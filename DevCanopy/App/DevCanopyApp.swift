@@ -6,6 +6,10 @@ struct DevCanopyApp: App {
     let modelContainer: ModelContainer
     
     init() {
+        appLogger.info("DevCanopy starting...")
+        appLogger.debug("Console logging: \(ProcessInfo.processInfo.environment["DEVCANOPY_LOG_CONSOLE"] ?? "disabled")")
+        appLogger.debug("Log level: \(ProcessInfo.processInfo.environment["DEVCANOPY_LOG_LEVEL"] ?? "info")")
+        
         do {
             let schema = Schema([
                 TrackedRepository.self,
@@ -22,7 +26,9 @@ struct DevCanopyApp: App {
                 for: schema,
                 configurations: [modelConfiguration]
             )
+            appLogger.info("ModelContainer initialized successfully")
         } catch {
+            appLogger.error("Failed to create ModelContainer: \(error)")
             fatalError("Failed to create ModelContainer: \(error)")
         }
     }

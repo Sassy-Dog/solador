@@ -92,6 +92,7 @@ Scripts/config.local.sh
 *.log
 .env
 .env.local
+Logs/
 
 # Build products
 Products/

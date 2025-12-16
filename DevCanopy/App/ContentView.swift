@@ -44,7 +44,10 @@ struct ContentView: View {
     private func setupInitialData() {
         // Check if this is first launch
         if repositories.isEmpty && services.isEmpty {
+            uiLogger.info("First launch detected - no repositories or services configured")
             // Show onboarding in future
+        } else {
+            uiLogger.debug("Found \(repositories.count) repositories and \(services.count) services")
         }
     }
 }

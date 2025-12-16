@@ -28,6 +28,8 @@ $(color_yellow "Build Options:")
 
 $(color_yellow "Run Options:")
   $(color_green "--clean-first")   Clean before building
+  $(color_green "--log") <mode>    Enable logging (console, file, both)
+  $(color_green "--log-level") <level>  Set log level (debug, info, warn, error)
 
 $(color_yellow "Publish Options:")
   $(color_green "--bump") <major|minor|patch>  Version bump type (default: patch)

@@ -82,6 +82,10 @@ struct DashboardView: View {
     }
     
     private func refreshAll() {
+        uiLogger.info("Manual refresh requested")
+        if repositories.isEmpty {
+            uiLogger.warning("No repositories to refresh")
+        }
         // Implement refresh logic
     }
     
