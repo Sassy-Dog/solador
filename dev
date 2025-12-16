@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Source library and config
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$SCRIPT_DIR/Scripts/lib.sh"
+source "$SCRIPT_DIR/Scripts/config.sh"
+
+# Show help
+show_help() {
+    cat << EOF
+$(color_cyan "$APP_NAME Development Tool")
+
+$(color_yellow "Usage:") $(color_green "$0") [command] [options]
+
+$(color_yellow "Commands:")
+  $(color_green "run")      $(color_gray "[r]")    Build and run the app (default)
+  $(color_green "build")    $(color_gray "[b]")    Build the app
+  $(color_green "test")     $(color_gray "[t]")    Run tests
+  $(color_green "clean")    $(color_gray "[c]")    Clean build artifacts
+  $(color_green "xcode")    $(color_gray "[x]")    Open project in Xcode
+  $(color_green "publish")  $(color_gray "[p]")    Publish a new release
+  $(color_green "help")     $(color_gray "[h]")    Show this help
+
+$(color_yellow "Build Options:")
+  $(color_green "--release")        Build in release mode
+  $(color_green "--configuration") <name>  Specify build configuration
+
+$(color_yellow "Run Options:")
+  $(color_green "--clean-first")   Clean before building
+
+$(color_yellow "Publish Options:")
+  $(color_green "--bump") <major|minor|patch>  Version bump type (default: patch)
+  $(color_green "--skip-tests")                Skip running tests
+
+$(color_yellow "Examples:")
+  $(color_green "$0")                    # Build and run (debug)
+  $(color_green "$0 run --release")      # Build and run (release)
+  $(color_green "$0 build --release")    # Build release version
+  $(color_green "$0 publish --bump minor")  # Publish minor version update
+
+EOF
+}
+
+# Parse command line arguments
+COMMAND="${1:-run}"
+shift || true
+
+# Handle command aliases
+case "$COMMAND" in
+    r) COMMAND="run" ;;
+    b) COMMAND="build" ;;
+    t) COMMAND="test" ;;
+    c) COMMAND="clean" ;;
+    x) COMMAND="xcode" ;;
+    p) COMMAND="publish" ;;
+    h|help|-h|--help) COMMAND="help" ;;
+esac
+
+# Ensure we're in the project root
+ensure_project_root
+
+# Route to appropriate script
+case "$COMMAND" in
+    run)
+        exec "$SCRIPT_DIR/Scripts/run.sh" "$@"
+        ;;
+    build)
+        exec "$SCRIPT_DIR/Scripts/build.sh" "$@"
+        ;;
+    test)
+        exec "$SCRIPT_DIR/Scripts/test.sh" "$@"
+        ;;
+    clean)
+        exec "$SCRIPT_DIR/Scripts/clean.sh" "$@"
+        ;;
+    xcode)
+        exec "$SCRIPT_DIR/Scripts/xcode.sh" "$@"
+        ;;
+    publish)
+        exec "$SCRIPT_DIR/Scripts/publish.sh" "$@"
+        ;;
+    help)
+        show_help
+        exit 0
+        ;;
+    *)
+        log_error "Unknown command: $COMMAND"
+        show_help
+        exit 1
+        ;;
+esac
