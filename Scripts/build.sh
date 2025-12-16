@@ -69,6 +69,7 @@ else
         -derivedDataPath "$DERIVED_DATA_PATH" \
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
         MARKETING_VERSION="$VERSION" \
+        -quiet \
         build
 fi
 
