@@ -14,6 +14,8 @@ struct ContentView: View {
             switch selectedSection {
             case .overview:
                 DashboardView()
+            case .projects:
+                ProjectsView()
             case .repositories:
                 RepositoriesView()
             case .services:
@@ -54,6 +56,7 @@ struct ContentView: View {
 
 enum SidebarSection: String, CaseIterable {
     case overview = "Overview"
+    case projects = "Projects"
     case repositories = "Repositories"
     case services = "Services"
     
@@ -61,6 +64,8 @@ enum SidebarSection: String, CaseIterable {
         switch self {
         case .overview:
             return "square.grid.2x2"
+        case .projects:
+            return "square.stack.3d.up"
         case .repositories:
             return "folder"
         case .services:

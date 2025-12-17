@@ -54,6 +54,9 @@ struct ServicesView: View {
 
 struct ServiceDetailCard: View {
     let service: ServiceConnection
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var githubService: GitHubService
+    @State private var showDisconnectAlert = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -78,17 +81,17 @@ struct ServiceDetailCard: View {
                 
                 Menu {
                     Button("Open Dashboard") {
-                        // Open service dashboard
+                        openServiceDashboard()
                     }
                     
                     Button("Refresh") {
-                        // Refresh service
+                        refreshService()
                     }
                     
                     Divider()
                     
                     Button("Disconnect", role: .destructive) {
-                        // Disconnect service
+                        showDisconnectAlert = true
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -129,12 +132,66 @@ struct ServiceDetailCard: View {
         .padding()
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(12)
+        .alert("Disconnect Service", isPresented: $showDisconnectAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Disconnect", role: .destructive) {
+                disconnectService()
+            }
+        } message: {
+            Text("Are you sure you want to disconnect \(service.service.rawValue)? This will remove the service connection but won't affect your repositories.")
+        }
+    }
+    
+    private func openServiceDashboard() {
+        switch service.service {
+        case .github:
+            if let url = URL(string: "https://github.com") {
+                NSWorkspace.shared.open(url)
+            }
+        case .vercel:
+            if let url = URL(string: "https://vercel.com/dashboard") {
+                NSWorkspace.shared.open(url)
+            }
+        case .neon:
+            if let url = URL(string: "https://console.neon.tech") {
+                NSWorkspace.shared.open(url)
+            }
+        case .cloudflare:
+            if let url = URL(string: "https://dash.cloudflare.com") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+    
+    private func refreshService() {
+        // Refresh service-specific data
+        switch service.service {
+        case .github:
+            Task {
+                try? await githubService.fetchCurrentUser()
+            }
+        default:
+            break
+        }
+    }
+    
+    private func disconnectService() {
+        switch service.service {
+        case .github:
+            githubService.disconnect()
+        default:
+            break
+        }
+        
+        modelContext.delete(service)
+        try? modelContext.save()
     }
 }
 
 struct ConnectServiceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedService: ServiceType?
+    @State private var showAuthentication = false
     
     var body: some View {
         VStack(spacing: 20) {
@@ -167,7 +224,7 @@ struct ConnectServiceSheet: View {
                 Spacer()
                 
                 Button("Next") {
-                    // Proceed to authentication
+                    showAuthentication = true
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(selectedService == nil)
@@ -176,6 +233,16 @@ struct ConnectServiceSheet: View {
         }
         .padding()
         .frame(width: 500, height: 400)
+        .sheet(isPresented: $showAuthentication) {
+            if selectedService == .github {
+                GitHubAuthenticationView()
+                    .environmentObject(GitHubService.shared)
+            } else {
+                // Placeholder for other services
+                Text("Authentication for \(selectedService?.rawValue ?? "") not yet implemented")
+                    .frame(width: 600, height: 400)
+            }
+        }
     }
 }
 

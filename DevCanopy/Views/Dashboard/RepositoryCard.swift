@@ -2,7 +2,10 @@ import SwiftUI
 
 struct RepositoryCard: View {
     let repository: TrackedRepository
+    @EnvironmentObject private var gitMonitorService: GitMonitorService
     @State private var isHovered = false
+    @State private var isRefreshing = false
+    @State private var showWorkflowConfiguration = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -26,9 +29,15 @@ struct RepositoryCard: View {
                 Spacer()
                 
                 // Status Icon
-                Image(systemName: repository.displayStatus.icon)
-                    .foregroundColor(Color(repository.displayStatus.color))
-                    .font(.title2)
+                if isRefreshing {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .frame(width: 24, height: 24)
+                } else {
+                    Image(systemName: repository.displayStatus.icon)
+                        .foregroundColor(Color(repository.displayStatus.color))
+                        .font(.title2)
+                }
             }
             
             Divider()
@@ -71,6 +80,11 @@ struct RepositoryCard: View {
                         }
                     }
                 }
+                
+                // GitHub Workflows
+                if !repository.activeWorkflows.isEmpty {
+                    WorkflowStatusView(repository: repository)
+                }
             }
         }
         .padding()
@@ -98,12 +112,32 @@ struct RepositoryCard: View {
             Divider()
             
             Button("Refresh") {
-                // Refresh this repository
+                Task {
+                    isRefreshing = true
+                    await gitMonitorService.refreshRepository(repository)
+                    isRefreshing = false
+                }
+            }
+            .disabled(isRefreshing)
+            
+            if repository.githubRepoIdentifier != nil {
+                Button("Configure Workflows...") {
+                    showWorkflowConfiguration = true
+                }
+                
+                Button("Refresh Workflows") {
+                    Task {
+                        await gitMonitorService.refreshWorkflows(for: repository)
+                    }
+                }
             }
             
             Button("Remove") {
                 // Remove repository
             }
+        }
+        .sheet(isPresented: $showWorkflowConfiguration) {
+            WorkflowConfigurationSheet(repository: repository)
         }
     }
     

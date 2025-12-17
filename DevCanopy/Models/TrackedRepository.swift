@@ -20,6 +20,27 @@ final class TrackedRepository {
     var githubRepoIdentifier: String?
     var vercelProjectId: String?
     
+    // GitHub workflows
+    @Relationship(deleteRule: .cascade)
+    var githubWorkflows: [GitHubWorkflow]? = []
+    
+    // Organization relationships
+    @Relationship(inverse: \Workspace.repositories)
+    var workspace: Workspace?
+    
+    @Relationship(inverse: \Project.repositories)
+    var project: Project?
+    
+    @Relationship(inverse: \Tag.repositories)
+    var tags: [Tag]? = []
+    
+    // Custom metadata
+    var customMetadata: [String: String]? = [:]
+    
+    // Display preferences
+    var isPinned: Bool = false
+    var sortOrder: Int = 0
+    
     init(name: String, path: String) {
         self.name = name
         self.path = path
@@ -41,6 +62,72 @@ final class TrackedRepository {
         } else {
             return .synced
         }
+    }
+    
+    // Organization helpers
+    var organizationPath: String {
+        var components: [String] = []
+        
+        if let workspace = workspace {
+            components.append(workspace.name)
+        }
+        
+        if let project = project {
+            // Build full project path
+            var projectPath: [String] = [project.name]
+            var current = project.parentProject
+            while let parent = current {
+                projectPath.insert(parent.name, at: 0)
+                current = parent.parentProject
+            }
+            components.append(contentsOf: projectPath)
+        }
+        
+        return components.joined(separator: " / ")
+    }
+    
+    var isOrganized: Bool {
+        workspace != nil || project != nil
+    }
+    
+    // Tag helpers
+    func hasTag(_ tagName: String) -> Bool {
+        tags?.contains(where: { $0.name == tagName }) ?? false
+    }
+    
+    func hasTagInCategory(_ category: TagCategory) -> Bool {
+        tags?.contains(where: { $0.category == category }) ?? false
+    }
+    
+    // GitHub workflow helpers
+    var activeWorkflows: [GitHubWorkflow] {
+        githubWorkflows?.filter { $0.isEnabled && $0.state == .active } ?? []
+    }
+    
+    var hasFailingWorkflows: Bool {
+        activeWorkflows.contains { workflow in
+            workflow.latestRun?.isFailure ?? false
+        }
+    }
+    
+    var workflowSummary: (success: Int, failure: Int, running: Int) {
+        var success = 0
+        var failure = 0
+        var running = 0
+        
+        for workflow in activeWorkflows {
+            if let latestRun = workflow.latestRun {
+                if latestRun.isInProgress {
+                    running += 1
+                } else if latestRun.isSuccess {
+                    success += 1
+                } else if latestRun.isFailure {
+                    failure += 1
+                }
+            }
+        }
+        
+        return (success, failure, running)
     }
 }
 

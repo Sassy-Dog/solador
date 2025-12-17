@@ -2,6 +2,34 @@ import SwiftUI
 import SwiftData
 
 struct DashboardView: View {
+    @State private var useGroupedView = true
+    
+    var body: some View {
+        if useGroupedView {
+            GroupedDashboardView()
+                .toolbar {
+                    ToolbarItem(placement: .automatic) {
+                        Button(action: { useGroupedView.toggle() }) {
+                            Label("Toggle View", systemImage: useGroupedView ? "square.grid.2x2" : "list.bullet.indent")
+                        }
+                        .help(useGroupedView ? "Switch to flat view" : "Switch to grouped view")
+                    }
+                }
+        } else {
+            FlatDashboardView()
+                .toolbar {
+                    ToolbarItem(placement: .automatic) {
+                        Button(action: { useGroupedView.toggle() }) {
+                            Label("Toggle View", systemImage: useGroupedView ? "square.grid.2x2" : "list.bullet.indent")
+                        }
+                        .help(useGroupedView ? "Switch to flat view" : "Switch to grouped view")
+                    }
+                }
+        }
+    }
+}
+
+struct FlatDashboardView: View {
     @Query private var repositories: [TrackedRepository]
     @Query private var services: [ServiceConnection]
     @State private var refreshTimer: Timer?

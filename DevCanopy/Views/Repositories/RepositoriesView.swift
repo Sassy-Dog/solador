@@ -1,8 +1,10 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct RepositoriesView: View {
     @Query private var repositories: [TrackedRepository]
+    @EnvironmentObject private var gitMonitorService: GitMonitorService
     @State private var showAddRepository = false
     
     var body: some View {
@@ -78,17 +80,88 @@ struct RepositoryListRow: View {
 
 struct AddRepositorySheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var gitMonitorService: GitMonitorService
+    @Query private var workspaces: [Workspace]
+    @Query private var projects: [Project]
+    @State private var selectedPath: String = ""
+    @State private var showFileImporter = false
+    @State private var errorMessage: String?
+    @State private var selectedWorkspace: Workspace?
+    @State private var selectedProject: Project?
     
     var body: some View {
-        VStack {
+        VStack(spacing: 20) {
             Text("Add Repository")
                 .font(.title2)
-                .padding()
+                .padding(.top)
             
-            Text("Drag and drop a folder or click to browse")
-                .foregroundStyle(.secondary)
+            VStack(spacing: 12) {
+                Text("Select a git repository folder")
+                    .foregroundStyle(.secondary)
+                
+                if !selectedPath.isEmpty {
+                    HStack {
+                        Image(systemName: "folder.fill")
+                            .foregroundColor(.accentColor)
+                        Text(selectedPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(selectedPath)
+                    }
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(8)
+                }
+                
+                Button("Browse...") {
+                    showFileImporter = true
+                }
+                .buttonStyle(.borderedProminent)
+                
+                // Organization selection
+                if !selectedPath.isEmpty {
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Organization (optional)")
+                            .font(.headline)
+                        
+                        if !workspaces.isEmpty {
+                            Picker("Workspace", selection: $selectedWorkspace) {
+                                Text("None").tag(nil as Workspace?)
+                                ForEach(workspaces) { workspace in
+                                    Text(workspace.name).tag(workspace as Workspace?)
+                                }
+                            }
+                        }
+                        
+                        if !projects.isEmpty {
+                            Picker("Project", selection: $selectedProject) {
+                                Text("None").tag(nil as Project?)
+                                ForEach(projects.filter { project in
+                                    // Show only root projects or projects in selected workspace
+                                    if let workspace = selectedWorkspace {
+                                        return project.workspace == workspace
+                                    } else {
+                                        return project.parentProject == nil && project.workspace == nil
+                                    }
+                                }) { project in
+                                    Text(project.name).tag(project as Project?)
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if let error = errorMessage {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .font(.caption)
+                }
+            }
             
-            // Implementation will include drag/drop and file browser
+            Spacer()
             
             HStack {
                 Button("Cancel") {
@@ -97,14 +170,61 @@ struct AddRepositorySheet: View {
                 .keyboardShortcut(.cancelAction)
                 
                 Button("Add") {
-                    // Add repository
-                    dismiss()
+                    addRepository()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(true) // Until path is selected
+                .disabled(selectedPath.isEmpty)
             }
             .padding()
         }
         .frame(width: 400, height: 300)
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    selectedPath = url.path
+                    errorMessage = nil
+                    validateRepository(at: url)
+                }
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+    
+    private func validateRepository(at url: URL) {
+        let gitURL = url.appendingPathComponent(".git")
+        if !FileManager.default.fileExists(atPath: gitURL.path) {
+            errorMessage = "Selected folder is not a git repository"
+            selectedPath = ""
+        }
+    }
+    
+    private func addRepository() {
+        guard !selectedPath.isEmpty else { return }
+        
+        let name = URL(fileURLWithPath: selectedPath).lastPathComponent
+        let repository = TrackedRepository(name: name, path: selectedPath)
+        
+        // Set organization
+        repository.workspace = selectedWorkspace
+        repository.project = selectedProject
+        
+        modelContext.insert(repository)
+        
+        do {
+            try modelContext.save()
+            
+            // Start monitoring the repository
+            gitMonitorService.startMonitoring(repository)
+            
+            dismiss()
+        } catch {
+            errorMessage = "Failed to add repository: \(error.localizedDescription)"
+        }
     }
 }
