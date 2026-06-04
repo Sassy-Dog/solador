@@ -124,6 +124,19 @@ final class KeychainHelper {
         try? delete(for: "github_access_token")
     }
     
+    // Per-host agent bearer tokens (keyed by MonitoredHost id).
+    func saveHostToken(_ token: String, hostID: UUID) throws {
+        try saveString(token, for: "host_token_\(hostID.uuidString)")
+    }
+
+    func loadHostToken(hostID: UUID) -> String? {
+        try? loadString(for: "host_token_\(hostID.uuidString)")
+    }
+
+    func deleteHostToken(hostID: UUID) {
+        try? delete(for: "host_token_\(hostID.uuidString)")
+    }
+
     func saveVercelToken(_ token: String) throws {
         try saveString(token, for: "vercel_access_token")
     }

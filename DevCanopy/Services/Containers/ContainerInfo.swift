@@ -1,7 +1,7 @@
 import Foundation
 
 /// A container runtime / VM manager detected on this machine.
-enum ContainerRuntime: String, Sendable, CaseIterable {
+enum ContainerRuntime: String, Sendable, CaseIterable, Codable {
     case docker
     case podman
     case tart
@@ -18,15 +18,20 @@ enum ContainerRuntime: String, Sendable, CaseIterable {
     }
 }
 
-/// One container or VM on this machine.
-struct ContainerInfo: Sendable, Identifiable, Equatable {
+/// One container or VM (local or reported by a remote agent — same wire shape).
+struct ContainerInfo: Sendable, Identifiable, Equatable, Codable {
     /// Stable identity: runtime + name (names are unique within a runtime).
+    /// Computed, so it's excluded from Codable (not part of the wire shape).
     var id: String { "\(runtime.rawValue):\(name)" }
     let name: String
     let statusText: String
     let isRunning: Bool
     let runtime: ContainerRuntime
     let image: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, statusText, isRunning, runtime, image
+    }
 }
 
 /// Pure, tested parsing for container/VM tool output. No I/O here.

@@ -26,6 +26,11 @@ struct SettingsView: View {
                     Label("GitHub", systemImage: "checkmark.seal")
                 }
 
+            HostsSettingsView()
+                .tabItem {
+                    Label("Hosts", systemImage: "server.rack")
+                }
+
             AboutView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")

@@ -8,11 +8,12 @@ struct HostsPanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .hosts
 
     @EnvironmentObject private var local: LocalHostMetricsService
+    @EnvironmentObject private var remoteHosts: RemoteHostsCoordinator
     @State private var availableWidth: CGFloat = 0
 
     private let minHostWidth: CGFloat = 760
 
-    private var hosts: [LocalHostMetricsService] { [local] }   // Phase 2: + remote hosts
+    private var hosts: [HostMetricsService] { [local] + remoteHosts.hosts }
 
     var body: some View {
         content

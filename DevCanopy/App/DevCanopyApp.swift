@@ -5,6 +5,7 @@ import SwiftData
 struct DevCanopyApp: App {
     let modelContainer: ModelContainer
     @StateObject private var gitMonitorService: GitMonitorService
+    @StateObject private var remoteHosts: RemoteHostsCoordinator
     @StateObject private var localHostMetrics = LocalHostMetricsService()
     @StateObject private var containerService = LocalContainerService()
     @StateObject private var gitWorktreeService = GitWorktreeService()
@@ -22,6 +23,7 @@ struct DevCanopyApp: App {
                 TrackedRepository.self,
                 ServiceConnection.self,
                 AppSettings.self,
+                MonitoredHost.self,
                 GitHubWorkflow.self,
                 GitHubWorkflowRun.self
             ])
@@ -41,6 +43,11 @@ struct DevCanopyApp: App {
             // Initialize GitMonitorService
             let gitMonitor = GitMonitorService(modelContext: container.mainContext)
             self._gitMonitorService = StateObject(wrappedValue: gitMonitor)
+
+            // Coordinator for remote-host agents (reads MonitoredHost from SwiftData)
+            self._remoteHosts = StateObject(
+                wrappedValue: RemoteHostsCoordinator(modelContext: container.mainContext)
+            )
             
             // Start monitoring existing repositories
             Task { @MainActor in
@@ -71,6 +78,7 @@ struct DevCanopyApp: App {
                 .environmentObject(claudeUsageService)
                 .environmentObject(portfolioCIService)
                 .environmentObject(ciRunnersService)
+                .environmentObject(remoteHosts)
                 .task {
                     localHostMetrics.start()
                     containerService.start()
@@ -78,6 +86,7 @@ struct DevCanopyApp: App {
                     claudeUsageService.start()
                     portfolioCIService.start()
                     ciRunnersService.start()
+                    remoteHosts.reload()
                 }
         }
         .modelContainer(modelContainer)
@@ -105,6 +114,7 @@ struct DevCanopyApp: App {
         Settings {
             SettingsView()
                 .environmentObject(gitMonitorService)
+                .environmentObject(remoteHosts)
         }
         .modelContainer(modelContainer)
     }

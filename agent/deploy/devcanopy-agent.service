@@ -1,0 +1,22 @@
+# DevCanopy per-host metrics agent (user systemd unit).
+#
+# Runs as the invoking user so rootless `podman ps` works without sudo.
+# Install with:  systemctl --user enable --now devcanopy-agent
+# (and `loginctl enable-linger <user>` so it survives logout / starts on boot).
+
+[Unit]
+Description=DevCanopy metrics agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/devcanopy-agent/devcanopy-agent
+EnvironmentFile=%h/.config/devcanopy-agent.env
+Restart=always
+RestartSec=3
+# Light hardening (user service; keep permissive enough for podman socket access).
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

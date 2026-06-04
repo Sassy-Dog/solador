@@ -6,9 +6,9 @@ import HostMetricsKit
 /// This is the default Hosts surface (no drill-in). Contains no scroll view of its own —
 /// the cockpit page scrolls.
 struct HostLupitaView: View {
-    @ObservedObject var service: LocalHostMetricsService
+    @ObservedObject var service: HostMetricsService
 
-    private static let cap = LocalHostMetricsService.historyCapacity
+    private static let cap = HostMetricsService.historyCapacity
 
     /// Per-core line colors, cycled — echoes Lupita's multi-hue core grid.
     private static let coreColors: [Color] = [
@@ -41,9 +41,9 @@ struct HostLupitaView: View {
                     networkSection(snap)
                 }
             } else {
-                Text("waiting for first sample…")
+                Text(service.connectionState == .unreachable ? "unreachable" : "waiting for first sample…")
                     .font(CockpitTheme.mono(12))
-                    .foregroundStyle(CockpitTheme.muted)
+                    .foregroundStyle(service.connectionState == .unreachable ? CockpitTheme.red : CockpitTheme.muted)
             }
         }
         .padding(18)
@@ -55,11 +55,19 @@ struct HostLupitaView: View {
 
     private var hostHeader: some View {
         HStack(spacing: 8) {
-            Circle().fill(CockpitTheme.green).frame(width: 8, height: 8)
+            Circle().fill(connectionColor).frame(width: 8, height: 8)
             Text(service.hostName)
                 .font(CockpitTheme.mono(14, weight: .bold))
                 .foregroundStyle(CockpitTheme.ink)
             Spacer()
+        }
+    }
+
+    private var connectionColor: Color {
+        switch service.connectionState {
+        case .local, .connected: CockpitTheme.green
+        case .connecting: CockpitTheme.amber
+        case .unreachable: CockpitTheme.red
         }
     }
 
