@@ -97,10 +97,37 @@ final class GitHubService: NSObject, ObservableObject {
         self.accessToken = token
         saveTokenToKeychain(token)
         self.isAuthenticated = true
-        
+
         Task {
             try? await fetchCurrentUser()
         }
+    }
+
+    /// (Re)loads a Personal Access Token from the Keychain and sets the
+    /// authenticated state accordingly. This is the supported path for
+    /// fine-grained PAT auth (the OAuth-PKCE flow is incomplete). Call after the
+    /// user saves/clears a token in Settings.
+    func configureFromKeychain() {
+        if let token = KeychainHelper.shared.loadGitHubToken(), !token.isEmpty {
+            self.accessToken = token
+            self.isAuthenticated = true
+            Task { try? await fetchCurrentUser() }
+        } else {
+            self.accessToken = nil
+            self.isAuthenticated = false
+            self.currentUser = nil
+        }
+    }
+
+    /// Whether a usable token is currently loaded (without exposing it).
+    var hasToken: Bool { accessToken?.isEmpty == false }
+
+    /// Performs an authenticated GET against an arbitrary REST endpoint and
+    /// returns the raw data. Reuses the shared Bearer-token / rate-limit
+    /// plumbing. Used by panels that fetch endpoints not modeled as
+    /// `TrackedRepository` (e.g. Portfolio CI).
+    func getRaw(endpoint: String, queryItems: [URLQueryItem]? = nil) async throws -> Data {
+        try await request(endpoint: endpoint, method: "GET", queryItems: queryItems)
     }
     
     // MARK: - API Methods

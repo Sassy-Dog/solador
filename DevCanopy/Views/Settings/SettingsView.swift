@@ -20,7 +20,12 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Terminal", systemImage: "terminal")
                 }
-            
+
+            GitHubSettingsView()
+                .tabItem {
+                    Label("GitHub", systemImage: "checkmark.seal")
+                }
+
             AboutView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
@@ -96,6 +101,69 @@ struct TerminalSettingsView: View {
         availableTerminals = terminals.filter { terminal in
             NSWorkspace.shared.urlForApplication(withBundleIdentifier: terminal.1) != nil
         }
+    }
+}
+
+struct GitHubSettingsView: View {
+    @State private var token: String = ""
+    @State private var hasStoredToken: Bool = KeychainHelper.shared.loadGitHubToken()?.isEmpty == false
+    @State private var statusMessage: String?
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("Fine-grained PAT", text: $token)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    Button("Save") { save() }
+                        .disabled(token.isEmpty)
+                    Button("Clear") { clear() }
+                        .disabled(!hasStoredToken)
+                    Spacer()
+                    if hasStoredToken {
+                        Label("Token stored", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    }
+                }
+
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Used by Portfolio CI to read GitHub Actions runs. A fine-grained PAT with read access to Actions is sufficient. Stored in your macOS Keychain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("GitHub Token")
+                    .font(.headline)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private func save() {
+        do {
+            try KeychainHelper.shared.saveGitHubToken(token)
+            GitHubService.shared.configureFromKeychain()
+            hasStoredToken = true
+            token = ""
+            statusMessage = "Saved."
+        } catch {
+            statusMessage = "Failed to save: \(error.localizedDescription)"
+        }
+    }
+
+    private func clear() {
+        KeychainHelper.shared.deleteGitHubToken()
+        GitHubService.shared.configureFromKeychain()
+        hasStoredToken = false
+        token = ""
+        statusMessage = "Cleared."
     }
 }
 
