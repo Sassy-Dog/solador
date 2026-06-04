@@ -20,6 +20,10 @@ settings:
   CODE_SIGN_IDENTITY: "-"
   CODE_SIGN_STYLE: Automatic
 
+packages:
+  HostMetricsKit:
+    path: Packages/HostMetricsKit
+
 configs:
   Debug:
     settings:
@@ -67,6 +71,8 @@ targets:
     dependencies:
       - sdk: SwiftUI.framework
       - sdk: SwiftData.framework
+      - package: HostMetricsKit
+        product: HostMetricsKit
     scheme:
       testTargets:
         - DevCanopyTests
@@ -83,6 +89,7 @@ targets:
       - target: DevCanopy
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.sassydog.devcanopy.tests
+      GENERATE_INFOPLIST_FILE: YES
       TEST_HOST: $(BUILT_PRODUCTS_DIR)/DevCanopy.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/DevCanopy
 
 schemes:

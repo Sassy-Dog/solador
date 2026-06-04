@@ -5,6 +5,11 @@ import SwiftData
 struct DevCanopyApp: App {
     let modelContainer: ModelContainer
     @StateObject private var gitMonitorService: GitMonitorService
+    @StateObject private var localHostMetrics = LocalHostMetricsService()
+    @StateObject private var containerService = LocalContainerService()
+    @StateObject private var gitWorktreeService = GitWorktreeService()
+    @StateObject private var claudeUsageService = ClaudeUsageService()
+    @StateObject private var portfolioCIService = PortfolioCIService()
     
     init() {
         appLogger.info("DevCanopy starting...")
@@ -16,9 +21,6 @@ struct DevCanopyApp: App {
                 TrackedRepository.self,
                 ServiceConnection.self,
                 AppSettings.self,
-                Workspace.self,
-                Project.self,
-                Tag.self,
                 GitHubWorkflow.self,
                 GitHubWorkflowRun.self
             ])
@@ -62,6 +64,18 @@ struct DevCanopyApp: App {
             ContentView()
                 .environmentObject(gitMonitorService)
                 .environmentObject(GitHubService.shared)
+                .environmentObject(localHostMetrics)
+                .environmentObject(containerService)
+                .environmentObject(gitWorktreeService)
+                .environmentObject(claudeUsageService)
+                .environmentObject(portfolioCIService)
+                .task {
+                    localHostMetrics.start()
+                    containerService.start()
+                    gitWorktreeService.start()
+                    claudeUsageService.start()
+                    portfolioCIService.start()
+                }
         }
         .modelContainer(modelContainer)
         .windowStyle(.automatic)

@@ -23,17 +23,7 @@ final class TrackedRepository {
     // GitHub workflows
     @Relationship(deleteRule: .cascade)
     var githubWorkflows: [GitHubWorkflow]? = []
-    
-    // Organization relationships
-    @Relationship(inverse: \Workspace.repositories)
-    var workspace: Workspace?
-    
-    @Relationship(inverse: \Project.repositories)
-    var project: Project?
-    
-    @Relationship(inverse: \Tag.repositories)
-    var tags: [Tag]? = []
-    
+
     // Custom metadata
     var customMetadata: [String: String]? = [:]
     
@@ -62,41 +52,6 @@ final class TrackedRepository {
         } else {
             return .synced
         }
-    }
-    
-    // Organization helpers
-    var organizationPath: String {
-        var components: [String] = []
-        
-        if let workspace = workspace {
-            components.append(workspace.name)
-        }
-        
-        if let project = project {
-            // Build full project path
-            var projectPath: [String] = [project.name]
-            var current = project.parentProject
-            while let parent = current {
-                projectPath.insert(parent.name, at: 0)
-                current = parent.parentProject
-            }
-            components.append(contentsOf: projectPath)
-        }
-        
-        return components.joined(separator: " / ")
-    }
-    
-    var isOrganized: Bool {
-        workspace != nil || project != nil
-    }
-    
-    // Tag helpers
-    func hasTag(_ tagName: String) -> Bool {
-        tags?.contains(where: { $0.name == tagName }) ?? false
-    }
-    
-    func hasTagInCategory(_ category: TagCategory) -> Bool {
-        tags?.contains(where: { $0.category == category }) ?? false
     }
     
     // GitHub workflow helpers

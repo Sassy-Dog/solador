@@ -88,6 +88,7 @@ Temporary Items
 
 # Project specific
 DevCanopy.xcodeproj/
+.superpowers/
 Scripts/config.local.sh
 *.log
 .env
