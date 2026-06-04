@@ -10,12 +10,14 @@ struct WorktreeStatus: Sendable, Identifiable, Equatable {
     let isDirty: Bool
 }
 
-/// A repository and its worktrees.
+/// A repository and its worktrees that have changes (clean ones are summarized
+/// by `cleanCount` to keep the panel glanceable).
 struct RepoWorktrees: Sendable, Identifiable, Equatable {
     var id: String { path }
     let name: String
     let path: String
-    let worktrees: [WorktreeStatus]
+    let worktrees: [WorktreeStatus]   // only worktrees with changes
+    let cleanCount: Int               // worktrees that are clean & synced (hidden)
 }
 
 /// Discovers git repos under configured roots and reports their worktrees with
@@ -65,6 +67,8 @@ final class GitWorktreeService: ObservableObject {
 
         let scanned = await Task.detached { () -> [RepoWorktrees] in
             let repoPaths = Self.discoverRepos(roots: roots, maxDepth: maxDepth)
+                // Only the tracked portfolio repos — keeps the panel focused.
+                .filter { PortfolioRepos.matches(repoDirName: ($0 as NSString).lastPathComponent) }
             return repoPaths.compactMap { Self.repoWorktrees(at: $0) }
         }.value
 
@@ -127,8 +131,11 @@ final class GitWorktreeService: ObservableObject {
             )
         }
 
+        // Show only worktrees with changes; summarize the rest as a clean count.
+        let changed = statuses.filter { $0.ahead > 0 || $0.behind > 0 || $0.isDirty }
+        let cleanCount = statuses.count - changed.count
         let name = (path as NSString).lastPathComponent
-        return RepoWorktrees(name: name, path: path, worktrees: statuses)
+        return RepoWorktrees(name: name, path: path, worktrees: changed, cleanCount: cleanCount)
     }
 
     /// Runs `git -C <directory> <args>` capturing stdout. Returns nil on failure.

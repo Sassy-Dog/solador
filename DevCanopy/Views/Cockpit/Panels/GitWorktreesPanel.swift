@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Git / Worktrees panel — branch + ahead/behind + dirty state per worktree,
-/// grouped by repository.
+/// Git / Worktrees panel — scoped to the tracked portfolio repos, showing only
+/// worktrees with changes (ahead/behind/dirty); clean worktrees are summarized so
+/// the panel stays glanceable.
 struct GitWorktreesPanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .gitWorktrees
 
@@ -10,7 +11,7 @@ struct GitWorktreesPanel: CockpitPanelView {
     var body: some View {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
             if service.repos.isEmpty {
-                Text("no repositories found")
+                Text("no portfolio repos found")
                     .font(CockpitTheme.mono(11))
                     .foregroundStyle(CockpitTheme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -26,8 +27,8 @@ struct GitWorktreesPanel: CockpitPanelView {
 
     private var trailingLabel: String? {
         guard !service.repos.isEmpty else { return nil }
-        let worktrees = service.repos.reduce(0) { $0 + $1.worktrees.count }
-        return "\(service.repos.count) repos · \(worktrees) wt"
+        let changed = service.repos.reduce(0) { $0 + $1.worktrees.count }
+        return changed == 0 ? "all clean" : "\(changed) changed"
     }
 
     @ViewBuilder
@@ -39,14 +40,17 @@ struct GitWorktreesPanel: CockpitPanelView {
             ForEach(repo.worktrees) { wt in
                 row(wt)
             }
+            if repo.worktrees.isEmpty {
+                cleanLine("✓ all \(repo.cleanCount) clean")
+            } else if repo.cleanCount > 0 {
+                cleanLine("+ \(repo.cleanCount) clean")
+            }
         }
     }
 
     private func row(_ wt: WorktreeStatus) -> some View {
         HStack(spacing: 7) {
-            Circle()
-                .fill(dotColor(wt))
-                .frame(width: 6, height: 6)
+            Circle().fill(dotColor(wt)).frame(width: 6, height: 6)
             Text(branchLabel(wt.info))
                 .font(CockpitTheme.mono(11, weight: .bold))
                 .foregroundStyle(CockpitTheme.ink)
@@ -59,22 +63,26 @@ struct GitWorktreesPanel: CockpitPanelView {
         }
     }
 
+    private func cleanLine(_ text: String) -> some View {
+        Text(text)
+            .font(CockpitTheme.mono(9))
+            .foregroundStyle(CockpitTheme.muted)
+    }
+
     private func branchLabel(_ info: WorktreeInfo) -> String {
         if info.isBare { return "(bare)" }
         if info.isDetached { return "(detached)" }
         return info.branch ?? "(unknown)"
     }
 
-    /// green = clean & synced; amber = ahead or dirty; red = behind or diverged.
+    /// amber = ahead or dirty; red = behind or diverged. (Clean rows aren't shown.)
     private func dotColor(_ wt: WorktreeStatus) -> Color {
         if wt.behind > 0 { return CockpitTheme.red }
         if wt.ahead > 0 || wt.isDirty { return CockpitTheme.amber }
         return CockpitTheme.green
     }
 
-    /// Compact status suffix like `↑2 ·3✎` or `✓`.
     private func suffix(_ wt: WorktreeStatus) -> String {
-        if wt.info.isBare { return "" }
         var parts: [String] = []
         if wt.ahead > 0 { parts.append("↑\(wt.ahead)") }
         if wt.behind > 0 { parts.append("↓\(wt.behind)") }

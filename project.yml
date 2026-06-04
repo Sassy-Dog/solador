@@ -11,13 +11,13 @@ options:
   generateEmptyDirectories: true
 
 settings:
-  DEVELOPMENT_TEAM: ""
+  DEVELOPMENT_TEAM: 52YMXC3348
   MARKETING_VERSION: 0.1.0
   CURRENT_PROJECT_VERSION: 1
   SWIFT_VERSION: "5.9"
   ENABLE_HARDENED_RUNTIME: true
   MACOSX_DEPLOYMENT_TARGET: "14.0"
-  CODE_SIGN_IDENTITY: "-"
+  CODE_SIGN_IDENTITY: "Apple Development"
   CODE_SIGN_STYLE: Automatic
 
 packages:
@@ -31,9 +31,8 @@ configs:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
       ENABLE_TESTABILITY: true
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
-      GCC_PREPROCESSOR_DEFINITIONS: 
+      GCC_PREPROCESSOR_DEFINITIONS:
         - DEBUG=1
-      CODE_SIGN_IDENTITY: "-"
       CODE_SIGN_STYLE: Automatic
       ENABLE_HARDENED_RUNTIME: false
   Release:

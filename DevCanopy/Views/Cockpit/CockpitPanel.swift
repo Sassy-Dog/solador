@@ -6,6 +6,7 @@ import SwiftUI
 /// concrete view; adding a layout = adding a `CockpitLayout` value.
 enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
     case hosts
+    case ciRunners
     case containers
     case portfolioCI
     case gitWorktrees
@@ -16,6 +17,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .hosts: return "Hosts"
+        case .ciRunners: return "CI Runners"
         case .containers: return "Containers / VMs"
         case .portfolioCI: return "Portfolio CI"
         case .gitWorktrees: return "Git / Worktrees"
@@ -26,6 +28,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
     var systemImage: String {
         switch self {
         case .hosts: return "cpu"
+        case .ciRunners: return "server.rack"
         case .containers: return "shippingbox"
         case .portfolioCI: return "checkmark.seal"
         case .gitWorktrees: return "arrow.triangle.branch"
@@ -65,13 +68,14 @@ extension CockpitLayout {
         rows: [
             [CockpitPlacement(kind: .hosts, span: .full)],
             [
-                CockpitPlacement(kind: .containers, span: .half),
+                CockpitPlacement(kind: .ciRunners, span: .half),
                 CockpitPlacement(kind: .portfolioCI, span: .half)
             ],
             [
-                CockpitPlacement(kind: .gitWorktrees, span: .half),
-                CockpitPlacement(kind: .claudeUsage, span: .half)
-            ]
+                CockpitPlacement(kind: .containers, span: .half),
+                CockpitPlacement(kind: .gitWorktrees, span: .half)
+            ],
+            [CockpitPlacement(kind: .claudeUsage, span: .full)]
         ]
     )
 }

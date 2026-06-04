@@ -8,6 +8,7 @@ struct DevCanopyApp: App {
     @StateObject private var localHostMetrics = LocalHostMetricsService()
     @StateObject private var containerService = LocalContainerService()
     @StateObject private var gitWorktreeService = GitWorktreeService()
+    @StateObject private var ciRunnersService = CIRunnersService()
     @StateObject private var claudeUsageService = ClaudeUsageService()
     @StateObject private var portfolioCIService = PortfolioCIService()
     
@@ -69,12 +70,14 @@ struct DevCanopyApp: App {
                 .environmentObject(gitWorktreeService)
                 .environmentObject(claudeUsageService)
                 .environmentObject(portfolioCIService)
+                .environmentObject(ciRunnersService)
                 .task {
                     localHostMetrics.start()
                     containerService.start()
                     gitWorktreeService.start()
                     claudeUsageService.start()
                     portfolioCIService.start()
+                    ciRunnersService.start()
                 }
         }
         .modelContainer(modelContainer)

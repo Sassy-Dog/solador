@@ -6,13 +6,8 @@ import SwiftUI
 /// results publish on the main actor. Per-repo failures are isolated.
 @MainActor
 final class PortfolioCIService: ObservableObject {
-    /// Phase 1: hardcoded portfolio. Swap to user config later.
-    static let configuredRepos = [
-        "Sassy-Dog/velovate",
-        "Sassy-Dog/qr-ninja",
-        "Sassy-Dog/tailored-tip",
-        "Sassy-Dog/what2wear"
-    ]
+    /// The tracked portfolio (shared source of truth with runners + worktrees).
+    static let configuredRepos = PortfolioRepos.slugs
 
     @Published private(set) var statuses: [RepoCIStatus] = []
     @Published private(set) var isAuthenticated = false

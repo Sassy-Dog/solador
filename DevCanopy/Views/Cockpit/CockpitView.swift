@@ -28,6 +28,7 @@ struct CockpitView: View {
     private func panel(for kind: CockpitPanelKind) -> some View {
         switch kind {
         case .hosts: HostsPanel()
+        case .ciRunners: CIRunnersPanel()
         case .containers: ContainersPanel()
         case .portfolioCI: PortfolioCIPanel()
         case .gitWorktrees: GitWorktreesPanel()

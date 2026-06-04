@@ -58,6 +58,7 @@ if command_exists xcbeautify; then
         -scheme "$SCHEME_NAME" \
         -configuration "$CONFIGURATION" \
         -derivedDataPath "$DERIVED_DATA_PATH" \
+        -allowProvisioningUpdates \
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
         MARKETING_VERSION="$VERSION" \
         build | xcbeautify
@@ -67,6 +68,7 @@ else
         -scheme "$SCHEME_NAME" \
         -configuration "$CONFIGURATION" \
         -derivedDataPath "$DERIVED_DATA_PATH" \
+        -allowProvisioningUpdates \
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
         MARKETING_VERSION="$VERSION" \
         -quiet \
