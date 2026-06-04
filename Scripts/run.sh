@@ -49,8 +49,14 @@ if [[ ! -d "$APP_PATH" ]]; then
     exit 1
 fi
 
-# Kill any existing instance
-pkill -f "$APP_NAME" 2>/dev/null || true
+# Kill any existing instance and WAIT for it to fully exit. pkill only signals;
+# launching while the old process is still terminating makes LaunchServices fail
+# with error -600 ("every other time"). Poll until it's gone (bounded ~3s).
+pkill -x "$APP_NAME" 2>/dev/null || true
+for _ in $(seq 1 30); do
+    pgrep -x "$APP_NAME" >/dev/null 2>&1 || break
+    sleep 0.1
+done
 
 # Run with console logging if requested
 if [[ "$LOG_MODE" == "console" ]] || [[ "$LOG_MODE" == "both" ]]; then
@@ -75,8 +81,12 @@ if [[ "$LOG_MODE" == "console" ]] || [[ "$LOG_MODE" == "both" ]]; then
     log_info "Logs will be saved to: $LOG_FILE"
     env "${ENV_VARS[@]}" "$BINARY_PATH" 2>&1 | tee "$LOG_FILE"
 else
-    # Normal launch (background)
+    # Normal launch (background). Retry once on a transient LaunchServices error
+    # (-600) in case the previous instance hadn't fully deregistered yet.
     log_info "Running $APP_NAME ($CONFIGURATION)..."
-    open "$APP_PATH"
+    if ! open "$APP_PATH" 2>/dev/null; then
+        sleep 0.7
+        open "$APP_PATH"
+    fi
     log_success "$APP_NAME launched"
 fi
