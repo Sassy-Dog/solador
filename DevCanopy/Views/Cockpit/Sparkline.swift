@@ -1,16 +1,21 @@
 import SwiftUI
 
-/// A minimal filled line chart for a series of values. Autoscales unless an
-/// explicit `range` is given (use `0...100` for percentages so the baseline is
-/// stable as values move).
+/// A minimal filled line chart for a series of values, rendered like Lupita: the
+/// newest sample is pinned to the right edge and points march left at a fixed
+/// spacing keyed to `capacity` (the buffer window). As samples arrive the line
+/// slides in from the right; once the buffer is full it scrolls. This keeps point
+/// density constant instead of stretching a few early points across the width.
+///
+/// Pass `range` (e.g. `0...100`) to keep the baseline stable; omit to autoscale.
 struct Sparkline: View {
     let values: [Double]
+    var capacity: Int
     var color: Color = CockpitTheme.green
     var range: ClosedRange<Double>? = nil
 
     var body: some View {
         GeometryReader { geo in
-            let pts = points(in: geo.size)
+            let pts = Self.layout(values: values, capacity: capacity, size: geo.size, range: range)
             if pts.count > 1 {
                 ZStack {
                     Path { path in
@@ -34,16 +39,27 @@ struct Sparkline: View {
         }
     }
 
-    private func points(in size: CGSize) -> [CGPoint] {
-        guard values.count > 1 else { return [] }
-        let lo = range?.lowerBound ?? (values.min() ?? 0)
-        let hiRaw = range?.upperBound ?? (values.max() ?? 1)
+    /// Pure point mapping (testable). Newest value pinned at `width`; points step
+    /// left by `width / (capacity - 1)`. Only the most recent `capacity` values are
+    /// plotted. y is normalized within `range` (clamped) or autoscaled over values.
+    static func layout(values: [Double], capacity: Int, size: CGSize, range: ClosedRange<Double>?) -> [CGPoint] {
+        let window = values.suffix(capacity)
+        guard window.count > 1, capacity > 1 else { return [] }
+        let pts = Array(window)
+
+        let lo = range?.lowerBound ?? (pts.min() ?? 0)
+        let hiRaw = range?.upperBound ?? (pts.max() ?? 1)
         let hi = hiRaw - lo < 0.0001 ? lo + 1 : hiRaw
-        let stepX = size.width / CGFloat(values.count - 1)
-        return values.enumerated().map { i, v in
+
+        let stepX = size.width / CGFloat(capacity - 1)
+        let n = pts.count
+        return pts.enumerated().map { i, v in
+            // offset of this point from the newest (which sits at the right edge)
+            let offsetFromNewest = (n - 1) - i
+            let x = size.width - CGFloat(offsetFromNewest) * stepX
             let clamped = Swift.min(Swift.max(v, lo), hi)
             let norm = (clamped - lo) / (hi - lo)
-            return CGPoint(x: CGFloat(i) * stepX, y: size.height * (1 - norm))
+            return CGPoint(x: x, y: size.height * (1 - norm))
         }
     }
 }

@@ -1,11 +1,14 @@
 import SwiftUI
 import HostMetricsKit
 
-/// Full Lupita-grade detail view for a single host — the drill-in from a host card.
-/// Big processor chart, per-core colored grid, Memory + Graphics, Disk + Network I/O.
-struct HostDetailView: View {
+/// Full Lupita-grade view for a single host, rendered inline as a card: host header,
+/// big processor chart, per-core colored grid, Memory + Graphics, Disk + Network I/O.
+/// This is the default Hosts surface (no drill-in). Contains no scroll view of its own —
+/// the cockpit page scrolls.
+struct HostLupitaView: View {
     @ObservedObject var service: LocalHostMetricsService
-    @Environment(\.dismiss) private var dismiss
+
+    private static let cap = LocalHostMetricsService.historyCapacity
 
     /// Per-core line colors, cycled — echoes Lupita's multi-hue core grid.
     private static let coreColors: [Color] = [
@@ -20,39 +23,43 @@ struct HostDetailView: View {
     private let readColor = Color(hex: 0x3fb950)
     private let writeColor = Color(hex: 0xe0922a)
     private let netColor = Color(hex: 0x5b8def)
+    private let netUpColor = Color(hex: 0x9bd34a)
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                if let snap = service.snapshot {
-                    processorSection(snap)
-                    Divider().overlay(CockpitTheme.line)
-                    HStack(alignment: .top, spacing: 28) {
-                        memorySection(snap)
-                        graphicsSection(snap)
-                    }
-                    Divider().overlay(CockpitTheme.line)
-                    HStack(alignment: .top, spacing: 28) {
-                        diskSection(snap)
-                        networkSection(snap)
-                    }
-                } else {
-                    Text("waiting for first sample…")
-                        .font(CockpitTheme.mono(12))
-                        .foregroundStyle(CockpitTheme.muted)
+        VStack(alignment: .leading, spacing: 18) {
+            hostHeader
+            if let snap = service.snapshot {
+                processorSection(snap)
+                Divider().overlay(CockpitTheme.line)
+                HStack(alignment: .top, spacing: 24) {
+                    memorySection(snap)
+                    graphicsSection(snap)
                 }
+                Divider().overlay(CockpitTheme.line)
+                HStack(alignment: .top, spacing: 24) {
+                    diskSection(snap)
+                    networkSection(snap)
+                }
+            } else {
+                Text("waiting for first sample…")
+                    .font(CockpitTheme.mono(12))
+                    .foregroundStyle(CockpitTheme.muted)
             }
-            .padding(24)
         }
-        .frame(minWidth: 820, minHeight: 760)
-        .background(CockpitTheme.background)
-        .overlay(alignment: .topTrailing) {
-            Button { dismiss() } label: {
-                Image(systemName: "xmark.circle.fill").font(.system(size: 18))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(CockpitTheme.muted)
-            .padding(14)
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CockpitTheme.panel)
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(CockpitTheme.line, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var hostHeader: some View {
+        HStack(spacing: 8) {
+            Circle().fill(CockpitTheme.green).frame(width: 8, height: 8)
+            Text(service.hostName)
+                .font(CockpitTheme.mono(14, weight: .bold))
+                .foregroundStyle(CockpitTheme.ink)
+            Spacer()
         }
     }
 
@@ -89,7 +96,7 @@ struct HostDetailView: View {
                     .font(CockpitTheme.mono(10, weight: .bold))
                     .foregroundStyle(usageColor(history.last ?? 0))
             }
-            Sparkline(values: history, color: color, range: 0...100).frame(height: 44)
+            Sparkline(values: history, capacity: Self.cap, color: color, range: 0...100).frame(height: 44)
         }
         .padding(8)
         .background(CockpitTheme.panelAlt)
@@ -148,7 +155,7 @@ struct HostDetailView: View {
                      left: ("Read", "\(fmt(snap.disk.readMBps)) MB/s", readColor),
                      right: ("Write", "\(fmt(snap.disk.writeMBps)) MB/s", writeColor))
             ioChart(seriesA: service.diskReadHistory, colorA: readColor,
-                    seriesB: service.diskWriteHistory, colorB: writeColor, unit: "MB/s")
+                    seriesB: service.diskWriteHistory, colorB: writeColor)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -158,9 +165,9 @@ struct HostDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             ioHeader(icon: "network", title: "Network I/O",
                      left: ("Down", "\(fmt(snap.network.downloadMBps)) MB/s", netColor),
-                     right: ("Up", "\(fmt(snap.network.uploadMBps)) MB/s", Color(hex: 0x9bd34a)))
+                     right: ("Up", "\(fmt(snap.network.uploadMBps)) MB/s", netUpColor))
             ioChart(seriesA: service.netDownHistory, colorA: netColor,
-                    seriesB: service.netUpHistory, colorB: Color(hex: 0x9bd34a), unit: "MB/s")
+                    seriesB: service.netUpHistory, colorB: netUpColor)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -174,13 +181,13 @@ struct HostDetailView: View {
             }
             .font(CockpitTheme.mono(8)).foregroundStyle(CockpitTheme.muted)
             .frame(height: height)
-            Sparkline(values: values, color: color, range: 0...100)
+            Sparkline(values: values, capacity: Self.cap, color: color, range: 0...100)
                 .frame(height: height)
                 .background(gridlines)
         }
     }
 
-    private func ioChart(seriesA: [Double], colorA: Color, seriesB: [Double], colorB: Color, unit: String) -> some View {
+    private func ioChart(seriesA: [Double], colorA: Color, seriesB: [Double], colorB: Color) -> some View {
         let maxV = max(seriesA.max() ?? 0, seriesB.max() ?? 0, 0.1)
         return HStack(alignment: .top, spacing: 6) {
             VStack {
@@ -189,8 +196,8 @@ struct HostDetailView: View {
             .font(CockpitTheme.mono(8)).foregroundStyle(CockpitTheme.muted)
             .frame(height: 90)
             ZStack {
-                Sparkline(values: seriesA, color: colorA, range: 0...maxV)
-                Sparkline(values: seriesB, color: colorB, range: 0...maxV)
+                Sparkline(values: seriesA, capacity: Self.cap, color: colorA, range: 0...maxV)
+                Sparkline(values: seriesB, capacity: Self.cap, color: colorB, range: 0...maxV)
             }
             .frame(height: 90)
             .background(gridlines)
