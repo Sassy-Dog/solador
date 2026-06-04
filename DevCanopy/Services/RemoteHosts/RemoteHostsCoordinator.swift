@@ -17,6 +17,26 @@ final class RemoteHostsCoordinator: ObservableObject {
         self.modelContext = modelContext
     }
 
+    /// Provisions a host from `DEVCANOPY_SEED_HOST` ("name|address|port|token") if
+    /// one with that address isn't already configured. Useful for headless setup
+    /// and first-run provisioning; no-op when the env var is unset.
+    func seedFromEnvironmentIfNeeded() {
+        guard let raw = ProcessInfo.processInfo.environment["DEVCANOPY_SEED_HOST"] else { return }
+        let parts = raw.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return }
+        let name = parts[0], address = parts[1]
+        let port = parts.count >= 3 ? (Int(parts[2]) ?? 7878) : 7878
+        let token = parts.count >= 4 ? parts[3] : ""
+
+        let existing = (try? modelContext.fetch(FetchDescriptor<MonitoredHost>())) ?? []
+        guard !existing.contains(where: { $0.address == address }) else { return }
+
+        let host = MonitoredHost(name: name, address: address, port: port)
+        modelContext.insert(host)
+        if !token.isEmpty { try? KeychainHelper.shared.saveHostToken(token, hostID: host.id) }
+        try? modelContext.save()
+    }
+
     /// Tear down existing services and rebuild from the current `MonitoredHost` list.
     /// Call after the host list changes (add/edit/remove/toggle).
     func reload() {

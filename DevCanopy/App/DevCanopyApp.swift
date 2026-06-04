@@ -86,6 +86,7 @@ struct DevCanopyApp: App {
                     claudeUsageService.start()
                     portfolioCIService.start()
                     ciRunnersService.start()
+                    remoteHosts.seedFromEnvironmentIfNeeded()
                     remoteHosts.reload()
                 }
         }
