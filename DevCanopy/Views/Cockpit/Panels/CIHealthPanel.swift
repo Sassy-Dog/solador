@@ -22,17 +22,17 @@ struct CIHealthPanel: CockpitPanelView {
     }
 
     var body: some View {
-        // Compute the item lists once; the header summary and the rows must agree.
+        // Compute the lists once; the header summary and the rows must agree.
         let running = runningItems
         let attention = attentionItems
+        let unreadable = unreadableRepos
         let loading = service.isLoading && service.health.isEmpty
-        let trailing: String? = (!service.isAuthenticated || loading)
-            ? nil
-            : (running.isEmpty && attention.isEmpty
-                ? "all green"
-                : "\(running.count) running · \(attention.count) failed")
 
-        return CockpitPanelContainer(kind: Self.kind, trailing: trailing) {
+        return CockpitPanelContainer(
+            kind: Self.kind,
+            trailing: trailing(running: running.count, attention: attention.count,
+                               unreadable: unreadable.count, loading: loading)
+        ) {
             if !service.isAuthenticated {
                 muted("connect a GitHub token in Settings")
             } else if loading {
@@ -47,7 +47,11 @@ struct CIHealthPanel: CockpitPanelView {
                         sectionHeader("NEEDS ATTENTION", attention.count)
                         ForEach(attention) { attentionRow($0) }
                     }
-                    greenLine(running: running.count, attention: attention.count)
+                    if !unreadable.isEmpty {
+                        sectionHeader("CAN'T READ", unreadable.count)
+                        unreadableRow(unreadable)
+                    }
+                    greenLine(running: running.count, attention: attention.count, unreadable: unreadable.count)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -71,6 +75,21 @@ struct CIHealthPanel: CockpitPanelView {
             }
             return items
         }
+    }
+
+    /// Repos whose runs couldn't be fetched (auth/network) — surfaced so a broken
+    /// token never masquerades as "all green".
+    private var unreadableRepos: [String] {
+        service.health.filter { !$0.reachable }.map(\.shortName)
+    }
+
+    private func trailing(running: Int, attention: Int, unreadable: Int, loading: Bool) -> String? {
+        guard service.isAuthenticated, !loading else { return nil }
+        var parts: [String] = []
+        if running > 0 { parts.append("\(running) running") }
+        if attention > 0 { parts.append("\(attention) failed") }
+        if unreadable > 0 { parts.append("\(unreadable) unreadable") }
+        return parts.isEmpty ? "all green" : parts.joined(separator: " · ")
     }
 
     private func sectionHeader(_ title: String, _ count: Int) -> some View {
@@ -104,11 +123,22 @@ struct CIHealthPanel: CockpitPanelView {
         }
     }
 
+    private func unreadableRow(_ repos: [String]) -> some View {
+        HStack(spacing: 7) {
+            Circle().fill(CockpitTheme.amber).frame(width: 6, height: 6)
+            Text(repos.joined(separator: ", "))
+                .font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(2)
+            Text("(check token access)")
+                .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted)
+            Spacer()
+        }
+    }
+
     @ViewBuilder
-    private func greenLine(running: Int, attention: Int) -> some View {
+    private func greenLine(running: Int, attention: Int, unreadable: Int) -> some View {
         let total = service.health.count
         let green = service.health.filter { $0.isClean }.count
-        if running == 0 && attention == 0 {
+        if running == 0 && attention == 0 && unreadable == 0 {
             label("✓ All \(total) repos green", CockpitTheme.green)
         } else {
             label("✓ \(green)/\(total) repos green", CockpitTheme.green)

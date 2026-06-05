@@ -55,14 +55,21 @@ struct RepoCIHealth: Equatable, Identifiable {
     let main: RunRef?
     let lastPR: RunRef?
     let running: [RunRef]
+    let reachable: Bool        // false when the repo's runs couldn't be fetched
 
     var id: String { repo }
     var shortName: String { repo.split(separator: "/").last.map(String.init) ?? repo }
 
-    /// Clean = nothing running and neither main nor lastPR failed. A nil slot
-    /// (no run of that type) counts as not-failed.
+    /// Clean = reachable, nothing running, neither main nor lastPR failed. A nil
+    /// slot (no run of that type) counts as not-failed. An UNREACHABLE repo is
+    /// never clean — a fetch failure must surface, not hide in the green count.
     var isClean: Bool {
-        running.isEmpty && !(main?.isFailed ?? false) && !(lastPR?.isFailed ?? false)
+        reachable && running.isEmpty && !(main?.isFailed ?? false) && !(lastPR?.isFailed ?? false)
+    }
+
+    /// A repo whose runs couldn't be fetched (auth/network error).
+    static func unreachable(repo: String) -> RepoCIHealth {
+        RepoCIHealth(repo: repo, main: nil, lastPR: nil, running: [], reachable: false)
     }
 }
 
@@ -74,7 +81,7 @@ extension PortfolioCIMapping {
         let main = sorted.first { $0.event == "push" && $0.headBranch == "main" }.map(ref)
         let lastPR = sorted.first { $0.event == "pull_request" }.map(ref)
         let running = sorted.map(ref).filter { $0.isRunning }
-        return RepoCIHealth(repo: repo, main: main, lastPR: lastPR, running: running)
+        return RepoCIHealth(repo: repo, main: main, lastPR: lastPR, running: running, reachable: true)
     }
 
     private static func ref(_ run: WorkflowRunDTO) -> RunRef {

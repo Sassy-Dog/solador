@@ -40,6 +40,14 @@ final class PortfolioCIMappingTests: XCTestCase {
         let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: [])
         XCTAssertEqual(h.shortName, "velovate")
         XCTAssertTrue(h.isClean, "no runs = nothing running, nothing failed")
+        XCTAssertTrue(h.reachable, "the mapping path means the repo was fetched")
+    }
+
+    func testUnreachableRepoIsNeverClean() {
+        let h = RepoCIHealth.unreachable(repo: "Sassy-Dog/platform")
+        XCTAssertFalse(h.reachable)
+        XCTAssertFalse(h.isClean, "an unreachable repo must not count as green")
+        XCTAssertEqual(h.shortName, "platform")
     }
 
     private func makeCreated(_ d: WorkflowRunDTO, _ created: String) -> WorkflowRunDTO {

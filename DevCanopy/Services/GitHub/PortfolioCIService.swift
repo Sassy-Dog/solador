@@ -50,7 +50,7 @@ final class PortfolioCIService: ObservableObject {
             return PortfolioCIMapping.health(repo: repo, runs: response.workflowRuns)
         } catch {
             appLogger.debug("CI Health: \(repo) fetch failed: \(error.localizedDescription)")
-            return RepoCIHealth(repo: repo, main: nil, lastPR: nil, running: [])
+            return .unreachable(repo: repo)
         }
     }
 
