@@ -13,9 +13,15 @@ concurrency:
 jobs:
   swift-tests:
     name: Swift app tests
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      # XcodeGen (Homebrew, latest) emits the newest project format, so pair it
+      # with the latest stable Xcode that can read it.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - name: Show toolchain
         run: |
