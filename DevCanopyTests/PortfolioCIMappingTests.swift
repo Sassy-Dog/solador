@@ -36,21 +36,29 @@ final class PortfolioCIMappingTests: XCTestCase {
 
     // MARK: - Short name
 
-    func testRepoShortNameTakesPartAfterSlash() {
-        let status = PortfolioCIMapping.map(repo: "Sassy-Dog/velovate", runs: [])
-        XCTAssertEqual(status.shortName, "velovate")
+    func testRepoCIHealthShortName() {
+        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: [])
+        XCTAssertEqual(h.shortName, "velovate")
+        XCTAssertTrue(h.isHealthy, "no runs = not failed, reachable")
+        XCTAssertTrue(h.reachable, "the mapping path means the repo was fetched")
     }
 
-    // MARK: - CI selection (latest run picked)
+    func testRunningRepoStillCountsHealthy() {
+        // A repo with a build in flight (but no failure) must remain healthy —
+        // running is activity, not a problem.
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: [
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push"),
+            dto(name: "CI", status: "in_progress", conclusion: nil, branch: "main", event: "push")
+        ])
+        XCTAssertFalse(h.running.isEmpty, "precondition: a run is in progress")
+        XCTAssertTrue(h.isHealthy, "running does not make a repo unhealthy")
+    }
 
-    func testMapPicksLatestCIRunByCreatedAt() {
-        let r1 = dto(name: "CI", status: "completed", conclusion: "success")
-        let r2 = dto(name: "CI", status: "completed", conclusion: "failure") // newer
-        let mapped = PortfolioCIMapping.map(
-            repo: "Sassy-Dog/velovate",
-            runs: [makeCreated(r1, "2026-05-29T10:00:00Z"), makeCreated(r2, "2026-05-29T11:00:00Z")]
-        )
-        XCTAssertEqual(mapped.ciConclusion, .failure)
+    func testUnreachableRepoIsNeverHealthy() {
+        let h = RepoCIHealth.unreachable(repo: "Sassy-Dog/platform")
+        XCTAssertFalse(h.reachable)
+        XCTAssertFalse(h.isHealthy, "an unreachable repo must not count as healthy")
+        XCTAssertEqual(h.shortName, "platform")
     }
 
     private func makeCreated(_ d: WorkflowRunDTO, _ created: String) -> WorkflowRunDTO {
@@ -65,39 +73,59 @@ final class PortfolioCIMappingTests: XCTestCase {
         )
     }
 
-    // MARK: - Health derivation
+    // MARK: - health() categorization
 
-    func testSuccessHealthIsGood() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: "success")])
-        XCTAssertEqual(s.health, .good)
-    }
-
-    func testFailureHealthIsBad() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: "failure")])
-        XCTAssertEqual(s.health, .bad)
-    }
-
-    func testInProgressHealthIsRunning() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [dto(name: "CI", status: "in_progress", conclusion: nil)])
-        XCTAssertEqual(s.health, .running)
-    }
-
-    func testNoRunsHealthIsUnknown() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [])
-        XCTAssertEqual(s.health, .unknown)
-        XCTAssertNil(s.ciConclusion)
-    }
-
-    // MARK: - Release detection
-
-    func testReleaseRunDetectedSeparatelyFromCI() {
+    func testHealthMainPicksLatestPushOnMain() {
         let runs = [
-            makeCreated(dto(name: "CI", status: "completed", conclusion: "success"), "2026-05-29T10:00:00Z"),
-            makeCreated(dto(name: "Release", status: "completed", conclusion: "failure"), "2026-05-29T11:00:00Z")
+            makeCreated(dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push"), "2026-05-29T10:00:00Z"),
+            makeCreated(dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push"), "2026-05-29T11:00:00Z"), // newer
+            makeCreated(dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/x", event: "pull_request"), "2026-05-29T12:00:00Z")
         ]
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: runs)
-        // CI health stays good (release failing shouldn't override CI)
-        XCTAssertEqual(s.ciConclusion, .success)
-        XCTAssertEqual(s.releaseConclusion, .failure)
+        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
+        XCTAssertEqual(h.main?.conclusion, .failure, "main = newest push-on-main run")
+        XCTAssertEqual(h.main?.context, "main")
+    }
+
+    func testHealthLastPRPicksLatestPullRequestRun() {
+        let runs = [
+            makeCreated(dto(name: "CI", status: "completed", conclusion: "failure", branch: "feat/old", event: "pull_request"), "2026-05-29T10:00:00Z"),
+            makeCreated(dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/new", event: "pull_request"), "2026-05-29T12:00:00Z") // newer
+        ]
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs)
+        XCTAssertEqual(h.lastPR?.conclusion, .success)
+        XCTAssertEqual(h.lastPR?.context, "feat/new")
+    }
+
+    func testHealthRunningCollectsInProgressRuns() {
+        let runs = [
+            dto(name: "CI", status: "in_progress", conclusion: nil, branch: "main", event: "push"),
+            dto(name: "Deploy", status: "queued", conclusion: nil, branch: "main", event: "workflow_dispatch"),
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push")
+        ]
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs)
+        XCTAssertEqual(h.running.count, 2, "both in_progress and queued runs are 'running'")
+        XCTAssertTrue(h.running.allSatisfy { $0.isRunning })
+    }
+
+    func testRunRefIsFailedAcrossFailingConclusions() {
+        for c in ["failure", "timed_out", "cancelled", "startup_failure"] {
+            let h = PortfolioCIMapping.health(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: c, branch: "main", event: "push")])
+            XCTAssertEqual(h.main?.isFailed, true, "\(c) should be a failure")
+        }
+        let ok = PortfolioCIMapping.health(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push")])
+        XCTAssertEqual(ok.main?.isFailed, false)
+    }
+
+    func testRepoIsHealthyWhenNotFailed() {
+        let clean = PortfolioCIMapping.health(repo: "o/r", runs: [
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push"),
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/x", event: "pull_request")
+        ])
+        XCTAssertTrue(clean.isHealthy)
+
+        let failing = PortfolioCIMapping.health(repo: "o/r", runs: [
+            dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push")
+        ])
+        XCTAssertFalse(failing.isHealthy)
     }
 }

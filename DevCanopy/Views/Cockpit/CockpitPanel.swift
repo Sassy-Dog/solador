@@ -8,7 +8,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
     case hosts
     case ciRunners
     case containers
-    case portfolioCI
+    case ciHealth
     case gitWorktrees
     case claudeUsage
 
@@ -19,7 +19,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
         case .hosts: return "Hosts"
         case .ciRunners: return "CI Runners"
         case .containers: return "Containers / VMs"
-        case .portfolioCI: return "Portfolio CI"
+        case .ciHealth: return "CI Health"
         case .gitWorktrees: return "Git / Worktrees"
         case .claudeUsage: return "Claude Usage"
         }
@@ -30,7 +30,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
         case .hosts: return "cpu"
         case .ciRunners: return "server.rack"
         case .containers: return "shippingbox"
-        case .portfolioCI: return "checkmark.seal"
+        case .ciHealth: return "checkmark.seal"
         case .gitWorktrees: return "arrow.triangle.branch"
         case .claudeUsage: return "gauge.with.needle"
         }
@@ -72,7 +72,7 @@ extension CockpitLayout {
                 CockpitPlacement(kind: .containers, span: .half)
             ],
             [
-                CockpitPlacement(kind: .portfolioCI, span: .half),
+                CockpitPlacement(kind: .ciHealth, span: .half),
                 CockpitPlacement(kind: .gitWorktrees, span: .half)
             ],
             [CockpitPlacement(kind: .claudeUsage, span: .full)]
