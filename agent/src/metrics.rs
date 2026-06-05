@@ -38,6 +38,9 @@ pub struct Snapshot {
     pub gpu: Gpu,
     /// `null` on servers (no battery).
     pub battery: Option<Battery>,
+    /// Per-mounted-volume usage. A full volume fails even when the disk has
+    /// space, so each is reported separately.
+    pub volumes: Vec<Volume>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -95,6 +98,15 @@ pub struct Battery {
     pub level: f64,
     #[serde(rename = "isCharging")]
     pub is_charging: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Volume {
+    pub mount: String,
+    #[serde(rename = "usedGB")]
+    pub used_gb: f64,
+    #[serde(rename = "totalGB")]
+    pub total_gb: f64,
 }
 
 impl Gpu {
@@ -202,6 +214,7 @@ fn empty_snapshot() -> Snapshot {
         },
         gpu: Gpu::zeros(),
         battery: None,
+        volumes: Vec::new(),
     }
 }
 
@@ -246,6 +259,25 @@ fn compute_snapshot(
     let read_mbps = (read_bytes as f64 / interval) / BYTES_PER_MIB;
     let write_mbps = (written_bytes as f64 / interval) / BYTES_PER_MIB;
 
+    // Per-volume usage (dedup by mount; skip zero-capacity pseudo-filesystems).
+    let mut volumes: Vec<Volume> = Vec::new();
+    for disk in disks.list() {
+        let total = disk.total_space();
+        if total == 0 {
+            continue;
+        }
+        let mount = disk.mount_point().to_string_lossy().to_string();
+        if volumes.iter().any(|v| v.mount == mount) {
+            continue;
+        }
+        let used = total.saturating_sub(disk.available_space());
+        volumes.push(Volume {
+            mount,
+            used_gb: used as f64 / BYTES_PER_GIB,
+            total_gb: total as f64 / BYTES_PER_GIB,
+        });
+    }
+
     // Network: sum received/transmitted byte deltas over the interval -> MiB/s.
     let (mut rx, mut tx) = (0u64, 0u64);
     for (_name, data) in networks.iter() {
@@ -279,6 +311,7 @@ fn compute_snapshot(
         },
         gpu: Gpu::zeros(),
         battery: None,
+        volumes,
     }
 }
 
@@ -297,7 +330,8 @@ mod tests {
             "disk": { "readMBps": 1.2, "writeMBps": 0.3 },
             "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
             "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
-            "battery": null
+            "battery": null,
+            "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }]
         })
     }
 
@@ -327,6 +361,11 @@ mod tests {
             },
             gpu: Gpu::zeros(),
             battery: None,
+            volumes: vec![Volume {
+                mount: "/".to_string(),
+                used_gb: 10.0,
+                total_gb: 100.0,
+            }],
         }
     }
 
@@ -359,7 +398,8 @@ mod tests {
                 "gpu",
                 "memory",
                 "network",
-                "timestamp"
+                "timestamp",
+                "volumes"
             ]
         );
 
@@ -394,6 +434,11 @@ mod tests {
         assert!(gpu["vramTotalGB"].is_number());
 
         assert!(v["battery"].is_null());
+
+        let vols = v["volumes"].as_array().unwrap();
+        assert!(vols[0]["mount"].is_string());
+        assert!(vols[0]["usedGB"].is_number());
+        assert!(vols[0]["totalGB"].is_number());
     }
 
     #[test]

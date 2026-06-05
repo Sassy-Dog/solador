@@ -83,8 +83,35 @@ public actor HostMetricsCollector {
             disk: disk,
             network: network,
             gpu: gpu,
-            battery: battery
+            battery: battery,
+            volumes: Self.collectVolumes()
         )
+    }
+
+    /// Per-volume usage for browsable mounted volumes (skips hidden/synthetic
+    /// mounts). A full volume causes failures even when the physical disk has
+    /// space, so each volume is reported separately rather than aggregated.
+    static func collectVolumes() -> [VolumeUsage] {
+        let keys: [URLResourceKey] = [
+            .volumeNameKey, .volumeTotalCapacityKey,
+            .volumeAvailableCapacityKey, .volumeIsBrowsableKey
+        ]
+        guard let urls = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]
+        ) else { return [] }
+
+        let gib = 1024.0 * 1024.0 * 1024.0
+        var out: [VolumeUsage] = []
+        for url in urls {
+            guard let vals = try? url.resourceValues(forKeys: Set(keys)),
+                  vals.volumeIsBrowsable == true,
+                  let total = vals.volumeTotalCapacity, total > 0,
+                  let available = vals.volumeAvailableCapacity else { continue }
+            let used = max(0, total - available)
+            let name = vals.volumeName ?? url.lastPathComponent
+            out.append(VolumeUsage(mount: name, usedGB: Double(used) / gib, totalGB: Double(total) / gib))
+        }
+        return out
     }
 
     /// Streams snapshots at the given interval until the consumer breaks or the
