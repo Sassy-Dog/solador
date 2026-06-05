@@ -48,6 +48,10 @@ struct HostLupitaView: View {
                     diskSection(snap)
                     networkSection(snap)
                 }
+                if !snap.volumes.isEmpty {
+                    Divider().overlay(CockpitTheme.line)
+                    volumesSection(snap.volumes)
+                }
             } else {
                 Text(service.connectionState == .unreachable ? "unreachable" : "waiting for first sample…")
                     .font(CockpitTheme.mono(12))
@@ -206,6 +210,45 @@ struct HostLupitaView: View {
                     seriesB: service.netUpHistory, colorB: netUpColor)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Volumes
+
+    @ViewBuilder
+    private func volumesSection(_ volumes: [VolumeUsage]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader(icon: "externaldrive", title: "Volumes", badge: nil,
+                          value: "\(volumes.count)", valueColor: CockpitTheme.muted)
+            ForEach(volumes) { volumeRow($0) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func volumeRow(_ v: VolumeUsage) -> some View {
+        let pct = v.percentUsed
+        let color = volumeColor(pct)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(v.mount).font(CockpitTheme.mono(10, weight: .bold))
+                    .foregroundStyle(CockpitTheme.ink).lineLimit(1)
+                Spacer()
+                Text("\(fmt(v.usedGB)) / \(fmt(v.totalGB)) GB · \(Int(pct.rounded()))%")
+                    .font(CockpitTheme.mono(9)).foregroundStyle(color)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2).fill(CockpitTheme.panelAlt)
+                    RoundedRectangle(cornerRadius: 2).fill(color)
+                        .frame(width: geo.size.width * CGFloat(min(max(pct, 0), 100) / 100))
+                }
+            }
+            .frame(height: 4)
+        }
+    }
+
+    /// Volumes fill up gradually; warn earlier than CPU since a full volume fails.
+    private func volumeColor(_ pct: Double) -> Color {
+        switch pct { case ..<85: CockpitTheme.green; case ..<95: CockpitTheme.amber; default: CockpitTheme.red }
     }
 
     // MARK: Chart helpers

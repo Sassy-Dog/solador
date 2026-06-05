@@ -16,7 +16,8 @@ final class HostSnapshotWireContractTests: XCTestCase {
       "disk": { "readMBps": 1.2, "writeMBps": 0.3 },
       "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
       "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
-      "battery": null
+      "battery": null,
+      "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }]
     }
     """
 
@@ -35,11 +36,33 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertEqual(snap.network.uploadMBps, 0.1, accuracy: 0.001)
         XCTAssertEqual(snap.gpu.usage, 0.0, accuracy: 0.001)
         XCTAssertNil(snap.battery)
+        XCTAssertEqual(snap.volumes.count, 1)
+        XCTAssertEqual(snap.volumes.first?.mount, "/")
+        XCTAssertEqual(snap.volumes.first?.percentUsed ?? 0, 10.0, accuracy: 0.001)  // 10/100, computed
 
         let comps = Calendar(identifier: .gregorian).dateComponents(
             in: TimeZone(identifier: "UTC")!, from: snap.timestamp)
         XCTAssertEqual(comps.year, 2026)
         XCTAssertEqual(comps.hour, 22)
+    }
+
+    /// Backward compatibility: an older agent that predates `volumes` must still
+    /// decode (the field is optional on the wire, defaulting to empty).
+    func testDecodesLegacyPayloadWithoutVolumes() throws {
+        let legacy = """
+        {
+          "timestamp": "2026-06-04T22:00:00Z",
+          "cpu": { "totalUsage": 1.0, "coreUsages": [1.0], "model": "x", "thermalState": 0 },
+          "memory": { "usedGB": 1.0, "totalGB": 8.0, "swapUsedGB": 0.0, "pressure": 0.0 },
+          "disk": { "readMBps": 0.0, "writeMBps": 0.0 },
+          "network": { "downloadMBps": 0.0, "uploadMBps": 0.0 },
+          "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
+          "battery": null
+        }
+        """
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(HostSnapshot.self, from: Data(legacy.utf8))
+        XCTAssertEqual(snap.volumes, [], "missing volumes key decodes to empty, not a failure")
+        XCTAssertEqual(snap.cpu.totalUsage, 1.0, accuracy: 0.001)
     }
 
     func testDecodesRemoteContainersPayload() throws {

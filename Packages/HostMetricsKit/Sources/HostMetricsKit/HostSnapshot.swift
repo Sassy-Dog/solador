@@ -10,6 +10,9 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
     public let gpu: GPUMetrics
     /// `nil` when no battery is present (e.g. desktop Macs).
     public let battery: BatteryMetrics?
+    /// Per-mounted-volume usage. Empty when unavailable or from an older agent
+    /// that predates this field (decoded tolerantly — see `init(from:)`).
+    public let volumes: [VolumeUsage]
 
     public init(
         timestamp: Date,
@@ -18,7 +21,8 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         disk: DiskMetrics,
         network: NetworkMetrics,
         gpu: GPUMetrics,
-        battery: BatteryMetrics?
+        battery: BatteryMetrics?,
+        volumes: [VolumeUsage] = []
     ) {
         self.timestamp = timestamp
         self.cpu = cpu
@@ -27,6 +31,43 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         self.network = network
         self.gpu = gpu
         self.battery = battery
+        self.volumes = volumes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case timestamp, cpu, memory, disk, network, gpu, battery, volumes
+    }
+
+    // Custom decode so a payload without `volumes` (older agents) still decodes,
+    // yielding an empty list rather than failing the whole snapshot. Encoding is
+    // synthesized and always includes `volumes`.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try c.decode(Date.self, forKey: .timestamp)
+        cpu = try c.decode(CPUMetrics.self, forKey: .cpu)
+        memory = try c.decode(MemoryMetrics.self, forKey: .memory)
+        disk = try c.decode(DiskMetrics.self, forKey: .disk)
+        network = try c.decode(NetworkMetrics.self, forKey: .network)
+        gpu = try c.decode(GPUMetrics.self, forKey: .gpu)
+        battery = try c.decodeIfPresent(BatteryMetrics.self, forKey: .battery)
+        volumes = try c.decodeIfPresent([VolumeUsage].self, forKey: .volumes) ?? []
+    }
+}
+
+/// Usage of one mounted volume. `percentUsed` is computed client-side (never on
+/// the wire) — the agent emits only `mount`, `usedGB`, `totalGB`.
+public struct VolumeUsage: Sendable, Codable, Equatable, Identifiable {
+    public let mount: String
+    public let usedGB: Double
+    public let totalGB: Double
+
+    public var id: String { mount }
+    public var percentUsed: Double { totalGB > 0 ? usedGB / totalGB * 100 : 0 }
+
+    public init(mount: String, usedGB: Double, totalGB: Double) {
+        self.mount = mount
+        self.usedGB = usedGB
+        self.totalGB = totalGB
     }
 }
 
