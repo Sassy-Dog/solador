@@ -100,6 +100,8 @@ enum PortfolioCIMapping {
         return run.event.lowercased() == "release"
     }
 
+    private static let isoStandard = ISO8601DateFormatter()
+
     private static let isoFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -107,7 +109,7 @@ enum PortfolioCIMapping {
     }()
 
     private static func createdDate(_ run: WorkflowRunDTO) -> Date {
-        ISO8601DateFormatter().date(from: run.createdAt)
+        isoStandard.date(from: run.createdAt)
             ?? isoFractional.date(from: run.createdAt)
             ?? Date.distantPast
     }
@@ -154,7 +156,8 @@ struct RepoCIHealth: Equatable, Identifiable {
     var id: String { repo }
     var shortName: String { repo.split(separator: "/").last.map(String.init) ?? repo }
 
-    /// Clean = nothing running and neither main nor lastPR failed.
+    /// Clean = nothing running and neither main nor lastPR failed. A nil slot
+    /// (no run of that type) counts as not-failed.
     var isClean: Bool {
         running.isEmpty && !(main?.isFailed ?? false) && !(lastPR?.isFailed ?? false)
     }
@@ -191,6 +194,6 @@ extension PortfolioCIMapping {
 
     private static func startedDate(_ run: WorkflowRunDTO) -> Date? {
         let s = run.runStartedAt ?? run.createdAt
-        return ISO8601DateFormatter().date(from: s) ?? isoFractional.date(from: s)
+        return isoStandard.date(from: s) ?? isoFractional.date(from: s)
     }
 }
