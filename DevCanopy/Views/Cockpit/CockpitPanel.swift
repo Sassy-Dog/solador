@@ -69,10 +69,10 @@ extension CockpitLayout {
             [CockpitPlacement(kind: .hosts, span: .full)],
             [
                 CockpitPlacement(kind: .ciRunners, span: .half),
-                CockpitPlacement(kind: .portfolioCI, span: .half)
+                CockpitPlacement(kind: .containers, span: .half)
             ],
             [
-                CockpitPlacement(kind: .containers, span: .half),
+                CockpitPlacement(kind: .portfolioCI, span: .half),
                 CockpitPlacement(kind: .gitWorktrees, span: .half)
             ],
             [CockpitPlacement(kind: .claudeUsage, span: .full)]
@@ -110,7 +110,9 @@ struct CockpitPanelContainer<Content: View>: View {
             content
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Fill the height offered by the cockpit Grid so cards in the same row
+        // share a height (the card chrome stretches; content stays top-aligned).
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CockpitTheme.panel)
         .overlay(
             RoundedRectangle(cornerRadius: 12)

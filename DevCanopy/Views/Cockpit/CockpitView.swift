@@ -6,14 +6,20 @@ import SwiftUI
 struct CockpitView: View {
     var layout: CockpitLayout = .hostsForward
 
+    /// The cockpit grid is two columns wide: a `.half` panel occupies one column,
+    /// a `.full` panel spans both. `Grid` sizes each row to its tallest cell and
+    /// offers that height to the others, so cards in a row share a height.
+    private let gridColumns = 2
+
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
+            Grid(horizontalSpacing: 16, verticalSpacing: 16) {
                 ForEach(Array(layout.rows.enumerated()), id: \.offset) { _, row in
-                    HStack(alignment: .top, spacing: 16) {
+                    GridRow {
                         ForEach(row) { placement in
                             panel(for: placement.kind)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .gridCellColumns(columnSpan(placement.span))
                         }
                     }
                 }
@@ -22,6 +28,15 @@ struct CockpitView: View {
         }
         .frame(minWidth: 880, minHeight: 600)
         .background(CockpitTheme.background)
+    }
+
+    /// How many grid columns a placement occupies. Only `.full`/`.half` appear in
+    /// shipped layouts; `.third` falls back to one column in this two-column grid.
+    private func columnSpan(_ span: PanelSpan) -> Int {
+        switch span {
+        case .full: return gridColumns
+        case .half, .third: return 1
+        }
     }
 
     @ViewBuilder
