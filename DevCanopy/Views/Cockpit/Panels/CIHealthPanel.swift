@@ -51,7 +51,7 @@ struct CIHealthPanel: CockpitPanelView {
                         sectionHeader("CAN'T READ", unreadable.count)
                         unreadableRow(unreadable)
                     }
-                    greenLine(running: running.count, attention: attention.count, unreadable: unreadable.count)
+                    healthLine(attention: attention.count, unreadable: unreadable.count)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -134,14 +134,17 @@ struct CIHealthPanel: CockpitPanelView {
         }
     }
 
+    /// Reassurance line. "Healthy" excludes only failed/unreachable repos — a
+    /// repo that is merely running still counts as healthy, so the fraction never
+    /// implies a problem just because a build is in flight.
     @ViewBuilder
-    private func greenLine(running: Int, attention: Int, unreadable: Int) -> some View {
+    private func healthLine(attention: Int, unreadable: Int) -> some View {
         let total = service.health.count
-        let green = service.health.filter { $0.isClean }.count
-        if running == 0 && attention == 0 && unreadable == 0 {
-            label("✓ All \(total) repos green", CockpitTheme.green)
+        let healthy = service.health.filter { $0.isHealthy }.count
+        if attention == 0 && unreadable == 0 {
+            label("✓ all \(total) healthy", CockpitTheme.green)
         } else {
-            label("✓ \(green)/\(total) repos green", CockpitTheme.green)
+            label("✓ \(healthy)/\(total) healthy", CockpitTheme.green)
         }
     }
 

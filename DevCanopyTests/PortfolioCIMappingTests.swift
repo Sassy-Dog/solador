@@ -39,14 +39,25 @@ final class PortfolioCIMappingTests: XCTestCase {
     func testRepoCIHealthShortName() {
         let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: [])
         XCTAssertEqual(h.shortName, "velovate")
-        XCTAssertTrue(h.isClean, "no runs = nothing running, nothing failed")
+        XCTAssertTrue(h.isHealthy, "no runs = not failed, reachable")
         XCTAssertTrue(h.reachable, "the mapping path means the repo was fetched")
     }
 
-    func testUnreachableRepoIsNeverClean() {
+    func testRunningRepoStillCountsHealthy() {
+        // A repo with a build in flight (but no failure) must remain healthy —
+        // running is activity, not a problem.
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: [
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push"),
+            dto(name: "CI", status: "in_progress", conclusion: nil, branch: "main", event: "push")
+        ])
+        XCTAssertFalse(h.running.isEmpty, "precondition: a run is in progress")
+        XCTAssertTrue(h.isHealthy, "running does not make a repo unhealthy")
+    }
+
+    func testUnreachableRepoIsNeverHealthy() {
         let h = RepoCIHealth.unreachable(repo: "Sassy-Dog/platform")
         XCTAssertFalse(h.reachable)
-        XCTAssertFalse(h.isClean, "an unreachable repo must not count as green")
+        XCTAssertFalse(h.isHealthy, "an unreachable repo must not count as healthy")
         XCTAssertEqual(h.shortName, "platform")
     }
 
@@ -105,16 +116,16 @@ final class PortfolioCIMappingTests: XCTestCase {
         XCTAssertEqual(ok.main?.isFailed, false)
     }
 
-    func testRepoIsCleanWhenGreenAndNothingRunning() {
+    func testRepoIsHealthyWhenNotFailed() {
         let clean = PortfolioCIMapping.health(repo: "o/r", runs: [
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push"),
             dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/x", event: "pull_request")
         ])
-        XCTAssertTrue(clean.isClean)
+        XCTAssertTrue(clean.isHealthy)
 
         let failing = PortfolioCIMapping.health(repo: "o/r", runs: [
             dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push")
         ])
-        XCTAssertFalse(failing.isClean)
+        XCTAssertFalse(failing.isHealthy)
     }
 }

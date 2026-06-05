@@ -60,11 +60,12 @@ struct RepoCIHealth: Equatable, Identifiable {
     var id: String { repo }
     var shortName: String { repo.split(separator: "/").last.map(String.init) ?? repo }
 
-    /// Clean = reachable, nothing running, neither main nor lastPR failed. A nil
-    /// slot (no run of that type) counts as not-failed. An UNREACHABLE repo is
-    /// never clean — a fetch failure must surface, not hide in the green count.
-    var isClean: Bool {
-        reachable && running.isEmpty && !(main?.isFailed ?? false) && !(lastPR?.isFailed ?? false)
+    /// Healthy = reachable and neither main nor lastPR failed. A *running* workflow
+    /// does NOT make a repo unhealthy (running is activity, not a problem, and is
+    /// shown separately). A nil slot (no run of that type) counts as not-failed.
+    /// An UNREACHABLE repo is never healthy — a fetch failure must surface.
+    var isHealthy: Bool {
+        reachable && !(main?.isFailed ?? false) && !(lastPR?.isFailed ?? false)
     }
 
     /// A repo whose runs couldn't be fetched (auth/network error).
