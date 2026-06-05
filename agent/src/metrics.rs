@@ -215,7 +215,11 @@ fn compute_snapshot(
     disks: &Disks,
     interval_secs: f64,
 ) -> Snapshot {
-    let interval = if interval_secs > 0.0 { interval_secs } else { 1.0 };
+    let interval = if interval_secs > 0.0 {
+        interval_secs
+    } else {
+        1.0
+    };
 
     // CPU.
     let total_usage = sys.global_cpu_usage() as f64;
@@ -348,7 +352,15 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["battery", "cpu", "disk", "gpu", "memory", "network", "timestamp"]
+            vec![
+                "battery",
+                "cpu",
+                "disk",
+                "gpu",
+                "memory",
+                "network",
+                "timestamp"
+            ]
         );
 
         assert!(v["timestamp"].is_string());
@@ -390,6 +402,9 @@ mod tests {
         // e.g. 2026-06-04T22:00:00Z — ends with Z, contains a 'T' separator.
         assert!(ts.ends_with('Z'), "timestamp must end with Z: {ts}");
         assert!(ts.contains('T'), "timestamp must contain T: {ts}");
-        assert!(!ts.contains("+00:00"), "offset must be normalized to Z: {ts}");
+        assert!(
+            !ts.contains("+00:00"),
+            "offset must be normalized to Z: {ts}"
+        );
     }
 }

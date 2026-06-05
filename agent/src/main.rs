@@ -21,9 +21,7 @@ async fn main() {
     let token = match std::env::var("DEVCANOPY_AGENT_TOKEN") {
         Ok(t) if !t.trim().is_empty() => t,
         _ => {
-            eprintln!(
-                "FATAL: DEVCANOPY_AGENT_TOKEN must be set (non-empty). Refusing to start."
-            );
+            eprintln!("FATAL: DEVCANOPY_AGENT_TOKEN must be set (non-empty). Refusing to start.");
             std::process::exit(1);
         }
     };
@@ -57,9 +55,7 @@ async fn main() {
         }
     };
 
-    tracing::info!(
-        "devcanopy-agent v{VERSION} listening on {addr} (host={hostname})"
-    );
+    tracing::info!("devcanopy-agent v{VERSION} listening on {addr} (host={hostname})");
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("FATAL: server error: {e}");
@@ -69,8 +65,7 @@ async fn main() {
 
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     fmt().with_env_filter(filter).with_target(false).init();
 }
 

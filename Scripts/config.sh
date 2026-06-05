@@ -23,13 +23,10 @@ export PROJECT_NAME="DevCanopy.xcodeproj"
 export DEVELOPMENT_TEAM=""
 export CODE_SIGN_IDENTITY=""
 
-# Terminal support (bundle identifiers)
-declare -A TERMINAL_APPS=(
-    ["Terminal"]="com.apple.Terminal"
-    ["iTerm"]="com.googlecode.iterm2"
-    ["Warp"]="dev.warp.Warp-Stable"
-    ["Ghostty"]="com.mitchellh.ghostty"
-)
+# Terminal support: the name→bundle-identifier mapping lives in the app
+# (Views/Settings/SettingsView.swift, detectAvailableTerminals). It's intentionally
+# not duplicated here as a bash associative array — that required bash 4+ and broke
+# under macOS's stock bash 3.2 (e.g. CI runners).
 
 # Default terminal (will detect installed ones)
 export DEFAULT_TERMINAL="Terminal"
