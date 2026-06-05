@@ -30,9 +30,11 @@ final class RemoteHostMetricsService: HostMetricsService {
         config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
         super.init(hostName: hostName, connectionState: .connecting)
+        installLifecyclePause()
     }
 
     override func start(interval: TimeInterval = 1.0) {
+        startInterval = interval
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }

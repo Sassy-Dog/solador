@@ -12,10 +12,12 @@ final class LocalHostMetricsService: HostMetricsService {
         let name = hostName
             ?? ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: "")
         super.init(hostName: name, connectionState: .local)
+        installLifecyclePause()
     }
 
     /// Begins streaming snapshots at the given cadence.
     override func start(interval: TimeInterval = 1.0) {
+        startInterval = interval
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }

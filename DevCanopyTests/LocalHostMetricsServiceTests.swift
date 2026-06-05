@@ -50,4 +50,41 @@ final class LocalHostMetricsServiceTests: XCTestCase {
         XCTAssertEqual(service.netDownHistory.last, 3)    // downloadMBps: 3
         XCTAssertEqual(service.netUpHistory.last, 4)      // uploadMBps: 4
     }
+
+    // MARK: - Lifecycle pause/resume (the burst fix's state machine)
+
+    /// A test double that starts/stops a no-op task — exercises the base-class
+    /// pause/resume state machine without real system collection or notifications.
+    private final class FakeHostMetricsService: HostMetricsService {
+        init() { super.init(hostName: "fake", connectionState: .local) }
+        override func start(interval: TimeInterval = 1.0) {
+            startInterval = interval
+            guard task == nil else { return }
+            task = Task {}
+        }
+    }
+
+    func testLifecyclePauseStopsCollectionAndResumeRestartsFresh() {
+        let s = FakeHostMetricsService()
+        XCTAssertFalse(s.isCollecting)
+
+        s.start(interval: 2)
+        XCTAssertTrue(s.isCollecting)
+        XCTAssertEqual(s.startInterval, 2)
+
+        s.pauseForLifecycle()
+        XCTAssertFalse(s.isCollecting, "paused = not collecting, so no backlog accrues while away")
+
+        s.resumeForLifecycle()
+        XCTAssertTrue(s.isCollecting, "resumes a fresh task at the remembered interval")
+
+        s.stop()
+    }
+
+    func testResumeWithoutPriorPauseIsNoOp() {
+        // didBecomeActive at launch must not start collection before the app asks.
+        let s = FakeHostMetricsService()
+        s.resumeForLifecycle()
+        XCTAssertFalse(s.isCollecting, "resume only restarts if we previously paused a running collector")
+    }
 }

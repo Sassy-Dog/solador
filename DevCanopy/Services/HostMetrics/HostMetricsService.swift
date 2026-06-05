@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import HostMetricsKit
 
@@ -36,6 +37,16 @@ class HostMetricsService: ObservableObject {
     /// Streaming task, managed by subclasses.
     var task: Task<Void, Never>?
 
+    /// Whether collection is currently running.
+    var isCollecting: Bool { task != nil }
+
+    /// Interval the subclass was last started with, so a lifecycle-resume can
+    /// restart at the same cadence. Subclasses set this in their `start` override.
+    var startInterval: TimeInterval = 1.0
+
+    private var lifecycleObservers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var wasRunningBeforePause = false
+
     init(hostName: String, connectionState: HostConnectionState) {
         self.hostName = hostName
         self.connectionState = connectionState
@@ -47,6 +58,43 @@ class HostMetricsService: ObservableObject {
     func stop() {
         task?.cancel()
         task = nil
+    }
+
+    // MARK: App-lifecycle pause
+
+    /// Pauses collection while the app is inactive/asleep and resumes (fresh) when
+    /// it returns. This is what stops a backlog of samples from replaying as a
+    /// burst on return, and avoids collecting when nobody's looking. Call once
+    /// from a subclass `init`.
+    func installLifecyclePause() {
+        let nc = NotificationCenter.default
+        let ws = NSWorkspace.shared.notificationCenter
+        func observe(_ name: Notification.Name, on center: NotificationCenter, _ handler: @escaping () -> Void) {
+            let token = center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { handler() }
+            }
+            lifecycleObservers.append((center, token))
+        }
+        observe(NSApplication.didResignActiveNotification, on: nc) { [weak self] in self?.pauseForLifecycle() }
+        observe(NSApplication.didBecomeActiveNotification, on: nc) { [weak self] in self?.resumeForLifecycle() }
+        observe(NSWorkspace.willSleepNotification, on: ws) { [weak self] in self?.pauseForLifecycle() }
+        observe(NSWorkspace.didWakeNotification, on: ws) { [weak self] in self?.resumeForLifecycle() }
+    }
+
+    /// Stops collection but remembers it was running, so `resumeForLifecycle`
+    /// restarts it. No-op if not currently collecting. Internal for testing.
+    func pauseForLifecycle() {
+        guard isCollecting else { return }
+        wasRunningBeforePause = true
+        stop()
+    }
+
+    /// Restarts collection (fresh — no pending samples) if it was paused by the
+    /// lifecycle. Internal for testing.
+    func resumeForLifecycle() {
+        guard wasRunningBeforePause else { return }
+        wasRunningBeforePause = false
+        start(interval: startInterval)
     }
 
     /// Records a snapshot and updates the capped history buffers.
@@ -83,5 +131,8 @@ class HostMetricsService: ObservableObject {
         }
     }
 
-    deinit { task?.cancel() }
+    deinit {
+        task?.cancel()
+        for (center, token) in lifecycleObservers { center.removeObserver(token) }
+    }
 }

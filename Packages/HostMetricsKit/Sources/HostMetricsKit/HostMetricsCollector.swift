@@ -89,11 +89,16 @@ public actor HostMetricsCollector {
 
     /// Streams snapshots at the given interval until the consumer breaks or the
     /// task is cancelled.
+    ///
+    /// Uses `.bufferingNewest(1)`: if the consumer falls behind (e.g. the app is
+    /// occluded and the main actor isn't draining the stream), intermediate
+    /// snapshots are dropped rather than queued. This prevents a backlog from
+    /// replaying as a fast-forward burst when the app becomes visible again.
     public nonisolated func snapshots(
         interval: TimeInterval = 1.0,
         includeBattery: Bool = true
     ) -> AsyncStream<HostSnapshot> {
-        AsyncStream { continuation in
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 while !Task.isCancelled {
                     let snapshot = await collectSnapshot(includeBattery: includeBattery)
