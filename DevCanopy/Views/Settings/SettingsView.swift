@@ -44,7 +44,8 @@ struct GeneralSettingsView: View {
     @AppStorage("refreshInterval") private var refreshInterval: Int = 60
     @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
     @AppStorage("showPerformanceOverlay") private var showPerformanceOverlay: Bool = false
-    
+    @AppStorage("coreRowSpan") private var coreRowSpan: Int = 2
+
     var body: some View {
         Form {
             Section {
@@ -53,10 +54,17 @@ struct GeneralSettingsView: View {
                         Text(interval.displayName).tag(interval.rawValue)
                     }
                 }
-                
+
                 Toggle("Launch at Login", isOn: $launchAtLogin)
-                
+
                 Toggle("Show Performance Overlay", isOn: $showPerformanceOverlay)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Stepper("CPU core rows: \(coreRowSpan)", value: $coreRowSpan, in: 1...4)
+                    Text("How many rows tall the per-core CPU grid is on every host card.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("General Settings")
                     .font(.headline)

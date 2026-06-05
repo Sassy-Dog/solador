@@ -8,7 +8,15 @@ import HostMetricsKit
 struct HostLupitaView: View {
     @ObservedObject var service: HostMetricsService
 
+    /// How many "section rows" tall the per-core grid is. Global (UserDefaults), so every host
+    /// card uses the same cores-block height and the cards line up. Set in General settings.
+    @AppStorage("coreRowSpan") private var coreRowSpan: Int = 2
+
     private static let cap = HostMetricsService.historyCapacity
+
+    /// Height of one "section row" — the cores block spans `coreRowSpan` of these. Roughly the
+    /// height of the processor chart so one row of cores reads like one of the other sections.
+    private static let coreRowUnit: CGFloat = 110
 
     /// Per-core line colors, cycled — echoes Lupita's multi-hue core grid.
     private static let coreColors: [Color] = [
@@ -84,17 +92,34 @@ struct HostLupitaView: View {
                 valueColor: usageColor(snap.cpu.totalUsage)
             )
             percentChart(service.cpuHistory, color: cpuColor, height: 110)
-
-            let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 5)
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(Array(service.coreHistories.enumerated()), id: \.offset) { index, history in
-                    coreCell(index: index, history: history)
-                }
-            }
+            coreGrid
         }
     }
 
-    private func coreCell(index: Int, history: [Double]) -> some View {
+    /// Per-core grid: columns chosen so the core count divides evenly (full last row), and the
+    /// whole block bounded to a fixed height (`coreRowSpan` section-rows) divided across the
+    /// visual rows — Lupita's trick. The fixed block height is identical on every host, so cards
+    /// align regardless of core count.
+    @ViewBuilder
+    private var coreGrid: some View {
+        let count = service.coreHistories.count
+        if count > 0 {
+            let cols = coreColumns(coreCount: count)
+            let visualRows = max(1, Int((Double(count) / Double(cols)).rounded(.up)))
+            let spacing: CGFloat = 8
+            let blockHeight = CGFloat(max(1, coreRowSpan)) * Self.coreRowUnit
+            let cellHeight = (blockHeight - spacing * CGFloat(visualRows - 1)) / CGFloat(visualRows)
+            let columns = Array(repeating: GridItem(.flexible(), spacing: spacing), count: cols)
+            LazyVGrid(columns: columns, spacing: spacing) {
+                ForEach(Array(service.coreHistories.enumerated()), id: \.offset) { index, history in
+                    coreCell(index: index, history: history, cellHeight: cellHeight)
+                }
+            }
+            .frame(height: blockHeight, alignment: .top)
+        }
+    }
+
+    private func coreCell(index: Int, history: [Double], cellHeight: CGFloat) -> some View {
         let color = Self.coreColors[index % Self.coreColors.count]
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -104,9 +129,12 @@ struct HostLupitaView: View {
                     .font(CockpitTheme.mono(10, weight: .bold))
                     .foregroundStyle(usageColor(history.last ?? 0))
             }
-            Sparkline(values: history, capacity: Self.cap, color: color, range: 0...100).frame(height: 44)
+            // Sparkline (a GeometryReader) takes whatever height is left after the label.
+            Sparkline(values: history, capacity: Self.cap, color: color, range: 0...100)
+                .frame(maxHeight: .infinity)
         }
         .padding(8)
+        .frame(height: cellHeight, alignment: .top)
         .background(CockpitTheme.panelAlt)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
