@@ -53,7 +53,8 @@ final class PortfolioReposTests: XCTestCase {
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "qr-ninja"))
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "velovate"))
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "what2wear"))
-        XCTAssertFalse(PortfolioRepos.matches(repoDirName: "devcanopy"))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "devcanopy"))     // now tracked
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "platform"))      // now tracked
         XCTAssertFalse(PortfolioRepos.matches(repoDirName: "blog"))
     }
 }

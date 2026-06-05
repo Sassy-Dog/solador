@@ -12,7 +12,9 @@ enum PortfolioRepos {
         "Sassy-Dog/velovate",
         "Sassy-Dog/qr-ninja",
         "Sassy-Dog/tailored-tip",
-        "Sassy-Dog/what2wear"
+        "Sassy-Dog/what2wear",
+        "Sassy-Dog/devcanopy",
+        "Sassy-Dog/platform"
     ]
 
     /// Repo names (after the slash).
