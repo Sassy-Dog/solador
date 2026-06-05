@@ -24,11 +24,13 @@ jobs:
 
       # The .xcodeproj is generated (gitignored), so CI needs XcodeGen.
       # xcbeautify is optional — ./dev test uses it for nicer output if present.
+      # bash: the runner's default /bin/bash is 3.2, which can't handle the
+      # associative arrays in Scripts/config.sh under `set -u`.
       - name: Install build tools
-        run: brew install xcodegen xcbeautify
+        run: brew install xcodegen xcbeautify bash
 
       - name: Run tests
-        run: ./dev test
+        run: "$(brew --prefix)/bin/bash ./dev test"
 
   agent-tests:
     name: Rust agent
