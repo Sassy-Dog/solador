@@ -45,7 +45,7 @@ struct CockpitView: View {
         case .hosts: HostsPanel()
         case .ciRunners: CIRunnersPanel()
         case .containers: ContainersPanel()
-        case .portfolioCI: PortfolioCIPanel()
+        case .ciHealth: CIHealthPanel()
         case .gitWorktrees: GitWorktreesPanel()
         case .claudeUsage: ClaudeUsagePanel()
         }

@@ -36,21 +36,10 @@ final class PortfolioCIMappingTests: XCTestCase {
 
     // MARK: - Short name
 
-    func testRepoShortNameTakesPartAfterSlash() {
-        let status = PortfolioCIMapping.map(repo: "Sassy-Dog/velovate", runs: [])
-        XCTAssertEqual(status.shortName, "velovate")
-    }
-
-    // MARK: - CI selection (latest run picked)
-
-    func testMapPicksLatestCIRunByCreatedAt() {
-        let r1 = dto(name: "CI", status: "completed", conclusion: "success")
-        let r2 = dto(name: "CI", status: "completed", conclusion: "failure") // newer
-        let mapped = PortfolioCIMapping.map(
-            repo: "Sassy-Dog/velovate",
-            runs: [makeCreated(r1, "2026-05-29T10:00:00Z"), makeCreated(r2, "2026-05-29T11:00:00Z")]
-        )
-        XCTAssertEqual(mapped.ciConclusion, .failure)
+    func testRepoCIHealthShortName() {
+        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: [])
+        XCTAssertEqual(h.shortName, "velovate")
+        XCTAssertTrue(h.isClean, "no runs = nothing running, nothing failed")
     }
 
     private func makeCreated(_ d: WorkflowRunDTO, _ created: String) -> WorkflowRunDTO {
@@ -63,42 +52,6 @@ final class PortfolioCIMappingTests: XCTestCase {
             runAttemptedAt: d.runAttemptedAt, actor: d.actor,
             triggeringActor: d.triggeringActor, displayTitle: d.displayTitle
         )
-    }
-
-    // MARK: - Health derivation
-
-    func testSuccessHealthIsGood() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: "success")])
-        XCTAssertEqual(s.health, .good)
-    }
-
-    func testFailureHealthIsBad() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: "failure")])
-        XCTAssertEqual(s.health, .bad)
-    }
-
-    func testInProgressHealthIsRunning() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [dto(name: "CI", status: "in_progress", conclusion: nil)])
-        XCTAssertEqual(s.health, .running)
-    }
-
-    func testNoRunsHealthIsUnknown() {
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: [])
-        XCTAssertEqual(s.health, .unknown)
-        XCTAssertNil(s.ciConclusion)
-    }
-
-    // MARK: - Release detection
-
-    func testReleaseRunDetectedSeparatelyFromCI() {
-        let runs = [
-            makeCreated(dto(name: "CI", status: "completed", conclusion: "success"), "2026-05-29T10:00:00Z"),
-            makeCreated(dto(name: "Release", status: "completed", conclusion: "failure"), "2026-05-29T11:00:00Z")
-        ]
-        let s = PortfolioCIMapping.map(repo: "o/r", runs: runs)
-        // CI health stays good (release failing shouldn't override CI)
-        XCTAssertEqual(s.ciConclusion, .success)
-        XCTAssertEqual(s.releaseConclusion, .failure)
     }
 
     // MARK: - health() categorization
