@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-tests:
+    name: Swift app tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # XcodeGen (Homebrew, latest) emits the newest project format, so pair it
+      # with the latest stable Xcode that can read it.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # The .xcodeproj is generated (gitignored), so CI needs XcodeGen.
+      # xcbeautify is optional — ./dev test uses it for nicer output if present.
+      # bash: the runner's default /bin/bash is 3.2, which can't handle the
+      # associative arrays in Scripts/config.sh under `set -u`.
+      - name: Install build tools
+        run: brew install xcodegen xcbeautify bash
+
+      - name: Run tests
+        run: "$(brew --prefix)/bin/bash ./dev test"
+
+  agent-tests:
+    name: Rust agent
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+
+      - name: Build
+        run: cargo build --locked --verbose
+
+      - name: Test
+        run: cargo test --locked --verbose
