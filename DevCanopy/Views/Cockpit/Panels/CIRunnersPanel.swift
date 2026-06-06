@@ -11,19 +11,22 @@ struct CIRunnersPanel: CockpitPanelView {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
             if !service.isAuthenticated {
                 empty("connect a GitHub token in Settings")
-            } else if let error = service.loadError {
-                empty(error)
-            } else if let summary = service.summary {
-                VStack(alignment: .leading, spacing: 8) {
-                    summaryRow(summary)
-                    osChips(summary)
-                    Divider().overlay(CockpitTheme.line)
-                    ForEach(service.runners) { runner in
-                        row(runner)
-                    }
-                }
             } else {
-                empty("loading runners…")
+                VStack(alignment: .leading, spacing: 8) {
+                    // Keep showing the last-good runners even if a refresh just
+                    // failed; the footer surfaces the failure.
+                    if let summary = service.summary {
+                        summaryRow(summary)
+                        osChips(summary)
+                        Divider().overlay(CockpitTheme.line)
+                        ForEach(service.runners) { runner in
+                            row(runner)
+                        }
+                    } else if service.loadError == nil {
+                        empty("loading runners…")
+                    }
+                    PanelStatusFooter(lastUpdated: service.lastUpdated, error: service.loadError, staleAfter: 150)
+                }
             }
         }
     }

@@ -26,6 +26,7 @@ struct RepoWorktrees: Sendable, Identifiable, Equatable {
 @MainActor
 final class GitWorktreeService: ObservableObject {
     @Published private(set) var repos: [RepoWorktrees] = []
+    @Published private(set) var lastUpdated: Date?
 
     /// Roots to scan, with `~` expanded.
     private let roots: [String]
@@ -73,6 +74,7 @@ final class GitWorktreeService: ObservableObject {
         }.value
 
         self.repos = scanned.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        self.lastUpdated = Date()
     }
 
     // MARK: - Discovery (off-actor)

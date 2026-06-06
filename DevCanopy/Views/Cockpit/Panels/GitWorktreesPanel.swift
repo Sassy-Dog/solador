@@ -10,17 +10,18 @@ struct GitWorktreesPanel: CockpitPanelView {
 
     var body: some View {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
-            if service.repos.isEmpty {
-                Text("no portfolio repos found")
-                    .font(CockpitTheme.mono(11))
-                    .foregroundStyle(CockpitTheme.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                if service.repos.isEmpty {
+                    Text("no portfolio repos found")
+                        .font(CockpitTheme.mono(11))
+                        .foregroundStyle(CockpitTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
                     ForEach(service.repos) { repo in
                         repoGroup(repo)
                     }
                 }
+                PanelStatusFooter(lastUpdated: service.lastUpdated, error: nil, staleAfter: 120)
             }
         }
     }

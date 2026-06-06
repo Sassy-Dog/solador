@@ -10,19 +10,20 @@ struct ContainersPanel: CockpitPanelView {
 
     var body: some View {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
-            if isEmpty {
-                Text("no containers detected")
-                    .font(CockpitTheme.mono(11))
-                    .foregroundStyle(CockpitTheme.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
+                if isEmpty {
+                    Text("no containers detected")
+                        .font(CockpitTheme.mono(11))
+                        .foregroundStyle(CockpitTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
                     hostSection("this machine", service.containers,
                                 noRuntimes: service.detectedRuntimes.isEmpty)
                     ForEach(remoteHosts.containersByHost.keys.sorted(), id: \.self) { host in
                         hostSection(host, remoteHosts.containersByHost[host] ?? [], noRuntimes: false)
                     }
                 }
+                PanelStatusFooter(lastUpdated: service.lastUpdated, error: service.lastError, staleAfter: 30)
             }
         }
     }

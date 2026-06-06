@@ -12,6 +12,8 @@ import SwiftUI
 final class ClaudeUsageService: ObservableObject {
     @Published private(set) var summary: UsageSummary?
     @Published private(set) var isLoading = false
+    @Published private(set) var lastUpdated: Date?
+    @Published private(set) var lastError: String?
 
     /// Optional ceilings used to render progress bars. When nil, the panel shows
     /// raw amounts with no percentage. Kept simple — adjust here if desired.
@@ -30,10 +32,13 @@ final class ClaudeUsageService: ObservableObject {
         isLoading = true
         let now = Date()
         let dir = Self.projectsDir
+        let dirExists = FileManager.default.fileExists(atPath: dir.path)
         let summary = await Task.detached(priority: .utility) {
             Self.loadSummary(projectsDir: dir, now: now)
         }.value
         self.summary = summary
+        self.lastError = dirExists ? nil : "no ~/.claude/projects"
+        self.lastUpdated = Date()
         self.isLoading = false
     }
 
