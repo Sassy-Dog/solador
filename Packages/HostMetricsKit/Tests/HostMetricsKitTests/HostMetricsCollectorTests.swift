@@ -70,6 +70,64 @@ final class HostMetricsCollectorTests: XCTestCase {
         XCTAssertEqual(snapshot, decoded, "Snapshot should survive a JSON round trip unchanged")
     }
 
+    // MARK: - Per-process CPU percentage
+
+    /// Regression: PID reuse over a long uptime can leave a cached cumulative CPU
+    /// counter that is *higher* than the new process's. The old code did
+    /// `currentTime - previousTime` on UInt64, which underflowed and trapped
+    /// (the overnight crash). A backwards counter must yield 0%, not a crash.
+    func testCPUPercentBackwardsCounterDoesNotCrash() {
+        let percent = SystemMonitorV2.cpuPercent(
+            currentTime: 1_000,
+            previousTime: 5_000_000_000,
+            elapsedSeconds: 1.0,
+            coreCount: 10
+        )
+        XCTAssertEqual(percent, 0.0, "Reused PID (counter went backwards) must report 0%, not crash")
+    }
+
+    func testCPUPercentNoPreviousSampleIsZero() {
+        let percent = SystemMonitorV2.cpuPercent(
+            currentTime: 1_000_000_000,
+            previousTime: nil,
+            elapsedSeconds: 1.0,
+            coreCount: 10
+        )
+        XCTAssertEqual(percent, 0.0, "First sample has no baseline to diff against")
+    }
+
+    func testCPUPercentNormalUsage() {
+        // 1.0s of CPU time over 2.0s of wall clock = 50%.
+        let percent = SystemMonitorV2.cpuPercent(
+            currentTime: 3_000_000_000,
+            previousTime: 2_000_000_000,
+            elapsedSeconds: 2.0,
+            coreCount: 10
+        )
+        XCTAssertEqual(percent, 50.0, accuracy: 0.001)
+    }
+
+    func testCPUPercentCapsAtAvailableCores() {
+        // 10s of CPU in 1s of wall clock would be 1000%, capped to coreCount*100.
+        let percent = SystemMonitorV2.cpuPercent(
+            currentTime: 10_000_000_000,
+            previousTime: 0,
+            elapsedSeconds: 1.0,
+            coreCount: 4
+        )
+        XCTAssertEqual(percent, 400.0, accuracy: 0.001, "Should cap at coreCount * 100%")
+    }
+
+    func testCPUPercentZeroElapsedIsZero() {
+        let percent = SystemMonitorV2.cpuPercent(
+            currentTime: 3_000_000_000,
+            previousTime: 2_000_000_000,
+            elapsedSeconds: 0.0,
+            coreCount: 10
+        )
+        XCTAssertEqual(percent, 0.0, "No elapsed wall-clock time means no measurable usage")
+    }
+
     func testStreamYieldsSnapshots() async {
         let collector = HostMetricsCollector()
         var received = 0
