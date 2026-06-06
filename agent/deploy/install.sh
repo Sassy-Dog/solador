@@ -82,7 +82,10 @@ echo "==> Wrote $ENV_FILE (token + port, mode 600)"
 mkdir -p "$(dirname "$UNIT_DST")"
 cp "$UNIT_SRC" "$UNIT_DST"
 systemctl --user daemon-reload
-systemctl --user enable --now "$BIN_NAME"
+systemctl --user enable "$BIN_NAME"
+# `restart` (not `enable --now`) so a re-run actually picks up the rebuilt binary —
+# `--now` only starts a stopped unit, it won't restart a running one.
+systemctl --user restart "$BIN_NAME"
 
 # Survive logout / start on boot.
 if command -v loginctl >/dev/null 2>&1; then
