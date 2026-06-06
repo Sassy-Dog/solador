@@ -12,7 +12,14 @@ struct HostLupitaView: View {
     /// card uses the same cores-block height and the cards line up. Set in General settings.
     @AppStorage("coreRowSpan") private var coreRowSpan: Int = 2
 
+    /// Reserve the Volumes section for this many volumes — the max across the
+    /// cards in this row — laid out in `volumeColumns`, so the sections below
+    /// (Top CPU/RAM) line up across side-by-side host cards. Set by `HostsPanel`.
+    var volumeSlots: Int = 0
+    var volumeColumns: Int = 1
+
     private static let cap = HostMetricsService.historyCapacity
+    private static let volumeCellHeight: CGFloat = 28
 
     /// Height of one "section row" — the cores block spans `coreRowSpan` of these. Roughly the
     /// height of the processor chart so one row of cores reads like one of the other sections.
@@ -48,9 +55,10 @@ struct HostLupitaView: View {
                     diskSection(snap)
                     networkSection(snap)
                 }
-                if !snap.volumes.isEmpty {
+                let volumeReserve = max(volumeSlots, snap.volumes.count)
+                if volumeReserve > 0 {
                     Divider().overlay(CockpitTheme.line)
-                    volumesSection(snap.volumes)
+                    volumesSection(snap.volumes, slots: volumeReserve, columns: max(1, volumeColumns))
                 }
                 if !snap.processes.isEmpty {
                     Divider().overlay(CockpitTheme.line)
@@ -218,12 +226,23 @@ struct HostLupitaView: View {
 
     // MARK: Volumes
 
+    /// Renders volumes in `columns` columns, padding to `slots` (the row's max
+    /// volume count) so every card reserves the same Volumes height and the
+    /// sections below align. Two columns when the card is wide enough.
     @ViewBuilder
-    private func volumesSection(_ volumes: [VolumeUsage]) -> some View {
+    private func volumesSection(_ volumes: [VolumeUsage], slots: Int, columns: Int) -> some View {
+        let rows = max(1, Int((Double(slots) / Double(columns)).rounded(.up)))
+        let pad = max(0, rows * columns - volumes.count)
+        let grid = Array(repeating: GridItem(.flexible(), spacing: 16), count: columns)
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(icon: "externaldrive", title: "Volumes", badge: nil,
                           value: "\(volumes.count)", valueColor: CockpitTheme.muted)
-            ForEach(volumes) { volumeRow($0) }
+            LazyVGrid(columns: grid, alignment: .leading, spacing: 6) {
+                ForEach(volumes) { volumeRow($0).frame(height: Self.volumeCellHeight, alignment: .top) }
+                ForEach(Array(0..<pad), id: \.self) { _ in
+                    Color.clear.frame(height: Self.volumeCellHeight)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
