@@ -13,6 +13,10 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
     /// Per-mounted-volume usage. Empty when unavailable or from an older agent
     /// that predates this field (decoded tolerantly — see `init(from:)`).
     public let volumes: [VolumeUsage]
+    /// Top CPU/RAM-consuming processes, sampled on a slow (~1 min) cadence — the
+    /// union of the top-by-CPU and top-by-memory, so the client can render both
+    /// lists. Empty from an older agent (decoded tolerantly).
+    public let processes: [ProcessSample]
 
     public init(
         timestamp: Date,
@@ -22,7 +26,8 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         network: NetworkMetrics,
         gpu: GPUMetrics,
         battery: BatteryMetrics?,
-        volumes: [VolumeUsage] = []
+        volumes: [VolumeUsage] = [],
+        processes: [ProcessSample] = []
     ) {
         self.timestamp = timestamp
         self.cpu = cpu
@@ -32,15 +37,16 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         self.gpu = gpu
         self.battery = battery
         self.volumes = volumes
+        self.processes = processes
     }
 
     private enum CodingKeys: String, CodingKey {
-        case timestamp, cpu, memory, disk, network, gpu, battery, volumes
+        case timestamp, cpu, memory, disk, network, gpu, battery, volumes, processes
     }
 
-    // Custom decode so a payload without `volumes` (older agents) still decodes,
-    // yielding an empty list rather than failing the whole snapshot. Encoding is
-    // synthesized and always includes `volumes`.
+    // Custom decode so a payload without `volumes`/`processes` (older agents)
+    // still decodes, yielding empty lists rather than failing the whole snapshot.
+    // Encoding is synthesized and always includes both.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         timestamp = try c.decode(Date.self, forKey: .timestamp)
@@ -51,6 +57,39 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         gpu = try c.decode(GPUMetrics.self, forKey: .gpu)
         battery = try c.decodeIfPresent(BatteryMetrics.self, forKey: .battery)
         volumes = try c.decodeIfPresent([VolumeUsage].self, forKey: .volumes) ?? []
+        processes = try c.decodeIfPresent([ProcessSample].self, forKey: .processes) ?? []
+    }
+}
+
+/// One process's resource use. `cpuPercent` can exceed 100 on multi-core hosts.
+public struct ProcessSample: Sendable, Codable, Equatable, Identifiable {
+    public let pid: Int
+    public let name: String
+    public let cpuPercent: Double
+    public let memoryMB: Double
+
+    public var id: Int { pid }
+
+    public init(pid: Int, name: String, cpuPercent: Double, memoryMB: Double) {
+        self.pid = pid
+        self.name = name
+        self.cpuPercent = cpuPercent
+        self.memoryMB = memoryMB
+    }
+}
+
+/// Reduces a full process list to the interesting few: the union of the top-N by
+/// CPU and top-N by memory (deduped by pid), so one list backs both a "Top CPU"
+/// and a "Top RAM" view. Pure and order-stable for testing.
+public enum ProcessRanking {
+    public static func top(_ all: [ProcessSample], limit: Int = 5) -> [ProcessSample] {
+        let byCPU = all.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(limit)
+        let byMem = all.sorted { $0.memoryMB > $1.memoryMB }.prefix(limit)
+        var seen = Set<Int>()
+        var out: [ProcessSample] = []
+        for p in byCPU where seen.insert(p.pid).inserted { out.append(p) }
+        for p in byMem where seen.insert(p.pid).inserted { out.append(p) }
+        return out.sorted { $0.cpuPercent > $1.cpuPercent }
     }
 }
 

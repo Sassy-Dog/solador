@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
-use sysinfo::{Disks, Networks, System};
+use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 use tokio::sync::RwLock;
 
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -18,6 +18,11 @@ const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 /// Refresh interval for the background sampler. Disk/network rates are computed
 /// as (delta bytes over this interval) / (interval seconds).
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Re-enumerate processes every N ticks (~1 min at the 1s sample interval).
+const PROCESS_SAMPLE_TICKS: u64 = 60;
+/// Keep the top-N by CPU and by memory.
+const PROCESS_TOP_LIMIT: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Wire contract types.
@@ -41,6 +46,8 @@ pub struct Snapshot {
     /// Per-mounted-volume usage. A full volume fails even when the disk has
     /// space, so each is reported separately.
     pub volumes: Vec<Volume>,
+    /// Top CPU/RAM-consuming processes (sampled on a slow cadence).
+    pub processes: Vec<Process>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -109,6 +116,60 @@ pub struct Volume {
     pub total_gb: f64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Process {
+    pub pid: i64,
+    pub name: String,
+    /// Can exceed 100 on multi-core hosts.
+    #[serde(rename = "cpuPercent")]
+    pub cpu_percent: f64,
+    #[serde(rename = "memoryMB")]
+    pub memory_mb: f64,
+}
+
+/// Reduce all processes to the union of the top-`limit` by CPU and by memory
+/// (deduped by pid), sorted by CPU descending.
+fn top_processes(sys: &System, limit: usize) -> Vec<Process> {
+    let all: Vec<Process> = sys
+        .processes()
+        .iter()
+        .map(|(pid, p)| Process {
+            pid: pid.as_u32() as i64,
+            name: p.name().to_string_lossy().to_string(),
+            cpu_percent: p.cpu_usage() as f64,
+            memory_mb: p.memory() as f64 / BYTES_PER_MIB,
+        })
+        .collect();
+
+    let cmp_desc = |key: fn(&Process) -> f64| {
+        move |a: &Process, b: &Process| {
+            key(b)
+                .partial_cmp(&key(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }
+    };
+
+    let mut by_cpu = all.clone();
+    by_cpu.sort_by(cmp_desc(|p| p.cpu_percent));
+    let mut by_mem = all;
+    by_mem.sort_by(cmp_desc(|p| p.memory_mb));
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<Process> = Vec::new();
+    for p in by_cpu.into_iter().take(limit) {
+        if seen.insert(p.pid) {
+            out.push(p);
+        }
+    }
+    for p in by_mem.into_iter().take(limit) {
+        if seen.insert(p.pid) {
+            out.push(p);
+        }
+    }
+    out.sort_by(cmp_desc(|p| p.cpu_percent));
+    out
+}
+
 impl Gpu {
     /// All-zero GPU placeholder (no portable GPU metrics source).
     pub fn zeros() -> Self {
@@ -171,6 +232,11 @@ pub fn spawn_sampler() -> MetricsState {
         sys.refresh_cpu_all();
         tokio::time::sleep(SAMPLE_INTERVAL).await;
 
+        // Processes are enumerated on a slow cadence (expensive, and only needed
+        // as a ~1-minute "what's hogging" view). Cached between ticks.
+        let mut cached_processes: Vec<Process> = Vec::new();
+        let mut tick: u64 = 0;
+
         loop {
             // Refresh everything; the second+ refresh yields valid deltas/usages.
             sys.refresh_cpu_all();
@@ -178,9 +244,21 @@ pub fn spawn_sampler() -> MetricsState {
             networks.refresh(true);
             disks.refresh(true);
 
-            let snap = compute_snapshot(&sys, &networks, &disks, SAMPLE_INTERVAL.as_secs_f64());
+            if tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
+                sys.refresh_processes(ProcessesToUpdate::All, true);
+                cached_processes = top_processes(&sys, PROCESS_TOP_LIMIT);
+            }
+
+            let snap = compute_snapshot(
+                &sys,
+                &networks,
+                &disks,
+                SAMPLE_INTERVAL.as_secs_f64(),
+                cached_processes.clone(),
+            );
             *handle.inner.write().await = snap;
 
+            tick = tick.wrapping_add(1);
             tokio::time::sleep(SAMPLE_INTERVAL).await;
         }
     });
@@ -215,6 +293,7 @@ fn empty_snapshot() -> Snapshot {
         gpu: Gpu::zeros(),
         battery: None,
         volumes: Vec::new(),
+        processes: Vec::new(),
     }
 }
 
@@ -227,6 +306,7 @@ fn compute_snapshot(
     networks: &Networks,
     disks: &Disks,
     interval_secs: f64,
+    processes: Vec<Process>,
 ) -> Snapshot {
     let interval = if interval_secs > 0.0 {
         interval_secs
@@ -312,6 +392,7 @@ fn compute_snapshot(
         gpu: Gpu::zeros(),
         battery: None,
         volumes,
+        processes,
     }
 }
 
@@ -331,7 +412,8 @@ mod tests {
             "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
             "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
             "battery": null,
-            "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }]
+            "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }],
+            "processes": [{ "pid": 123, "name": "node", "cpuPercent": 12.5, "memoryMB": 256.0 }]
         })
     }
 
@@ -366,6 +448,12 @@ mod tests {
                 used_gb: 10.0,
                 total_gb: 100.0,
             }],
+            processes: vec![Process {
+                pid: 123,
+                name: "node".to_string(),
+                cpu_percent: 12.5,
+                memory_mb: 256.0,
+            }],
         }
     }
 
@@ -398,6 +486,7 @@ mod tests {
                 "gpu",
                 "memory",
                 "network",
+                "processes",
                 "timestamp",
                 "volumes"
             ]
@@ -439,6 +528,12 @@ mod tests {
         assert!(vols[0]["mount"].is_string());
         assert!(vols[0]["usedGB"].is_number());
         assert!(vols[0]["totalGB"].is_number());
+
+        let procs = v["processes"].as_array().unwrap();
+        assert!(procs[0]["pid"].is_i64());
+        assert!(procs[0]["name"].is_string());
+        assert!(procs[0]["cpuPercent"].is_number());
+        assert!(procs[0]["memoryMB"].is_number());
     }
 
     #[test]
