@@ -17,7 +17,8 @@ final class HostSnapshotWireContractTests: XCTestCase {
       "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
       "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
       "battery": null,
-      "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }]
+      "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }],
+      "processes": [{ "pid": 123, "name": "node", "cpuPercent": 12.5, "memoryMB": 256.0 }]
     }
     """
 
@@ -39,6 +40,10 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertEqual(snap.volumes.count, 1)
         XCTAssertEqual(snap.volumes.first?.mount, "/")
         XCTAssertEqual(snap.volumes.first?.percentUsed ?? 0, 10.0, accuracy: 0.001)  // 10/100, computed
+        XCTAssertEqual(snap.processes.count, 1)
+        XCTAssertEqual(snap.processes.first?.name, "node")
+        XCTAssertEqual(snap.processes.first?.cpuPercent ?? 0, 12.5, accuracy: 0.001)
+        XCTAssertEqual(snap.processes.first?.memoryMB ?? 0, 256.0, accuracy: 0.001)
 
         let comps = Calendar(identifier: .gregorian).dateComponents(
             in: TimeZone(identifier: "UTC")!, from: snap.timestamp)
@@ -62,7 +67,24 @@ final class HostSnapshotWireContractTests: XCTestCase {
         """
         let snap = try RemoteHostMetricsService.snapshotDecoder.decode(HostSnapshot.self, from: Data(legacy.utf8))
         XCTAssertEqual(snap.volumes, [], "missing volumes key decodes to empty, not a failure")
+        XCTAssertEqual(snap.processes, [], "missing processes key decodes to empty too")
         XCTAssertEqual(snap.cpu.totalUsage, 1.0, accuracy: 0.001)
+    }
+
+    func testProcessRankingUnionsTopCPUAndTopMemoryDeduped() {
+        func p(_ pid: Int, cpu: Double, mem: Double) -> ProcessSample {
+            ProcessSample(pid: pid, name: "p\(pid)", cpuPercent: cpu, memoryMB: mem)
+        }
+        // pid 1 tops CPU; pid 2 tops memory; pid 3 is middling (should drop at limit 2).
+        let all = [p(1, cpu: 90, mem: 10), p(2, cpu: 5, mem: 900), p(3, cpu: 50, mem: 50), p(4, cpu: 1, mem: 1)]
+        let top = ProcessRanking.top(all, limit: 2)
+        let pids = Set(top.map(\.pid))
+        XCTAssertTrue(pids.contains(1), "top CPU included")
+        XCTAssertTrue(pids.contains(2), "top memory included even though low CPU")
+        XCTAssertTrue(pids.contains(3), "second-by-cpu/second-by-mem included")
+        XCTAssertFalse(pids.contains(4), "neither top-CPU nor top-mem dropped")
+        XCTAssertEqual(top.first?.pid, 1, "result sorted by CPU desc")
+        XCTAssertEqual(top.count, Set(top.map(\.pid)).count, "no duplicate pids")
     }
 
     func testDecodesRemoteContainersPayload() throws {

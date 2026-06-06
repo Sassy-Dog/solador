@@ -10,6 +10,15 @@ import Foundation
 public actor HostMetricsCollector {
     private let monitor = SystemMonitorV2()
 
+    /// Top processes are expensive to enumerate, and the user cares about what's
+    /// hogging CPU/RAM "over the last minute" — not per second. So they're sampled
+    /// on a slow cadence and cached between snapshots. Sampling `getProcessData`
+    /// every ~minute also makes its delta-based CPU% a ~1-minute average.
+    private var cachedProcesses: [ProcessSample] = []
+    private var lastProcessSampleAt: Date = .distantPast
+    private let processSampleInterval: TimeInterval = 55
+    private let processTopLimit = 5
+
     public init() {}
 
     /// Collects a single point-in-time snapshot of host metrics.
@@ -84,8 +93,24 @@ public actor HostMetricsCollector {
             network: network,
             gpu: gpu,
             battery: battery,
-            volumes: Self.collectVolumes()
+            volumes: Self.collectVolumes(),
+            processes: sampleProcessesIfDue()
         )
+    }
+
+    /// Returns the cached top-process list, refreshing it (via the expensive full
+    /// enumeration) only when the slow cadence is due.
+    private func sampleProcessesIfDue() -> [ProcessSample] {
+        let now = Date()
+        guard now.timeIntervalSince(lastProcessSampleAt) >= processSampleInterval else {
+            return cachedProcesses
+        }
+        let all = monitor.getProcessData().processes.map {
+            ProcessSample(pid: Int($0.id), name: $0.name, cpuPercent: $0.cpuUsage, memoryMB: $0.memoryUsage)
+        }
+        cachedProcesses = ProcessRanking.top(all, limit: processTopLimit)
+        lastProcessSampleAt = now
+        return cachedProcesses
     }
 
     /// Per-volume usage for browsable mounted volumes (skips hidden/synthetic

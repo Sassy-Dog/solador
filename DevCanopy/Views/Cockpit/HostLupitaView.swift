@@ -52,6 +52,10 @@ struct HostLupitaView: View {
                     Divider().overlay(CockpitTheme.line)
                     volumesSection(snap.volumes)
                 }
+                if !snap.processes.isEmpty {
+                    Divider().overlay(CockpitTheme.line)
+                    processesSection(snap.processes)
+                }
             } else {
                 Text(service.connectionState == .unreachable ? "unreachable" : "waiting for first sample…")
                     .font(CockpitTheme.mono(12))
@@ -249,6 +253,44 @@ struct HostLupitaView: View {
     /// Volumes fill up gradually; warn earlier than CPU since a full volume fails.
     private func volumeColor(_ pct: Double) -> Color {
         switch pct { case ..<85: CockpitTheme.green; case ..<95: CockpitTheme.amber; default: CockpitTheme.red }
+    }
+
+    // MARK: Top processes
+
+    @ViewBuilder
+    private func processesSection(_ procs: [ProcessSample]) -> some View {
+        HStack(alignment: .top, spacing: 24) {
+            processList(
+                "Top CPU",
+                procs.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(5).map { $0 },
+                value: { "\(Int($0.cpuPercent.rounded()))%" }
+            )
+            processList(
+                "Top RAM",
+                procs.sorted { $0.memoryMB > $1.memoryMB }.prefix(5).map { $0 },
+                value: { memoryLabel($0.memoryMB) }
+            )
+        }
+    }
+
+    private func processList(_ title: String, _ items: [ProcessSample], value: @escaping (ProcessSample) -> String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(CockpitTheme.mono(10, weight: .bold))
+                .foregroundStyle(CockpitTheme.muted)
+            ForEach(items) { p in
+                HStack(spacing: 6) {
+                    Text(p.name).font(CockpitTheme.mono(10)).foregroundStyle(CockpitTheme.ink).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(value(p)).font(CockpitTheme.mono(10, weight: .bold)).foregroundStyle(CockpitTheme.muted)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func memoryLabel(_ mb: Double) -> String {
+        mb >= 1024 ? "\(fmt(mb / 1024)) GB" : "\(Int(mb.rounded())) MB"
     }
 
     // MARK: Chart helpers
