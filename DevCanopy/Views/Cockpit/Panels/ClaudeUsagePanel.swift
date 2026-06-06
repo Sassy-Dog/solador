@@ -9,17 +9,20 @@ struct ClaudeUsagePanel: CockpitPanelView {
 
     var body: some View {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
-            if let summary = service.summary {
-                if summary.last7d.totalTokens == 0 {
-                    emptyState
+            VStack(alignment: .leading, spacing: 10) {
+                if let summary = service.summary {
+                    if summary.last7d.totalTokens == 0 {
+                        emptyState
+                    } else {
+                        content(summary)
+                    }
                 } else {
-                    content(summary)
+                    Text(service.isLoading ? "reading logs…" : "no usage data")
+                        .font(CockpitTheme.mono(11))
+                        .foregroundStyle(CockpitTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } else {
-                Text(service.isLoading ? "reading logs…" : "no usage data")
-                    .font(CockpitTheme.mono(11))
-                    .foregroundStyle(CockpitTheme.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                PanelStatusFooter(lastUpdated: service.lastUpdated, error: service.lastError, staleAfter: 150)
             }
         }
     }

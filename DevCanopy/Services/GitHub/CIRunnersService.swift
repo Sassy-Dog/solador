@@ -10,6 +10,7 @@ final class CIRunnersService: ObservableObject {
     @Published private(set) var summary: RunnerSummary?
     @Published private(set) var isAuthenticated = false
     @Published private(set) var loadError: String?
+    @Published private(set) var lastUpdated: Date?
 
     private let github: GitHubService
     private var task: Task<Void, Never>?
@@ -35,6 +36,7 @@ final class CIRunnersService: ObservableObject {
             runners = mapped
             summary = CIRunnerMapping.summarize(mapped)
             loadError = nil
+            lastUpdated = Date()
         } catch {
             // Most likely the PAT lacks org self-hosted-runners (read) permission.
             loadError = "couldn't read runners — token needs org self-hosted runners (read)"

@@ -8,6 +8,8 @@ import Foundation
 final class LocalContainerService: ObservableObject {
     @Published private(set) var containers: [ContainerInfo] = []
     @Published private(set) var detectedRuntimes: [ContainerRuntime] = []
+    @Published private(set) var lastUpdated: Date?
+    @Published private(set) var lastError: String?
 
     /// Directories searched (in order) for tool executables.
     private static let searchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
@@ -35,9 +37,10 @@ final class LocalContainerService: ObservableObject {
         let podman = toolPath(ContainerRuntime.podman.toolName)
         let tart = toolPath(ContainerRuntime.tart.toolName)
 
-        let (merged, runtimes) = await Task.detached { () -> ([ContainerInfo], [ContainerRuntime]) in
+        let (merged, runtimes, errored) = await Task.detached { () -> ([ContainerInfo], [ContainerRuntime], [String]) in
             var merged: [ContainerInfo] = []
             var runtimes: [ContainerRuntime] = []
+            var errored: [String] = []
 
             let psArgs = ["ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.Image}}"]
 
@@ -45,26 +48,28 @@ final class LocalContainerService: ObservableObject {
                 runtimes.append(.docker)
                 if let out = Self.run(docker, psArgs) {
                     merged += ContainerParsing.parsePsOutput(out, runtime: .docker)
-                }
+                } else { errored.append("docker") }
             }
             if let podman {
                 runtimes.append(.podman)
                 if let out = Self.run(podman, psArgs) {
                     merged += ContainerParsing.parsePsOutput(out, runtime: .podman)
-                }
+                } else { errored.append("podman") }
             }
             if let tart {
                 runtimes.append(.tart)
                 if let out = Self.run(tart, ["list"]) {
                     merged += ContainerParsing.parseTartList(out)
-                }
+                } else { errored.append("tart") }
             }
 
-            return (merged, runtimes)
+            return (merged, runtimes, errored)
         }.value
 
         self.containers = merged
         self.detectedRuntimes = runtimes
+        self.lastError = errored.isEmpty ? nil : "couldn't read \(errored.joined(separator: ", "))"
+        self.lastUpdated = Date()
     }
 
     /// Initial refresh plus a repeating refresh every 10s.
