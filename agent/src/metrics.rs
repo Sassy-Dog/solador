@@ -135,7 +135,13 @@ fn top_processes(sys: &System, limit: usize) -> Vec<Process> {
         .iter()
         .map(|(pid, p)| Process {
             pid: pid.as_u32() as i64,
-            name: p.name().to_string_lossy().to_string(),
+            // Prefer the executable's file name (e.g. "node", "chrome"); sysinfo's
+            // name() is the Linux comm/thread name ("MainThread") for many procs.
+            name: p
+                .exe()
+                .and_then(|e| e.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.name().to_string_lossy().to_string()),
             cpu_percent: p.cpu_usage() as f64,
             memory_mb: p.memory() as f64 / BYTES_PER_MIB,
         })
@@ -339,24 +345,33 @@ fn compute_snapshot(
     let read_mbps = (read_bytes as f64 / interval) / BYTES_PER_MIB;
     let write_mbps = (written_bytes as f64 / interval) / BYTES_PER_MIB;
 
-    // Per-volume usage (dedup by mount; skip zero-capacity pseudo-filesystems).
-    let mut volumes: Vec<Volume> = Vec::new();
+    // Per-volume usage. Skip zero-capacity pseudo-filesystems, and collapse the
+    // same filesystem mounted in several places (bind mounts report byte-identical
+    // total/available) to the shortest mount path so the list isn't full of dupes.
+    let mut by_fs: std::collections::HashMap<(u64, u64), Volume> = std::collections::HashMap::new();
     for disk in disks.list() {
         let total = disk.total_space();
         if total == 0 {
             continue;
         }
+        let available = disk.available_space();
         let mount = disk.mount_point().to_string_lossy().to_string();
-        if volumes.iter().any(|v| v.mount == mount) {
-            continue;
-        }
-        let used = total.saturating_sub(disk.available_space());
-        volumes.push(Volume {
-            mount,
-            used_gb: used as f64 / BYTES_PER_GIB,
+        let vol = Volume {
+            mount: mount.clone(),
+            used_gb: total.saturating_sub(available) as f64 / BYTES_PER_GIB,
             total_gb: total as f64 / BYTES_PER_GIB,
-        });
+        };
+        by_fs
+            .entry((total, available))
+            .and_modify(|existing| {
+                if mount.len() < existing.mount.len() {
+                    *existing = vol.clone();
+                }
+            })
+            .or_insert(vol);
     }
+    let mut volumes: Vec<Volume> = by_fs.into_values().collect();
+    volumes.sort_by(|a, b| a.mount.cmp(&b.mount));
 
     // Network: sum received/transmitted byte deltas over the interval -> MiB/s.
     let (mut rx, mut tx) = (0u64, 0u64);
