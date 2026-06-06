@@ -287,30 +287,44 @@ class SystemMonitorV2 {
         }
 
         let currentTime = taskInfo.pti_total_user + taskInfo.pti_total_system
+        let percent = Self.cpuPercent(
+            currentTime: currentTime,
+            previousTime: previousProcessCPUTimes[pid],
+            elapsedSeconds: Date().timeIntervalSince(lastProcessUpdateTime),
+            coreCount: Double(ProcessInfo.processInfo.processorCount)
+        )
 
-        // Calculate percentage based on previous sample
-        if let previousTime = previousProcessCPUTimes[pid] {
-            let timeDiff = currentTime - previousTime
-            let elapsedSeconds = Date().timeIntervalSince(lastProcessUpdateTime)
+        // Always re-baseline so the next sample diffs against this one. This also
+        // recovers from PID reuse: the next tick measures against the new process.
+        previousProcessCPUTimes[pid] = currentTime
+        return percent
+    }
 
-            if elapsedSeconds > 0, timeDiff > 0 {
-                // Convert nanoseconds to seconds and calculate percentage
-                let cpuSeconds = Double(timeDiff) / 1_000_000_000.0
-                let cpuPercent = (cpuSeconds / elapsedSeconds) * 100.0
-
-                previousProcessCPUTimes[pid] = currentTime
-
-                // Get CPU core count to normalize the percentage
-                let coreCount = Double(ProcessInfo.processInfo.processorCount)
-
-                // Return normalized percentage (can be over 100% on multi-core systems)
-                return min(cpuPercent, coreCount * 100.0)
-            }
+    /// Computes a process's normalized CPU percentage from two cumulative CPU-time
+    /// samples (nanoseconds). Returns 0 when there is no prior sample, no elapsed
+    /// time, no progress, or — critically — when the counter has gone *backwards*.
+    ///
+    /// A backwards counter happens when the kernel recycles a PID over a long
+    /// uptime: the cached value belongs to a now-dead process, and the new owner's
+    /// cumulative counter is lower. `currentTime - previousTime` on `UInt64` would
+    /// underflow and trap (the cause of the overnight crash), so the strict
+    /// `currentTime > previousTime` guard both fixes the crash and is correct
+    /// behavior — a reused PID has no meaningful diff for this tick.
+    static func cpuPercent(
+        currentTime: UInt64,
+        previousTime: UInt64?,
+        elapsedSeconds: TimeInterval,
+        coreCount: Double
+    ) -> Double {
+        guard let previousTime, currentTime > previousTime, elapsedSeconds > 0 else {
+            return 0.0
         }
 
-        // First sample - store for next calculation
-        previousProcessCPUTimes[pid] = currentTime
-        return 0.0
+        let cpuSeconds = Double(currentTime - previousTime) / 1_000_000_000.0
+        let cpuPercent = (cpuSeconds / elapsedSeconds) * 100.0
+
+        // Cap at total available CPU (can exceed 100% on multi-core systems).
+        return min(cpuPercent, coreCount * 100.0)
     }
 
     // MARK: - Private CPU Methods
