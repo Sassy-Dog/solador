@@ -244,7 +244,7 @@ pub fn spawn_sampler() -> MetricsState {
             networks.refresh(true);
             disks.refresh(true);
 
-            if tick % PROCESS_SAMPLE_TICKS == 0 {
+            if tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
                 sys.refresh_processes(ProcessesToUpdate::All, true);
                 cached_processes = top_processes(&sys, PROCESS_TOP_LIMIT);
             }
