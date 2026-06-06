@@ -226,25 +226,35 @@ struct HostLupitaView: View {
 
     // MARK: Volumes
 
-    /// Renders volumes in `columns` columns, padding to `slots` (the row's max
-    /// volume count) so every card reserves the same Volumes height and the
-    /// sections below align. Two columns when the card is wide enough.
+    /// Renders volumes, reserving `slots` (the row's max volume count) worth of
+    /// rows so every card reserves the same Volumes height and the sections below
+    /// align. Most-important (fullest) volumes lead; layout in `VolumeGridLayout`.
     @ViewBuilder
     private func volumesSection(_ volumes: [VolumeUsage], slots: Int, columns: Int) -> some View {
-        let rows = max(1, Int((Double(slots) / Double(columns)).rounded(.up)))
-        let pad = max(0, rows * columns - volumes.count)
-        let grid = Array(repeating: GridItem(.flexible(), spacing: 16), count: columns)
+        let sorted = volumes.sorted { $0.percentUsed > $1.percentUsed }
+        let reservedRows = VolumeGridLayout.rowCount(slots, columns: columns)
+        let rows = VolumeGridLayout.rows(sorted, columns: columns)
+        let pad = max(0, reservedRows - rows.count)
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(icon: "externaldrive", title: "Volumes", badge: nil,
                           value: "\(volumes.count)", valueColor: CockpitTheme.muted)
-            LazyVGrid(columns: grid, alignment: .leading, spacing: 6) {
-                ForEach(volumes) { volumeRow($0).frame(height: Self.volumeCellHeight, alignment: .top) }
-                ForEach(Array(0..<pad), id: \.self) { _ in
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 16) {
+                        ForEach(row) { volumeCell($0) }
+                    }
+                }
+                ForEach(Array(0 ..< pad), id: \.self) { _ in
                     Color.clear.frame(height: Self.volumeCellHeight)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func volumeCell(_ v: VolumeUsage) -> some View {
+        volumeRow(v).frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: Self.volumeCellHeight, alignment: .top)
     }
 
     private func volumeRow(_ v: VolumeUsage) -> some View {
