@@ -204,8 +204,8 @@ struct HostLupitaView: View {
     private func diskSection(_ snap: HostSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ioHeader(icon: "internaldrive", title: "Disk I/O",
-                     left: ("Read", "\(fmt(snap.disk.readMBps)) MB/s", readColor),
-                     right: ("Write", "\(fmt(snap.disk.writeMBps)) MB/s", writeColor))
+                     left: ("Read", fmtRate(snap.disk.readMBps), readColor),
+                     right: ("Write", fmtRate(snap.disk.writeMBps), writeColor))
             ioChart(seriesA: service.diskReadHistory, colorA: readColor,
                     seriesB: service.diskWriteHistory, colorB: writeColor)
         }
@@ -216,8 +216,8 @@ struct HostLupitaView: View {
     private func networkSection(_ snap: HostSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ioHeader(icon: "network", title: "Network I/O",
-                     left: ("Down", "\(fmt(snap.network.downloadMBps)) MB/s", netColor),
-                     right: ("Up", "\(fmt(snap.network.uploadMBps)) MB/s", netUpColor))
+                     left: ("Down", fmtRate(snap.network.downloadMBps), netColor),
+                     right: ("Up", fmtRate(snap.network.uploadMBps), netUpColor))
             ioChart(seriesA: service.netDownHistory, colorA: netColor,
                     seriesB: service.netUpHistory, colorB: netUpColor)
         }
@@ -340,10 +340,15 @@ struct HostLupitaView: View {
     private func ioChart(seriesA: [Double], colorA: Color, seriesB: [Double], colorB: Color) -> some View {
         let maxV = max(seriesA.max() ?? 0, seriesB.max() ?? 0, 0.1)
         return HStack(alignment: .top, spacing: 6) {
-            VStack {
-                Text("\(fmt(maxV))"); Spacer(); Text("0")
+            // Reserve the axis width to the widest label so the plot stays
+            // anchored when the auto-scaled max changes its digit-count.
+            VStack(alignment: .trailing) {
+                anchored(fmtAxis(maxV), reserve: "9999", size: 8,
+                         color: CockpitTheme.muted, alignment: .trailing)
+                Spacer()
+                anchored("0", reserve: "9999", size: 8,
+                         color: CockpitTheme.muted, alignment: .trailing)
             }
-            .font(CockpitTheme.mono(8)).foregroundStyle(CockpitTheme.muted)
             .frame(height: 90)
             ZStack {
                 Sparkline(values: seriesA, capacity: Self.cap, color: colorA, range: 0...maxV)
@@ -385,9 +390,31 @@ struct HostLupitaView: View {
     private func legend(_ label: String, _ value: String, _ color: Color) -> some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text("\(label):").font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted)
-            Text(value).font(CockpitTheme.mono(9, weight: .bold)).foregroundStyle(CockpitTheme.ink)
+            // Anchor both columns so the dot and label stay put as the value's
+            // digit-count changes — otherwise the live numbers jitter the labels.
+            anchored("\(label):", reserve: "Write:", size: 9,
+                     color: CockpitTheme.muted, alignment: .leading)
+            anchored(value, reserve: "9999 MB/s", size: 9, weight: .bold,
+                     color: CockpitTheme.ink, alignment: .trailing)
         }
+    }
+
+    /// Renders `text` inside a footprint reserved for `placeholder`, aligned as
+    /// requested. Because the cockpit font is monospaced, sizing to a worst-case
+    /// placeholder keeps value labels (and their neighbors) from reflowing as the
+    /// underlying number's width changes — anchoring them to kill the distraction.
+    private func anchored(_ text: String, reserve placeholder: String, size: CGFloat,
+                          weight: Font.Weight = .regular, color: Color,
+                          alignment: Alignment) -> some View {
+        Text(placeholder)
+            .font(CockpitTheme.mono(size, weight: weight))
+            .hidden()
+            .overlay(alignment: alignment) {
+                Text(text)
+                    .font(CockpitTheme.mono(size, weight: weight))
+                    .monospacedDigit()
+                    .foregroundStyle(color)
+            }
     }
 
     private func thermalBadge(_ state: ThermalState) -> AnyView {
@@ -417,5 +444,19 @@ struct HostLupitaView: View {
     }
     private func fmt(_ v: Double) -> String {
         v >= 100 ? String(Int(v)) : String(format: "%.1f", v)
+    }
+
+    /// A throughput rate with bounded width and unit: stays in MB/s up to
+    /// 1000, then switches to GB/s. Caps the label so bursts (e.g. 17 GB/s
+    /// disk reads) don't blow out the anchored legend column.
+    private func fmtRate(_ mbps: Double) -> String {
+        mbps >= 1000 ? String(format: "%.1f GB/s", mbps / 1024) : "\(fmt(mbps)) MB/s"
+    }
+
+    /// A unitless axis tick with bounded width: collapses thousands to a `k`
+    /// suffix ("17151" → "17k") so the chart's auto-scaled max never widens
+    /// the y-axis column and shifts the plot.
+    private func fmtAxis(_ v: Double) -> String {
+        v >= 1000 ? String(format: "%.0fk", v / 1000) : fmt(v)
     }
 }
