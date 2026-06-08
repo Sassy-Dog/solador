@@ -62,12 +62,17 @@ class HostMetricsService: ObservableObject {
 
     // MARK: App-lifecycle pause
 
-    /// Pauses collection while the app is inactive/asleep and resumes (fresh) when
-    /// it returns. This is what stops a backlog of samples from replaying as a
-    /// burst on return, and avoids collecting when nobody's looking. Call once
+    /// Pauses collection across system sleep and resumes (fresh) on wake. Call once
     /// from a subclass `init`.
+    ///
+    /// We deliberately do NOT pause on app focus changes (`resignActive`/`becomeActive`):
+    /// the cockpit is built to be a glanceable, persistent display on a second monitor,
+    /// so it must keep updating while it's visible but not the frontmost app (e.g. in
+    /// fullscreen while you work elsewhere). The "fast replay burst" that a paused-then-
+    /// resumed collector used to cause is already prevented at the source by the
+    /// collector's `.bufferingNewest(1)` policy (a lagging consumer only ever sees the
+    /// newest sample), so a focus-based pause buys nothing and only freezes the dashboard.
     func installLifecyclePause() {
-        let nc = NotificationCenter.default
         let ws = NSWorkspace.shared.notificationCenter
         func observe(_ name: Notification.Name, on center: NotificationCenter, _ handler: @escaping () -> Void) {
             let token = center.addObserver(forName: name, object: nil, queue: .main) { _ in
@@ -75,8 +80,6 @@ class HostMetricsService: ObservableObject {
             }
             lifecycleObservers.append((center, token))
         }
-        observe(NSApplication.didResignActiveNotification, on: nc) { [weak self] in self?.pauseForLifecycle() }
-        observe(NSApplication.didBecomeActiveNotification, on: nc) { [weak self] in self?.resumeForLifecycle() }
         observe(NSWorkspace.willSleepNotification, on: ws) { [weak self] in self?.pauseForLifecycle() }
         observe(NSWorkspace.didWakeNotification, on: ws) { [weak self] in self?.resumeForLifecycle() }
     }
