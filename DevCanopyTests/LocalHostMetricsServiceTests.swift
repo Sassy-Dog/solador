@@ -82,7 +82,7 @@ final class LocalHostMetricsServiceTests: XCTestCase {
     }
 
     func testResumeWithoutPriorPauseIsNoOp() {
-        // didBecomeActive at launch must not start collection before the app asks.
+        // A wake (didWake) before the app has ever started collection must not start it.
         let s = FakeHostMetricsService()
         s.resumeForLifecycle()
         XCTAssertFalse(s.isCollecting, "resume only restarts if we previously paused a running collector")
