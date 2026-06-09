@@ -47,8 +47,6 @@ targets:
     platform: macOS
     sources:
       - path: DevCanopy
-        excludes:
-          - "**/*.xcassets"
       - path: DevCanopy/Resources
         type: folder
     settings:
