@@ -144,9 +144,31 @@ pub const SKIP_FSTYPES_ENV: &str = "DEVCANOPY_AGENT_SKIP_FSTYPES";
 /// (autofs/NFS automounts) or aren't host storage. Filtering them at the source
 /// keeps the dashboard's volume list stable.
 const DEFAULT_SKIP_FSTYPES: &[&str] = &[
-    "autofs", "nfs", "nfs4", "cifs", "smb", "smb2", "smb3", "smbfs", "9p", "afs", "afpfs", "ceph",
-    "glusterfs", "lustre", "davfs", "davfs2", "sshfs", "curlftpfs", "tmpfs", "devtmpfs", "ramfs",
-    "squashfs", "overlay", "overlayfs", "iso9660",
+    "autofs",
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb",
+    "smb2",
+    "smb3",
+    "smbfs",
+    "9p",
+    "afs",
+    "afpfs",
+    "ceph",
+    "glusterfs",
+    "lustre",
+    "davfs",
+    "davfs2",
+    "sshfs",
+    "curlftpfs",
+    "tmpfs",
+    "devtmpfs",
+    "ramfs",
+    "squashfs",
+    "overlay",
+    "overlayfs",
+    "iso9660",
 ];
 
 /// Resolve the fstype skip set from the env value (`None` = unset → defaults).
@@ -189,10 +211,7 @@ struct DiskEntry {
 /// a bind mount reads statvfs at a different instant than its source, so on a
 /// busy host the sizes momentarily disagree and a size-based key flaps. Size is
 /// only the fallback when the device name is empty.
-fn build_volumes(
-    entries: Vec<DiskEntry>,
-    skip: &std::collections::HashSet<String>,
-) -> Vec<Volume> {
+fn build_volumes(entries: Vec<DiskEntry>, skip: &std::collections::HashSet<String>) -> Vec<Volume> {
     let mut by_fs: std::collections::HashMap<String, Volume> = std::collections::HashMap::new();
     for entry in entries {
         if entry.total == 0 || should_skip_fstype(&entry.fstype, skip) {
@@ -701,7 +720,7 @@ mod tests {
                 entry("/data", 101 * GIB, 90 * GIB, "xfs"),
                 entry("/pool", 102 * GIB, 90 * GIB, "btrfs"),
                 entry("/tank", 103 * GIB, 90 * GIB, "zfs"),
-                entry("/boot/efi", 1 * GIB, 0, "vfat"),
+                entry("/boot/efi", GIB, 0, "vfat"),
                 // NTFS via FUSE is a real local disk — the `fuse.` prefix rule
                 // must not catch it.
                 entry("/mnt/ntfs", 104 * GIB, 90 * GIB, "fuseblk"),
@@ -746,7 +765,13 @@ mod tests {
         let vols = build_volumes(
             vec![
                 entry_dev("/", dev, 436 * GIB, 283 * GIB, "ext4"),
-                entry_dev("/home/chris/.openclaw/workspace/shared", dev, 436 * GIB, 283 * GIB + 12345, "ext4"),
+                entry_dev(
+                    "/home/chris/.openclaw/workspace/shared",
+                    dev,
+                    436 * GIB,
+                    283 * GIB + 12345,
+                    "ext4",
+                ),
             ],
             &skip,
         );
