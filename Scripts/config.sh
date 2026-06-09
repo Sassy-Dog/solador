@@ -3,7 +3,7 @@
 # DevCanopy Configuration
 export APP_NAME="DevCanopy"
 export BUNDLE_IDENTIFIER="com.sassydog.devcanopy"
-export VERSION="0.1.0"
+export VERSION="0.1.1"
 export MINIMUM_MACOS_VERSION="14.0"
 
 # Build configurations
