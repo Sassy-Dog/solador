@@ -31,8 +31,44 @@ class HostMetricsService: ObservableObject {
     @Published private(set) var netUpHistory: [Double] = []
     @Published private(set) var connectionState: HostConnectionState
 
+    /// Debounced volume list — see `VolumeStabilizer`. Transient mounts that flap
+    /// between samples never land here, so the Volumes section can't shift.
+    @Published private(set) var stableVolumes: [VolumeUsage] = []
+
+    /// Mount paths the user chose to hide on this host. Mutate via
+    /// `hideVolume`/`unhideVolume` so the change is persisted.
+    @Published private(set) var hiddenMounts: Set<String> = []
+
+    /// Writes the hide list to this host's backing store (SwiftData for remote
+    /// hosts, UserDefaults for the local one). Set by whoever builds the service.
+    var persistHiddenMounts: ((Set<String>) -> Void)?
+
     /// Display name of this host (e.g. "mac-w26h", "ubu-3xdv").
     let hostName: String
+
+    private var volumeStabilizer = VolumeStabilizer()
+
+    /// The volumes the cockpit renders: debounced and minus the hide list.
+    /// `HostsPanel.volumeSlots` and `HostLupitaView` must BOTH read this so slot
+    /// reservation and rendering can never disagree.
+    var visibleVolumes: [VolumeUsage] {
+        stableVolumes.filter { !hiddenMounts.contains($0.mount) }
+    }
+
+    func hideVolume(_ mount: String) {
+        hiddenMounts.insert(mount)
+        persistHiddenMounts?(hiddenMounts)
+    }
+
+    func unhideVolume(_ mount: String) {
+        hiddenMounts.remove(mount)
+        persistHiddenMounts?(hiddenMounts)
+    }
+
+    /// Replaces the hide list without persisting — for loading the stored value.
+    func setHiddenMounts(_ mounts: Set<String>) {
+        hiddenMounts = mounts
+    }
 
     /// Streaming task, managed by subclasses.
     var task: Task<Void, Never>?
@@ -104,6 +140,7 @@ class HostMetricsService: ObservableObject {
     /// Internal so tests and subclasses can drive it.
     func ingest(_ snap: HostSnapshot) {
         snapshot = snap
+        stableVolumes = volumeStabilizer.observe(snap.volumes)
         append(&cpuHistory, snap.cpu.totalUsage)
         append(&memoryHistory, snap.memory.usagePercentage)
         append(&gpuHistory, snap.gpu.usage)

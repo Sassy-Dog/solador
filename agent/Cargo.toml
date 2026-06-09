@@ -1,6 +1,6 @@
 [package]
 name = "devcanopy-agent"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Per-host metrics agent polled by DevCanopy over Tailscale"
 license = "MIT"

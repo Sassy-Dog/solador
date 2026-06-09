@@ -6,6 +6,7 @@ import SwiftData
 struct HostsSettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var coordinator: RemoteHostsCoordinator
+    @EnvironmentObject private var local: LocalHostMetricsService
     @Query(sort: \MonitoredHost.name) private var hosts: [MonitoredHost]
 
     @State private var newName = ""
@@ -26,6 +27,16 @@ struct HostsSettingsView: View {
                 }
             } header: {
                 Text("Remote Hosts").font(.headline)
+            }
+
+            if !local.hiddenMounts.isEmpty {
+                Section {
+                    ForEach(local.hiddenMounts.sorted(), id: \.self) { mount in
+                        hiddenVolumeRow(mount) { local.unhideVolume(mount) }
+                    }
+                } header: {
+                    Text("Hidden Volumes — \(local.hostName) (this Mac)").font(.headline)
+                }
             }
 
             Section {
@@ -52,23 +63,48 @@ struct HostsSettingsView: View {
     }
 
     private func hostRow(_ host: MonitoredHost) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(host.name).bold()
-                Text("\(host.address):\(host.port)")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let result = testResults[host.id] {
-                    Text(result).font(.caption2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(host.name).bold()
+                    Text("\(host.address):\(host.port)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let result = testResults[host.id] {
+                        Text(result).font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
+                Spacer()
+                Button("Test") { test(host) }
+                Toggle("", isOn: enabledBinding(host)).labelsHidden()
+                Button(role: .destructive) { remove(host) } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
             }
-            Spacer()
-            Button("Test") { test(host) }
-            Toggle("", isOn: enabledBinding(host)).labelsHidden()
-            Button(role: .destructive) { remove(host) } label: {
-                Image(systemName: "trash")
+            if !host.hiddenVolumeMounts.isEmpty {
+                ForEach(host.hiddenVolumeMounts, id: \.self) { mount in
+                    hiddenVolumeRow(mount) { unhide(mount, on: host) }
+                }
+                .padding(.leading, 12)
             }
-            .buttonStyle(.borderless)
         }
+    }
+
+    private func hiddenVolumeRow(_ mount: String, unhide: @escaping () -> Void) -> some View {
+        HStack {
+            Image(systemName: "eye.slash").font(.caption).foregroundStyle(.secondary)
+            Text(mount).font(.caption.monospaced())
+            Spacer()
+            Button("Unhide", action: unhide).buttonStyle(.borderless).font(.caption)
+        }
+    }
+
+    private func unhide(_ mount: String, on host: MonitoredHost) {
+        host.hiddenVolumeMounts.removeAll { $0 == mount }
+        try? modelContext.save()
+        // Push into the live service without reload() — a reload would reset the
+        // host card's sparkline history and volume debounce.
+        coordinator.applyHiddenMounts()
     }
 
     private func enabledBinding(_ host: MonitoredHost) -> Binding<Bool> {

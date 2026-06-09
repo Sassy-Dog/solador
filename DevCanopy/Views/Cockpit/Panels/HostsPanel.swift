@@ -53,8 +53,10 @@ struct HostsPanel: CockpitPanelView {
 
     /// Most volumes any visible host reports — all cards reserve this many so the
     /// Volumes section (and the Top CPU/RAM below it) line up across cards.
+    /// Reads `visibleVolumes` (debounced + hide-list-filtered), so a transient
+    /// mount on one host can't reflow every card.
     private var volumeSlots: Int {
-        hosts.map { $0.snapshot?.volumes.count ?? 0 }.max() ?? 0
+        hosts.map { $0.visibleVolumes.count }.max() ?? 0
     }
 
     /// Two volume columns once each card is wide enough; one otherwise.

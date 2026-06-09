@@ -94,19 +94,22 @@ public enum ProcessRanking {
 }
 
 /// Usage of one mounted volume. `percentUsed` is computed client-side (never on
-/// the wire) — the agent emits only `mount`, `usedGB`, `totalGB`.
+/// the wire) — the agent emits `mount`, `usedGB`, `totalGB`, and (since agent
+/// 0.2.0) `fstype`, which is nil from older agents and the local collector.
 public struct VolumeUsage: Sendable, Codable, Equatable, Identifiable {
     public let mount: String
     public let usedGB: Double
     public let totalGB: Double
+    public let fstype: String?
 
     public var id: String { mount }
     public var percentUsed: Double { totalGB > 0 ? usedGB / totalGB * 100 : 0 }
 
-    public init(mount: String, usedGB: Double, totalGB: Double) {
+    public init(mount: String, usedGB: Double, totalGB: Double, fstype: String? = nil) {
         self.mount = mount
         self.usedGB = usedGB
         self.totalGB = totalGB
+        self.fstype = fstype
     }
 }
 

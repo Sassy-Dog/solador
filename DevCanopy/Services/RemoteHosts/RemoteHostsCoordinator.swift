@@ -53,10 +53,33 @@ final class RemoteHostsCoordinator: ObservableObject {
             let service = RemoteHostMetricsService(
                 hostName: host.name, address: host.address, port: host.port, token: token
             )
+            service.setHiddenMounts(Set(host.hiddenVolumeMounts))
+            let hostID = host.id
+            service.persistHiddenMounts = { [weak self] mounts in
+                self?.saveHiddenMounts(mounts, hostID: hostID)
+            }
             service.start()
             startContainerPolling(hostID: host.id, hostName: host.name, service: service)
             return service
         }
+    }
+
+    /// Pushes the persisted hide lists into the live services. Used after Settings
+    /// edits `MonitoredHost.hiddenVolumeMounts` directly — unlike `reload()`, this
+    /// keeps the services (and their sparkline history + volume debounce) intact.
+    func applyHiddenMounts() {
+        let monitored = (try? modelContext.fetch(FetchDescriptor<MonitoredHost>())) ?? []
+        for host in monitored {
+            hosts.first { $0.hostName == host.name }?
+                .setHiddenMounts(Set(host.hiddenVolumeMounts))
+        }
+    }
+
+    private func saveHiddenMounts(_ mounts: Set<String>, hostID: UUID) {
+        let descriptor = FetchDescriptor<MonitoredHost>(predicate: #Predicate { $0.id == hostID })
+        guard let host = ((try? modelContext.fetch(descriptor)) ?? []).first else { return }
+        host.hiddenVolumeMounts = mounts.sorted()
+        try? modelContext.save()
     }
 
     private func startContainerPolling(hostID: UUID, hostName: String, service: RemoteHostMetricsService) {

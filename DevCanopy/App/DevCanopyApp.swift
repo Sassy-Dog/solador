@@ -116,6 +116,7 @@ struct DevCanopyApp: App {
             SettingsView()
                 .environmentObject(gitMonitorService)
                 .environmentObject(remoteHosts)
+                .environmentObject(localHostMetrics)
         }
         .modelContainer(modelContainer)
     }

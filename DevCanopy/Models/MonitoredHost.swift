@@ -12,6 +12,8 @@ final class MonitoredHost {
     var enabled: Bool = true
     var createdAt: Date = Date()
     var lastSeen: Date?
+    /// Mount paths the user hid from this host's Volumes section in the cockpit.
+    var hiddenVolumeMounts: [String] = []
 
     init(name: String, address: String, port: Int = 7878, enabled: Bool = true) {
         self.id = UUID()

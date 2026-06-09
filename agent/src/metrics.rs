@@ -114,6 +114,10 @@ pub struct Volume {
     pub used_gb: f64,
     #[serde(rename = "totalGB")]
     pub total_gb: f64,
+    /// Filesystem type, lowercased (e.g. "ext4"). Absent from the wire when
+    /// unknown — the Swift decoder treats the key as optional.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fstype: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -125,6 +129,117 @@ pub struct Process {
     pub cpu_percent: f64,
     #[serde(rename = "memoryMB")]
     pub memory_mb: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Volume filtering.
+// ---------------------------------------------------------------------------
+
+/// Env var holding a comma-separated fstype skip list. When set it REPLACES the
+/// default list entirely (an operator who sets it owns the whole policy); an
+/// empty value disables fstype filtering.
+pub const SKIP_FSTYPES_ENV: &str = "DEVCANOPY_AGENT_SKIP_FSTYPES";
+
+/// Filesystem types that are transient, remote, or pseudo — mounts that flap
+/// (autofs/NFS automounts) or aren't host storage. Filtering them at the source
+/// keeps the dashboard's volume list stable.
+const DEFAULT_SKIP_FSTYPES: &[&str] = &[
+    "autofs",
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb",
+    "smb2",
+    "smb3",
+    "smbfs",
+    "9p",
+    "afs",
+    "afpfs",
+    "ceph",
+    "glusterfs",
+    "lustre",
+    "davfs",
+    "davfs2",
+    "sshfs",
+    "curlftpfs",
+    "tmpfs",
+    "devtmpfs",
+    "ramfs",
+    "squashfs",
+    "overlay",
+    "overlayfs",
+    "iso9660",
+];
+
+/// Resolve the fstype skip set from the env value (`None` = unset → defaults).
+fn skip_fstypes(env_val: Option<&str>) -> std::collections::HashSet<String> {
+    match env_val {
+        None => DEFAULT_SKIP_FSTYPES.iter().map(|s| s.to_string()).collect(),
+        Some(raw) => raw
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    }
+}
+
+/// Whether a (lowercased) fstype should be skipped. With the default policy
+/// (any non-empty skip set containing "autofs"), `fuse.*` subtypes are also
+/// skipped — they're FUSE network/userspace mounts (sshfs, rclone, gvfs).
+/// `fuseblk` (NTFS via FUSE, a real local disk) deliberately does not match.
+fn should_skip_fstype(fstype: &str, skip: &std::collections::HashSet<String>) -> bool {
+    skip.contains(fstype) || (!skip.is_empty() && fstype.starts_with("fuse."))
+}
+
+/// A mounted filesystem as plain data, so volume filtering is testable
+/// (sysinfo's `Disk` cannot be constructed in tests).
+struct DiskEntry {
+    mount: String,
+    /// Backing device (e.g. "/dev/mapper/vg-root"); may be empty.
+    device: String,
+    total: u64,
+    available: u64,
+    fstype: String,
+}
+
+/// Filter and reduce mounted filesystems to the reported volume list:
+/// skip zero-capacity pseudo-filesystems and skipped fstypes, collapse the same
+/// filesystem mounted in several places (bind mounts) to the shortest mount
+/// path, and sort by mount.
+///
+/// Dedupe keys on the backing device when known — NOT on (total, available):
+/// a bind mount reads statvfs at a different instant than its source, so on a
+/// busy host the sizes momentarily disagree and a size-based key flaps. Size is
+/// only the fallback when the device name is empty.
+fn build_volumes(entries: Vec<DiskEntry>, skip: &std::collections::HashSet<String>) -> Vec<Volume> {
+    let mut by_fs: std::collections::HashMap<String, Volume> = std::collections::HashMap::new();
+    for entry in entries {
+        if entry.total == 0 || should_skip_fstype(&entry.fstype, skip) {
+            continue;
+        }
+        let key = if entry.device.is_empty() {
+            format!("size:{}:{}", entry.total, entry.available)
+        } else {
+            format!("dev:{}", entry.device)
+        };
+        let vol = Volume {
+            mount: entry.mount.clone(),
+            used_gb: entry.total.saturating_sub(entry.available) as f64 / BYTES_PER_GIB,
+            total_gb: entry.total as f64 / BYTES_PER_GIB,
+            fstype: Some(entry.fstype),
+        };
+        by_fs
+            .entry(key)
+            .and_modify(|existing| {
+                if entry.mount.len() < existing.mount.len() {
+                    *existing = vol.clone();
+                }
+            })
+            .or_insert(vol);
+    }
+    let mut volumes: Vec<Volume> = by_fs.into_values().collect();
+    volumes.sort_by(|a, b| a.mount.cmp(&b.mount));
+    volumes
 }
 
 /// Reduce all processes to the union of the top-`limit` by CPU and by memory
@@ -234,6 +349,10 @@ pub fn spawn_sampler() -> MetricsState {
         let mut networks = Networks::new_with_refreshed_list();
         let mut disks = Disks::new_with_refreshed_list();
 
+        // Read once at startup; the skip policy doesn't change while running.
+        let skip_env = std::env::var(SKIP_FSTYPES_ENV).ok();
+        let skip = skip_fstypes(skip_env.as_deref());
+
         // Prime CPU usage (the first reading is meaningless).
         sys.refresh_cpu_all();
         tokio::time::sleep(SAMPLE_INTERVAL).await;
@@ -261,6 +380,7 @@ pub fn spawn_sampler() -> MetricsState {
                 &disks,
                 SAMPLE_INTERVAL.as_secs_f64(),
                 cached_processes.clone(),
+                &skip,
             );
             *handle.inner.write().await = snap;
 
@@ -313,6 +433,7 @@ fn compute_snapshot(
     disks: &Disks,
     interval_secs: f64,
     processes: Vec<Process>,
+    skip_fstypes: &std::collections::HashSet<String>,
 ) -> Snapshot {
     let interval = if interval_secs > 0.0 {
         interval_secs
@@ -345,33 +466,19 @@ fn compute_snapshot(
     let read_mbps = (read_bytes as f64 / interval) / BYTES_PER_MIB;
     let write_mbps = (written_bytes as f64 / interval) / BYTES_PER_MIB;
 
-    // Per-volume usage. Skip zero-capacity pseudo-filesystems, and collapse the
-    // same filesystem mounted in several places (bind mounts report byte-identical
-    // total/available) to the shortest mount path so the list isn't full of dupes.
-    let mut by_fs: std::collections::HashMap<(u64, u64), Volume> = std::collections::HashMap::new();
-    for disk in disks.list() {
-        let total = disk.total_space();
-        if total == 0 {
-            continue;
-        }
-        let available = disk.available_space();
-        let mount = disk.mount_point().to_string_lossy().to_string();
-        let vol = Volume {
-            mount: mount.clone(),
-            used_gb: total.saturating_sub(available) as f64 / BYTES_PER_GIB,
-            total_gb: total as f64 / BYTES_PER_GIB,
-        };
-        by_fs
-            .entry((total, available))
-            .and_modify(|existing| {
-                if mount.len() < existing.mount.len() {
-                    *existing = vol.clone();
-                }
-            })
-            .or_insert(vol);
-    }
-    let mut volumes: Vec<Volume> = by_fs.into_values().collect();
-    volumes.sort_by(|a, b| a.mount.cmp(&b.mount));
+    // Per-volume usage; see `build_volumes` for the filtering policy.
+    let entries: Vec<DiskEntry> = disks
+        .list()
+        .iter()
+        .map(|disk| DiskEntry {
+            mount: disk.mount_point().to_string_lossy().to_string(),
+            device: disk.name().to_string_lossy().to_string(),
+            total: disk.total_space(),
+            available: disk.available_space(),
+            fstype: disk.file_system().to_string_lossy().to_lowercase(),
+        })
+        .collect();
+    let volumes = build_volumes(entries, skip_fstypes);
 
     // Network: sum received/transmitted byte deltas over the interval -> MiB/s.
     let (mut rx, mut tx) = (0u64, 0u64);
@@ -427,7 +534,7 @@ mod tests {
             "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
             "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
             "battery": null,
-            "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }],
+            "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0, "fstype": "ext4" }],
             "processes": [{ "pid": 123, "name": "node", "cpuPercent": 12.5, "memoryMB": 256.0 }]
         })
     }
@@ -462,6 +569,7 @@ mod tests {
                 mount: "/".to_string(),
                 used_gb: 10.0,
                 total_gb: 100.0,
+                fstype: Some("ext4".to_string()),
             }],
             processes: vec![Process {
                 pid: 123,
@@ -543,12 +651,191 @@ mod tests {
         assert!(vols[0]["mount"].is_string());
         assert!(vols[0]["usedGB"].is_number());
         assert!(vols[0]["totalGB"].is_number());
+        assert!(vols[0]["fstype"].is_string());
 
         let procs = v["processes"].as_array().unwrap();
         assert!(procs[0]["pid"].is_i64());
         assert!(procs[0]["name"].is_string());
         assert!(procs[0]["cpuPercent"].is_number());
         assert!(procs[0]["memoryMB"].is_number());
+    }
+
+    /// `fstype` is optional on the wire: absent (not null) when unknown, so old
+    /// consumers and the canonical contract stay byte-compatible.
+    #[test]
+    fn volume_without_fstype_omits_the_key() {
+        let v = serde_json::to_value(Volume {
+            mount: "/".to_string(),
+            used_gb: 1.0,
+            total_gb: 2.0,
+            fstype: None,
+        })
+        .unwrap();
+        assert!(!v.as_object().unwrap().contains_key("fstype"));
+    }
+
+    fn entry(mount: &str, total: u64, available: u64, fstype: &str) -> DiskEntry {
+        entry_dev(mount, "", total, available, fstype)
+    }
+
+    fn entry_dev(mount: &str, device: &str, total: u64, available: u64, fstype: &str) -> DiskEntry {
+        DiskEntry {
+            mount: mount.to_string(),
+            device: device.to_string(),
+            total,
+            available,
+            fstype: fstype.to_string(),
+        }
+    }
+
+    fn mounts(volumes: &[Volume]) -> Vec<&str> {
+        volumes.iter().map(|v| v.mount.as_str()).collect()
+    }
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn build_volumes_skips_transient_and_pseudo_fstypes() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(
+            vec![
+                entry("/", 100 * GIB, 90 * GIB, "ext4"),
+                entry("/shared", 50 * GIB, 40 * GIB, "autofs"),
+                entry("/mnt/nas", 50 * GIB, 30 * GIB, "nfs4"),
+                entry("/mnt/win", 50 * GIB, 20 * GIB, "cifs"),
+                entry("/mnt/ssh", 50 * GIB, 10 * GIB, "fuse.sshfs"),
+                entry("/run", 8 * GIB, 7 * GIB, "tmpfs"),
+            ],
+            &skip,
+        );
+        assert_eq!(mounts(&vols), vec!["/"]);
+    }
+
+    #[test]
+    fn build_volumes_keeps_local_filesystems() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(
+            vec![
+                entry("/", 100 * GIB, 90 * GIB, "ext4"),
+                entry("/data", 101 * GIB, 90 * GIB, "xfs"),
+                entry("/pool", 102 * GIB, 90 * GIB, "btrfs"),
+                entry("/tank", 103 * GIB, 90 * GIB, "zfs"),
+                entry("/boot/efi", GIB, 0, "vfat"),
+                // NTFS via FUSE is a real local disk — the `fuse.` prefix rule
+                // must not catch it.
+                entry("/mnt/ntfs", 104 * GIB, 90 * GIB, "fuseblk"),
+            ],
+            &skip,
+        );
+        assert_eq!(
+            mounts(&vols),
+            vec!["/", "/boot/efi", "/data", "/mnt/ntfs", "/pool", "/tank"]
+        );
+    }
+
+    #[test]
+    fn build_volumes_skips_zero_capacity() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(vec![entry("/proc", 0, 0, "ext4")], &skip);
+        assert!(vols.is_empty());
+    }
+
+    #[test]
+    fn build_volumes_dedupes_bind_mounts_to_shortest_path() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(
+            vec![
+                entry("/var/lib/docker/btrfs", 100 * GIB, 60 * GIB, "btrfs"),
+                entry("/data", 100 * GIB, 60 * GIB, "btrfs"),
+            ],
+            &skip,
+        );
+        assert_eq!(mounts(&vols), vec!["/data"]);
+    }
+
+    /// THE ubu-3xdv `/shared` bug: a bind mount of the root filesystem reads
+    /// statvfs at a different instant than `/`, so on a busy host the available
+    /// bytes differ between the two entries and size-based dedupe randomly
+    /// misses — the duplicate flaps in and out every sample. Same backing
+    /// device MUST collapse regardless of momentary size disagreement.
+    #[test]
+    fn build_volumes_dedupes_same_device_even_when_sizes_disagree() {
+        let skip = skip_fstypes(None);
+        let dev = "/dev/mapper/ubuntu--vg-ubuntu--lv";
+        let vols = build_volumes(
+            vec![
+                entry_dev("/", dev, 436 * GIB, 283 * GIB, "ext4"),
+                entry_dev(
+                    "/home/chris/.openclaw/workspace/shared",
+                    dev,
+                    436 * GIB,
+                    283 * GIB + 12345,
+                    "ext4",
+                ),
+            ],
+            &skip,
+        );
+        assert_eq!(mounts(&vols), vec!["/"]);
+    }
+
+    /// Distinct devices that happen to report identical sizes (e.g. two freshly
+    /// formatted identical disks) are different filesystems — both must show.
+    #[test]
+    fn build_volumes_keeps_distinct_devices_with_identical_sizes() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(
+            vec![
+                entry_dev("/data1", "/dev/sda1", 100 * GIB, 60 * GIB, "ext4"),
+                entry_dev("/data2", "/dev/sdb1", 100 * GIB, 60 * GIB, "ext4"),
+            ],
+            &skip,
+        );
+        assert_eq!(mounts(&vols), vec!["/data1", "/data2"]);
+    }
+
+    #[test]
+    fn build_volumes_populates_fstype_and_converts_to_gib() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(vec![entry("/", 100 * GIB, 75 * GIB, "ext4")], &skip);
+        assert_eq!(vols.len(), 1);
+        assert_eq!(vols[0].fstype.as_deref(), Some("ext4"));
+        assert!((vols[0].total_gb - 100.0).abs() < 1e-9);
+        assert!((vols[0].used_gb - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn skip_fstypes_defaults_when_env_unset() {
+        let skip = skip_fstypes(None);
+        for fs in ["autofs", "nfs", "nfs4", "cifs", "tmpfs", "overlay"] {
+            assert!(skip.contains(fs), "default skip list must contain {fs}");
+        }
+        assert!(!skip.contains("ext4"));
+    }
+
+    #[test]
+    fn skip_fstypes_env_replaces_default_entirely() {
+        let skip = skip_fstypes(Some(" NFS , ext4 "));
+        let mut got: Vec<&str> = skip.iter().map(String::as_str).collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["ext4", "nfs"]);
+    }
+
+    #[test]
+    fn skip_fstypes_empty_env_disables_filtering() {
+        let skip = skip_fstypes(Some(""));
+        assert!(skip.is_empty());
+        let vols = build_volumes(vec![entry("/shared", GIB, 0, "autofs")], &skip);
+        assert_eq!(mounts(&vols), vec!["/shared"]);
+    }
+
+    #[test]
+    fn fuse_prefixed_fstypes_are_always_skipped_with_default_list() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(
+            vec![entry("/mnt/r", 10 * GIB, 5 * GIB, "fuse.rclone")],
+            &skip,
+        );
+        assert!(vols.is_empty());
     }
 
     #[test]
