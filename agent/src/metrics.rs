@@ -173,6 +173,8 @@ fn should_skip_fstype(fstype: &str, skip: &std::collections::HashSet<String>) ->
 /// (sysinfo's `Disk` cannot be constructed in tests).
 struct DiskEntry {
     mount: String,
+    /// Backing device (e.g. "/dev/mapper/vg-root"); may be empty.
+    device: String,
     total: u64,
     available: u64,
     fstype: String,
@@ -180,17 +182,27 @@ struct DiskEntry {
 
 /// Filter and reduce mounted filesystems to the reported volume list:
 /// skip zero-capacity pseudo-filesystems and skipped fstypes, collapse the same
-/// filesystem mounted in several places (bind mounts report byte-identical
-/// total/available) to the shortest mount path, and sort by mount.
+/// filesystem mounted in several places (bind mounts) to the shortest mount
+/// path, and sort by mount.
+///
+/// Dedupe keys on the backing device when known — NOT on (total, available):
+/// a bind mount reads statvfs at a different instant than its source, so on a
+/// busy host the sizes momentarily disagree and a size-based key flaps. Size is
+/// only the fallback when the device name is empty.
 fn build_volumes(
     entries: Vec<DiskEntry>,
     skip: &std::collections::HashSet<String>,
 ) -> Vec<Volume> {
-    let mut by_fs: std::collections::HashMap<(u64, u64), Volume> = std::collections::HashMap::new();
+    let mut by_fs: std::collections::HashMap<String, Volume> = std::collections::HashMap::new();
     for entry in entries {
         if entry.total == 0 || should_skip_fstype(&entry.fstype, skip) {
             continue;
         }
+        let key = if entry.device.is_empty() {
+            format!("size:{}:{}", entry.total, entry.available)
+        } else {
+            format!("dev:{}", entry.device)
+        };
         let vol = Volume {
             mount: entry.mount.clone(),
             used_gb: entry.total.saturating_sub(entry.available) as f64 / BYTES_PER_GIB,
@@ -198,7 +210,7 @@ fn build_volumes(
             fstype: Some(entry.fstype),
         };
         by_fs
-            .entry((entry.total, entry.available))
+            .entry(key)
             .and_modify(|existing| {
                 if entry.mount.len() < existing.mount.len() {
                     *existing = vol.clone();
@@ -441,6 +453,7 @@ fn compute_snapshot(
         .iter()
         .map(|disk| DiskEntry {
             mount: disk.mount_point().to_string_lossy().to_string(),
+            device: disk.name().to_string_lossy().to_string(),
             total: disk.total_space(),
             available: disk.available_space(),
             fstype: disk.file_system().to_string_lossy().to_lowercase(),
@@ -643,8 +656,13 @@ mod tests {
     }
 
     fn entry(mount: &str, total: u64, available: u64, fstype: &str) -> DiskEntry {
+        entry_dev(mount, "", total, available, fstype)
+    }
+
+    fn entry_dev(mount: &str, device: &str, total: u64, available: u64, fstype: &str) -> DiskEntry {
         DiskEntry {
             mount: mount.to_string(),
+            device: device.to_string(),
             total,
             available,
             fstype: fstype.to_string(),
@@ -714,6 +732,40 @@ mod tests {
             &skip,
         );
         assert_eq!(mounts(&vols), vec!["/data"]);
+    }
+
+    /// THE ubu-3xdv `/shared` bug: a bind mount of the root filesystem reads
+    /// statvfs at a different instant than `/`, so on a busy host the available
+    /// bytes differ between the two entries and size-based dedupe randomly
+    /// misses — the duplicate flaps in and out every sample. Same backing
+    /// device MUST collapse regardless of momentary size disagreement.
+    #[test]
+    fn build_volumes_dedupes_same_device_even_when_sizes_disagree() {
+        let skip = skip_fstypes(None);
+        let dev = "/dev/mapper/ubuntu--vg-ubuntu--lv";
+        let vols = build_volumes(
+            vec![
+                entry_dev("/", dev, 436 * GIB, 283 * GIB, "ext4"),
+                entry_dev("/home/chris/.openclaw/workspace/shared", dev, 436 * GIB, 283 * GIB + 12345, "ext4"),
+            ],
+            &skip,
+        );
+        assert_eq!(mounts(&vols), vec!["/"]);
+    }
+
+    /// Distinct devices that happen to report identical sizes (e.g. two freshly
+    /// formatted identical disks) are different filesystems — both must show.
+    #[test]
+    fn build_volumes_keeps_distinct_devices_with_identical_sizes() {
+        let skip = skip_fstypes(None);
+        let vols = build_volumes(
+            vec![
+                entry_dev("/data1", "/dev/sda1", 100 * GIB, 60 * GIB, "ext4"),
+                entry_dev("/data2", "/dev/sdb1", 100 * GIB, 60 * GIB, "ext4"),
+            ],
+            &skip,
+        );
+        assert_eq!(mounts(&vols), vec!["/data1", "/data2"]);
     }
 
     #[test]
