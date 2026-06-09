@@ -51,18 +51,17 @@ targets:
           - "**/*.xcassets"
       - path: DevCanopy/Resources
         type: folder
-    preBuildScripts:
-      - name: Update Build Number
-        script: |
-          # Update build number from git
-          BUILD_NUMBER=$(git rev-list --count HEAD 2>/dev/null || echo "1")
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
-        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sassydog.devcanopy
         PRODUCT_NAME: DevCanopy
         INFOPLIST_FILE: DevCanopy/Resources/Info.plist
+        # Build number: Info.plist reads $(CURRENT_PROJECT_VERSION); Scripts/build.sh
+        # overrides it with the git commit count. This is only the fallback for
+        # builds straight from Xcode. (A PlistBuddy preBuildScript used to stamp
+        # the built product instead — it broke clean Release builds because the
+        # processed Info.plist doesn't exist yet at preBuild time.)
+        CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         COMBINE_HIDPI_IMAGES: true
         ENABLE_APP_SANDBOX: false
