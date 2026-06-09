@@ -6,12 +6,20 @@ import HostMetricsKit
 /// buffers + `ingest` in `HostMetricsService`.
 @MainActor
 final class LocalHostMetricsService: HostMetricsService {
+    /// UserDefaults key for this Mac's hidden volume mounts. Remote hosts persist
+    /// theirs on `MonitoredHost` instead — the local host has no SwiftData row.
+    static let hiddenMountsDefaultsKey = "localHiddenVolumeMounts"
+
     private let collector = HostMetricsCollector()
 
-    init(hostName: String? = nil) {
+    init(hostName: String? = nil, defaults: UserDefaults = .standard) {
         let name = hostName
             ?? ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: "")
         super.init(hostName: name, connectionState: .local)
+        setHiddenMounts(Set(defaults.stringArray(forKey: Self.hiddenMountsDefaultsKey) ?? []))
+        persistHiddenMounts = { mounts in
+            defaults.set(mounts.sorted(), forKey: Self.hiddenMountsDefaultsKey)
+        }
         installLifecyclePause()
     }
 

@@ -42,6 +42,10 @@ Notes:
   servers. These are intentionally defaulted; the keys are never omitted (except
   `battery`, which is JSON `null`).
 - Memory has **no** `usagePercentage` key — the Swift side computes it.
+- `volumes` entries are `{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0, "fstype": "ext4" }`.
+  `fstype` is lowercased and omitted (not `null`) when unknown. Transient, remote,
+  and pseudo filesystems are filtered out at the source (see `DEVCANOPY_AGENT_SKIP_FSTYPES`),
+  and bind mounts of the same filesystem collapse to the shortest mount path.
 
 ### `/v1/containers` shape
 
@@ -59,7 +63,20 @@ rootless, so it works as a normal user.
 |--------------------------|----------|---------|----------------------------------|
 | `DEVCANOPY_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
 | `DEVCANOPY_AGENT_PORT`   | no       | `7878`  | TCP port. Binds `0.0.0.0:<port>`. |
+| `DEVCANOPY_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
 | `RUST_LOG`               | no       | `info`  | Log filter (tracing).            |
+
+Default skipped fstypes (transient/remote/pseudo filesystems, so automounts like
+an autofs `/shared` can't flap in and out of the dashboard):
+
+```
+autofs, nfs, nfs4, cifs, smb, smb2, smb3, smbfs, 9p, afs, afpfs, ceph,
+glusterfs, lustre, davfs, davfs2, sshfs, curlftpfs, tmpfs, devtmpfs, ramfs,
+squashfs, overlay, overlayfs, iso9660
+```
+
+Any `fuse.*` subtype (e.g. `fuse.sshfs`, `fuse.rclone`) is also skipped whenever
+filtering is enabled; `fuseblk` (NTFS via FUSE — a real local disk) is kept.
 
 ## Build & run (local)
 

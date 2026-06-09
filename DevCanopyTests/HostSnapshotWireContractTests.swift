@@ -17,7 +17,7 @@ final class HostSnapshotWireContractTests: XCTestCase {
       "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
       "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
       "battery": null,
-      "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }],
+      "volumes": [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0, "fstype": "ext4" }],
       "processes": [{ "pid": 123, "name": "node", "cpuPercent": 12.5, "memoryMB": 256.0 }]
     }
     """
@@ -39,6 +39,7 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertNil(snap.battery)
         XCTAssertEqual(snap.volumes.count, 1)
         XCTAssertEqual(snap.volumes.first?.mount, "/")
+        XCTAssertEqual(snap.volumes.first?.fstype, "ext4")
         XCTAssertEqual(snap.volumes.first?.percentUsed ?? 0, 10.0, accuracy: 0.001)  // 10/100, computed
         XCTAssertEqual(snap.processes.count, 1)
         XCTAssertEqual(snap.processes.first?.name, "node")
@@ -69,6 +70,17 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertEqual(snap.volumes, [], "missing volumes key decodes to empty, not a failure")
         XCTAssertEqual(snap.processes, [], "missing processes key decodes to empty too")
         XCTAssertEqual(snap.cpu.totalUsage, 1.0, accuracy: 0.001)
+    }
+
+    /// Backward compatibility: an agent that predates `fstype` emits volumes
+    /// without the key — they must decode with `fstype == nil`.
+    func testDecodesVolumeWithoutFstype() throws {
+        let json = """
+        [{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }]
+        """
+        let volumes = try RemoteHostMetricsService.snapshotDecoder.decode([VolumeUsage].self, from: Data(json.utf8))
+        XCTAssertEqual(volumes.first?.mount, "/")
+        XCTAssertNil(volumes.first?.fstype, "missing fstype key decodes to nil, not a failure")
     }
 
     func testProcessRankingUnionsTopCPUAndTopMemoryDeduped() {

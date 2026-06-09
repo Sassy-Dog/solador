@@ -55,10 +55,10 @@ struct HostLupitaView: View {
                     diskSection(snap)
                     networkSection(snap)
                 }
-                let volumeReserve = max(volumeSlots, snap.volumes.count)
+                let volumeReserve = max(volumeSlots, service.visibleVolumes.count)
                 if volumeReserve > 0 {
                     Divider().overlay(CockpitTheme.line)
-                    volumesSection(snap.volumes, slots: volumeReserve, columns: max(1, volumeColumns))
+                    volumesSection(service.visibleVolumes, slots: volumeReserve, columns: max(1, volumeColumns))
                 }
                 if !snap.processes.isEmpty {
                     Divider().overlay(CockpitTheme.line)
@@ -255,6 +255,14 @@ struct HostLupitaView: View {
     private func volumeCell(_ v: VolumeUsage) -> some View {
         volumeRow(v).frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: Self.volumeCellHeight, alignment: .top)
+            .contentShape(Rectangle())
+            .contextMenu {
+                if let fstype = v.fstype {
+                    Text("\(v.mount) — \(fstype)")
+                }
+                Button("Hide \u{201C}\(v.mount)\u{201D}") { service.hideVolume(v.mount) }
+            }
+            .help(v.fstype.map { "\(v.mount) (\($0))" } ?? v.mount)
     }
 
     private func volumeRow(_ v: VolumeUsage) -> some View {
