@@ -1,4 +1,3 @@
-<!-- generated-by: ai-agent-skills:create-dev-workflows | template: take-it | template-version: 1 -->
 ---
 name: take-it
 description: >
@@ -9,6 +8,8 @@ description: >
   "knock out #N", or any variant handing over a list of GitHub issue numbers to ship in parallel.
   DevCanopy-specific.
 ---
+
+<!-- generated-by: ai-agent-skills:create-dev-workflows | template: take-it | template-version: 1 -->
 
 # DevCanopy Take-It
 
@@ -56,7 +57,7 @@ git switch main >/dev/null 2>&1 && git pull --ff-only origin main
 > ```
 >
 > **Your job:**
-> 1. **Stay inside your assigned worktree.** cwd resets between Bash calls — prefix every call with `cd <your worktree path> && `, and verify `pwd && git rev-parse --show-toplevel && git branch --show-current` before your first edit. **Never `git stash`** (worktrees share one `.git`; a stash collides with the other parallel agents). Commit WIP to your branch or discard explicitly.
+> 1. **Stay inside your assigned worktree.** cwd resets between Bash calls — prefix every call with `cd <your worktree path> &&`, and verify `pwd && git rev-parse --show-toplevel && git branch --show-current` before your first edit. **Never `git stash`** (worktrees share one `.git`; a stash collides with the other parallel agents). Commit WIP to your branch or discard explicitly.
 > 2. Read the issue carefully. If scope is genuinely unclear after the body and linked issues/PRs, STOP and report back — do not guess.
 > 3. Implement the change following the repo's `CLAUDE.md`.
 <!-- BEGIN PROJECT-SPECIFIC: subagent-rules -->
