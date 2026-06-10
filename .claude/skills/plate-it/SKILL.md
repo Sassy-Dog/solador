@@ -1,4 +1,3 @@
-<!-- generated-by: ai-agent-skills:create-dev-workflows | template: plate-it | template-version: 1 -->
 ---
 name: plate-it
 description: >
@@ -11,6 +10,8 @@ description: >
   "what hurts customers most", or "triage". DevCanopy-specific.
   Read-only — never files issues, never mutates state.
 ---
+
+<!-- generated-by: ai-agent-skills:create-dev-workflows | template: plate-it | template-version: 1 -->
 
 # DevCanopy Plate-It
 

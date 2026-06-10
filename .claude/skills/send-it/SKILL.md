@@ -1,4 +1,3 @@
-<!-- generated-by: ai-agent-skills:create-dev-workflows | template: send-it | template-version: 1 -->
 ---
 name: send-it
 description: >
@@ -7,6 +6,8 @@ description: >
   watch CI, merge, clean up. Use when the user says "send it", "ship it", "open the PR",
   "create a PR", or asks to merge a branch. DevCanopy-specific.
 ---
+
+<!-- generated-by: ai-agent-skills:create-dev-workflows | template: send-it | template-version: 1 -->
 
 # DevCanopy Send-It
 
@@ -42,11 +43,10 @@ Mirror CI locally, scoped to changed paths — seconds locally beats a CI round-
 ./dev build && ./dev test
 ```
 
-If `.swift` files were added, removed, or renamed, run `./Scripts/generate-project.sh` first — `./dev build`/`./dev test` won't pick up new source files without regenerating the XcodeGen project.
-
 Any check fails → fix before commit. Never push and rely on CI to surface it.
 
 <!-- BEGIN PROJECT-SPECIFIC: extra-gates -->
+**XcodeGen regen gate** — if `.swift` files were added, removed, or renamed, run `./Scripts/generate-project.sh` before the pre-flight; `./dev build`/`./dev test` won't pick up new source files without regenerating the XcodeGen project.
 <!-- END PROJECT-SPECIFIC -->
 
 ## 3. Template-compliant PR body
