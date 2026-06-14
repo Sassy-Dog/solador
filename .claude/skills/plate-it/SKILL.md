@@ -2,7 +2,7 @@
 name: plate-it
 description: >
   Synthesize the full DevCanopy work surface — customer pain (GitHub bugs),
-  backlog (open GitHub issues, label-driven — no project board), tech debt (TODO/FIXME, skipped tests), dev experience
+  backlog (GitHub Project board #5, status-column driven), tech debt (TODO/FIXME, skipped tests), dev experience
   (CI duration/flake), and synthesized "next bet" candidates with no GitHub
   issue yet. Dedupes across sources, scores within each category, returns a prioritized inline
   plate. Use when the user says "what's on our plate", "what's on our plate today", "what should
@@ -34,21 +34,24 @@ Issue the independent pulls in a single message with multiple tool calls.
 ### A. Customer pain
 
 **GitHub bugs** —
+
 ```bash
 gh issue list --repo Sassy-Dog/devcanopy --state open --label bug \
   --limit 100 --json number,title,labels,createdAt,updatedAt,reactionGroups,comments,url
 ```
+
 Demand proxy = reactions + comments.
 
 ### B. Backlog
 
-DevCanopy has no project board — the backlog is the open-issue list itself, prioritized by labels (`sev:high`/`sev:medium`/`sev:low`, plus `tech-debt`, `enhancement`, `bug`).
+DevCanopy's backlog is GitHub Project board #5 (Sassy-Dog) — status columns **Backlog → Ready → In progress → In review → Done**. Priority within a column is board order; fill-it grooms Backlog → Ready, drain-it ships from Ready.
 
-Open issues + labels — `gh issue list --repo Sassy-Dog/devcanopy --state open --limit 200 --json number,title,labels,updatedAt`, plus `ai-agent-skills:github-issues` stale-issue detection (`REPO=Sassy-Dog/devcanopy`).
+Board snapshot — invoke `ai-agent-skills:github-issues` (board snapshot, `PROJECT_NUMBER=5`, `OWNER=Sassy-Dog`), plus its stale-issue detection (`REPO=Sassy-Dog/devcanopy`).
 
 ### C. Tech debt + dev experience
 
 Invoke `ai-agent-skills:repo-health`:
+
 - tech-debt scan with `SCAN_PATHS="DevCanopy DevCanopyTests Packages agent/src Scripts"`, `EXCLUDE_PATHSPECS=":!agent/target :!*.xcodeproj"`
 - CI health with `WORKFLOW=ci.yml`
 
@@ -66,7 +69,7 @@ Cluster feedback/error items that lack a GitHub issue into candidate "next bets"
 
 ## 3. Dedupe across sources
 
-Correlation keys: auto-file marker ↔ GH body (`<source>-source: <ID>`); TODO containing `#NNN` ↔ that issue; merged items retain ALL source links — cross-source overlap boosts score (§4).
+Correlation keys: auto-file marker ↔ GH body (`<source>-source: <ID>`); bug-labeled issue ↔ board item ("also on board"); TODO containing `#NNN` ↔ that issue; merged items retain ALL source links — cross-source overlap boosts score (§4).
 
 ## 4. Score within each category
 
@@ -120,4 +123,5 @@ _To ship: `take #<N> #<M>`_
 This skill NEVER files GitHub issues, changes Sentry status, or mutates anything. If an unfiled signal deserves an issue, the plate says so and the human files it (or runs the filing flow explicitly).
 
 <!-- BEGIN PROJECT-SPECIFIC: extra-guardrails -->
+**Shipping paths from the plate:** `take #N #M` ships specific issues ad-hoc; for the board flow, `fill it` grooms Backlog → Ready, then `drain it` (or `/loop 5m /drain-it`) ships from Ready until empty.
 <!-- END PROJECT-SPECIFIC -->

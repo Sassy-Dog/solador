@@ -22,6 +22,18 @@ DevCanopy is a native macOS dashboard application that monitors development infr
 - `./dev publish --bump patch` - Publish new version
 - `./prd` - Production build (alias for `./dev build --release`)
 
+### Backlog & workflow skills
+The backlog is **GitHub Project board #5** (`Sassy-Dog`), status-column driven:
+**Backlog → Ready → In progress → In review → Done**. It is the source of truth for
+backlog state (not labels). Five generated `.claude/skills/` automate the loop:
+- **plate-it** (`plate it`) — synthesize a prioritized plate from the board + CI + tech debt.
+- **fill-it** (`fill it`) — groom Backlog issues until dispatchable, promote to **Ready**.
+- **take-it** (`take #N`) — ship specific issues in parallel worktrees.
+- **drain-it** (`drain it` / `/loop 5m /drain-it`) — loop dispatcher; ships from **Ready** until empty.
+- **send-it** (`send it`) — single-PR end-to-end flow (worktree audit → gates → PR → merge).
+
+The contract: **Ready means dispatchable** — fill-it produces it, drain-it consumes it.
+
 ### Project Structure
 ```
 DevCanopy/
