@@ -6,7 +6,7 @@ description: >
   with Closes #N, and a coordinator loop polls to auto-merge greens and surface failures. Use when
   the user says "take #341, #432", "take #N", "take it #N", "go take #N and #M", "pick up #N",
   "knock out #N", or any variant handing over a list of GitHub issue numbers to ship in parallel.
-  DevCanopy-specific.
+  DevCanopy-specific
 ---
 
 <!-- generated-by: ai-agent-skills:create-dev-workflows | template: take-it | template-version: 1 -->
@@ -33,9 +33,13 @@ Parallel issue-shipping: the user hands you GitHub issue numbers; this skill shi
 gh issue view N --repo Sassy-Dog/devcanopy --json number,title,state,labels,body,assignees
 ```
 
-Skip + announce if: not OPEN; `blocked` label; assignee already set; or stub body (< 80 chars) — but **check `gh issue view N --comments` before calling it a stub**; scope may live in a follow-up comment. For survivors capture title, body, labels (label → conventional-commit prefix: `bug`→`fix`, `enhancement`→`feat`, `documentation`→`docs`, else `chore`).
+Skip + announce if: not OPEN; `blocked` label; assignee already set or board card already In progress/In review; or stub body (< 80 chars) — but **check `gh issue view N --comments` before calling it a stub**; scope may live in a follow-up comment. For survivors capture title, body, labels (label → conventional-commit prefix: `bug`→`fix`, `enhancement`→`feat`, `documentation`→`docs`, else `chore`).
 
-## 3. Dispatch sub-agents in parallel
+## 3. Claim each issue
+
+Best-effort, so parallel sessions don't double-pick: `gh issue edit N --repo Sassy-Dog/devcanopy --add-assignee @me`, and move the board card to In progress per `ai-agent-skills:github-issues` (`references/board-graphql.md`; board 5, IDs: project `PVT_kwDODSBhws4BaqCG`, status field `PVTSSF_lADODSBhws4BaqCGzhVgAc8`, In progress `d04a8f33`). Claim failures are logged, never fatal — the PR's `Closes #N` lands the card on Done regardless.
+
+## 4. Dispatch sub-agents in parallel
 
 **First, fast-forward local main** — worktrees branch from local HEAD, not origin; a stale base lands the PR `CONFLICTING`:
 
@@ -67,7 +71,7 @@ git switch main >/dev/null 2>&1 && git pull --ff-only origin main
 > 6. Push and open a PR per the send-it template — the body MUST contain `Closes #{N}` on its own line (Summary / Changes / Testing sections).
 > 7. **Do NOT merge.** Report back: `RESULT: pr=<N> branch=<name> status=<opened|skipped|failed> note=<one-line>`
 
-## 4. Coordinator: watch + merge (delegated)
+## 5. Coordinator: watch + merge (delegated)
 
 Use the plugin capability skill for ALL polling/merge/teardown mechanics — do NOT reimplement them inline:
 
@@ -78,7 +82,7 @@ If `ai-agent-skills:pr-shepherd` is not in your available skills, STOP and tell 
 
 Run the coordinator synchronously; backgrounding it orphans PRs at "checks pending".
 
-## 5. Final report
+## 6. Final report
 
 | Issue | PR | Status | Notes |
 |-------|----|--------|-------|
@@ -86,7 +90,7 @@ Run the coordinator synchronously; backgrounding it orphans PRs at "checks pendi
 | #240 | #261 | ⚠️ FAILED | named failing check + log excerpt |
 | #216 | — | ⏭ SKIPPED | reason |
 
-Always end with: claims to unwind by hand (assignments for unshipped issues) and a next-action one-liner per failure.
+Always end with: claims to unwind by hand (assignments, board cards for unshipped issues) and a next-action one-liner per failure.
 
 ## Guardrails
 
