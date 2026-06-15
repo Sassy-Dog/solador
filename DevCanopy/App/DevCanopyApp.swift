@@ -5,6 +5,7 @@ import SwiftData
 struct DevCanopyApp: App {
     let modelContainer: ModelContainer
     @StateObject private var remoteHosts: RemoteHostsCoordinator
+    @StateObject private var portfolioStore: PortfolioStore
     @StateObject private var localHostMetrics = LocalHostMetricsService()
     @StateObject private var containerService = LocalContainerService()
     @StateObject private var gitWorktreeService = GitWorktreeService()
@@ -28,7 +29,8 @@ struct DevCanopyApp: App {
         
         do {
             let schema = Schema([
-                MonitoredHost.self
+                MonitoredHost.self,
+                TrackedRepo.self
             ])
             
             let modelConfiguration = ModelConfiguration(
@@ -46,6 +48,12 @@ struct DevCanopyApp: App {
             // Coordinator for remote-host agents (reads MonitoredHost from SwiftData)
             self._remoteHosts = StateObject(
                 wrappedValue: RemoteHostsCoordinator(modelContext: container.mainContext)
+            )
+
+            // Editable portfolio repo set (reads TrackedRepo from SwiftData, seeds
+            // once). Drives the Portfolio CI, CI Runners, and Git/Worktrees panels.
+            self._portfolioStore = StateObject(
+                wrappedValue: PortfolioStore(modelContext: container.mainContext)
             )
 
             appLogger.info("ModelContainer and services initialized successfully")
@@ -66,8 +74,23 @@ struct DevCanopyApp: App {
                 .environmentObject(portfolioCIService)
                 .environmentObject(ciRunnersService)
                 .environmentObject(remoteHosts)
+                .environmentObject(portfolioStore)
                 .task {
                     let interval = refreshInterval
+
+                    // Feed the editable portfolio set into the panels that key off
+                    // it, and refresh them immediately when the set changes.
+                    portfolioCIService.slugsProvider = { [weak portfolioStore] in
+                        portfolioStore?.slugs ?? PortfolioRepos.seedSlugs
+                    }
+                    gitWorktreeService.slugsProvider = { [weak portfolioStore] in
+                        portfolioStore?.slugs ?? PortfolioRepos.seedSlugs
+                    }
+                    portfolioStore.onChange = { [weak portfolioCIService, weak gitWorktreeService] in
+                        Task { await portfolioCIService?.refresh() }
+                        Task { await gitWorktreeService?.refresh() }
+                    }
+
                     localHostMetrics.start()
                     containerService.start()
                     gitWorktreeService.start(interval: interval)
@@ -112,6 +135,7 @@ struct DevCanopyApp: App {
             SettingsView()
                 .environmentObject(remoteHosts)
                 .environmentObject(localHostMetrics)
+                .environmentObject(portfolioStore)
         }
         .modelContainer(modelContainer)
     }

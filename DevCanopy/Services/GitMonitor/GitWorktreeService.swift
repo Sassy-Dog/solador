@@ -33,6 +33,11 @@ final class GitWorktreeService: ObservableObject {
     /// Max directory depth to descend looking for `.git` entries.
     private let maxDepth: Int
 
+    /// The tracked portfolio slugs used to filter discovered repos to the focused
+    /// set. Supplied by `PortfolioStore`; defaults to the first-run seed so the
+    /// service works standalone (previews/tests).
+    var slugsProvider: () -> [String] = { PortfolioRepos.seedSlugs }
+
     private var task: Task<Void, Never>?
 
     init(roots: [String] = ["~/Repos"], maxDepth: Int = 3) {
@@ -72,11 +77,12 @@ final class GitWorktreeService: ObservableObject {
     func refresh() async {
         let roots = self.roots
         let maxDepth = self.maxDepth
+        let slugs = slugsProvider()
 
         let scanned = await Task.detached { () -> [RepoWorktrees] in
             let repoPaths = Self.discoverRepos(roots: roots, maxDepth: maxDepth)
                 // Only the tracked portfolio repos — keeps the panel focused.
-                .filter { PortfolioRepos.matches(repoDirName: ($0 as NSString).lastPathComponent) }
+                .filter { PortfolioRepos.matches(repoDirName: ($0 as NSString).lastPathComponent, in: slugs) }
             return repoPaths.compactMap { Self.repoWorktrees(at: $0) }
         }.value
 
