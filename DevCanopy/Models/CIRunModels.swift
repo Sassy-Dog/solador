@@ -36,6 +36,9 @@ struct WorkflowDisplayOptions: Codable, Equatable {
     var prominentForRelease: Bool = true  // Show release version prominently
     var notifyOnFailure: Bool = true
     var notifyOnSuccess: Bool = false
+    /// Fire a macOS notification once when a tracked run transitions into the
+    /// `.waiting` deployment-protection gate (needs a human approval).
+    var notifyOnApprovalNeeded: Bool = true
 }
 
 enum WorkflowBadgeStyle: String, Codable {

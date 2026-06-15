@@ -14,6 +14,16 @@ struct CIHealthPanel: CockpitPanelView {
         let ref: RunRef
         var id: Int64 { ref.runID }
     }
+    private struct ApprovalItem: Identifiable {
+        let repo: String
+        let ref: RunRef
+        var id: Int64 { ref.runID }
+    }
+    private struct StuckItem: Identifiable {
+        let repo: String
+        let ref: RunRef
+        var id: Int64 { ref.runID }
+    }
     private struct AttentionItem: Identifiable {
         let repo: String
         let which: String
@@ -24,13 +34,16 @@ struct CIHealthPanel: CockpitPanelView {
     var body: some View {
         // Compute the lists once; the header summary and the rows must agree.
         let running = runningItems
+        let approval = approvalItems
+        let stuck = stuckItems
         let attention = attentionItems
         let unreadable = unreadableRepos
         let loading = service.isLoading && service.health.isEmpty
 
         return CockpitPanelContainer(
             kind: Self.kind,
-            trailing: trailing(running: running.count, attention: attention.count,
+            trailing: trailing(running: running.count, approval: approval.count,
+                               stuck: stuck.count, attention: attention.count,
                                unreadable: unreadable.count, loading: loading)
         ) {
             if !service.isAuthenticated {
@@ -39,6 +52,14 @@ struct CIHealthPanel: CockpitPanelView {
                 muted("loading…")
             } else {
                 VStack(alignment: .leading, spacing: 12) {
+                    if !approval.isEmpty {
+                        sectionHeader("NEEDS APPROVAL", approval.count)
+                        ForEach(approval) { approvalRow($0) }
+                    }
+                    if !stuck.isEmpty {
+                        sectionHeader("STUCK", stuck.count)
+                        ForEach(stuck) { stuckRow($0) }
+                    }
                     if !running.isEmpty {
                         sectionHeader("RUNNING", running.count)
                         ForEach(running) { runningRow($0) }
@@ -64,6 +85,18 @@ struct CIHealthPanel: CockpitPanelView {
             .sorted { ($0.ref.startedAt ?? .distantFuture) < ($1.ref.startedAt ?? .distantFuture) }
     }
 
+    private var approvalItems: [ApprovalItem] {
+        service.health
+            .flatMap { h in h.needsApproval.map { ApprovalItem(repo: h.shortName, ref: $0) } }
+            .sorted { ($0.ref.startedAt ?? .distantFuture) < ($1.ref.startedAt ?? .distantFuture) }
+    }
+
+    private var stuckItems: [StuckItem] {
+        service.health
+            .flatMap { h in h.stuck.map { StuckItem(repo: h.shortName, ref: $0) } }
+            .sorted { ($0.ref.startedAt ?? .distantFuture) < ($1.ref.startedAt ?? .distantFuture) }
+    }
+
     private var attentionItems: [AttentionItem] {
         service.health.flatMap { h -> [AttentionItem] in
             var items: [AttentionItem] = []
@@ -83,9 +116,12 @@ struct CIHealthPanel: CockpitPanelView {
         service.health.filter { !$0.reachable }.map(\.shortName)
     }
 
-    private func trailing(running: Int, attention: Int, unreadable: Int, loading: Bool) -> String? {
+    private func trailing(running: Int, approval: Int, stuck: Int, attention: Int,
+                          unreadable: Int, loading: Bool) -> String? {
         guard service.isAuthenticated, !loading else { return nil }
         var parts: [String] = []
+        if approval > 0 { parts.append("\(approval) needs approval") }
+        if stuck > 0 { parts.append("\(stuck) stuck") }
         if running > 0 { parts.append("\(running) running") }
         if attention > 0 { parts.append("\(attention) failed") }
         if unreadable > 0 { parts.append("\(unreadable) unreadable") }
@@ -107,6 +143,38 @@ struct CIHealthPanel: CockpitPanelView {
                     .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted).lineLimit(1)
                 Spacer()
                 Text(elapsed(item.ref.startedAt)).font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.amber)
+            }
+        }
+    }
+
+    /// A run parked at a deployment-protection gate. Blinking amber dot (the user
+    /// explicitly asked for blinking) so it reads as "act now", not "still cooking".
+    private func approvalRow(_ item: ApprovalItem) -> some View {
+        rowChrome(url: item.ref.htmlURL) {
+            HStack(spacing: 7) {
+                BlinkingDot(color: CockpitTheme.amber)
+                Text(item.repo).font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(1)
+                Text("\(item.ref.title) · \(item.ref.context)")
+                    .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted).lineLimit(1)
+                Spacer()
+                Text("needs approval · \(elapsed(item.ref.startedAt))")
+                    .font(CockpitTheme.mono(9, weight: .bold)).foregroundStyle(CockpitTheme.amber)
+            }
+        }
+    }
+
+    /// A queued/pending run that has gone stale (concurrency-blocked / stuck-queued)
+    /// — surfaced distinctly from a healthy long-running job (the 17h51m incident).
+    private func stuckRow(_ item: StuckItem) -> some View {
+        rowChrome(url: item.ref.htmlURL) {
+            HStack(spacing: 7) {
+                Circle().fill(CockpitTheme.red).frame(width: 6, height: 6)
+                Text(item.repo).font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(1)
+                Text("\(item.ref.title) · \(item.ref.context)")
+                    .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted).lineLimit(1)
+                Spacer()
+                Text("stuck · \(elapsed(item.ref.startedAt))")
+                    .font(CockpitTheme.mono(9, weight: .bold)).foregroundStyle(CockpitTheme.red)
             }
         }
     }
@@ -180,5 +248,21 @@ struct CIHealthPanel: CockpitPanelView {
         if s < 3600 { return "\(max(1, s / 60))m ago" }
         if s < 86400 { return "\(s / 3600)h ago" }
         return "\(s / 86400)d ago"
+    }
+}
+
+/// A status dot that pulses its opacity to draw the eye — used for NEEDS APPROVAL,
+/// where a human needs to act, vs the steady dot used for plain RUNNING.
+private struct BlinkingDot: View {
+    let color: Color
+    @State private var dim = false
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .opacity(dim ? 0.25 : 1.0)
+            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: dim)
+            .onAppear { dim = true }
     }
 }

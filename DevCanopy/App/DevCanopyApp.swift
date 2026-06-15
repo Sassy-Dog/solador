@@ -63,6 +63,7 @@ struct DevCanopyApp: App {
                     containerService.start()
                     gitWorktreeService.start()
                     claudeUsageService.start()
+                    CINotificationService.shared.requestAuthorizationIfNeeded()
                     portfolioCIService.start()
                     ciRunnersService.start()
                     remoteHosts.seedFromEnvironmentIfNeeded()
