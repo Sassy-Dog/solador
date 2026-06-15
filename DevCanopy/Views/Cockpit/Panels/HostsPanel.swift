@@ -33,7 +33,7 @@ struct HostsPanel: CockpitPanelView {
         if hosts.count <= 1 || fits {
             HStack(alignment: .top, spacing: 16) {
                 ForEach(hosts, id: \.hostName) { service in
-                    HostLupitaView(service: service,
+                    HostMetricsPanel(service: service,
                                    volumeSlots: volumeSlots,
                                    volumeColumns: volumeColumns(forCardCount: hosts.count))
                 }
@@ -41,7 +41,7 @@ struct HostsPanel: CockpitPanelView {
         } else {
             TabView {
                 ForEach(hosts, id: \.hostName) { service in
-                    HostLupitaView(service: service,
+                    HostMetricsPanel(service: service,
                                    volumeSlots: volumeSlots,
                                    volumeColumns: volumeColumns(forCardCount: 1))
                         .tabItem { Text(service.hostName) }

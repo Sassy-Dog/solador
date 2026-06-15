@@ -63,7 +63,7 @@ class HostMetricsService: ObservableObject {
     private var volumeStabilizer = VolumeStabilizer()
 
     /// The volumes the cockpit renders: debounced and minus the hide list.
-    /// `HostsPanel.volumeSlots` and `HostLupitaView` must BOTH read this so slot
+    /// `HostsPanel.volumeSlots` and `HostMetricsPanel` must BOTH read this so slot
     /// reservation and rendering can never disagree.
     var visibleVolumes: [VolumeUsage] {
         stableVolumes.filter { !hiddenMounts.contains($0.mount) }
