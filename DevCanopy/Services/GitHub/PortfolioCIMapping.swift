@@ -30,14 +30,43 @@ struct RunRef: Equatable, Identifiable {
 
     var id: Int64 { runID }
 
-    var isRunning: Bool {
+    /// A `.pending`/`.queued` run older than this with no jobs dispatched reads as
+    /// STUCK/BLOCKED rather than a healthy long-running job (the 17h51m incident).
+    static let stuckThreshold: TimeInterval = 3600  // 1 hour
+
+    /// Parked at a deployment-protection gate (manual approval or wait timer).
+    /// GitHub's `status == "waiting"` is the precise signal a human must act.
+    var needsApproval: Bool { status == .waiting }
+
+    /// Queued/pending past the staleness threshold — concurrency-blocked or
+    /// stuck-queued, not actually executing. `now` is injectable for testing.
+    func isStuck(now: Date = Date()) -> Bool {
         switch status {
-        case .some(.inProgress), .some(.queued), .some(.requested), .some(.waiting), .some(.pending):
-            return true
+        case .some(.queued), .some(.pending), .some(.requested):
+            guard let startedAt else { return false }
+            return now.timeIntervalSince(startedAt) > Self.stuckThreshold
         default:
             return false
         }
     }
+
+    /// Actively executing (or freshly queued) — excludes the `.waiting` approval
+    /// gate and excludes pending/queued runs that have gone stale (`isStuck`).
+    /// Those render in their own NEEDS APPROVAL / STUCK sections.
+    func isRunning(now: Date = Date()) -> Bool {
+        switch status {
+        case .some(.inProgress):
+            return true
+        case .some(.queued), .some(.requested), .some(.pending):
+            return !isStuck(now: now)
+        default:
+            // .waiting → needs approval (not running); .completed/.none → not running
+            return false
+        }
+    }
+
+    /// Default-clock convenience for callers that don't inject a clock.
+    var isRunning: Bool { isRunning(now: Date()) }
 
     var isFailed: Bool {
         switch conclusion {
@@ -54,7 +83,9 @@ struct RepoCIHealth: Equatable, Identifiable {
     let repo: String           // "owner/name"
     let main: RunRef?
     let lastPR: RunRef?
-    let running: [RunRef]
+    let running: [RunRef]       // actively executing (excludes waiting + stuck)
+    let needsApproval: [RunRef] // parked at a deployment-protection gate (.waiting)
+    let stuck: [RunRef]         // queued/pending past the staleness threshold
     let reachable: Bool        // false when the repo's runs couldn't be fetched
 
     var id: String { repo }
@@ -70,19 +101,24 @@ struct RepoCIHealth: Equatable, Identifiable {
 
     /// A repo whose runs couldn't be fetched (auth/network error).
     static func unreachable(repo: String) -> RepoCIHealth {
-        RepoCIHealth(repo: repo, main: nil, lastPR: nil, running: [], reachable: false)
+        RepoCIHealth(repo: repo, main: nil, lastPR: nil, running: [],
+                     needsApproval: [], stuck: [], reachable: false)
     }
 }
 
 extension PortfolioCIMapping {
     /// Categorize a repo's runs into main / lastPR / running. Pure; "newest" is by
     /// createdAt descending. Assumes the default branch is `main`.
-    static func health(repo: String, runs: [WorkflowRunDTO]) -> RepoCIHealth {
+    static func health(repo: String, runs: [WorkflowRunDTO], now: Date = Date()) -> RepoCIHealth {
         let sorted = runs.sorted { createdDate($0) > createdDate($1) }
         let main = sorted.first { $0.event == "push" && $0.headBranch == "main" }.map(ref)
         let lastPR = sorted.first { $0.event == "pull_request" }.map(ref)
-        let running = sorted.map(ref).filter { $0.isRunning }
-        return RepoCIHealth(repo: repo, main: main, lastPR: lastPR, running: running, reachable: true)
+        let refs = sorted.map(ref)
+        let running = refs.filter { $0.isRunning(now: now) }
+        let needsApproval = refs.filter { $0.needsApproval }
+        let stuck = refs.filter { $0.isStuck(now: now) }
+        return RepoCIHealth(repo: repo, main: main, lastPR: lastPR, running: running,
+                            needsApproval: needsApproval, stuck: stuck, reachable: true)
     }
 
     private static func ref(_ run: WorkflowRunDTO) -> RunRef {

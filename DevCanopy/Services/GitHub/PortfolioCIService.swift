@@ -16,8 +16,26 @@ final class PortfolioCIService: ObservableObject {
     private let github: GitHubService
     private var task: Task<Void, Never>?
 
-    init(github: GitHubService = .shared) {
+    /// Notification delivery for CI events (needs-approval). Injectable for tests.
+    private let notifier: CINotificationService?
+    /// Display preferences gating which notifications fire. There is no per-repo
+    /// UI for these yet, so the defaults apply (notifyOnApprovalNeeded == true).
+    private let displayOptions: WorkflowDisplayOptions
+    /// Run IDs already seen in `.waiting` — used to fire the approval notification
+    /// once on the transition *into* waiting, not on every poll while it stays.
+    private var knownApprovalRunIDs: Set<Int64> = []
+    /// Suppress notifications on the very first refresh so we don't alert for runs
+    /// that were already parked before the app launched.
+    private var didInitialRefresh = false
+
+    init(
+        github: GitHubService = .shared,
+        notifier: CINotificationService? = .shared,
+        displayOptions: WorkflowDisplayOptions = WorkflowDisplayOptions()
+    ) {
         self.github = github
+        self.notifier = notifier
+        self.displayOptions = displayOptions
     }
 
     func refresh() async {
@@ -37,6 +55,32 @@ final class PortfolioCIService: ObservableObject {
         }
         self.health = results
         self.isLoading = false
+        notifyApprovalTransitions(in: results)
+    }
+
+    /// Fire a needs-approval notification once per run, on its transition *into*
+    /// the `.waiting` gate. Diffs the current waiting set against what we've seen
+    /// so re-polling a still-waiting run doesn't re-notify. The first refresh only
+    /// seeds the baseline (no alert for runs already parked before launch).
+    private func notifyApprovalTransitions(in results: [RepoCIHealth]) {
+        let currentWaiting = results.flatMap { h in h.needsApproval.map { ($0, h.shortName) } }
+        let currentIDs = Set(currentWaiting.map { $0.0.runID })
+
+        defer {
+            knownApprovalRunIDs = currentIDs
+            didInitialRefresh = true
+        }
+
+        guard didInitialRefresh, displayOptions.notifyOnApprovalNeeded else { return }
+
+        for (ref, shortName) in currentWaiting where !knownApprovalRunIDs.contains(ref.runID) {
+            notifier?.notifyNeedsApproval(
+                repo: shortName,
+                title: ref.title,
+                context: ref.context,
+                htmlURL: ref.htmlURL
+            )
+        }
     }
 
     /// Fetches recent runs for a repo and categorizes them. Any error yields an
