@@ -65,6 +65,45 @@ jobs:
       - name: Run tests
         run: ./dev test
 
+      # Non-regression coverage gate (issue #19), modeled on Lupita's CI. `./dev
+      # test` runs under CI=true, so test.sh emits build/TestResults.xcresult with
+      # coverage enabled. We read the DevCanopy.app target's LINE coverage — the
+      # production code — and fail if it drops below the floor. We deliberately
+      # gate on the app target, not the JSON-wide `lineCoverage`, because the
+      # latter folds in the test target's own ~97% and masks real product
+      # regressions.
+      #
+      # FLOOR = 64. Measured app-target line coverage at this commit is 65.46%
+      # (3822/5839). The floor sits just below that so a genuine drop fails the
+      # build while leaving a small buffer for non-deterministic sampling jitter.
+      # Ratchet upward as tests are added — do not lower it.
+      - name: Coverage floor (DevCanopy.app line coverage)
+        run: |
+          FLOOR=64
+          BUNDLE=build/TestResults.xcresult
+
+          if [[ ! -d "$BUNDLE" ]]; then
+            echo "::error::Coverage result bundle $BUNDLE not found — did ./dev test run with CI=true?"
+            exit 1
+          fi
+
+          # xccov reports lineCoverage as a 0..1 fraction; scale to a percentage.
+          COVERAGE=$(xcrun xccov view --report --json "$BUNDLE" \
+            | jq '(.targets[] | select(.name == "DevCanopy.app") | .lineCoverage) * 100')
+
+          if [[ -z "$COVERAGE" || "$COVERAGE" == "null" ]]; then
+            echo "::error::Could not read DevCanopy.app line coverage from $BUNDLE"
+            exit 1
+          fi
+
+          printf 'DevCanopy.app line coverage: %.2f%% (floor %s%%)\n' "$COVERAGE" "$FLOOR"
+
+          if awk "BEGIN { exit !($COVERAGE < $FLOOR) }"; then
+            echo "::error::Line coverage ${COVERAGE}% is below floor ${FLOOR}%"
+            exit 1
+          fi
+          echo "::notice::Line coverage ${COVERAGE}% meets floor ${FLOOR}%"
+
   lint:
     name: Lint
     runs-on: macos-15
