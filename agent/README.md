@@ -125,6 +125,58 @@ journalctl --user -u devcanopy-agent -f
 To rotate the token: edit `~/.config/devcanopy-agent.env`, then
 `systemctl --user restart devcanopy-agent`.
 
+## Redeploy an existing host (upgrade in place)
+
+Use this once a host is already installed and you want to ship a new agent build.
+It is the unattended counterpart to `install.sh`: it **never prompts for a token**
+and only swaps the binary.
+
+From the crate directory on the target host (e.g. `ubu-3xdv`, on a fresh checkout
+of the new commit):
+
+```bash
+./deploy/redeploy.sh
+```
+
+What it does:
+1. Reads the target version from `Cargo.toml` and builds `--release`.
+2. Preserves the currently-installed binary as `devcanopy-agent.prev` (the
+   rollback anchor).
+3. **Atomically swaps** the new binary into place. The running binary can't be
+   overwritten in place — Linux returns `ETXTBSY` ("Text file busy") — so the
+   script stages the build to `devcanopy-agent.new` and `mv`s it over the live
+   path. A rename over a running executable is allowed even when an in-place
+   write is not.
+4. Restarts the user service.
+5. **Verifies** by polling `/v1/health` (using the token/bind/port from the env
+   file) until it reports the version from `Cargo.toml`. If the new binary never
+   reports the expected version, the script fails loudly and tells you to roll
+   back — the bad binary is live but you have a one-command escape hatch.
+
+It requires an existing `~/.config/devcanopy-agent.env` and systemd user unit; if
+the host has never been installed it errors and points you at `install.sh`. It
+honors the same `/opt` → `~/.local/bin` install layout (resolved from the unit's
+`ExecStart`) and uses `sudo` only if the install directory isn't user-writable.
+
+## Roll back a bad redeploy
+
+If a redeploy ships a broken build (or `redeploy.sh` reports the health check
+failed), restore the previous binary with one command:
+
+```bash
+./deploy/redeploy.sh rollback
+```
+
+It atomically swaps `devcanopy-agent.prev` back into place, restarts the service,
+and verifies the agent comes back online via `/v1/health`. The swap is
+reversible: the binary you rolled back over becomes the new `.prev`, so re-running
+`rollback` rolls forward again. (The agent binary has no `--version` flag, so
+rollback verifies the service is reachable rather than asserting an exact
+version.)
+
+No cargo or rebuild is needed to roll back — that's the point of keeping the prior
+binary on the host.
+
 ## How DevCanopy connects
 
 - DevCanopy reaches the host over Tailscale at `http://<tailscale-host>:7878`.
