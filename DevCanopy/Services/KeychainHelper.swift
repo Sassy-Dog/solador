@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-enum KeychainError: LocalizedError {
+enum KeychainError: LocalizedError, Equatable {
     case duplicateItem
     case itemNotFound
     case unexpectedStatus(OSStatus)
