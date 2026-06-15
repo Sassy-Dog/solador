@@ -70,9 +70,9 @@ public actor HostMetricsCollector {
         if includeBattery {
             if let info = BatteryMonitor().getBatteryInfo() {
                 battery = BatteryMetrics(
-                    hasBattery: info.hasBattery,
-                    currentCapacity: info.currentCapacity,
+                    level: Double(info.currentCapacity),
                     isCharging: info.isCharging,
+                    hasBattery: info.hasBattery,
                     cycleCount: info.cycleCount,
                     health: info.health,
                     powerSource: info.powerSource,

@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 use tokio::sync::RwLock;
 
@@ -106,7 +106,16 @@ pub struct Gpu {
     pub vram_total_gb: f64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+/// Battery wire contract. The minimal cross-platform shape — `level` (0–100) and
+/// `isCharging` — which is all a generic host agent can produce. The Swift
+/// `BatteryMetrics` decoder treats exactly these two keys as required and any
+/// richer (macOS-local) keys as optional. The shape is locked by both this
+/// crate's tests and the Swift wire-contract suite via the shared fixture
+/// `TestFixtures/battery_contract.json`.
+///
+/// Derives `Deserialize` so the round-trip test can read the shared fixture; the
+/// production agent only ever serializes (and currently always emits `null`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Battery {
     pub level: f64,
     #[serde(rename = "isCharging")]
@@ -670,6 +679,71 @@ mod tests {
             canonical_sample(),
             "serialized Snapshot diverged from the canonical wire contract"
         );
+    }
+
+    /// Load the shared cross-language battery fixture
+    /// (`TestFixtures/battery_contract.json`), decoded byte-for-key by both this
+    /// crate and the Swift wire-contract suite.
+    fn shared_battery_fixture() -> String {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../TestFixtures/battery_contract.json"
+        );
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read shared battery fixture {path}: {e}"))
+    }
+
+    /// CONTRACT LOCK (shared fixture): the non-null battery payload both sides
+    /// agree on must round-trip through the agent's `Battery` type — deserialize
+    /// from the shared JSON, then re-serialize to the identical value. If the
+    /// agent's `Battery` keys drift from the fixture, this fails; the Swift
+    /// `testSharedBatteryContractFixture` fails on the same file.
+    #[test]
+    fn battery_round_trips_shared_contract_fixture() {
+        let json = shared_battery_fixture();
+        let battery: Battery =
+            serde_json::from_str(&json).expect("shared fixture decodes into Battery");
+        assert_eq!(battery.level, 82.5);
+        assert!(battery.is_charging);
+
+        let reserialized = serde_json::to_value(&battery).unwrap();
+        let original: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            reserialized, original,
+            "Battery diverged from the shared wire contract fixture"
+        );
+    }
+
+    /// The serialized battery has exactly the two contract keys — `level` and
+    /// `isCharging` (camelCase) — and nothing else.
+    #[test]
+    fn battery_has_exact_contract_keys() {
+        let v = serde_json::to_value(Battery {
+            level: 82.5,
+            is_charging: true,
+        })
+        .unwrap();
+        let obj = v.as_object().expect("battery is an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["isCharging", "level"]);
+        assert!(v["level"].is_number());
+        assert!(v["isCharging"].is_boolean());
+    }
+
+    /// A snapshot carrying a non-null battery serializes the nested object with
+    /// the canonical keys — the path that today's `battery: None` agent never
+    /// exercises, but the first battery-bearing host will.
+    #[test]
+    fn snapshot_with_battery_serializes_canonical_shape() {
+        let mut snap = canonical_snapshot();
+        snap.battery = Some(Battery {
+            level: 82.5,
+            is_charging: true,
+        });
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(v["battery"]["level"], json!(82.5));
+        assert_eq!(v["battery"]["isCharging"], json!(true));
     }
 
     /// Assert every required key is present with the correct JSON type.

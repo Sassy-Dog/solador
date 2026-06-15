@@ -55,7 +55,15 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         disk = try c.decode(DiskMetrics.self, forKey: .disk)
         network = try c.decode(NetworkMetrics.self, forKey: .network)
         gpu = try c.decode(GPUMetrics.self, forKey: .gpu)
-        battery = try c.decodeIfPresent(BatteryMetrics.self, forKey: .battery)
+        // Tolerant battery decode: a malformed or unexpected battery object must
+        // not sink the whole snapshot (which would flip an otherwise-healthy host
+        // unreachable). `null`/absent → nil; a present-but-undecodable object →
+        // nil rather than a thrown error. Only `level`+`isCharging` are required.
+        if let raw = try? c.decodeIfPresent(BatteryMetrics.self, forKey: .battery) {
+            battery = raw
+        } else {
+            battery = nil
+        }
         volumes = try c.decodeIfPresent([VolumeUsage].self, forKey: .volumes) ?? []
         processes = try c.decodeIfPresent([ProcessSample].self, forKey: .processes) ?? []
     }
@@ -196,33 +204,81 @@ public struct GPUMetrics: Sendable, Codable, Equatable {
     }
 }
 
+/// Battery state. The wire contract (locked by the shared fixture
+/// `TestFixtures/battery_contract.json`) is the minimal cross-platform shape the
+/// Rust agent emits: `level` (0–100) and `isCharging` — the only two fields a
+/// generic host agent can produce. Everything else is macOS-local enrichment from
+/// the IOKit collector and is decode-optional, so an agent payload carrying only
+/// the two contract keys still decodes.
+///
+/// Decoding is tolerant: only `level` and `isCharging` are required. A battery
+/// object missing either (or with an incompatible type) throws here; the caller
+/// (`HostSnapshot.init(from:)`) catches that and degrades `battery` to `nil`
+/// rather than failing the entire snapshot.
 public struct BatteryMetrics: Sendable, Codable, Equatable {
-    public let hasBattery: Bool
-    public let currentCapacity: Int
+    /// Charge level, 0–100. Canonical wire key; the agent's `level`.
+    public let level: Double
     public let isCharging: Bool
-    public let cycleCount: Int
-    public let health: Double
-    public let powerSource: String
-    public let timeRemaining: String
-    public let wattage: Double
+
+    // macOS-local IOKit enrichment — absent from the agent wire contract.
+    public let hasBattery: Bool?
+    public let cycleCount: Int?
+    public let health: Double?
+    public let powerSource: String?
+    public let timeRemaining: String?
+    public let wattage: Double?
 
     public init(
-        hasBattery: Bool,
-        currentCapacity: Int,
+        level: Double,
         isCharging: Bool,
-        cycleCount: Int,
-        health: Double,
-        powerSource: String,
-        timeRemaining: String,
-        wattage: Double
+        hasBattery: Bool? = nil,
+        cycleCount: Int? = nil,
+        health: Double? = nil,
+        powerSource: String? = nil,
+        timeRemaining: String? = nil,
+        wattage: Double? = nil
     ) {
-        self.hasBattery = hasBattery
-        self.currentCapacity = currentCapacity
+        self.level = level
         self.isCharging = isCharging
+        self.hasBattery = hasBattery
         self.cycleCount = cycleCount
         self.health = health
         self.powerSource = powerSource
         self.timeRemaining = timeRemaining
         self.wattage = wattage
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case level, isCharging, hasBattery, cycleCount, health
+        case powerSource, timeRemaining, wattage
+    }
+
+    // Custom decode: the two contract keys are required; the macOS-rich keys are
+    // optional, so an agent payload with only `level`/`isCharging` decodes. An
+    // unexpected/incompatible battery shape throws (caught upstream → nil).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        level = try c.decode(Double.self, forKey: .level)
+        isCharging = try c.decode(Bool.self, forKey: .isCharging)
+        hasBattery = try c.decodeIfPresent(Bool.self, forKey: .hasBattery)
+        cycleCount = try c.decodeIfPresent(Int.self, forKey: .cycleCount)
+        health = try c.decodeIfPresent(Double.self, forKey: .health)
+        powerSource = try c.decodeIfPresent(String.self, forKey: .powerSource)
+        timeRemaining = try c.decodeIfPresent(String.self, forKey: .timeRemaining)
+        wattage = try c.decodeIfPresent(Double.self, forKey: .wattage)
+    }
+
+    // Encode omits nil enrichment so the round-trip of an agent-shaped value
+    // (only `level`/`isCharging`) re-emits exactly the contract floor.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(level, forKey: .level)
+        try c.encode(isCharging, forKey: .isCharging)
+        try c.encodeIfPresent(hasBattery, forKey: .hasBattery)
+        try c.encodeIfPresent(cycleCount, forKey: .cycleCount)
+        try c.encodeIfPresent(health, forKey: .health)
+        try c.encodeIfPresent(powerSource, forKey: .powerSource)
+        try c.encodeIfPresent(timeRemaining, forKey: .timeRemaining)
+        try c.encodeIfPresent(wattage, forKey: .wattage)
     }
 }
