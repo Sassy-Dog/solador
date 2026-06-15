@@ -145,8 +145,25 @@ struct HostsSettingsView: View {
         )
         testResults[host.id] = "Testing…"
         Task {
-            let ok = await probe.checkHealth()
-            testResults[host.id] = ok ? "✓ reachable" : "✗ unreachable / bad token"
+            switch await probe.checkHealth() {
+            case .ok(let info):
+                // Show the live agent version + hostname so a redeploy can be
+                // confirmed without SSHing in. Flag a stale sampler if present.
+                var line = "✓ \(info.hostname) · agent v\(info.version)"
+                if info.samplerStale == true { line += " · sampler stale" }
+                testResults[host.id] = line
+            case .failure(let error):
+                switch error {
+                case .authFailed:
+                    testResults[host.id] = "✗ auth failed (401) — check token"
+                case .decodeFailed:
+                    testResults[host.id] = "✗ decode failed — agent/app version skew?"
+                case .httpStatus(let code):
+                    testResults[host.id] = "✗ HTTP \(code)"
+                case .unreachable:
+                    testResults[host.id] = "✗ unreachable — host down or agent stopped"
+                }
+            }
         }
     }
 }
