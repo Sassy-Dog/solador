@@ -7,7 +7,7 @@ import SwiftUI
 struct HostsPanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .hosts
 
-    @EnvironmentObject private var local: LocalHostMetricsService
+    @EnvironmentObject private var local: HostMetricsService
     @EnvironmentObject private var remoteHosts: RemoteHostsCoordinator
     @State private var availableWidth: CGFloat = 0
 

@@ -6,7 +6,13 @@ struct DevCanopyApp: App {
     let modelContainer: ModelContainer
     @StateObject private var remoteHosts: RemoteHostsCoordinator
     @StateObject private var portfolioStore: PortfolioStore
-    @StateObject private var localHostMetrics = LocalHostMetricsService()
+    /// "This machine" metrics. Base type so demo mode can swap a
+    /// `DemoHostMetricsService` in for the live `LocalHostMetricsService` without
+    /// touching the panels (which read it as `HostMetricsService`).
+    @StateObject private var localHostMetrics: HostMetricsService =
+        DemoMode.isEnabled
+            ? DemoHostMetricsService(hostName: "mac-demo", profile: .localMac, connectionState: .local)
+            : LocalHostMetricsService()
     @StateObject private var containerService = LocalContainerService()
     @StateObject private var gitWorktreeService = GitWorktreeService()
     @StateObject private var ciRunnersService = CIRunnersService()
@@ -98,8 +104,14 @@ struct DevCanopyApp: App {
                     CINotificationService.shared.requestAuthorizationIfNeeded()
                     portfolioCIService.start(interval: interval)
                     ciRunnersService.start(interval: interval)
-                    remoteHosts.seedFromEnvironmentIfNeeded()
-                    remoteHosts.reload()
+                    if DemoMode.isEnabled {
+                        // Inject a synthetic remote host + demo containers; skip env
+                        // seeding and real-agent reload entirely.
+                        remoteHosts.loadDemo()
+                    } else {
+                        remoteHosts.seedFromEnvironmentIfNeeded()
+                        remoteHosts.reload()
+                    }
                 }
                 .onChange(of: refreshIntervalRaw) {
                     let interval = refreshInterval

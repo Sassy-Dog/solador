@@ -6,7 +6,7 @@ import SwiftUI
 struct HostsSettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var coordinator: RemoteHostsCoordinator
-    @EnvironmentObject private var local: LocalHostMetricsService
+    @EnvironmentObject private var local: HostMetricsService
     @Query(sort: \MonitoredHost.name) private var hosts: [MonitoredHost]
 
     @State private var newName = ""
