@@ -2,8 +2,10 @@ import Foundation
 
 // Internal data structs returned by the vendored SystemMonitorV2 engine.
 //
-// Copied verbatim from Lupita's PerformanceMonitor.swift (struct/enum definitions
-// only — no PerformanceMonitor class, demo mode, or notifications). These remain
+// Provenance: originally copied from Lupita's PerformanceMonitor.swift (struct/enum
+// definitions only — no PerformanceMonitor class, demo mode, or notifications).
+// Sync policy: this copy is canonical; Lupita is dead / reference-only — do NOT
+// upstream changes or sync back to Lupita. See ../../../README.md. These remain
 // `internal`: they are an implementation detail behind the public `HostSnapshot`.
 //
 // One required edit: `CPUData.initializeCoreHistories` referenced

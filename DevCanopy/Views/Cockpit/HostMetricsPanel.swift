@@ -1,11 +1,11 @@
 import SwiftUI
 import HostMetricsKit
 
-/// Full Lupita-grade view for a single host, rendered inline as a card: host header,
+/// Full metrics view for a single host, rendered inline as a card: host header,
 /// big processor chart, per-core colored grid, Memory + Graphics, Disk + Network I/O.
 /// This is the default Hosts surface (no drill-in). Contains no scroll view of its own —
 /// the cockpit page scrolls.
-struct HostLupitaView: View {
+struct HostMetricsPanel: View {
     @ObservedObject var service: HostMetricsService
 
     /// How many "section rows" tall the per-core grid is. Global (UserDefaults), so every host
