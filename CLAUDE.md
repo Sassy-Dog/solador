@@ -4,12 +4,21 @@ This file provides context for Claude Code when working with the DevCanopy codeb
 
 ## Project Overview
 
-DevCanopy is a native macOS dashboard application that monitors development infrastructure:
-- Local git repositories (FSEvents-based monitoring)
-- GitHub workflows and CI/CD status
-- Vercel deployments
-- Neon databases
-- Cloudflare Workers/Pages
+DevCanopy is a native macOS cockpit that watches development infrastructure at a
+glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
+- **Hosts** — live CPU/memory/disk/network/GPU/battery from a per-host agent over Tailscale
+- **Containers** — podman/docker/tart containers and VMs on those hosts
+- **CI Health** — GitHub Actions status across a portfolio of repos
+- **CI Runners** — self-hosted runner availability/activity
+- **Git Worktrees** — local worktrees and their remote sync state
+- **Claude Usage** — token/cost rollups from local Claude Code usage logs
+
+It has three parts:
+- **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit.
+- **Agent** (`agent/`) — Rust (axum) HTTP service exposing host metrics + container
+  list as JSON behind a bearer token; reached over Tailscale. See `agent/README.md`.
+- **HostMetricsKit** (`Packages/HostMetricsKit/`) — local Swift package for
+  local-machine metric collection (CPU/GPU/battery via IOKit), shared by the app.
 
 ## Development Workflow
 
@@ -44,48 +53,63 @@ DevCanopy/
 │   ├── config.sh          # App configuration
 │   └── *.sh               # Implementation scripts
 ├── project.yml            # XcodeGen configuration
-├── DevCanopy/             # Source code
-│   ├── App/              # App lifecycle
-│   ├── Models/           # SwiftData models
-│   ├── Services/         # API integrations
-│   ├── Views/            # SwiftUI views
+├── DevCanopy/             # macOS app source
+│   ├── App/              # App lifecycle, ContentView, CockpitView host
+│   ├── Models/           # SwiftData models (MonitoredHost, AppSettings, CIRunModels)
+│   ├── Services/         # Host/agent, GitHub CI, containers, Claude usage, worktrees
+│   ├── Views/            # SwiftUI views (Cockpit panels + Settings)
 │   └── Resources/        # Info.plist, entitlements
-└── DevCanopyTests/        # Unit tests
+├── DevCanopyTests/        # App unit tests
+├── Packages/
+│   └── HostMetricsKit/   # Local Swift package: local-machine metrics collection
+└── agent/                 # Rust per-host metrics agent (axum)
 ```
 
+> After adding new `.swift` files, run `./Scripts/generate-project.sh` to regenerate
+> the Xcode project — `./dev build`/`test` won't pick them up otherwise.
+
 ## Technology Stack
-- **Language**: Swift 5.9+
-- **UI Framework**: SwiftUI
-- **Data Persistence**: SwiftData
+- **App language**: Swift 5.9+ (SwiftUI, SwiftData)
+- **Agent language**: Rust (axum, tokio, sysinfo-style sampling)
 - **Credential Storage**: macOS Keychain
-- **File Monitoring**: FSEvents
-- **OAuth**: ASWebAuthenticationSession with PKCE
+- **Transport**: HTTP/JSON over Tailscale, guarded by a bearer token
 - **Project Generation**: XcodeGen
 
 ## Key Implementation Notes
 
-### Git Monitoring
-- Uses FSEvents to watch repository directories
-- Parses git state without modifying files
-- Compares local HEAD to remote tracking branch
-- Updates status every 30s/1m/5m based on settings
+### Hosts & metrics
+- Remote hosts run the Rust agent (`agent/`), polled by the app over Tailscale.
+- Agent endpoints: `GET /v1/snapshot` (CPU/mem/disk/net/gpu/battery),
+  `GET /v1/containers`, `GET /v1/health`. All require `Authorization: Bearer <token>`.
+- Remote polling lives in `Services/HostMetrics/` and `Services/RemoteHosts/`;
+  local-machine metrics come from `Packages/HostMetricsKit`.
+- Container discovery: `Services/Containers/`.
 
-### Service Authentication
-- **GitHub/Vercel**: OAuth 2.0 with PKCE (no client secret)
-- **Neon/Cloudflare**: API token authentication
-- All credentials stored in macOS Keychain
+### Git worktrees
+- `Services/GitMonitor/` parses git/worktree state without modifying files
+  (`GitWorktreeService.swift`, `GitStatusParser.swift`, `WorktreeParsing.swift`).
+- Surfaced by `Views/Cockpit/Panels/GitWorktreesPanel.swift`.
+
+### CI & Claude usage
+- GitHub Actions data: `Services/GitHub/` (CI health + self-hosted runners).
+- Claude Code usage rollups: `Services/ClaudeUsage/`.
+
+### Authentication
+- **GitHub CI panels**: a fine-grained PAT with read-only access to Actions, entered
+  in Settings → GitHub Token (`Views/Settings/SettingsView.swift`).
+- **Remote hosts**: per-host bearer token entered in Settings → Hosts.
+- All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);
+  never persisted in SwiftData.
 
 ### UI Design
-- Dark mode optimized (primary mode)
-- Glanceable dashboard view
-- Status indicated by color: green (good), orange (warning), red (error)
-- Click actions open terminal/browser in context
-- Designed for persistent display on second monitor
+- Dark mode optimized; glanceable grid of cockpit panels.
+- Status indicated by color: green (good), orange (warning), red (error).
+- Designed for persistent full-screen display on a second monitor.
 
 ### SwiftData Models
-- `TrackedRepository`: Local git repos with status
-- `ServiceConnection`: OAuth/API connections
-- `AppSettings`: User preferences
+- `MonitoredHost`: a remote host running the agent (address, port, hidden volumes).
+- `AppSettings`: user preferences.
+- `CIRunModels`: persisted CI run state.
 
 ## Testing
 
@@ -94,11 +118,8 @@ Run tests with:
 ./dev test
 ```
 
-Tests cover:
-- Repository status calculations
-- Service connection states
-- Data model persistence
-- UI component behavior
+Tests cover the app (`DevCanopyTests/`) and the HostMetricsKit package
+(`Packages/HostMetricsKit/Tests/`). Agent tests run via `cargo test` in `agent/`.
 
 ## Building for Distribution
 
@@ -113,16 +134,20 @@ Tests cover:
 
 ## Common Tasks
 
-### Adding a New Service Integration
-1. Add to `ServiceType` enum in `ServiceConnection.swift`
-2. Create service folder in `DevCanopy/Services/`
-3. Implement OAuth flow or API token auth
-4. Add UI in `ServicesView.swift`
+### Adding a New Cockpit Panel
+1. Add a service under `DevCanopy/Services/` for the data source.
+2. Add a `CockpitPanelKind` case and wire it in `Views/Cockpit/CockpitView.swift`.
+3. Create the panel view in `Views/Cockpit/Panels/`.
+4. Run `./Scripts/generate-project.sh` so new files land in the Xcode project.
 
-### Updating Git Monitoring
-- Main logic in `Services/GitMonitor/`
-- FSEvents setup in `GitMonitor.swift`
-- Status parsing in `GitStatusParser.swift`
+### Working on Git Worktree Monitoring
+- Parsing/logic in `Services/GitMonitor/` (`GitWorktreeService.swift`,
+  `GitStatusParser.swift`, `WorktreeParsing.swift`).
+- Panel in `Views/Cockpit/Panels/GitWorktreesPanel.swift`.
+
+### Working on the Agent
+- Rust source in `agent/src/` (`server.rs`, `metrics.rs`, `containers.rs`).
+- Deploy via `agent/deploy`; see `agent/README.md` for endpoints and rollout.
 
 ### Modifying Build Scripts
 - Edit scripts in `Scripts/` directory
@@ -131,7 +156,8 @@ Tests cover:
 
 ## Debugging
 
-- Enable debug logging: `DEBUG=1 ./dev run`
+- App console logging: `./dev run --log console --log-level debug`
+  (`DEBUG=1 ./dev run` only toggles the shell script's own logging).
 - Check Console.app for app logs
 - SwiftUI previews available for most views
 
@@ -145,8 +171,7 @@ Tests cover:
 
 ## Security Considerations
 
-- Never log credentials or tokens
-- Use Keychain for all sensitive data
-- Request minimal OAuth scopes
-- Validate SSL certificates
+- Never log credentials or tokens (the agent must not echo its bearer token)
+- Use Keychain for all sensitive data; never persist tokens in SwiftData
+- Request minimal token scopes (fine-grained, read-only where possible)
 - No telemetry or analytics by default

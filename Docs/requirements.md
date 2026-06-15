@@ -1,5 +1,11 @@
 # Requirements
 
+> **⚠️ Superseded — see #20.** These requirements describe the original cloud-estate
+> direction (multi-provider repository/service monitoring) that was deferred. The
+> shipped product is a local-first host/CI/worktree cockpit. For the current
+> architecture, see the [README](../README.md) and [CLAUDE.md](../CLAUDE.md).
+> This file is retained for historical context only.
+
 ## Core Concepts
 
 ### Repositories
