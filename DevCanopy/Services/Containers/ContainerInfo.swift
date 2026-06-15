@@ -1,28 +1,33 @@
 import Foundation
 
 /// A container runtime / VM manager detected on this machine.
-enum ContainerRuntime: String, Sendable, CaseIterable, Codable {
+enum ContainerRuntime: String, CaseIterable, Codable {
     case docker
     case podman
     case tart
 
     /// Tool executable name to resolve on PATH.
-    var toolName: String { rawValue }
+    var toolName: String {
+        rawValue
+    }
 
     var displayName: String {
         switch self {
-        case .docker: return "Docker"
-        case .podman: return "Podman"
-        case .tart: return "Tart"
+        case .docker: "Docker"
+        case .podman: "Podman"
+        case .tart: "Tart"
         }
     }
 }
 
 /// One container or VM (local or reported by a remote agent — same wire shape).
-struct ContainerInfo: Sendable, Identifiable, Equatable, Codable {
+struct ContainerInfo: Identifiable, Equatable, Codable {
     /// Stable identity: runtime + name (names are unique within a runtime).
     /// Computed, so it's excluded from Codable (not part of the wire shape).
-    var id: String { "\(runtime.rawValue):\(name)" }
+    var id: String {
+        "\(runtime.rawValue):\(name)"
+    }
+
     let name: String
     let statusText: String
     let isRunning: Bool
@@ -36,7 +41,6 @@ struct ContainerInfo: Sendable, Identifiable, Equatable, Codable {
 
 /// Pure, tested parsing for container/VM tool output. No I/O here.
 enum ContainerParsing {
-
     /// Parses `docker ps -a --format '{{.Names}}|{{.Status}}|{{.Image}}'`
     /// (and the identical podman invocation): pipe-delimited lines.
     /// `isRunning` is true when the status begins with "Up".

@@ -22,16 +22,18 @@ enum RefreshInterval: Int, Codable, CaseIterable {
         return RefreshInterval(rawValue: raw) ?? .default
     }
 
-    var seconds: TimeInterval { TimeInterval(rawValue) }
+    var seconds: TimeInterval {
+        TimeInterval(rawValue)
+    }
 
     var displayName: String {
         switch self {
         case .thirtySeconds:
-            return "30 seconds"
+            "30 seconds"
         case .oneMinute:
-            return "1 minute"
+            "1 minute"
         case .fiveMinutes:
-            return "5 minutes"
+            "5 minutes"
         }
     }
 }

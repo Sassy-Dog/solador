@@ -1,8 +1,7 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class CockpitLayoutTests: XCTestCase {
-
     /// The shipped layout must render every panel exactly once — guards against
     /// dropping or duplicating a panel when arranging rows.
     func testHostsForwardLayoutContainsEveryPanelExactlyOnce() {

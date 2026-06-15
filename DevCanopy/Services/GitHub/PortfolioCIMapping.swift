@@ -2,7 +2,6 @@ import Foundation
 
 /// Pure mapping from a repo's workflow-runs DTOs to CI health models.
 enum PortfolioCIMapping {
-
     private static let isoStandard = ISO8601DateFormatter()
 
     private static let isoFractional: ISO8601DateFormatter = {
@@ -21,22 +20,26 @@ enum PortfolioCIMapping {
 /// One workflow run distilled to what the CI Health panel renders.
 struct RunRef: Equatable, Identifiable {
     let runID: Int64
-    let title: String          // workflow name, e.g. "CI"
-    let context: String        // "main" or the PR/branch name
+    let title: String // workflow name, e.g. "CI"
+    let context: String // "main" or the PR/branch name
     let conclusion: RunConclusion?
     let status: RunStatus?
     let startedAt: Date?
     let htmlURL: String
 
-    var id: Int64 { runID }
+    var id: Int64 {
+        runID
+    }
 
     /// A `.pending`/`.queued` run older than this with no jobs dispatched reads as
     /// STUCK/BLOCKED rather than a healthy long-running job (the 17h51m incident).
-    static let stuckThreshold: TimeInterval = 3600  // 1 hour
+    static let stuckThreshold: TimeInterval = 3600 // 1 hour
 
     /// Parked at a deployment-protection gate (manual approval or wait timer).
     /// GitHub's `status == "waiting"` is the precise signal a human must act.
-    var needsApproval: Bool { status == .waiting }
+    var needsApproval: Bool {
+        status == .waiting
+    }
 
     /// Queued/pending past the staleness threshold — concurrency-blocked or
     /// stuck-queued, not actually executing. `now` is injectable for testing.
@@ -56,40 +59,47 @@ struct RunRef: Equatable, Identifiable {
     func isRunning(now: Date = Date()) -> Bool {
         switch status {
         case .some(.inProgress):
-            return true
+            true
         case .some(.queued), .some(.requested), .some(.pending):
-            return !isStuck(now: now)
+            !isStuck(now: now)
         default:
             // .waiting → needs approval (not running); .completed/.none → not running
-            return false
+            false
         }
     }
 
     /// Default-clock convenience for callers that don't inject a clock.
-    var isRunning: Bool { isRunning(now: Date()) }
+    var isRunning: Bool {
+        isRunning(now: Date())
+    }
 
     var isFailed: Bool {
         switch conclusion {
         case .failure, .timedOut, .cancelled, .startupFailure:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
 }
 
 /// Per-repo CI health: latest main run, latest PR run, and any running runs.
 struct RepoCIHealth: Equatable, Identifiable {
-    let repo: String           // "owner/name"
+    let repo: String // "owner/name"
     let main: RunRef?
     let lastPR: RunRef?
-    let running: [RunRef]       // actively executing (excludes waiting + stuck)
+    let running: [RunRef] // actively executing (excludes waiting + stuck)
     let needsApproval: [RunRef] // parked at a deployment-protection gate (.waiting)
-    let stuck: [RunRef]         // queued/pending past the staleness threshold
-    let reachable: Bool        // false when the repo's runs couldn't be fetched
+    let stuck: [RunRef] // queued/pending past the staleness threshold
+    let reachable: Bool // false when the repo's runs couldn't be fetched
 
-    var id: String { repo }
-    var shortName: String { repo.split(separator: "/").last.map(String.init) ?? repo }
+    var id: String {
+        repo
+    }
+
+    var shortName: String {
+        repo.split(separator: "/").last.map(String.init) ?? repo
+    }
 
     /// Healthy = reachable and neither main nor lastPR failed. A *running* workflow
     /// does NOT make a repo unhealthy (running is activity, not a problem, and is
@@ -101,8 +111,15 @@ struct RepoCIHealth: Equatable, Identifiable {
 
     /// A repo whose runs couldn't be fetched (auth/network error).
     static func unreachable(repo: String) -> RepoCIHealth {
-        RepoCIHealth(repo: repo, main: nil, lastPR: nil, running: [],
-                     needsApproval: [], stuck: [], reachable: false)
+        RepoCIHealth(
+            repo: repo,
+            main: nil,
+            lastPR: nil,
+            running: [],
+            needsApproval: [],
+            stuck: [],
+            reachable: false
+        )
     }
 }
 
@@ -115,10 +132,17 @@ extension PortfolioCIMapping {
         let lastPR = sorted.first { $0.event == "pull_request" }.map(ref)
         let refs = sorted.map(ref)
         let running = refs.filter { $0.isRunning(now: now) }
-        let needsApproval = refs.filter { $0.needsApproval }
+        let needsApproval = refs.filter(\.needsApproval)
         let stuck = refs.filter { $0.isStuck(now: now) }
-        return RepoCIHealth(repo: repo, main: main, lastPR: lastPR, running: running,
-                            needsApproval: needsApproval, stuck: stuck, reachable: true)
+        return RepoCIHealth(
+            repo: repo,
+            main: main,
+            lastPR: lastPR,
+            running: running,
+            needsApproval: needsApproval,
+            stuck: stuck,
+            reachable: true
+        )
     }
 
     private static func ref(_ run: WorkflowRunDTO) -> RunRef {
@@ -134,7 +158,7 @@ extension PortfolioCIMapping {
     }
 
     private static func contextLabel(_ run: WorkflowRunDTO) -> String {
-        if run.event == "push" && run.headBranch == "main" { return "main" }
+        if run.event == "push", run.headBranch == "main" { return "main" }
         if run.event == "pull_request" { return run.headBranch ?? "PR" }
         return run.headBranch ?? run.event
     }

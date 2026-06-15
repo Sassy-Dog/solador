@@ -1,0 +1,76 @@
+# SwiftLint Configuration for DevCanopy
+
+# Disabled rules
+disabled_rules:
+  - todo # Allow TODO/FIXME comments for now
+  - line_length # Allow longer lines for complex view/service code
+  - function_body_length # Some service methods are complex
+  - type_body_length # Models/views have many properties
+  # SwiftFormat owns layout; these two SwiftLint rules disagree with its config:
+  #   - opening_brace: SwiftFormat's wrapMultilineStatementBraces puts `{` on its
+  #     own line after a multi-line condition; SwiftLint wants it on the same line.
+  #   - switch_case_alignment: clashes with `--indentcase false` on compact
+  #     single-expression switches. Avoid the two tools fighting over braces.
+  - opening_brace
+  - switch_case_alignment
+
+# Opt-in rules
+opt_in_rules:
+  # NOTE: `empty_count` is deliberately NOT enabled — its autofix rewrites
+  # `count == 0` to `isEmpty`, which turns CircularBuffer's own
+  # `isEmpty { count == 0 }` getter into infinite recursion (SIGSEGV).
+  # Same footgun documented for SwiftFormat's `isEmpty` rule in .swiftformat.
+  - explicit_init
+  - first_where
+  - sorted_first_last
+  - contains_over_filter_count
+  - contains_over_filter_is_empty
+  - contains_over_first_not_nil
+  - flatmap_over_map_reduce
+  - last_where
+  - reduce_into
+  - redundant_nil_coalescing
+  - toggle_bool
+  - unused_optional_binding
+
+# Paths to include/exclude
+included:
+  - DevCanopy
+  - DevCanopyTests
+  - Packages/HostMetricsKit/Sources
+  - Packages/HostMetricsKit/Tests
+
+excluded:
+  - .build
+  - build
+  - Scripts
+  - DevCanopy/Assets.xcassets
+
+# Rule configurations
+file_length:
+  warning: 500
+  error: 1000
+
+type_name:
+  min_length: 3
+  max_length:
+    warning: 50
+    error: 60
+
+identifier_name:
+  min_length: 1 # Allow single letter variables in closures
+  max_length:
+    warning: 50
+    error: 60
+  excluded:
+    - id
+    - i
+    - j
+    - x
+    - y
+    - z
+
+nesting:
+  type_level:
+    warning: 2
+    error: 3

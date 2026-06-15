@@ -1,8 +1,7 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class ContainerParsingTests: XCTestCase {
-
     // MARK: - docker/podman ps
 
     func testParsePsOutputParsesPipeDelimitedRunningAndStopped() {

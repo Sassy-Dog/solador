@@ -7,24 +7,24 @@ import Foundation
 
 /// Status of a GitHub Actions workflow run (the `status` field).
 enum RunStatus: String, Codable {
-    case requested = "requested"
-    case queued = "queued"
-    case pending = "pending"
-    case waiting = "waiting"
+    case requested
+    case queued
+    case pending
+    case waiting
     case inProgress = "in_progress"
-    case completed = "completed"
+    case completed
 }
 
 /// Conclusion of a completed GitHub Actions workflow run (the `conclusion` field).
 enum RunConclusion: String, Codable {
-    case success = "success"
-    case failure = "failure"
-    case neutral = "neutral"
-    case cancelled = "cancelled"
-    case skipped = "skipped"
+    case success
+    case failure
+    case neutral
+    case cancelled
+    case skipped
     case timedOut = "timed_out"
     case actionRequired = "action_required"
-    case stale = "stale"
+    case stale
     case startupFailure = "startup_failure"
 }
 
@@ -33,7 +33,7 @@ struct WorkflowDisplayOptions: Codable, Equatable {
     var showInDashboard: Bool = true
     var showInRepositoryCard: Bool = true
     var badgeStyle: WorkflowBadgeStyle = .iconAndText
-    var prominentForRelease: Bool = true  // Show release version prominently
+    var prominentForRelease: Bool = true // Show release version prominently
     var notifyOnFailure: Bool = true
     var notifyOnSuccess: Bool = false
     /// Fire a macOS notification once when a tracked run transitions into the
@@ -44,6 +44,6 @@ struct WorkflowDisplayOptions: Codable, Equatable {
 enum WorkflowBadgeStyle: String, Codable {
     case iconOnly = "icon"
     case textOnly = "text"
-    case iconAndText = "iconAndText"
-    case detailed = "detailed"  // Shows run number, duration, etc.
+    case iconAndText
+    case detailed // Shows run number, duration, etc.
 }

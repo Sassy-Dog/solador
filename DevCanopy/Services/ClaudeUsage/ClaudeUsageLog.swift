@@ -4,7 +4,6 @@ import Foundation
 /// side-effect free so it can be unit-tested; the surrounding service handles
 /// file discovery and threading.
 enum ClaudeUsageLog {
-
     /// Shared formatter for the ISO-8601 timestamps with fractional seconds
     /// (e.g. `2026-05-29T13:18:22.932Z`).
     private static let isoFormatter: ISO8601DateFormatter = {

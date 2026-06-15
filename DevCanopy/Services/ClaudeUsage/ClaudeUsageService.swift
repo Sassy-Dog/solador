@@ -37,9 +37,9 @@ final class ClaudeUsageService: ObservableObject {
             Self.loadSummary(projectsDir: dir, now: now)
         }.value
         self.summary = summary
-        self.lastError = dirExists ? nil : "no ~/.claude/projects"
-        self.lastUpdated = Date()
-        self.isLoading = false
+        lastError = dirExists ? nil : "no ~/.claude/projects"
+        lastUpdated = Date()
+        isLoading = false
     }
 
     /// Initial load plus a repeating refresh.
@@ -47,11 +47,11 @@ final class ClaudeUsageService: ObservableObject {
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }
-            await self.refresh()
+            await refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled { break }
-                await self.refresh()
+                await refresh()
             }
         }
     }
@@ -72,7 +72,7 @@ final class ClaudeUsageService: ObservableObject {
 
     // MARK: - Off-actor loading
 
-    nonisolated private static func loadSummary(projectsDir: URL, now: Date) -> UsageSummary {
+    private nonisolated static func loadSummary(projectsDir: URL, now: Date) -> UsageSummary {
         let fm = FileManager.default
         let cutoff = now.addingTimeInterval(-8 * 24 * 3600) // 8 days of slack over the 7d window
 
@@ -102,7 +102,7 @@ final class ClaudeUsageService: ObservableObject {
 
     /// Streams a file line-by-line, parsing usage records. Resilient: malformed
     /// lines and read errors are skipped.
-    nonisolated private static func appendRecords(from url: URL, into records: inout [UsageRecord]) {
+    private nonisolated static func appendRecords(from url: URL, into records: inout [UsageRecord]) {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? handle.close() }
 
@@ -113,10 +113,11 @@ final class ClaudeUsageService: ObservableObject {
         while let chunk = try? handle.read(upToCount: chunkSize), !chunk.isEmpty {
             buffer.append(chunk)
             while let idx = buffer.firstIndex(of: newline) {
-                let lineData = buffer.subdata(in: buffer.startIndex..<idx)
-                buffer.removeSubrange(buffer.startIndex...idx)
+                let lineData = buffer.subdata(in: buffer.startIndex ..< idx)
+                buffer.removeSubrange(buffer.startIndex ... idx)
                 if let line = String(data: lineData, encoding: .utf8),
-                   let record = ClaudeUsageLog.parseLine(line) {
+                   let record = ClaudeUsageLog.parseLine(line)
+                {
                     records.append(record)
                 }
             }
@@ -124,7 +125,8 @@ final class ClaudeUsageService: ObservableObject {
         // Trailing line without newline.
         if !buffer.isEmpty,
            let line = String(data: buffer, encoding: .utf8),
-           let record = ClaudeUsageLog.parseLine(line) {
+           let record = ClaudeUsageLog.parseLine(line)
+        {
             records.append(record)
         }
     }

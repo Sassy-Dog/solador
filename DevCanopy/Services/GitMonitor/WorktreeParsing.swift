@@ -1,8 +1,11 @@
 import Foundation
 
 /// One worktree of a git repository.
-struct WorktreeInfo: Sendable, Identifiable, Equatable {
-    var id: String { path }
+struct WorktreeInfo: Identifiable, Equatable {
+    var id: String {
+        path
+    }
+
     let path: String
     /// Branch name with `refs/heads/` stripped; nil when detached or bare.
     let branch: String?
@@ -13,7 +16,6 @@ struct WorktreeInfo: Sendable, Identifiable, Equatable {
 
 /// Pure, tested parsing for `git worktree list --porcelain`. No I/O here.
 enum WorktreeParsing {
-
     /// Parses blank-line-separated porcelain records into `[WorktreeInfo]`.
     static func parseWorktreeList(_ output: String) -> [WorktreeInfo] {
         // Records are separated by blank lines. Each record begins with a
@@ -51,13 +53,17 @@ enum WorktreeParsing {
             let line = String(rawLine)
             if line.trimmingCharacters(in: .whitespaces).isEmpty {
                 // Blank line terminates the current record.
-                if path != nil { flush(); reset() }
+                if path != nil { flush()
+                    reset()
+                }
                 continue
             }
 
             if line.hasPrefix("worktree ") {
                 // New record begins; flush any in-progress one.
-                if path != nil { flush(); reset() }
+                if path != nil { flush()
+                    reset()
+                }
                 path = String(line.dropFirst("worktree ".count)).trimmingCharacters(in: .whitespaces)
             } else if line.hasPrefix("HEAD ") {
                 head = String(line.dropFirst("HEAD ".count)).trimmingCharacters(in: .whitespaces)

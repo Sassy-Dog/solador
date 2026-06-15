@@ -1,5 +1,5 @@
-import SwiftUI
 import SwiftData
+import SwiftUI
 
 /// Settings tab to manage remote hosts running the DevCanopy agent. Connection
 /// details persist as `MonitoredHost`; the bearer token goes to the Keychain.
@@ -110,7 +110,10 @@ struct HostsSettingsView: View {
     private func enabledBinding(_ host: MonitoredHost) -> Binding<Bool> {
         Binding(
             get: { host.enabled },
-            set: { host.enabled = $0; try? modelContext.save(); coordinator.reload() }
+            set: { host.enabled = $0
+                try? modelContext.save()
+                coordinator.reload()
+            }
         )
     }
 
@@ -125,7 +128,10 @@ struct HostsSettingsView: View {
             try modelContext.save()
             coordinator.reload()
             statusMessage = "Added \(newName)."
-            newName = ""; newAddress = ""; newPort = "7878"; newToken = ""
+            newName = ""
+            newAddress = ""
+            newPort = "7878"
+            newToken = ""
         } catch {
             statusMessage = "Failed: \(error.localizedDescription)"
         }
@@ -146,19 +152,19 @@ struct HostsSettingsView: View {
         testResults[host.id] = "Testing…"
         Task {
             switch await probe.checkHealth() {
-            case .ok(let info):
+            case let .ok(info):
                 // Show the live agent version + hostname so a redeploy can be
                 // confirmed without SSHing in. Flag a stale sampler if present.
                 var line = "✓ \(info.hostname) · agent v\(info.version)"
                 if info.samplerStale == true { line += " · sampler stale" }
                 testResults[host.id] = line
-            case .failure(let error):
+            case let .failure(error):
                 switch error {
                 case .authFailed:
                     testResults[host.id] = "✗ auth failed (401) — check token"
                 case .decodeFailed:
                     testResults[host.id] = "✗ decode failed — agent/app version skew?"
-                case .httpStatus(let code):
+                case let .httpStatus(code):
                     testResults[host.id] = "✗ HTTP \(code)"
                 case .unreachable:
                     testResults[host.id] = "✗ unreachable — host down or agent stopped"

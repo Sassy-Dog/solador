@@ -65,6 +65,53 @@ jobs:
       - name: Run tests
         run: ./dev test
 
+  lint:
+    name: Lint
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # Pin SwiftLint to a specific release (not the floating Homebrew formula) so
+      # the rule set can't drift silently and re-baseline us. Matches the local
+      # toolchain (lint-baseline.json was generated with this version).
+      - name: Install SwiftLint (pinned)
+        env:
+          SWIFTLINT_VERSION: '0.63.3'
+        run: |
+          curl -fsSL -o /tmp/swiftlint.zip \
+            "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
+          unzip -o -q /tmp/swiftlint.zip -d /tmp/swiftlint
+          sudo mv /tmp/swiftlint/swiftlint /usr/local/bin/swiftlint
+          swiftlint version
+
+      - name: Run SwiftLint
+        run: |
+          # --strict fails on any NON-baselined violation. The baseline
+          # (lint-baseline.json) holds pre-existing structural debt in the
+          # absorbed HostMetricsKit code (large_tuple / cyclomatic_complexity /
+          # file_length, etc.) so the gate enforces clean NEW code without
+          # blocking on that legacy backlog. Shrink the baseline as that debt lands.
+          swiftlint lint --baseline lint-baseline.json --strict --reporter github-actions-logging
+
+      # Pinned for reproducibility; matches the local toolchain that reformatted
+      # the repo (config: .swiftformat).
+      - name: Install SwiftFormat (pinned)
+        env:
+          SWIFTFORMAT_VERSION: '0.61.1'
+        run: |
+          curl -fsSL -o /tmp/swiftformat.zip \
+            "https://github.com/nicklockwood/SwiftFormat/releases/download/${SWIFTFORMAT_VERSION}/swiftformat.zip"
+          unzip -o -q /tmp/swiftformat.zip -d /tmp/swiftformat
+          BIN=$(find /tmp/swiftformat -name swiftformat -type f -perm +111 | head -1)
+          sudo mv "$BIN" /usr/local/bin/swiftformat
+          swiftformat --version
+
+      - name: Run SwiftFormat (lint)
+        run: |
+          # Blocking: fails on any formatting violation. New code must stay
+          # formatted to .swiftformat.
+          swiftformat --lint .
+
   agent-tests:
     name: Rust agent
     runs-on: ubuntu-latest

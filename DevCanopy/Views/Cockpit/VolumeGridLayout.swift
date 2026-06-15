@@ -21,7 +21,7 @@ enum VolumeGridLayout {
         var rows: [[VolumeUsage]] = []
         var rest = volumes
         if !rest.count.isMultiple(of: 2) {
-            rows.append([rest.removeFirst()])   // most-important, full-width top row
+            rows.append([rest.removeFirst()]) // most-important, full-width top row
         }
         var i = 0
         while i < rest.count {

@@ -23,7 +23,9 @@ final class CIRunnersService: ObservableObject {
         github.configureFromKeychain()
         isAuthenticated = github.hasToken
         guard isAuthenticated else {
-            runners = []; summary = nil; loadError = nil
+            runners = []
+            summary = nil
+            loadError = nil
             return
         }
         do {
@@ -46,7 +48,12 @@ final class CIRunnersService: ObservableObject {
 
     /// macOS first, then Linux, then by name.
     private static func order(_ a: CIRunner, _ b: CIRunner) -> Bool {
-        func rank(_ os: RunnerOS) -> Int { switch os { case .macOS: 0; case .linux: 1; case .other: 2 } }
+        func rank(_ os: RunnerOS) -> Int {
+            switch os
+            { case .macOS: 0
+            case .linux: 1
+            case .other: 2 }
+        }
         if rank(a.os) != rank(b.os) { return rank(a.os) < rank(b.os) }
         return a.name.localizedStandardCompare(b.name) == .orderedAscending
     }
@@ -55,16 +62,19 @@ final class CIRunnersService: ObservableObject {
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }
-            await self.refresh()
+            await refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled { break }
-                await self.refresh()
+                await refresh()
             }
         }
     }
 
-    func stop() { task?.cancel(); task = nil }
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
 
     /// Stops the current polling loop and restarts it on a new cadence. Used
     /// when the user changes the Refresh Interval setting.

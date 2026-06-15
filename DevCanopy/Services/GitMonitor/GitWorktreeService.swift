@@ -2,8 +2,11 @@ import Foundation
 
 /// Per-worktree status combining the parsed worktree record with ahead/behind
 /// and dirty state computed from `git status`.
-struct WorktreeStatus: Sendable, Identifiable, Equatable {
-    var id: String { info.id }
+struct WorktreeStatus: Identifiable, Equatable {
+    var id: String {
+        info.id
+    }
+
     let info: WorktreeInfo
     let ahead: Int
     let behind: Int
@@ -12,12 +15,15 @@ struct WorktreeStatus: Sendable, Identifiable, Equatable {
 
 /// A repository and its worktrees that have changes (clean ones are summarized
 /// by `cleanCount` to keep the panel glanceable).
-struct RepoWorktrees: Sendable, Identifiable, Equatable {
-    var id: String { path }
+struct RepoWorktrees: Identifiable, Equatable {
+    var id: String {
+        path
+    }
+
     let name: String
     let path: String
-    let worktrees: [WorktreeStatus]   // only worktrees with changes
-    let cleanCount: Int               // worktrees that are clean & synced (hidden)
+    let worktrees: [WorktreeStatus] // only worktrees with changes
+    let cleanCount: Int // worktrees that are clean & synced (hidden)
 }
 
 /// Discovers git repos under configured roots and reports their worktrees with
@@ -50,11 +56,11 @@ final class GitWorktreeService: ObservableObject {
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }
-            await self.refresh()
+            await refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled { break }
-                await self.refresh()
+                await refresh()
             }
         }
     }
@@ -75,8 +81,8 @@ final class GitWorktreeService: ObservableObject {
 
     /// Scans + computes status off-actor, then publishes.
     func refresh() async {
-        let roots = self.roots
-        let maxDepth = self.maxDepth
+        let roots = roots
+        let maxDepth = maxDepth
         let slugs = slugsProvider()
 
         let scanned = await Task.detached { () -> [RepoWorktrees] in
@@ -86,15 +92,15 @@ final class GitWorktreeService: ObservableObject {
             return repoPaths.compactMap { Self.repoWorktrees(at: $0) }
         }.value
 
-        self.repos = scanned.sorted { $0.name.lowercased() < $1.name.lowercased() }
-        self.lastUpdated = Date()
+        repos = scanned.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        lastUpdated = Date()
     }
 
     // MARK: - Discovery (off-actor)
 
     /// Finds directories containing a `.git` entry up to `maxDepth` below each
     /// root. Does not descend into a repo once found.
-    nonisolated private static func discoverRepos(roots: [String], maxDepth: Int) -> [String] {
+    private nonisolated static func discoverRepos(roots: [String], maxDepth: Int) -> [String] {
         let fm = FileManager.default
         var found: [String] = []
 
@@ -102,7 +108,7 @@ final class GitWorktreeService: ObservableObject {
             // A directory with a `.git` entry is a repo root.
             if fm.fileExists(atPath: "\(dir)/.git") {
                 found.append(dir)
-                return  // don't descend into a repo
+                return // don't descend into a repo
             }
             guard depth < maxDepth else { return }
             guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { return }
@@ -125,7 +131,7 @@ final class GitWorktreeService: ObservableObject {
 
     /// Lists worktrees of the repo at `path` and computes per-worktree status.
     /// Returns nil if the repo errors or has no worktrees.
-    nonisolated private static func repoWorktrees(at path: String) -> RepoWorktrees? {
+    private nonisolated static func repoWorktrees(at path: String) -> RepoWorktrees? {
         guard let listOutput = runGit(directory: path, ["worktree", "list", "--porcelain"]) else {
             return nil
         }
@@ -154,7 +160,7 @@ final class GitWorktreeService: ObservableObject {
     }
 
     /// Runs `git -C <directory> <args>` capturing stdout. Returns nil on failure.
-    nonisolated private static func runGit(directory: String, _ args: [String]) -> String? {
+    private nonisolated static func runGit(directory: String, _ args: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", directory] + args

@@ -21,7 +21,7 @@ func coreColumns(coreCount: Int, maxColumns: Int = 10) -> Int {
 
     // Largest proper divisor (rows = coreCount / c ≥ 2) within the cap → fewest rows, no waste.
     var best = 0
-    for c in 1...min(maxColumns, coreCount) where coreCount % c == 0 && coreCount / c >= 2 {
+    for c in 1 ... min(maxColumns, coreCount) where coreCount % c == 0 && coreCount / c >= 2 {
         best = c
     }
     if best >= 2 { return best }
@@ -30,7 +30,7 @@ func coreColumns(coreCount: Int, maxColumns: Int = 10) -> Int {
     var bestColumns = 2
     var bestWaste = Int.max
     var bestRows = Int.max
-    for c in 2...max(2, maxColumns) {
+    for c in 2 ... max(2, maxColumns) {
         let rows = (coreCount + c - 1) / c
         guard rows >= 2 else { continue }
         let waste = rows * c - coreCount

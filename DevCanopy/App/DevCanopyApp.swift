@@ -1,5 +1,5 @@
-import SwiftUI
 import SwiftData
+import SwiftUI
 
 @main
 struct DevCanopyApp: App {
@@ -26,33 +26,33 @@ struct DevCanopyApp: App {
         appLogger.info("DevCanopy starting...")
         appLogger.debug("Console logging: \(ProcessInfo.processInfo.environment["DEVCANOPY_LOG_CONSOLE"] ?? "disabled")")
         appLogger.debug("Log level: \(ProcessInfo.processInfo.environment["DEVCANOPY_LOG_LEVEL"] ?? "info")")
-        
+
         do {
             let schema = Schema([
                 MonitoredHost.self,
                 TrackedRepo.self
             ])
-            
+
             let modelConfiguration = ModelConfiguration(
                 schema: schema,
                 isStoredInMemoryOnly: false
             )
-            
+
             let container = try ModelContainer(
                 for: schema,
                 configurations: [modelConfiguration]
             )
-            
-            self.modelContainer = container
+
+            modelContainer = container
 
             // Coordinator for remote-host agents (reads MonitoredHost from SwiftData)
-            self._remoteHosts = StateObject(
+            _remoteHosts = StateObject(
                 wrappedValue: RemoteHostsCoordinator(modelContext: container.mainContext)
             )
 
             // Editable portfolio repo set (reads TrackedRepo from SwiftData, seeds
             // once). Drives the Portfolio CI, CI Runners, and Git/Worktrees panels.
-            self._portfolioStore = StateObject(
+            _portfolioStore = StateObject(
                 wrappedValue: PortfolioStore(modelContext: container.mainContext)
             )
 
@@ -62,7 +62,7 @@ struct DevCanopyApp: App {
             fatalError("Failed to create ModelContainer: \(error)")
         }
     }
-    
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -130,7 +130,7 @@ struct DevCanopyApp: App {
                 }
             }
         }
-        
+
         Settings {
             SettingsView()
                 .environmentObject(remoteHosts)
