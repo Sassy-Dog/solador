@@ -53,6 +53,15 @@ jobs:
       - name: Install xcbeautify
         run: brew install xcbeautify
 
+      # The HostMetricsKit SPM package is not part of the DevCanopy app scheme, so
+      # `./dev test` never runs it (issue #28). Run it directly with `swift test`
+      # so its suite — including the testCPUPercentBackwardsCounterDoesNotCrash
+      # regression lock for the PID-reuse counter-underflow crash — actually
+      # executes in CI. Uses the toolchain already pinned by setup-xcode above; no
+      # XcodeGen/xcbeautify needed for SPM.
+      - name: Run HostMetricsKit package tests
+        run: swift test --package-path Packages/HostMetricsKit
+
       - name: Run tests
         run: ./dev test
 

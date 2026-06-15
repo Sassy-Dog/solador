@@ -51,10 +51,14 @@ final class HostMetricsCollectorTests: XCTestCase {
         let collector = HostMetricsCollector()
         let snapshot = await collector.collectSnapshot()
 
+        // Generous window: this guards against a wildly-wrong timestamp (e.g. an
+        // epoch/uninitialized value), not clock precision. A tight bound flakes on a
+        // cold CI runner where the first snapshot collection can be slow; 30s still
+        // catches the failure mode while tolerating a sluggish runner.
         XCTAssertLessThan(
             abs(snapshot.timestamp.timeIntervalSinceNow),
-            5,
-            "Snapshot timestamp should be within 5 seconds of now"
+            30,
+            "Snapshot timestamp should be recent (within 30 seconds of now)"
         )
     }
 
