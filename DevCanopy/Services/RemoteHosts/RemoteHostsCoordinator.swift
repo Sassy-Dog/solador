@@ -7,7 +7,9 @@ import SwiftData
 /// `hosts` (merged with the local service) and `containersByHost`.
 @MainActor
 final class RemoteHostsCoordinator: ObservableObject {
-    @Published private(set) var hosts: [RemoteHostMetricsService] = []
+    /// Typed as the base `HostMetricsService` (not `RemoteHostMetricsService`) so
+    /// demo mode can inject a `DemoHostMetricsService` here alongside real agents.
+    @Published private(set) var hosts: [HostMetricsService] = []
     @Published private(set) var containersByHost: [String: [ContainerInfo]] = [:]
 
     private let modelContext: ModelContext
@@ -62,6 +64,21 @@ final class RemoteHostsCoordinator: ObservableObject {
             startContainerPolling(hostID: host.id, hostName: host.name, service: service)
             return service
         }
+    }
+
+    /// Demo-mode wiring: replaces any real hosts with a single synthetic remote host
+    /// driven by `DemoHostMetricsService`, plus a static set of demo containers. No
+    /// SwiftData, no network. Off-path for normal launches — only `DemoMode` calls it.
+    func loadDemo() {
+        stopAll()
+        let demo = DemoHostMetricsService(
+            hostName: "ubu-build",
+            profile: .remoteLinux,
+            connectionState: .connected
+        )
+        demo.start()
+        hosts = [demo]
+        containersByHost = ["ubu-build": DemoContainers.remote]
     }
 
     /// Pushes the persisted hide lists into the live services. Used after Settings
