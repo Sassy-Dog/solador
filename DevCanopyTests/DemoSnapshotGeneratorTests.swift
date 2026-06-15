@@ -1,6 +1,6 @@
-import XCTest
-import HostMetricsKit
 @testable import DevCanopy
+import HostMetricsKit
+import XCTest
 
 /// Locks the demo data source's invariants: snapshots stay in plausible ranges,
 /// the warmup fills the full history window, and profile shape (cores, battery,
@@ -9,12 +9,12 @@ final class DemoSnapshotGeneratorTests: XCTestCase {
     func testSnapshotValuesStayInPlausibleRanges() {
         let gen = DemoSnapshotGenerator(profile: .localMac)
         // Sweep a range of phases to exercise the periodic components.
-        for i in 0..<200 {
+        for i in 0 ..< 200 {
             let snap = gen.snapshot(at: Double(i) * DemoSnapshotGenerator.step)
-            XCTAssert((0...100).contains(snap.cpu.totalUsage), "cpu out of range: \(snap.cpu.totalUsage)")
-            XCTAssert((0...100).contains(snap.gpu.usage), "gpu out of range: \(snap.gpu.usage)")
-            XCTAssert((0...100).contains(snap.memory.usagePercentage), "mem out of range")
-            XCTAssert((0...100).contains(snap.memory.pressure), "pressure out of range")
+            XCTAssert((0 ... 100).contains(snap.cpu.totalUsage), "cpu out of range: \(snap.cpu.totalUsage)")
+            XCTAssert((0 ... 100).contains(snap.gpu.usage), "gpu out of range: \(snap.gpu.usage)")
+            XCTAssert((0 ... 100).contains(snap.memory.usagePercentage), "mem out of range")
+            XCTAssert((0 ... 100).contains(snap.memory.pressure), "pressure out of range")
             XCTAssertGreaterThanOrEqual(snap.disk.readMBps, 0)
             XCTAssertGreaterThanOrEqual(snap.disk.writeMBps, 0)
             XCTAssertGreaterThanOrEqual(snap.network.downloadMBps, 0)

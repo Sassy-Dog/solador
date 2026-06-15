@@ -16,11 +16,13 @@ final class DemoHostMetricsService: HostMetricsService {
     ///   - connectionState: `.local` for "this machine", `.connected` for a
     ///     synthetic remote host (so it renders like a healthy agent).
     init(hostName: String, profile: DemoHostProfile, connectionState: HostConnectionState) {
-        self.generator = DemoSnapshotGenerator(profile: profile)
+        generator = DemoSnapshotGenerator(profile: profile)
         let warmup = generator.warmup(samples: HostMetricsService.historyCapacity)
-        self.phase = warmup.nextPhase
+        phase = warmup.nextPhase
         super.init(hostName: hostName, connectionState: connectionState)
-        for snap in warmup.snapshots { ingest(snap) }
+        for snap in warmup.snapshots {
+            ingest(snap)
+        }
         installLifecyclePause()
     }
 
@@ -30,8 +32,8 @@ final class DemoHostMetricsService: HostMetricsService {
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.phase += DemoSnapshotGenerator.step
-                self.ingest(self.generator.snapshot(at: self.phase))
+                phase += DemoSnapshotGenerator.step
+                ingest(generator.snapshot(at: phase))
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
