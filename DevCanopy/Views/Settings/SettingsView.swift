@@ -201,8 +201,8 @@ struct AboutView: View {
                 .frame(width: 200)
             
             VStack(alignment: .leading, spacing: 8) {
-                Link("GitHub Repository", destination: URL(string: "https://github.com/sassydog/devcanopy")!)
-                Link("Report an Issue", destination: URL(string: "https://github.com/sassydog/devcanopy/issues")!)
+                Link("GitHub Repository", destination: URL(string: "https://github.com/Sassy-Dog/devcanopy")!)
+                Link("Report an Issue", destination: URL(string: "https://github.com/Sassy-Dog/devcanopy/issues")!)
                 Link("Documentation", destination: URL(string: "https://devcanopy.app/docs")!)
             }
             
