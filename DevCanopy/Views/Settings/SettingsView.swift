@@ -1,24 +1,11 @@
 import SwiftUI
-import SwiftData
 
 struct SettingsView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var settings: [AppSettings]
-    
-    private var appSettings: AppSettings? {
-        settings.first
-    }
-    
     var body: some View {
         TabView {
             GeneralSettingsView()
                 .tabItem {
                     Label("General", systemImage: "gear")
-                }
-            
-            TerminalSettingsView()
-                .tabItem {
-                    Label("Terminal", systemImage: "terminal")
                 }
 
             GitHubSettingsView()
@@ -41,10 +28,12 @@ struct SettingsView: View {
 }
 
 struct GeneralSettingsView: View {
-    @AppStorage("refreshInterval") private var refreshInterval: Int = 60
-    @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
-    @AppStorage("showPerformanceOverlay") private var showPerformanceOverlay: Bool = false
+    @AppStorage("refreshInterval") private var refreshInterval: Int = RefreshInterval.default.rawValue
     @AppStorage("coreRowSpan") private var coreRowSpan: Int = 2
+
+    /// Mirrors the system login-item registration so the toggle reflects real
+    /// state rather than a stored preference that may have failed to apply.
+    @State private var launchAtLogin: Bool = LaunchAtLogin.isEnabled
 
     var body: some View {
         Form {
@@ -56,8 +45,12 @@ struct GeneralSettingsView: View {
                 }
 
                 Toggle("Launch at Login", isOn: $launchAtLogin)
-
-                Toggle("Show Performance Overlay", isOn: $showPerformanceOverlay)
+                    .onChange(of: launchAtLogin) { _, newValue in
+                        LaunchAtLogin.setEnabled(newValue)
+                        // Re-sync to the authoritative system state in case
+                        // registration was denied or failed.
+                        launchAtLogin = LaunchAtLogin.isEnabled
+                    }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Stepper("CPU core rows: \(coreRowSpan)", value: $coreRowSpan, in: 1...4)
@@ -72,47 +65,9 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-    }
-}
-
-struct TerminalSettingsView: View {
-    @AppStorage("preferredTerminal") private var preferredTerminal: String = "Terminal"
-    @State private var availableTerminals: [(name: String, bundleId: String)] = []
-    
-    var body: some View {
-        Form {
-            Section {
-                Picker("Preferred Terminal", selection: $preferredTerminal) {
-                    ForEach(availableTerminals, id: \.bundleId) { terminal in
-                        Text(terminal.name).tag(terminal.bundleId)
-                    }
-                }
-                
-                Text("Select your preferred terminal application for opening repositories")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("Terminal Settings")
-                    .font(.headline)
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
         .onAppear {
-            detectAvailableTerminals()
-        }
-    }
-    
-    private func detectAvailableTerminals() {
-        let terminals = [
-            ("Terminal", "com.apple.Terminal"),
-            ("iTerm", "com.googlecode.iterm2"),
-            ("Warp", "dev.warp.Warp-Stable"),
-            ("Ghostty", "com.mitchellh.ghostty")
-        ]
-        
-        availableTerminals = terminals.filter { terminal in
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: terminal.1) != nil
+            // Reflect any out-of-band change to the login-item registration.
+            launchAtLogin = LaunchAtLogin.isEnabled
         }
     }
 }

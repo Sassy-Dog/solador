@@ -11,7 +11,16 @@ struct DevCanopyApp: App {
     @StateObject private var ciRunnersService = CIRunnersService()
     @StateObject private var claudeUsageService = ClaudeUsageService()
     @StateObject private var portfolioCIService = PortfolioCIService()
-    
+
+    /// User-selected cadence (seconds) for the periodic data-fetch services.
+    /// Single settings mechanism: `AppStorage`/`UserDefaults` under
+    /// `refreshInterval`. Changes restart those services live.
+    @AppStorage("refreshInterval") private var refreshIntervalRaw: Int = RefreshInterval.default.rawValue
+
+    private var refreshInterval: TimeInterval {
+        TimeInterval(RefreshInterval(rawValue: refreshIntervalRaw)?.rawValue ?? RefreshInterval.default.rawValue)
+    }
+
     init() {
         appLogger.info("DevCanopy starting...")
         appLogger.debug("Console logging: \(ProcessInfo.processInfo.environment["DEVCANOPY_LOG_CONSOLE"] ?? "disabled")")
@@ -19,7 +28,6 @@ struct DevCanopyApp: App {
         
         do {
             let schema = Schema([
-                AppSettings.self,
                 MonitoredHost.self
             ])
             
@@ -59,15 +67,23 @@ struct DevCanopyApp: App {
                 .environmentObject(ciRunnersService)
                 .environmentObject(remoteHosts)
                 .task {
+                    let interval = refreshInterval
                     localHostMetrics.start()
                     containerService.start()
-                    gitWorktreeService.start()
-                    claudeUsageService.start()
+                    gitWorktreeService.start(interval: interval)
+                    claudeUsageService.start(interval: interval)
                     CINotificationService.shared.requestAuthorizationIfNeeded()
-                    portfolioCIService.start()
-                    ciRunnersService.start()
+                    portfolioCIService.start(interval: interval)
+                    ciRunnersService.start(interval: interval)
                     remoteHosts.seedFromEnvironmentIfNeeded()
                     remoteHosts.reload()
+                }
+                .onChange(of: refreshIntervalRaw) {
+                    let interval = refreshInterval
+                    gitWorktreeService.restart(interval: interval)
+                    claudeUsageService.restart(interval: interval)
+                    portfolioCIService.restart(interval: interval)
+                    ciRunnersService.restart(interval: interval)
                 }
         }
         .modelContainer(modelContainer)
