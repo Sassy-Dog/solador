@@ -83,6 +83,77 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertNil(volumes.first?.fstype, "missing fstype key decodes to nil, not a failure")
     }
 
+    // MARK: - Shared battery contract fixture
+
+    /// Absolute path to a repo-root fixture, derived from this test file's own
+    /// location (`DevCanopyTests/…` → repo root). Keeps the fixture out of the
+    /// test bundle's resources while still committing one file both languages read.
+    private func repoFixtureURL(_ relativePath: String) -> URL {
+        URL(fileURLWithPath: #filePath)            // …/DevCanopyTests/HostSnapshotWireContractTests.swift
+            .deletingLastPathComponent()           // …/DevCanopyTests
+            .deletingLastPathComponent()           // …/  (repo root)
+            .appendingPathComponent(relativePath)
+    }
+
+    /// CONTRACT LOCK (shared fixture): the non-null battery payload both sides
+    /// agree on must decode into `BatteryMetrics` from the SAME committed JSON the
+    /// Rust `battery_round_trips_shared_contract_fixture` test decodes. If the
+    /// agent's keys or this decoder drift, exactly one suite fails on this file.
+    func testSharedBatteryContractFixtureDecodes() throws {
+        let url = repoFixtureURL("TestFixtures/battery_contract.json")
+        let data = try Data(contentsOf: url)
+        let battery = try RemoteHostMetricsService.snapshotDecoder.decode(BatteryMetrics.self, from: data)
+        XCTAssertEqual(battery.level, 82.5, accuracy: 0.001)
+        XCTAssertTrue(battery.isCharging)
+        // Agent payload carries only the two contract keys — enrichment is nil.
+        XCTAssertNil(battery.hasBattery)
+        XCTAssertNil(battery.health)
+        XCTAssertNil(battery.wattage)
+    }
+
+    /// A full `HostSnapshot` carrying the shared non-null battery payload (the
+    /// path the always-`null` agent never exercised) round-trips end to end.
+    func testSnapshotWithSharedBatteryPayloadDecodes() throws {
+        let batteryJSON = try String(
+            contentsOf: repoFixtureURL("TestFixtures/battery_contract.json"), encoding: .utf8)
+        let json = """
+        {
+          "timestamp": "2026-06-04T22:00:00Z",
+          "cpu": { "totalUsage": 1.0, "coreUsages": [1.0], "model": "x", "thermalState": 0 },
+          "memory": { "usedGB": 1.0, "totalGB": 8.0, "swapUsedGB": 0.0, "pressure": 0.0 },
+          "disk": { "readMBps": 0.0, "writeMBps": 0.0 },
+          "network": { "downloadMBps": 0.0, "uploadMBps": 0.0 },
+          "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
+          "battery": \(batteryJSON)
+        }
+        """
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(snap.battery?.level, 82.5)
+        XCTAssertEqual(snap.battery?.isCharging, true)
+    }
+
+    /// A battery object with unexpected keys (and missing the required contract
+    /// keys) degrades to `battery == nil` rather than failing the whole snapshot —
+    /// the core regression guard from issue #37.
+    func testUnexpectedBatteryShapeDegradesToNil() throws {
+        let json = """
+        {
+          "timestamp": "2026-06-04T22:00:00Z",
+          "cpu": { "totalUsage": 1.0, "coreUsages": [1.0], "model": "x", "thermalState": 0 },
+          "memory": { "usedGB": 1.0, "totalGB": 8.0, "swapUsedGB": 0.0, "pressure": 0.0 },
+          "disk": { "readMBps": 0.0, "writeMBps": 0.0 },
+          "network": { "downloadMBps": 0.0, "uploadMBps": 0.0 },
+          "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
+          "battery": { "percentage": 50, "plugged": "yes" }
+        }
+        """
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(json.utf8))
+        XCTAssertNil(snap.battery, "unexpected battery shape degrades to nil, not a snapshot failure")
+        XCTAssertEqual(snap.cpu.totalUsage, 1.0, accuracy: 0.001, "rest of snapshot still decodes")
+    }
+
     func testProcessRankingUnionsTopCPUAndTopMemoryDeduped() {
         func p(_ pid: Int, cpu: Double, mem: Double) -> ProcessSample {
             ProcessSample(pid: pid, name: "p\(pid)", cpuPercent: cpu, memoryMB: mem)
