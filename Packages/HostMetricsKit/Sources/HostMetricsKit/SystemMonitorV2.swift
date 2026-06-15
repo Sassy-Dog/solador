@@ -7,6 +7,24 @@ import IOKit.storage
 import Metal
 import os
 
+// MARK: - Concurrency-safe Mach task port
+
+/// The current Mach task port.
+///
+/// Darwin exposes the task port as the global mutable `var mach_task_self_`, and
+/// `mach_task_self()` is a C macro (`#define mach_task_self() mach_task_self_`)
+/// that isn't importable into Swift — so the var is the only access. Referencing
+/// it directly trips strict-concurrency checking ("reference to var
+/// 'mach_task_self_' is not concurrency-safe because it involves shared mutable
+/// state"), and even reading it once to initialize a plain global `let` flags
+/// the same diagnostic.
+///
+/// The port value is set once at process startup and never mutates, so reading
+/// it is in fact safe. We capture it once into this immutable global —
+/// annotated `nonisolated(unsafe)` to assert that safety to the compiler — and
+/// route every call site through it rather than touching the unsafe global var.
+private nonisolated(unsafe) let machTaskSelf: mach_port_t = mach_task_self_
+
 // MARK: - Safe System Monitor with Comprehensive Error Handling
 
 class SystemMonitorV2 {
@@ -335,7 +353,7 @@ class SystemMonitorV2 {
         info = UInt32(MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
 
         let hostPort = mach_host_self()
-        defer { mach_port_deallocate(mach_task_self_, hostPort) }
+        defer { mach_port_deallocate(machTaskSelf, hostPort) }
 
         let result = withUnsafeMutablePointer(to: &cpuInfo) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(info)) {
@@ -436,7 +454,7 @@ class SystemMonitorV2 {
         previousCoreStates = currentCoreStates
 
         // Deallocate memory
-        let deallocateResult = vm_deallocate(mach_task_self_, vm_address_t(bitPattern: validCpuInfo), vm_size_t(numCpuInfo))
+        let deallocateResult = vm_deallocate(machTaskSelf, vm_address_t(bitPattern: validCpuInfo), vm_size_t(numCpuInfo))
         if deallocateResult != KERN_SUCCESS {
             Logger.system.warning("Failed to deallocate CPU info memory: \(deallocateResult)")
         }
@@ -484,7 +502,7 @@ class SystemMonitorV2 {
         var vmInfo = vm_statistics64()
         var vmInfoSize = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<natural_t>.size)
         let hostPort = mach_host_self()
-        defer { mach_port_deallocate(mach_task_self_, hostPort) }
+        defer { mach_port_deallocate(machTaskSelf, hostPort) }
 
         let vmResult = withUnsafeMutablePointer(to: &vmInfo) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(vmInfoSize)) {
