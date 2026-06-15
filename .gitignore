@@ -41,7 +41,7 @@ playground.xcworkspace
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
+# Package.resolved is intentionally NOT ignored — it pins transitive SPM deps for reproducible CI builds.
 
 # CocoaPods
 Pods/

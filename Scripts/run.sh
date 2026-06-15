@@ -64,7 +64,14 @@ if [[ "$LOG_MODE" == "console" ]] || [[ "$LOG_MODE" == "both" ]]; then
     
     # Create Logs directory
     mkdir -p "Logs"
-    
+
+    # Prune old console logs, keeping only the newest MAX_LOGS files. Without this,
+    # every console run leaves a new timestamped log behind and Logs/ grows forever.
+    MAX_LOGS=10
+    ls -1t Logs/devcanopy_*.log 2>/dev/null | tail -n +"$MAX_LOGS" | while IFS= read -r old_log; do
+        rm -f "$old_log"
+    done
+
     # Create timestamped log file
     TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
     LOG_FILE="Logs/devcanopy_${TIMESTAMP}.log"
