@@ -65,9 +65,11 @@ struct HostLupitaView: View {
                     processesSection(snap.processes)
                 }
             } else {
-                Text(service.connectionState == .unreachable ? "unreachable" : "waiting for first sample…")
+                let failed = service.connectionState.isFailed
+                Text(failed ? service.connectionState.failureLabel : "waiting for first sample…")
                     .font(CockpitTheme.mono(12))
-                    .foregroundStyle(service.connectionState == .unreachable ? CockpitTheme.red : CockpitTheme.muted)
+                    .foregroundStyle(failed ? CockpitTheme.red : CockpitTheme.muted)
+                    .help(failed ? failureTooltip : "")
             }
         }
         .padding(18)
@@ -91,7 +93,23 @@ struct HostLupitaView: View {
         switch service.connectionState {
         case .local, .connected: CockpitTheme.green
         case .connecting: CockpitTheme.amber
-        case .unreachable: CockpitTheme.red
+        case .failed: CockpitTheme.red
+        }
+    }
+
+    /// Cause-specific guidance shown on hover over a failed host, so the user
+    /// chases the right layer instead of SSHing into a healthy VM.
+    private var failureTooltip: String {
+        guard case .failed(let error) = service.connectionState else { return "" }
+        switch error {
+        case .authFailed:
+            return "Agent rejected the bearer token (401). Check the host's token in Settings."
+        case .decodeFailed:
+            return "Agent responded but the payload didn't decode — likely an agent/app version skew after a redeploy."
+        case .httpStatus(let code):
+            return "Agent returned HTTP \(code)."
+        case .unreachable:
+            return "Couldn't reach the agent. Check the host is up and the agent is running."
         }
     }
 

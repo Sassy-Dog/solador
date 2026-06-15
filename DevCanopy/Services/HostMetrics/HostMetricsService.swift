@@ -4,10 +4,24 @@ import HostMetricsKit
 
 /// Connection state for a host's metrics feed.
 enum HostConnectionState: Equatable {
-    case local            // this machine, in-process
-    case connecting       // remote, awaiting first sample
-    case connected        // remote, receiving
-    case unreachable      // remote, can't reach the agent
+    case local                       // this machine, in-process
+    case connecting                  // remote, awaiting first sample
+    case connected                   // remote, receiving
+    case failed(RemoteHostError)     // remote, last poll failed (with cause)
+
+    /// True for any failed state, regardless of cause. Lets call sites that only
+    /// care "is this host down?" stay terse.
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
+    /// Short, human-facing label for a failed state ("auth failed", "decode
+    /// failed", "unreachable", …); empty for non-failed states.
+    var failureLabel: String {
+        if case .failed(let error) = self { return error.shortLabel }
+        return ""
+    }
 }
 
 /// Base class for a host's live metrics + capped history buffers the cockpit's
