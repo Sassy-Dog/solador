@@ -42,20 +42,43 @@ pub fn list_containers() -> Vec<Container> {
 /// Run `<runtime> ps -a --format '{{.Names}}|{{.Status}}|{{.Image}}'`.
 /// Returns `None` if the binary is missing or the command fails.
 fn run_format(runtime: &str) -> Option<String> {
-    let output = Command::new(runtime)
-        .args(["ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.Image}}"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    run_command(
+        runtime,
+        &["ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.Image}}"],
+    )
 }
 
 /// Run `tart list`. Returns `None` if missing or failed.
 fn run_tart() -> Option<String> {
-    let output = Command::new("tart").arg("list").output().ok()?;
+    run_command("tart", &["list"])
+}
+
+/// Run a runtime command, returning its stdout on success.
+///
+/// A *missing* binary (the runtime simply isn't installed) stays silent — that's
+/// the expected case for an optional runtime. Any other failure — a spawn error
+/// that isn't `NotFound`, or a non-zero exit — is logged via `tracing::warn!`
+/// with the runtime name, exit status, and trimmed stderr, so an operator can
+/// diagnose e.g. a stopped rootless-podman socket from `journalctl`.
+fn run_command(runtime: &str, args: &[&str]) -> Option<String> {
+    let output = match Command::new(runtime).args(args).output() {
+        Ok(o) => o,
+        Err(e) => {
+            // Binary not on PATH is the normal "runtime not installed" case.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(runtime, error = %e, "failed to run container runtime");
+            }
+            return None;
+        }
+    };
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            runtime,
+            status = %output.status,
+            stderr = stderr.trim(),
+            "container runtime command exited non-zero"
+        );
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
