@@ -6,32 +6,52 @@ on:
   push:
     branches: [main]
 
+# Least-privilege default token: jobs only read repo contents. Widen per-job if
+# a future step needs more (e.g. packages: write).
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only dedupe redundant PR runs. main pushes must each get a verdict, so a
+  # follow-up push never cancels an in-flight main run (see run 27231906125).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   swift-tests:
     name: Swift app tests
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      # XcodeGen (Homebrew, latest) emits the newest project format, so pair it
-      # with the latest stable Xcode that can read it.
-      - uses: maxim-lobanov/setup-xcode@v1
+      # XcodeGen emits the newest project format, so pair it with a pinned Xcode
+      # that can read it. Both are pinned: a floating xcode-version or XcodeGen
+      # is a silent build input (the .xcodeproj is gitignored).
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
-          xcode-version: latest-stable
+          xcode-version: '16.2'
 
       - name: Show toolchain
         run: |
           xcodebuild -version
           swift --version
 
-      # The .xcodeproj is generated (gitignored), so CI needs XcodeGen.
-      # xcbeautify is optional — ./dev test uses it for nicer output if present.
-      - name: Install build tools
-        run: brew install xcodegen xcbeautify
+      # The .xcodeproj is generated (gitignored), so CI needs XcodeGen. Install a
+      # pinned XcodeGen release (not the floating Homebrew formula) so the
+      # generated project format cannot drift silently. xcbeautify is optional —
+      # ./dev test uses it for nicer output if present.
+      - name: Install XcodeGen (pinned)
+        env:
+          XCODEGEN_VERSION: '2.45.4'
+        run: |
+          curl -fsSL -o /tmp/xcodegen.zip \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen
+          sudo /tmp/xcodegen/xcodegen/install.sh /usr/local
+          xcodegen --version
+
+      - name: Install xcbeautify
+        run: brew install xcbeautify
 
       - name: Run tests
         run: ./dev test
@@ -43,13 +63,15 @@ jobs:
       run:
         working-directory: agent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Toolchain version is pinned in agent/rust-toolchain.toml; this action
+      # honors it. Pinned to the stable-channel action at a fixed commit.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           workspaces: agent
 

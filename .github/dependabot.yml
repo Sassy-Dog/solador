@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Rust agent crates (98 locked deps in agent/Cargo.lock).
+  - package-ecosystem: cargo
+    directory: /agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # GitHub Actions — keep the SHA-pinned action refs current. Dependabot updates
+  # both the pin and the trailing version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
