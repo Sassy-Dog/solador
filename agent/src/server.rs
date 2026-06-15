@@ -89,9 +89,138 @@ async fn containers_handler() -> impl IntoResponse {
 }
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    // Report the sampler's liveness, not a static "ok". A dead sampler serves
+    // frozen numbers; surfacing `degraded` + the sample age lets the dashboard
+    // distinguish a live host from one that's silently stuck.
+    let stale = state.metrics.is_stale();
+    let status = if stale { "degraded" } else { "ok" };
     Json(json!({
-        "status": "ok",
+        "status": status,
         "hostname": state.hostname,
         "version": state.version,
+        "sampleAgeSeconds": state.metrics.sample_age().as_secs(),
+        "samplerStale": stale,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Request};
+    use tower::ServiceExt; // for `oneshot`
+
+    const TOKEN: &str = "s3cr3t-token";
+
+    fn test_router() -> Router {
+        let state = AppState {
+            metrics: MetricsState::fresh_for_test(crate::metrics::empty_snapshot()),
+            token: Arc::new(TOKEN.to_string()),
+            hostname: "test-host".to_string(),
+            version: "0.0.0-test",
+        };
+        build_router(state)
+    }
+
+    /// Issue a GET /v1/health with an optional Authorization header.
+    async fn health_status(auth: Option<&str>) -> StatusCode {
+        let mut builder = Request::builder().uri("/v1/health");
+        if let Some(value) = auth {
+            builder = builder.header(header::AUTHORIZATION, value);
+        }
+        let request = builder.body(Body::empty()).unwrap();
+        test_router().oneshot(request).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn missing_authorization_header_is_401() {
+        assert_eq!(health_status(None).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn wrong_token_is_401() {
+        let got = health_status(Some("Bearer not-the-token")).await;
+        assert_eq!(got, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn token_without_bearer_scheme_is_401() {
+        // A bare token (no `Bearer ` prefix) must not authenticate.
+        let got = health_status(Some(TOKEN)).await;
+        assert_eq!(got, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn correct_bearer_token_is_200() {
+        let got = health_status(Some(&format!("Bearer {TOKEN}"))).await;
+        assert_eq!(got, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn health_reports_ok_for_fresh_sampler() {
+        let request = Request::builder()
+            .uri("/v1/health")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["samplerStale"], false);
+        assert!(v["sampleAgeSeconds"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn health_reports_degraded_when_sampler_is_stale() {
+        let state = AppState {
+            metrics: MetricsState::fresh_for_test(crate::metrics::empty_snapshot()),
+            token: Arc::new(TOKEN.to_string()),
+            hostname: "test-host".to_string(),
+            version: "0.0.0-test",
+        };
+        // Force the sampler stale, as if the background task had died.
+        state
+            .metrics
+            .set_sample_age_for_test(std::time::Duration::from_secs(3600));
+        let router = build_router(state);
+
+        let request = Request::builder()
+            .uri("/v1/health")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["samplerStale"], true);
+    }
+
+    #[test]
+    fn constant_time_eq_matches_equal_slices() {
+        assert!(constant_time_eq(b"abc123", b"abc123"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_differing_content() {
+        assert!(!constant_time_eq(b"abc123", b"abc124"));
+        assert!(!constant_time_eq(b"abc123", b"xbc123"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_differing_length() {
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"abcd", b"abc"));
+        assert!(!constant_time_eq(b"", b"x"));
+    }
 }

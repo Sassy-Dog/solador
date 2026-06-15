@@ -5,8 +5,8 @@
 //! *rates* (bytes/s), which require a delta between two refreshes — hence the
 //! background sampler rather than computing on-demand inside the HTTP handler.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
@@ -23,6 +23,12 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
 const PROCESS_SAMPLE_TICKS: u64 = 60;
 /// Keep the top-N by CPU and by memory.
 const PROCESS_TOP_LIMIT: usize = 5;
+
+/// How many sample intervals may elapse before the sampler is considered stale.
+/// A healthy sampler writes every [`SAMPLE_INTERVAL`]; if no fresh sample has
+/// landed in this many intervals (e.g. the task panicked), `/v1/health` reports
+/// `degraded`. Three intervals tolerates a missed tick or two without flapping.
+pub const STALE_INTERVALS: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Wire contract types.
@@ -310,14 +316,60 @@ impl Gpu {
 #[derive(Clone)]
 pub struct MetricsState {
     inner: Arc<RwLock<Snapshot>>,
+    /// Instant at which the most recent sample was written. The sampler stamps
+    /// this on every write; `sample_age` reads it to detect a dead sampler.
+    last_sample: Arc<Mutex<Instant>>,
 }
 
 impl MetricsState {
-    /// Returns the latest sampled snapshot, with a freshly-stamped timestamp.
+    /// Returns the latest sampled snapshot.
+    ///
+    /// The `timestamp` is the one the sampler stamped when it wrote the sample —
+    /// *not* the request time. A frozen sampler therefore returns a frozen
+    /// timestamp, so the dashboard can see the sample is stale instead of being
+    /// shown old numbers behind a fresh "now".
     pub async fn latest(&self) -> Snapshot {
-        let mut snap = self.inner.read().await.clone();
-        snap.timestamp = now_rfc3339();
-        snap
+        self.inner.read().await.clone()
+    }
+
+    /// How long since the sampler last wrote a sample.
+    pub fn sample_age(&self) -> Duration {
+        self.last_sample
+            .lock()
+            .expect("last_sample mutex poisoned")
+            .elapsed()
+    }
+
+    /// Whether the sampler has gone stale (no fresh sample within
+    /// [`STALE_INTERVALS`] sample intervals) — the signal that the background
+    /// task has died and the served numbers are frozen.
+    pub fn is_stale(&self) -> bool {
+        self.sample_age() > SAMPLE_INTERVAL * STALE_INTERVALS
+    }
+
+    /// Record that a fresh sample landed now.
+    fn mark_sampled(&self) {
+        *self.last_sample.lock().expect("last_sample mutex poisoned") = Instant::now();
+    }
+
+    /// Build a state around a fixed snapshot whose sample is marked fresh now —
+    /// for tests that need a `MetricsState` without a running sampler.
+    #[cfg(test)]
+    pub fn fresh_for_test(snapshot: Snapshot) -> Self {
+        MetricsState {
+            inner: Arc::new(RwLock::new(snapshot)),
+            last_sample: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+
+    /// Force the recorded last-sample time `age` into the past — for tests that
+    /// exercise the stale-sampler path without sleeping a real interval.
+    #[cfg(test)]
+    pub fn set_sample_age_for_test(&self, age: Duration) {
+        let backdated = Instant::now()
+            .checked_sub(age)
+            .expect("backdate within Instant range");
+        *self.last_sample.lock().expect("last_sample mutex poisoned") = backdated;
     }
 }
 
@@ -338,53 +390,35 @@ pub fn now_rfc3339() -> String {
 ///
 /// The sampler primes one refresh, then loops: sleep ~1s, refresh again, compute
 /// rates from the deltas, and store the result.
+///
+/// The loop is run under a supervisor: if it panics, the supervisor logs a
+/// `tracing::error!` and restarts it after a short backoff. Until a restart
+/// produces a fresh sample, [`MetricsState::is_stale`] reports `true`, so a
+/// crashed sampler surfaces as `degraded` on `/v1/health` rather than serving
+/// frozen numbers behind a green health check.
 pub fn spawn_sampler() -> MetricsState {
     let state = MetricsState {
         inner: Arc::new(RwLock::new(empty_snapshot())),
+        last_sample: Arc::new(Mutex::new(Instant::now())),
     };
     let handle = state.clone();
 
     tokio::spawn(async move {
-        let mut sys = System::new_all();
-        let mut networks = Networks::new_with_refreshed_list();
-        let mut disks = Disks::new_with_refreshed_list();
-
-        // Read once at startup; the skip policy doesn't change while running.
-        let skip_env = std::env::var(SKIP_FSTYPES_ENV).ok();
-        let skip = skip_fstypes(skip_env.as_deref());
-
-        // Prime CPU usage (the first reading is meaningless).
-        sys.refresh_cpu_all();
-        tokio::time::sleep(SAMPLE_INTERVAL).await;
-
-        // Processes are enumerated on a slow cadence (expensive, and only needed
-        // as a ~1-minute "what's hogging" view). Cached between ticks.
-        let mut cached_processes: Vec<Process> = Vec::new();
-        let mut tick: u64 = 0;
-
         loop {
-            // Refresh everything; the second+ refresh yields valid deltas/usages.
-            sys.refresh_cpu_all();
-            sys.refresh_memory();
-            networks.refresh(true);
-            disks.refresh(true);
-
-            if tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
-                sys.refresh_processes(ProcessesToUpdate::All, true);
-                cached_processes = top_processes(&sys, PROCESS_TOP_LIMIT);
+            let task = handle.clone();
+            // Isolate the loop so a panic inside it doesn't take down the agent;
+            // a `JoinHandle` carries the panic back here as an `Err`.
+            let join = tokio::spawn(async move { sampler_loop(task).await });
+            match join.await {
+                Ok(()) => {
+                    // The loop is infinite; a clean return is unexpected.
+                    tracing::error!("metrics sampler exited unexpectedly; restarting");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "metrics sampler panicked; restarting");
+                }
             }
-
-            let snap = compute_snapshot(
-                &sys,
-                &networks,
-                &disks,
-                SAMPLE_INTERVAL.as_secs_f64(),
-                cached_processes.clone(),
-                &skip,
-            );
-            *handle.inner.write().await = snap;
-
-            tick = tick.wrapping_add(1);
+            // Back off so a tight panic loop doesn't spin the CPU.
             tokio::time::sleep(SAMPLE_INTERVAL).await;
         }
     });
@@ -392,8 +426,55 @@ pub fn spawn_sampler() -> MetricsState {
     state
 }
 
+/// The sampler's inner loop: prime once, then sample forever.
+async fn sampler_loop(state: MetricsState) {
+    let mut sys = System::new_all();
+    let mut networks = Networks::new_with_refreshed_list();
+    let mut disks = Disks::new_with_refreshed_list();
+
+    // Read once at startup; the skip policy doesn't change while running.
+    let skip_env = std::env::var(SKIP_FSTYPES_ENV).ok();
+    let skip = skip_fstypes(skip_env.as_deref());
+
+    // Prime CPU usage (the first reading is meaningless).
+    sys.refresh_cpu_all();
+    tokio::time::sleep(SAMPLE_INTERVAL).await;
+
+    // Processes are enumerated on a slow cadence (expensive, and only needed
+    // as a ~1-minute "what's hogging" view). Cached between ticks.
+    let mut cached_processes: Vec<Process> = Vec::new();
+    let mut tick: u64 = 0;
+
+    loop {
+        // Refresh everything; the second+ refresh yields valid deltas/usages.
+        sys.refresh_cpu_all();
+        sys.refresh_memory();
+        networks.refresh(true);
+        disks.refresh(true);
+
+        if tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+            cached_processes = top_processes(&sys, PROCESS_TOP_LIMIT);
+        }
+
+        let snap = compute_snapshot(
+            &sys,
+            &networks,
+            &disks,
+            SAMPLE_INTERVAL.as_secs_f64(),
+            cached_processes.clone(),
+            &skip,
+        );
+        *state.inner.write().await = snap;
+        state.mark_sampled();
+
+        tick = tick.wrapping_add(1);
+        tokio::time::sleep(SAMPLE_INTERVAL).await;
+    }
+}
+
 /// A zero-valued snapshot used before the first sample lands.
-fn empty_snapshot() -> Snapshot {
+pub(crate) fn empty_snapshot() -> Snapshot {
     Snapshot {
         timestamp: now_rfc3339(),
         cpu: Cpu {
@@ -836,6 +917,41 @@ mod tests {
             &skip,
         );
         assert!(vols.is_empty());
+    }
+
+    #[tokio::test]
+    async fn latest_preserves_sampler_timestamp() {
+        // `latest()` must return the sampler's stamped timestamp verbatim, not a
+        // request-time "now" — that masking is the bug this guards against.
+        let snap = canonical_snapshot();
+        let state = MetricsState::fresh_for_test(snap.clone());
+        let got = state.latest().await;
+        assert_eq!(
+            got.timestamp, snap.timestamp,
+            "latest() must not rewrite the timestamp at request time"
+        );
+    }
+
+    #[test]
+    fn fresh_state_is_not_stale() {
+        let state = MetricsState::fresh_for_test(empty_snapshot());
+        assert!(!state.is_stale(), "a just-marked sample must be fresh");
+        assert!(state.sample_age() < SAMPLE_INTERVAL * STALE_INTERVALS);
+    }
+
+    #[test]
+    fn sampler_goes_stale_once_intervals_elapse() {
+        // Backdating the last sample past STALE_INTERVALS must flip is_stale() —
+        // the dead-sampler signal /v1/health reports.
+        let state = MetricsState::fresh_for_test(empty_snapshot());
+        assert!(!state.is_stale());
+        state.set_sample_age_for_test(
+            SAMPLE_INTERVAL * STALE_INTERVALS + Duration::from_millis(500),
+        );
+        assert!(
+            state.is_stale(),
+            "no fresh sample past {STALE_INTERVALS} intervals must read stale"
+        );
     }
 
     #[test]
