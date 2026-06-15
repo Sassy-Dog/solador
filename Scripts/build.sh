@@ -52,6 +52,12 @@ log_info "Version: $VERSION ($BUILD_NUMBER)"
 # Build with xcodebuild
 log_info "Building..."
 
+# Forward the Sentry DSN (issue #18) into the SentryDSN Info.plist key via the
+# SENTRY_DSN build setting. Defaults to empty when unset (project.yml), so a
+# normal local build ships no DSN and Sentry no-ops — telemetry stays opt-in.
+# Release/CI sets SENTRY_DSN from the GitHub Actions secret; never hardcoded.
+SENTRY_DSN="${SENTRY_DSN:-}"
+
 if command_exists xcbeautify; then
     xcodebuild \
         -project "$PROJECT_NAME" \
@@ -61,6 +67,7 @@ if command_exists xcbeautify; then
         -allowProvisioningUpdates \
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
         MARKETING_VERSION="$VERSION" \
+        SENTRY_DSN="$SENTRY_DSN" \
         build | xcbeautify
 else
     xcodebuild \
@@ -71,6 +78,7 @@ else
         -allowProvisioningUpdates \
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
         MARKETING_VERSION="$VERSION" \
+        SENTRY_DSN="$SENTRY_DSN" \
         -quiet \
         build
 fi

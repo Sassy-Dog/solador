@@ -26,6 +26,11 @@ settings:
 packages:
   HostMetricsKit:
     path: Packages/HostMetricsKit
+  # Optional crash/error reporting (issue #18). No-ops unless a SENTRY_DSN is
+  # configured (env var or Info.plist) — honors "no telemetry by default".
+  Sentry:
+    url: https://github.com/getsentry/sentry-cocoa
+    from: 8.58.3
 
 configs:
   Debug:
@@ -57,6 +62,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.sassydog.devcanopy
         PRODUCT_NAME: DevCanopy
         INFOPLIST_FILE: DevCanopy/Resources/Info.plist
+        # Default for the SentryDSN Info.plist key ($(SENTRY_DSN)). Empty so
+        # local/Xcode-direct builds ship no DSN → Sentry no-ops (no telemetry by
+        # default, issue #18). build.sh forwards a real DSN from the environment
+        # (GitHub Actions secret) for release builds; never hardcode it here.
+        SENTRY_DSN: ""
         # Build number: Info.plist reads $(CURRENT_PROJECT_VERSION); Scripts/build.sh
         # overrides it with the git commit count. This is only the fallback for
         # builds straight from Xcode. (A PlistBuddy preBuildScript used to stamp
@@ -72,6 +82,8 @@ targets:
       - sdk: SwiftData.framework
       - package: HostMetricsKit
         product: HostMetricsKit
+      - package: Sentry
+        product: Sentry
     scheme:
       testTargets:
         - DevCanopyTests
