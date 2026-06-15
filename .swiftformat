@@ -1,0 +1,50 @@
+# SwiftFormat Configuration for DevCanopy
+
+# File options
+--swiftversion 6.0
+
+# Format options
+--indent 4
+--indentcase false
+--trimwhitespace always
+--commas inline
+--semicolons never
+--linebreaks lf
+--ifdef no-indent
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--closingparen balanced
+--funcattributes prev-line
+--typeattributes prev-line
+--varattributes prev-line
+
+# Enable rules
+# NOTE: the `isEmpty` rule is deliberately NOT enabled — it rewrites
+# `count == 0` to `isEmpty`, which can turn a custom `isEmpty { count == 0 }`
+# getter into infinite recursion. Same class of footgun as SwiftLint's
+# `empty_count`.
+--enable sortImports
+--enable redundantSelf
+--enable redundantReturn
+--enable redundantLet
+--enable redundantPattern
+--enable redundantGet
+--enable redundantInit
+--enable redundantNilInit
+--enable redundantObjc
+--enable redundantParens
+--enable redundantVoidReturnType
+--enable strongifiedSelf
+--enable trailingCommas
+--enable unusedArguments
+--enable void
+
+# Disable rules that conflict with SwiftUI
+--disable redundantClosure
+
+# Exclude paths
+--exclude .build
+--exclude build
+--exclude Scripts
+--exclude DevCanopy/Assets.xcassets

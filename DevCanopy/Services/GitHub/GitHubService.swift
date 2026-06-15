@@ -32,16 +32,18 @@ final class GitHubService: ObservableObject {
     /// saves/clears a token in Settings. Reads the Keychain only — no network.
     func configureFromKeychain() {
         if let token = KeychainHelper.shared.loadGitHubToken(), !token.isEmpty {
-            self.accessToken = token
-            self.isAuthenticated = true
+            accessToken = token
+            isAuthenticated = true
         } else {
-            self.accessToken = nil
-            self.isAuthenticated = false
+            accessToken = nil
+            isAuthenticated = false
         }
     }
 
     /// Whether a usable token is currently loaded (without exposing it).
-    var hasToken: Bool { accessToken?.isEmpty == false }
+    var hasToken: Bool {
+        accessToken?.isEmpty == false
+    }
 
     /// Performs an authenticated GET against an arbitrary REST endpoint and
     /// returns the raw data. Reuses the shared Bearer-token / rate-limit
@@ -53,7 +55,7 @@ final class GitHubService: ObservableObject {
     // MARK: - Network Request
 
     private func request(endpoint: String, method: String, queryItems: [URLQueryItem]? = nil) async throws -> Data {
-        guard let accessToken = accessToken else {
+        guard let accessToken else {
             throw GitHubError.notAuthenticated
         }
 
@@ -82,14 +84,15 @@ final class GitHubService: ObservableObject {
         }
 
         if let resetTime = httpResponse.value(forHTTPHeaderField: "X-RateLimit-Reset"),
-           let timestamp = Double(resetTime) {
+           let timestamp = Double(resetTime)
+        {
             rateLimitReset = Date(timeIntervalSince1970: timestamp)
         }
 
-        guard (200...299).contains(httpResponse.statusCode) else {
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
             if httpResponse.statusCode == 401 {
                 throw GitHubError.notAuthenticated
-            } else if httpResponse.statusCode == 403 && rateLimitRemaining == 0 {
+            } else if httpResponse.statusCode == 403, rateLimitRemaining == 0 {
                 throw GitHubError.rateLimitExceeded(resetTime: rateLimitReset ?? Date())
             }
             throw GitHubError.httpError(statusCode: httpResponse.statusCode)
@@ -102,14 +105,14 @@ final class GitHubService: ObservableObject {
 
     private func loadStoredToken() {
         if let token = KeychainHelper.shared.loadGitHubToken(), !token.isEmpty {
-            self.accessToken = token
-            self.isAuthenticated = true
+            accessToken = token
+            isAuthenticated = true
         }
     }
 
     func disconnect() {
-        self.accessToken = nil
-        self.isAuthenticated = false
+        accessToken = nil
+        isAuthenticated = false
         KeychainHelper.shared.deleteGitHubToken()
     }
 }
@@ -126,15 +129,15 @@ enum GitHubError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notAuthenticated:
-            return "Not authenticated with GitHub"
+            "Not authenticated with GitHub"
         case .invalidURL:
-            return "Invalid URL"
+            "Invalid URL"
         case .invalidResponse:
-            return "Invalid response from GitHub"
-        case .rateLimitExceeded(let resetTime):
-            return "GitHub rate limit exceeded. Resets at \(resetTime.formatted())"
-        case .httpError(let code):
-            return "HTTP error: \(code)"
+            "Invalid response from GitHub"
+        case let .rateLimitExceeded(resetTime):
+            "GitHub rate limit exceeded. Resets at \(resetTime.formatted())"
+        case let .httpError(code):
+            "HTTP error: \(code)"
         }
     }
 }

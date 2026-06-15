@@ -1,13 +1,12 @@
-import XCTest
-import HostMetricsKit
 @testable import DevCanopy
+import HostMetricsKit
+import XCTest
 
 /// Locks the remote-host failure taxonomy (issue #36): a wrong token, a broken
 /// wire contract, and a dead VM must surface as distinct causes rather than one
 /// undifferentiated "unreachable", and the `/v1/health` payload must decode so
 /// the app can show the agent version without SSHing in.
 final class RemoteHostFailureTests: XCTestCase {
-
     // MARK: Health payload decoding
 
     func testDecodesHealthPayloadWithVersionAndHostname() throws {
@@ -53,7 +52,7 @@ final class RemoteHostFailureTests: XCTestCase {
             RemoteHostError.authFailed.shortLabel,
             RemoteHostError.decodeFailed.shortLabel,
             RemoteHostError.unreachable.shortLabel,
-            RemoteHostError.httpStatus(503).shortLabel,
+            RemoteHostError.httpStatus(503).shortLabel
         ])
         XCTAssertEqual(labels.count, 4, "failure causes must be distinguishable")
     }

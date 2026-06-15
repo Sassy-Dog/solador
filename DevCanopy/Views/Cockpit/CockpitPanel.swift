@@ -4,7 +4,7 @@ import SwiftUI
 /// `kind`; the *arrangement* of panels lives separately in `CockpitLayout`, so
 /// panels never know where they sit. Adding a panel = adding a case here and a
 /// concrete view; adding a layout = adding a `CockpitLayout` value.
-enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
+enum CockpitPanelKind: String, CaseIterable, Identifiable {
     case hosts
     case ciRunners
     case containers
@@ -12,53 +12,59 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable, Sendable {
     case gitWorktrees
     case claudeUsage
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var title: String {
         switch self {
-        case .hosts: return "Hosts"
-        case .ciRunners: return "CI Runners"
-        case .containers: return "Containers / VMs"
-        case .ciHealth: return "CI Health"
-        case .gitWorktrees: return "Git / Worktrees"
-        case .claudeUsage: return "Claude Usage"
+        case .hosts: "Hosts"
+        case .ciRunners: "CI Runners"
+        case .containers: "Containers / VMs"
+        case .ciHealth: "CI Health"
+        case .gitWorktrees: "Git / Worktrees"
+        case .claudeUsage: "Claude Usage"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .hosts: return "cpu"
-        case .ciRunners: return "server.rack"
-        case .containers: return "shippingbox"
-        case .ciHealth: return "checkmark.seal"
-        case .gitWorktrees: return "arrow.triangle.branch"
-        case .claudeUsage: return "gauge.with.needle"
+        case .hosts: "cpu"
+        case .ciRunners: "server.rack"
+        case .containers: "shippingbox"
+        case .ciHealth: "checkmark.seal"
+        case .gitWorktrees: "arrow.triangle.branch"
+        case .claudeUsage: "gauge.with.needle"
         }
     }
 }
 
 /// How wide a panel sits within its cockpit row.
-enum PanelSpan: Sendable {
+enum PanelSpan {
     case full
     case half
     case third
 }
 
 /// One panel placed in the layout.
-struct CockpitPlacement: Identifiable, Sendable {
+struct CockpitPlacement: Identifiable {
     let kind: CockpitPanelKind
     let span: PanelSpan
-    var id: String { kind.id }
+    var id: String {
+        kind.id
+    }
 }
 
 /// A data-driven cockpit arrangement: ordered rows of placements. This is the
 /// seam that makes layouts swappable without touching panel views.
-struct CockpitLayout: Sendable {
+struct CockpitLayout {
     let name: String
     let rows: [[CockpitPlacement]]
 
     /// Every panel kind present in this layout, flattened in render order.
-    var panelKinds: [CockpitPanelKind] { rows.flatMap { $0.map(\.kind) } }
+    var panelKinds: [CockpitPanelKind] {
+        rows.flatMap { $0.map(\.kind) }
+    }
 }
 
 extension CockpitLayout {

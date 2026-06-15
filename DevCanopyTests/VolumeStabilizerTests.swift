@@ -1,9 +1,8 @@
-import XCTest
-import HostMetricsKit
 @testable import DevCanopy
+import HostMetricsKit
+import XCTest
 
 final class VolumeStabilizerTests: XCTestCase {
-
     private func vol(_ mount: String, usedGB: Double = 10) -> VolumeUsage {
         VolumeUsage(mount: mount, usedGB: usedGB, totalGB: 100)
     }
@@ -35,7 +34,7 @@ final class VolumeStabilizerTests: XCTestCase {
         _ = stabilizer.observe([vol("/")])
         _ = stabilizer.observe([vol("/"), vol("/new")])
         _ = stabilizer.observe([vol("/"), vol("/new")])
-        _ = stabilizer.observe([vol("/")])                                    // gap — streak resets
+        _ = stabilizer.observe([vol("/")]) // gap — streak resets
         XCTAssertEqual(mounts(stabilizer.observe([vol("/"), vol("/new")])), ["/"])
         XCTAssertEqual(mounts(stabilizer.observe([vol("/"), vol("/new")])), ["/"])
         XCTAssertEqual(mounts(stabilizer.observe([vol("/"), vol("/new")])), ["/", "/new"])
@@ -67,7 +66,7 @@ final class VolumeStabilizerTests: XCTestCase {
         var stabilizer = VolumeStabilizer(threshold: 3)
         _ = stabilizer.observe([vol("/")])
         // /shared alternates present/absent every poll — must never surface.
-        for _ in 0..<10 {
+        for _ in 0 ..< 10 {
             XCTAssertEqual(mounts(stabilizer.observe([vol("/"), vol("/shared")])), ["/"])
             XCTAssertEqual(mounts(stabilizer.observe([vol("/")])), ["/"])
         }

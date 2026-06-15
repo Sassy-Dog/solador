@@ -1,8 +1,7 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class PortfolioCIMappingTests: XCTestCase {
-
     /// A fixed "now" close to the default DTO timestamps so that, unless a test
     /// deliberately ages a run, queued/pending runs read as running (not stuck).
     private static let now = ISO8601DateFormatter().date(from: "2026-05-29T12:05:00Z")!
@@ -135,8 +134,15 @@ final class PortfolioCIMappingTests: XCTestCase {
     func testStalePendingRunIsStuckNotRunning() {
         // A pending run created well over an hour before "now" with no jobs.
         let runs = [
-            dto(name: "Release", status: "pending", conclusion: nil, branch: "main",
-                event: "push", id: 20, createdAt: "2026-05-28T12:00:00Z") // ~24h before now
+            dto(
+                name: "Release",
+                status: "pending",
+                conclusion: nil,
+                branch: "main",
+                event: "push",
+                id: 20,
+                createdAt: "2026-05-28T12:00:00Z"
+            ) // ~24h before now
         ]
         let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, now: Self.now)
         XCTAssertEqual(h.stuck.count, 1, "a long-pending run reads as stuck")
@@ -146,8 +152,15 @@ final class PortfolioCIMappingTests: XCTestCase {
 
     func testFreshPendingRunIsRunningNotStuck() {
         let runs = [
-            dto(name: "Release", status: "pending", conclusion: nil, branch: "main",
-                event: "push", id: 21, createdAt: "2026-05-29T12:00:00Z") // 5m before now
+            dto(
+                name: "Release",
+                status: "pending",
+                conclusion: nil,
+                branch: "main",
+                event: "push",
+                id: 21,
+                createdAt: "2026-05-29T12:00:00Z"
+            ) // 5m before now
         ]
         let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, now: Self.now)
         XCTAssertEqual(h.running.count, 1, "a freshly pending run is still 'running'")

@@ -44,9 +44,9 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         case timestamp, cpu, memory, disk, network, gpu, battery, volumes, processes
     }
 
-    // Custom decode so a payload without `volumes`/`processes` (older agents)
-    // still decodes, yielding empty lists rather than failing the whole snapshot.
-    // Encoding is synthesized and always includes both.
+    /// Custom decode so a payload without `volumes`/`processes` (older agents)
+    /// still decodes, yielding empty lists rather than failing the whole snapshot.
+    /// Encoding is synthesized and always includes both.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         timestamp = try c.decode(Date.self, forKey: .timestamp)
@@ -76,7 +76,9 @@ public struct ProcessSample: Sendable, Codable, Equatable, Identifiable {
     public let cpuPercent: Double
     public let memoryMB: Double
 
-    public var id: Int { pid }
+    public var id: Int {
+        pid
+    }
 
     public init(pid: Int, name: String, cpuPercent: Double, memoryMB: Double) {
         self.pid = pid
@@ -95,8 +97,12 @@ public enum ProcessRanking {
         let byMem = all.sorted { $0.memoryMB > $1.memoryMB }.prefix(limit)
         var seen = Set<Int>()
         var out: [ProcessSample] = []
-        for p in byCPU where seen.insert(p.pid).inserted { out.append(p) }
-        for p in byMem where seen.insert(p.pid).inserted { out.append(p) }
+        for p in byCPU where seen.insert(p.pid).inserted {
+            out.append(p)
+        }
+        for p in byMem where seen.insert(p.pid).inserted {
+            out.append(p)
+        }
         return out.sorted { $0.cpuPercent > $1.cpuPercent }
     }
 }
@@ -110,8 +116,13 @@ public struct VolumeUsage: Sendable, Codable, Equatable, Identifiable {
     public let totalGB: Double
     public let fstype: String?
 
-    public var id: String { mount }
-    public var percentUsed: Double { totalGB > 0 ? usedGB / totalGB * 100 : 0 }
+    public var id: String {
+        mount
+    }
+
+    public var percentUsed: Double {
+        totalGB > 0 ? usedGB / totalGB * 100 : 0
+    }
 
     public init(mount: String, usedGB: Double, totalGB: Double, fstype: String? = nil) {
         self.mount = mount
@@ -156,7 +167,9 @@ public struct MemoryMetrics: Sendable, Codable, Equatable {
     /// Memory pressure, 0–100.
     public let pressure: Double
 
-    public var usagePercentage: Double { totalGB > 0 ? usedGB / totalGB * 100 : 0 }
+    public var usagePercentage: Double {
+        totalGB > 0 ? usedGB / totalGB * 100 : 0
+    }
 
     public init(
         usedGB: Double,
@@ -253,9 +266,9 @@ public struct BatteryMetrics: Sendable, Codable, Equatable {
         case powerSource, timeRemaining, wattage
     }
 
-    // Custom decode: the two contract keys are required; the macOS-rich keys are
-    // optional, so an agent payload with only `level`/`isCharging` decodes. An
-    // unexpected/incompatible battery shape throws (caught upstream → nil).
+    /// Custom decode: the two contract keys are required; the macOS-rich keys are
+    /// optional, so an agent payload with only `level`/`isCharging` decodes. An
+    /// unexpected/incompatible battery shape throws (caught upstream → nil).
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         level = try c.decode(Double.self, forKey: .level)
@@ -268,8 +281,8 @@ public struct BatteryMetrics: Sendable, Codable, Equatable {
         wattage = try c.decodeIfPresent(Double.self, forKey: .wattage)
     }
 
-    // Encode omits nil enrichment so the round-trip of an agent-shaped value
-    // (only `level`/`isCharging`) re-emits exactly the contract floor.
+    /// Encode omits nil enrichment so the round-trip of an agent-shaped value
+    /// (only `level`/`isCharging`) re-emits exactly the contract floor.
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(level, forKey: .level)

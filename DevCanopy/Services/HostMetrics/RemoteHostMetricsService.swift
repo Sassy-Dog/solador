@@ -18,10 +18,10 @@ enum RemoteHostError: Error, Equatable {
     /// Short, human-facing label used in card text and the Settings Test result.
     var shortLabel: String {
         switch self {
-        case .authFailed: return "auth failed"
-        case .httpStatus(let code): return "HTTP \(code)"
-        case .decodeFailed: return "decode failed"
-        case .unreachable: return "unreachable"
+        case .authFailed: "auth failed"
+        case let .httpStatus(code): "HTTP \(code)"
+        case .decodeFailed: "decode failed"
+        case .unreachable: "unreachable"
         }
     }
 }
@@ -71,7 +71,7 @@ final class RemoteHostMetricsService: HostMetricsService {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 5
         config.waitsForConnectivity = false
-        self.session = URLSession(configuration: config)
+        session = URLSession(configuration: config)
         super.init(hostName: hostName, connectionState: .connecting)
         installLifecyclePause()
     }
@@ -82,7 +82,7 @@ final class RemoteHostMetricsService: HostMetricsService {
         task = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
-                await self.poll()
+                await poll()
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
@@ -171,7 +171,7 @@ final class RemoteHostMetricsService: HostMetricsService {
         guard let http = response as? HTTPURLResponse else {
             throw RemoteHostError.unreachable
         }
-        guard (200...299).contains(http.statusCode) else {
+        guard (200 ... 299).contains(http.statusCode) else {
             throw http.statusCode == 401
                 ? RemoteHostError.authFailed
                 : RemoteHostError.httpStatus(http.statusCode)

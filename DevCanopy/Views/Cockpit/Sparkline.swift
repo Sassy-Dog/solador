@@ -11,7 +11,7 @@ struct Sparkline: View {
     let values: [Double]
     var capacity: Int
     var color: Color = CockpitTheme.green
-    var range: ClosedRange<Double>? = nil
+    var range: ClosedRange<Double>?
 
     var body: some View {
         GeometryReader { geo in

@@ -7,7 +7,7 @@ import SwiftData
 final class MonitoredHost {
     var id: UUID = UUID()
     var name: String = ""
-    var address: String = ""        // Tailscale IP or MagicDNS name
+    var address: String = "" // Tailscale IP or MagicDNS name
     var port: Int = 7878
     var enabled: Bool = true
     var createdAt: Date = Date()
@@ -16,11 +16,11 @@ final class MonitoredHost {
     var hiddenVolumeMounts: [String] = []
 
     init(name: String, address: String, port: Int = 7878, enabled: Bool = true) {
-        self.id = UUID()
+        id = UUID()
         self.name = name
         self.address = address
         self.port = port
         self.enabled = enabled
-        self.createdAt = Date()
+        createdAt = Date()
     }
 }

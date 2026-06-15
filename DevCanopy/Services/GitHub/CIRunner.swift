@@ -15,36 +15,40 @@ struct RunnerDTO: Decodable {
     let id: Int
     let name: String
     let os: String
-    let status: String      // "online" | "offline"
+    let status: String // "online" | "offline"
     let busy: Bool
     let labels: [Label]?
 
     struct Label: Decodable { let name: String }
 }
 
-enum RunnerOS: Sendable, Equatable {
+enum RunnerOS: Equatable {
     case macOS, linux, other
     var label: String {
-        switch self { case .macOS: "macOS"; case .linux: "Linux"; case .other: "Other" }
+        switch self { case .macOS: "macOS"
+        case .linux: "Linux"
+        case .other: "Other" }
     }
 }
 
 /// Idle/busy/offline — the thing Chris wants to see at a glance (mirrors Mission Control).
-enum RunnerState: Sendable, Equatable {
+enum RunnerState: Equatable {
     case idle, busy, offline
     var label: String {
-        switch self { case .idle: "idle"; case .busy: "busy"; case .offline: "offline" }
+        switch self { case .idle: "idle"
+        case .busy: "busy"
+        case .offline: "offline" }
     }
 }
 
-struct CIRunner: Sendable, Identifiable, Equatable {
+struct CIRunner: Identifiable, Equatable {
     let id: Int
     let name: String
     let os: RunnerOS
     let state: RunnerState
 }
 
-struct RunnerSummary: Sendable, Equatable {
+struct RunnerSummary: Equatable {
     let total: Int
     let online: Int
     let busy: Int
@@ -81,11 +85,11 @@ enum CIRunnerMapping {
         return RunnerSummary(
             total: runners.count,
             online: online.count,
-            busy: runners.filter { $0.state == .busy }.count,
-            idle: runners.filter { $0.state == .idle }.count,
-            macOSOnline: mac.filter { $0.state != .offline }.count,
+            busy: runners.count(where: { $0.state == .busy }),
+            idle: runners.count(where: { $0.state == .idle }),
+            macOSOnline: mac.count(where: { $0.state != .offline }),
             macOSTotal: mac.count,
-            linuxOnline: linux.filter { $0.state != .offline }.count,
+            linuxOnline: linux.count(where: { $0.state != .offline }),
             linuxTotal: linux.count
         )
     }

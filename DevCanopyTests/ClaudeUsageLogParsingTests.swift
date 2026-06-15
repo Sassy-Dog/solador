@@ -1,8 +1,7 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class ClaudeUsageLogParsingTests: XCTestCase {
-
     // MARK: - Project name derivation from cwd
 
     func testProjectNameFromPlainRepoPath() {

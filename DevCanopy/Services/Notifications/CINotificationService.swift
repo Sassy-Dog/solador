@@ -1,6 +1,6 @@
+import AppKit
 import Foundation
 import UserNotifications
-import AppKit
 
 /// Delivers macOS notifications for CI events. Today it surfaces one signal:
 /// a tracked run entering the `.waiting` deployment-protection gate ("needs
@@ -22,7 +22,7 @@ final class CINotificationService: NSObject, UNUserNotificationCenterDelegate {
     /// app bundle (e.g. the XCTest host), so allow injecting nil to disable.
     init(center: UNUserNotificationCenter? = CINotificationService.defaultCenter()) {
         self.center = center ?? UNUserNotificationCenter.current()
-        self.enabled = center != nil
+        enabled = center != nil
         super.init()
         if enabled {
             self.center.delegate = self
@@ -31,10 +31,11 @@ final class CINotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     private let enabled: Bool
 
-    nonisolated private static func defaultCenter() -> UNUserNotificationCenter? {
+    private nonisolated static func defaultCenter() -> UNUserNotificationCenter? {
         // Only safe to touch when running inside a real, bundled app.
         guard Bundle.main.bundleIdentifier != nil,
-              Bundle.main.bundleURL.pathExtension == "app" else {
+              Bundle.main.bundleURL.pathExtension == "app"
+        else {
             return nil
         }
         return UNUserNotificationCenter.current()
@@ -68,7 +69,7 @@ final class CINotificationService: NSObject, UNUserNotificationCenterDelegate {
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
             content: content,
-            trigger: nil  // deliver immediately
+            trigger: nil // deliver immediately
         )
         center.add(request) { error in
             if let error {
@@ -81,7 +82,7 @@ final class CINotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// Open the deep-linked run when the user taps the notification.
     nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
+        _: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
@@ -94,8 +95,8 @@ final class CINotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// Show the banner even when DevCanopy is frontmost.
     nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
+        _: UNUserNotificationCenter,
+        willPresent _: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])

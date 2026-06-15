@@ -66,10 +66,10 @@ final class LocalContainerService: ObservableObject {
             return (merged, runtimes, errored)
         }.value
 
-        self.containers = merged
-        self.detectedRuntimes = runtimes
-        self.lastError = errored.isEmpty ? nil : "couldn't read \(errored.joined(separator: ", "))"
-        self.lastUpdated = Date()
+        containers = merged
+        detectedRuntimes = runtimes
+        lastError = errored.isEmpty ? nil : "couldn't read \(errored.joined(separator: ", "))"
+        lastUpdated = Date()
     }
 
     /// Initial refresh plus a repeating refresh every 10s.
@@ -77,11 +77,11 @@ final class LocalContainerService: ObservableObject {
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }
-            await self.refresh()
+            await refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled { break }
-                await self.refresh()
+                await refresh()
             }
         }
     }
@@ -94,14 +94,14 @@ final class LocalContainerService: ObservableObject {
     deinit { task?.cancel() }
 
     /// Runs a tool and captures stdout. Returns nil on any failure. Off-actor.
-    nonisolated private static func run(_ executable: String, _ arguments: [String]) -> String? {
+    private nonisolated static func run(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
 
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()  // discard stderr
+        process.standardError = Pipe() // discard stderr
 
         do {
             try process.run()

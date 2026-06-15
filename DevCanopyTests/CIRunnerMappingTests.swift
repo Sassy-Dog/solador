@@ -1,8 +1,7 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class CIRunnerMappingTests: XCTestCase {
-
     private func dto(_ name: String, os: String, status: String, busy: Bool) -> RunnerDTO {
         RunnerDTO(id: abs(name.hashValue), name: name, os: os, status: status, busy: busy, labels: nil)
     }
@@ -15,7 +14,7 @@ final class CIRunnerMappingTests: XCTestCase {
         ])
         XCTAssertEqual(runners[0].state, .busy)
         XCTAssertEqual(runners[1].state, .idle)
-        XCTAssertEqual(runners[2].state, .offline)   // offline regardless of busy
+        XCTAssertEqual(runners[2].state, .offline) // offline regardless of busy
     }
 
     func testOSClassification() {
@@ -51,12 +50,12 @@ final class PortfolioReposTests: XCTestCase {
     private let slugs = PortfolioRepos.seedSlugs
 
     func testNormalizedMatchingHandlesPunctuation() {
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "tailoredtip", in: slugs))   // slug tailored-tip
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "tailoredtip", in: slugs)) // slug tailored-tip
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "qr-ninja", in: slugs))
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "velovate", in: slugs))
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "what2wear", in: slugs))
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "devcanopy", in: slugs))     // now tracked
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "platform", in: slugs))      // now tracked
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "devcanopy", in: slugs)) // now tracked
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "platform", in: slugs)) // now tracked
         XCTAssertFalse(PortfolioRepos.matches(repoDirName: "blog", in: slugs))
     }
 

@@ -1,8 +1,7 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class WorktreeParsingTests: XCTestCase {
-
     func testParsesMultipleRecordsWithBranches() {
         let output = """
         worktree /Users/chris/Repos/foo
