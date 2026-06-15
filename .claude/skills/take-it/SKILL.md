@@ -65,6 +65,9 @@ git switch main >/dev/null 2>&1 && git pull --ff-only origin main
 > 2. Read the issue carefully. If scope is genuinely unclear after the body and linked issues/PRs, STOP and report back — do not guess.
 > 3. Implement the change following the repo's `CLAUDE.md`.
 <!-- BEGIN PROJECT-SPECIFIC: subagent-rules -->
+> **Language-specific pre-flight (extends step 4 below — `./dev build && ./dev test` alone is NOT enough):**
+> - For `agent/` (Rust) changes, pre-flight MUST include `cargo fmt --check && cargo clippy -- -D warnings` — CI has a Format-check + Clippy gate, so a clean `cargo build`/`cargo test` still fails CI if formatting/lints are off.
+> - For CI / build-config changes (`.github/workflows/`, toolchain pins): pin tool versions to what a recent **green** run actually used (verify in the run log — e.g. Xcode is `latest-stable` = a 26.x today, NOT a guessed 16.x), and never rename the `Swift app tests` / `Rust agent` job names — the `main` branch-protection ruleset requires those exact check contexts.
 <!-- END PROJECT-SPECIFIC -->
 > 4. Run the send-it pre-flight locally and fix anything red: `./dev build && ./dev test`
 > 5. Commit on branch `{prefix}/issue-{N}-{slug}` with a conventional-commit message containing a literal `Closes #{N}` line.
