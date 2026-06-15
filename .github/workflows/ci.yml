@@ -22,7 +22,7 @@ jobs:
     name: Swift app tests
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # XcodeGen emits the newest project format, so pair it with a pinned Xcode
       # that can read it. Both are pinned: a floating xcode-version or XcodeGen
@@ -63,7 +63,7 @@ jobs:
       run:
         working-directory: agent
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # Toolchain version is pinned in agent/rust-toolchain.toml; this action
       # honors it. Pinned to the stable-channel action at a fixed commit.
