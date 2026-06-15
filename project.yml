@@ -12,7 +12,10 @@ options:
 
 settings:
   DEVELOPMENT_TEAM: 52YMXC3348
-  MARKETING_VERSION: 0.1.0
+  # Keep in sync with Scripts/config.sh VERSION — Scripts/publish.sh bumps both and
+  # verifies they match before mutating. This value is the fallback for Xcode-direct
+  # builds; scripted builds (Scripts/build.sh) override it with config.sh's VERSION.
+  MARKETING_VERSION: 0.1.1
   CURRENT_PROJECT_VERSION: 1
   SWIFT_VERSION: "5.9"
   ENABLE_HARDENED_RUNTIME: true
