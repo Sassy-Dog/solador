@@ -6,12 +6,13 @@ import SwiftUI
 /// results publish on the main actor. Per-repo failures are isolated.
 @MainActor
 final class PortfolioCIService: ObservableObject {
-    /// The tracked portfolio (shared source of truth with runners + worktrees).
-    static let configuredRepos = PortfolioRepos.slugs
-
     @Published private(set) var health: [RepoCIHealth] = []
     @Published private(set) var isAuthenticated = false
     @Published private(set) var isLoading = false
+
+    /// The tracked portfolio slugs to fetch. Supplied by `PortfolioStore` so the
+    /// set stays user-editable; defaults to the first-run seed for previews/tests.
+    var slugsProvider: () -> [String] = { PortfolioRepos.seedSlugs }
 
     private let github: GitHubService
     private var task: Task<Void, Never>?
@@ -50,7 +51,7 @@ final class PortfolioCIService: ObservableObject {
 
         isLoading = true
         var results: [RepoCIHealth] = []
-        for repo in Self.configuredRepos {
+        for repo in slugsProvider() {
             results.append(await fetchHealth(for: repo))
         }
         self.health = results

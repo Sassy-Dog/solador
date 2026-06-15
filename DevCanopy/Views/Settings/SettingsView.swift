@@ -13,6 +13,11 @@ struct SettingsView: View {
                     Label("GitHub", systemImage: "checkmark.seal")
                 }
 
+            PortfolioSettingsView()
+                .tabItem {
+                    Label("Portfolio", systemImage: "square.grid.2x2")
+                }
+
             HostsSettingsView()
                 .tabItem {
                     Label("Hosts", systemImage: "server.rack")

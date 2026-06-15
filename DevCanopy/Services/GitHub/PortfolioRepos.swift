@@ -1,14 +1,16 @@
 import Foundation
 
-/// Single source of truth for the portfolio Chris actively tracks. Used by the
-/// Portfolio CI panel (GitHub slugs), the CI Runners panel (org), and the
-/// Git/Worktrees panel (local repo-dir matching). Phase 1: hardcoded; swap to
-/// user config later.
+/// Pure helpers + first-run seed for the tracked portfolio. The live, editable
+/// set now lives in SwiftData (`TrackedRepo`) and is owned by `PortfolioStore`;
+/// this enum only provides the one-time seed and the slug/name normalization used
+/// to match an on-disk repo directory against a tracked slug.
 enum PortfolioRepos {
     static let org = "Sassy-Dog"
 
-    /// owner/name slugs.
-    static let slugs = [
+    /// The list used to seed `TrackedRepo` once, on first run. After that the set
+    /// is user-editable in Settings; changing this array does not retro-edit an
+    /// already-seeded store.
+    static let seedSlugs = [
         "Sassy-Dog/velovate",
         "Sassy-Dog/qr-ninja",
         "Sassy-Dog/tailoredtip",
@@ -17,19 +19,20 @@ enum PortfolioRepos {
         "Sassy-Dog/platform"
     ]
 
-    /// Repo names (after the slash).
-    static let names = slugs.map { String($0.split(separator: "/").last ?? "") }
-
     /// Normalizes a repo/dir name for matching: lowercase, letters+digits only,
     /// so slug `tailored-tip` matches an on-disk dir `tailoredtip`.
     static func normalize(_ s: String) -> String {
         s.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
-    private static let normalizedNames = Set(names.map(normalize))
+    /// Repo names (after the slash) for a set of `owner/name` slugs.
+    static func names(from slugs: [String]) -> [String] {
+        slugs.map { String($0.split(separator: "/").last ?? "") }
+    }
 
-    /// True if a local repo directory name belongs to the tracked portfolio.
-    static func matches(repoDirName: String) -> Bool {
-        normalizedNames.contains(normalize(repoDirName))
+    /// True if `repoDirName` matches one of the tracked `slugs` after normalization.
+    static func matches(repoDirName: String, in slugs: [String]) -> Bool {
+        let normalized = Set(names(from: slugs).map(normalize))
+        return normalized.contains(normalize(repoDirName))
     }
 }

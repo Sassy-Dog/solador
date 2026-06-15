@@ -48,13 +48,21 @@ final class CIRunnerMappingTests: XCTestCase {
 }
 
 final class PortfolioReposTests: XCTestCase {
+    private let slugs = PortfolioRepos.seedSlugs
+
     func testNormalizedMatchingHandlesPunctuation() {
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "tailoredtip"))   // slug tailored-tip
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "qr-ninja"))
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "velovate"))
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "what2wear"))
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "devcanopy"))     // now tracked
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "platform"))      // now tracked
-        XCTAssertFalse(PortfolioRepos.matches(repoDirName: "blog"))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "tailoredtip", in: slugs))   // slug tailored-tip
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "qr-ninja", in: slugs))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "velovate", in: slugs))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "what2wear", in: slugs))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "devcanopy", in: slugs))     // now tracked
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "platform", in: slugs))      // now tracked
+        XCTAssertFalse(PortfolioRepos.matches(repoDirName: "blog", in: slugs))
+    }
+
+    func testMatchingRespectsTheProvidedSet() {
+        // A repo only matches when its slug is in the live set.
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "velovate", in: ["Sassy-Dog/velovate"]))
+        XCTAssertFalse(PortfolioRepos.matches(repoDirName: "velovate", in: ["Sassy-Dog/qr-ninja"]))
     }
 }
