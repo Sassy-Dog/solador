@@ -49,7 +49,10 @@ async fn main() {
     // Resolve the bind host. Default is the host's Tailscale (tailnet) IP so the
     // agent is *not* reachable on the public NIC. Binding all interfaces
     // (0.0.0.0 / ::) requires explicit opt-in via DEVCANOPY_AGENT_BIND.
-    let bind_host = match resolve_bind_host(std::env::var("DEVCANOPY_AGENT_BIND").ok(), detect_tailscale_ip) {
+    let bind_host = match resolve_bind_host(
+        std::env::var("DEVCANOPY_AGENT_BIND").ok(),
+        detect_tailscale_ip,
+    ) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("FATAL: {e}");
