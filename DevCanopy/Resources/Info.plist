@@ -34,5 +34,12 @@
     <false/>
     <key>NSSupportsSuddenTermination</key>
     <false/>
+    <!-- Sentry crash/error reporting DSN (issue #18). Left empty by default so
+         the SDK cleanly no-ops in dev/local builds (no telemetry by default). A
+         real DSN is injected at build/release time via the SENTRY_DSN build
+         setting, or at runtime via the SENTRY_DSN environment variable. Never
+         hardcode the DSN here — it comes from the GitHub Actions secret. -->
+    <key>SentryDSN</key>
+    <string>$(SENTRY_DSN)</string>
 </dict>
 </plist>
