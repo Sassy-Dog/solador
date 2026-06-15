@@ -65,5 +65,13 @@ final class CIRunnersService: ObservableObject {
     }
 
     func stop() { task?.cancel(); task = nil }
+
+    /// Stops the current polling loop and restarts it on a new cadence. Used
+    /// when the user changes the Refresh Interval setting.
+    func restart(interval: TimeInterval) {
+        stop()
+        start(interval: interval)
+    }
+
     deinit { task?.cancel() }
 }
