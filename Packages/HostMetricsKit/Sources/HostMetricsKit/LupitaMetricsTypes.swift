@@ -38,8 +38,6 @@ struct CPUData {
     /// System thermal state
     var thermalState: ProcessInfo.ThermalState = .nominal
 
-    init() {}
-
     mutating func addHistoryPoint(_ value: Double) {
         history.append(value)
     }
@@ -111,8 +109,6 @@ struct DiskData {
 
     /// Individual physical disks on the system
     var physicalDisks: [PhysicalDisk] = []
-
-    init() {}
 }
 
 /// Network performance data
@@ -263,8 +259,6 @@ struct ProcessData {
 
     /// Whether to show system processes
     var showSystemProcesses: Bool = false
-
-    init() {}
 
     /// Returns sorted processes based on current sort order
     var sortedProcesses: [ProcessItem] {

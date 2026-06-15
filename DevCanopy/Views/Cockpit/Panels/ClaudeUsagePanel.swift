@@ -34,7 +34,6 @@ struct ClaudeUsagePanel: CockpitPanelView {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
     private func content(_ summary: UsageSummary) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             windowRow(label: "5H", totals: summary.last5h, limit: service.fiveHourTokenLimit)
@@ -57,7 +56,6 @@ struct ClaudeUsagePanel: CockpitPanelView {
         return "\(Self.money(summary.today.costUSD)) today"
     }
 
-    @ViewBuilder
     private func windowRow(label: String, totals: UsageTotals, limit: Int?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 7) {
@@ -128,8 +126,8 @@ struct ClaudeUsagePanel: CockpitPanelView {
         if n >= 1_000_000 {
             return String(format: "%.1fM", n / 1_000_000)
         }
-        if n >= 1_000 {
-            return String(format: "%.0fk", n / 1_000)
+        if n >= 1000 {
+            return String(format: "%.0fk", n / 1000)
         }
         return "\(count)"
     }

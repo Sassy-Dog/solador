@@ -17,8 +17,11 @@ struct ContainersPanel: CockpitPanelView {
                         .foregroundStyle(CockpitTheme.muted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    hostSection("this machine", service.containers,
-                                noRuntimes: service.detectedRuntimes.isEmpty)
+                    hostSection(
+                        "this machine",
+                        service.containers,
+                        noRuntimes: service.detectedRuntimes.isEmpty
+                    )
                     ForEach(remoteHosts.containersByHost.keys.sorted(), id: \.self) { host in
                         hostSection(host, remoteHosts.containersByHost[host] ?? [], noRuntimes: false)
                     }
@@ -28,7 +31,9 @@ struct ContainersPanel: CockpitPanelView {
         }
     }
 
-    private var allRemote: [ContainerInfo] { remoteHosts.containersByHost.values.flatMap { $0 } }
+    private var allRemote: [ContainerInfo] {
+        remoteHosts.containersByHost.values.flatMap(\.self)
+    }
 
     private var isEmpty: Bool {
         service.detectedRuntimes.isEmpty && service.containers.isEmpty && allRemote.isEmpty
@@ -39,7 +44,6 @@ struct ContainersPanel: CockpitPanelView {
         return "\(running) running"
     }
 
-    @ViewBuilder
     private func hostSection(_ host: String, _ containers: [ContainerInfo], noRuntimes: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(host.uppercased())

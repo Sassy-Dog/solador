@@ -1,5 +1,5 @@
-import SwiftUI
 import SwiftData
+import SwiftUI
 
 /// Settings tab to manage the tracked portfolio repos that drive the Portfolio
 /// CI, CI Runners, and Git/Worktrees panels. Repos persist as `TrackedRepo`;

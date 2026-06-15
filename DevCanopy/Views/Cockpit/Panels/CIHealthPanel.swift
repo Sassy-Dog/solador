@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// CI Health panel — what's running now and what's failing across the curated
 /// repos, so it's clear what needs a look. Authenticates with a fine-grained PAT
@@ -12,23 +12,34 @@ struct CIHealthPanel: CockpitPanelView {
     private struct RunningItem: Identifiable {
         let repo: String
         let ref: RunRef
-        var id: Int64 { ref.runID }
+        var id: Int64 {
+            ref.runID
+        }
     }
+
     private struct ApprovalItem: Identifiable {
         let repo: String
         let ref: RunRef
-        var id: Int64 { ref.runID }
+        var id: Int64 {
+            ref.runID
+        }
     }
+
     private struct StuckItem: Identifiable {
         let repo: String
         let ref: RunRef
-        var id: Int64 { ref.runID }
+        var id: Int64 {
+            ref.runID
+        }
     }
+
     private struct AttentionItem: Identifiable {
         let repo: String
         let which: String
         let ref: RunRef
-        var id: String { "\(repo):\(ref.runID):\(which)" }
+        var id: String {
+            "\(repo):\(ref.runID):\(which)"
+        }
     }
 
     var body: some View {
@@ -42,9 +53,14 @@ struct CIHealthPanel: CockpitPanelView {
 
         return CockpitPanelContainer(
             kind: Self.kind,
-            trailing: trailing(running: running.count, approval: approval.count,
-                               stuck: stuck.count, attention: attention.count,
-                               unreadable: unreadable.count, loading: loading)
+            trailing: trailing(
+                running: running.count,
+                approval: approval.count,
+                stuck: stuck.count,
+                attention: attention.count,
+                unreadable: unreadable.count,
+                loading: loading
+            )
         ) {
             if !service.isAuthenticated {
                 muted("connect a GitHub token in Settings")
@@ -116,8 +132,14 @@ struct CIHealthPanel: CockpitPanelView {
         service.health.filter { !$0.reachable }.map(\.shortName)
     }
 
-    private func trailing(running: Int, approval: Int, stuck: Int, attention: Int,
-                          unreadable: Int, loading: Bool) -> String? {
+    private func trailing(
+        running: Int,
+        approval: Int,
+        stuck: Int,
+        attention: Int,
+        unreadable: Int,
+        loading: Bool
+    ) -> String? {
         guard service.isAuthenticated, !loading else { return nil }
         var parts: [String] = []
         if approval > 0 { parts.append("\(approval) needs approval") }
@@ -208,15 +230,15 @@ struct CIHealthPanel: CockpitPanelView {
     @ViewBuilder
     private func healthLine(attention: Int, unreadable: Int) -> some View {
         let total = service.health.count
-        let healthy = service.health.filter { $0.isHealthy }.count
-        if attention == 0 && unreadable == 0 {
+        let healthy = service.health.count(where: { $0.isHealthy })
+        if attention == 0, unreadable == 0 {
             label("✓ all \(total) healthy", CockpitTheme.green)
         } else {
             label("✓ \(healthy)/\(total) healthy", CockpitTheme.green)
         }
     }
 
-    private func rowChrome<Content: View>(url: String, @ViewBuilder _ content: () -> Content) -> some View {
+    private func rowChrome(url: String, @ViewBuilder _ content: () -> some View) -> some View {
         content()
             .contentShape(Rectangle())
             .onTapGesture {

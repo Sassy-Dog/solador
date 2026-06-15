@@ -6,7 +6,6 @@ import Foundation
 /// Pricing is applied **per record by its own model** before summing, so windows
 /// that mix models (e.g. opus + sonnet in the same hour) cost out correctly.
 enum ClaudeUsageAggregator {
-
     static func summarize(records: [UsageRecord], now: Date, calendar: Calendar = .current) -> UsageSummary {
         // Dedup by requestId, keeping the first occurrence.
         var seen = Set<String>()

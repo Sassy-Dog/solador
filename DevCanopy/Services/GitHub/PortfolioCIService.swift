@@ -42,20 +42,20 @@ final class PortfolioCIService: ObservableObject {
     func refresh() async {
         github.configureFromKeychain()
         let authed = github.hasToken
-        self.isAuthenticated = authed
+        isAuthenticated = authed
 
         guard authed else {
-            self.health = []
+            health = []
             return
         }
 
         isLoading = true
         var results: [RepoCIHealth] = []
         for repo in slugsProvider() {
-            results.append(await fetchHealth(for: repo))
+            await results.append(fetchHealth(for: repo))
         }
-        self.health = results
-        self.isLoading = false
+        health = results
+        isLoading = false
         notifyApprovalTransitions(in: results)
     }
 
@@ -65,7 +65,7 @@ final class PortfolioCIService: ObservableObject {
     /// seeds the baseline (no alert for runs already parked before launch).
     private func notifyApprovalTransitions(in results: [RepoCIHealth]) {
         let currentWaiting = results.flatMap { h in h.needsApproval.map { ($0, h.shortName) } }
-        let currentIDs = Set(currentWaiting.map { $0.0.runID })
+        let currentIDs = Set(currentWaiting.map(\.0.runID))
 
         defer {
             knownApprovalRunIDs = currentIDs
@@ -103,11 +103,11 @@ final class PortfolioCIService: ObservableObject {
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }
-            await self.refresh()
+            await refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled { break }
-                await self.refresh()
+                await refresh()
             }
         }
     }

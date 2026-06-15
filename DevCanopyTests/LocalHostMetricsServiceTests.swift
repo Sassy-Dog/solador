@@ -1,10 +1,9 @@
-import XCTest
-import HostMetricsKit
 @testable import DevCanopy
+import HostMetricsKit
+import XCTest
 
 @MainActor
 final class LocalHostMetricsServiceTests: XCTestCase {
-
     private func snapshot(cpu: Double, cores: [Double]) -> HostSnapshot {
         HostSnapshot(
             timestamp: Date(),
@@ -26,7 +25,7 @@ final class LocalHostMetricsServiceTests: XCTestCase {
     func testCPUHistoryIsCappedAtCapacity() {
         let service = LocalHostMetricsService()
         let n = LocalHostMetricsService.historyCapacity + 50
-        for i in 0..<n {
+        for i in 0 ..< n {
             service.ingest(snapshot(cpu: Double(i), cores: [Double(i)]))
         }
         XCTAssertEqual(service.cpuHistory.count, LocalHostMetricsService.historyCapacity)
@@ -45,10 +44,10 @@ final class LocalHostMetricsServiceTests: XCTestCase {
     func testIOHistoriesTrackDiskAndNetwork() {
         let service = LocalHostMetricsService()
         service.ingest(snapshot(cpu: 10, cores: [1]))
-        XCTAssertEqual(service.diskReadHistory.last, 1)   // snapshot() uses readMBps: 1
-        XCTAssertEqual(service.diskWriteHistory.last, 2)  // writeMBps: 2
-        XCTAssertEqual(service.netDownHistory.last, 3)    // downloadMBps: 3
-        XCTAssertEqual(service.netUpHistory.last, 4)      // uploadMBps: 4
+        XCTAssertEqual(service.diskReadHistory.last, 1) // snapshot() uses readMBps: 1
+        XCTAssertEqual(service.diskWriteHistory.last, 2) // writeMBps: 2
+        XCTAssertEqual(service.netDownHistory.last, 3) // downloadMBps: 3
+        XCTAssertEqual(service.netUpHistory.last, 4) // uploadMBps: 4
     }
 
     // MARK: - Lifecycle pause/resume (the burst fix's state machine)
@@ -56,7 +55,10 @@ final class LocalHostMetricsServiceTests: XCTestCase {
     /// A test double that starts/stops a no-op task — exercises the base-class
     /// pause/resume state machine without real system collection or notifications.
     private final class FakeHostMetricsService: HostMetricsService {
-        init() { super.init(hostName: "fake", connectionState: .local) }
+        init() {
+            super.init(hostName: "fake", connectionState: .local)
+        }
+
         override func start(interval: TimeInterval = 1.0) {
             startInterval = interval
             guard task == nil else { return }

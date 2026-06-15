@@ -58,7 +58,7 @@ struct GeneralSettingsView: View {
                     }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Stepper("CPU core rows: \(coreRowSpan)", value: $coreRowSpan, in: 1...4)
+                    Stepper("CPU core rows: \(coreRowSpan)", value: $coreRowSpan, in: 1 ... 4)
                     Text("How many rows tall the per-core CPU grid is on every host card.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -146,28 +146,28 @@ struct AboutView: View {
             Image(systemName: "square.grid.2x2")
                 .font(.system(size: 60))
                 .foregroundColor(.accentColor)
-            
+
             Text("DevCanopy")
                 .font(.largeTitle)
                 .bold()
-            
+
             Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")")
                 .foregroundStyle(.secondary)
-            
+
             Text("Monitor your development infrastructure")
                 .font(.headline)
-            
+
             Divider()
                 .frame(width: 200)
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Link("GitHub Repository", destination: URL(string: "https://github.com/Sassy-Dog/devcanopy")!)
                 Link("Report an Issue", destination: URL(string: "https://github.com/Sassy-Dog/devcanopy/issues")!)
                 Link("Documentation", destination: URL(string: "https://devcanopy.app/docs")!)
             }
-            
+
             Spacer()
-            
+
             Text("© 2024 Sassy Dog")
                 .font(.caption)
                 .foregroundStyle(.secondary)

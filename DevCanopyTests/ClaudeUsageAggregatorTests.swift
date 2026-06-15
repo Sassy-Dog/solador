@@ -1,9 +1,8 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class ClaudeUsageAggregatorTests: XCTestCase {
-
-    // A fixed reference "now": 2026-05-29 12:00:00 UTC.
+    /// A fixed reference "now": 2026-05-29 12:00:00 UTC.
     private let now = Date(timeIntervalSince1970: 1_780_142_400) // 2026-05-29T12:00:00Z
 
     private func record(
@@ -60,7 +59,7 @@ final class ClaudeUsageAggregatorTests: XCTestCase {
     func testSevenDayWindowExcludesOlderThanSevenDays() {
         let records = [
             record(offsetHours: 24 * 8, requestId: "ancient", input: 999), // 8 days ago -> excluded
-            record(offsetHours: 24 * 3, requestId: "midweek", input: 300)  // 3 days ago -> included
+            record(offsetHours: 24 * 3, requestId: "midweek", input: 300) // 3 days ago -> included
         ]
         let summary = ClaudeUsageAggregator.summarize(records: records, now: now)
         XCTAssertEqual(summary.last7d.inputTokens, 300)
@@ -71,9 +70,14 @@ final class ClaudeUsageAggregatorTests: XCTestCase {
     func testCostComputedFromPricingTablePerModel() {
         // Opus: input 15, output 75, cacheWrite 18.75, cacheRead 1.5 (per 1M)
         let records = [
-            record(requestId: "opus", model: "claude-opus-4-7",
-                   input: 1_000_000, output: 1_000_000,
-                   cacheWrite: 1_000_000, cacheRead: 1_000_000)
+            record(
+                requestId: "opus",
+                model: "claude-opus-4-7",
+                input: 1_000_000,
+                output: 1_000_000,
+                cacheWrite: 1_000_000,
+                cacheRead: 1_000_000
+            )
         ]
         let summary = ClaudeUsageAggregator.summarize(records: records, now: now)
         // 15 + 75 + 18.75 + 1.5 = 110.25
@@ -102,7 +106,7 @@ final class ClaudeUsageAggregatorTests: XCTestCase {
     func testPerProjectAttributionSortedByCostDesc() {
         let records = [
             record(requestId: "a", model: "claude-sonnet-4-5", project: "velovate", input: 1_000_000), // $3
-            record(requestId: "b", model: "claude-opus-4-7", project: "qr-ninja", input: 1_000_000)     // $15
+            record(requestId: "b", model: "claude-opus-4-7", project: "qr-ninja", input: 1_000_000) // $15
         ]
         let summary = ClaudeUsageAggregator.summarize(records: records, now: now)
         XCTAssertEqual(summary.projectsLast7d.count, 2)

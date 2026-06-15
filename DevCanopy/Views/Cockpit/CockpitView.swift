@@ -34,8 +34,8 @@ struct CockpitView: View {
     /// shipped layouts; `.third` falls back to one column in this two-column grid.
     private func columnSpan(_ span: PanelSpan) -> Int {
         switch span {
-        case .full: return gridColumns
-        case .half, .third: return 1
+        case .full: gridColumns
+        case .half, .third: 1
         }
     }
 

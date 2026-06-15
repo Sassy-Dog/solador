@@ -1,6 +1,6 @@
 import Foundation
-import XCTest
 @testable import HostMetricsKit
+import XCTest
 
 final class HostMetricsCollectorTests: XCTestCase {
     /// Maps the live `ProcessInfo` thermal state into the package's enum,
@@ -82,7 +82,7 @@ final class HostMetricsCollectorTests: XCTestCase {
     /// (the overnight crash). A backwards counter must yield 0%, not a crash.
     func testCPUPercentBackwardsCounterDoesNotCrash() {
         let percent = SystemMonitorV2.cpuPercent(
-            currentTime: 1_000,
+            currentTime: 1000,
             previousTime: 5_000_000_000,
             elapsedSeconds: 1.0,
             coreCount: 10

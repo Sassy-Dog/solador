@@ -1,5 +1,5 @@
-import SwiftUI
 import HostMetricsKit
+import SwiftUI
 
 /// Full metrics view for a single host, rendered inline as a card: host header,
 /// big processor chart, per-core colored grid, Memory + Graphics, Disk + Network I/O.
@@ -27,18 +27,18 @@ struct HostMetricsPanel: View {
 
     /// Per-core line colors, cycled — echoes Lupita's multi-hue core grid.
     private static let coreColors: [Color] = [
-        Color(hex: 0x5b8def), Color(hex: 0x3fb950), Color(hex: 0xe0922a),
-        Color(hex: 0xb066f0), Color(hex: 0xe0584f), Color(hex: 0x33c7c7),
-        Color(hex: 0xe06ab0), Color(hex: 0x9bd34a), Color(hex: 0x4fb0e0),
-        Color(hex: 0xd0c24a)
+        Color(hex: 0x5B8DEF), Color(hex: 0x3FB950), Color(hex: 0xE0922A),
+        Color(hex: 0xB066F0), Color(hex: 0xE0584F), Color(hex: 0x33C7C7),
+        Color(hex: 0xE06AB0), Color(hex: 0x9BD34A), Color(hex: 0x4FB0E0),
+        Color(hex: 0xD0C24A)
     ]
-    private let cpuColor = Color(hex: 0x5b8def)
-    private let memColor = Color(hex: 0xb066f0)
-    private let gpuColor = Color(hex: 0x33c7c7)
-    private let readColor = Color(hex: 0x3fb950)
-    private let writeColor = Color(hex: 0xe0922a)
-    private let netColor = Color(hex: 0x5b8def)
-    private let netUpColor = Color(hex: 0x9bd34a)
+    private let cpuColor = Color(hex: 0x5B8DEF)
+    private let memColor = Color(hex: 0xB066F0)
+    private let gpuColor = Color(hex: 0x33C7C7)
+    private let readColor = Color(hex: 0x3FB950)
+    private let writeColor = Color(hex: 0xE0922A)
+    private let netColor = Color(hex: 0x5B8DEF)
+    private let netUpColor = Color(hex: 0x9BD34A)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -100,13 +100,13 @@ struct HostMetricsPanel: View {
     /// Cause-specific guidance shown on hover over a failed host, so the user
     /// chases the right layer instead of SSHing into a healthy VM.
     private var failureTooltip: String {
-        guard case .failed(let error) = service.connectionState else { return "" }
+        guard case let .failed(error) = service.connectionState else { return "" }
         switch error {
         case .authFailed:
             return "Agent rejected the bearer token (401). Check the host's token in Settings."
         case .decodeFailed:
             return "Agent responded but the payload didn't decode — likely an agent/app version skew after a redeploy."
-        case .httpStatus(let code):
+        case let .httpStatus(code):
             return "Agent returned HTTP \(code)."
         case .unreachable:
             return "Couldn't reach the agent. Check the host is up and the agent is running."
@@ -115,7 +115,6 @@ struct HostMetricsPanel: View {
 
     // MARK: Processor
 
-    @ViewBuilder
     private func processorSection(_ snap: HostSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(
@@ -164,7 +163,7 @@ struct HostMetricsPanel: View {
                     .foregroundStyle(usageColor(history.last ?? 0))
             }
             // Sparkline (a GeometryReader) takes whatever height is left after the label.
-            Sparkline(values: history, capacity: Self.cap, color: color, range: 0...100)
+            Sparkline(values: history, capacity: Self.cap, color: color, range: 0 ... 100)
                 .frame(maxHeight: .infinity)
         }
         .padding(8)
@@ -175,7 +174,6 @@ struct HostMetricsPanel: View {
 
     // MARK: Memory / Graphics
 
-    @ViewBuilder
     private func memorySection(_ snap: HostSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
@@ -198,7 +196,6 @@ struct HostMetricsPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
     private func graphicsSection(_ snap: HostSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
@@ -218,26 +215,38 @@ struct HostMetricsPanel: View {
 
     // MARK: Disk / Network
 
-    @ViewBuilder
     private func diskSection(_ snap: HostSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            ioHeader(icon: "internaldrive", title: "Disk I/O",
-                     left: ("Read", fmtRate(snap.disk.readMBps), readColor),
-                     right: ("Write", fmtRate(snap.disk.writeMBps), writeColor))
-            ioChart(seriesA: service.diskReadHistory, colorA: readColor,
-                    seriesB: service.diskWriteHistory, colorB: writeColor)
+            ioHeader(
+                icon: "internaldrive",
+                title: "Disk I/O",
+                left: ("Read", fmtRate(snap.disk.readMBps), readColor),
+                right: ("Write", fmtRate(snap.disk.writeMBps), writeColor)
+            )
+            ioChart(
+                seriesA: service.diskReadHistory,
+                colorA: readColor,
+                seriesB: service.diskWriteHistory,
+                colorB: writeColor
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
     private func networkSection(_ snap: HostSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            ioHeader(icon: "network", title: "Network I/O",
-                     left: ("Down", fmtRate(snap.network.downloadMBps), netColor),
-                     right: ("Up", fmtRate(snap.network.uploadMBps), netUpColor))
-            ioChart(seriesA: service.netDownHistory, colorA: netColor,
-                    seriesB: service.netUpHistory, colorB: netUpColor)
+            ioHeader(
+                icon: "network",
+                title: "Network I/O",
+                left: ("Down", fmtRate(snap.network.downloadMBps), netColor),
+                right: ("Up", fmtRate(snap.network.uploadMBps), netUpColor)
+            )
+            ioChart(
+                seriesA: service.netDownHistory,
+                colorA: netColor,
+                seriesB: service.netUpHistory,
+                colorB: netUpColor
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -254,8 +263,13 @@ struct HostMetricsPanel: View {
         let rows = VolumeGridLayout.rows(sorted, columns: columns)
         let pad = max(0, reservedRows - rows.count)
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader(icon: "externaldrive", title: "Volumes", badge: nil,
-                          value: "\(volumes.count)", valueColor: CockpitTheme.muted)
+            sectionHeader(
+                icon: "externaldrive",
+                title: "Volumes",
+                badge: nil,
+                value: "\(volumes.count)",
+                valueColor: CockpitTheme.muted
+            )
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     HStack(spacing: 16) {
@@ -307,22 +321,23 @@ struct HostMetricsPanel: View {
 
     /// Volumes fill up gradually; warn earlier than CPU since a full volume fails.
     private func volumeColor(_ pct: Double) -> Color {
-        switch pct { case ..<85: CockpitTheme.green; case ..<95: CockpitTheme.amber; default: CockpitTheme.red }
+        switch pct { case ..<85: CockpitTheme.green
+        case ..<95: CockpitTheme.amber
+        default: CockpitTheme.red }
     }
 
     // MARK: Top processes
 
-    @ViewBuilder
     private func processesSection(_ procs: [ProcessSample]) -> some View {
         HStack(alignment: .top, spacing: 24) {
             processList(
                 "Top CPU",
-                procs.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(5).map { $0 },
+                procs.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(5).map(\.self),
                 value: { "\(Int($0.cpuPercent.rounded()))%" }
             )
             processList(
                 "Top RAM",
-                procs.sorted { $0.memoryMB > $1.memoryMB }.prefix(5).map { $0 },
+                procs.sorted { $0.memoryMB > $1.memoryMB }.prefix(5).map(\.self),
                 value: { memoryLabel($0.memoryMB) }
             )
         }
@@ -353,11 +368,15 @@ struct HostMetricsPanel: View {
     private func percentChart(_ values: [Double], color: Color, height: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 6) {
             VStack {
-                Text("100%"); Spacer(); Text("50%"); Spacer(); Text("0%")
+                Text("100%")
+                Spacer()
+                Text("50%")
+                Spacer()
+                Text("0%")
             }
             .font(CockpitTheme.mono(8)).foregroundStyle(CockpitTheme.muted)
             .frame(height: height)
-            Sparkline(values: values, capacity: Self.cap, color: color, range: 0...100)
+            Sparkline(values: values, capacity: Self.cap, color: color, range: 0 ... 100)
                 .frame(height: height)
                 .background(gridlines)
         }
@@ -369,16 +388,26 @@ struct HostMetricsPanel: View {
             // Reserve the axis width to the widest label so the plot stays
             // anchored when the auto-scaled max changes its digit-count.
             VStack(alignment: .trailing) {
-                anchored(fmtAxis(maxV), reserve: "9999", size: 8,
-                         color: CockpitTheme.muted, alignment: .trailing)
+                anchored(
+                    fmtAxis(maxV),
+                    reserve: "9999",
+                    size: 8,
+                    color: CockpitTheme.muted,
+                    alignment: .trailing
+                )
                 Spacer()
-                anchored("0", reserve: "9999", size: 8,
-                         color: CockpitTheme.muted, alignment: .trailing)
+                anchored(
+                    "0",
+                    reserve: "9999",
+                    size: 8,
+                    color: CockpitTheme.muted,
+                    alignment: .trailing
+                )
             }
             .frame(height: 90)
             ZStack {
-                Sparkline(values: seriesA, capacity: Self.cap, color: colorA, range: 0...maxV)
-                Sparkline(values: seriesB, capacity: Self.cap, color: colorB, range: 0...maxV)
+                Sparkline(values: seriesA, capacity: Self.cap, color: colorA, range: 0 ... maxV)
+                Sparkline(values: seriesB, capacity: Self.cap, color: colorB, range: 0 ... maxV)
             }
             .frame(height: 90)
             .background(gridlines)
@@ -386,7 +415,12 @@ struct HostMetricsPanel: View {
     }
 
     private var gridlines: some View {
-        VStack { Divider().overlay(CockpitTheme.line); Spacer(); Divider().overlay(CockpitTheme.line); Spacer(); Divider().overlay(CockpitTheme.line) }
+        VStack { Divider().overlay(CockpitTheme.line)
+            Spacer()
+            Divider().overlay(CockpitTheme.line)
+            Spacer()
+            Divider().overlay(CockpitTheme.line)
+        }
     }
 
     // MARK: Header bits
@@ -418,10 +452,21 @@ struct HostMetricsPanel: View {
             Circle().fill(color).frame(width: 6, height: 6)
             // Anchor both columns so the dot and label stay put as the value's
             // digit-count changes — otherwise the live numbers jitter the labels.
-            anchored("\(label):", reserve: "Write:", size: 9,
-                     color: CockpitTheme.muted, alignment: .leading)
-            anchored(value, reserve: "9999 MB/s", size: 9, weight: .bold,
-                     color: CockpitTheme.ink, alignment: .trailing)
+            anchored(
+                "\(label):",
+                reserve: "Write:",
+                size: 9,
+                color: CockpitTheme.muted,
+                alignment: .leading
+            )
+            anchored(
+                value,
+                reserve: "9999 MB/s",
+                size: 9,
+                weight: .bold,
+                color: CockpitTheme.ink,
+                alignment: .trailing
+            )
         }
     }
 
@@ -429,9 +474,14 @@ struct HostMetricsPanel: View {
     /// requested. Because the cockpit font is monospaced, sizing to a worst-case
     /// placeholder keeps value labels (and their neighbors) from reflowing as the
     /// underlying number's width changes — anchoring them to kill the distraction.
-    private func anchored(_ text: String, reserve placeholder: String, size: CGFloat,
-                          weight: Font.Weight = .regular, color: Color,
-                          alignment: Alignment) -> some View {
+    private func anchored(
+        _ text: String,
+        reserve placeholder: String,
+        size: CGFloat,
+        weight: Font.Weight = .regular,
+        color: Color,
+        alignment: Alignment
+    ) -> some View {
         Text(placeholder)
             .font(CockpitTheme.mono(size, weight: weight))
             .hidden()
@@ -463,11 +513,17 @@ struct HostMetricsPanel: View {
     }
 
     private func usageColor(_ v: Double) -> Color {
-        switch v { case ..<70: CockpitTheme.green; case ..<90: CockpitTheme.amber; default: CockpitTheme.red }
+        switch v { case ..<70: CockpitTheme.green
+        case ..<90: CockpitTheme.amber
+        default: CockpitTheme.red }
     }
+
     private func pressureColor(_ v: Double) -> Color {
-        switch v { case ..<60: CockpitTheme.green; case ..<85: CockpitTheme.amber; default: CockpitTheme.red }
+        switch v { case ..<60: CockpitTheme.green
+        case ..<85: CockpitTheme.amber
+        default: CockpitTheme.red }
     }
+
     private func fmt(_ v: Double) -> String {
         v >= 100 ? String(Int(v)) : String(format: "%.1f", v)
     }

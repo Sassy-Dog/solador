@@ -40,14 +40,16 @@ struct UsageTotals: Equatable {
 struct UsageBreakdown: Equatable, Identifiable {
     let name: String
     let totals: UsageTotals
-    var id: String { name }
+    var id: String {
+        name
+    }
 }
 
 /// The aggregate view the panel renders.
 struct UsageSummary: Equatable {
-    var today: UsageTotals = UsageTotals()
-    var last5h: UsageTotals = UsageTotals()
-    var last7d: UsageTotals = UsageTotals()
+    var today: UsageTotals = .init()
+    var last5h: UsageTotals = .init()
+    var last7d: UsageTotals = .init()
     var projectsLast7d: [UsageBreakdown] = []
     var modelsLast7d: [UsageBreakdown] = []
 }

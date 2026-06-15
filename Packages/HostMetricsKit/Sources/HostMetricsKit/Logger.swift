@@ -47,6 +47,11 @@ enum Logger {
     static let ui = Channel(category: "ui")
     static let network = Channel(category: "network")
 
-    static var isDebugEnabled: Bool { false }
-    static var isVerboseEnabled: Bool { false }
+    static var isDebugEnabled: Bool {
+        false
+    }
+
+    static var isVerboseEnabled: Bool {
+        false
+    }
 }

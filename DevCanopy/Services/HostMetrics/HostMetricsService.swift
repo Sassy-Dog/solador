@@ -4,10 +4,10 @@ import HostMetricsKit
 
 /// Connection state for a host's metrics feed.
 enum HostConnectionState: Equatable {
-    case local                       // this machine, in-process
-    case connecting                  // remote, awaiting first sample
-    case connected                   // remote, receiving
-    case failed(RemoteHostError)     // remote, last poll failed (with cause)
+    case local // this machine, in-process
+    case connecting // remote, awaiting first sample
+    case connected // remote, receiving
+    case failed(RemoteHostError) // remote, last poll failed (with cause)
 
     /// True for any failed state, regardless of cause. Lets call sites that only
     /// care "is this host down?" stay terse.
@@ -19,7 +19,7 @@ enum HostConnectionState: Equatable {
     /// Short, human-facing label for a failed state ("auth failed", "decode
     /// failed", "unreachable", …); empty for non-failed states.
     var failureLabel: String {
-        if case .failed(let error) = self { return error.shortLabel }
+        if case let .failed(error) = self { return error.shortLabel }
         return ""
     }
 }
@@ -88,7 +88,9 @@ class HostMetricsService: ObservableObject {
     var task: Task<Void, Never>?
 
     /// Whether collection is currently running.
-    var isCollecting: Bool { task != nil }
+    var isCollecting: Bool {
+        task != nil
+    }
 
     /// Interval the subclass was last started with, so a lifecycle-resume can
     /// restart at the same cadence. Subclasses set this in their `start` override.
@@ -103,7 +105,7 @@ class HostMetricsService: ObservableObject {
     }
 
     /// Begins streaming. Overridden by subclasses.
-    func start(interval: TimeInterval = 1.0) {}
+    func start(interval _: TimeInterval = 1.0) {}
 
     func stop() {
         task?.cancel()
@@ -187,6 +189,8 @@ class HostMetricsService: ObservableObject {
 
     deinit {
         task?.cancel()
-        for (center, token) in lifecycleObservers { center.removeObserver(token) }
+        for (center, token) in lifecycleObservers {
+            center.removeObserver(token)
+        }
     }
 }

@@ -105,7 +105,7 @@ final class RemoteHostsCoordinator: ObservableObject {
                 if let containers = try? await service.fetchContainers() {
                     self?.containersByHost[hostName] = containers
                 }
-                try? await Task.sleep(nanoseconds: 10_000_000_000)  // 10s
+                try? await Task.sleep(nanoseconds: 10_000_000_000) // 10s
             }
         }
     }

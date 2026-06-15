@@ -1,5 +1,5 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 /// Round-trip tests for `KeychainHelper`.
 ///
@@ -9,7 +9,6 @@ import XCTest
 /// suite there, each test first probes availability and `XCTSkip`s when the
 /// keychain is unreachable, so the suite passes both locally and in unsigned CI.
 final class KeychainHelperTests: XCTestCase {
-
     private let helper = KeychainHelper.shared
     private var keys: [String] = []
 

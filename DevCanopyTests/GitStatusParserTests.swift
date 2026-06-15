@@ -1,8 +1,7 @@
-import XCTest
 @testable import DevCanopy
+import XCTest
 
 final class GitStatusParserTests: XCTestCase {
-
     // MARK: - Clean / synced
 
     func testSyncedCleanRepo() {

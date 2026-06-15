@@ -30,7 +30,7 @@ final class LocalHostMetricsService: HostMetricsService {
         task = Task { [weak self] in
             guard let self else { return }
             for await snap in collector.snapshots(interval: interval) {
-                self.ingest(snap)
+                ingest(snap)
             }
         }
     }

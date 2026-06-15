@@ -32,7 +32,6 @@ struct GitWorktreesPanel: CockpitPanelView {
         return changed == 0 ? "all clean" : "\(changed) changed"
     }
 
-    @ViewBuilder
     private func repoGroup(_ repo: RepoWorktrees) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(repo.name.uppercased())

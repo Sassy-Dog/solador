@@ -15,9 +15,11 @@ final class TrackedRepo {
     init(slug: String, enabled: Bool = true) {
         self.slug = slug
         self.enabled = enabled
-        self.createdAt = Date()
+        createdAt = Date()
     }
 
     /// Repo name after the slash, e.g. `velovate`.
-    var name: String { String(slug.split(separator: "/").last ?? "") }
+    var name: String {
+        String(slug.split(separator: "/").last ?? "")
+    }
 }

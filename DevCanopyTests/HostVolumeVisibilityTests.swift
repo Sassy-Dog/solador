@@ -1,13 +1,12 @@
-import XCTest
-import HostMetricsKit
 @testable import DevCanopy
+import HostMetricsKit
+import XCTest
 
 /// `visibleVolumes` is the single source of truth the cockpit renders: the
 /// debounced volume list minus the user's per-host hide list. These tests drive
 /// it through `ingest(_:)` the way real collectors do.
 @MainActor
 final class HostVolumeVisibilityTests: XCTestCase {
-
     private func snapshot(volumes: [VolumeUsage]) -> HostSnapshot {
         HostSnapshot(
             timestamp: Date(),
@@ -32,7 +31,7 @@ final class HostVolumeVisibilityTests: XCTestCase {
     func testFlappingVolumeNeverReachesVisibleVolumes() {
         let s = service()
         s.ingest(snapshot(volumes: [vol("/")]))
-        for _ in 0..<10 {
+        for _ in 0 ..< 10 {
             s.ingest(snapshot(volumes: [vol("/"), vol("/shared")]))
             s.ingest(snapshot(volumes: [vol("/")]))
         }
@@ -42,7 +41,7 @@ final class HostVolumeVisibilityTests: XCTestCase {
     func testStablyPresentVolumeBecomesVisible() {
         let s = service()
         s.ingest(snapshot(volumes: [vol("/")]))
-        for _ in 0..<VolumeStabilizer.defaultThreshold {
+        for _ in 0 ..< VolumeStabilizer.defaultThreshold {
             s.ingest(snapshot(volumes: [vol("/"), vol("/data")]))
         }
         XCTAssertEqual(s.visibleVolumes.map(\.mount), ["/", "/data"])
@@ -59,8 +58,8 @@ final class HostVolumeVisibilityTests: XCTestCase {
 
     // MARK: Local host persistence (UserDefaults)
 
-    func testLocalServiceLoadsAndPersistsHiddenMountsViaUserDefaults() {
-        let defaults = UserDefaults(suiteName: "HostVolumeVisibilityTests")!
+    func testLocalServiceLoadsAndPersistsHiddenMountsViaUserDefaults() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "HostVolumeVisibilityTests"))
         defaults.removePersistentDomain(forName: "HostVolumeVisibilityTests")
         defaults.set(["/seeded"], forKey: LocalHostMetricsService.hiddenMountsDefaultsKey)
 
