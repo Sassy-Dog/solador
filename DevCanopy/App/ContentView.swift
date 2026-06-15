@@ -10,5 +10,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .modelContainer(for: TrackedRepository.self, inMemory: true)
+        .modelContainer(for: MonitoredHost.self, inMemory: true)
 }

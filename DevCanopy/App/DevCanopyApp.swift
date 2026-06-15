@@ -4,7 +4,6 @@ import SwiftData
 @main
 struct DevCanopyApp: App {
     let modelContainer: ModelContainer
-    @StateObject private var gitMonitorService: GitMonitorService
     @StateObject private var remoteHosts: RemoteHostsCoordinator
     @StateObject private var localHostMetrics = LocalHostMetricsService()
     @StateObject private var containerService = LocalContainerService()
@@ -20,12 +19,8 @@ struct DevCanopyApp: App {
         
         do {
             let schema = Schema([
-                TrackedRepository.self,
-                ServiceConnection.self,
                 AppSettings.self,
-                MonitoredHost.self,
-                GitHubWorkflow.self,
-                GitHubWorkflowRun.self
+                MonitoredHost.self
             ])
             
             let modelConfiguration = ModelConfiguration(
@@ -39,27 +34,12 @@ struct DevCanopyApp: App {
             )
             
             self.modelContainer = container
-            
-            // Initialize GitMonitorService
-            let gitMonitor = GitMonitorService(modelContext: container.mainContext)
-            self._gitMonitorService = StateObject(wrappedValue: gitMonitor)
 
             // Coordinator for remote-host agents (reads MonitoredHost from SwiftData)
             self._remoteHosts = StateObject(
                 wrappedValue: RemoteHostsCoordinator(modelContext: container.mainContext)
             )
-            
-            // Start monitoring existing repositories
-            Task { @MainActor in
-                let descriptor = FetchDescriptor<TrackedRepository>()
-                if let repositories = try? container.mainContext.fetch(descriptor) {
-                    for repository in repositories {
-                        gitMonitor.startMonitoring(repository)
-                    }
-                    appLogger.info("Started monitoring \(repositories.count) existing repositories")
-                }
-            }
-            
+
             appLogger.info("ModelContainer and services initialized successfully")
         } catch {
             appLogger.error("Failed to create ModelContainer: \(error)")
@@ -70,7 +50,6 @@ struct DevCanopyApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(gitMonitorService)
                 .environmentObject(GitHubService.shared)
                 .environmentObject(localHostMetrics)
                 .environmentObject(containerService)
@@ -114,7 +93,6 @@ struct DevCanopyApp: App {
         
         Settings {
             SettingsView()
-                .environmentObject(gitMonitorService)
                 .environmentObject(remoteHosts)
                 .environmentObject(localHostMetrics)
         }
