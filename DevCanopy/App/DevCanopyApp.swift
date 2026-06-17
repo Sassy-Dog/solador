@@ -94,6 +94,9 @@ struct DevCanopyApp: App {
                     portfolioCIService.slugsProvider = { [weak portfolioStore] in
                         portfolioStore?.slugs ?? PortfolioRepos.seedSlugs
                     }
+                    portfolioCIService.watchedProvider = { [weak portfolioStore] in
+                        portfolioStore?.watchedWorkflows ?? [:]
+                    }
                     gitWorktreeService.slugsProvider = { [weak portfolioStore] in
                         portfolioStore?.slugs ?? PortfolioRepos.seedSlugs
                     }

@@ -188,4 +188,95 @@ final class PortfolioCIMappingTests: XCTestCase {
         ])
         XCTAssertFalse(failing.isHealthy)
     }
+
+    // MARK: - watched workflows + event-gate relaxation (issue #76)
+
+    /// The silent-failure incident: a `release.yml` run fires on `workflow_run`
+    /// after `ci.yml`. With the legacy `event == "push"` gate it's dropped — green
+    /// panel, failed release. Without a watch list, that's the (preserved) default.
+    func testWorkflowRunFailureInvisibleWithoutWatchList() {
+        let runs = [
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 1),
+            dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 2)
+        ]
+        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
+        XCTAssertTrue(h.isHealthy, "default view ignores the workflow_run failure (legacy behavior preserved)")
+        XCTAssertEqual(h.main?.title, "CI")
+    }
+
+    /// Adding `release.yml` to the watch list relaxes the event gate so the
+    /// `workflow_run` failure on main reddens the repo and names the workflow.
+    func testWatchedReleaseWorkflowRunFailureRedensRepo() {
+        let runs = [
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 1),
+            dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 2)
+        ]
+        let h = PortfolioCIMapping.health(
+            repo: "Sassy-Dog/velovate",
+            runs: runs,
+            watchedWorkflows: ["release.yml"]
+        )
+        XCTAssertFalse(h.isHealthy, "watched release failure must redden the repo")
+        XCTAssertEqual(h.main?.conclusion, .failure)
+        XCTAssertEqual(h.main?.title, "Release", "the failing workflow is named")
+    }
+
+    /// `schedule`-triggered runs on the default branch also count when watched.
+    func testWatchedScheduleFailureRedensRepo() {
+        let runs = [
+            dto(name: "Nightly", status: "completed", conclusion: "failure", branch: "main", event: "schedule", id: 1)
+        ]
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["Nightly"])
+        XCTAssertFalse(h.isHealthy)
+        XCTAssertEqual(h.main?.title, "Nightly")
+    }
+
+    /// Watch-list match is case-insensitive and extension-agnostic: `release.yml`,
+    /// `Release.yaml`, and `Release` all match a run named "Release".
+    func testWatchedMatchIsCaseAndExtensionInsensitive() {
+        let runs = [
+            dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 1)
+        ]
+        for key in ["release.yml", "Release.yaml", "RELEASE", "release"] {
+            let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: [key])
+            XCTAssertFalse(h.isHealthy, "key \(key) should match the 'Release' run")
+        }
+    }
+
+    /// When a watch list is set, non-watched workflows are filtered out — a
+    /// passing `ci.yml` doesn't mask a failing watched `release.yml`, and a
+    /// failing non-watched workflow doesn't redden a repo that opted into only
+    /// specific workflows.
+    func testWatchListFiltersOutNonWatchedWorkflows() {
+        let runs = [
+            dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push", id: 1),
+            dto(name: "Release", status: "completed", conclusion: "success", branch: "main", event: "workflow_run", id: 2)
+        ]
+        // Only "Release" is watched; the failing "CI" run is out of scope.
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["release.yml"])
+        XCTAssertTrue(h.isHealthy, "non-watched CI failure is filtered out when a watch list is set")
+        XCTAssertEqual(h.main?.title, "Release")
+    }
+
+    /// An empty watch list is identical to no watch list (default push+PR view).
+    func testEmptyWatchListPreservesDefaultBehavior() {
+        let runs = [
+            dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 1),
+            dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 2)
+        ]
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: [])
+        XCTAssertTrue(h.isHealthy, "empty list == legacy behavior; workflow_run failure ignored")
+        XCTAssertEqual(h.main?.title, "CI")
+    }
+
+    /// A watched workflow_run failure on a non-default branch must not feed the
+    /// main slot — only default-branch runs count toward repo health.
+    func testWatchedRunOffDefaultBranchDoesNotFeedMain() {
+        let runs = [
+            dto(name: "Release", status: "completed", conclusion: "failure", branch: "release/1.2", event: "workflow_run", id: 1)
+        ]
+        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["release.yml"])
+        XCTAssertNil(h.main, "a non-main watched run must not populate the main slot")
+        XCTAssertTrue(h.isHealthy)
+    }
 }

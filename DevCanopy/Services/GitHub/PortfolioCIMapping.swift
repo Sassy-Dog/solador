@@ -124,11 +124,37 @@ struct RepoCIHealth: Equatable, Identifiable {
 }
 
 extension PortfolioCIMapping {
+    /// Default branch assumed for the repo "main" health slot.
+    private static let defaultBranch = "main"
+
     /// Categorize a repo's runs into main / lastPR / running. Pure; "newest" is by
     /// createdAt descending. Assumes the default branch is `main`.
-    static func health(repo: String, runs: [WorkflowRunDTO], now: Date = Date()) -> RepoCIHealth {
-        let sorted = runs.sorted { createdDate($0) > createdDate($1) }
-        let main = sorted.first { $0.event == "push" && $0.headBranch == "main" }.map(ref)
+    ///
+    /// `watchedWorkflows` is an optional per-repo opt-in list of workflows that
+    /// should count toward repo health beyond the default `push`/`pull_request`
+    /// view (issue #76). nil/empty preserves the legacy behavior:
+    ///   - `main` = newest `push` run on the default branch.
+    ///   - `lastPR` = newest `pull_request` run.
+    ///
+    /// When non-empty, runs are first filtered to the watched workflows (matched
+    /// against `WorkflowRunDTO.name` — the workflow's display name, e.g. "Release";
+    /// entries may be given as a filename like `release.yml`/`release.yaml` or the
+    /// display name, matched case-insensitively). The event gate is then *relaxed*
+    /// so any watched run on the default branch — `workflow_run`, `schedule`,
+    /// `workflow_dispatch`, or `push` — counts toward the `main` slot. This is the
+    /// silent-failure fix: a `release.yml` run fires on `workflow_run`, which the
+    /// legacy `event == "push"` gate dropped on the floor.
+    static func health(
+        repo: String,
+        runs: [WorkflowRunDTO],
+        watchedWorkflows: [String]? = nil,
+        now: Date = Date()
+    ) -> RepoCIHealth {
+        let watched = normalizedWatched(watchedWorkflows)
+        let scoped = watched.isEmpty ? runs : runs.filter { matchesWatched($0, watched) }
+        let sorted = scoped.sorted { createdDate($0) > createdDate($1) }
+
+        let main = sorted.first { isDefaultBranchHealth($0, watchScoped: !watched.isEmpty) }.map(ref)
         let lastPR = sorted.first { $0.event == "pull_request" }.map(ref)
         let refs = sorted.map(ref)
         let running = refs.filter { $0.isRunning(now: now) }
@@ -143,6 +169,40 @@ extension PortfolioCIMapping {
             stuck: stuck,
             reachable: true
         )
+    }
+
+    /// Whether a run feeds the `main` health slot. Default behavior is strictly
+    /// `push` on the default branch. When the caller has scoped to watched
+    /// workflows, the event gate is relaxed to any non-PR run on the default
+    /// branch (`workflow_run`/`schedule`/`workflow_dispatch`/`push`) so a release
+    /// pipeline's failure surfaces.
+    private static func isDefaultBranchHealth(_ run: WorkflowRunDTO, watchScoped: Bool) -> Bool {
+        guard run.headBranch == defaultBranch else { return false }
+        if watchScoped { return run.event != "pull_request" }
+        return run.event == "push"
+    }
+
+    /// Lowercased, extension-stripped, de-blanked watched-workflow keys.
+    private static func normalizedWatched(_ watched: [String]?) -> Set<String> {
+        guard let watched else { return [] }
+        return Set(watched.map(normalizeWorkflowKey).filter { !$0.isEmpty })
+    }
+
+    /// Normalize a workflow identifier for matching: trim, drop a trailing
+    /// `.yml`/`.yaml`, lowercase. So `release.yml`, `Release.yaml`, and `Release`
+    /// all collapse to `release`.
+    private static func normalizeWorkflowKey(_ s: String) -> String {
+        var key = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        for ext in [".yml", ".yaml"] where key.lowercased().hasSuffix(ext) {
+            key = String(key.dropLast(ext.count))
+            break
+        }
+        return key.lowercased()
+    }
+
+    /// True when a run's display name matches any watched key.
+    private static func matchesWatched(_ run: WorkflowRunDTO, _ watched: Set<String>) -> Bool {
+        watched.contains(normalizeWorkflowKey(run.name))
     }
 
     private static func ref(_ run: WorkflowRunDTO) -> RunRef {
