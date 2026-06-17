@@ -13,6 +13,11 @@ final class PortfolioStore: ObservableObject {
     /// Enabled `owner/name` slugs, sorted. Republished whenever the set changes.
     @Published private(set) var slugs: [String] = []
 
+    /// Per-repo watched workflows, keyed by slug. Only repos with a non-empty list
+    /// appear. Drives the Portfolio CI panel's "watch beyond ci.yml" behavior
+    /// (issue #76). Republished alongside `slugs`.
+    @Published private(set) var watchedWorkflows: [String: [String]] = [:]
+
     private let modelContext: ModelContext
 
     /// Called after the slug set changes so dependent services refresh now rather
@@ -43,6 +48,24 @@ final class PortfolioStore: ObservableObject {
         )
         let tracked = (try? modelContext.fetch(descriptor)) ?? []
         slugs = tracked.map(\.slug)
+        watchedWorkflows = tracked.reduce(into: [:]) { acc, repo in
+            let cleaned = (repo.watchedWorkflows ?? [])
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !cleaned.isEmpty { acc[repo.slug] = cleaned }
+        }
+    }
+
+    /// Replaces a repo's watched-workflow list. Empty/blank clears it (restoring
+    /// the legacy push+PR view for that repo).
+    func setWatchedWorkflows(_ workflows: [String], for repo: TrackedRepo) {
+        let cleaned = workflows
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        repo.watchedWorkflows = cleaned.isEmpty ? nil : cleaned
+        try? modelContext.save()
+        reload()
+        onChange?()
     }
 
     /// Adds a repo by `owner/name` slug. No-op on a blank or duplicate slug

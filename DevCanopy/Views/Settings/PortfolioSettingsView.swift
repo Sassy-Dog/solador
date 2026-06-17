@@ -35,7 +35,7 @@ struct PortfolioSettingsView: View {
                 if let statusMessage {
                     Text(statusMessage).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Drives Portfolio CI, CI Runners, and Git/Worktrees. Disabled repos stay in the list but are skipped. Changes apply at the next refresh.")
+                Text("Drives Portfolio CI, CI Runners, and Git/Worktrees. Disabled repos stay in the list but are skipped. Changes apply at the next refresh. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: {
                 Text("Add Repo").font(.headline)
@@ -46,23 +46,46 @@ struct PortfolioSettingsView: View {
     }
 
     private func repoRow(_ repo: TrackedRepo) -> some View {
-        HStack {
-            Text(repo.slug)
-                .font(.body.monospaced())
-                .foregroundStyle(repo.enabled ? .primary : .secondary)
-            Spacer()
-            Toggle("", isOn: enabledBinding(repo)).labelsHidden()
-            Button(role: .destructive) { store.remove(repo) } label: {
-                Image(systemName: "trash")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(repo.slug)
+                    .font(.body.monospaced())
+                    .foregroundStyle(repo.enabled ? .primary : .secondary)
+                Spacer()
+                Toggle("", isOn: enabledBinding(repo)).labelsHidden()
+                Button(role: .destructive) { store.remove(repo) } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
+            TextField("Watched workflows (comma-separated, e.g. release.yml)", text: watchedBinding(repo))
+                .textFieldStyle(.roundedBorder)
+                .font(.caption.monospaced())
+                .disabled(!repo.enabled)
         }
+        .padding(.vertical, 2)
     }
 
     private func enabledBinding(_ repo: TrackedRepo) -> Binding<Bool> {
         Binding(
             get: { repo.enabled },
             set: { store.setEnabled($0, for: repo) }
+        )
+    }
+
+    /// Edits the per-repo watched-workflow list as a comma-separated string.
+    /// Empty preserves today's push+PR view; add e.g. `release.yml` to surface a
+    /// release-pipeline failure on the health panel (issue #76).
+    private func watchedBinding(_ repo: TrackedRepo) -> Binding<String> {
+        Binding(
+            get: { (repo.watchedWorkflows ?? []).joined(separator: ", ") },
+            set: { newValue in
+                let parsed = newValue
+                    .split(whereSeparator: { $0 == "," || $0 == "\n" })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                store.setWatchedWorkflows(parsed, for: repo)
+            }
         )
     }
 

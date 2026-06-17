@@ -14,6 +14,11 @@ final class PortfolioCIService: ObservableObject {
     /// set stays user-editable; defaults to the first-run seed for previews/tests.
     var slugsProvider: () -> [String] = { PortfolioRepos.seedSlugs }
 
+    /// Per-repo watched workflows keyed by slug (issue #76). Supplied by
+    /// `PortfolioStore`; a missing/empty entry preserves the legacy push+PR view
+    /// for that repo. Defaults to none for previews/tests.
+    var watchedProvider: () -> [String: [String]] = { [:] }
+
     private let github: GitHubService
     private var task: Task<Void, Never>?
 
@@ -89,10 +94,15 @@ final class PortfolioCIService: ObservableObject {
     private func fetchHealth(for repo: String) async -> RepoCIHealth {
         let endpoint = "/repos/\(repo)/actions/runs"
         let query = [URLQueryItem(name: "per_page", value: "30")]
+        let watched = watchedProvider()[repo]
         do {
             let data = try await github.getRaw(endpoint: endpoint, queryItems: query)
             let response = try JSONDecoder().decode(WorkflowRunsResponse.self, from: data)
-            return PortfolioCIMapping.health(repo: repo, runs: response.workflowRuns)
+            return PortfolioCIMapping.health(
+                repo: repo,
+                runs: response.workflowRuns,
+                watchedWorkflows: watched
+            )
         } catch {
             appLogger.debug("CI Health: \(repo) fetch failed: \(error.localizedDescription)")
             return .unreachable(repo: repo)
