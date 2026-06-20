@@ -26,10 +26,17 @@ It has three parts:
 - `./dev` - Build and run (debug mode)
 - `./dev run --release` - Run release build
 - `./dev test` - Run all tests
+- `./dev lint` - SwiftLint + SwiftFormat checks, mirrors CI (run before pushing)
+- `./dev format` - Auto-fix formatting with SwiftFormat
 - `./dev clean` - Clean build artifacts
 - `./dev xcode` - Open in Xcode
 - `./dev publish --bump patch` - Publish new version
 - `./prd` - Production build (alias for `./dev build --release`)
+
+> `./dev lint` is the local mirror of CI's Lint job. `./Scripts/install-hooks.sh`
+> (one-time) wires it to a pre-push hook so lint/baseline failures never reach CI.
+> When renaming `.swift` files, also re-point their entries in `lint-baseline.json`
+> (the baseline is path-keyed; a rename un-baselines its violations).
 
 ### Backlog & workflow skills
 The backlog is **GitHub Project board #5** (`Sassy-Dog`), status-column driven:

@@ -48,16 +48,28 @@ cd devcanopy
 - `./dev run --release` - Run release build
 - `./dev run --log console --log-level debug` - Run with console logging
 - `./dev test` - Run all tests
+- `./dev lint` - Run SwiftLint + SwiftFormat checks (mirrors CI)
+- `./dev format` - Auto-fix formatting with SwiftFormat
 - `./dev clean` - Clean build artifacts
 - `./dev xcode` - Open in Xcode
 - `./dev publish --bump patch` - Create a new release
 - `./prd` - Build production version
+
+### Linting
+
+`./dev lint` runs the exact checks CI runs (`swiftlint --strict` against
+`lint-baseline.json`, plus `swiftformat --lint`), so lint failures surface locally
+instead of after a CI round-trip. Run `./Scripts/install-hooks.sh` once to enable a
+**pre-push hook** that runs it automatically before every push (bypass a single push
+with `git push --no-verify`). With Claude Code, a `PostToolUse` hook
+(`.claude/settings.json`) also auto-formats each `.swift` file as it's edited.
 
 ### Requirements
 
 - macOS 14.0 (Sonoma) or later
 - Xcode 15.0 or later
 - XcodeGen (`brew install xcodegen`)
+- SwiftLint + SwiftFormat (`brew install swiftlint swiftformat`) — for `./dev lint`
 - [Rust toolchain](https://rustup.rs) — only if building/deploying the agent (`agent/`)
 
 ### Project Structure
@@ -120,9 +132,10 @@ This is an internal Sassy Dog repository. The backlog lives on GitHub Project bo
 #5 (status-column driven); see [`CLAUDE.md`](CLAUDE.md) for the workflow.
 
 1. Create a feature branch (`git checkout -b feat/your-change`)
-2. Commit using conventional commits (`feat:`, `fix:`, `chore:`, `docs:`)
-3. Push and open a Pull Request
-4. Wait for CI to pass, then merge
+2. Run `./Scripts/install-hooks.sh` once to enable the pre-push lint gate
+3. Commit using conventional commits (`feat:`, `fix:`, `chore:`, `docs:`)
+4. Push and open a Pull Request
+5. Wait for CI to pass, then merge
 
 ## Acknowledgments
 
