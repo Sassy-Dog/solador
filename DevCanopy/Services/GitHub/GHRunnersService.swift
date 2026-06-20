@@ -3,10 +3,10 @@ import SwiftUI
 
 /// Fetches all self-hosted runners registered with the GitHub org and their
 /// idle/busy/offline state — the authoritative cross-host view (a runner on any
-/// machine shows here), mirroring Mission Control's CI Runners card.
+/// machine shows here), mirroring Mission Control's GitHub Runners card.
 @MainActor
-final class CIRunnersService: ObservableObject {
-    @Published private(set) var runners: [CIRunner] = []
+final class GHRunnersService: ObservableObject {
+    @Published private(set) var runners: [GHRunner] = []
     @Published private(set) var summary: RunnerSummary?
     @Published private(set) var isAuthenticated = false
     @Published private(set) var loadError: String?
@@ -34,9 +34,9 @@ final class CIRunnersService: ObservableObject {
                 queryItems: [URLQueryItem(name: "per_page", value: "100")]
             )
             let resp = try JSONDecoder().decode(RunnersResponse.self, from: data)
-            let mapped = CIRunnerMapping.map(dtos: resp.runners).sorted(by: Self.order)
+            let mapped = GHRunnerMapping.map(dtos: resp.runners).sorted(by: Self.order)
             runners = mapped
-            summary = CIRunnerMapping.summarize(mapped)
+            summary = GHRunnerMapping.summarize(mapped)
             loadError = nil
             lastUpdated = Date()
         } catch {
@@ -47,7 +47,7 @@ final class CIRunnersService: ObservableObject {
     }
 
     /// macOS first, then Linux, then by name.
-    private static func order(_ a: CIRunner, _ b: CIRunner) -> Bool {
+    private static func order(_ a: GHRunner, _ b: GHRunner) -> Bool {
         func rank(_ os: RunnerOS) -> Int {
             switch os
             { case .macOS: 0

@@ -76,4 +76,60 @@ final class RemoteHostFailureTests: XCTestCase {
             XCTAssertEqual(state.failureLabel, "")
         }
     }
+
+    // MARK: Failure debounce (issue: a high-latency link must not flap the card)
+
+    /// Builds a service without touching the network — `init` only configures a
+    /// `URLSession`; nothing connects until `start()`, so the debounce state
+    /// machine can be driven directly via `recordFailure`/`recordSuccess`.
+    @MainActor
+    private func makeService() -> RemoteHostMetricsService {
+        RemoteHostMetricsService(hostName: "h", address: "h", port: 7878, token: "t")
+    }
+
+    @MainActor
+    func testSingleFailureDoesNotMarkHostDown() {
+        let service = makeService()
+        service.recordFailure(.unreachable)
+        XCTAssertFalse(service.connectionState.isFailed, "one missed poll must be absorbed")
+        XCTAssertEqual(service.consecutiveFailures, 1)
+    }
+
+    @MainActor
+    func testSecondConsecutiveFailureMarksHostDown() {
+        let service = makeService()
+        service.recordFailure(.unreachable)
+        service.recordFailure(.unreachable)
+        XCTAssertEqual(service.connectionState, .failed(.unreachable))
+        XCTAssertEqual(service.consecutiveFailures, 2)
+    }
+
+    @MainActor
+    func testSuccessAfterOutageRecoversAndResetsStreak() {
+        let service = makeService()
+        service.recordFailure(.unreachable)
+        service.recordFailure(.unreachable)
+        service.recordSuccess()
+        XCTAssertEqual(service.connectionState, .connected)
+        XCTAssertEqual(service.consecutiveFailures, 0)
+    }
+
+    @MainActor
+    func testSuccessBetweenBlipsPreventsFalseDown() {
+        let service = makeService()
+        service.recordFailure(.unreachable) // blip 1
+        service.recordSuccess() // recovered, streak reset
+        service.recordFailure(.unreachable) // blip 2 — must start fresh
+        XCTAssertFalse(service.connectionState.isFailed, "non-consecutive blips must not trip the threshold")
+        XCTAssertEqual(service.consecutiveFailures, 1)
+    }
+
+    @MainActor
+    func testCauseChangeWhileDownUpdatesState() {
+        let service = makeService()
+        service.recordFailure(.unreachable)
+        service.recordFailure(.unreachable) // down on unreachable
+        service.recordFailure(.authFailed) // cause changes mid-outage
+        XCTAssertEqual(service.connectionState, .failed(.authFailed))
+    }
 }

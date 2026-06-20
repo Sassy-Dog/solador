@@ -10,8 +10,8 @@ DevCanopy renders a grid of glanceable panels:
 - **Hosts** — live CPU / memory / disk / network / GPU / battery for each machine,
   pulled from a small per-host agent over [Tailscale](https://tailscale.com).
 - **Containers** — podman, docker, and tart containers/VMs running on those hosts.
-- **CI Health** — GitHub Actions status across your portfolio of repositories.
-- **CI Runners** — self-hosted runner availability and activity.
+- **GitHub Workflows** — GitHub Actions status across your portfolio of repositories.
+- **GitHub Runners** — self-hosted runner availability and activity.
 - **Git Worktrees** — local worktrees and their sync state with their remotes.
 - **Claude Usage** — token/cost rollups from your local Claude Code usage logs.
 
@@ -70,7 +70,7 @@ DevCanopy/
 ├── project.yml             # XcodeGen configuration
 ├── DevCanopy/              # macOS app source
 │   ├── App/               # App lifecycle, ContentView, CockpitView host
-│   ├── Models/            # SwiftData models (MonitoredHost, AppSettings, CIRunModels)
+│   ├── Models/            # SwiftData models (MonitoredHost, AppSettings, WorkflowRunModels)
 │   ├── Services/          # Host/agent, GitHub CI, containers, Claude usage, worktrees
 │   ├── Views/             # SwiftUI views (Cockpit panels + Settings)
 │   └── Resources/         # Info.plist, entitlements, assets
@@ -90,7 +90,7 @@ token is stored in the macOS Keychain, never in SwiftData.
 
 ### GitHub authentication
 
-The CI Health and CI Runners panels read GitHub Actions data using a **fine-grained
+The GitHub Workflows and GitHub Runners panels read GitHub Actions data using a **fine-grained
 personal access token** with read-only access to Actions. Add it in
 **Settings → GitHub Token**. See [`Docs/github-setup.md`](Docs/github-setup.md).
 

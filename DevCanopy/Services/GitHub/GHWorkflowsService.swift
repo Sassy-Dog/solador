@@ -1,12 +1,12 @@
 import Foundation
 import SwiftUI
 
-/// Fetches per-repo CI health (main / last-PR / running) for the curated repo set
+/// Fetches per-repo workflow health (main / last-PR / running) for the curated repo set
 /// using a fine-grained PAT (via `GitHubService`). Network off the main actor;
 /// results publish on the main actor. Per-repo failures are isolated.
 @MainActor
-final class PortfolioCIService: ObservableObject {
-    @Published private(set) var health: [RepoCIHealth] = []
+final class GHWorkflowsService: ObservableObject {
+    @Published private(set) var health: [RepoWorkflowHealth] = []
     @Published private(set) var isAuthenticated = false
     @Published private(set) var isLoading = false
 
@@ -23,7 +23,7 @@ final class PortfolioCIService: ObservableObject {
     private var task: Task<Void, Never>?
 
     /// Notification delivery for CI events (needs-approval). Injectable for tests.
-    private let notifier: CINotificationService?
+    private let notifier: WorkflowNotificationService?
     /// Display preferences gating which notifications fire. There is no per-repo
     /// UI for these yet, so the defaults apply (notifyOnApprovalNeeded == true).
     private let displayOptions: WorkflowDisplayOptions
@@ -36,7 +36,7 @@ final class PortfolioCIService: ObservableObject {
 
     init(
         github: GitHubService = .shared,
-        notifier: CINotificationService? = .shared,
+        notifier: WorkflowNotificationService? = .shared,
         displayOptions: WorkflowDisplayOptions = WorkflowDisplayOptions()
     ) {
         self.github = github
@@ -55,7 +55,7 @@ final class PortfolioCIService: ObservableObject {
         }
 
         isLoading = true
-        var results: [RepoCIHealth] = []
+        var results: [RepoWorkflowHealth] = []
         for repo in slugsProvider() {
             await results.append(fetchHealth(for: repo))
         }
@@ -68,7 +68,7 @@ final class PortfolioCIService: ObservableObject {
     /// the `.waiting` gate. Diffs the current waiting set against what we've seen
     /// so re-polling a still-waiting run doesn't re-notify. The first refresh only
     /// seeds the baseline (no alert for runs already parked before launch).
-    private func notifyApprovalTransitions(in results: [RepoCIHealth]) {
+    private func notifyApprovalTransitions(in results: [RepoWorkflowHealth]) {
         let currentWaiting = results.flatMap { h in h.needsApproval.map { ($0, h.shortName) } }
         let currentIDs = Set(currentWaiting.map(\.0.runID))
 
@@ -91,20 +91,20 @@ final class PortfolioCIService: ObservableObject {
 
     /// Fetches recent runs for a repo and categorizes them. Any error yields an
     /// empty (clean) health so one repo failing doesn't break the rest.
-    private func fetchHealth(for repo: String) async -> RepoCIHealth {
+    private func fetchHealth(for repo: String) async -> RepoWorkflowHealth {
         let endpoint = "/repos/\(repo)/actions/runs"
         let query = [URLQueryItem(name: "per_page", value: "30")]
         let watched = watchedProvider()[repo]
         do {
             let data = try await github.getRaw(endpoint: endpoint, queryItems: query)
             let response = try JSONDecoder().decode(WorkflowRunsResponse.self, from: data)
-            return PortfolioCIMapping.health(
+            return GHWorkflowsMapping.health(
                 repo: repo,
                 runs: response.workflowRuns,
                 watchedWorkflows: watched
             )
         } catch {
-            appLogger.debug("CI Health: \(repo) fetch failed: \(error.localizedDescription)")
+            appLogger.debug("GitHub Workflows: \(repo) fetch failed: \(error.localizedDescription)")
             return .unreachable(repo: repo)
         }
     }

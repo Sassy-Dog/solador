@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 /// Owns the editable portfolio repo set. Reads `TrackedRepo` from SwiftData and
-/// publishes the enabled `owner/name` slugs that drive the Portfolio CI, CI
+/// publishes the enabled `owner/name` slugs that drive the GitHub Workflows, GitHub
 /// Runners, and Git/Worktrees panels. Mirrors `RemoteHostsCoordinator`: a thin
 /// coordinator over SwiftData that the cockpit services read from.
 ///
@@ -14,7 +14,7 @@ final class PortfolioStore: ObservableObject {
     @Published private(set) var slugs: [String] = []
 
     /// Per-repo watched workflows, keyed by slug. Only repos with a non-empty list
-    /// appear. Drives the Portfolio CI panel's "watch beyond ci.yml" behavior
+    /// appear. Drives the GitHub Workflows panel's "watch beyond ci.yml" behavior
     /// (issue #76). Republished alongside `slugs`.
     @Published private(set) var watchedWorkflows: [String: [String]] = [:]
 

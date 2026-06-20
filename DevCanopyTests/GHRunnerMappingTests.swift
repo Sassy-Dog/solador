@@ -1,13 +1,13 @@
 @testable import DevCanopy
 import XCTest
 
-final class CIRunnerMappingTests: XCTestCase {
+final class GHRunnerMappingTests: XCTestCase {
     private func dto(_ name: String, os: String, status: String, busy: Bool) -> RunnerDTO {
         RunnerDTO(id: abs(name.hashValue), name: name, os: os, status: status, busy: busy, labels: nil)
     }
 
     func testStateDerivation() {
-        let runners = CIRunnerMapping.map(dtos: [
+        let runners = GHRunnerMapping.map(dtos: [
             dto("a", os: "macOS", status: "online", busy: true),
             dto("b", os: "Linux", status: "online", busy: false),
             dto("c", os: "Linux", status: "offline", busy: false)
@@ -18,7 +18,7 @@ final class CIRunnerMappingTests: XCTestCase {
     }
 
     func testOSClassification() {
-        let runners = CIRunnerMapping.map(dtos: [
+        let runners = GHRunnerMapping.map(dtos: [
             dto("a", os: "macOS", status: "online", busy: false),
             dto("b", os: "Linux", status: "online", busy: false),
             dto("c", os: "Windows", status: "online", busy: false)
@@ -29,7 +29,7 @@ final class CIRunnerMappingTests: XCTestCase {
     }
 
     func testSummaryCounts() {
-        let summary = CIRunnerMapping.summarize(CIRunnerMapping.map(dtos: [
+        let summary = GHRunnerMapping.summarize(GHRunnerMapping.map(dtos: [
             dto("m1", os: "macOS", status: "online", busy: true),
             dto("m2", os: "macOS", status: "online", busy: false),
             dto("l1", os: "Linux", status: "online", busy: false),

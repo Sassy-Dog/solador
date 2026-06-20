@@ -1,13 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// CI Health panel — what's running now and what's failing across the curated
+/// GitHub Workflows panel — what's running now and what's failing across the curated
 /// repos, so it's clear what needs a look. Authenticates with a fine-grained PAT
 /// from the Keychain (set in Settings).
-struct CIHealthPanel: CockpitPanelView {
-    static let kind: CockpitPanelKind = .ciHealth
+struct GHWorkflowsPanel: CockpitPanelView {
+    static let kind: CockpitPanelKind = .ghWorkflows
 
-    @EnvironmentObject private var service: PortfolioCIService
+    @EnvironmentObject private var service: GHWorkflowsService
 
     private struct RunningItem: Identifiable {
         let repo: String

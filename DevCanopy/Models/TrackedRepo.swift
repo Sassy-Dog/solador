@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 /// A repo in the tracked portfolio, persisted so the set can be edited in
-/// Settings without recompiling. Drives the Portfolio CI, CI Runners (org), and
+/// Settings without recompiling. Drives the GitHub Workflows, GitHub Runners (org), and
 /// Git/Worktrees panels. Seeded once on first run from `PortfolioRepos.seedSlugs`;
 /// the bare `owner/name` slug is the identity.
 @Model

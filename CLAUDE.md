@@ -8,8 +8,8 @@ DevCanopy is a native macOS cockpit that watches development infrastructure at a
 glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **Hosts** — live CPU/memory/disk/network/GPU/battery from a per-host agent over Tailscale
 - **Containers** — podman/docker/tart containers and VMs on those hosts
-- **CI Health** — GitHub Actions status across a portfolio of repos
-- **CI Runners** — self-hosted runner availability/activity
+- **GitHub Workflows** — GitHub Actions status across a portfolio of repos
+- **GitHub Runners** — self-hosted runner availability/activity
 - **Git Worktrees** — local worktrees and their remote sync state
 - **Claude Usage** — token/cost rollups from local Claude Code usage logs
 
@@ -55,7 +55,7 @@ DevCanopy/
 ├── project.yml            # XcodeGen configuration
 ├── DevCanopy/             # macOS app source
 │   ├── App/              # App lifecycle, ContentView, CockpitView host
-│   ├── Models/           # SwiftData models (MonitoredHost, AppSettings, CIRunModels)
+│   ├── Models/           # SwiftData models (MonitoredHost, AppSettings, WorkflowRunModels)
 │   ├── Services/         # Host/agent, GitHub CI, containers, Claude usage, worktrees
 │   ├── Views/            # SwiftUI views (Cockpit panels + Settings)
 │   └── Resources/        # Info.plist, entitlements
@@ -91,7 +91,7 @@ DevCanopy/
 - Surfaced by `Views/Cockpit/Panels/GitWorktreesPanel.swift`.
 
 ### CI & Claude usage
-- GitHub Actions data: `Services/GitHub/` (CI health + self-hosted runners).
+- GitHub Actions data: `Services/GitHub/` (workflow health + self-hosted runners).
 - Claude Code usage rollups: `Services/ClaudeUsage/`.
 
 ### Authentication
@@ -109,7 +109,7 @@ DevCanopy/
 ### SwiftData Models
 - `MonitoredHost`: a remote host running the agent (address, port, hidden volumes).
 - `AppSettings`: user preferences.
-- `CIRunModels`: persisted CI run state.
+- `WorkflowRunModels`: persisted workflow run state.
 
 ## Testing
 

@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// CI Runners panel — all self-hosted runners registered with the GitHub org and
+/// GitHub Runners panel — all self-hosted runners registered with the GitHub org and
 /// their idle/busy/offline state, across every host (mirrors Mission Control).
-struct CIRunnersPanel: CockpitPanelView {
-    static let kind: CockpitPanelKind = .ciRunners
+struct GHRunnersPanel: CockpitPanelView {
+    static let kind: CockpitPanelKind = .ghRunners
 
-    @EnvironmentObject private var service: CIRunnersService
+    @EnvironmentObject private var service: GHRunnersService
 
     var body: some View {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
@@ -67,7 +67,7 @@ struct CIRunnersPanel: CockpitPanelView {
             .overlay(Capsule().strokeBorder(CockpitTheme.line, lineWidth: 1))
     }
 
-    private func row(_ runner: CIRunner) -> some View {
+    private func row(_ runner: GHRunner) -> some View {
         HStack(spacing: 7) {
             Circle().fill(dotColor(runner.state)).frame(width: 6, height: 6)
             Text(runner.name)

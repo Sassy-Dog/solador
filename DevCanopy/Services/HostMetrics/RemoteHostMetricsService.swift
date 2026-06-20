@@ -59,17 +59,32 @@ final class RemoteHostMetricsService: HostMetricsService {
         return decoder
     }()
 
+    /// Per-request timeout. Deliberately forgiving so a high-latency or briefly
+    /// flapping tailnet link — e.g. a Mac tethered to a phone — isn't misread as a
+    /// dead host. Paired with `waitsForConnectivity = false`, the loop still fails
+    /// fast per attempt and recovers fast; this just gives a slow-but-alive
+    /// round-trip room to complete.
+    static let requestTimeout: TimeInterval = 10
+
+    /// Consecutive failed polls required before a host is marked down. Debounces
+    /// momentary drops: a single missed poll never flips the card red or logs.
+    static let failureThreshold = 2
+
     let address: String
     let port: Int
     private let token: String?
     private let session: URLSession
+
+    /// Back-to-back failed polls; reset to 0 on any success. Once it reaches
+    /// `failureThreshold` the host flips to `.failed`. Readable for tests.
+    private(set) var consecutiveFailures = 0
 
     init(hostName: String, address: String, port: Int, token: String?) {
         self.address = address
         self.port = port
         self.token = token
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForRequest = Self.requestTimeout
         config.waitsForConnectivity = false
         session = URLSession(configuration: config)
         super.init(hostName: hostName, connectionState: .connecting)
@@ -92,16 +107,36 @@ final class RemoteHostMetricsService: HostMetricsService {
         do {
             let snap = try await fetchSnapshot()
             ingest(snap)
-            setConnection(.connected)
+            recordSuccess()
         } catch let error as RemoteHostError {
-            logFailure(path: "/v1/snapshot", error: error)
-            setConnection(.failed(error))
+            recordFailure(error)
         } catch {
             // Any non-classified throw is treated as unreachable.
-            let classified = RemoteHostError.unreachable
-            logFailure(path: "/v1/snapshot", error: classified, underlying: error)
-            setConnection(.failed(classified))
+            recordFailure(.unreachable, underlying: error)
         }
+    }
+
+    /// Marks a poll as succeeded: clears the failure streak, logs a single
+    /// recovery line if we were previously down, then flips the card to connected.
+    func recordSuccess() {
+        if connectionState.isFailed {
+            serviceLogger.info("Remote host \(hostName) \(address):\(port) recovered")
+        }
+        consecutiveFailures = 0
+        setConnection(.connected)
+    }
+
+    /// Records a failed poll. Only flips the host to `.failed` (and logs) once the
+    /// streak reaches `failureThreshold`, so a momentary drop is absorbed silently.
+    /// Logs on the down-transition and on a genuine cause change — never per poll.
+    func recordFailure(_ error: RemoteHostError, underlying: Error? = nil) {
+        consecutiveFailures += 1
+        guard consecutiveFailures >= Self.failureThreshold else { return }
+        let newState = HostConnectionState.failed(error)
+        if connectionState != newState {
+            logFailure(path: "/v1/snapshot", error: error, underlying: underlying)
+        }
+        setConnection(newState)
     }
 
     private func fetchSnapshot() async throws -> HostSnapshot {

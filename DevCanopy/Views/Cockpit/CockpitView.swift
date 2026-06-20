@@ -43,9 +43,9 @@ struct CockpitView: View {
     private func panel(for kind: CockpitPanelKind) -> some View {
         switch kind {
         case .hosts: HostsPanel()
-        case .ciRunners: CIRunnersPanel()
+        case .ghRunners: GHRunnersPanel()
         case .containers: ContainersPanel()
-        case .ciHealth: CIHealthPanel()
+        case .ghWorkflows: GHWorkflowsPanel()
         case .gitWorktrees: GitWorktreesPanel()
         case .claudeUsage: ClaudeUsagePanel()
         }
