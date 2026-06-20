@@ -20,6 +20,8 @@ $(color_yellow "Commands:")
   $(color_green "clean")    $(color_gray "[c]")    Clean build artifacts
   $(color_green "xcode")    $(color_gray "[x]")    Open project in Xcode
   $(color_green "publish")  $(color_gray "[p]")    Publish a new release
+  $(color_green "lint")     $(color_gray "[l]")    Run SwiftLint + SwiftFormat checks (mirrors CI)
+  $(color_green "format")   $(color_gray "[f]")    Auto-fix formatting with SwiftFormat
   $(color_green "help")     $(color_gray "[h]")    Show this help
 
 $(color_yellow "Build Options:")
@@ -56,6 +58,8 @@ case "$COMMAND" in
     c) COMMAND="clean" ;;
     x) COMMAND="xcode" ;;
     p) COMMAND="publish" ;;
+    l) COMMAND="lint" ;;
+    f) COMMAND="format" ;;
     h|help|-h|--help) COMMAND="help" ;;
 esac
 
@@ -81,6 +85,12 @@ case "$COMMAND" in
         ;;
     publish)
         exec "$SCRIPT_DIR/Scripts/publish.sh" "$@"
+        ;;
+    lint)
+        exec "$SCRIPT_DIR/Scripts/lint.sh" "$@"
+        ;;
+    format)
+        exec "$SCRIPT_DIR/Scripts/format.sh" "$@"
         ;;
     help)
         show_help
