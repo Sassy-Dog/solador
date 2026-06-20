@@ -6,9 +6,9 @@ import SwiftUI
 /// concrete view; adding a layout = adding a `CockpitLayout` value.
 enum CockpitPanelKind: String, CaseIterable, Identifiable {
     case hosts
-    case ciRunners
+    case ghRunners
     case containers
-    case ciHealth
+    case ghWorkflows
     case gitWorktrees
     case claudeUsage
 
@@ -19,9 +19,9 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .hosts: "Hosts"
-        case .ciRunners: "CI Runners"
+        case .ghRunners: "GitHub Runners"
         case .containers: "Containers / VMs"
-        case .ciHealth: "CI Health"
+        case .ghWorkflows: "GitHub Workflows"
         case .gitWorktrees: "Git / Worktrees"
         case .claudeUsage: "Claude Usage"
         }
@@ -30,9 +30,9 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .hosts: "cpu"
-        case .ciRunners: "server.rack"
+        case .ghRunners: "server.rack"
         case .containers: "shippingbox"
-        case .ciHealth: "checkmark.seal"
+        case .ghWorkflows: "checkmark.seal"
         case .gitWorktrees: "arrow.triangle.branch"
         case .claudeUsage: "gauge.with.needle"
         }
@@ -74,11 +74,11 @@ extension CockpitLayout {
         rows: [
             [CockpitPlacement(kind: .hosts, span: .full)],
             [
-                CockpitPlacement(kind: .ciRunners, span: .half),
+                CockpitPlacement(kind: .ghRunners, span: .half),
                 CockpitPlacement(kind: .containers, span: .half)
             ],
             [
-                CockpitPlacement(kind: .ciHealth, span: .half),
+                CockpitPlacement(kind: .ghWorkflows, span: .half),
                 CockpitPlacement(kind: .gitWorktrees, span: .half)
             ],
             [CockpitPlacement(kind: .claudeUsage, span: .full)]

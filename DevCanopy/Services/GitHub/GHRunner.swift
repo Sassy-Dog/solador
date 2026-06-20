@@ -41,7 +41,7 @@ enum RunnerState: Equatable {
     }
 }
 
-struct CIRunner: Identifiable, Equatable {
+struct GHRunner: Identifiable, Equatable {
     let id: Int
     let name: String
     let os: RunnerOS
@@ -59,10 +59,10 @@ struct RunnerSummary: Equatable {
     let linuxTotal: Int
 }
 
-enum CIRunnerMapping {
-    static func map(dtos: [RunnerDTO]) -> [CIRunner] {
+enum GHRunnerMapping {
+    static func map(dtos: [RunnerDTO]) -> [GHRunner] {
         dtos.map { dto in
-            CIRunner(id: dto.id, name: dto.name, os: os(from: dto), state: state(from: dto))
+            GHRunner(id: dto.id, name: dto.name, os: os(from: dto), state: state(from: dto))
         }
     }
 
@@ -78,7 +78,7 @@ enum CIRunnerMapping {
         return .other
     }
 
-    static func summarize(_ runners: [CIRunner]) -> RunnerSummary {
+    static func summarize(_ runners: [GHRunner]) -> RunnerSummary {
         let online = runners.filter { $0.state != .offline }
         let mac = runners.filter { $0.os == .macOS }
         let linux = runners.filter { $0.os == .linux }

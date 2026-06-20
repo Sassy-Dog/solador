@@ -1,7 +1,7 @@
 import Foundation
 
-/// Pure mapping from a repo's workflow-runs DTOs to CI health models.
-enum PortfolioCIMapping {
+/// Pure mapping from a repo's workflow-runs DTOs to workflow health models.
+enum GHWorkflowsMapping {
     private static let isoStandard = ISO8601DateFormatter()
 
     private static let isoFractional: ISO8601DateFormatter = {
@@ -17,7 +17,7 @@ enum PortfolioCIMapping {
     }
 }
 
-/// One workflow run distilled to what the CI Health panel renders.
+/// One workflow run distilled to what the GitHub Workflows panel renders.
 struct RunRef: Equatable, Identifiable {
     let runID: Int64
     let title: String // workflow name, e.g. "CI"
@@ -83,8 +83,8 @@ struct RunRef: Equatable, Identifiable {
     }
 }
 
-/// Per-repo CI health: latest main run, latest PR run, and any running runs.
-struct RepoCIHealth: Equatable, Identifiable {
+/// Per-repo workflow health: latest main run, latest PR run, and any running runs.
+struct RepoWorkflowHealth: Equatable, Identifiable {
     let repo: String // "owner/name"
     let main: RunRef?
     let lastPR: RunRef?
@@ -110,8 +110,8 @@ struct RepoCIHealth: Equatable, Identifiable {
     }
 
     /// A repo whose runs couldn't be fetched (auth/network error).
-    static func unreachable(repo: String) -> RepoCIHealth {
-        RepoCIHealth(
+    static func unreachable(repo: String) -> RepoWorkflowHealth {
+        RepoWorkflowHealth(
             repo: repo,
             main: nil,
             lastPR: nil,
@@ -123,7 +123,7 @@ struct RepoCIHealth: Equatable, Identifiable {
     }
 }
 
-extension PortfolioCIMapping {
+extension GHWorkflowsMapping {
     /// Default branch assumed for the repo "main" health slot.
     private static let defaultBranch = "main"
 
@@ -149,7 +149,7 @@ extension PortfolioCIMapping {
         runs: [WorkflowRunDTO],
         watchedWorkflows: [String]? = nil,
         now: Date = Date()
-    ) -> RepoCIHealth {
+    ) -> RepoWorkflowHealth {
         let watched = normalizedWatched(watchedWorkflows)
         let scoped = watched.isEmpty ? runs : runs.filter { matchesWatched($0, watched) }
         let sorted = scoped.sorted { createdDate($0) > createdDate($1) }
@@ -160,7 +160,7 @@ extension PortfolioCIMapping {
         let running = refs.filter { $0.isRunning(now: now) }
         let needsApproval = refs.filter(\.needsApproval)
         let stuck = refs.filter { $0.isStuck(now: now) }
-        return RepoCIHealth(
+        return RepoWorkflowHealth(
             repo: repo,
             main: main,
             lastPR: lastPR,

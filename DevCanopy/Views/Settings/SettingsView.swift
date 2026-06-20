@@ -107,7 +107,7 @@ struct GitHubSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Used by Portfolio CI to read GitHub Actions runs. A fine-grained PAT with read access to Actions is sufficient. Stored in your macOS Keychain.")
+                Text("Used by GitHub Workflows to read GitHub Actions runs. A fine-grained PAT with read access to Actions is sufficient. Stored in your macOS Keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Thin, PAT-authenticated GitHub REST client used by the cockpit's live CI
-/// panels (`PortfolioCIService`, `CIRunnersService`). It loads a fine-grained
+/// Thin, PAT-authenticated GitHub REST client used by the cockpit's live GitHub
+/// panels (`GHWorkflowsService`, `GHRunnersService`). It loads a fine-grained
 /// Personal Access Token from the Keychain and performs authenticated GETs.
 ///
 /// The legacy OAuth-PKCE flow, the per-launch git-monitor workflow fetch/persist
@@ -47,7 +47,7 @@ final class GitHubService: ObservableObject {
 
     /// Performs an authenticated GET against an arbitrary REST endpoint and
     /// returns the raw data. Reuses the shared Bearer-token / rate-limit
-    /// plumbing. Used by the live CI panels (Portfolio CI, CI Runners).
+    /// plumbing. Used by the live CI panels (GitHub Workflows, GitHub Runners).
     func getRaw(endpoint: String, queryItems: [URLQueryItem]? = nil) async throws -> Data {
         try await request(endpoint: endpoint, method: "GET", queryItems: queryItems)
     }

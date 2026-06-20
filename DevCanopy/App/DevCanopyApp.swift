@@ -15,9 +15,9 @@ struct DevCanopyApp: App {
             : LocalHostMetricsService()
     @StateObject private var containerService = LocalContainerService()
     @StateObject private var gitWorktreeService = GitWorktreeService()
-    @StateObject private var ciRunnersService = CIRunnersService()
+    @StateObject private var ghRunnersService = GHRunnersService()
     @StateObject private var claudeUsageService = ClaudeUsageService()
-    @StateObject private var portfolioCIService = PortfolioCIService()
+    @StateObject private var portfolioCIService = GHWorkflowsService()
 
     /// User-selected cadence (seconds) for the periodic data-fetch services.
     /// Single settings mechanism: `AppStorage`/`UserDefaults` under
@@ -62,7 +62,7 @@ struct DevCanopyApp: App {
             )
 
             // Editable portfolio repo set (reads TrackedRepo from SwiftData, seeds
-            // once). Drives the Portfolio CI, CI Runners, and Git/Worktrees panels.
+            // once). Drives the GitHub Workflows, GitHub Runners, and Git/Worktrees panels.
             _portfolioStore = StateObject(
                 wrappedValue: PortfolioStore(modelContext: container.mainContext)
             )
@@ -83,7 +83,7 @@ struct DevCanopyApp: App {
                 .environmentObject(gitWorktreeService)
                 .environmentObject(claudeUsageService)
                 .environmentObject(portfolioCIService)
-                .environmentObject(ciRunnersService)
+                .environmentObject(ghRunnersService)
                 .environmentObject(remoteHosts)
                 .environmentObject(portfolioStore)
                 .task {
@@ -109,9 +109,9 @@ struct DevCanopyApp: App {
                     containerService.start()
                     gitWorktreeService.start(interval: interval)
                     claudeUsageService.start(interval: interval)
-                    CINotificationService.shared.requestAuthorizationIfNeeded()
+                    WorkflowNotificationService.shared.requestAuthorizationIfNeeded()
                     portfolioCIService.start(interval: interval)
-                    ciRunnersService.start(interval: interval)
+                    ghRunnersService.start(interval: interval)
                     if DemoMode.isEnabled {
                         // Inject a synthetic remote host + demo containers; skip env
                         // seeding and real-agent reload entirely.
@@ -126,7 +126,7 @@ struct DevCanopyApp: App {
                     gitWorktreeService.restart(interval: interval)
                     claudeUsageService.restart(interval: interval)
                     portfolioCIService.restart(interval: interval)
-                    ciRunnersService.restart(interval: interval)
+                    ghRunnersService.restart(interval: interval)
                 }
         }
         .modelContainer(modelContainer)

@@ -1,7 +1,7 @@
 @testable import DevCanopy
 import XCTest
 
-final class PortfolioCIMappingTests: XCTestCase {
+final class GHWorkflowsMappingTests: XCTestCase {
     /// A fixed "now" close to the default DTO timestamps so that, unless a test
     /// deliberately ages a run, queued/pending runs read as running (not stuck).
     private static let now = ISO8601DateFormatter().date(from: "2026-05-29T12:05:00Z")!
@@ -42,8 +42,8 @@ final class PortfolioCIMappingTests: XCTestCase {
 
     // MARK: - Short name
 
-    func testRepoCIHealthShortName() {
-        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: [])
+    func testRepoWorkflowHealthShortName() {
+        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: [])
         XCTAssertEqual(h.shortName, "velovate")
         XCTAssertTrue(h.isHealthy, "no runs = not failed, reachable")
         XCTAssertTrue(h.reachable, "the mapping path means the repo was fetched")
@@ -52,7 +52,7 @@ final class PortfolioCIMappingTests: XCTestCase {
     func testRunningRepoStillCountsHealthy() {
         // A repo with a build in flight (but no failure) must remain healthy —
         // running is activity, not a problem.
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: [
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: [
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push"),
             dto(name: "CI", status: "in_progress", conclusion: nil, branch: "main", event: "push")
         ])
@@ -61,7 +61,7 @@ final class PortfolioCIMappingTests: XCTestCase {
     }
 
     func testUnreachableRepoIsNeverHealthy() {
-        let h = RepoCIHealth.unreachable(repo: "Sassy-Dog/platform")
+        let h = RepoWorkflowHealth.unreachable(repo: "Sassy-Dog/platform")
         XCTAssertFalse(h.reachable)
         XCTAssertFalse(h.isHealthy, "an unreachable repo must not count as healthy")
         XCTAssertEqual(h.shortName, "platform")
@@ -87,7 +87,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             makeCreated(dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push"), "2026-05-29T11:00:00Z"), // newer
             makeCreated(dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/x", event: "pull_request"), "2026-05-29T12:00:00Z")
         ]
-        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
+        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
         XCTAssertEqual(h.main?.conclusion, .failure, "main = newest push-on-main run")
         XCTAssertEqual(h.main?.context, "main")
     }
@@ -97,7 +97,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             makeCreated(dto(name: "CI", status: "completed", conclusion: "failure", branch: "feat/old", event: "pull_request"), "2026-05-29T10:00:00Z"),
             makeCreated(dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/new", event: "pull_request"), "2026-05-29T12:00:00Z") // newer
         ]
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs)
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs)
         XCTAssertEqual(h.lastPR?.conclusion, .success)
         XCTAssertEqual(h.lastPR?.context, "feat/new")
     }
@@ -110,7 +110,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             dto(name: "Deploy", status: "queued", conclusion: nil, branch: "main", event: "workflow_dispatch", id: 2),
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 3)
         ]
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, now: Self.now)
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, now: Self.now)
         XCTAssertEqual(h.running.count, 2, "both in_progress and a fresh queued run are 'running'")
         XCTAssertTrue(h.running.allSatisfy { $0.isRunning(now: Self.now) })
     }
@@ -122,7 +122,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             dto(name: "Release", status: "waiting", conclusion: nil, branch: "main", event: "push", id: 10),
             dto(name: "CI", status: "in_progress", conclusion: nil, branch: "main", event: "push", id: 11)
         ]
-        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: runs, now: Self.now)
+        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: runs, now: Self.now)
         XCTAssertEqual(h.needsApproval.count, 1, "waiting run is a needs-approval item")
         XCTAssertEqual(h.needsApproval.first?.title, "Release")
         XCTAssertTrue(h.needsApproval.first?.needsApproval == true)
@@ -144,7 +144,7 @@ final class PortfolioCIMappingTests: XCTestCase {
                 createdAt: "2026-05-28T12:00:00Z"
             ) // ~24h before now
         ]
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, now: Self.now)
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, now: Self.now)
         XCTAssertEqual(h.stuck.count, 1, "a long-pending run reads as stuck")
         XCTAssertTrue(h.running.isEmpty, "a stuck run is not counted as running")
         XCTAssertTrue(h.stuck.first?.isStuck(now: Self.now) == true)
@@ -162,28 +162,28 @@ final class PortfolioCIMappingTests: XCTestCase {
                 createdAt: "2026-05-29T12:00:00Z"
             ) // 5m before now
         ]
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, now: Self.now)
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, now: Self.now)
         XCTAssertEqual(h.running.count, 1, "a freshly pending run is still 'running'")
         XCTAssertTrue(h.stuck.isEmpty, "not stuck until past the threshold")
     }
 
     func testRunRefIsFailedAcrossFailingConclusions() {
         for c in ["failure", "timed_out", "cancelled", "startup_failure"] {
-            let h = PortfolioCIMapping.health(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: c, branch: "main", event: "push")])
+            let h = GHWorkflowsMapping.health(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: c, branch: "main", event: "push")])
             XCTAssertEqual(h.main?.isFailed, true, "\(c) should be a failure")
         }
-        let ok = PortfolioCIMapping.health(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push")])
+        let ok = GHWorkflowsMapping.health(repo: "o/r", runs: [dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push")])
         XCTAssertEqual(ok.main?.isFailed, false)
     }
 
     func testRepoIsHealthyWhenNotFailed() {
-        let clean = PortfolioCIMapping.health(repo: "o/r", runs: [
+        let clean = GHWorkflowsMapping.health(repo: "o/r", runs: [
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push"),
             dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/x", event: "pull_request")
         ])
         XCTAssertTrue(clean.isHealthy)
 
-        let failing = PortfolioCIMapping.health(repo: "o/r", runs: [
+        let failing = GHWorkflowsMapping.health(repo: "o/r", runs: [
             dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push")
         ])
         XCTAssertFalse(failing.isHealthy)
@@ -199,7 +199,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 1),
             dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 2)
         ]
-        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
+        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
         XCTAssertTrue(h.isHealthy, "default view ignores the workflow_run failure (legacy behavior preserved)")
         XCTAssertEqual(h.main?.title, "CI")
     }
@@ -211,7 +211,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 1),
             dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 2)
         ]
-        let h = PortfolioCIMapping.health(
+        let h = GHWorkflowsMapping.health(
             repo: "Sassy-Dog/velovate",
             runs: runs,
             watchedWorkflows: ["release.yml"]
@@ -226,7 +226,7 @@ final class PortfolioCIMappingTests: XCTestCase {
         let runs = [
             dto(name: "Nightly", status: "completed", conclusion: "failure", branch: "main", event: "schedule", id: 1)
         ]
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["Nightly"])
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["Nightly"])
         XCTAssertFalse(h.isHealthy)
         XCTAssertEqual(h.main?.title, "Nightly")
     }
@@ -238,7 +238,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 1)
         ]
         for key in ["release.yml", "Release.yaml", "RELEASE", "release"] {
-            let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: [key])
+            let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, watchedWorkflows: [key])
             XCTAssertFalse(h.isHealthy, "key \(key) should match the 'Release' run")
         }
     }
@@ -253,7 +253,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             dto(name: "Release", status: "completed", conclusion: "success", branch: "main", event: "workflow_run", id: 2)
         ]
         // Only "Release" is watched; the failing "CI" run is out of scope.
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["release.yml"])
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["release.yml"])
         XCTAssertTrue(h.isHealthy, "non-watched CI failure is filtered out when a watch list is set")
         XCTAssertEqual(h.main?.title, "Release")
     }
@@ -264,7 +264,7 @@ final class PortfolioCIMappingTests: XCTestCase {
             dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 1),
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 2)
         ]
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: [])
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, watchedWorkflows: [])
         XCTAssertTrue(h.isHealthy, "empty list == legacy behavior; workflow_run failure ignored")
         XCTAssertEqual(h.main?.title, "CI")
     }
@@ -275,7 +275,7 @@ final class PortfolioCIMappingTests: XCTestCase {
         let runs = [
             dto(name: "Release", status: "completed", conclusion: "failure", branch: "release/1.2", event: "workflow_run", id: 1)
         ]
-        let h = PortfolioCIMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["release.yml"])
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: runs, watchedWorkflows: ["release.yml"])
         XCTAssertNil(h.main, "a non-main watched run must not populate the main slot")
         XCTAssertTrue(h.isHealthy)
     }

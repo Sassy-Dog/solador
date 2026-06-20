@@ -1,6 +1,6 @@
 import Foundation
 
-/// User-selectable cadence for the periodic data-fetch services (CI health,
+/// User-selectable cadence for the periodic data-fetch services (workflow health,
 /// runners, worktrees, Claude usage). Stored as its raw `Int` (seconds) under
 /// the `refreshInterval` `AppStorage`/`UserDefaults` key — the single settings
 /// mechanism for the app.

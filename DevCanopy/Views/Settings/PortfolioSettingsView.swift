@@ -1,8 +1,8 @@
 import SwiftData
 import SwiftUI
 
-/// Settings tab to manage the tracked portfolio repos that drive the Portfolio
-/// CI, CI Runners, and Git/Worktrees panels. Repos persist as `TrackedRepo`;
+/// Settings tab to manage the tracked portfolio repos that drive the GitHub
+/// Workflows, GitHub Runners, and Git/Worktrees panels. Repos persist as `TrackedRepo`;
 /// edits go through `PortfolioStore`, which republishes the live set and refreshes
 /// the dependent panels immediately.
 struct PortfolioSettingsView: View {
@@ -35,7 +35,7 @@ struct PortfolioSettingsView: View {
                 if let statusMessage {
                     Text(statusMessage).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Drives Portfolio CI, CI Runners, and Git/Worktrees. Disabled repos stay in the list but are skipped. Changes apply at the next refresh. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive.")
+                Text("Drives GitHub Workflows, GitHub Runners, and Git/Worktrees. Disabled repos stay in the list but are skipped. Changes apply at the next refresh. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: {
                 Text("Add Repo").font(.headline)

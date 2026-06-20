@@ -9,8 +9,8 @@ import UserNotifications
 /// This is the app's only notification delivery path. Authorization is requested
 /// lazily on first use; if the user has denied it, delivery is a silent no-op.
 @MainActor
-final class CINotificationService: NSObject, UNUserNotificationCenterDelegate {
-    static let shared = CINotificationService()
+final class WorkflowNotificationService: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = WorkflowNotificationService()
 
     /// userInfo key carrying the deep-link URL to open on tap.
     private static let urlKey = "htmlURL"
@@ -20,7 +20,7 @@ final class CINotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// `UNUserNotificationCenter.current()` traps in a process without a proper
     /// app bundle (e.g. the XCTest host), so allow injecting nil to disable.
-    init(center: UNUserNotificationCenter? = CINotificationService.defaultCenter()) {
+    init(center: UNUserNotificationCenter? = WorkflowNotificationService.defaultCenter()) {
         self.center = center ?? UNUserNotificationCenter.current()
         enabled = center != nil
         super.init()

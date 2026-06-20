@@ -1,7 +1,7 @@
 import Foundation
 
-// Live CI model types consumed by the cockpit's Portfolio CI path
-// (`Services/GitHub/PortfolioCIMapping.swift`). The dead v1 `@Model`
+// Live CI model types consumed by the cockpit's GitHub Workflows path
+// (`Services/GitHub/GHWorkflowsMapping.swift`). The dead v1 `@Model`
 // workflow classes that previously lived alongside these were deleted in
 // issue #30; these enums/structs are the surviving, still-used types.
 
