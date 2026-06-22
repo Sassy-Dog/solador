@@ -48,6 +48,7 @@ struct CockpitView: View {
         case .ghWorkflows: GHWorkflowsPanel()
         case .gitWorktrees: GitWorktreesPanel()
         case .claudeUsage: ClaudeUsagePanel()
+        case .openclawAgents: OpenClawPanel()
         }
     }
 }

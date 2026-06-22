@@ -18,6 +18,11 @@ struct DevCanopyApp: App {
     @StateObject private var ghRunnersService = GHRunnersService()
     @StateObject private var claudeUsageService = ClaudeUsageService()
     @StateObject private var portfolioCIService = GHWorkflowsService()
+    /// OpenClaw agent-farm runtime + the coordinator the panel reads. The
+    /// coordinator wraps one runtime today; adding hermes is a second runtime in
+    /// the array. The WS reconnects itself, so it does not ride `refreshInterval`.
+    @StateObject private var openclawService: OpenClawService
+    @StateObject private var agentRuntimes: AgentRuntimeCoordinator
 
     /// User-selected cadence (seconds) for the periodic data-fetch services.
     /// Single settings mechanism: `AppStorage`/`UserDefaults` under
@@ -67,6 +72,16 @@ struct DevCanopyApp: App {
                 wrappedValue: PortfolioStore(modelContext: container.mainContext)
             )
 
+            // OpenClaw runtime: URL from AppStorage-backed UserDefaults, token
+            // from the Keychain — both read at connect time so a Settings change
+            // (applied via restart) picks up the new value.
+            let openclaw = OpenClawService(
+                urlProvider: { UserDefaults.standard.string(forKey: "openclawGatewayURL") },
+                tokenProvider: { KeychainHelper.shared.loadOpenClawToken() }
+            )
+            _openclawService = StateObject(wrappedValue: openclaw)
+            _agentRuntimes = StateObject(wrappedValue: AgentRuntimeCoordinator(runtimes: [openclaw]))
+
             appLogger.info("ModelContainer and services initialized successfully")
         } catch {
             appLogger.error("Failed to create ModelContainer: \(error)")
@@ -86,6 +101,7 @@ struct DevCanopyApp: App {
                 .environmentObject(ghRunnersService)
                 .environmentObject(remoteHosts)
                 .environmentObject(portfolioStore)
+                .environmentObject(agentRuntimes)
                 .task {
                     let interval = refreshInterval
 
@@ -112,6 +128,8 @@ struct DevCanopyApp: App {
                     WorkflowNotificationService.shared.requestAuthorizationIfNeeded()
                     portfolioCIService.start(interval: interval)
                     ghRunnersService.start(interval: interval)
+                    // Self-reconnecting WebSocket; not on the poll cadence.
+                    agentRuntimes.start()
                     if DemoMode.isEnabled {
                         // Inject a synthetic remote host + demo containers; skip env
                         // seeding and real-agent reload entirely.
@@ -156,6 +174,7 @@ struct DevCanopyApp: App {
                 .environmentObject(remoteHosts)
                 .environmentObject(localHostMetrics)
                 .environmentObject(portfolioStore)
+                .environmentObject(openclawService)
         }
         .modelContainer(modelContainer)
     }

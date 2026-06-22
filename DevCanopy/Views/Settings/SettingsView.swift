@@ -23,6 +23,11 @@ struct SettingsView: View {
                     Label("Hosts", systemImage: "server.rack")
                 }
 
+            OpenClawSettingsView()
+                .tabItem {
+                    Label("OpenClaw", systemImage: "brain.head.profile")
+                }
+
             AboutView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
