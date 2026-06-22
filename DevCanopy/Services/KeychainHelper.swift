@@ -148,4 +148,37 @@ final class KeychainHelper {
     func deleteVercelToken() {
         try? delete(for: "vercel_access_token")
     }
+
+    // MARK: - OpenClaw
+
+    /// Optional bearer token for the OpenClaw gateway. Most installs authenticate
+    /// purely via the Ed25519 device pairing below; the token is an extra/ambient
+    /// credential when the gateway is configured to require one.
+    func saveOpenClawToken(_ token: String) throws {
+        try saveString(token, for: "openclaw_bearer_token")
+    }
+
+    func loadOpenClawToken() -> String? {
+        try? loadString(for: "openclaw_bearer_token")
+    }
+
+    func deleteOpenClawToken() {
+        try? delete(for: "openclaw_bearer_token")
+    }
+
+    /// Ed25519 device signing key (raw 32-byte seed) used to sign the gateway's
+    /// connect challenge. Binary, so it uses the raw Data path rather than the
+    /// String convenience. Device-bound and must not sync — the helper's default
+    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` is exactly right.
+    func saveOpenClawDeviceKey(_ rawSeed: Data) throws {
+        try save(rawSeed, for: "openclaw_device_key")
+    }
+
+    func loadOpenClawDeviceKey() -> Data? {
+        try? load(for: "openclaw_device_key")
+    }
+
+    func deleteOpenClawDeviceKey() {
+        try? delete(for: "openclaw_device_key")
+    }
 }

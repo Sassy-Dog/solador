@@ -11,6 +11,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
     case ghWorkflows
     case gitWorktrees
     case claudeUsage
+    case openclawAgents
 
     var id: String {
         rawValue
@@ -24,6 +25,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .ghWorkflows: "GitHub Workflows"
         case .gitWorktrees: "Git / Worktrees"
         case .claudeUsage: "Claude Usage"
+        case .openclawAgents: "OpenClaw"
         }
     }
 
@@ -35,6 +37,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .ghWorkflows: "checkmark.seal"
         case .gitWorktrees: "arrow.triangle.branch"
         case .claudeUsage: "gauge.with.needle"
+        case .openclawAgents: "brain.head.profile"
         }
     }
 }
@@ -81,7 +84,10 @@ extension CockpitLayout {
                 CockpitPlacement(kind: .ghWorkflows, span: .half),
                 CockpitPlacement(kind: .gitWorktrees, span: .half)
             ],
-            [CockpitPlacement(kind: .claudeUsage, span: .full)]
+            [
+                CockpitPlacement(kind: .claudeUsage, span: .half),
+                CockpitPlacement(kind: .openclawAgents, span: .half)
+            ]
         ]
     )
 }
