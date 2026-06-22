@@ -12,8 +12,10 @@ import UserNotifications
 final class WorkflowNotificationService: NSObject, UNUserNotificationCenterDelegate {
     static let shared = WorkflowNotificationService()
 
-    /// userInfo key carrying the deep-link URL to open on tap.
-    private static let urlKey = "htmlURL"
+    /// userInfo key carrying the deep-link URL to open on tap. `nonisolated` so
+    /// the `nonisolated` delegate callback below can read it; it's a constant
+    /// `String` (`Sendable`), so no isolation is needed.
+    private nonisolated static let urlKey = "htmlURL"
 
     private let center: UNUserNotificationCenter
     private var didRequestAuthorization = false

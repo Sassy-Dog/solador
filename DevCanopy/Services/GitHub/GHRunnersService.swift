@@ -15,8 +15,11 @@ final class GHRunnersService: ObservableObject {
     private let github: GitHubService
     private var task: Task<Void, Never>?
 
-    init(github: GitHubService = .shared) {
-        self.github = github
+    /// `nil` default (not `.shared`) because default arguments are evaluated in a
+    /// nonisolated context, where the `@MainActor` `shared` can't be referenced.
+    /// Resolved here in the main-actor init body instead.
+    init(github: GitHubService? = nil) {
+        self.github = github ?? .shared
     }
 
     func refresh() async {

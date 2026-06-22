@@ -20,10 +20,10 @@ import os
 /// the same diagnostic.
 ///
 /// The port value is set once at process startup and never mutates, so reading
-/// it is in fact safe. We capture it once into this immutable global —
-/// annotated `nonisolated(unsafe)` to assert that safety to the compiler — and
-/// route every call site through it rather than touching the unsafe global var.
-private nonisolated(unsafe) let machTaskSelf: mach_port_t = mach_task_self_
+/// it is in fact safe. We capture it once into this immutable global and route
+/// every call site through it. `mach_port_t` is `Sendable`, so the immutable
+/// `let` needs no concurrency annotation.
+private let machTaskSelf: mach_port_t = mach_task_self_
 
 // MARK: - Safe System Monitor with Comprehensive Error Handling
 

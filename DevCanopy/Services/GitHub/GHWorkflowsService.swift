@@ -34,13 +34,17 @@ final class GHWorkflowsService: ObservableObject {
     /// that were already parked before the app launched.
     private var didInitialRefresh = false
 
+    /// `nil` defaults (not `.shared`) because default arguments are evaluated in a
+    /// nonisolated context, where the `@MainActor` `shared` singletons can't be
+    /// referenced; resolved here in the main-actor init body. (Disabling
+    /// notifications is done via `displayOptions`, not a nil notifier.)
     init(
-        github: GitHubService = .shared,
-        notifier: WorkflowNotificationService? = .shared,
+        github: GitHubService? = nil,
+        notifier: WorkflowNotificationService? = nil,
         displayOptions: WorkflowDisplayOptions = WorkflowDisplayOptions()
     ) {
-        self.github = github
-        self.notifier = notifier
+        self.github = github ?? .shared
+        self.notifier = notifier ?? .shared
         self.displayOptions = displayOptions
     }
 
