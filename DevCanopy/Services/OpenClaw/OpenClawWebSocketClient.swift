@@ -27,10 +27,6 @@ actor OpenClawWebSocketClient {
     private let urlSession: URLSession
     private var socket: URLSessionWebSocketTask?
 
-    /// Connect uses the literal id "connect-1" (matches the gateway reference
-    /// client). Bootstrap/heartbeat RPCs use id == method so responses route by id.
-    private static let connectID = "connect-1"
-
     init(gatewayURL: String, token: String?, identity: OpenClawDeviceIdentity) {
         self.gatewayURL = gatewayURL
         self.token = token
@@ -47,7 +43,7 @@ actor OpenClawWebSocketClient {
         onConnected: @escaping @Sendable () -> Void,
         onFrame: @escaping @Sendable (OCEnvelope) -> Void
     ) async throws {
-        let request = try buildRequest()
+        let request = try OpenClawProtocol.makeRequest(gatewayURL: gatewayURL, token: token)
         let socket = urlSession.webSocketTask(with: request)
         self.socket = socket
         socket.resume()
@@ -74,38 +70,6 @@ actor OpenClawWebSocketClient {
         socket = nil
     }
 
-    // MARK: - Request
-
-    private func buildRequest() throws -> URLRequest {
-        guard let url = URL(string: gatewayURL),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "ws" || scheme == "wss"
-        else {
-            throw OpenClawSessionError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        if let token, !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        // The gateway enforces `controlUi.allowedOrigins` on the WS upgrade.
-        // Derive the Origin from the gateway URL itself (ws→http, wss→https) so
-        // the operator's allowedOrigins only needs the gateway's own hostname.
-        if let origin = Self.deriveOrigin(scheme: scheme, host: url.host, port: url.port) {
-            request.setValue(origin, forHTTPHeaderField: "Origin")
-        }
-        return request
-    }
-
-    /// `ws://host:port` → `http://host:port`; `wss://` → `https://`.
-    static func deriveOrigin(scheme: String, host: String?, port: Int?) -> String? {
-        guard let host, !host.isEmpty else { return nil }
-        let httpScheme = scheme == "wss" ? "https" : "http"
-        if let port {
-            return "\(httpScheme)://\(host):\(port)"
-        }
-        return "\(httpScheme)://\(host)"
-    }
-
     // MARK: - Handshake
 
     private func awaitChallenge() async throws -> String {
@@ -123,81 +87,33 @@ actor OpenClawWebSocketClient {
     }
 
     private func sendConnect(nonce: String) async throws {
-        let scopes = ["operator.read", "operator.approvals", "operator.admin"]
-        let signedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let signature = identity.signConnect(SignConnectParams(
-            clientID: "openclaw-tui",
-            clientMode: "ui",
-            role: "operator",
-            scopes: scopes,
-            token: token,
+        let frame = OpenClawProtocol.connectFrame(
             nonce: nonce,
-            signedAtMs: signedAtMs
-        ))
-
-        var params: [String: Any] = [
-            "minProtocol": 3,
-            "maxProtocol": 3,
-            "client": [
-                "id": "openclaw-tui",
-                "displayName": "DevCanopy",
-                "version": Self.appVersion,
-                "platform": "macos",
-                "mode": "ui",
-                "instanceId": identity.deviceID
-            ],
-            "role": "operator",
-            "scopes": scopes,
-            "caps": [],
-            "device": [
-                "id": identity.deviceID,
-                "publicKey": identity.publicKeyBase64URL,
-                "signature": signature,
-                "signedAt": signedAtMs,
-                "nonce": nonce
-            ]
-        ]
-        if let token, !token.isEmpty {
-            params["auth"] = ["token": token]
-        }
-        try await send([
-            "type": "req",
-            "id": Self.connectID,
-            "method": "connect",
-            "params": params
-        ])
+            identity: identity,
+            token: token,
+            signedAtMs: Int64(Date().timeIntervalSince1970 * 1000),
+            appVersion: Self.appVersion
+        )
+        try await send(frame)
     }
 
     private func awaitHelloOk() async throws {
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
             guard let env = try await receiveEnvelope(until: deadline) else { continue }
-            guard env.type == "res", env.id == Self.connectID else { continue }
+            guard env.type == "res", env.id == OpenClawProtocol.connectID else { continue }
             if env.ok == true, env.payload?["type"]?.stringValue == "hello-ok" {
                 return
             }
             // Distinguish a pairing request from a generic rejection so the
             // service can back off long and surface the approve instruction.
-            if let pairing = Self.classifyPairing(env, fallbackDeviceID: identity.deviceID) {
+            if let pairing = OpenClawProtocol.classifyPairing(env, fallbackDeviceID: identity.deviceID) {
                 throw OpenClawSessionError.pairingRequired(pairing)
             }
             let message = env.error?.message ?? env.error?.code ?? "handshake rejected"
             throw OpenClawSessionError.handshakeRejected(message)
         }
         throw OpenClawSessionError.handshakeTimeout
-    }
-
-    /// `error.details.code == "PAIRING_REQUIRED"` with a `requestId` → a pairing
-    /// request; `reason == "scope-upgrade"` distinguishes upgrade from first pair.
-    static func classifyPairing(_ env: OCEnvelope, fallbackDeviceID: String) -> PairingState? {
-        guard let details = env.error?.details, details.code == "PAIRING_REQUIRED" else { return nil }
-        let kind: PairingState.Kind = details.reason == "scope-upgrade" ? .scopeUpgrade : .firstPair
-        return PairingState(
-            deviceID: details.deviceId ?? fallbackDeviceID,
-            requestID: details.requestId,
-            kind: kind,
-            remediationHint: details.remediationHint
-        )
     }
 
     // MARK: - Bootstrap + heartbeat
