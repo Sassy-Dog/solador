@@ -1,6 +1,6 @@
 # Setting up GitHub Integration
 
-DevCanopy's **CI Health** and **CI Runners** panels read GitHub Actions data using a
+DevCanopy's **Repos** and **GitHub Runners** panels read GitHub data using a
 **fine-grained personal access token** with read-only access. There is no OAuth flow —
 you paste a token into the app and it is stored in your macOS Keychain.
 
@@ -12,6 +12,7 @@ you paste a token into the app and it is stored in your macOS Keychain.
 3. Scope it to the repositories whose CI you want to watch (or the whole org).
 4. Under **Repository permissions**, grant **read-only** access to:
    - **Actions** — required (reads workflow runs and self-hosted runner status).
+   - **Contents** — required for the Repos panel's remote branch counts.
    - **Metadata** — read-only (granted automatically alongside other permissions).
 5. Leave everything else at **No access** — DevCanopy never writes to GitHub.
 6. Generate the token and copy it (it is shown only once).
@@ -22,14 +23,15 @@ you paste a token into the app and it is stored in your macOS Keychain.
 2. Paste the token into the **Fine-grained PAT** field and click **Save**.
 3. The status shows **Token stored** once it is saved to the Keychain.
 
-The in-app help reads: *"Used by Portfolio CI to read GitHub Actions runs. A
-fine-grained PAT with read access to Actions is sufficient. Stored in your macOS
-Keychain."* — keep this doc in sync with that text.
+The in-app help reads: *"Used by the Repos panel. Grant the fine-grained PAT read
+access to Actions (workflow runs) and Contents (remote branch counts). Stored in your
+macOS Keychain."* — keep this doc in sync with that text.
 
 ## Troubleshooting
 
 ### CI panels show no data / 401
-- Confirm the token has **read** access to **Actions** for the repositories shown.
+- Confirm the token has **read** access to **Actions** (and **Contents**, for the Repos
+  panel's branch counts) for the repositories shown.
 - Confirm the token hasn't expired and was scoped to the right repos/org.
 - Re-save a fresh token via **Settings → GitHub Token → Clear**, then **Save**.
 

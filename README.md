@@ -10,10 +10,10 @@ DevCanopy renders a grid of glanceable panels:
 - **Hosts** — live CPU / memory / disk / network / GPU / battery for each machine,
   pulled from a small per-host agent over [Tailscale](https://tailscale.com).
 - **Containers** — podman, docker, and tart containers/VMs running on those hosts.
-- **GitHub Workflows** — GitHub Actions status across your portfolio of repositories.
+- **Repos** — one fixed row per watched repo: running-workflow count and longest-running
+  elapsed, alongside local/remote branch and worktree counts, across your portfolio.
 - **GitHub Runners** — self-hosted runner availability and activity.
-- **Git Worktrees** — local worktrees and their sync state with their remotes.
-- **Claude Usage** — token/cost rollups from your local Claude Code usage logs.
+- **Claude Usage** — token rollups from your local Claude Code usage logs.
 
 ## Architecture
 
@@ -102,9 +102,10 @@ token is stored in the macOS Keychain, never in SwiftData.
 
 ### GitHub authentication
 
-The GitHub Workflows and GitHub Runners panels read GitHub Actions data using a **fine-grained
-personal access token** with read-only access to Actions. Add it in
-**Settings → GitHub Token**. See [`Docs/github-setup.md`](Docs/github-setup.md).
+The Repos and GitHub Runners panels read GitHub data using a **fine-grained personal
+access token** with read-only access to **Actions** (workflow runs) and **Contents**
+(remote branch counts). Add it in **Settings → GitHub Token**. See
+[`Docs/github-setup.md`](Docs/github-setup.md).
 
 All credentials are stored in the macOS Keychain.
 
