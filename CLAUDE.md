@@ -8,10 +8,10 @@ DevCanopy is a native macOS cockpit that watches development infrastructure at a
 glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **Hosts** — live CPU/memory/disk/network/GPU/battery from a per-host agent over Tailscale
 - **Containers** — podman/docker/tart containers and VMs on those hosts
-- **GitHub Workflows** — GitHub Actions status across a portfolio of repos
+- **Repos** — one fixed row per watched repo: running-workflow count + longest-running
+  elapsed, plus local/remote branch and worktree counts (folds in the former Git Worktrees panel)
 - **GitHub Runners** — self-hosted runner availability/activity
-- **Git Worktrees** — local worktrees and their remote sync state
-- **Claude Usage** — token/cost rollups from local Claude Code usage logs
+- **Claude Usage** — token rollups from local Claude Code usage logs (subscription; no USD)
 
 It has three parts:
 - **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit.
@@ -92,18 +92,23 @@ DevCanopy/
   local-machine metrics come from `Packages/HostMetricsKit`.
 - Container discovery: `Services/Containers/`.
 
-### Git worktrees
+### Git worktrees & branches
 - `Services/GitMonitor/` parses git/worktree state without modifying files
-  (`GitWorktreeService.swift`, `GitStatusParser.swift`, `WorktreeParsing.swift`).
-- Surfaced by `Views/Cockpit/Panels/GitWorktreesPanel.swift`.
+  (`GitWorktreeService.swift`, `GitStatusParser.swift`, `WorktreeParsing.swift`) and
+  counts a repo's local branches + worktrees.
+- Surfaced as per-repo counts in the **Repos** panel
+  (`Views/Cockpit/Panels/GHWorkflowsPanel.swift`) — there is no standalone worktree panel.
 
 ### CI & Claude usage
-- GitHub Actions data: `Services/GitHub/` (workflow health + self-hosted runners).
-- Claude Code usage rollups: `Services/ClaudeUsage/`.
+- GitHub Actions data: `Services/GitHub/` (workflow health, self-hosted runners, and
+  remote branch counts via the GitHub API).
+- Claude Code usage rollups: `Services/ClaudeUsage/` (tokens only — USD is computed and
+  unit-tested but never displayed, since the account is subscription-based).
 
 ### Authentication
-- **GitHub CI panels**: a fine-grained PAT with read-only access to Actions, entered
-  in Settings → GitHub Token (`Views/Settings/SettingsView.swift`).
+- **Repos / GitHub Runners panels**: a fine-grained PAT with read-only access to
+  **Actions** (workflow runs) and **Contents** (remote branch counts), entered in
+  Settings → GitHub Token (`Views/Settings/SettingsView.swift`).
 - **Remote hosts**: per-host bearer token entered in Settings → Hosts.
 - All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);
   never persisted in SwiftData.
@@ -150,7 +155,8 @@ Tests cover the app (`DevCanopyTests/`) and the HostMetricsKit package
 ### Working on Git Worktree Monitoring
 - Parsing/logic in `Services/GitMonitor/` (`GitWorktreeService.swift`,
   `GitStatusParser.swift`, `WorktreeParsing.swift`).
-- Panel in `Views/Cockpit/Panels/GitWorktreesPanel.swift`.
+- Surfaced as per-repo branch/worktree counts in the **Repos** panel
+  (`Views/Cockpit/Panels/GHWorkflowsPanel.swift`).
 
 ### Working on the Agent
 - Rust source in `agent/src/` (`server.rs`, `metrics.rs`, `containers.rs`).
