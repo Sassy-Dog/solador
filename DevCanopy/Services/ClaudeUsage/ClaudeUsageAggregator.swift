@@ -52,12 +52,14 @@ enum ClaudeUsageAggregator {
         )
     }
 
-    /// Breakdowns sorted by cost descending, with name as a stable tiebreaker.
+    /// Breakdowns sorted by total tokens descending, with name as a stable
+    /// tiebreaker — matches the token figures the panel displays (the app is
+    /// subscription-based, so cost is computed but not surfaced).
     private static func sortedBreakdowns(_ map: [String: UsageTotals]) -> [UsageBreakdown] {
         map.map { UsageBreakdown(name: $0.key, totals: $0.value) }
             .sorted {
-                if $0.totals.costUSD != $1.totals.costUSD {
-                    return $0.totals.costUSD > $1.totals.costUSD
+                if $0.totals.totalTokens != $1.totals.totalTokens {
+                    return $0.totals.totalTokens > $1.totals.totalTokens
                 }
                 return $0.name < $1.name
             }

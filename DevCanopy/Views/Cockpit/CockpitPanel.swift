@@ -9,7 +9,6 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
     case ghRunners
     case containers
     case ghWorkflows
-    case gitWorktrees
     case claudeUsage
     case openclawAgents
 
@@ -22,8 +21,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .hosts: "Hosts"
         case .ghRunners: "GitHub Runners"
         case .containers: "Containers / VMs"
-        case .ghWorkflows: "GitHub Workflows"
-        case .gitWorktrees: "Git / Worktrees"
+        case .ghWorkflows: "Repos"
         case .claudeUsage: "Claude Usage"
         case .openclawAgents: "OpenClaw"
         }
@@ -35,7 +33,6 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .ghRunners: "server.rack"
         case .containers: "shippingbox"
         case .ghWorkflows: "checkmark.seal"
-        case .gitWorktrees: "arrow.triangle.branch"
         case .claudeUsage: "gauge.with.needle"
         case .openclawAgents: "brain.head.profile"
         }
@@ -82,12 +79,9 @@ extension CockpitLayout {
             ],
             [
                 CockpitPlacement(kind: .ghWorkflows, span: .half),
-                CockpitPlacement(kind: .gitWorktrees, span: .half)
+                CockpitPlacement(kind: .claudeUsage, span: .half)
             ],
-            [
-                CockpitPlacement(kind: .claudeUsage, span: .half),
-                CockpitPlacement(kind: .openclawAgents, span: .half)
-            ]
+            [CockpitPlacement(kind: .openclawAgents, span: .half)]
         ]
     )
 }
