@@ -24,6 +24,12 @@ struct RepoWorktrees: Identifiable, Equatable {
     let path: String
     let worktrees: [WorktreeStatus] // only worktrees with changes
     let cleanCount: Int // worktrees that are clean & synced (hidden)
+    let localBranches: Int // count of refs/heads (repo-level, shared across worktrees)
+
+    /// Total worktrees attached to the repo (changed + clean).
+    var worktreeCount: Int {
+        worktrees.count + cleanCount
+    }
 }
 
 /// Discovers git repos under configured roots and reports their worktrees with
@@ -156,7 +162,23 @@ final class GitWorktreeService: ObservableObject {
         let changed = statuses.filter { $0.ahead > 0 || $0.behind > 0 || $0.isDirty }
         let cleanCount = statuses.count - changed.count
         let name = (path as NSString).lastPathComponent
-        return RepoWorktrees(name: name, path: path, worktrees: changed, cleanCount: cleanCount)
+        return RepoWorktrees(
+            name: name,
+            path: path,
+            worktrees: changed,
+            cleanCount: cleanCount,
+            localBranches: localBranchCount(at: path)
+        )
+    }
+
+    /// Counts a repo's local branches (`refs/heads`). Branches are repo-level —
+    /// shared across all worktrees — so this runs once at the repo root. Returns
+    /// 0 if git errors.
+    private nonisolated static func localBranchCount(at path: String) -> Int {
+        guard let output = runGit(directory: path, ["for-each-ref", "--format=%(refname)", "refs/heads"]) else {
+            return 0
+        }
+        return output.split(separator: "\n").count
     }
 
     /// Runs `git -C <directory> <args>` capturing stdout. Returns nil on failure.

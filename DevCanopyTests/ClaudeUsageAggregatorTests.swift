@@ -103,14 +103,14 @@ final class ClaudeUsageAggregatorTests: XCTestCase {
 
     // MARK: - Per-project / per-model breakdowns
 
-    func testPerProjectAttributionSortedByCostDesc() {
+    func testPerProjectAttributionSortedByTokensDesc() {
         let records = [
-            record(requestId: "a", model: "claude-sonnet-4-5", project: "velovate", input: 1_000_000), // $3
-            record(requestId: "b", model: "claude-opus-4-7", project: "qr-ninja", input: 1_000_000) // $15
+            record(requestId: "a", model: "claude-sonnet-4-5", project: "velovate", input: 1_000_000),
+            record(requestId: "b", model: "claude-opus-4-7", project: "qr-ninja", input: 1_000_000)
         ]
         let summary = ClaudeUsageAggregator.summarize(records: records, now: now)
         XCTAssertEqual(summary.projectsLast7d.count, 2)
-        // sorted by cost desc => qr-ninja first
+        // equal tokens (1M each) → name tiebreak => qr-ninja first
         XCTAssertEqual(summary.projectsLast7d[0].name, "qr-ninja")
         XCTAssertEqual(summary.projectsLast7d[0].totals.costUSD, 15.0, accuracy: 0.0001)
         XCTAssertEqual(summary.projectsLast7d[1].name, "velovate")
@@ -124,7 +124,7 @@ final class ClaudeUsageAggregatorTests: XCTestCase {
         ]
         let summary = ClaudeUsageAggregator.summarize(records: records, now: now)
         XCTAssertEqual(summary.modelsLast7d.count, 2)
-        XCTAssertEqual(summary.modelsLast7d[0].name, "claude-opus-4-7") // higher cost first
+        XCTAssertEqual(summary.modelsLast7d[0].name, "claude-opus-4-7") // more tokens first (2M vs 1M)
         XCTAssertEqual(summary.modelsLast7d[0].totals.inputTokens, 2_000_000)
     }
 

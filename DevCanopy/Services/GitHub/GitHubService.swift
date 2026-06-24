@@ -52,9 +52,54 @@ final class GitHubService: ObservableObject {
         try await request(endpoint: endpoint, method: "GET", queryItems: queryItems)
     }
 
+    /// Total number of branches for a repo, using the cheap `per_page=1` +
+    /// `Link: rel="last"` trick: with one item per page, the last page number
+    /// equals the branch count — one request, no pagination. Falls back to the
+    /// returned array's length when there is no `Link` header (0 or 1 branch).
+    func branchCount(for repo: String) async throws -> Int {
+        let (data, http) = try await requestWithResponse(
+            endpoint: "/repos/\(repo)/branches",
+            method: "GET",
+            queryItems: [URLQueryItem(name: "per_page", value: "1")]
+        )
+        if let last = Self.lastPage(fromLinkHeader: http.value(forHTTPHeaderField: "Link")) {
+            return last
+        }
+        let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any]
+        return array?.count ?? 0
+    }
+
+    /// Parses a GitHub `Link` header and returns the `page=` value of the
+    /// `rel="last"` URL (the total page count). Returns nil when the header is
+    /// absent or has no `last` relation (single-page result). Pure — `nonisolated`
+    /// so it's callable off the main actor and from tests.
+    nonisolated static func lastPage(fromLinkHeader header: String?) -> Int? {
+        guard let header else { return nil }
+        // Each comma-separated part looks like: <https://…?per_page=1&page=37>; rel="last"
+        for part in header.split(separator: ",") {
+            guard part.contains("rel=\"last\"") else { continue }
+            guard let open = part.firstIndex(of: "<"),
+                  let close = part.firstIndex(of: ">"),
+                  open < close,
+                  let url = URLComponents(string: String(part[part.index(after: open) ..< close])),
+                  let page = url.queryItems?.first(where: { $0.name == "page" })?.value
+            else { return nil }
+            return Int(page)
+        }
+        return nil
+    }
+
     // MARK: - Network Request
 
     private func request(endpoint: String, method: String, queryItems: [URLQueryItem]? = nil) async throws -> Data {
+        try await requestWithResponse(endpoint: endpoint, method: method, queryItems: queryItems).0
+    }
+
+    private func requestWithResponse(
+        endpoint: String,
+        method: String,
+        queryItems: [URLQueryItem]? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
         guard let accessToken else {
             throw GitHubError.notAuthenticated
         }
@@ -98,7 +143,7 @@ final class GitHubService: ObservableObject {
             throw GitHubError.httpError(statusCode: httpResponse.statusCode)
         }
 
-        return data
+        return (data, httpResponse)
     }
 
     // MARK: - Keychain

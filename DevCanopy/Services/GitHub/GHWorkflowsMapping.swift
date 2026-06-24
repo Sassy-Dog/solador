@@ -92,6 +92,7 @@ struct RepoWorkflowHealth: Equatable, Identifiable {
     let needsApproval: [RunRef] // parked at a deployment-protection gate (.waiting)
     let stuck: [RunRef] // queued/pending past the staleness threshold
     let reachable: Bool // false when the repo's runs couldn't be fetched
+    let remoteBranches: Int? // branch count from the GitHub API; nil if unknown/fetch failed
 
     var id: String {
         repo
@@ -118,7 +119,8 @@ struct RepoWorkflowHealth: Equatable, Identifiable {
             running: [],
             needsApproval: [],
             stuck: [],
-            reachable: false
+            reachable: false,
+            remoteBranches: nil
         )
     }
 }
@@ -148,6 +150,7 @@ extension GHWorkflowsMapping {
         repo: String,
         runs: [WorkflowRunDTO],
         watchedWorkflows: [String]? = nil,
+        remoteBranches: Int? = nil,
         now: Date = Date()
     ) -> RepoWorkflowHealth {
         let watched = normalizedWatched(watchedWorkflows)
@@ -167,7 +170,8 @@ extension GHWorkflowsMapping {
             running: running,
             needsApproval: needsApproval,
             stuck: stuck,
-            reachable: true
+            reachable: true,
+            remoteBranches: remoteBranches
         )
     }
 

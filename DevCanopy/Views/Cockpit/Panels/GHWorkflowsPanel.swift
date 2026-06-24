@@ -1,64 +1,59 @@
 import AppKit
 import SwiftUI
 
-/// GitHub Workflows panel — what's running now and what's failing across the curated
-/// repos, so it's clear what needs a look. Authenticates with a fine-grained PAT
-/// from the Keychain (set in Settings).
+/// Repos panel — a fixed row per watched repo with glanceable counts (running
+/// workflows, local/remote branches, worktrees) plus the elapsed time of the
+/// longest-running workflow. The row count is fixed (one per watched repo), so
+/// the card never resizes as CI activity comes and goes. Workflow data comes
+/// from `GHWorkflowsService` (fine-grained PAT in the Keychain); branch/worktree
+/// counts come from the local `GitWorktreeService`.
 struct GHWorkflowsPanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .ghWorkflows
 
     @EnvironmentObject private var service: GHWorkflowsService
+    @EnvironmentObject private var worktreeService: GitWorktreeService
 
-    private struct RunningItem: Identifiable {
-        let repo: String
-        let ref: RunRef
-        var id: Int64 {
-            ref.runID
-        }
+    /// What a repo's status dot communicates, in descending urgency. The dot
+    /// collapses what used to be separate RUNNING / NEEDS APPROVAL / STUCK /
+    /// NEEDS ATTENTION sections into one fixed-size signal.
+    private enum RepoStatus {
+        case unreachable // runs couldn't be fetched (auth/network)
+        case failed // main or last-PR run failed, or a queued run is stuck
+        case needsApproval // a run is parked at a deployment-protection gate
+        case running // actively executing, nothing wrong
+        case healthy // green across the board
     }
 
-    private struct ApprovalItem: Identifiable {
-        let repo: String
-        let ref: RunRef
-        var id: Int64 {
-            ref.runID
-        }
+    private struct RepoRow: Identifiable {
+        let id: String // "owner/name"
+        let name: String // short name shown in the row
+        let slug: String // "owner/name" for the Actions URL
+        let running: Int
+        let longest: String // elapsed of the oldest running run; "" if none
+        let localBranches: Int? // nil when the repo isn't found on disk
+        let remoteBranches: Int? // nil when the GitHub branch fetch failed
+        let worktrees: Int? // nil when the repo isn't found on disk
+        let status: RepoStatus
     }
 
-    private struct StuckItem: Identifiable {
-        let repo: String
-        let ref: RunRef
-        var id: Int64 {
-            ref.runID
-        }
-    }
-
-    private struct AttentionItem: Identifiable {
-        let repo: String
-        let which: String
-        let ref: RunRef
-        var id: String {
-            "\(repo):\(ref.runID):\(which)"
-        }
-    }
+    // Fixed column widths — the cockpit's monospace font makes these align cleanly.
+    private let runW: CGFloat = 34
+    private let localW: CGFloat = 44
+    private let remoteW: CGFloat = 52
+    private let wtW: CGFloat = 34
+    private let longestW: CGFloat = 56
 
     var body: some View {
-        // Compute the lists once; the header summary and the rows must agree.
-        let running = runningItems
-        let approval = approvalItems
-        let stuck = stuckItems
-        let attention = attentionItems
-        let unreadable = unreadableRepos
         let loading = service.isLoading && service.health.isEmpty
 
         return CockpitPanelContainer(
             kind: Self.kind,
             trailing: trailing(
-                running: running.count,
-                approval: approval.count,
-                stuck: stuck.count,
-                attention: attention.count,
-                unreadable: unreadable.count,
+                running: totalRunning,
+                approval: totalApproval,
+                stuck: totalStuck,
+                attention: totalAttention,
+                unreadable: unreadableCount,
                 loading: loading
             )
         ) {
@@ -67,69 +62,81 @@ struct GHWorkflowsPanel: CockpitPanelView {
             } else if loading {
                 muted("loading…")
             } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    if !approval.isEmpty {
-                        sectionHeader("NEEDS APPROVAL", approval.count)
-                        ForEach(approval) { approvalRow($0) }
-                    }
-                    if !stuck.isEmpty {
-                        sectionHeader("STUCK", stuck.count)
-                        ForEach(stuck) { stuckRow($0) }
-                    }
-                    if !running.isEmpty {
-                        sectionHeader("RUNNING", running.count)
-                        ForEach(running) { runningRow($0) }
-                    }
-                    if !attention.isEmpty {
-                        sectionHeader("NEEDS ATTENTION", attention.count)
-                        ForEach(attention) { attentionRow($0) }
-                    }
-                    if !unreadable.isEmpty {
-                        sectionHeader("CAN'T READ", unreadable.count)
-                        unreadableRow(unreadable)
-                    }
-                    healthLine(attention: attention.count, unreadable: unreadable.count)
+                VStack(alignment: .leading, spacing: 6) {
+                    headerRow
+                    ForEach(rows) { repoRow($0) }
+                    healthLine(attention: totalAttention, unreadable: unreadableCount)
+                        .padding(.top, 4)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
 
-    private var runningItems: [RunningItem] {
-        service.health
-            .flatMap { h in h.running.map { RunningItem(repo: h.shortName, ref: $0) } }
-            .sorted { ($0.ref.startedAt ?? .distantFuture) < ($1.ref.startedAt ?? .distantFuture) }
-    }
+    // MARK: - Row model
 
-    private var approvalItems: [ApprovalItem] {
-        service.health
-            .flatMap { h in h.needsApproval.map { ApprovalItem(repo: h.shortName, ref: $0) } }
-            .sorted { ($0.ref.startedAt ?? .distantFuture) < ($1.ref.startedAt ?? .distantFuture) }
-    }
-
-    private var stuckItems: [StuckItem] {
-        service.health
-            .flatMap { h in h.stuck.map { StuckItem(repo: h.shortName, ref: $0) } }
-            .sorted { ($0.ref.startedAt ?? .distantFuture) < ($1.ref.startedAt ?? .distantFuture) }
-    }
-
-    private var attentionItems: [AttentionItem] {
-        service.health.flatMap { h -> [AttentionItem] in
-            var items: [AttentionItem] = []
-            if let m = h.main, m.isFailed {
-                items.append(AttentionItem(repo: h.shortName, which: "main", ref: m))
+    /// One row per watched repo, sorted by name for a stable order. Joins the
+    /// GitHub workflow health with local worktree/branch counts using the same
+    /// normalized name the two services already share (`PortfolioRepos`).
+    private var rows: [RepoRow] {
+        let wtByName = Dictionary(
+            worktreeService.repos.map { (PortfolioRepos.normalize($0.name), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return service.health
+            .sorted { $0.shortName.lowercased() < $1.shortName.lowercased() }
+            .map { h in
+                let wt = wtByName[PortfolioRepos.normalize(h.shortName)]
+                let oldestRunning = h.running.compactMap(\.startedAt).min()
+                return RepoRow(
+                    id: h.repo,
+                    name: h.shortName,
+                    slug: h.repo,
+                    running: h.running.count,
+                    longest: elapsed(oldestRunning),
+                    localBranches: wt?.localBranches,
+                    remoteBranches: h.remoteBranches,
+                    worktrees: wt?.worktreeCount,
+                    status: status(for: h)
+                )
             }
-            if let p = h.lastPR, p.isFailed {
-                items.append(AttentionItem(repo: h.shortName, which: "PR " + p.context, ref: p))
-            }
-            return items
+    }
+
+    /// Status-dot precedence: the most urgent condition wins. Unreachable and
+    /// failed/stuck are problems (red / muted); needs-approval asks for a human;
+    /// running is mere activity; otherwise healthy.
+    private func status(for h: RepoWorkflowHealth) -> RepoStatus {
+        if !h.reachable { return .unreachable }
+        if (h.main?.isFailed ?? false) || (h.lastPR?.isFailed ?? false) || !h.stuck.isEmpty {
+            return .failed
+        }
+        if !h.needsApproval.isEmpty { return .needsApproval }
+        if !h.running.isEmpty { return .running }
+        return .healthy
+    }
+
+    // MARK: - Aggregates (fixed-size header + footer)
+
+    private var totalRunning: Int {
+        service.health.reduce(0) { $0 + $1.running.count }
+    }
+
+    private var totalApproval: Int {
+        service.health.reduce(0) { $0 + $1.needsApproval.count }
+    }
+
+    private var totalStuck: Int {
+        service.health.reduce(0) { $0 + $1.stuck.count }
+    }
+
+    private var totalAttention: Int {
+        service.health.reduce(0) { acc, h in
+            acc + ((h.main?.isFailed ?? false) ? 1 : 0) + ((h.lastPR?.isFailed ?? false) ? 1 : 0)
         }
     }
 
-    /// Repos whose runs couldn't be fetched (auth/network) — surfaced so a broken
-    /// token never masquerades as "all green".
-    private var unreadableRepos: [String] {
-        service.health.filter { !$0.reachable }.map(\.shortName)
+    private var unreadableCount: Int {
+        service.health.count(where: { !$0.reachable })
     }
 
     private func trailing(
@@ -150,77 +157,86 @@ struct GHWorkflowsPanel: CockpitPanelView {
         return parts.isEmpty ? "all green" : parts.joined(separator: " · ")
     }
 
-    private func sectionHeader(_ title: String, _ count: Int) -> some View {
-        Text("\(title) (\(count))")
-            .font(CockpitTheme.mono(10, weight: .bold))
+    // MARK: - Rows
+
+    private var headerRow: some View {
+        HStack(spacing: 8) {
+            Color.clear.frame(width: 6, height: 1) // aligns with the status dot
+            headerLabel("REPO", width: nil)
+            Spacer(minLength: 8)
+            headerLabel("RUN", width: runW)
+            headerLabel("LOCAL", width: localW)
+            headerLabel("REMOTE", width: remoteW)
+            headerLabel("WT", width: wtW)
+            headerLabel("LONGEST", width: longestW)
+        }
+    }
+
+    private func headerLabel(_ text: String, width: CGFloat?) -> some View {
+        Text(text)
+            .font(CockpitTheme.mono(9, weight: .bold))
             .foregroundStyle(CockpitTheme.muted)
+            .frame(width: width, alignment: width == nil ? .leading : .trailing)
     }
 
-    private func runningRow(_ item: RunningItem) -> some View {
-        rowChrome(url: item.ref.htmlURL) {
-            HStack(spacing: 7) {
-                Circle().fill(CockpitTheme.amber).frame(width: 6, height: 6)
-                Text(item.repo).font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(1)
-                Text("\(item.ref.title) · \(item.ref.context)")
-                    .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted).lineLimit(1)
-                Spacer()
-                Text(elapsed(item.ref.startedAt)).font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.amber)
+    private func repoRow(_ row: RepoRow) -> some View {
+        HStack(spacing: 8) {
+            statusDot(row.status)
+            Text(row.name)
+                .font(CockpitTheme.mono(11, weight: .bold))
+                .foregroundStyle(CockpitTheme.ink)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            countCell(row.running, width: runW)
+            countCell(row.localBranches, width: localW)
+            countCell(row.remoteBranches, width: remoteW)
+            countCell(row.worktrees, width: wtW)
+            Text(row.longest.isEmpty ? "·" : row.longest)
+                .font(CockpitTheme.mono(11))
+                .foregroundStyle(row.longest.isEmpty ? CockpitTheme.muted : CockpitTheme.amber)
+                .frame(width: longestW, alignment: .trailing)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { openActions(row.slug) }
+    }
+
+    /// A right-aligned count. Renders "—" when the value is unknown (repo not on
+    /// disk, or branch fetch failed) and dims a real zero so non-zero pops.
+    private func countCell(_ value: Int?, width: CGFloat) -> some View {
+        Group {
+            if let value {
+                Text("\(value)").foregroundStyle(value == 0 ? CockpitTheme.muted : CockpitTheme.ink)
+            } else {
+                Text("—").foregroundStyle(CockpitTheme.muted)
             }
+        }
+        .font(CockpitTheme.mono(11))
+        .frame(width: width, alignment: .trailing)
+    }
+
+    @ViewBuilder
+    private func statusDot(_ status: RepoStatus) -> some View {
+        if status == .needsApproval {
+            // Blinking to read as "act now" — a human must approve the gate.
+            BlinkingDot(color: CockpitTheme.amber)
+        } else {
+            Circle().fill(color(for: status)).frame(width: 6, height: 6)
         }
     }
 
-    /// A run parked at a deployment-protection gate. Blinking amber dot (the user
-    /// explicitly asked for blinking) so it reads as "act now", not "still cooking".
-    private func approvalRow(_ item: ApprovalItem) -> some View {
-        rowChrome(url: item.ref.htmlURL) {
-            HStack(spacing: 7) {
-                BlinkingDot(color: CockpitTheme.amber)
-                Text(item.repo).font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(1)
-                Text("\(item.ref.title) · \(item.ref.context)")
-                    .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted).lineLimit(1)
-                Spacer()
-                Text("needs approval · \(elapsed(item.ref.startedAt))")
-                    .font(CockpitTheme.mono(9, weight: .bold)).foregroundStyle(CockpitTheme.amber)
-            }
+    private func color(for status: RepoStatus) -> Color {
+        switch status {
+        case .unreachable: CockpitTheme.muted
+        case .failed: CockpitTheme.red
+        case .needsApproval: CockpitTheme.amber
+        case .running: CockpitTheme.amber
+        case .healthy: CockpitTheme.green
         }
     }
 
-    /// A queued/pending run that has gone stale (concurrency-blocked / stuck-queued)
-    /// — surfaced distinctly from a healthy long-running job (the 17h51m incident).
-    private func stuckRow(_ item: StuckItem) -> some View {
-        rowChrome(url: item.ref.htmlURL) {
-            HStack(spacing: 7) {
-                Circle().fill(CockpitTheme.red).frame(width: 6, height: 6)
-                Text(item.repo).font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(1)
-                Text("\(item.ref.title) · \(item.ref.context)")
-                    .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted).lineLimit(1)
-                Spacer()
-                Text("stuck · \(elapsed(item.ref.startedAt))")
-                    .font(CockpitTheme.mono(9, weight: .bold)).foregroundStyle(CockpitTheme.red)
-            }
-        }
-    }
-
-    private func attentionRow(_ item: AttentionItem) -> some View {
-        rowChrome(url: item.ref.htmlURL) {
-            HStack(spacing: 7) {
-                Circle().fill(CockpitTheme.red).frame(width: 6, height: 6)
-                Text(item.repo).font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(1)
-                Text(item.which).font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted).lineLimit(1)
-                Spacer()
-                Text("failed · \(relative(item.ref.startedAt))").font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.red)
-            }
-        }
-    }
-
-    private func unreadableRow(_ repos: [String]) -> some View {
-        HStack(spacing: 7) {
-            Circle().fill(CockpitTheme.amber).frame(width: 6, height: 6)
-            Text(repos.joined(separator: ", "))
-                .font(CockpitTheme.mono(11, weight: .bold)).foregroundStyle(CockpitTheme.ink).lineLimit(2)
-            Text("(check token access)")
-                .font(CockpitTheme.mono(9)).foregroundStyle(CockpitTheme.muted)
-            Spacer()
+    private func openActions(_ slug: String) {
+        if let url = URL(string: "https://github.com/\(slug)/actions") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -238,13 +254,7 @@ struct GHWorkflowsPanel: CockpitPanelView {
         }
     }
 
-    private func rowChrome(url: String, @ViewBuilder _ content: () -> some View) -> some View {
-        content()
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if let u = URL(string: url) { NSWorkspace.shared.open(u) }
-            }
-    }
+    // MARK: - Helpers
 
     private func muted(_ text: String) -> some View {
         Text(text).font(CockpitTheme.mono(11)).foregroundStyle(CockpitTheme.muted)
@@ -263,18 +273,10 @@ struct GHWorkflowsPanel: CockpitPanelView {
         if s < 3600 { return "\(s / 60)m" }
         return "\(s / 3600)h\((s % 3600) / 60)m"
     }
-
-    private func relative(_ date: Date?) -> String {
-        guard let date else { return "recently" }
-        let s = Int(max(0, Date().timeIntervalSince(date)))
-        if s < 3600 { return "\(max(1, s / 60))m ago" }
-        if s < 86400 { return "\(s / 3600)h ago" }
-        return "\(s / 86400)d ago"
-    }
 }
 
-/// A status dot that pulses its opacity to draw the eye — used for NEEDS APPROVAL,
-/// where a human needs to act, vs the steady dot used for plain RUNNING.
+/// A status dot that pulses its opacity to draw the eye — used for a repo with a
+/// run parked at an approval gate, vs the steady dot used otherwise.
 private struct BlinkingDot: View {
     let color: Color
     @State private var dim = false

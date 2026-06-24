@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Claude Usage panel — today's cost (header), rolling 5h + weekly windows, and
+/// Claude Usage panel — today's tokens (header), rolling 5h + weekly windows, and
 /// a compact top-projects breakdown. Reads from `ClaudeUsageService`; no network.
+/// Subscription-based, so token counts (not USD costs) are what's shown.
 struct ClaudeUsagePanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .claudeUsage
 
@@ -53,7 +54,7 @@ struct ClaudeUsagePanel: CockpitPanelView {
 
     private var trailingLabel: String {
         guard let summary = service.summary else { return "" }
-        return "\(Self.money(summary.today.costUSD)) today"
+        return "\(Self.tokens(summary.today.totalTokens)) today"
     }
 
     private func windowRow(label: String, totals: UsageTotals, limit: Int?) -> some View {
@@ -63,12 +64,9 @@ struct ClaudeUsagePanel: CockpitPanelView {
                     .font(CockpitTheme.mono(10, weight: .bold))
                     .foregroundStyle(CockpitTheme.muted)
                     .frame(width: 42, alignment: .leading)
+                Spacer()
                 Text(Self.tokens(totals.totalTokens))
                     .font(CockpitTheme.mono(12, weight: .bold))
-                    .foregroundStyle(CockpitTheme.ink)
-                Spacer()
-                Text(Self.money(totals.costUSD))
-                    .font(CockpitTheme.mono(11))
                     .foregroundStyle(CockpitTheme.green)
             }
             if let limit, limit > 0 {
@@ -88,7 +86,7 @@ struct ClaudeUsagePanel: CockpitPanelView {
                 .foregroundStyle(CockpitTheme.ink)
                 .lineLimit(1)
             Spacer()
-            Text(Self.money(totals.costUSD))
+            Text(Self.tokens(totals.totalTokens))
                 .font(CockpitTheme.mono(10))
                 .foregroundStyle(CockpitTheme.muted)
         }
@@ -115,10 +113,6 @@ struct ClaudeUsagePanel: CockpitPanelView {
     }
 
     // MARK: - Formatting
-
-    static func money(_ usd: Double) -> String {
-        String(format: "$%.2f", usd)
-    }
 
     /// Abbreviated token count: 1_234 -> "1.2k", 1_200_000 -> "1.2M".
     static func tokens(_ count: Int) -> String {
