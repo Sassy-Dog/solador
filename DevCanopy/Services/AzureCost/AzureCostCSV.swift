@@ -45,6 +45,11 @@ func priorMonthDate(from date: Date) -> Date {
 /// line split) because the export's `tags` column embeds quoted JSON with commas
 /// — and quoted fields may, in principle, contain newlines. Strips a leading
 /// UTF-8 BOM (the export's header starts with one).
+///
+/// Scans Unicode *scalars*, not `Character`s: Swift folds a CRLF (`"\r\n"`) into a
+/// single grapheme-cluster `Character` that equals neither `"\r"` nor `"\n"`, so a
+/// `Character`-based scan never breaks rows on the export's CRLF line endings and
+/// collapses the whole file into one row. Scalars keep `\r` and `\n` separate.
 func parseCsv(_ text: String) -> [[String]] {
     var rows: [[String]] = []
     var field = ""
@@ -53,36 +58,40 @@ func parseCsv(_ text: String) -> [[String]] {
 
     var source = Substring(text)
     if source.first == "\u{FEFF}" { source = source.dropFirst() }
-    let chars = Array(source)
+    let scalars = Array(source.unicodeScalars)
+    let quote: Unicode.Scalar = "\""
+    let comma: Unicode.Scalar = ","
+    let newline: Unicode.Scalar = "\n"
+    let carriageReturn: Unicode.Scalar = "\r"
 
     var i = 0
-    while i < chars.count {
-        let c = chars[i]
+    while i < scalars.count {
+        let c = scalars[i]
         if inQuotes {
-            if c == "\"" {
-                if i + 1 < chars.count, chars[i + 1] == "\"" {
-                    field.append("\"")
+            if c == quote {
+                if i + 1 < scalars.count, scalars[i + 1] == quote {
+                    field.unicodeScalars.append(quote)
                     i += 1 // escaped quote
                 } else {
                     inQuotes = false
                 }
             } else {
-                field.append(c)
+                field.unicodeScalars.append(c)
             }
-        } else if c == "\"" {
+        } else if c == quote {
             inQuotes = true
-        } else if c == "," {
+        } else if c == comma {
             row.append(field)
             field = ""
-        } else if c == "\n" || c == "\r" {
+        } else if c == newline || c == carriageReturn {
             // End the row on \n; swallow \r and \r\n.
-            if c == "\r", i + 1 < chars.count, chars[i + 1] == "\n" { i += 1 }
+            if c == carriageReturn, i + 1 < scalars.count, scalars[i + 1] == newline { i += 1 }
             row.append(field)
             field = ""
             rows.append(row)
             row = []
         } else {
-            field.append(c)
+            field.unicodeScalars.append(c)
         }
         i += 1
     }
