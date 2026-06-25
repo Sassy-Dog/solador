@@ -149,6 +149,22 @@ final class KeychainHelper {
         try? delete(for: "vercel_access_token")
     }
 
+    /// Container-scoped, read+list user-delegation SAS URL for the platform Azure
+    /// Cost Management export (e.g. `https://stsassydog.blob.core.windows.net/
+    /// cost-exports?sv=...&sig=...`). The SAS *is* the credential — the app never
+    /// holds an Azure identity, it just appends the query to plain blob GETs.
+    func saveAzureCostSAS(_ sasURL: String) throws {
+        try saveString(sasURL, for: "azure_cost_sas_url")
+    }
+
+    func loadAzureCostSAS() -> String? {
+        try? loadString(for: "azure_cost_sas_url")
+    }
+
+    func deleteAzureCostSAS() {
+        try? delete(for: "azure_cost_sas_url")
+    }
+
     // MARK: - OpenClaw
 
     /// Optional bearer token for the OpenClaw gateway. Most installs authenticate
