@@ -33,6 +33,23 @@ final class AzureCostCSVTests: XCTestCase {
         XCTAssertEqual(rows[0], ["col"])
     }
 
+    func testParseCsvSplitsRowsOnCRLFLineEndings() {
+        // The real Azure export uses CRLF. Swift folds "\r\n" into a single
+        // grapheme-cluster Character, so a Character-based scan collapses the whole
+        // file into one row — this guards the scalar-based parse (\r and \n apart).
+        let rows = parseCsv("a,b\r\n1,2\r\n3,4\r\n")
+        XCTAssertEqual(rows, [["a", "b"], ["1", "2"], ["3", "4"]])
+    }
+
+    func testAggregateSumsCostAcrossCRLFRows() throws {
+        // Mirrors the production failure: a CRLF export summed to $0 because every
+        // data row folded into the header row. Scalar parsing splits them correctly.
+        let csv = "resourceGroupName,costInUsd\r\nrg-a,10\r\nrg-b,5\r\n"
+        let (total, byResource) = try aggregateCostCsv(csv)
+        XCTAssertEqual(total, 15, accuracy: 1e-6)
+        assertResources(byResource, [("rg-a", 10), ("rg-b", 5)])
+    }
+
     // MARK: - aggregateCostCsv
 
     func testAggregateSumsCostInUsdAndGroupsByResourceGroupDesc() throws {
