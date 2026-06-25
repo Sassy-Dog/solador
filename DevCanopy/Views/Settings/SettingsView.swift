@@ -28,6 +28,11 @@ struct SettingsView: View {
                     Label("OpenClaw", systemImage: "brain.head.profile")
                 }
 
+            AzureCostSettingsView()
+                .tabItem {
+                    Label("Azure Cost", systemImage: "dollarsign.circle")
+                }
+
             AboutView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
@@ -141,6 +146,69 @@ struct GitHubSettingsView: View {
         GitHubService.shared.configureFromKeychain()
         hasStoredToken = false
         token = ""
+        statusMessage = "Cleared."
+    }
+}
+
+struct AzureCostSettingsView: View {
+    @State private var sasURL: String = ""
+    @State private var hasStoredSAS: Bool = KeychainHelper.shared.loadAzureCostSAS()?.isEmpty == false
+    @State private var statusMessage: String?
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("SAS URL", text: $sasURL)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    Button("Save") { save() }
+                        .disabled(sasURL.isEmpty)
+                    Button("Clear") { clear() }
+                        .disabled(!hasStoredSAS)
+                    Spacer()
+                    if hasStoredSAS {
+                        Label("SAS stored", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    }
+                }
+
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Used by the Azure Cost panel. Paste a container-scoped, read+list SAS URL for the `cost-exports` container on `stsassydog` (e.g. `https://stsassydog.blob.core.windows.net/cost-exports?sv=...&sig=...`). The SAS is the only credential — no Azure sign-in. Stored in your macOS Keychain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Azure Cost SAS")
+                    .font(.headline)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private func save() {
+        do {
+            try KeychainHelper.shared.saveAzureCostSAS(sasURL)
+            AzureCostService.shared.configureFromKeychain()
+            hasStoredSAS = true
+            sasURL = ""
+            statusMessage = "Saved."
+        } catch {
+            statusMessage = "Failed to save: \(error.localizedDescription)"
+        }
+    }
+
+    private func clear() {
+        KeychainHelper.shared.deleteAzureCostSAS()
+        AzureCostService.shared.configureFromKeychain()
+        hasStoredSAS = false
+        sasURL = ""
         statusMessage = "Cleared."
     }
 }

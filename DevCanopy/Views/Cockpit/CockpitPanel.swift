@@ -11,6 +11,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
     case ghWorkflows
     case claudeUsage
     case openclawAgents
+    case azureCost
 
     var id: String {
         rawValue
@@ -24,6 +25,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .ghWorkflows: "Repos"
         case .claudeUsage: "Claude Usage"
         case .openclawAgents: "OpenClaw"
+        case .azureCost: "Azure Cost"
         }
     }
 
@@ -35,6 +37,7 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .ghWorkflows: "checkmark.seal"
         case .claudeUsage: "gauge.with.needle"
         case .openclawAgents: "brain.head.profile"
+        case .azureCost: "dollarsign.circle"
         }
     }
 }
@@ -74,14 +77,17 @@ extension CockpitLayout {
         rows: [
             [CockpitPlacement(kind: .hosts, span: .full)],
             [
-                CockpitPlacement(kind: .ghRunners, span: .half),
-                CockpitPlacement(kind: .containers, span: .half)
+                CockpitPlacement(kind: .ghWorkflows, span: .half),
+                CockpitPlacement(kind: .ghRunners, span: .half)
             ],
             [
-                CockpitPlacement(kind: .ghWorkflows, span: .half),
-                CockpitPlacement(kind: .claudeUsage, span: .half)
+                CockpitPlacement(kind: .containers, span: .half),
+                CockpitPlacement(kind: .openclawAgents, span: .half)
             ],
-            [CockpitPlacement(kind: .openclawAgents, span: .half)]
+            [
+                CockpitPlacement(kind: .claudeUsage, span: .half),
+                CockpitPlacement(kind: .azureCost, span: .half)
+            ]
         ]
     )
 }
