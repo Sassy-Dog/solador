@@ -101,13 +101,14 @@ DevCanopy/
 
 ### CI & Claude usage
 - GitHub Actions data: `Services/GitHub/` (workflow health, self-hosted runners, and
-  remote branch counts via the GitHub API).
+  remote branch / open-issue / open-PR counts via the GitHub API).
 - Claude Code usage rollups: `Services/ClaudeUsage/` (tokens only — USD is computed and
   unit-tested but never displayed, since the account is subscription-based).
 
 ### Authentication
 - **Repos / GitHub Runners panels**: a fine-grained PAT with read-only access to
-  **Actions** (workflow runs) and **Contents** (remote branch counts), entered in
+  **Actions** (workflow runs), **Contents** (remote branch counts), **Issues**
+  (open-issue counts), and **Pull requests** (open-PR counts), entered in
   Settings → GitHub Token (`Views/Settings/SettingsView.swift`).
 - **Remote hosts**: per-host bearer token entered in Settings → Hosts.
 - All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);

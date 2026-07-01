@@ -13,6 +13,8 @@ you paste a token into the app and it is stored in your macOS Keychain.
 4. Under **Repository permissions**, grant **read-only** access to:
    - **Actions** — required (reads workflow runs and self-hosted runner status).
    - **Contents** — required for the Repos panel's remote branch counts.
+   - **Issues** — required for the Repos panel's open-issue counts.
+   - **Pull requests** — required for the Repos panel's open-PR counts.
    - **Metadata** — read-only (granted automatically alongside other permissions).
 5. Leave everything else at **No access** — DevCanopy never writes to GitHub.
 6. Generate the token and copy it (it is shown only once).
@@ -24,14 +26,17 @@ you paste a token into the app and it is stored in your macOS Keychain.
 3. The status shows **Token stored** once it is saved to the Keychain.
 
 The in-app help reads: *"Used by the Repos panel. Grant the fine-grained PAT read
-access to Actions (workflow runs) and Contents (remote branch counts). Stored in your
-macOS Keychain."* — keep this doc in sync with that text.
+access to Actions (workflow runs), Contents (remote branch counts), Issues (open-issue
+counts), and Pull requests (open-PR counts). Stored in your macOS Keychain."* — keep
+this doc in sync with that text.
 
 ## Troubleshooting
 
 ### CI panels show no data / 401
-- Confirm the token has **read** access to **Actions** (and **Contents**, for the Repos
-  panel's branch counts) for the repositories shown.
+- Confirm the token has **read** access to **Actions** (plus **Contents**, **Issues**,
+  and **Pull requests** for the Repos panel's branch/issue/PR counts) for the
+  repositories shown. A missing Issues/Pull requests scope shows "—" in those columns
+  but does not break the rest of the panel.
 - Confirm the token hasn't expired and was scoped to the right repos/org.
 - Re-save a fresh token via **Settings → GitHub Token → Clear**, then **Save**.
 

@@ -57,10 +57,38 @@ final class GitHubService: ObservableObject {
     /// equals the branch count — one request, no pagination. Falls back to the
     /// returned array's length when there is no `Link` header (0 or 1 branch).
     func branchCount(for repo: String) async throws -> Int {
+        try await openCount(endpoint: "/repos/\(repo)/branches")
+    }
+
+    /// Number of **open pull requests** for a repo, via the same `per_page=1` +
+    /// `Link: rel="last"` count trick as `branchCount`. Requires the PAT's
+    /// Pull requests (read) permission.
+    func openPullRequestCount(for repo: String) async throws -> Int {
+        try await openCount(
+            endpoint: "/repos/\(repo)/pulls",
+            extraQuery: [URLQueryItem(name: "state", value: "open")]
+        )
+    }
+
+    /// Number of open items on a repo's **issues** endpoint. GitHub counts every
+    /// pull request as an issue, so this total is `open issues + open PRs`; callers
+    /// subtract the open-PR count to get a pure open-issue count. Requires the PAT's
+    /// Issues (read) permission.
+    func openIssuesIncludingPRsCount(for repo: String) async throws -> Int {
+        try await openCount(
+            endpoint: "/repos/\(repo)/issues",
+            extraQuery: [URLQueryItem(name: "state", value: "open")]
+        )
+    }
+
+    /// Shared implementation of the cheap `per_page=1` + `Link: rel="last"` count:
+    /// with one item per page, the last page number equals the total. Falls back to
+    /// the returned array's length when there is no `Link` header (0 or 1 item).
+    private func openCount(endpoint: String, extraQuery: [URLQueryItem] = []) async throws -> Int {
         let (data, http) = try await requestWithResponse(
-            endpoint: "/repos/\(repo)/branches",
+            endpoint: endpoint,
             method: "GET",
-            queryItems: [URLQueryItem(name: "per_page", value: "1")]
+            queryItems: [URLQueryItem(name: "per_page", value: "1")] + extraQuery
         )
         if let last = Self.lastPage(fromLinkHeader: http.value(forHTTPHeaderField: "Link")) {
             return last
