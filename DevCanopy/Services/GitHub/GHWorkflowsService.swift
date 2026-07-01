@@ -102,14 +102,20 @@ final class GHWorkflowsService: ObservableObject {
         do {
             let data = try await github.getRaw(endpoint: endpoint, queryItems: query)
             let response = try JSONDecoder().decode(WorkflowRunsResponse.self, from: data)
-            // Best-effort: a branch-count failure shouldn't mark the repo unreachable
-            // (its runs decoded fine). nil renders as "—" in the panel.
-            let branches = try? await github.branchCount(for: repo)
-            return GHWorkflowsMapping.health(
+            // Best-effort side counts fired concurrently (each releases the main
+            // actor at its network await). A failure — including a PAT missing the
+            // Issues/Pull requests scope — yields nil, which renders as "—" and
+            // never marks the repo unreachable (its runs decoded fine).
+            async let branches = try? github.branchCount(for: repo)
+            async let openPRs = try? github.openPullRequestCount(for: repo)
+            async let openIssuesInclPRs = try? github.openIssuesIncludingPRsCount(for: repo)
+            return await GHWorkflowsMapping.health(
                 repo: repo,
                 runs: response.workflowRuns,
                 watchedWorkflows: watched,
-                remoteBranches: branches
+                remoteBranches: branches,
+                openIssuesIncludingPRs: openIssuesInclPRs,
+                openPullRequests: openPRs
             )
         } catch {
             appLogger.debug("GitHub Workflows: \(repo) fetch failed: \(error.localizedDescription)")

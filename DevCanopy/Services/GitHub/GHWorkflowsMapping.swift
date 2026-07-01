@@ -93,6 +93,8 @@ struct RepoWorkflowHealth: Equatable, Identifiable {
     let stuck: [RunRef] // queued/pending past the staleness threshold
     let reachable: Bool // false when the repo's runs couldn't be fetched
     let remoteBranches: Int? // branch count from the GitHub API; nil if unknown/fetch failed
+    let openIssues: Int? // open issues (PRs excluded); nil if unknown/fetch failed
+    let openPRs: Int? // open pull requests; nil if unknown/fetch failed
 
     var id: String {
         repo
@@ -120,12 +122,24 @@ struct RepoWorkflowHealth: Equatable, Identifiable {
             needsApproval: [],
             stuck: [],
             reachable: false,
-            remoteBranches: nil
+            remoteBranches: nil,
+            openIssues: nil,
+            openPRs: nil
         )
     }
 }
 
 extension GHWorkflowsMapping {
+    /// Pure open-issue count. GitHub's issues endpoint counts pull requests as
+    /// issues, so the caller passes the inclusive total and the open-PR count and
+    /// this subtracts them. Returns nil when either input is unknown (a failed
+    /// fetch), and clamps at 0 so a transient issues/PRs sampling skew never shows
+    /// a negative.
+    static func pureOpenIssueCount(openIssuesIncludingPRs: Int?, openPullRequests: Int?) -> Int? {
+        guard let inclusive = openIssuesIncludingPRs, let prs = openPullRequests else { return nil }
+        return max(0, inclusive - prs)
+    }
+
     /// Default branch assumed for the repo "main" health slot.
     private static let defaultBranch = "main"
 
@@ -151,6 +165,8 @@ extension GHWorkflowsMapping {
         runs: [WorkflowRunDTO],
         watchedWorkflows: [String]? = nil,
         remoteBranches: Int? = nil,
+        openIssuesIncludingPRs: Int? = nil,
+        openPullRequests: Int? = nil,
         now: Date = Date()
     ) -> RepoWorkflowHealth {
         let watched = normalizedWatched(watchedWorkflows)
@@ -171,7 +187,12 @@ extension GHWorkflowsMapping {
             needsApproval: needsApproval,
             stuck: stuck,
             reachable: true,
-            remoteBranches: remoteBranches
+            remoteBranches: remoteBranches,
+            openIssues: pureOpenIssueCount(
+                openIssuesIncludingPRs: openIssuesIncludingPRs,
+                openPullRequests: openPullRequests
+            ),
+            openPRs: openPullRequests
         )
     }
 

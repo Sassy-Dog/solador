@@ -117,7 +117,7 @@ struct GitHubSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Used by the Repos panel. Grant the fine-grained PAT read access to **Actions** (workflow runs) and **Contents** (remote branch counts). Stored in your macOS Keychain.")
+                Text("Used by the Repos panel. Grant the fine-grained PAT read access to **Actions** (workflow runs), **Contents** (remote branch counts), **Issues** (open-issue counts), and **Pull requests** (open-PR counts). Stored in your macOS Keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

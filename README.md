@@ -103,8 +103,9 @@ token is stored in the macOS Keychain, never in SwiftData.
 ### GitHub authentication
 
 The Repos and GitHub Runners panels read GitHub data using a **fine-grained personal
-access token** with read-only access to **Actions** (workflow runs) and **Contents**
-(remote branch counts). Add it in **Settings → GitHub Token**. See
+access token** with read-only access to **Actions** (workflow runs), **Contents**
+(remote branch counts), **Issues** (open-issue counts), and **Pull requests** (open-PR
+counts). Add it in **Settings → GitHub Token**. See
 [`Docs/github-setup.md`](Docs/github-setup.md).
 
 All credentials are stored in the macOS Keychain.

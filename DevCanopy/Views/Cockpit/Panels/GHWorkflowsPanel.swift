@@ -1,12 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Repos panel — a fixed row per watched repo with glanceable counts (running
-/// workflows, local/remote branches, worktrees) plus the elapsed time of the
-/// longest-running workflow. The row count is fixed (one per watched repo), so
-/// the card never resizes as CI activity comes and goes. Workflow data comes
-/// from `GHWorkflowsService` (fine-grained PAT in the Keychain); branch/worktree
-/// counts come from the local `GitWorktreeService`.
+/// Repos panel — a fixed row per watched repo with glanceable counts (open
+/// issues/PRs, local/remote branches, worktrees, running jobs) plus the elapsed
+/// time of the longest-running job. The row count is fixed (one per watched
+/// repo), so the card never resizes as CI activity comes and goes. Workflow,
+/// issue, and PR data come from `GHWorkflowsService` (fine-grained PAT in the
+/// Keychain); branch/worktree counts come from the local `GitWorktreeService`.
 struct GHWorkflowsPanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .ghWorkflows
 
@@ -30,6 +30,8 @@ struct GHWorkflowsPanel: CockpitPanelView {
         let slug: String // "owner/name" for the Actions URL
         let running: Int
         let longest: String // elapsed of the oldest running run; "" if none
+        let openIssues: Int? // open issues (PRs excluded); nil when the GitHub fetch failed
+        let openPRs: Int? // open pull requests; nil when the GitHub fetch failed
         let localBranches: Int? // nil when the repo isn't found on disk
         let remoteBranches: Int? // nil when the GitHub branch fetch failed
         let worktrees: Int? // nil when the repo isn't found on disk
@@ -37,10 +39,12 @@ struct GHWorkflowsPanel: CockpitPanelView {
     }
 
     // Fixed column widths — the cockpit's monospace font makes these align cleanly.
-    private let runW: CGFloat = 34
+    private let issuesW: CGFloat = 52
+    private let prsW: CGFloat = 34
     private let localW: CGFloat = 44
     private let remoteW: CGFloat = 52
     private let wtW: CGFloat = 34
+    private let jobsW: CGFloat = 40
     private let longestW: CGFloat = 56
 
     var body: some View {
@@ -94,6 +98,8 @@ struct GHWorkflowsPanel: CockpitPanelView {
                     slug: h.repo,
                     running: h.running.count,
                     longest: elapsed(oldestRunning),
+                    openIssues: h.openIssues,
+                    openPRs: h.openPRs,
                     localBranches: wt?.localBranches,
                     remoteBranches: h.remoteBranches,
                     worktrees: wt?.worktreeCount,
@@ -164,10 +170,12 @@ struct GHWorkflowsPanel: CockpitPanelView {
             Color.clear.frame(width: 6, height: 1) // aligns with the status dot
             headerLabel("REPO", width: nil)
             Spacer(minLength: 8)
-            headerLabel("RUN", width: runW)
-            headerLabel("LOCAL", width: localW)
+            headerLabel("ISSUES", width: issuesW)
+            headerLabel("PRS", width: prsW)
             headerLabel("REMOTE", width: remoteW)
+            headerLabel("LOCAL", width: localW)
             headerLabel("WT", width: wtW)
+            headerLabel("JOBS", width: jobsW)
             headerLabel("LONGEST", width: longestW)
         }
     }
@@ -187,10 +195,12 @@ struct GHWorkflowsPanel: CockpitPanelView {
                 .foregroundStyle(CockpitTheme.ink)
                 .lineLimit(1)
             Spacer(minLength: 8)
-            countCell(row.running, width: runW)
-            countCell(row.localBranches, width: localW)
+            countCell(row.openIssues, width: issuesW)
+            countCell(row.openPRs, width: prsW)
             countCell(row.remoteBranches, width: remoteW)
+            countCell(row.localBranches, width: localW)
             countCell(row.worktrees, width: wtW)
+            countCell(row.running, width: jobsW, nonZeroColor: CockpitTheme.amber)
             Text(row.longest.isEmpty ? "·" : row.longest)
                 .font(CockpitTheme.mono(11))
                 .foregroundStyle(row.longest.isEmpty ? CockpitTheme.muted : CockpitTheme.amber)
@@ -201,11 +211,17 @@ struct GHWorkflowsPanel: CockpitPanelView {
     }
 
     /// A right-aligned count. Renders "—" when the value is unknown (repo not on
-    /// disk, or branch fetch failed) and dims a real zero so non-zero pops.
-    private func countCell(_ value: Int?, width: CGFloat) -> some View {
+    /// disk, or GitHub fetch failed) and dims a real zero so non-zero pops.
+    /// `nonZeroColor` tints a non-zero value — used to render JOBS in amber (the
+    /// most ephemeral column), pairing it with the amber LONGEST cell beside it.
+    private func countCell(
+        _ value: Int?,
+        width: CGFloat,
+        nonZeroColor: Color = CockpitTheme.ink
+    ) -> some View {
         Group {
             if let value {
-                Text("\(value)").foregroundStyle(value == 0 ? CockpitTheme.muted : CockpitTheme.ink)
+                Text("\(value)").foregroundStyle(value == 0 ? CockpitTheme.muted : nonZeroColor)
             } else {
                 Text("—").foregroundStyle(CockpitTheme.muted)
             }

@@ -279,4 +279,52 @@ final class GHWorkflowsMappingTests: XCTestCase {
         XCTAssertNil(h.main, "a non-main watched run must not populate the main slot")
         XCTAssertTrue(h.isHealthy)
     }
+
+    // MARK: - open issue / PR counts
+
+    /// GitHub's issues endpoint counts PRs, so the pure open-issue count is the
+    /// inclusive total minus the open-PR count.
+    func testPureOpenIssueCountSubtractsPullRequests() {
+        XCTAssertEqual(GHWorkflowsMapping.pureOpenIssueCount(openIssuesIncludingPRs: 10, openPullRequests: 3), 7)
+    }
+
+    /// The issues and PRs totals are sampled from two separate requests, so a
+    /// transient skew could make PRs momentarily exceed the inclusive total —
+    /// clamp at 0 rather than show a negative.
+    func testPureOpenIssueCountClampsAtZero() {
+        XCTAssertEqual(GHWorkflowsMapping.pureOpenIssueCount(openIssuesIncludingPRs: 2, openPullRequests: 5), 0)
+    }
+
+    /// A failed fetch on either input yields nil (renders "—"), never a wrong number.
+    func testPureOpenIssueCountNilWhenEitherInputMissing() {
+        XCTAssertNil(GHWorkflowsMapping.pureOpenIssueCount(openIssuesIncludingPRs: nil, openPullRequests: 3))
+        XCTAssertNil(GHWorkflowsMapping.pureOpenIssueCount(openIssuesIncludingPRs: 10, openPullRequests: nil))
+        XCTAssertNil(GHWorkflowsMapping.pureOpenIssueCount(openIssuesIncludingPRs: nil, openPullRequests: nil))
+    }
+
+    /// health() threads the pure issue count and the raw PR count onto the model.
+    func testHealthThreadsOpenIssueAndPRCounts() {
+        let h = GHWorkflowsMapping.health(
+            repo: "o/r",
+            runs: [],
+            openIssuesIncludingPRs: 12,
+            openPullRequests: 4
+        )
+        XCTAssertEqual(h.openIssues, 8, "12 inclusive − 4 PRs = 8 pure issues")
+        XCTAssertEqual(h.openPRs, 4)
+    }
+
+    /// When the side-count fetches fail (nil), the counts are nil, not zero.
+    func testHealthLeavesOpenCountsNilWhenNotFetched() {
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: [])
+        XCTAssertNil(h.openIssues)
+        XCTAssertNil(h.openPRs)
+    }
+
+    /// An unreachable repo carries nil issue/PR counts (no data to show).
+    func testUnreachableRepoHasNilOpenCounts() {
+        let h = RepoWorkflowHealth.unreachable(repo: "o/r")
+        XCTAssertNil(h.openIssues)
+        XCTAssertNil(h.openPRs)
+    }
 }
