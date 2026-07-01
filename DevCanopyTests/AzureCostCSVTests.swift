@@ -45,9 +45,9 @@ final class AzureCostCSVTests: XCTestCase {
         // Mirrors the production failure: a CRLF export summed to $0 because every
         // data row folded into the header row. Scalar parsing splits them correctly.
         let csv = "resourceGroupName,costInUsd\r\nrg-a,10\r\nrg-b,5\r\n"
-        let (total, byResource) = try aggregateCostCsv(csv)
-        XCTAssertEqual(total, 15, accuracy: 1e-6)
-        assertResources(byResource, [("rg-a", 10), ("rg-b", 5)])
+        let agg = try aggregateCostCsv(csv)
+        XCTAssertEqual(agg.total, 15, accuracy: 1e-6)
+        assertResources(agg.byResource, [("rg-a", 10), ("rg-b", 5)])
     }
 
     // MARK: - aggregateCostCsv
@@ -65,9 +65,9 @@ final class AzureCostCSVTests: XCTestCase {
             "" // trailing blank line
         ].joined(separator: "\n")
 
-        let (total, byResource) = try aggregateCostCsv(csv)
-        XCTAssertEqual(total, 25.5, accuracy: 1e-6)
-        assertResources(byResource, [("rg-a", 15), ("rg-b", 7.5), ("(unassigned)", 3)])
+        let agg = try aggregateCostCsv(csv)
+        XCTAssertEqual(agg.total, 25.5, accuracy: 1e-6)
+        assertResources(agg.byResource, [("rg-a", 15), ("rg-b", 7.5), ("(unassigned)", 3)])
     }
 
     func testAggregateFoldsCaseVariantResourceGroupsIntoOne() throws {
@@ -78,13 +78,31 @@ final class AzureCostCSVTests: XCTestCase {
             "rg-velovate-prd,321.65"
         ].joined(separator: "\n")
 
-        let (_, byResource) = try aggregateCostCsv(csv)
-        assertResources(byResource, [("rg-velovate-prd", 321.65), ("rg-sassydog", 197.57)])
+        let agg = try aggregateCostCsv(csv)
+        assertResources(agg.byResource, [("rg-velovate-prd", 321.65), ("rg-sassydog", 197.57)])
     }
 
     func testAggregateNormalizesDisplayCasingToLowercase() throws {
-        let (_, byResource) = try aggregateCostCsv("resourceGroupName,costInUsd\nRG-PACKER-BUILD,0.03")
-        assertResources(byResource, [("rg-packer-build", 0.03)])
+        let agg = try aggregateCostCsv("resourceGroupName,costInUsd\nRG-PACKER-BUILD,0.03")
+        assertResources(agg.byResource, [("rg-packer-build", 0.03)])
+    }
+
+    func testAggregateGroupsByMeterCategoryPreservingCasingAndFoldingBlanks() throws {
+        // meterCategory is the resource-TYPE column. Unlike resource groups it holds
+        // human-readable display names, so casing is preserved (not lowercased); the
+        // same type across groups merges; blank rows (reservation/capacity charges)
+        // fold into "(other)".
+        let csv = [
+            "resourceGroupName,meterCategory,costInUsd",
+            "rg-a,Virtual Network,40.96",
+            "rg-a,NAT Gateway,28.67",
+            "rg-b,Virtual Network,9.04",
+            "rg-c,,72.27"
+        ].joined(separator: "\n")
+
+        let agg = try aggregateCostCsv(csv)
+        XCTAssertEqual(agg.total, 150.94, accuracy: 1e-6)
+        assertResources(agg.byType, [("(other)", 72.27), ("Virtual Network", 50), ("NAT Gateway", 28.67)])
     }
 
     func testAggregateThrowsWhenCostColumnAbsent() {
@@ -94,9 +112,29 @@ final class AzureCostCSVTests: XCTestCase {
     }
 
     func testAggregateHandlesEmptyExportGracefully() throws {
-        let (total, byResource) = try aggregateCostCsv("")
-        XCTAssertEqual(total, 0)
-        XCTAssertTrue(byResource.isEmpty)
+        let agg = try aggregateCostCsv("")
+        XCTAssertEqual(agg.total, 0)
+        XCTAssertTrue(agg.byResource.isEmpty)
+        XCTAssertTrue(agg.byType.isEmpty)
+    }
+
+    // MARK: - projectMonthlySpend
+
+    func testProjectMonthlySpendExtrapolatesMidMonth() {
+        // 15 of 30 days elapsed at $300 → full-month projection $600.
+        XCTAssertEqual(projectMonthlySpend(300, now: utc(2026, 6, 15)), 600, accuracy: 1e-6)
+    }
+
+    func testProjectMonthlySpendOnLastDayEqualsMTD() {
+        // On the last day elapsed == daysInMonth, so a completed month projects to
+        // itself — why a stale end-of-month snapshot shows projected == MTD.
+        XCTAssertEqual(projectMonthlySpend(688.46, now: utc(2026, 6, 30, 23)), 688.46, accuracy: 1e-6)
+        XCTAssertEqual(projectMonthlySpend(500, now: utc(2027, 2, 28, 12)), 500, accuracy: 1e-6)
+    }
+
+    func testProjectMonthlySpendOnFirstDayDoesNotDivideByZero() {
+        // Day 1: elapsed = 1 → project MTD × daysInMonth (July = 31).
+        XCTAssertEqual(projectMonthlySpend(20, now: utc(2026, 7, 1, 6)), 620, accuracy: 1e-6)
     }
 
     // MARK: - parseBlobListXML
@@ -164,6 +202,63 @@ final class AzureCostCSVTests: XCTestCase {
         XCTAssertEqual(summary.spendMTD, 42, accuracy: 1e-6)
         XCTAssertEqual(summary.spendPriorMonth, 0)
         XCTAssertNil(summary.error)
+    }
+
+    func testFetchSummaryComputesProjectedAndTypeBreakdown() async throws {
+        let mtd = "\(AzureCostReader.mtdPrefix)/20260601-20260630/202606151800/g/000001.csv"
+        let stub = StubBlobFetcher(blobs: [
+            mtd: "resourceGroupName,meterCategory,costInUsd\nrg-a,SQL Database,200\nrg-b,Storage,100"
+        ])
+
+        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 6, 15))
+        XCTAssertEqual(summary.spendMTD, 300, accuracy: 1e-6)
+        // 15 of 30 days elapsed → projected doubles MTD; frozen onto the summary.
+        XCTAssertEqual(summary.spendProjected, 600, accuracy: 1e-6)
+        XCTAssertNil(summary.asOfMonth) // current month present → not a fallback
+        assertResources(summary.byType, [("SQL Database", 200), ("Storage", 100)])
+    }
+
+    func testFetchSummaryFallsBackToLastCompletedMonthOnRollover() async throws {
+        // The 1st-of-month gap: the current month (July) has no export yet, so fall
+        // back to June's still-present daily folder and stamp the covered month. Prior
+        // month is then May, and a completed month projects to itself.
+        let june = "\(AzureCostReader.mtdPrefix)/20260601-20260630/202606301508/g/000001.csv"
+        let may = "\(AzureCostReader.priorPrefix)/20260501-20260531/202606301508/g/000001.csv"
+        let stub = StubBlobFetcher(blobs: [
+            june: "resourceGroupName,meterCategory,costInUsd\nrg-a,Storage,600\nrg-b,SQL Database,88.46",
+            may: "resourceGroupName,costInUsd\nrg-a,239.72"
+        ])
+
+        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 7, 1))
+        XCTAssertEqual(summary.spendMTD, 688.46, accuracy: 1e-6)
+        XCTAssertEqual(summary.spendPriorMonth, 239.72, accuracy: 1e-6)
+        XCTAssertEqual(summary.spendProjected, 688.46, accuracy: 1e-6)
+        XCTAssertEqual(summary.asOfMonth, utc(2026, 6, 1))
+        assertResources(summary.byType, [("Storage", 600), ("SQL Database", 88.46)])
+        XCTAssertNil(summary.error)
+    }
+
+    func testFetchSummaryThrowsWhenNoRecentMonthAvailable() async {
+        // Neither the current month nor the last completed month has an export — the
+        // fallback also misses, so .noBlobs propagates (the service maps it to a calm
+        // message and keeps any prior on-screen summary).
+        let stub = StubBlobFetcher(blobs: [:])
+        do {
+            _ = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 7, 1))
+            XCTFail("expected .noBlobs when no recent export exists")
+        } catch let error as AzureCostError {
+            guard case .noBlobs = error else { return XCTFail("expected .noBlobs, got \(error)") }
+        } catch {
+            XCTFail("expected AzureCostError, got \(error)")
+        }
+    }
+
+    @MainActor
+    func testFriendlyMessageForNoBlobsReadsCalm() {
+        // .noBlobs surfaces only when neither the current nor the last completed month
+        // has an export; it must read calmly, not as a scary blob-path error.
+        let message = AzureCostService.friendlyMessage(for: AzureCostError.noBlobs(prefix: "daily/x/20260701-20260731/"))
+        XCTAssertEqual(message, "no recent cost export found")
     }
 
     // MARK: - Helpers

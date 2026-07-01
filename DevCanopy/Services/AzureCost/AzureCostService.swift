@@ -173,7 +173,7 @@ enum AzureCostReader {
         fetcher: BlobFetching,
         rootPrefix: String,
         month: Date
-    ) async throws -> (total: Double, byResource: [AzureResourceCost]) {
+    ) async throws -> AzureCostAggregate {
         let prefix = "\(rootPrefix)/\(monthRangeFolder(month))/"
         let names = try await fetcher.listBlobs(prefix: prefix)
         guard !names.isEmpty else { throw AzureCostError.noBlobs(prefix: prefix) }
@@ -191,20 +191,30 @@ enum AzureCostReader {
         guard !csvBlobs.isEmpty else { throw AzureCostError.noCSV(run: latestRun, prefix: prefix) }
 
         // Sum every partition (large months split into 000001.csv, 000002.csv, …),
-        // merging resource groups case-insensitively.
+        // merging the already-keyed group/type breakdowns across partitions.
         var total = 0.0
         var byResourceGroup: [String: Double] = [:]
+        var byMeterCategory: [String: Double] = [:]
         for blob in csvBlobs {
             let part = try await aggregateCostCsv(fetcher.getBlobText(path: blob))
             total += part.total
             for resource in part.byResource {
                 byResourceGroup[resource.name, default: 0] += resource.cost
             }
+            for type in part.byType {
+                byMeterCategory[type.name, default: 0] += type.cost
+            }
         }
-        let byResource = byResourceGroup
-            .map { AzureResourceCost(name: $0.key, cost: $0.value) }
-            .sorted { $0.cost > $1.cost }
-        return (total, byResource)
+        func sorted(_ totals: [String: Double]) -> [AzureResourceCost] {
+            totals
+                .map { AzureResourceCost(name: $0.key, cost: $0.value) }
+                .sorted { $0.cost > $1.cost }
+        }
+        return AzureCostAggregate(
+            total: total,
+            byResource: sorted(byResourceGroup),
+            byType: sorted(byMeterCategory)
+        )
     }
 
     /// Month-to-date spend, prior-month total, and the top resource groups. MTD is
@@ -217,11 +227,25 @@ enum AzureCostReader {
         topN: Int = AzureCostReader.topN,
         now: Date = Date()
     ) async throws -> AzureCostSummary {
-        let mtd = try await readExport(fetcher: fetcher, rootPrefix: mtdPrefix, month: now)
+        // Headline = the current month's export. On the 1st-of-month rollover gap the
+        // current month hasn't been exported yet, so fall back to the last completed
+        // month (whose daily folder is still present) — the card shows real figures,
+        // stamped with the month they cover, rather than an empty error state.
+        var coveredMonth = now
+        let mtd: AzureCostAggregate
+        do {
+            mtd = try await readExport(fetcher: fetcher, rootPrefix: mtdPrefix, month: now)
+        } catch AzureCostError.noBlobs {
+            coveredMonth = priorMonthDate(from: now)
+            mtd = try await readExport(fetcher: fetcher, rootPrefix: mtdPrefix, month: coveredMonth)
+        }
+        let isFallback = monthRangeFolder(coveredMonth) != monthRangeFolder(now)
 
+        // Prior month is best-effort (a missing export folds to 0, never blanks the
+        // card) and is taken relative to whichever month we're actually showing.
         var spendPriorMonth = 0.0
         do {
-            let prior = try await readExport(fetcher: fetcher, rootPrefix: priorPrefix, month: priorMonthDate(from: now))
+            let prior = try await readExport(fetcher: fetcher, rootPrefix: priorPrefix, month: priorMonthDate(from: coveredMonth))
             spendPriorMonth = prior.total
         } catch {
             // Don't fail the whole fetch if only the prior-month export is missing
@@ -231,7 +255,12 @@ enum AzureCostReader {
         return AzureCostSummary(
             spendMTD: mtd.total,
             spendPriorMonth: spendPriorMonth,
+            // A completed (fallback) month projects to itself; the current month is
+            // linearly extrapolated by elapsed days.
+            spendProjected: isFallback ? mtd.total : projectMonthlySpend(mtd.total, now: now),
             byResource: Array(mtd.byResource.prefix(topN)),
+            byType: Array(mtd.byType.prefix(topN)),
+            asOfMonth: isFallback ? coveredMonth : nil,
             error: nil
         )
     }
@@ -325,9 +354,18 @@ final class AzureCostService: ObservableObject {
 
     static func friendlyMessage(for error: Error) -> String {
         if let azureError = error as? AzureCostError {
-            return azureError.isAuthFailure
-                ? "SAS expired or invalid — paste a new one in Settings"
-                : (azureError.errorDescription ?? "couldn't refresh Azure cost")
+            if azureError.isAuthFailure {
+                return "SAS expired or invalid — paste a new one in Settings"
+            }
+            // `.noBlobs` only reaches here when neither the current month nor the
+            // last completed month has an export (fetchSummary falls back to the
+            // prior month, and a missing prior-month export is swallowed) — i.e. no
+            // recent cost data exists at all. If an earlier summary is on screen,
+            // refresh() keeps it and the footer appends "· last ok …".
+            if case .noBlobs = azureError {
+                return "no recent cost export found"
+            }
+            return azureError.errorDescription ?? "couldn't refresh Azure cost"
         }
         return error.localizedDescription
     }
