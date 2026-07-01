@@ -71,7 +71,8 @@ struct ClaudeUsagePanel: CockpitPanelView {
             }
             if let limit, limit > 0 {
                 let fraction = min(Double(totals.totalTokens) / Double(limit), 1.0)
-                progressBar(fraction: fraction)
+                CockpitProgressBar(fraction: fraction)
+                    .padding(.leading, 49)
             }
         }
     }
@@ -90,26 +91,6 @@ struct ClaudeUsagePanel: CockpitPanelView {
                 .font(CockpitTheme.mono(10))
                 .foregroundStyle(CockpitTheme.muted)
         }
-    }
-
-    private func progressBar(fraction: Double) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(CockpitTheme.panelAlt)
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Self.fillColor(fraction))
-                    .frame(width: max(2, geo.size.width * fraction))
-            }
-        }
-        .frame(height: 4)
-        .padding(.leading, 49)
-    }
-
-    private static func fillColor(_ fraction: Double) -> Color {
-        if fraction >= 0.9 { return CockpitTheme.red }
-        if fraction >= 0.6 { return CockpitTheme.amber }
-        return CockpitTheme.green
     }
 
     // MARK: - Formatting

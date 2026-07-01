@@ -6,9 +6,12 @@ import Foundation
 /// free of I/O so it is fully unit-testable.
 ///
 /// Columns read (Cost Management "ActualCost" export schema): the dashboard shows
-/// USD, so we sum `costInUsd`; the top-N tile groups by `resourceGroupName`.
+/// USD, so we sum `costInUsd`; one top-N tile groups by `resourceGroupName`, the
+/// other by `meterCategory` (the human-readable service type — "Virtual Network",
+/// "NAT Gateway", "SQL Database", "Storage", …).
 private let costColumn = "costInUsd"
 private let resourceGroupColumn = "resourceGroupName"
+private let meterCategoryColumn = "meterCategory"
 
 /// Lenient numeric parse matching JS `Number(v)`: blanks / non-numbers fold to 0
 /// rather than throwing, so a stray short row never poisons the sum.
@@ -39,6 +42,21 @@ func priorMonthDate(from date: Date) -> Date {
     calendar.timeZone = TimeZone(identifier: "UTC")!
     let startOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: date))!
     return calendar.date(byAdding: .month, value: -1, to: startOfMonth)!
+}
+
+/// Linearly project month-to-date spend to a full-month total: spend so far, scaled
+/// by (days in month / elapsed days). Elapsed counts the current (partial) day so
+/// day 1 never divides by zero. Ported from mission-control's `projectMonthlySpend`
+/// so both consumers extrapolate identically. Computed at fetch time and frozen onto
+/// the summary — on the last day of a month elapsed == daysInMonth, so a carried-
+/// forward end-of-month snapshot correctly shows projected == MTD.
+func projectMonthlySpend(_ spendMTD: Double, now: Date = Date()) -> Double {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let elapsedDays = calendar.component(.day, from: now) // 1-based, includes today
+    let daysInMonth = calendar.range(of: .day, in: .month, for: now)?.count ?? 30
+    guard elapsedDays > 0 else { return spendMTD }
+    return spendMTD / Double(elapsedDays) * Double(daysInMonth)
 }
 
 /// Parse RFC4180 CSV into rows of fields. A full character state machine (not a
@@ -103,39 +121,54 @@ func parseCsv(_ text: String) -> [[String]] {
     return rows
 }
 
-/// Sum an export CSV: total `costInUsd`, plus a per-resource-group breakdown
-/// (sorted desc). Rows with no resource group (subscription-level charges) fold
-/// into "(unassigned)".
+/// Sum an export CSV: total `costInUsd`, plus two top-N breakdowns (each sorted
+/// desc) — by resource group and by resource type (`meterCategory`).
 ///
-/// Azure resource-group names are case-INSENSITIVE: the export can report the same
-/// group as both `rg-sassydog` and `RG-SASSYDOG` across rows. Group by — and
-/// display — the lowercased name so we neither split one group into two tiles nor
-/// show an inconsistent mix of casings (lossless here: this org's groups are
-/// lowercase-canonical).
+/// Resource groups: Azure names are case-INSENSITIVE (the export can report the same
+/// group as both `rg-sassydog` and `RG-SASSYDOG` across rows), so we group by — and
+/// display — the lowercased name; rows with no group (subscription-level charges)
+/// fold into "(unassigned)".
+///
+/// Resource types: `meterCategory` values are human-readable display names
+/// ("Virtual Network", "SQL Database"), so we keep their original casing rather than
+/// lowercasing; blank rows (e.g. reservation/capacity charges) fold into "(other)".
 ///
 /// - Throws: when the `costInUsd` column is absent from the header.
-func aggregateCostCsv(_ csv: String) throws -> (total: Double, byResource: [AzureResourceCost]) {
+func aggregateCostCsv(_ csv: String) throws -> AzureCostAggregate {
     let rows = parseCsv(csv)
-    guard let header = rows.first else { return (0, []) }
+    guard let header = rows.first else { return AzureCostAggregate(total: 0, byResource: [], byType: []) }
 
     guard let costIdx = header.firstIndex(of: costColumn) else {
         throw AzureCostError.missingColumn(costColumn)
     }
     let rgIdx = header.firstIndex(of: resourceGroupColumn)
+    let typeIdx = header.firstIndex(of: meterCategoryColumn)
 
     var total = 0.0
     var byResourceGroup: [String: Double] = [:]
+    var byMeterCategory: [String: Double] = [:]
     for row in rows.dropFirst() {
         guard row.count > costIdx else { continue } // skip blank/short trailing lines
         let cost = num(row[costIdx])
         total += cost
-        let raw = (rgIdx.map { row.count > $0 ? row[$0] : "" } ?? "").trimmingCharacters(in: .whitespaces)
-        let key = (raw.isEmpty ? "(unassigned)" : raw).lowercased()
-        byResourceGroup[key, default: 0] += cost
+
+        let rg = (rgIdx.map { row.count > $0 ? row[$0] : "" } ?? "").trimmingCharacters(in: .whitespaces)
+        byResourceGroup[(rg.isEmpty ? "(unassigned)" : rg).lowercased(), default: 0] += cost
+
+        let type = (typeIdx.map { row.count > $0 ? row[$0] : "" } ?? "").trimmingCharacters(in: .whitespaces)
+        byMeterCategory[type.isEmpty ? "(other)" : type, default: 0] += cost
     }
 
-    let byResource = byResourceGroup
+    return AzureCostAggregate(
+        total: total,
+        byResource: sortedCosts(byResourceGroup),
+        byType: sortedCosts(byMeterCategory)
+    )
+}
+
+/// Fold a `name → cost` map into `AzureResourceCost`s sorted by cost desc.
+private func sortedCosts(_ totals: [String: Double]) -> [AzureResourceCost] {
+    totals
         .map { AzureResourceCost(name: $0.key, cost: $0.value) }
         .sorted { $0.cost > $1.cost }
-    return (total, byResource)
 }

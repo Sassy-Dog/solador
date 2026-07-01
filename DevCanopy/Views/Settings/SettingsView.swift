@@ -155,8 +155,24 @@ struct AzureCostSettingsView: View {
     @State private var hasStoredSAS: Bool = KeychainHelper.shared.loadAzureCostSAS()?.isEmpty == false
     @State private var statusMessage: String?
 
+    /// Monthly budget (USD) for the panel's projected-vs-budget bar. Not a secret,
+    /// so `@AppStorage`/UserDefaults, not Keychain; the panel reads the same key.
+    @AppStorage("azureMonthlyBudgetUSD") private var budgetUSD: Double = 0
+
     var body: some View {
         Form {
+            Section {
+                TextField("Monthly budget (USD)", value: $budgetUSD, format: .number)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("Powers the projected-vs-budget bar on the Azure Cost panel. Leave at 0 to hide the bar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Budget")
+                    .font(.headline)
+            }
+
             Section {
                 SecureField("SAS URL", text: $sasURL)
                     .textFieldStyle(.roundedBorder)
