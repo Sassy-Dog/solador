@@ -70,28 +70,40 @@ final class GitHubService: ObservableObject {
         )
     }
 
-    /// Number of open items on a repo's **issues** endpoint. GitHub counts every
-    /// pull request as an issue, so this total is `open issues + open PRs`; callers
-    /// subtract the open-PR count to get a pure open-issue count. Requires the PAT's
-    /// Issues (read) permission.
+    /// Open issue+PR count for a repo, read from the repo object's accurate
+    /// `open_issues_count`. GitHub counts every pull request as an issue, so this is
+    /// `open issues + open PRs`; callers subtract the open-PR count for a pure
+    /// open-issue count.
+    ///
+    /// This deliberately does NOT use the `/issues` list endpoint: `/issues` serves
+    /// cursor-based pagination (`rel="next"` with an opaque `after=` cursor, no
+    /// `rel="last"`), so the `per_page=1` last-page trick can't count it and would
+    /// silently undercount every repo with >1 open issue to 1.
     func openIssuesIncludingPRsCount(for repo: String) async throws -> Int {
-        try await openCount(
-            endpoint: "/repos/\(repo)/issues",
-            extraQuery: [URLQueryItem(name: "state", value: "open")]
-        )
+        let data = try await getRaw(endpoint: "/repos/\(repo)")
+        return try JSONDecoder().decode(RepoDTO.self, from: data).openIssuesCount
     }
 
     /// Shared implementation of the cheap `per_page=1` + `Link: rel="last"` count:
     /// with one item per page, the last page number equals the total. Falls back to
-    /// the returned array's length when there is no `Link` header (0 or 1 item).
+    /// the returned array's length only when there is genuinely a single page (no
+    /// `Link` header at all). If the header advertises a `rel="next"` but no
+    /// `rel="last"` (cursor pagination), the total is unknowable via this trick, so
+    /// it throws rather than silently undercounting to the per_page size.
     private func openCount(endpoint: String, extraQuery: [URLQueryItem] = []) async throws -> Int {
         let (data, http) = try await requestWithResponse(
             endpoint: endpoint,
             method: "GET",
             queryItems: [URLQueryItem(name: "per_page", value: "1")] + extraQuery
         )
-        if let last = Self.lastPage(fromLinkHeader: http.value(forHTTPHeaderField: "Link")) {
+        let link = http.value(forHTTPHeaderField: "Link")
+        if let last = Self.lastPage(fromLinkHeader: link) {
             return last
+        }
+        if Self.hasNextPage(fromLinkHeader: link) {
+            // More pages exist but the count is unknowable from the header — refuse
+            // to lie with a per_page=1 undercount.
+            throw GitHubError.unsupportedPagination
         }
         let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any]
         return array?.count ?? 0
@@ -115,6 +127,14 @@ final class GitHubService: ObservableObject {
             return Int(page)
         }
         return nil
+    }
+
+    /// Whether a GitHub `Link` header advertises a `rel="next"` page. Used to
+    /// distinguish a genuinely single-page result (no `Link` at all → safe to count
+    /// the returned array) from cursor-based pagination (`rel="next"` but no
+    /// `rel="last"` → total unknowable, must not undercount). Pure; test-callable.
+    nonisolated static func hasNextPage(fromLinkHeader header: String?) -> Bool {
+        header?.contains("rel=\"next\"") ?? false
     }
 
     // MARK: - Network Request
@@ -196,6 +216,7 @@ enum GitHubError: LocalizedError {
     case notAuthenticated
     case invalidURL
     case invalidResponse
+    case unsupportedPagination
     case rateLimitExceeded(resetTime: Date)
     case httpError(statusCode: Int)
 
@@ -207,6 +228,8 @@ enum GitHubError: LocalizedError {
             "Invalid URL"
         case .invalidResponse:
             "Invalid response from GitHub"
+        case .unsupportedPagination:
+            "Cannot count via the last-page trick (cursor pagination)"
         case let .rateLimitExceeded(resetTime):
             "GitHub rate limit exceeded. Resets at \(resetTime.formatted())"
         case let .httpError(code):
@@ -216,6 +239,16 @@ enum GitHubError: LocalizedError {
 }
 
 // MARK: - Response DTOs
+
+/// Minimal decode of `GET /repos/{owner}/{repo}` — only the accurate
+/// `open_issues_count` (open issues + open PRs) the Repos panel needs.
+struct RepoDTO: Codable {
+    let openIssuesCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case openIssuesCount = "open_issues_count"
+    }
+}
 
 struct WorkflowRunsResponse: Codable {
     let totalCount: Int
