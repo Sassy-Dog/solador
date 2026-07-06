@@ -57,6 +57,8 @@ struct HostsSettingsView: View {
             } header: {
                 Text("Add Host").font(.headline)
             }
+
+            ContainerGroupRulesSection()
         }
         .formStyle(.grouped)
         .padding()

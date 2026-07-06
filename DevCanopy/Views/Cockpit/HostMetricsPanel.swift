@@ -116,10 +116,11 @@ struct HostMetricsPanel: View {
     // MARK: Processor
 
     private func processorSection(_ snap: HostSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let model = CPUModelFormatter.clean(snap.cpu.model)
+        return VStack(alignment: .leading, spacing: 12) {
             sectionHeader(
                 icon: "cpu",
-                title: "Processor (\(snap.cpu.model.isEmpty ? "CPU" : snap.cpu.model))",
+                title: model.isEmpty ? "Processor" : model,
                 badge: thermalBadge(snap.cpu.thermalState),
                 value: "\(Int(snap.cpu.totalUsage.rounded()))%",
                 valueColor: usageColor(snap.cpu.totalUsage)
@@ -425,13 +426,24 @@ struct HostMetricsPanel: View {
 
     // MARK: Header bits
 
+    /// The title is the only compressible element: it truncates on one line while the
+    /// badge and value are fixed-size, so a long CPU model can never wrap the header
+    /// to two lines (which would change the card height and shift the cockpit grid).
     private func sectionHeader(icon: String, title: String, badge: AnyView?, value: String, valueColor: Color) -> some View {
         HStack {
             Image(systemName: icon).foregroundStyle(CockpitTheme.green)
-            Text(title).font(CockpitTheme.mono(13, weight: .bold)).foregroundStyle(CockpitTheme.ink)
-            if let badge { badge }
+            Text(title)
+                .font(CockpitTheme.mono(13, weight: .bold))
+                .foregroundStyle(CockpitTheme.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+            if let badge { badge.fixedSize() }
             Spacer()
-            Text(value).font(CockpitTheme.mono(18, weight: .bold)).foregroundStyle(valueColor)
+            Text(value)
+                .font(CockpitTheme.mono(18, weight: .bold))
+                .foregroundStyle(valueColor)
+                .fixedSize()
         }
     }
 
