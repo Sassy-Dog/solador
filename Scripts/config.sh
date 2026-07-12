@@ -3,8 +3,13 @@
 # DevCanopy Configuration
 export APP_NAME="DevCanopy"
 export BUNDLE_IDENTIFIER="com.sassydog.devcanopy"
-export VERSION="0.1.1"
 export MINIMUM_MACOS_VERSION="14.0"
+
+# Version is NOT configured here (org Versioning spec §3/§10: no hand-maintained
+# version fields). Both numbers derive from git via their single-source scripts:
+#   marketing version → Scripts/get-version-info.sh   (CalVer YYYY.M.<commits-this-month>)
+#   build number      → Scripts/get-build-number.sh   (total commit count, monotonic)
+# See Docs/VERSIONING.md.
 
 # Build configurations
 export CONFIGURATIONS=("Debug" "Release")
