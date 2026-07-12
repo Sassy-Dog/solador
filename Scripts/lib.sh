@@ -55,51 +55,15 @@ ensure_main_branch() {
     fi
 }
 
-# Get build number from git
-get_build_number_from_git() {
-    local count=$(git rev-list --count HEAD 2>/dev/null || echo "1")
-    echo "$count"
-}
-
-# Parse version components
-parse_version() {
-    local version=$1
-    echo "$version" | sed 's/^v//'
-}
-
-# Increment version
-increment_version() {
-    local version=$1
-    local component=$2  # major, minor, or patch
-    
-    local major minor patch
-    IFS='.' read -r major minor patch <<< "$(parse_version "$version")"
-    
-    case $component in
-        major)
-            ((major++))
-            minor=0
-            patch=0
-            ;;
-        minor)
-            ((minor++))
-            patch=0
-            ;;
-        patch)
-            ((patch++))
-            ;;
-        *)
-            log_error "Invalid version component: $component"
-            exit 1
-            ;;
-    esac
-    
-    echo "${major}.${minor}.${patch}"
-}
+# Versioning lives in dedicated single-source scripts (Docs/VERSIONING.md, org
+# Versioning spec §3) — NOT here:
+#   Scripts/get-version-info.sh   marketing CalVer + the §4 release mint (--tag)
+#   Scripts/get-build-number.sh   build number (total commit count, --at <ref>)
+# The old semver helpers (parse_version / increment_version) and the inline
+# build-number counter were removed with the CalVer adoption (issue #98).
 
 # Export functions for use in other scripts
 export -f color_red color_green color_yellow color_blue color_cyan color_gray
 export -f log_info log_success log_warning log_error log_debug
 export -f command_exists ensure_project_root ensure_clean_working_tree
-export -f get_current_branch ensure_main_branch get_build_number_from_git
-export -f parse_version increment_version
+export -f get_current_branch ensure_main_branch

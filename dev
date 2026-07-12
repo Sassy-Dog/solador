@@ -34,14 +34,14 @@ $(color_yellow "Run Options:")
   $(color_green "--log-level") <level>  Set log level (debug, info, warn, error)
 
 $(color_yellow "Publish Options:")
-  $(color_green "--bump") <major|minor|patch>  Version bump type (default: patch)
-  $(color_green "--skip-tests")                Skip running tests
+  $(color_green "--skip-tests")   Skip running tests
+  $(color_gray "(no --bump: the version is CalVer minted from git — Docs/VERSIONING.md)")
 
 $(color_yellow "Examples:")
   $(color_green "$0")                    # Build and run (debug)
   $(color_green "$0 run --release")      # Build and run (release)
   $(color_green "$0 build --release")    # Build release version
-  $(color_green "$0 publish --bump minor")  # Publish minor version update
+  $(color_green "$0 publish")            # Mint CalVer tag + release build
 
 EOF
 }

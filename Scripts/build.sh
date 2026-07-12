@@ -45,9 +45,13 @@ if [[ ! -d "$PROJECT_NAME" ]]; then
     "$SCRIPT_DIR/generate-project.sh"
 fi
 
-# Get build number
-BUILD_NUMBER=$(get_build_number_from_git)
-log_info "Version: $VERSION ($BUILD_NUMBER)"
+# Derive the two decoupled numbers from their single-source scripts
+# (Docs/VERSIONING.md). Both honor the org replay pins — MARKETING_VERSION /
+# BUILD_NUMBER env are emitted verbatim — which is how publish.sh threads the
+# §4-minted version into this build instead of letting it re-resolve.
+BUILD_NUMBER="$("$SCRIPT_DIR/get-build-number.sh")"
+MARKETING_VERSION="$("$SCRIPT_DIR/get-version-info.sh" --version)"
+log_info "Version: $MARKETING_VERSION ($BUILD_NUMBER)"
 
 # Build with xcodebuild
 log_info "Building..."
@@ -66,7 +70,7 @@ if command_exists xcbeautify; then
         -derivedDataPath "$DERIVED_DATA_PATH" \
         -allowProvisioningUpdates \
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-        MARKETING_VERSION="$VERSION" \
+        MARKETING_VERSION="$MARKETING_VERSION" \
         SENTRY_DSN="$SENTRY_DSN" \
         build | xcbeautify
 else
@@ -77,7 +81,7 @@ else
         -derivedDataPath "$DERIVED_DATA_PATH" \
         -allowProvisioningUpdates \
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-        MARKETING_VERSION="$VERSION" \
+        MARKETING_VERSION="$MARKETING_VERSION" \
         SENTRY_DSN="$SENTRY_DSN" \
         -quiet \
         build

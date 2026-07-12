@@ -12,10 +12,15 @@ options:
 
 settings:
   DEVELOPMENT_TEAM: 52YMXC3348
-  # Keep in sync with Scripts/config.sh VERSION — Scripts/publish.sh bumps both and
-  # verifies they match before mutating. This value is the fallback for Xcode-direct
-  # builds; scripted builds (Scripts/build.sh) override it with config.sh's VERSION.
-  MARKETING_VERSION: 0.1.1
+  # Static INERT baselines for Xcode-GUI builds only (org Versioning spec §7,
+  # generated-projects row): version values are NEVER computed into this file —
+  # xcodegen evaluates it at generate-time, so a real value here would go stale
+  # per commit. Real values are injected at xcodebuild time as command-line
+  # build settings by Scripts/build.sh: MARKETING_VERSION from
+  # Scripts/get-version-info.sh (CalVer) and CURRENT_PROJECT_VERSION from
+  # Scripts/get-build-number.sh (total commit count). Never hand-bump these —
+  # 0.0.0 is deliberately "visibly not a scripted release build".
+  MARKETING_VERSION: 0.0.0
   CURRENT_PROJECT_VERSION: 1
   SWIFT_VERSION: "5.9"
   ENABLE_HARDENED_RUNTIME: true
@@ -68,10 +73,11 @@ targets:
         # (GitHub Actions secret) for release builds; never hardcode it here.
         SENTRY_DSN: ""
         # Build number: Info.plist reads $(CURRENT_PROJECT_VERSION); Scripts/build.sh
-        # overrides it with the git commit count. This is only the fallback for
-        # builds straight from Xcode. (A PlistBuddy preBuildScript used to stamp
-        # the built product instead — it broke clean Release builds because the
-        # processed Info.plist doesn't exist yet at preBuild time.)
+        # overrides it with the git commit count (Scripts/get-build-number.sh). This
+        # is only the fallback for builds straight from Xcode. (A PlistBuddy
+        # preBuildScript used to stamp the built product instead — it broke clean
+        # Release builds because the processed Info.plist doesn't exist yet at
+        # preBuild time.)
         CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         COMBINE_HIDPI_IMAGES: true

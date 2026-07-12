@@ -30,7 +30,7 @@ It has three parts:
 - `./dev format` - Auto-fix formatting with SwiftFormat
 - `./dev clean` - Clean build artifacts
 - `./dev xcode` - Open in Xcode
-- `./dev publish --bump patch` - Publish new version
+- `./dev publish` - Publish a new release (CalVer minted from git — see `Docs/VERSIONING.md`)
 - `./prd` - Production build (alias for `./dev build --release`)
 
 > `./dev lint` is the local mirror of CI's Lint job. `./Scripts/install-hooks.sh`
@@ -136,14 +136,26 @@ Tests cover the app (`DevCanopyTests/`) and the HostMetricsKit package
 
 ## Building for Distribution
 
-1. Ensure clean working tree on main branch
-2. Run `./dev publish --bump patch` (or minor/major)
+1. Ensure clean working tree on main branch, up to date with origin
+2. Run `./dev publish`
 3. Script will:
+   - Verify CI is green for HEAD (fails closed without a verdict)
    - Run tests
-   - Update version
-   - Build release
-   - Create git tag
-   - Push to GitHub
+   - Mint + push the CalVer tag `vYYYY.M.P` (§4 probe/reuse/bump ladder; no version bump commit)
+   - Build release stamped with the minted version
+
+### Versioning (org spec v1.0 — `Docs/VERSIONING.md`)
+
+Two decoupled numbers, both derived from git — never hand-maintained:
+- **Marketing version**: CalVer `YYYY.M.<commits-this-month>` (UTC, non-padded
+  month, floored at 1) — `Scripts/get-version-info.sh --version`.
+- **Build number**: total commit count, monotonic forever —
+  `Scripts/get-build-number.sh [--at <ref>]`.
+
+`Scripts/build.sh` injects both as xcodebuild command-line build settings;
+`project.yml` carries only static inert baselines (never computed into it,
+never hand-bumped). Replay pins: `MARKETING_VERSION` / `BUILD_NUMBER` env.
+Never compute a version anywhere else.
 
 ## Common Tasks
 

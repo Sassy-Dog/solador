@@ -52,7 +52,7 @@ cd devcanopy
 - `./dev format` - Auto-fix formatting with SwiftFormat
 - `./dev clean` - Clean build artifacts
 - `./dev xcode` - Open in Xcode
-- `./dev publish --bump patch` - Create a new release
+- `./dev publish` - Create a new release (CalVer minted from git)
 - `./prd` - Build production version
 
 ### Linting
@@ -120,13 +120,15 @@ DevCanopy can open repositories in your preferred terminal:
 
 ## Building for Release
 
-1. Ensure you're on the main branch with a clean working tree
-2. Run `./dev publish --bump patch` (or `minor`/`major`)
+1. Ensure you're on the main branch with a clean working tree, up to date with origin
+2. Run `./dev publish`
 3. The script will:
+   - Verify CI is green for HEAD (fails closed)
    - Run tests
-   - Update version number
-   - Build release version
-   - Create and push git tag
+   - Mint and push the CalVer release tag (`vYYYY.M.P`, derived from git — no version bump commit)
+   - Build the release version stamped with the minted version
+
+Versioning is CalVer derived from git — see [`Docs/VERSIONING.md`](Docs/VERSIONING.md).
 
 ## Contributing
 
