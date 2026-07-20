@@ -12,6 +12,10 @@ final class RemoteHostsCoordinator: ObservableObject {
     @Published private(set) var hosts: [HostMetricsService] = []
     @Published private(set) var containersByHost: [String: [ContainerInfo]] = [:]
 
+    /// Fed on every successful container poll so expected-container absence can
+    /// be measured per host. Assigned once at app startup.
+    var presenceStore: ContainerPresenceStore?
+
     private let modelContext: ModelContext
     private var containerTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -35,7 +39,9 @@ final class RemoteHostsCoordinator: ObservableObject {
 
         let host = MonitoredHost(name: name, address: address, port: port)
         modelContext.insert(host)
-        if !token.isEmpty { try? KeychainHelper.shared.saveHostToken(token, hostID: host.id) }
+        if !token.isEmpty {
+            try? KeychainHelper.shared.saveHostToken(token, hostID: host.id)
+        }
         try? modelContext.save()
     }
 
@@ -104,6 +110,11 @@ final class RemoteHostsCoordinator: ObservableObject {
             while !Task.isCancelled {
                 if let containers = try? await service.fetchContainers() {
                     self?.containersByHost[hostName] = containers
+                    self?.presenceStore?.noteRemotePoll(
+                        host: hostName,
+                        containers: containers,
+                        rules: ContainerGroupRule.loadFromDefaults()
+                    )
                 }
                 try? await Task.sleep(nanoseconds: 10_000_000_000) // 10s
             }

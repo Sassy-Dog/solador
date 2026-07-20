@@ -19,8 +19,17 @@ struct GHRunnersPanel: CockpitPanelView {
                         summaryRow(summary)
                         osChips(summary)
                         Divider().overlay(CockpitTheme.line)
-                        ForEach(service.runners) { runner in
-                            row(runner)
+                        // Name-keyed display rows: an ephemeral runner re-registers
+                        // under a fresh numeric id every cycle, and a remembered
+                        // absent runner holds its slot instead of vanishing.
+                        ForEach(GHRunnerRosterLogic.displayRows(
+                            registered: service.runners,
+                            absent: service.absentExpected
+                        )) { displayRow in
+                            switch displayRow {
+                            case let .registered(runner): row(runner)
+                            case let .absent(absence): absentRow(absence)
+                            }
                         }
                     } else if service.loadError == nil {
                         empty("loading runners…")
@@ -33,7 +42,13 @@ struct GHRunnersPanel: CockpitPanelView {
 
     private var trailingLabel: String? {
         guard let s = service.summary else { return nil }
-        return "\(s.online)/\(s.total)"
+        let missing = service.absentExpected.count { absence in
+            if case .missing = absence.state {
+                return true
+            }
+            return false
+        }
+        return missing > 0 ? "\(s.online)/\(s.total) · \(missing) missing" : "\(s.online)/\(s.total)"
     }
 
     private func summaryRow(_ s: RunnerSummary) -> some View {
@@ -54,8 +69,12 @@ struct GHRunnersPanel: CockpitPanelView {
 
     private func osChips(_ s: RunnerSummary) -> some View {
         HStack(spacing: 8) {
-            if s.macOSTotal > 0 { chip("macOS \(s.macOSOnline)/\(s.macOSTotal)") }
-            if s.linuxTotal > 0 { chip("Linux \(s.linuxOnline)/\(s.linuxTotal)") }
+            if s.macOSTotal > 0 {
+                chip("macOS \(s.macOSOnline)/\(s.macOSTotal)")
+            }
+            if s.linuxTotal > 0 {
+                chip("Linux \(s.linuxOnline)/\(s.linuxTotal)")
+            }
         }
     }
 
@@ -90,6 +109,37 @@ struct GHRunnersPanel: CockpitPanelView {
         case .idle: CockpitTheme.green
         case .busy: CockpitTheme.amber
         case .offline: CockpitTheme.muted
+        }
+    }
+
+    /// A remembered runner absent from the registered list: de-registered by the
+    /// ephemeral cycle (amber, normal) or gone past grace (red, alarm).
+    private func absentRow(_ absence: GHRunnerAbsence) -> some View {
+        HStack(spacing: 7) {
+            Circle().fill(presenceColor(absence.state)).frame(width: 6, height: 6)
+            Text(absence.name)
+                .font(CockpitTheme.mono(11, weight: .bold))
+                .foregroundStyle(CockpitTheme.ink)
+                .lineLimit(1)
+            Spacer()
+            Text(absence.os.label.uppercased())
+                .font(CockpitTheme.mono(8))
+                .foregroundStyle(CockpitTheme.muted)
+            Text(Presence.label(absence.state) ?? "—")
+                .font(CockpitTheme.mono(9, weight: .bold))
+                .foregroundStyle(presenceColor(absence.state))
+                .frame(minWidth: 48, alignment: .trailing)
+        }
+        .contextMenu {
+            Button("Forget \u{201C}\(absence.name)\u{201D}") { service.forget(name: absence.name) }
+        }
+    }
+
+    private func presenceColor(_ state: PresenceState) -> Color {
+        switch state {
+        case .present: CockpitTheme.green
+        case .recycling: CockpitTheme.amber
+        case .missing: CockpitTheme.red
         }
     }
 

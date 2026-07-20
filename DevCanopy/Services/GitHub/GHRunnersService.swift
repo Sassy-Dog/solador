@@ -11,8 +11,13 @@ final class GHRunnersService: ObservableObject {
     @Published private(set) var isAuthenticated = false
     @Published private(set) var loadError: String?
     @Published private(set) var lastUpdated: Date?
+    /// Remembered runners currently absent from GitHub's registered list
+    /// (ephemeral runners de-register between jobs). Recomputed only on a
+    /// successful fetch, so absence clocks freeze while GitHub is unreachable.
+    @Published private(set) var absentExpected: [GHRunnerAbsence] = []
 
     private let github: GitHubService
+    private var roster: [RunnerRosterEntry]
     private var task: Task<Void, Never>?
 
     /// `nil` default (not `.shared`) because default arguments are evaluated in a
@@ -20,6 +25,13 @@ final class GHRunnersService: ObservableObject {
     /// Resolved here in the main-actor init body instead.
     init(github: GitHubService? = nil) {
         self.github = github ?? .shared
+        if let data = UserDefaults.standard.data(forKey: GHRunnerRosterLogic.defaultsKey),
+           let decoded = try? JSONDecoder().decode([RunnerRosterEntry].self, from: data)
+        {
+            roster = decoded
+        } else {
+            roster = []
+        }
     }
 
     func refresh() async {
@@ -29,6 +41,9 @@ final class GHRunnersService: ObservableObject {
             runners = []
             summary = nil
             loadError = nil
+            // No missing alarms without credentials — but the roster survives
+            // so expectations resume intact when auth returns.
+            absentExpected = []
             return
         }
         do {
@@ -42,11 +57,29 @@ final class GHRunnersService: ObservableObject {
             summary = GHRunnerMapping.summarize(mapped)
             loadError = nil
             lastUpdated = Date()
+
+            let now = Date()
+            roster = GHRunnerRosterLogic.updated(roster: roster, registered: mapped, now: now)
+            persistRoster()
+            absentExpected = GHRunnerRosterLogic.absences(roster: roster, registered: mapped, now: now)
         } catch {
             // Most likely the PAT lacks org self-hosted-runners (read) permission.
             loadError = "couldn't read runners — token needs org self-hosted runners (read)"
             appLogger.debug("CI runners fetch failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Right-click "Forget": drop one remembered runner immediately (e.g. a
+    /// decommissioned name that shouldn't wait out the 24h age-out).
+    func forget(name: String) {
+        roster.removeAll { $0.name == name }
+        persistRoster()
+        absentExpected = GHRunnerRosterLogic.absences(roster: roster, registered: runners, now: Date())
+    }
+
+    private func persistRoster() {
+        guard let data = try? JSONEncoder().encode(roster) else { return }
+        UserDefaults.standard.set(data, forKey: GHRunnerRosterLogic.defaultsKey)
     }
 
     /// macOS first, then Linux, then by name.
@@ -57,7 +90,9 @@ final class GHRunnersService: ObservableObject {
             case .linux: 1
             case .other: 2 }
         }
-        if rank(a.os) != rank(b.os) { return rank(a.os) < rank(b.os) }
+        if rank(a.os) != rank(b.os) {
+            return rank(a.os) < rank(b.os)
+        }
         return a.name.localizedStandardCompare(b.name) == .orderedAscending
     }
 
@@ -68,7 +103,9 @@ final class GHRunnersService: ObservableObject {
             await refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                if Task.isCancelled { break }
+                if Task.isCancelled {
+                    break
+                }
                 await refresh()
             }
         }

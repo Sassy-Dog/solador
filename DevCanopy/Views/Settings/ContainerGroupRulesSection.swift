@@ -7,7 +7,7 @@ import SwiftUI
 /// shows the seeded defaults; the first edit persists whatever is on screen,
 /// including a deliberately emptied list.
 struct ContainerGroupRulesSection: View {
-    @AppStorage("containerGroupRules") private var groupRulesData = Data()
+    @AppStorage(ContainerGroupRule.rulesDefaultsKey) private var groupRulesData = Data()
     @Query(sort: \MonitoredHost.name) private var monitoredHosts: [MonitoredHost]
 
     var body: some View {
@@ -19,7 +19,7 @@ struct ContainerGroupRulesSection: View {
             Button("Add Rule") {
                 save(rules + [ContainerGroupRule(pattern: "", label: "")])
             }
-            Text("Collapse folds matching containers into one \u{201C}label ×N\u{201D} row on the Containers panel; Hide removes their rows entirely (they still count in the header rollup). A rule only applies on its selected host, and a scoped Collapse rule shows a standing ×0 row there even with no matches. `*` matches any run of characters; everything else is literal and case-sensitive.")
+            Text("Collapse folds matching containers into one \u{201C}label ×N\u{201D} row on the Containers panel; Hide removes their rows entirely (they still count in the header rollup); Expect keeps a standing presence row for matching names — amber while briefly absent (recycling), red once absent past 5 minutes (missing). Expect globs track names actually observed at least once; only an exact name alarms without ever being seen. A Collapse rule's expected count renders ×matched/expected and warns amber when short. A rule only applies on its selected host, and a scoped Collapse rule shows a standing ×0 row there even with no matches. `*` matches any run of characters; everything else is literal and case-sensitive.")
                 .font(.caption).foregroundStyle(.secondary)
         } header: {
             Text("Container Group Rules").font(.headline)
@@ -34,6 +34,7 @@ struct ContainerGroupRulesSection: View {
             Picker("Action", selection: binding(for: rule.id, keyPath: \.action, default: .collapse)) {
                 Text("Collapse").tag(ContainerRuleAction.collapse)
                 Text("Hide").tag(ContainerRuleAction.hide)
+                Text("Expect").tag(ContainerRuleAction.expect)
             }
             .labelsHidden()
             .fixedSize()
@@ -48,6 +49,14 @@ struct ContainerGroupRulesSection: View {
                     prompt: Text("group label")
                 )
                 .labelsHidden()
+                TextField(
+                    "Expected count",
+                    text: expectedCountBinding(for: rule.id),
+                    prompt: Text("expected ×")
+                )
+                .labelsHidden()
+                .font(.body.monospaced())
+                .frame(width: 84)
             }
             Picker("Host", selection: binding(for: rule.id, keyPath: \.host, default: nil)) {
                 Text("All hosts").tag(String?.none)
@@ -82,6 +91,25 @@ struct ContainerGroupRulesSection: View {
                 var updated = ContainerGroupRule.load(from: groupRulesData)
                 guard let index = updated.firstIndex(where: { $0.id == id }) else { return }
                 updated[index][keyPath: keyPath] = newValue
+                save(updated)
+            }
+        )
+    }
+
+    /// String ⇄ Int? shim for the expected-count field: empty or non-numeric input
+    /// clears the expectation (nil), never coerces to 0 — an expectation of zero is
+    /// no expectation, and the panel must not render a fabricated number.
+    private func expectedCountBinding(for id: UUID) -> Binding<String> {
+        Binding(
+            get: {
+                ContainerGroupRule.load(from: groupRulesData)
+                    .first(where: { $0.id == id })?.expectedCount.map(String.init) ?? ""
+            },
+            set: { newValue in
+                var updated = ContainerGroupRule.load(from: groupRulesData)
+                guard let index = updated.firstIndex(where: { $0.id == id }) else { return }
+                let parsed = Int(newValue.trimmingCharacters(in: .whitespaces))
+                updated[index].expectedCount = parsed.flatMap { $0 > 0 ? $0 : nil }
                 save(updated)
             }
         )
