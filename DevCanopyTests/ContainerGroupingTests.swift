@@ -286,4 +286,178 @@ final class ContainerGroupingTests: XCTestCase {
         XCTAssertTrue(ContainerGrouping.matches(name: "", pattern: ""))
         XCTAssertFalse(ContainerGrouping.matches(name: "x", pattern: ""))
     }
+
+    // MARK: - Expect rules (model)
+
+    private func expectRule(_ pattern: String, host: String? = nil) -> ContainerGroupRule {
+        ContainerGroupRule(pattern: pattern, label: "", action: .expect, host: host)
+    }
+
+    private static let now = Date(timeIntervalSince1970: 2_000_000)
+
+    private func record(absentFor: TimeInterval, runtime: ContainerRuntime? = .tart) -> ContainerPresenceRecord {
+        ContainerPresenceRecord(lastSeen: Self.now.addingTimeInterval(-absentFor), runtime: runtime)
+    }
+
+    func testExpectActionSurvivesRoundTrip() {
+        let original = [expectRule("sassydog-ghr-mac-s2")]
+        let decoded = ContainerGroupRule.load(from: ContainerGroupRule.encode(original))
+        XCTAssertEqual(decoded, original)
+        XCTAssertEqual(decoded[0].action, .expect)
+    }
+
+    func testExpectedCountSurvivesRoundTrip() {
+        var original = rule("ghr-", "runners")
+        original.expectedCount = 10
+        let decoded = ContainerGroupRule.load(from: ContainerGroupRule.encode([original]))
+        XCTAssertEqual(decoded, [original])
+        XCTAssertEqual(decoded[0].expectedCount, 10)
+    }
+
+    func testLegacyRulesDecodeWithNilExpectedCount() {
+        let legacy = Data("""
+        [{"id":"11111111-2222-3333-4444-555555555555","pattern":"api-*","label":"workflow jobs"}]
+        """.utf8)
+        XCTAssertNil(ContainerGroupRule.load(from: legacy)[0].expectedCount)
+    }
+
+    func testUnknownActionDegradesToCollapseInsteadOfResettingAllRules() {
+        let future = Data("""
+        [{"id":"11111111-2222-3333-4444-555555555555","pattern":"api-*","label":"jobs","action":"quarantine"}]
+        """.utf8)
+        let rules = ContainerGroupRule.load(from: future)
+        XCTAssertEqual(
+            rules.count, 1,
+            "an unknown action must degrade that one rule, not reset the whole list to seeded defaults"
+        )
+        XCTAssertEqual(rules.first?.action, .collapse)
+        XCTAssertEqual(rules.first?.pattern, "api-*")
+    }
+
+    // MARK: - Partition: expected-absent rows
+
+    func testExpectMatchedPresentContainerRendersIndividuallyAndBeatsLaterRules() {
+        let input = [container("mac-s1", runtime: .tart)]
+        let result = ContainerGrouping.partition(
+            input, rules: [expectRule("mac-s1"), rule("mac-", "macs")], host: "h",
+            presence: [:], now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertEqual(result.individual.map(\.name), ["mac-s1"])
+        XCTAssertEqual(
+            result.aggregates.map(\.total), [0],
+            "expect wins first-match-wins; the later collapse rule keeps its standing row at zero"
+        )
+        XCTAssertTrue(result.expectedAbsent.isEmpty)
+    }
+
+    func testAbsentExpectedRecordEmitsRecyclingRowUnderGrace() {
+        let result = ContainerGrouping.partition(
+            [], rules: [expectRule("mac-s1")], host: "h",
+            presence: ["mac-s1": record(absentFor: 60)], now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertEqual(result.expectedAbsent.map(\.name), ["mac-s1"])
+        XCTAssertEqual(result.expectedAbsent.first?.runtime, .tart)
+        XCTAssertEqual(result.expectedAbsent.first?.state, .recycling(absence: 60))
+    }
+
+    func testAbsentExpectedRecordEmitsMissingRowBeyondGrace() {
+        let result = ContainerGrouping.partition(
+            [], rules: [expectRule("mac-s1")], host: "h",
+            presence: ["mac-s1": record(absentFor: 400, runtime: nil)], now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertEqual(result.expectedAbsent.first?.state, .missing(absence: 400))
+        XCTAssertEqual(
+            result.expectedAbsent.first?.runtime, ContainerRuntime?.none,
+            "a never-observed expectation has no runtime to display"
+        )
+    }
+
+    func testNilNowSuppressesAbsentRows() {
+        let result = ContainerGrouping.partition(
+            [], rules: [expectRule("mac-s1")], host: "h",
+            presence: ["mac-s1": record(absentFor: 60)], now: nil, matcher: prefixMatcher
+        )
+        XCTAssertTrue(
+            result.expectedAbsent.isEmpty,
+            "no successful poll yet — never alarm on data we haven't actually looked at"
+        )
+    }
+
+    func testHostScopedExpectEmitsOnlyOnItsHost() {
+        let scoped = expectRule("mac-s1", host: "mac")
+        let presence = ["mac-s1": record(absentFor: 60)]
+
+        let onHost = ContainerGrouping.partition(
+            [], rules: [scoped], host: "mac", presence: presence, now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertEqual(onHost.expectedAbsent.map(\.name), ["mac-s1"])
+
+        let elsewhere = ContainerGrouping.partition(
+            [], rules: [scoped], host: "ubu", presence: presence, now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertTrue(elsewhere.expectedAbsent.isEmpty)
+    }
+
+    func testHideRuleOrderedAboveExpectSuppressesAbsentRow() {
+        let rules = [
+            ContainerGroupRule(pattern: "mac-s1", label: "", action: .hide),
+            expectRule("mac-s1")
+        ]
+        let result = ContainerGrouping.partition(
+            [], rules: rules, host: "h",
+            presence: ["mac-s1": record(absentFor: 60)], now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertTrue(
+            result.expectedAbsent.isEmpty,
+            "first-match-wins arbitrates absent rows exactly like present ones"
+        )
+    }
+
+    func testRecordWithoutMatchingExpectRuleEmitsNothing() {
+        let result = ContainerGrouping.partition(
+            [], rules: [expectRule("mac-s1")], host: "h",
+            presence: ["other": record(absentFor: 60)], now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertTrue(result.expectedAbsent.isEmpty)
+    }
+
+    func testPresentContainerIsNotAlsoEmittedAsAbsent() {
+        let result = ContainerGrouping.partition(
+            [container("mac-s1", runtime: .tart)], rules: [expectRule("mac-s1")], host: "h",
+            presence: ["mac-s1": record(absentFor: 9999)], now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertTrue(result.expectedAbsent.isEmpty)
+    }
+
+    func testAbsentRowsSortByName() {
+        let presence = ["mac-s2": record(absentFor: 60), "mac-s1": record(absentFor: 60)]
+        let result = ContainerGrouping.partition(
+            [], rules: [expectRule("mac-")], host: "h",
+            presence: presence, now: Self.now, matcher: prefixMatcher
+        )
+        XCTAssertEqual(result.expectedAbsent.map(\.name), ["mac-s1", "mac-s2"])
+    }
+
+    func testAggregateCarriesExpectedCount() {
+        var withCount = rule("ghr-", "runners")
+        withCount.expectedCount = 2
+        let result = ContainerGrouping.partition(
+            [container("ghr-1")], rules: [withCount], host: "h", matcher: prefixMatcher
+        )
+        XCTAssertEqual(result.aggregates.first?.expectedCount, 2)
+    }
+
+    // MARK: - Display rows
+
+    func testDisplayRowsMergeNameSortedAcrossPresentAndAbsent() {
+        let absent = [
+            ExpectedAbsentContainer(name: "c", runtime: nil, state: .missing(absence: 400)),
+            ExpectedAbsentContainer(name: "a", runtime: .tart, state: .recycling(absence: 10))
+        ]
+        let rows = ContainerGrouping.displayRows(individual: [container("b")], absent: absent)
+        XCTAssertEqual(
+            rows.map(\.id), ["a", "b", "c"],
+            "row identity is the NAME — stable across present/absent flips, no row teardown"
+        )
+    }
 }

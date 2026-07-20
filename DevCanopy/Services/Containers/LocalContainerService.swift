@@ -1,9 +1,49 @@
 import Foundation
 
+/// Result of one per-runtime merge pass.
+struct LocalMergeOutcome: Equatable {
+    let merged: [ContainerInfo]
+    let updatedLastKnown: [ContainerRuntime: [ContainerInfo]]
+    let errored: [String]
+    let succeeded: Set<ContainerRuntime>
+}
+
+/// Pure per-runtime merge with last-known retention: a runtime whose poll failed
+/// contributes its previous list instead of nothing, so one transient `tart list`
+/// failure can't blank every VM row until the next poll. No I/O here.
+enum LocalContainerMerge {
+    static func merge(
+        results: [(runtime: ContainerRuntime, containers: [ContainerInfo]?)],
+        lastKnown: [ContainerRuntime: [ContainerInfo]]
+    ) -> LocalMergeOutcome {
+        var merged: [ContainerInfo] = []
+        var updated = lastKnown
+        var errored: [String] = []
+        var succeeded: Set<ContainerRuntime> = []
+
+        for (runtime, containers) in results {
+            if let containers {
+                merged += containers
+                updated[runtime] = containers
+                succeeded.insert(runtime)
+            } else {
+                merged += lastKnown[runtime] ?? []
+                errored.append(runtime.rawValue)
+            }
+        }
+        return LocalMergeOutcome(
+            merged: merged,
+            updatedLastKnown: updated,
+            errored: errored,
+            succeeded: succeeded
+        )
+    }
+}
+
 /// Detects and polls local container runtimes / VM managers (docker, podman,
 /// tart) on "this machine". GUI apps inherit a minimal PATH, so tools are
 /// resolved by absolute path. Resilient: a missing or erroring tool is treated
-/// as contributing nothing.
+/// as contributing nothing new — its last-known list is retained.
 @MainActor
 final class LocalContainerService: ObservableObject {
     @Published private(set) var containers: [ContainerInfo] = []
@@ -14,6 +54,15 @@ final class LocalContainerService: ObservableObject {
     /// Directories searched (in order) for tool executables.
     private static let searchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
 
+    /// Runtimes whose most recent poll actually succeeded — presence clocks must
+    /// only advance for these (a failed source proves nothing about absence).
+    private(set) var lastSucceededRuntimes: Set<ContainerRuntime> = []
+
+    /// Fed after every poll so expected-container absence can be measured.
+    /// Assigned once at app startup; nil in previews/tests that don't care.
+    var presenceStore: ContainerPresenceStore?
+
+    private var lastKnownByRuntime: [ContainerRuntime: [ContainerInfo]] = [:]
     private var task: Task<Void, Never>?
 
     /// Resolves the absolute path of a tool by probing the known bin dirs.
@@ -29,7 +78,8 @@ final class LocalContainerService: ObservableObject {
     }
 
     /// Runs whichever tools exist, parses their output, and publishes the merged
-    /// result. Never throws; failures yield empty contributions.
+    /// result. Never throws; a failed tool retains its last-known list so one
+    /// transient failure can't blank rows for containers that still exist.
     func refresh() async {
         // Resolve tools on the main actor (cheap FS probes), then do the
         // process spawning + parsing off-actor.
@@ -37,39 +87,45 @@ final class LocalContainerService: ObservableObject {
         let podman = toolPath(ContainerRuntime.podman.toolName)
         let tart = toolPath(ContainerRuntime.tart.toolName)
 
-        let (merged, runtimes, errored) = await Task.detached { () -> ([ContainerInfo], [ContainerRuntime], [String]) in
-            var merged: [ContainerInfo] = []
+        let (results, runtimes) = await Task.detached {
+            () -> ([(runtime: ContainerRuntime, containers: [ContainerInfo]?)], [ContainerRuntime]) in
+            var results: [(runtime: ContainerRuntime, containers: [ContainerInfo]?)] = []
             var runtimes: [ContainerRuntime] = []
-            var errored: [String] = []
 
             let psArgs = ["ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.Image}}"]
 
             if let docker {
                 runtimes.append(.docker)
-                if let out = Self.run(docker, psArgs) {
-                    merged += ContainerParsing.parsePsOutput(out, runtime: .docker)
-                } else { errored.append("docker") }
+                let out = Self.run(docker, psArgs)
+                results.append((.docker, out.map { ContainerParsing.parsePsOutput($0, runtime: .docker) }))
             }
             if let podman {
                 runtimes.append(.podman)
-                if let out = Self.run(podman, psArgs) {
-                    merged += ContainerParsing.parsePsOutput(out, runtime: .podman)
-                } else { errored.append("podman") }
+                let out = Self.run(podman, psArgs)
+                results.append((.podman, out.map { ContainerParsing.parsePsOutput($0, runtime: .podman) }))
             }
             if let tart {
                 runtimes.append(.tart)
-                if let out = Self.run(tart, ["list"]) {
-                    merged += ContainerParsing.parseTartList(out)
-                } else { errored.append("tart") }
+                let out = Self.run(tart, ["list"])
+                results.append((.tart, out.map(ContainerParsing.parseTartList)))
             }
 
-            return (merged, runtimes, errored)
+            return (results, runtimes)
         }.value
 
-        containers = merged
+        let outcome = LocalContainerMerge.merge(results: results, lastKnown: lastKnownByRuntime)
+        lastKnownByRuntime = outcome.updatedLastKnown
+        containers = outcome.merged
         detectedRuntimes = runtimes
-        lastError = errored.isEmpty ? nil : "couldn't read \(errored.joined(separator: ", "))"
+        lastSucceededRuntimes = outcome.succeeded
+        lastError = outcome.errored.isEmpty ? nil : "couldn't read \(outcome.errored.joined(separator: ", "))"
         lastUpdated = Date()
+
+        presenceStore?.noteLocalPoll(
+            containers: outcome.merged,
+            succeeded: outcome.succeeded,
+            rules: ContainerGroupRule.loadFromDefaults()
+        )
     }
 
     /// Initial refresh plus a repeating refresh every 10s.
@@ -80,7 +136,9 @@ final class LocalContainerService: ObservableObject {
             await refresh()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                if Task.isCancelled { break }
+                if Task.isCancelled {
+                    break
+                }
                 await refresh()
             }
         }

@@ -22,7 +22,7 @@ struct RunnerDTO: Decodable {
     struct Label: Decodable { let name: String }
 }
 
-enum RunnerOS: Equatable {
+enum RunnerOS: String, Codable, Equatable {
     case macOS, linux, other
     var label: String {
         switch self { case .macOS: "macOS"
@@ -73,8 +73,12 @@ enum GHRunnerMapping {
 
     private static func os(from dto: RunnerDTO) -> RunnerOS {
         let o = dto.os.lowercased()
-        if o.contains("mac") || o.contains("darwin") { return .macOS }
-        if o.contains("linux") { return .linux }
+        if o.contains("mac") || o.contains("darwin") {
+            return .macOS
+        }
+        if o.contains("linux") {
+            return .linux
+        }
         return .other
     }
 

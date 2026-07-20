@@ -14,6 +14,7 @@ struct DevCanopyApp: App {
             ? DemoHostMetricsService(hostName: "mac-demo", profile: .localMac, connectionState: .local)
             : LocalHostMetricsService()
     @StateObject private var containerService = LocalContainerService()
+    @StateObject private var containerPresence = ContainerPresenceStore()
     @StateObject private var gitWorktreeService = GitWorktreeService()
     @StateObject private var ghRunnersService = GHRunnersService()
     @StateObject private var claudeUsageService = ClaudeUsageService()
@@ -95,6 +96,7 @@ struct DevCanopyApp: App {
                 .environmentObject(GitHubService.shared)
                 .environmentObject(localHostMetrics)
                 .environmentObject(containerService)
+                .environmentObject(containerPresence)
                 .environmentObject(gitWorktreeService)
                 .environmentObject(claudeUsageService)
                 .environmentObject(portfolioCIService)
@@ -123,6 +125,8 @@ struct DevCanopyApp: App {
                     }
 
                     localHostMetrics.start()
+                    containerService.presenceStore = containerPresence
+                    remoteHosts.presenceStore = containerPresence
                     containerService.start()
                     gitWorktreeService.start(interval: interval)
                     claudeUsageService.start(interval: interval)
