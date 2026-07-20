@@ -197,14 +197,28 @@ extension GHWorkflowsMapping {
     }
 
     /// Whether a run feeds the `main` health slot. Default behavior is strictly
-    /// `push` on the default branch. When the caller has scoped to watched
-    /// workflows, the event gate is relaxed to any non-PR run on the default
-    /// branch (`workflow_run`/`schedule`/`workflow_dispatch`/`push`) so a release
+    /// `push` on the default branch, plus successful merge-queue runs targeting
+    /// it. When the caller has scoped to watched workflows, the event gate is
+    /// relaxed to any non-PR run on the default branch
+    /// (`workflow_run`/`schedule`/`workflow_dispatch`/`push`) so a release
     /// pipeline's failure surfaces.
     private static func isDefaultBranchHealth(_ run: WorkflowRunDTO, watchScoped: Bool) -> Bool {
+        if isMergeQueueSuccess(run) { return true }
         guard run.headBranch == defaultBranch else { return false }
         if watchScoped { return run.event != "pull_request" }
         return run.event == "push"
+    }
+
+    /// A successful merge-queue run is main-health evidence: the queue validated
+    /// exactly the tree it then landed on the default branch, and merge-queue
+    /// repos may never run push CI on main again (path filters), leaving a stale
+    /// push failure as "latest" forever. Failed or cancelled queue runs are NOT
+    /// evidence against main — a rejected candidate never lands (the queue doing
+    /// its job), and queue batch recalculations cancel runs routinely.
+    private static func isMergeQueueSuccess(_ run: WorkflowRunDTO) -> Bool {
+        run.event == "merge_group"
+            && (run.headBranch?.hasPrefix("gh-readonly-queue/\(defaultBranch)/") ?? false)
+            && run.conclusion == "success"
     }
 
     /// Lowercased, extension-stripped, de-blanked watched-workflow keys.
