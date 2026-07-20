@@ -12,7 +12,15 @@ set -uo pipefail
 payload=$(cat)
 
 command -v jq >/dev/null 2>&1 || exit 0
-command -v swiftformat >/dev/null 2>&1 || exit 0
+
+# Prefer the CI-pinned swiftformat that ./dev lint/format cache under
+# build/lint-tools/ — keeps hook output identical to the lint gate. Hooks must
+# stay instant, so never download here; fall back to a PATH install, and exit
+# clean with neither (the pre-push lint gate still catches formatting).
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SWIFTFORMAT=$(ls "$ROOT"/build/lint-tools/swiftformat-*/swiftformat 2>/dev/null | sort -V | tail -1)
+[[ -n "$SWIFTFORMAT" && -x "$SWIFTFORMAT" ]] || SWIFTFORMAT=$(command -v swiftformat || true)
+[[ -n "$SWIFTFORMAT" ]] || exit 0
 
 file=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty')
 [[ -n "$file" && "$file" == *.swift && -f "$file" ]] || exit 0
@@ -22,5 +30,5 @@ case "$file" in
     */build/*|*/.build/*|*/Scripts/*|*/Assets.xcassets/*) exit 0 ;;
 esac
 
-swiftformat "$file" >/dev/null 2>&1 || true
+"$SWIFTFORMAT" "$file" >/dev/null 2>&1 || true
 exit 0
