@@ -123,8 +123,12 @@ jobs:
           curl -fsSL -o /tmp/swiftlint.zip \
             "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
           unzip -o -q /tmp/swiftlint.zip -d /tmp/swiftlint
-          sudo mv /tmp/swiftlint/swiftlint /usr/local/bin/swiftlint
-          swiftlint version
+          # Invoke by absolute path everywhere: arm64 macOS runners preinstall a
+          # Homebrew swiftlint in /opt/homebrew/bin, which shadows /usr/local/bin —
+          # a bare `swiftlint` silently un-pins to whatever the image ships.
+          # Assert the pin actually took so a shadow can never sneak back in.
+          /tmp/swiftlint/swiftlint version
+          [ "$(/tmp/swiftlint/swiftlint version)" = "${SWIFTLINT_VERSION}" ]
 
       - name: Run SwiftLint
         run: |
@@ -133,7 +137,7 @@ jobs:
           # absorbed HostMetricsKit code (large_tuple / cyclomatic_complexity /
           # file_length, etc.) so the gate enforces clean NEW code without
           # blocking on that legacy backlog. Shrink the baseline as that debt lands.
-          swiftlint lint --baseline lint-baseline.json --strict --reporter github-actions-logging
+          /tmp/swiftlint/swiftlint lint --baseline lint-baseline.json --strict --reporter github-actions-logging
 
       # Pinned for reproducibility; matches the local toolchain that reformatted
       # the repo (config: .swiftformat).
@@ -145,14 +149,18 @@ jobs:
             "https://github.com/nicklockwood/SwiftFormat/releases/download/${SWIFTFORMAT_VERSION}/swiftformat.zip"
           unzip -o -q /tmp/swiftformat.zip -d /tmp/swiftformat
           BIN=$(find /tmp/swiftformat -name swiftformat -type f -perm +111 | head -1)
-          sudo mv "$BIN" /usr/local/bin/swiftformat
-          swiftformat --version
+          # Same shadow trap as SwiftLint above: keep the pinned binary at a
+          # dedicated path and invoke it absolutely; assert the pin took.
+          mkdir -p /tmp/swiftformat-bin
+          mv "$BIN" /tmp/swiftformat-bin/swiftformat
+          /tmp/swiftformat-bin/swiftformat --version
+          [ "$(/tmp/swiftformat-bin/swiftformat --version)" = "${SWIFTFORMAT_VERSION}" ]
 
       - name: Run SwiftFormat (lint)
         run: |
           # Blocking: fails on any formatting violation. New code must stay
           # formatted to .swiftformat.
-          swiftformat --lint .
+          /tmp/swiftformat-bin/swiftformat --lint .
 
   agent-tests:
     name: Rust agent
