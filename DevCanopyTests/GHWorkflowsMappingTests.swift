@@ -327,4 +327,97 @@ final class GHWorkflowsMappingTests: XCTestCase {
         XCTAssertNil(h.openIssues)
         XCTAssertNil(h.openPRs)
     }
+
+    // MARK: - Merge-queue main health (merge_group evidence)
+
+    func testMergeGroupSuccessSupersedesOlderPushFailureOnMain() {
+        // Merge-queue repos validate on gh-readonly-queue refs and may never run
+        // push CI on main again (path filters) — a stale push failure must be
+        // superseded by a newer queue-validated merge.
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: [
+            dto(
+                name: "CI", status: "completed", conclusion: "failure",
+                branch: "main", event: "push", id: 1, createdAt: "2026-05-29T11:00:00Z"
+            ),
+            dto(
+                name: "CI", status: "completed", conclusion: "success",
+                branch: "gh-readonly-queue/main/pr-224-abc123", event: "merge_group",
+                id: 2, createdAt: "2026-05-29T12:00:00Z"
+            )
+        ])
+        XCTAssertEqual(h.main?.conclusion, .success, "the queue validated exactly what landed on main")
+        XCTAssertTrue(h.isHealthy)
+    }
+
+    func testFailedMergeGroupRunIsNotEvidenceAgainstMain() {
+        // A rejected queue candidate never lands — the queue doing its job says
+        // nothing about main's health. The newest push run keeps the main slot.
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: [
+            dto(
+                name: "CI", status: "completed", conclusion: "success",
+                branch: "main", event: "push", id: 1, createdAt: "2026-05-29T11:00:00Z"
+            ),
+            dto(
+                name: "CI", status: "completed", conclusion: "failure",
+                branch: "gh-readonly-queue/main/pr-9-def456", event: "merge_group",
+                id: 2, createdAt: "2026-05-29T12:00:00Z"
+            )
+        ])
+        XCTAssertEqual(h.main?.conclusion, .success)
+        XCTAssertTrue(h.isHealthy)
+    }
+
+    func testPushFailureNewerThanMergeGroupSuccessStaysRed() {
+        // A direct push that breaks main AFTER the last queue merge is real.
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: [
+            dto(
+                name: "CI", status: "completed", conclusion: "success",
+                branch: "gh-readonly-queue/main/pr-7-aaa", event: "merge_group",
+                id: 1, createdAt: "2026-05-29T11:00:00Z"
+            ),
+            dto(
+                name: "CI", status: "completed", conclusion: "failure",
+                branch: "main", event: "push", id: 2, createdAt: "2026-05-29T12:00:00Z"
+            )
+        ])
+        XCTAssertEqual(h.main?.conclusion, .failure)
+        XCTAssertFalse(h.isHealthy)
+    }
+
+    func testMergeGroupForAnotherBranchQueueIsIgnored() {
+        // Only queue refs targeting the default branch are main evidence.
+        let h = GHWorkflowsMapping.health(repo: "o/r", runs: [
+            dto(
+                name: "CI", status: "completed", conclusion: "failure",
+                branch: "main", event: "push", id: 1, createdAt: "2026-05-29T11:00:00Z"
+            ),
+            dto(
+                name: "CI", status: "completed", conclusion: "success",
+                branch: "gh-readonly-queue/release/pr-3-xyz", event: "merge_group",
+                id: 2, createdAt: "2026-05-29T12:00:00Z"
+            )
+        ])
+        XCTAssertEqual(h.main?.conclusion, .failure, "a release-queue run must not vouch for main")
+        XCTAssertFalse(h.isHealthy)
+    }
+
+    func testWatchScopedModeAlsoAcceptsMergeGroupSuccess() {
+        let h = GHWorkflowsMapping.health(
+            repo: "o/r",
+            runs: [
+                dto(
+                    name: "CI", status: "completed", conclusion: "failure",
+                    branch: "main", event: "push", id: 1, createdAt: "2026-05-29T11:00:00Z"
+                ),
+                dto(
+                    name: "CI", status: "completed", conclusion: "success",
+                    branch: "gh-readonly-queue/main/pr-5-bbb", event: "merge_group",
+                    id: 2, createdAt: "2026-05-29T12:00:00Z"
+                )
+            ],
+            watchedWorkflows: ["CI"]
+        )
+        XCTAssertEqual(h.main?.conclusion, .success)
+        XCTAssertTrue(h.isHealthy)
+    }
 }
