@@ -21,7 +21,10 @@ struct AzureCostPanel: CockpitPanelView {
                     muted("Add an Azure Cost SAS URL in Settings")
                 } else if let summary = service.summary {
                     content(summary)
-                    PanelStatusFooter(lastUpdated: service.lastUpdated, error: service.lastError, staleAfter: 600)
+                    // Poll cadence is 4h (daily export), so the stale threshold sits
+                    // above it — 5h flags a genuinely stuck/failing poller, ~1h after a
+                    // missed cycle, not the normal gap between polls.
+                    PanelStatusFooter(lastUpdated: service.lastUpdated, error: service.lastError, staleAfter: 5 * 60 * 60)
                 } else if let error = service.lastError {
                     Text(error)
                         .font(CockpitTheme.mono(11))

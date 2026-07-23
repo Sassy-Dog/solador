@@ -185,7 +185,7 @@ final class AzureCostCSVTests: XCTestCase {
             prior: "resourceGroupName,costInUsd\nrg-a,100"
         ])
 
-        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 6, 15))
+        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 6, 15)).summary
         XCTAssertEqual(summary.spendMTD, 15, accuracy: 1e-6)
         XCTAssertEqual(summary.spendPriorMonth, 100, accuracy: 1e-6)
         XCTAssertNil(summary.error)
@@ -198,7 +198,7 @@ final class AzureCostCSVTests: XCTestCase {
         let mtd = "\(AzureCostReader.mtdPrefix)/20260601-20260630/202606151800/g/000001.csv"
         let stub = StubBlobFetcher(blobs: [mtd: "resourceGroupName,costInUsd\nrg-a,42"])
 
-        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 6, 15))
+        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 6, 15)).summary
         XCTAssertEqual(summary.spendMTD, 42, accuracy: 1e-6)
         XCTAssertEqual(summary.spendPriorMonth, 0)
         XCTAssertNil(summary.error)
@@ -210,7 +210,7 @@ final class AzureCostCSVTests: XCTestCase {
             mtd: "resourceGroupName,meterCategory,costInUsd\nrg-a,SQL Database,200\nrg-b,Storage,100"
         ])
 
-        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 6, 15))
+        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 6, 15)).summary
         XCTAssertEqual(summary.spendMTD, 300, accuracy: 1e-6)
         // 15 of 30 days elapsed → projected doubles MTD; frozen onto the summary.
         XCTAssertEqual(summary.spendProjected, 600, accuracy: 1e-6)
@@ -229,7 +229,7 @@ final class AzureCostCSVTests: XCTestCase {
             may: "resourceGroupName,costInUsd\nrg-a,239.72"
         ])
 
-        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 7, 1))
+        let summary = try await AzureCostReader.fetchSummary(fetcher: stub, now: utc(2026, 7, 1)).summary
         XCTAssertEqual(summary.spendMTD, 688.46, accuracy: 1e-6)
         XCTAssertEqual(summary.spendPriorMonth, 239.72, accuracy: 1e-6)
         XCTAssertEqual(summary.spendProjected, 688.46, accuracy: 1e-6)
@@ -251,6 +251,55 @@ final class AzureCostCSVTests: XCTestCase {
         } catch {
             XCTFail("expected AzureCostError, got \(error)")
         }
+    }
+
+    // MARK: - Cache (skip re-download on unchanged export, #114)
+
+    func testCacheHitSkipsPartitionDownloads() async throws {
+        let mtd = "\(AzureCostReader.mtdPrefix)/20260601-20260630/202606151800/g/000001.csv"
+        let prior = "\(AzureCostReader.priorPrefix)/20260501-20260531/202606010300/g/000001.csv"
+        let fetcher = CountingBlobFetcher(StubBlobFetcher(blobs: [
+            mtd: "resourceGroupName,costInUsd\nrg-a,10",
+            prior: "resourceGroupName,costInUsd\nrg-a,100"
+        ]))
+
+        let first = try await AzureCostReader.fetchSummary(fetcher: fetcher, now: utc(2026, 6, 15))
+        let downloadsAfterFirst = fetcher.getBlobTextCount
+        XCTAssertGreaterThan(downloadsAfterFirst, 0, "first fetch must download partitions")
+
+        // Same blobs → same fingerprint → cache hit → not a single further download.
+        let second = try await AzureCostReader.fetchSummary(fetcher: fetcher, now: utc(2026, 6, 15), previous: first)
+        XCTAssertEqual(fetcher.getBlobTextCount, downloadsAfterFirst, "cache hit must not re-download partitions")
+        XCTAssertEqual(second.summary, first.summary)
+        XCTAssertEqual(second.fingerprint, first.fingerprint)
+    }
+
+    func testCacheMissRedownloadsWhenNewRunAppears() async throws {
+        let monthFolder = "\(AzureCostReader.mtdPrefix)/20260601-20260630"
+        let run1 = "\(monthFolder)/202606151800/g/000001.csv"
+        let first = try await AzureCostReader.fetchSummary(
+            fetcher: CountingBlobFetcher(StubBlobFetcher(blobs: [run1: "resourceGroupName,costInUsd\nrg-a,10"])),
+            now: utc(2026, 6, 15)
+        )
+        XCTAssertEqual(first.summary.spendMTD, 10, accuracy: 1e-6)
+
+        // A newer run folder lands with different data → new fingerprint → cache miss →
+        // the new run downloads and the total updates.
+        let run2 = "\(monthFolder)/202606152100/h/000001.csv"
+        let fetcher2 = CountingBlobFetcher(StubBlobFetcher(blobs: [
+            run1: "resourceGroupName,costInUsd\nrg-a,10",
+            run2: "resourceGroupName,costInUsd\nrg-a,25"
+        ]))
+        let second = try await AzureCostReader.fetchSummary(fetcher: fetcher2, now: utc(2026, 6, 15), previous: first)
+        XCTAssertGreaterThan(fetcher2.getBlobTextCount, 0, "cache miss must re-download the new run")
+        XCTAssertEqual(second.summary.spendMTD, 25, accuracy: 1e-6)
+        XCTAssertNotEqual(second.fingerprint, first.fingerprint)
+    }
+
+    @MainActor
+    func testPollIntervalIsFourHours() {
+        // Azure cost runs on its own fixed cadence, not the shared RefreshInterval (#114).
+        XCTAssertEqual(AzureCostService.pollInterval, 4 * 60 * 60)
     }
 
     @MainActor
@@ -296,5 +345,27 @@ private struct StubBlobFetcher: BlobFetching {
 
     func getBlobText(path: String) async throws -> String {
         blobs[path] ?? ""
+    }
+}
+
+/// Wraps a `StubBlobFetcher` and counts `getBlobText` calls — the deterministic proof
+/// that a cache hit performs zero partition downloads. `@unchecked Sendable` is safe
+/// here: the reader awaits partition reads strictly sequentially, so the counter is
+/// never touched concurrently.
+private final class CountingBlobFetcher: BlobFetching, @unchecked Sendable {
+    private let inner: StubBlobFetcher
+    private(set) var getBlobTextCount = 0
+
+    init(_ inner: StubBlobFetcher) {
+        self.inner = inner
+    }
+
+    func listBlobs(prefix: String) async throws -> [String] {
+        try await inner.listBlobs(prefix: prefix)
+    }
+
+    func getBlobText(path: String) async throws -> String {
+        getBlobTextCount += 1
+        return try await inner.getBlobText(path: path)
     }
 }

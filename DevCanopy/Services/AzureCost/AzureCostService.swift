@@ -156,6 +156,25 @@ private func extractTagValues(_ tag: String, in xml: String) -> [String] {
     return values
 }
 
+// MARK: - Caching
+
+/// Identity of the data a summary was built from — the CSV partition paths of the
+/// newest run of each export. Cost Management writes every export run to a fresh
+/// timestamped `{run}/` folder (the same assumption `readExport` uses to pick the
+/// newest run), so a changed path-set means new data has landed. When it's unchanged,
+/// the cheap blob *list* is all a poll needs — no partition bodies (the #114 egress).
+struct ExportFingerprint: Equatable {
+    let mtd: [String]
+    let prior: [String]
+}
+
+/// A parsed summary plus the fingerprint of the export it came from, so the next poll
+/// can compare and skip re-downloading unchanged partitions.
+struct AzureCostFetchResult {
+    let summary: AzureCostSummary
+    let fingerprint: ExportFingerprint
+}
+
 // MARK: - Reader (pure orchestration over a BlobFetching)
 
 /// Lists an export's month folder, picks the lexically-greatest run (newest), sums
@@ -167,13 +186,15 @@ enum AzureCostReader {
     static let priorPrefix = "last-month/mc-platform-lastmonth-actualcost"
     static let topN = 5
 
-    /// Read one export's latest run for `month` and aggregate it. Layout:
-    /// `{rootPrefix}/{monthRange}/{runTimestamp}/{runGuid}/000001.csv` (+ `_manifest.json`).
-    static func readExport(
+    /// List one export's month folder and return the sorted CSV partition paths of the
+    /// newest run — the *cheap* half of a read (a blob list, a few KB, no partition
+    /// bodies). Layout: `{rootPrefix}/{monthRange}/{runTimestamp}/{runGuid}/000001.csv`
+    /// (+ `_manifest.json`). The returned paths double as the run's cache fingerprint.
+    static func selectLatestRun(
         fetcher: BlobFetching,
         rootPrefix: String,
         month: Date
-    ) async throws -> AzureCostAggregate {
+    ) async throws -> [String] {
         let prefix = "\(rootPrefix)/\(monthRangeFolder(month))/"
         let names = try await fetcher.listBlobs(prefix: prefix)
         guard !names.isEmpty else { throw AzureCostError.noBlobs(prefix: prefix) }
@@ -189,9 +210,15 @@ enum AzureCostReader {
         let latestRun = names.map(runOf).max() ?? ""
         let csvBlobs = names.filter { runOf($0) == latestRun && $0.hasSuffix(".csv") }
         guard !csvBlobs.isEmpty else { throw AzureCostError.noCSV(run: latestRun, prefix: prefix) }
+        // Sorted so the fingerprint is order-stable across polls (list order isn't
+        // guaranteed); the aggregation below is order-independent anyway.
+        return csvBlobs.sorted()
+    }
 
-        // Sum every partition (large months split into 000001.csv, 000002.csv, …),
-        // merging the already-keyed group/type breakdowns across partitions.
+    /// Download and sum the given CSV partitions — the *expensive* half of a read (the
+    /// egress #114 is about). Large months split into 000001.csv, 000002.csv, …; merge
+    /// the already-keyed group/type breakdowns across partitions.
+    static func aggregate(fetcher: BlobFetching, csvBlobs: [String]) async throws -> AzureCostAggregate {
         var total = 0.0
         var byResourceGroup: [String: Double] = [:]
         var byMeterCategory: [String: Double] = [:]
@@ -217,52 +244,85 @@ enum AzureCostReader {
         )
     }
 
-    /// Month-to-date spend, prior-month total, and the top resource groups. MTD is
-    /// required (a failure propagates); prior-month is best-effort (a missing
-    /// export yields prior = 0, never blanks the card).
+    /// Read one export's latest run for `month` and aggregate it (list → download).
+    static func readExport(
+        fetcher: BlobFetching,
+        rootPrefix: String,
+        month: Date
+    ) async throws -> AzureCostAggregate {
+        let csvBlobs = try await selectLatestRun(fetcher: fetcher, rootPrefix: rootPrefix, month: month)
+        return try await aggregate(fetcher: fetcher, csvBlobs: csvBlobs)
+    }
+
+    /// Month-to-date spend, prior-month total, and the top resource groups, wrapped
+    /// with the fingerprint of the export they came from. MTD is required (a failure
+    /// propagates); prior-month is best-effort (a missing export yields prior = 0,
+    /// never blanks the card).
+    ///
+    /// Pass the last successful result as `previous`: if the newest run's partition
+    /// paths are unchanged, no new export has been published, so the cached summary is
+    /// returned without downloading a single partition body (the #114 fix). Only the
+    /// cheap blob *list* runs on an unchanged cycle.
     static func fetchSummary(
         fetcher: BlobFetching,
         mtdPrefix: String = AzureCostReader.mtdPrefix,
         priorPrefix: String = AzureCostReader.priorPrefix,
         topN: Int = AzureCostReader.topN,
-        now: Date = Date()
-    ) async throws -> AzureCostSummary {
+        now: Date = Date(),
+        previous: AzureCostFetchResult? = nil
+    ) async throws -> AzureCostFetchResult {
         // Headline = the current month's export. On the 1st-of-month rollover gap the
         // current month hasn't been exported yet, so fall back to the last completed
         // month (whose daily folder is still present) — the card shows real figures,
         // stamped with the month they cover, rather than an empty error state.
         var coveredMonth = now
-        let mtd: AzureCostAggregate
+        let mtdBlobs: [String]
         do {
-            mtd = try await readExport(fetcher: fetcher, rootPrefix: mtdPrefix, month: now)
+            mtdBlobs = try await selectLatestRun(fetcher: fetcher, rootPrefix: mtdPrefix, month: now)
         } catch AzureCostError.noBlobs {
             coveredMonth = priorMonthDate(from: now)
-            mtd = try await readExport(fetcher: fetcher, rootPrefix: mtdPrefix, month: coveredMonth)
+            mtdBlobs = try await selectLatestRun(fetcher: fetcher, rootPrefix: mtdPrefix, month: coveredMonth)
         }
         let isFallback = monthRangeFolder(coveredMonth) != monthRangeFolder(now)
 
         // Prior month is best-effort (a missing export folds to 0, never blanks the
         // card) and is taken relative to whichever month we're actually showing.
-        var spendPriorMonth = 0.0
+        var priorBlobs: [String] = []
         do {
-            let prior = try await readExport(fetcher: fetcher, rootPrefix: priorPrefix, month: priorMonthDate(from: coveredMonth))
-            spendPriorMonth = prior.total
+            priorBlobs = try await selectLatestRun(fetcher: fetcher, rootPrefix: priorPrefix, month: priorMonthDate(from: coveredMonth))
         } catch {
-            // Don't fail the whole fetch if only the prior-month export is missing
-            // (e.g. before its first run) — MTD is the headline figure.
+            // No prior-month export yet (e.g. before its first run) — leave the paths
+            // empty so prior folds to 0; this stays stable across polls, so cache hits
+            // still work, and flips to a miss the cycle the export first appears.
         }
 
-        return AzureCostSummary(
+        // The identity of the data we'd build from. Unchanged vs the last success ⇒
+        // nothing new landed ⇒ reuse the cached summary, skipping partition downloads.
+        let fingerprint = ExportFingerprint(mtd: mtdBlobs, prior: priorBlobs)
+        if let previous, previous.fingerprint == fingerprint {
+            return previous
+        }
+
+        let mtd = try await aggregate(fetcher: fetcher, csvBlobs: mtdBlobs)
+        var spendPriorMonth = 0.0
+        if !priorBlobs.isEmpty, let prior = try? await aggregate(fetcher: fetcher, csvBlobs: priorBlobs) {
+            spendPriorMonth = prior.total
+        }
+
+        let summary = AzureCostSummary(
             spendMTD: mtd.total,
             spendPriorMonth: spendPriorMonth,
             // A completed (fallback) month projects to itself; the current month is
-            // linearly extrapolated by elapsed days.
+            // linearly extrapolated by elapsed days. Frozen onto the cached summary —
+            // over a poll interval the elapsed-days drift is cosmetic and self-heals on
+            // the next real export (a cache miss, recomputed with fresh `now`).
             spendProjected: isFallback ? mtd.total : projectMonthlySpend(mtd.total, now: now),
             byResource: Array(mtd.byResource.prefix(topN)),
             byType: Array(mtd.byType.prefix(topN)),
             asOfMonth: isFallback ? coveredMonth : nil,
             error: nil
         )
+        return AzureCostFetchResult(summary: summary, fingerprint: fingerprint)
     }
 }
 
@@ -276,6 +336,12 @@ enum AzureCostReader {
 final class AzureCostService: ObservableObject {
     static let shared = AzureCostService()
 
+    /// Poll cadence. The Cost Management export is published ~once a day, so this runs
+    /// on its own fixed 4-hour cadence rather than the shared `RefreshInterval` setting
+    /// (like host/container metrics) — paired with the fingerprint cache, unchanged
+    /// polls download nothing (fixes #114's ~161 GB/mo egress).
+    static let pollInterval: TimeInterval = 4 * 60 * 60
+
     @Published private(set) var summary: AzureCostSummary?
     @Published private(set) var isLoading = false
     @Published private(set) var isConfigured: Bool
@@ -288,6 +354,11 @@ final class AzureCostService: ObservableObject {
 
     private var task: Task<Void, Never>?
 
+    /// Last successful fetch (summary + its export fingerprint). Consulted each poll to
+    /// skip re-downloading partitions when the export hasn't changed. Cleared when the
+    /// SAS is cleared/reconfigured so a new container never serves the old one's data.
+    private var cache: AzureCostFetchResult?
+
     init(makeFetcher: @escaping (String) -> BlobFetching = { URLSessionBlobFetcher(sasURL: $0) }) {
         self.makeFetcher = makeFetcher
         isConfigured = KeychainHelper.shared.loadAzureCostSAS()?.isEmpty == false
@@ -297,6 +368,7 @@ final class AzureCostService: ObservableObject {
         guard let sas = KeychainHelper.shared.loadAzureCostSAS(), !sas.isEmpty else {
             isConfigured = false
             summary = nil
+            cache = nil
             lastError = nil
             isLoading = false
             return
@@ -305,7 +377,9 @@ final class AzureCostService: ObservableObject {
         isLoading = true
         let fetcher = makeFetcher(sas)
         do {
-            summary = try await AzureCostReader.fetchSummary(fetcher: fetcher)
+            let result = try await AzureCostReader.fetchSummary(fetcher: fetcher, previous: cache)
+            summary = result.summary
+            cache = result
             lastError = nil
             lastUpdated = Date()
         } catch {
@@ -317,8 +391,8 @@ final class AzureCostService: ObservableObject {
         isLoading = false
     }
 
-    /// Initial load plus a repeating refresh.
-    func start(interval: TimeInterval = 60) {
+    /// Initial load plus a repeating refresh on the fixed 4-hour cadence.
+    func start(interval: TimeInterval = AzureCostService.pollInterval) {
         guard task == nil else { return }
         task = Task { [weak self] in
             guard let self else { return }
@@ -347,6 +421,9 @@ final class AzureCostService: ObservableObject {
     /// the SAS URL in Settings so the panel updates without waiting for the poll.
     func configureFromKeychain() {
         isConfigured = KeychainHelper.shared.loadAzureCostSAS()?.isEmpty == false
+        // Drop the cache: a new SAS may point at a different container, so force a
+        // fresh download rather than risk serving the previous one's summary.
+        cache = nil
         Task { await refresh() }
     }
 

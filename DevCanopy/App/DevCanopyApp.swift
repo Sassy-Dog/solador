@@ -133,7 +133,9 @@ struct DevCanopyApp: App {
                     WorkflowNotificationService.shared.requestAuthorizationIfNeeded()
                     portfolioCIService.start(interval: interval)
                     ghRunnersService.start(interval: interval)
-                    AzureCostService.shared.start(interval: interval)
+                    // Azure cost is a daily export — own fixed 4h cadence, not the
+                    // shared refresh interval (#114).
+                    AzureCostService.shared.start()
                     // Self-reconnecting WebSocket; not on the poll cadence.
                     agentRuntimes.start()
                     if DemoMode.isEnabled {
@@ -151,7 +153,8 @@ struct DevCanopyApp: App {
                     claudeUsageService.restart(interval: interval)
                     portfolioCIService.restart(interval: interval)
                     ghRunnersService.restart(interval: interval)
-                    AzureCostService.shared.restart(interval: interval)
+                    // Azure cost intentionally not restarted here — it runs on its own
+                    // fixed 4h cadence, independent of the shared refresh interval (#114).
                 }
         }
         .modelContainer(modelContainer)
