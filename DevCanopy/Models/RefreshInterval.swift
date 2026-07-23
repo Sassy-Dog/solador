@@ -6,7 +6,8 @@ import Foundation
 /// mechanism for the app.
 ///
 /// Note: real-time host/container metrics poll on their own sub-second/10s
-/// cadences and are intentionally not governed by this setting.
+/// cadences and are intentionally not governed by this setting. The Azure cost
+/// panel likewise runs on its own fixed 4h cadence (the export is daily).
 enum RefreshInterval: Int, Codable, CaseIterable {
     case thirtySeconds = 30
     case oneMinute = 60
