@@ -164,7 +164,10 @@ jobs:
 
   agent-tests:
     name: Rust agent
-    runs-on: ubuntu-latest
+    # dtolnay/rust-toolchain installs into $HOME, so it needs no root — which is
+    # what makes this job portable to the fleet (the image ships no rustup/cargo
+    # and the runner is non-root with no sudo).
+    runs-on: [self-hosted, linux, sassy-dog]
     defaults:
       run:
         working-directory: agent
