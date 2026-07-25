@@ -23,16 +23,22 @@ concurrency:
 jobs:
   swift-tests:
     name: Swift app tests
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS, sassy-dog]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # XcodeGen emits the newest project format, so pair it with a pinned Xcode
       # that can read it. Both are pinned: a floating xcode-version or XcodeGen
       # is a silent build input (the .xcodeproj is gitignored).
+      #
+      # 26.4.1 is the ONLY Xcode installed on the org's self-hosted Mac, so the
+      # pin has to match it — setup-xcode selects an installed version, it does
+      # not download one. Bumped from 26.3 with this runner move; if another
+      # version is ever added to the image, re-pin deliberately rather than
+      # floating.
       - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
-          xcode-version: '26.3'
+          xcode-version: '26.4.1'
 
       - name: Show toolchain
         run: |
@@ -112,7 +118,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS, sassy-dog]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
