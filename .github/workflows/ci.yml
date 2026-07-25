@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Required for the merge queue: without this the queue builds a merge_group
+  # ref, no check ever reports against it, and entries sit until they time out.
+  merge_group:
 
 # Least-privilege default token: jobs only read repo contents. Widen per-job if
 # a future step needs more (e.g. packages: write).
