@@ -40,6 +40,26 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .azureCost: "dollarsign.circle"
         }
     }
+
+    /// The narrowest width at which this panel still reads well — its personal
+    /// breakpoint. `CockpitBreakpoints.reflow` breaks a row apart only when *its*
+    /// panels stop fitting, so a lean panel pair stays side-by-side at a width that
+    /// forces a hungrier pair to stack.
+    ///
+    /// Each figure is the panel's widest fixed content plus its 28pt of card padding
+    /// — e.g. Repos sums seven fixed numeric columns (312pt), their gaps, the status
+    /// dot and a legible repo name. Widen a panel's content, widen this number.
+    var minWidth: CGFloat {
+        switch self {
+        case .hosts: CockpitBreakpoints.hostCardMinWidth
+        case .ghWorkflows: 560
+        case .openclawAgents: 440
+        case .ghRunners: 400
+        case .containers: 400
+        case .azureCost: 400
+        case .claudeUsage: 360
+        }
+    }
 }
 
 /// How wide a panel sits within its cockpit row.
