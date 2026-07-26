@@ -45,6 +45,7 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @AppStorage("refreshInterval") private var refreshInterval: Int = RefreshInterval.default.rawValue
     @AppStorage("coreRowSpan") private var coreRowSpan: Int = 2
+    @AppStorage("hostOverflowMode") private var hostOverflowRaw: String = HostOverflowMode.stack.rawValue
 
     /// Mirrors the system login-item registration so the toggle reflects real
     /// state rather than a stored preference that may have failed to apply.
@@ -70,6 +71,17 @@ struct GeneralSettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Stepper("CPU core rows: \(coreRowSpan)", value: $coreRowSpan, in: 1 ... 4)
                     Text("How many rows tall the per-core CPU grid is on every host card.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker("When host cards don't fit", selection: $hostOverflowRaw) {
+                        ForEach(HostOverflowMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode.rawValue)
+                        }
+                    }
+                    Text("Stacking keeps every host visible; tabs keep the cockpit short.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

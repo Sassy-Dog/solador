@@ -16,4 +16,12 @@ final class CockpitLayoutTests: XCTestCase {
             XCTAssertFalse(row.isEmpty, "a cockpit row must contain at least one panel")
         }
     }
+
+    /// Every panel declares its own breakpoint. A new panel kind that forgets one
+    /// would reflow against a zero minimum and never break out of a cramped row.
+    func testEveryPanelKindDeclaresAPositiveMinWidth() {
+        for kind in CockpitPanelKind.allCases {
+            XCTAssertGreaterThan(kind.minWidth, 0, "\(kind.rawValue) must declare a minWidth")
+        }
+    }
 }

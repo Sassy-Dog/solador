@@ -114,6 +114,26 @@ DevCanopy/
 - All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);
   never persisted in SwiftData.
 
+### Responsive layout (breakpoints)
+- `Views/Cockpit/CockpitBreakpoints.swift` holds the responsive math — pure values,
+  no SwiftUI, unit-tested like `CoreGridLayout`/`VolumeGridLayout`.
+- The model is CSS `repeat(auto-fit, minmax(<min>, 1fr))`, **not** global `sm/md/lg`
+  tiers: every panel declares its own `CockpitPanelKind.minWidth`, and `reflow()`
+  splits a row only when *its* panels stop fitting. So Claude Usage + Azure Cost stay
+  side-by-side at a width where the host cards must stack.
+- Panels never measure themselves. One `GeometryReader` at the `CockpitView` root is
+  the only measurement; each panel's width is *derived* from the reflowed row and
+  handed down as `\.cockpitPanelWidth` (`CockpitPanelWidth.swift`).
+  **Don't reach for `.background(GeometryReader { … .preference(…) })` here** — those
+  preferences do not reach `onPreferenceChange` in this SwiftUI version, and the
+  reader silently stays at 0.
+- Host cards need ≥ 900pt each (`CockpitBreakpoints.hostCardMinWidth`); below that
+  they stack, or collapse to tabs if the user picks that in General settings
+  (`hostOverflowMode`).
+- Unknown width (0) means "not in a cockpit", and every fallback picks the layout that
+  can't be unreadable — `hostColumns` stacks rather than assuming wide. Assuming wide
+  is what let a dead measurement pass for a deliberate layout.
+
 ### UI Design
 - Dark mode optimized; glanceable grid of cockpit panels.
 - Status indicated by color: green (good), orange (warning), red (error).
@@ -161,7 +181,9 @@ Never compute a version anywhere else.
 
 ### Adding a New Cockpit Panel
 1. Add a service under `DevCanopy/Services/` for the data source.
-2. Add a `CockpitPanelKind` case and wire it in `Views/Cockpit/CockpitView.swift`.
+2. Add a `CockpitPanelKind` case — including its `minWidth` breakpoint — and wire it
+   in `Views/Cockpit/CockpitView.swift`. `CockpitLayoutTests` fails if you skip the
+   `minWidth`.
 3. Create the panel view in `Views/Cockpit/Panels/`.
 4. Run `./Scripts/generate-project.sh` so new files land in the Xcode project.
 
