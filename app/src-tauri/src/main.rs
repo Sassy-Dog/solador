@@ -1,48 +1,91 @@
 //! DevCanopy shell. The frontend receives a finished view-model and paints;
 //! all logic lives in `viewmodel`.
 
-use serde_json::Value;
+use agentclient::AgentClient;
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use viewmodel::card::{host_card, HostHistories};
 
-const FIXTURE: &str = include_str!("../../../crates/metrics/tests/fixtures/snapshot.json");
+/// The mutable half of one watched host. The `AgentClient` is immutable and is
+/// held separately so the poll loop never locks across an await.
+struct HostState {
+    name: String,
+    histories: HostHistories,
+    latest: Option<metrics::Snapshot>,
+    error: Option<String>,
+}
 
-/// Task 7 replaces this with live polling.
-fn current_view_model() -> Value {
-    let snap: metrics::Snapshot = serde_json::from_str(FIXTURE).expect("fixture");
-    let mut h = HostHistories::new();
-    // Seed a full history buffer: fewer samples than HISTORY_CAPACITY would
-    // plateau the visible-sample count at every viewport wide enough to
-    // request more than we have, defeating the "widen instead of stretch"
-    // chart behaviour the Playwright suite checks.
-    for _ in 0..viewmodel::layout::HISTORY_CAPACITY {
-        h.record(&snap);
-    }
-    host_card("ubu-3xdv", &snap, &h)
+type Shared = Arc<Mutex<HostState>>;
+
+/// Tokens live in the OS credential store, never in app storage. The service
+/// name matches the Swift `KeychainHelper` so an existing entry is reused.
+fn load_token(host_id: &str) -> Option<String> {
+    keyring::Entry::new("com.sassydog.devcanopy", &format!("host-{host_id}"))
+        .ok()?
+        .get_password()
+        .ok()
 }
 
 #[tauri::command]
-fn snapshot() -> Value {
-    current_view_model()
+fn snapshot(state: tauri::State<'_, Shared>) -> Value {
+    let s = state.lock().unwrap();
+    match (&s.latest, &s.error) {
+        (Some(snap), _) => host_card(&s.name, snap, &s.histories),
+        (None, Some(msg)) => json!({ "error": { "message": msg, "hostName": s.name } }),
+        (None, None) => json!({
+            "error": { "message": "waiting for first sample…", "hostName": s.name }
+        }),
+    }
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(i) = args.iter().position(|a| a == "--dump") {
-        let path = args
-            .get(i + 1)
-            .cloned()
-            .unwrap_or_else(|| "sample.json".into());
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&current_view_model()).unwrap(),
-        )
-        .expect("write view-model");
-        println!("wrote {path}");
-        return;
-    }
+    // Configuration is env-driven for the skeleton; Settings arrives with the
+    // store crate in a later plan.
+    let host_id = std::env::var("DEVCANOPY_HOST_ID").unwrap_or_else(|_| "default".into());
+    let name = std::env::var("DEVCANOPY_HOST_NAME").unwrap_or_else(|_| "ubu-3xdv".into());
+    let url =
+        std::env::var("DEVCANOPY_HOST_URL").unwrap_or_else(|_| "http://100.87.202.125:7878".into());
+    let token = std::env::var("DEVCANOPY_AGENT_TOKEN")
+        .ok()
+        .or_else(|| load_token(&host_id))
+        .unwrap_or_default();
+
+    let shared: Shared = Arc::new(Mutex::new(HostState {
+        name,
+        histories: HostHistories::new(),
+        latest: None,
+        error: None,
+    }));
+
+    // Immutable, so it is owned by the poll task rather than the mutex.
+    let client = AgentClient::new(url, token);
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let poll_target = shared.clone();
+    rt.spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            tick.tick().await;
+            // No lock is held across this await.
+            let result = client.snapshot().await;
+            let mut s = poll_target.lock().unwrap();
+            match result {
+                Ok(snap) => {
+                    s.histories.record(&snap);
+                    s.latest = Some(snap);
+                    s.error = None;
+                }
+                Err(e) => s.error = Some(e.user_message().to_string()),
+            }
+        }
+    });
 
     tauri::Builder::default()
+        .manage(shared)
         .invoke_handler(tauri::generate_handler![snapshot])
         .run(tauri::generate_context!())
         .expect("failed to start");
+
+    // Keep the runtime alive for the lifetime of the app.
+    drop(rt);
 }

@@ -158,15 +158,32 @@ function render(d) {
 }
 
 (async () => {
-  try {
-    const data = window.__TAURI__
+  const load = async () =>
+    window.__TAURI__
       ? await window.__TAURI__.core.invoke("snapshot")
       : await (await fetch("sample.json")).json();
-    render(data);
-  } catch (e) {
+
+  const draw = (d) => {
+    if (d.error) {
+      // A failed host shows its cause, never fabricated numbers.
+      $("hostName").textContent = d.error.hostName;
+      $("cpuValue").textContent = "—";
+      $("cpuModel").textContent = d.error.message;
+      $("cpuModel").style.color = "#e05a4f";
+      return;
+    }
+    $("cpuModel").style.color = "";
+    render(d);
+  };
+
+  try { draw(await load()); } catch (e) {
+    // CSSOM setters, not a `style=""` attribute: this string embeds `esc(e)`
+    // and runs under the same `style-src 'self'` CSP as everywhere else in
+    // this file (see the top-of-file note and `render()`'s volume bars).
     document.body.innerHTML = `<pre>failed to load snapshot: ${esc(e)}</pre>`;
     const pre = document.body.querySelector("pre");
     pre.style.color = "#e05a4f";
     pre.style.padding = "20px";
   }
+  if (window.__TAURI__) setInterval(async () => { try { draw(await load()); } catch {} }, 2000);
 })();

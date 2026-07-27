@@ -9,5 +9,8 @@ tauri-build = "2"
 [dependencies]
 metrics = { path = "../../crates/metrics" }
 viewmodel = { path = "../../crates/viewmodel" }
+agentclient = { path = "../../crates/agentclient" }
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tauri = "2"
 serde_json = { workspace = true }
