@@ -15,7 +15,7 @@
 Every task's requirements implicitly include these.
 
 - **Platforms:** macOS and Windows only. Do not add Linux-conditional code or dependencies.
-- **No npm.** No `package.json`, no `node_modules`, no lockfile, no bundler, no framework. `app/ui/` is served as static files.
+- **No npm in the shipped frontend.** `app/ui/` has no `package.json`, no `node_modules`, no lockfile, no bundler and no framework — it is served as static files, and nothing under `app/` may gain a JS dependency. The Playwright *test harness* lives in `tests/frontend/` with its own `package.json`; that directory ships to nobody and is the only place npm is permitted.
 - **CSP is strict.** `app/src-tauri/tauri.conf.json` must set a real `csp`; `"csp": null` must never be committed.
 - **Escape all remote-origin strings.** Host names, CPU models, mount paths and process names come from a remote agent. Every interpolation into markup passes through `esc()`, or uses `textContent`.
 - **Unknown renders `—`.** Never `0`, never a default. `Option<f64>` at the Rust boundary; the frontend has no branch that could invent a value.
@@ -1365,6 +1365,10 @@ telling the operator which layer to chase, not just that something failed."
 - Create: `app/ui/index.html`
 - Create: `app/ui/app.css`
 - Create: `app/ui/app.js`
+- Create: `tests/frontend/package.json`
+- Create: `tests/frontend/playwright.config.js`
+- Create: `tests/frontend/layout.spec.js`
+- Modify: `.gitignore`
 
 **Interfaces:**
 - Consumes: `viewmodel::card::{host_card, HostHistories}`, `metrics::Snapshot`
@@ -1817,37 +1821,128 @@ Expected: builds clean.
 Run: `./target/release/devcanopy-app`
 Expected: a window titled "DevCanopy" showing the host card with 16 core cells and populated charts. Close it.
 
-- [ ] **Step 6: Assert the layout, not a screenshot**
+- [ ] **Step 6: Write the Playwright layout test**
 
-```bash
-mkdir -p /tmp/dc-preview && cp app/ui/* /tmp/dc-preview/
-./target/release/devcanopy-app --dump /tmp/dc-preview/sample.json
-(cd /tmp/dc-preview && python3 -m http.server 3799 &) && sleep 2
+The Rust unit tests prove the *policy*; this proves the CSS actually applies it. It
+asserts computed layout, never pixels — screenshots would be brittle and would not
+catch the failure mode that matters (a rung that silently doesn't apply).
+
+`tests/frontend/package.json`:
+
+```json
+{
+  "name": "devcanopy-frontend-tests",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": { "test": "playwright test" },
+  "devDependencies": { "@playwright/test": "^1.50.0" }
+}
 ```
 
-Verify in any browser at `http://127.0.0.1:3799/index.html`, then in its console:
+`tests/frontend/playwright.config.js`:
 
 ```js
-const wrap = document.querySelector('.cores-wrap');
-const grid = document.querySelector('.cores');
-for (const w of [1900, 890, 440, 216]) {
-  wrap.style.width = w + 'px'; void wrap.offsetWidth;
-  const cols = getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length;
-  const cells = grid.children.length;
-  console.log(w, 'cols', cols, 'fullLastRow', cells % cols === 0,
-              'blockPx', Math.round(wrap.getBoundingClientRect().height));
-}
-wrap.style.width = '';
+// Serves app/ui plus a dumped view-model. No build step: the frontend is static.
+export default {
+  testDir: ".",
+  use: { baseURL: "http://127.0.0.1:4173" },
+  webServer: {
+    command: "python3 -m http.server 4173 --directory ../../app/ui",
+    url: "http://127.0.0.1:4173/index.html",
+    reuseExistingServer: true,
+  },
+};
 ```
 
-Expected: `1900 cols 16 fullLastRow true blockPx 220`, `890 cols 8 … 220`, `440 cols 4 … 220`, `216 cols 2 … 220`. Every row full, block fixed at 220 throughout.
+`tests/frontend/layout.spec.js`:
 
-Stop the server: `pkill -f 'http.server 3799'`
+```js
+import { test, expect } from "@playwright/test";
 
-- [ ] **Step 7: Commit**
+test.beforeEach(async ({ page }) => {
+  await page.goto("/index.html");
+  await page.waitForFunction(() => document.querySelectorAll("#cores .core").length > 0);
+});
+
+test("core grid uses only column counts that leave a full last row", async ({ page }) => {
+  // 16 cores -> divisors 1,2,4,8,16. Any other count would orphan the last row.
+  for (const [width, expected] of [[1900, 16], [900, 8], [500, 4], [300, 2], [150, 1]]) {
+    const got = await page.evaluate((w) => {
+      const wrap = document.querySelector(".cores-wrap");
+      const grid = document.querySelector(".cores");
+      wrap.style.width = w + "px";
+      void wrap.offsetWidth;
+      const cols = getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length;
+      const cells = grid.children.length;
+      wrap.style.width = "";
+      return { cols, cells };
+    }, width);
+    expect(got.cols, `at ${width}px`).toBe(expected);
+    expect(got.cells % got.cols, `orphan row at ${width}px`).toBe(0);
+  }
+});
+
+test("cores block holds a fixed height at every width", async ({ page }) => {
+  for (const width of [1900, 900, 500, 300, 150]) {
+    const h = await page.evaluate((w) => {
+      const wrap = document.querySelector(".cores-wrap");
+      wrap.style.width = w + "px";
+      void wrap.offsetWidth;
+      const px = Math.round(wrap.getBoundingClientRect().height);
+      wrap.style.width = "";
+      return px;
+    }, width);
+    // core_block_height(CORE_ROW_SPAN_DEFAULT) = 2 * 110
+    expect(h, `block height at ${width}px`).toBe(220);
+  }
+});
+
+test("charts widen their time window instead of stretching", async ({ page }) => {
+  const density = async (w) =>
+    page.evaluate((width) => {
+      document.body.style.width = width + "px";
+      void document.body.offsetWidth;
+      const pts = document.querySelector("#cpuChart svg polyline")
+        .getAttribute("points").trim().split(" ");
+      const xs = pts.map((p) => parseFloat(p.split(",")[0]));
+      document.body.style.width = "";
+      return { n: xs.length, px: (xs[xs.length - 1] - xs[0]) / (xs.length - 1) };
+    }, w);
+
+  const narrow = await density(500);
+  const wide = await density(1500);
+  // three times the width shows about three times the samples...
+  expect(wide.n).toBeGreaterThan(narrow.n * 2.5);
+  // ...at unchanged on-screen density, which is what "not stretched" means
+  expect(Math.abs(wide.px - narrow.px)).toBeLessThan(0.5);
+});
+
+test("a host with no discrete GPU renders an em dash, never zero", async ({ page }) => {
+  await expect(page.locator("#gpuValue")).toHaveText("—");
+  await expect(page.locator("#vramText")).toHaveText("VRAM: —");
+});
+```
+
+- [ ] **Step 7: Run the layout test**
 
 ```bash
-git add app
+./target/release/devcanopy-app --dump app/ui/sample.json
+cd tests/frontend && npm install && npx playwright install chromium && npm test
+```
+
+Expected: 4 passing. If the column-count test fails, the ladder is not reaching CSS —
+check that `installCoreLadder` ran and that `.cores-wrap` has `container-type: inline-size`.
+
+Add `app/ui/sample.json` to `.gitignore` — it is generated, not source:
+
+```bash
+printf 'app/ui/sample.json\ntests/frontend/node_modules/\ntests/frontend/test-results/\n' >> .gitignore
+```
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add app tests/frontend .gitignore
 git commit -m "feat(app): Tauri shell rendering the host card from viewmodel
 
 Frontend is static HTML/CSS/JS with no npm. The core grid reflows via
@@ -2130,7 +2225,7 @@ these crates stay portable, and a check job catches drift the moment it lands."
 - `cargo test --workspace` passes: 5 (metrics) + 27 (viewmodel) + 5 (agentclient) = 37 tests
 - `./target/release/devcanopy-app` shows live metrics from a real agent
 - A wrong token produces `—` and a cause-specific message, never a zero
-- The core grid reflows 16/8/4/2/1 columns with a full last row at every width, and the cores block measures 220px throughout
+- `cd tests/frontend && npm test` passes 4 Playwright tests: full last row at every rung, 220px block, constant chart density, em dash for a missing GPU
 - CI gates fmt, clippy, tests, and a Windows cross-check
 - The Swift app is unmodified and still builds (`./dev build`)
 
