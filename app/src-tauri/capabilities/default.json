@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The cockpit window may call the read-only snapshot command and nothing else.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

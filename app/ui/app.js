@@ -1,0 +1,141 @@
+// The entire frontend. No npm, no bundler, no framework: `viewmodel` has
+// already decided every string and colour, so this only paints.
+
+const $ = (id) => document.getElementById(id);
+
+// Host names, CPU models, mount paths and process names arrive from a REMOTE
+// agent. A webview parses markup, and in Tauri the DOM can call `invoke`, so an
+// unescaped `<img onerror=...>` would reach the Rust command surface.
+const esc = (v) =>
+  String(v).replace(/[&<>"']/g, (ch) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+const CHARTS = new Map();
+
+function paint(el) {
+  const spec = CHARTS.get(el);
+  if (!spec) return;
+  const w = Math.max(1, Math.round(el.clientWidth));
+  const h = Math.max(1, Math.round(el.clientHeight));
+  const { series, lo, hi, grid, pxPerSample, retained } = spec;
+  const visible = Math.min(retained, Math.max(2, Math.floor(w / pxPerSample)));
+  const parts = [];
+  if (grid) {
+    for (const f of [0, 0.5, 1]) {
+      const y = (f * 100).toFixed(2);
+      parts.push(`<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="var(--line)" stroke-width="0.5" vector-effect="non-scaling-stroke"/>`);
+    }
+  }
+  for (const sr of series) {
+    const all = sr.values || [];
+    if (all.length < 2) continue;
+    const win = all.slice(Math.max(0, all.length - visible));
+    const span = Math.max(hi - lo, 1e-4);
+    const step = win.length > 1 ? w / (win.length - 1) : 0;
+    const pts = win.map((v, i) => {
+      const y = 100 - Math.min(Math.max((v - lo) / span, 0), 1) * 100;
+      return `${(i * step).toFixed(2)},${y.toFixed(2)}`;
+    }).join(" ");
+    parts.push(`<polyline points="${pts}" fill="none" stroke="${esc(sr.color)}" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
+  }
+  // x in real pixels, y normalised: a wider chart shows MORE TIME, not a
+  // stretched line. A symmetric viewBox is what causes stretching.
+  el.innerHTML = `<svg viewBox="0 0 ${w} 100" preserveAspectRatio="none" width="${w}" height="${h}" role="img" aria-label="metric history, ${visible} samples">${parts.join("")}</svg>`;
+}
+
+const chartObserver = new ResizeObserver((es) => { for (const e of es) paint(e.target); });
+
+function spark(el, series, lo, hi, capacity, grid = true) {
+  if (el.dataset.h) el.style.height = Number(el.dataset.h) + "px";
+  CHARTS.set(el, { series, lo, hi, grid, pxPerSample: window.__PX || 4, retained: capacity });
+  paint(el);
+  chartObserver.observe(el);
+}
+
+/** Rust computes which column counts leave a full last row; CSS distributes. */
+function installCoreLadder(ladder) {
+  const rules = ladder.map((r) =>
+    `@container cores (min-width: ${r.minWidth}px){.cores{grid-template-columns:repeat(${r.cols},1fr)}}`
+  ).join("\n");
+  let el = document.getElementById("coreLadder");
+  if (!el) { el = document.createElement("style"); el.id = "coreLadder"; document.head.appendChild(el); }
+  el.textContent = rules;
+}
+
+function render(d) {
+  const r = document.documentElement.style;
+  for (const [k, v] of Object.entries(d.theme)) {
+    r.setProperty("--" + (k === "netUp" ? "netup" : k), v);
+  }
+  window.__PX = d.pxPerSample;
+  r.setProperty("--core-block-h", d.coreBlockHeight + "px");
+  installCoreLadder(d.coreLadder);
+
+  $("hostName").textContent = d.hostName;
+  $("cpuModel").textContent = d.cpuModel;
+  $("cpuValue").textContent = d.cpuValue;
+  $("cpuValue").style.color = d.cpuValueColor;
+  const th = $("thermal");
+  th.textContent = d.thermalText;
+  th.style.color = d.thermalColor;
+  th.style.background = d.thermalColor + "22";
+
+  spark($("cpuChart"), [{ values: d.cpuHistory, color: d.theme.cpu }], 0, 100, d.capacity);
+
+  $("cores").innerHTML = d.cores.map((c) =>
+    `<div class="core"><div class="cap">${esc(c.label)}<b style="margin-left:auto;color:${esc(c.valueColor)}">${esc(c.value)}</b></div><div class="plot"></div></div>`
+  ).join("");
+  document.querySelectorAll("#cores .plot").forEach((el, i) => {
+    spark(el, [{ values: d.cores[i].history, color: d.cores[i].hue }], 0, 100, d.capacity, false);
+  });
+
+  $("memValue").textContent = d.memValue;
+  spark($("memChart"), [{ values: d.memHistory, color: d.theme.mem }], 0, 100, d.capacity);
+  $("swapText").textContent = d.swapText;
+  $("pressureText").textContent = d.pressureText;
+  $("pressureText").style.color = d.pressureColor;
+
+  $("gpuValue").textContent = d.gpuValue;
+  $("gpuValue").style.color = d.gpuValueColor;
+  spark($("gpuChart"), [{ values: d.gpuHistory, color: d.theme.gpu }], 0, 100, d.capacity);
+  $("vramText").textContent = d.vramText;
+
+  $("diskRead").textContent = d.diskRead;
+  $("diskWrite").textContent = d.diskWrite;
+  $("diskAxis").textContent = d.diskAxis;
+  spark($("diskChart"), [
+    { values: d.diskReadHistory, color: d.theme.read },
+    { values: d.diskWriteHistory, color: d.theme.write },
+  ], 0, d.diskMax, d.capacity);
+
+  $("netDown").textContent = d.netDown;
+  $("netUp").textContent = d.netUp;
+  $("netAxis").textContent = d.netAxis;
+  spark($("netChart"), [
+    { values: d.netDownHistory, color: d.theme.net },
+    { values: d.netUpHistory, color: d.theme.netUp },
+  ], 0, d.netMax, d.capacity);
+
+  $("volumeCount").textContent = d.volumeCount;
+  $("volumes").innerHTML = d.volumes.map((v) =>
+    `<div class="vol"><div class="top"><span class="mount">${esc(v.mount)}</span><span class="detail" style="color:${esc(v.tint)}">${esc(v.detail)}</span></div><div class="bar"><span style="width:${(v.fraction * 100).toFixed(1)}%;background:${esc(v.tint)}"></span></div></div>`
+  ).join("");
+
+  const procs = (list) => list.map((p) =>
+    `<div class="proc"><span>${esc(p.name)}</span><span class="v">${esc(p.value)}</span></div>`
+  ).join("");
+  $("topCpu").innerHTML = procs(d.topCpu);
+  $("topRam").innerHTML = procs(d.topRam);
+}
+
+(async () => {
+  try {
+    const data = window.__TAURI__
+      ? await window.__TAURI__.core.invoke("snapshot")
+      : await (await fetch("sample.json")).json();
+    render(data);
+  } catch (e) {
+    document.body.innerHTML =
+      `<pre style="color:#e05a4f;padding:20px">failed to load snapshot: ${esc(e)}</pre>`;
+  }
+})();

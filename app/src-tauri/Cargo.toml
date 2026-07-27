@@ -1,0 +1,13 @@
+[package]
+name = "devcanopy-app"
+version = "0.1.0"
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+metrics = { path = "../../crates/metrics" }
+viewmodel = { path = "../../crates/viewmodel" }
+tauri = "2"
+serde_json = { workspace = true }
