@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "pretest": "cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump ../../app/ui/sample.json",
+    "pretest": "cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump ../../app/ui/sample.json && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-stale ../../app/ui/sample-stale.json",
     "test": "playwright test"
   },
   "devDependencies": { "@playwright/test": "^1.50.0" }

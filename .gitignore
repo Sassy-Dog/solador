@@ -104,6 +104,7 @@ target/
 
 # Frontend (Tauri app + Playwright tests)
 app/ui/sample.json
+app/ui/sample-stale.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/

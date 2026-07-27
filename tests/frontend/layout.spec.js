@@ -155,24 +155,23 @@ test("a core cell's value text renders its usage colour", async ({ page }) => {
   expect(computed).toBe(expected);
 });
 
-test("a host that fails after connecting keeps its last-known data, with an unmissable stale indicator", async ({ page }) => {
+test("a host that fails after connecting keeps its last-known data, with an unmissable stale indicator", async ({ page, baseURL }) => {
   // Regression test for the "stale value presented as current" defect: a
   // host that dies after a good poll used to render a fully live-looking
   // card forever. Simulates that sequence by stubbing `window.__TAURI__` (no
   // real Tauri IPC in a browser context) so the first `invoke("snapshot")`
-  // returns a live view-model and every call after returns a "stale" one
-  // built from the SAME data -- the whole point is that the numbers must
-  // not change, only the connection badge.
-  const live = await (await fetch("http://127.0.0.1:4173/sample.json")).json();
-  const stale = {
-    ...live,
-    connection: {
-      state: "stale",
-      color: "#e05a4f",
-      message:
-        "Couldn't reach the agent. Check the host is up and the agent is running. — last update 2s ago",
-    },
-  };
+  // returns a live view-model and every call after returns a "stale" one --
+  // the whole point is that the numbers must not change, only the connection
+  // badge.
+  //
+  // Both fixtures are dumped by the real Rust binary (`--dump` / `--dump-stale`,
+  // see tests/frontend/package.json's pretest and app/src-tauri/src/main.rs),
+  // from the identical underlying snapshot/history, rather than the stale one
+  // being hand-built here from `live` with a copy-pasted "stale"/message
+  // string: a hand-built copy can't notice viewmodel's own strings drifting
+  // out from under it (see finding M4).
+  const live = await (await fetch(`${baseURL}/sample.json`)).json();
+  const stale = await (await fetch(`${baseURL}/sample-stale.json`)).json();
 
   await page.addInitScript(
     ([liveVm, staleVm]) => {
@@ -201,4 +200,43 @@ test("a host that fails after connecting keeps its last-known data, with an unmi
   expect(cpuAfter).not.toBe("—");
   await expect(page.locator("#staleMsg")).toContainText("Couldn't reach the agent");
   await expect(page.locator("#staleMsg")).toContainText("ago");
+});
+
+test("repeated renders do not leak chart bookkeeping (#cores)", async ({ page, baseURL }) => {
+  // Regression test for finding I1: render() used to replace #cores'
+  // innerHTML on every single poll without pruning the discarded cells from
+  // CHARTS (a strong Map) or unregistering them from chartObserver -- ~32
+  // detached nodes leaked per poll, forever, in an app meant to run
+  // full-screen indefinitely. app.js exposes a read-only test hook
+  // (window.__DEVCANOPY_TEST__) specifically so this can be driven directly
+  // rather than waiting on real 2s poll ticks.
+  await gotoApp(page);
+  const data = await (await fetch(`${baseURL}/sample.json`)).json();
+  const coreCount = data.cores.length;
+  // 5 fixed top-level charts (cpu/mem/gpu/disk/net) that exist once and are
+  // never rebuilt, plus one per core.
+  const expectedCharts = 5 + coreCount;
+
+  const counts = await page.evaluate(
+    ({ d, n }) => {
+      const results = [];
+      for (let i = 0; i < n; i++) {
+        window.__DEVCANOPY_TEST__.render(d);
+        results.push(window.__DEVCANOPY_TEST__.chartCount());
+      }
+      return results;
+    },
+    { d: data, n: 20 }
+  );
+
+  // Flat at every single render, not just the last one -- if CHARTS grew by
+  // even one entry per call, this would climb linearly instead.
+  for (const [i, count] of counts.entries()) {
+    expect(count, `chart bookkeeping size after render #${i + 1}`).toBe(expectedCharts);
+  }
+
+  // The DOM itself must also still show exactly one cell per core, not a
+  // pile-up of orphaned ones sitting outside #cores.
+  const cells = await page.locator("#cores .core").count();
+  expect(cells).toBe(coreCount);
 });
