@@ -220,12 +220,10 @@ jobs:
       # dtolnay/rust-toolchain@stable elsewhere in this file. Reusing that
       # action here (rather than a raw `rustup toolchain install`) keeps this
       # job portable to a fleet image with no pre-installed rustup, matching
-      # the reasoning already pinned on the agent-tests job above. `targets`
-      # installs the Windows cross-target as part of setup.
+      # the reasoning already pinned on the agent-tests job above.
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt, clippy
-          targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
@@ -239,15 +237,6 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
-
-      # Cheap insurance: the port's whole premise is that crates/metrics,
-      # crates/viewmodel and crates/agentclient stay portable to Windows, so a
-      # check job catches drift the moment it lands. app/src-tauri is
-      # deliberately excluded — a Tauri binary needs more than a target triple
-      # to cross-compile (linker, WebView2, resource compiler), which is out of
-      # scope for a source-portability check.
-      - name: Windows target still compiles
-        run: cargo check -p metrics -p viewmodel -p agentclient --target x86_64-pc-windows-msvc
 
       # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
       # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does
@@ -277,3 +266,40 @@ jobs:
       - name: Frontend e2e (Playwright)
         working-directory: tests/frontend
         run: npm test
+
+  windows-tests:
+    name: Windows workspace tests
+    # GitHub-hosted, deliberately not self-hosted: the sassy-dog fleet is
+    # macOS/Linux only. This replaces what used to be a `cargo check --target
+    # x86_64-pc-windows-msvc` cross-check inside rust-workspace above. That
+    # check was only ever a proxy for "does this still compile on Windows",
+    # and it failed on macOS for a toolchain reason, not a portability defect:
+    # agentclient's reqwest/rustls-tls dependency pulls in `ring`, whose
+    # build.rs compiles C sources that need Windows CRT headers macOS doesn't
+    # have. A real Windows runner removes that gap entirely and verifies
+    # strictly more than a cross-check ever could — it actually links and runs
+    # the tests.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # GitHub-hosted runners are ephemeral (no persistent disk between runs,
+      # unlike the self-hosted pool above), so caching matters more here, not
+      # less — same action as the other two Rust jobs in this file, just
+      # pointed at this job's own cache key via runner.os.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          workspaces: .
+
+      # Full workspace, including app/src-tauri: windows-latest's runner image
+      # ships the WebView2 Runtime, and tauri's build.rs/webview2-com resolve
+      # the WebView2 SDK bindings themselves at build time, so no extra
+      # apt/choco-equivalent setup should be needed — unlike Linux, which needs
+      # webkit2gtk/appindicator system packages this repo doesn't install
+      # anywhere. Narrow this to `-p metrics -p viewmodel -p agentclient` only
+      # if a real run shows app/src-tauri needs something this image doesn't
+      # have, and say why in the job/PR rather than narrowing silently.
+      - name: Test
+        run: cargo test --workspace
