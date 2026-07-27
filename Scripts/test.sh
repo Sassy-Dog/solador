@@ -54,8 +54,46 @@ else
 fi
 
 if [[ $? -eq 0 ]]; then
-    log_success "All tests passed"
+    log_success "Swift tests passed"
 else
-    log_error "Tests failed"
+    log_error "Swift tests failed"
     exit 1
 fi
+
+# --- Rust workspace (crates/metrics, crates/viewmodel, crates/agentclient,
+# app/src-tauri) --- additive: does not touch anything above. agent/ is a
+# separate Cargo workspace with its own CI job (agent-tests) and is
+# deliberately not run here.
+if ! command_exists cargo; then
+    log_error "cargo not found — install the Rust toolchain (rust-toolchain.toml pins the version) to run the Rust workspace"
+    exit 1
+fi
+
+log_info "Running Rust workspace tests (crates/*, app/src-tauri)…"
+if cargo test --locked --workspace; then
+    log_success "Rust workspace tests passed"
+else
+    log_error "Rust workspace tests failed"
+    exit 1
+fi
+
+# --- Frontend e2e (Playwright), tests/frontend --- the only thing that
+# exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
+if command_exists npm; then
+    if [[ ! -d "tests/frontend/node_modules" ]]; then
+        log_info "Installing frontend test dependencies…"
+        (cd tests/frontend && npm ci)
+    fi
+
+    log_info "Running frontend e2e tests (tests/frontend)…"
+    if (cd tests/frontend && npx playwright install chromium && npm test); then
+        log_success "Frontend e2e tests passed"
+    else
+        log_error "Frontend e2e tests failed"
+        exit 1
+    fi
+else
+    log_warning "npm not found — skipping frontend e2e tests (tests/frontend)"
+fi
+
+log_success "All tests passed"

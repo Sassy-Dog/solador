@@ -19,4 +19,17 @@ SWIFTFORMAT=$(ensure_pinned_swiftformat) || exit 1
 
 log_info "Formatting Swift sources in place (swiftformat $("$SWIFTFORMAT" --version))…"
 "$SWIFTFORMAT" .
+log_success "Swift formatting complete"
+
+# Rust workspace (crates/metrics, crates/viewmodel, crates/agentclient,
+# app/src-tauri) -- additive, matches ./dev lint's `cargo fmt --check`.
+# agent/ has its own toolchain/CI and is left to it.
+if command_exists cargo; then
+    log_info "Formatting Rust workspace sources in place (cargo fmt)…"
+    cargo fmt --all
+    log_success "Rust formatting complete"
+else
+    log_warning "cargo not found — skipped formatting the Rust workspace"
+fi
+
 log_success "Formatting complete — review changes with: git diff"

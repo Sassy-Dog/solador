@@ -14,20 +14,33 @@ glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **Claude Usage** — token rollups from local Claude Code usage logs (subscription; no USD)
 
 It has three parts:
-- **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit.
+- **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit. This is the shipped app.
 - **Agent** (`agent/`) — Rust (axum) HTTP service exposing host metrics + container
   list as JSON behind a bearer token; reached over Tailscale. See `agent/README.md`.
 - **HostMetricsKit** (`Packages/HostMetricsKit/`) — local Swift package for
   local-machine metric collection (CPU/GPU/battery via IOKit), shared by the app.
+
+There is also an experimental cross-platform walking skeleton, kept separate from
+the shipped SwiftUI app above (which stays untouched): a Rust workspace
+(`crates/metrics`, `crates/viewmodel`, `crates/agentclient`) plus a Tauri v2 app
+(`app/`) that polls one live agent and renders one host-monitoring card, proving out
+a macOS/Windows-portable stack. Its frontend is plain HTML/CSS/JS with no bundler
+(`app/ui/`) and its own Playwright e2e suite (`tests/frontend/`). See
+`.superpowers/sdd/2026-07-27-cross-platform-walking-skeleton/` for the plan/reviews
+that produced it.
 
 ## Development Workflow
 
 ### Quick Commands
 - `./dev` - Build and run (debug mode)
 - `./dev run --release` - Run release build
-- `./dev test` - Run all tests
-- `./dev lint` - SwiftLint + SwiftFormat checks, mirrors CI (run before pushing)
-- `./dev format` - Auto-fix formatting with SwiftFormat
+- `./dev test` - Run all tests: the Swift app, **plus** the root Rust workspace
+  (`cargo test --locked --workspace` — `crates/*`, `app/src-tauri`) and the
+  `tests/frontend` Playwright e2e suite
+- `./dev lint` - SwiftLint + SwiftFormat, **plus** `cargo fmt --check` + `cargo clippy`
+  for the root Rust workspace, mirrors CI (run before pushing)
+- `./dev format` - Auto-fix formatting: SwiftFormat, **plus** `cargo fmt` for the
+  root Rust workspace
 - `./dev clean` - Clean build artifacts
 - `./dev xcode` - Open in Xcode
 - `./dev publish` - Publish a new release (CalVer minted from git — see `Docs/VERSIONING.md`)
@@ -37,6 +50,12 @@ It has three parts:
 > (one-time) wires it to a pre-push hook so lint/baseline failures never reach CI.
 > When renaming `.swift` files, also re-point their entries in `lint-baseline.json`
 > (the baseline is path-keyed; a rename un-baselines its violations).
+>
+> The root Rust workspace (`crates/*`, `app/src-tauri`) is distinct from `agent/`,
+> which has its own `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` and its own CI
+> job (`agent-tests`); it is not run by `./dev test`/`./dev lint` and has no local
+> wiring of its own — see `agent/README.md`. The root workspace's toolchain is
+> pinned by the root `rust-toolchain.toml`, same convention as `agent/`'s.
 
 ### Backlog & workflow skills
 The backlog is **GitHub Project board #5** (`Sassy-Dog`), status-column driven:
@@ -60,7 +79,7 @@ DevCanopy/
 │   ├── config.sh          # App configuration
 │   └── *.sh               # Implementation scripts
 ├── project.yml            # XcodeGen configuration
-├── DevCanopy/             # macOS app source
+├── DevCanopy/             # macOS app source (the shipped app)
 │   ├── App/              # App lifecycle, ContentView, CockpitView host
 │   ├── Models/           # SwiftData models (MonitoredHost, AppSettings, WorkflowRunModels)
 │   ├── Services/         # Host/agent, GitHub CI, containers, Claude usage, worktrees
@@ -69,7 +88,22 @@ DevCanopy/
 ├── DevCanopyTests/        # App unit tests
 ├── Packages/
 │   └── HostMetricsKit/   # Local Swift package: local-machine metrics collection
-└── agent/                 # Rust per-host metrics agent (axum)
+├── agent/                 # Rust per-host metrics agent (axum) -- own Cargo
+│                          # workspace/toolchain/CI job, not part of the
+│                          # root Cargo.toml below
+│
+│                          # Cross-platform walking skeleton (experimental,
+│                          # see Project Overview):
+├── Cargo.toml             # Root Rust workspace: crates/* + app/src-tauri
+├── rust-toolchain.toml    # Pins the root workspace's toolchain (agent/'s convention)
+├── crates/
+│   ├── metrics/           # Wire-format types shared with the agent's JSON contract
+│   ├── viewmodel/         # host_card(): every string/colour the frontend paints
+│   └── agentclient/       # HTTP client polling the same agent the Swift app polls
+├── app/
+│   ├── src-tauri/         # Tauri v2 shell: polls the agent, exposes `snapshot`
+│   └── ui/                # Frontend: plain HTML/CSS/JS, no bundler
+└── tests/frontend/         # Playwright e2e suite for app/ui/ (own package.json)
 ```
 
 > After adding new `.swift` files, run `./Scripts/generate-project.sh` to regenerate
