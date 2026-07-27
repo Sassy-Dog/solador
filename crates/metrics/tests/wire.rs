@@ -38,8 +38,13 @@ fn percent_used_guards_against_a_zero_total() {
     assert_eq!(empty.percent_used(), 0.0, "must not divide by zero");
 }
 
+/// Round-trips only this crate's own `Snapshot` (deserialise -> serialise ->
+/// deserialise again) -- it exercises this type's serde impls, nothing more.
+/// It CANNOT catch the app and the live agent drifting apart: that needs a
+/// real agent payload, which is what `live_capture_deserialises_when_present`
+/// below checks (and only when `snapshot-live.json` is actually present).
 #[test]
-fn round_trips_so_the_app_and_agent_cannot_drift() {
+fn round_tripping_through_json_preserves_the_snapshot() {
     let s: Snapshot = serde_json::from_str(FIXTURE).unwrap();
     let out = serde_json::to_string(&s).unwrap();
     let again: Snapshot = serde_json::from_str(&out).unwrap();
