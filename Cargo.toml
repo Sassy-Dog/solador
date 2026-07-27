@@ -4,6 +4,9 @@ members = ["crates/viewmodel", "crates/metrics", "crates/agentclient", "app/src-
 
 [workspace.package]
 edition = "2021"
+# 1.90 is the real floor: `is_multiple_of` (crates/viewmodel) needs 1.87+.
+# Members opt in via `rust-version.workspace = true`; rust-toolchain.toml
+# pins the exact dev/CI toolchain the same way agent/'s does.
 rust-version = "1.90"
 
 [workspace.dependencies]
