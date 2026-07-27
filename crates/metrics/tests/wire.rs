@@ -47,6 +47,50 @@ fn round_trips_so_the_app_and_agent_cannot_drift() {
     assert_eq!(s.volumes.len(), again.volumes.len());
 }
 
+/// Volume without fstype key exercises #[serde(default)] on the omitted field.
+/// The agent uses #[serde(skip_serializing_if)] so fstype is absent when unknown;
+/// deserialization must default to None, not fail.
+#[test]
+fn volume_without_fstype_deserialises_to_none() {
+    let json = r#"{
+        "timestamp": "2026-07-27T14:03:12Z",
+        "cpu": { "totalUsage": 0.0, "coreUsages": [], "model": "test", "thermalState": 0 },
+        "memory": { "usedGB": 0.0, "totalGB": 1.0, "swapUsedGB": 0.0, "pressure": 0.0 },
+        "disk": { "readMBps": 0.0, "writeMBps": 0.0 },
+        "network": { "downloadMBps": 0.0, "uploadMBps": 0.0 },
+        "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
+        "battery": null,
+        "volumes": [
+            { "mount": "/", "usedGB": 10.0, "totalGB": 100.0 }
+        ],
+        "processes": []
+    }"#;
+    let s: Snapshot = serde_json::from_str(json).expect("volume without fstype must deserialise");
+    let vol = &s.volumes[0];
+    assert_eq!(vol.mount, "/");
+    assert!(
+        vol.fstype.is_none(),
+        "omitted fstype key must deserialize to None via #[serde(default)]"
+    );
+}
+
+/// Non-null battery deserialization using the shared cross-language contract fixture.
+/// The agent and Swift decoder both use TestFixtures/battery_contract.json;
+/// this crate is the third implementation of the contract and must join that pattern.
+#[test]
+fn battery_deserialises_from_shared_contract_fixture() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../TestFixtures/battery_contract.json"
+    );
+    let raw = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read shared battery fixture {path}: {e}"));
+    let battery: metrics::Battery =
+        serde_json::from_str(&raw).expect("shared fixture must deserialize into Battery");
+    assert_eq!(battery.level, 82.5, "battery level must be 82.5");
+    assert!(battery.is_charging, "battery must be charging");
+}
+
 /// Guards against the committed fixture drifting from what the agent sends.
 /// Skipped when the live capture is absent so CI stays hermetic.
 #[test]
