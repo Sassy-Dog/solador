@@ -231,10 +231,31 @@ mod tests {
 
     #[test]
     fn processes_are_ranked_separately_for_cpu_and_ram() {
-        let vm = host_card("ubu-3xdv", &fixture(), &HostHistories::new());
-        assert_eq!(vm["topCpu"][0]["name"], "cargo");
-        assert_eq!(vm["topCpu"][0]["value"], "184%");
-        assert_eq!(vm["topRam"][0]["value"], "2.1 GB");
+        // Deliberately divergent: the CPU leader is not the RAM leader, so a
+        // copy-paste bug that sorted `topRam` on `cpu_percent` (or vice
+        // versa) would be caught here — the shared fixture's processes have
+        // correlated cpu/mem values and can't distinguish the two sorts.
+        let mut s = fixture();
+        s.processes = vec![
+            metrics::Process {
+                pid: 1,
+                name: "burst".to_string(),
+                cpu_percent: 195.0,
+                memory_mb: 800.0,
+            },
+            metrics::Process {
+                pid: 2,
+                name: "hog".to_string(),
+                cpu_percent: 12.0,
+                memory_mb: 6144.0,
+            },
+        ];
+        let vm = host_card("ubu-3xdv", &s, &HostHistories::new());
+        assert_ne!(vm["topCpu"][0]["name"], vm["topRam"][0]["name"]);
+        assert_eq!(vm["topCpu"][0]["name"], "burst");
+        assert_eq!(vm["topCpu"][0]["value"], "195%");
+        assert_eq!(vm["topRam"][0]["name"], "hog");
+        assert_eq!(vm["topRam"][0]["value"], "6.0 GB");
     }
 
     #[test]
