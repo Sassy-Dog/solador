@@ -22,8 +22,13 @@ struct HostState {
 
 type Shared = Arc<Mutex<HostState>>;
 
-/// Tokens live in the OS credential store, never in app storage. The service
-/// name matches the Swift `KeychainHelper` so an existing entry is reused.
+/// Tokens live in the OS credential store, never in app storage. The
+/// *service* string matches the Swift `KeychainHelper`
+/// (`com.sassydog.devcanopy`), but the *account* does not: Swift stores each
+/// host's token under `host_token_<UUID>`
+/// (`DevCanopy/Services/KeychainHelper.swift`), this stores it under
+/// `host-{id}`. Nothing is actually reused today -- a token saved by one app
+/// is invisible to the other; unifying the account scheme is separate work.
 fn load_token(host_id: &str) -> Option<String> {
     keyring::Entry::new("com.sassydog.devcanopy", &format!("host-{host_id}"))
         .ok()?
@@ -46,7 +51,11 @@ fn view_for(s: &HostState) -> Value {
         // (this is real data, just not current), with an unmissable stale
         // badge instead of silently going on looking live forever.
         (Some(snap), Some(msg)) => {
-            let stale_secs = s.last_success.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+            // `None` when a snapshot exists but no successful poll is on
+            // record -- unreachable via the real poll loop below (latest and
+            // last_success are always set together), but host_card must
+            // still render it as "unknown", never a fabricated `0s ago`.
+            let stale_secs = s.last_success.map(|t| t.elapsed().as_secs());
             host_card(
                 &s.name,
                 snap,
@@ -70,27 +79,56 @@ fn snapshot(state: tauri::State<'_, Shared>) -> Value {
     view_for(&s)
 }
 
+/// Test-fixture generation only, decoupled from the live-agent path below
+/// (which starts with empty history and only ever records real samples).
+/// Built from the committed agent-contract fixture so this is reproducible on
+/// a clean checkout with no live agent involved. Shared by both `--dump` and
+/// `--dump-stale` so a live and a stale view-model always carry the exact
+/// same underlying data -- staleness is meant to change only the connection
+/// badge, never the numbers (see `card::tests::a_stale_host_card_keeps_its_
+/// data_but_turns_red_and_says_how_old_it_is`), and the Playwright suite
+/// depends on that holding for its dumped fixtures too.
+fn dump_view_model(connection: &Connection) -> Value {
+    const FIXTURE: &str = include_str!("../../../crates/metrics/tests/fixtures/snapshot.json");
+    let snap: metrics::Snapshot = serde_json::from_str(FIXTURE).expect("fixture");
+    let mut h = HostHistories::new();
+    // A full history buffer is what lets the Playwright suite assert "wider
+    // charts show proportionally more samples" without needing hundreds of
+    // real polls first — see HISTORY_CAPACITY's doc comment.
+    for _ in 0..viewmodel::layout::HISTORY_CAPACITY {
+        h.record(&snap);
+    }
+    host_card("ubu-3xdv", &snap, &h, connection)
+}
+
+/// Returns the path argument following `flag` if `flag` is present, falling
+/// back to `default` when the flag is given with no path.
+fn dump_flag_path(args: &[String], flag: &str, default: &str) -> Option<String> {
+    let i = args.iter().position(|a| a == flag)?;
+    Some(args.get(i + 1).cloned().unwrap_or_else(|| default.into()))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(i) = args.iter().position(|a| a == "--dump") {
-        let path = args
-            .get(i + 1)
-            .cloned()
-            .unwrap_or_else(|| "sample.json".into());
-        // Test-fixture generation only, decoupled from the live-agent path
-        // below (which starts with empty history and only ever records real
-        // samples). Built from the committed agent-contract fixture so this
-        // is reproducible on a clean checkout with no live agent involved.
-        const FIXTURE: &str = include_str!("../../../crates/metrics/tests/fixtures/snapshot.json");
-        let snap: metrics::Snapshot = serde_json::from_str(FIXTURE).expect("fixture");
-        let mut h = HostHistories::new();
-        // A full history buffer is what lets the Playwright suite assert
-        // "wider charts show proportionally more samples" without needing
-        // hundreds of real polls first — see HISTORY_CAPACITY's doc comment.
-        for _ in 0..viewmodel::layout::HISTORY_CAPACITY {
-            h.record(&snap);
-        }
-        let vm = host_card("ubu-3xdv", &snap, &h, &Connection::Live);
+    if let Some(path) = dump_flag_path(&args, "--dump", "sample.json") {
+        let vm = dump_view_model(&Connection::Live);
+        std::fs::write(&path, serde_json::to_string_pretty(&vm).unwrap())
+            .expect("write view-model");
+        println!("wrote {path}");
+        return;
+    }
+    // A stale counterpart to --dump, built from the identical underlying
+    // snapshot/history (see dump_view_model) so tests/frontend/layout.spec.js
+    // can assert "the numbers don't change, only the badge does" against two
+    // Rust-derived fixtures instead of hand-building the stale one in JS --
+    // a hand-built fixture can't notice viewmodel's own `"stale"` string (or
+    // its message format) drifting out from under it.
+    if let Some(path) = dump_flag_path(&args, "--dump-stale", "sample-stale.json") {
+        let vm = dump_view_model(&Connection::Stale {
+            message: "Couldn't reach the agent. Check the host is up and the agent is running."
+                .to_string(),
+            stale_secs: Some(2),
+        });
         std::fs::write(&path, serde_json::to_string_pretty(&vm).unwrap())
             .expect("write view-model");
         println!("wrote {path}");
@@ -129,6 +167,15 @@ fn main() {
     let poll_target = shared.clone();
     rt.spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        // `interval`'s default (`Burst`) fires every missed tick back-to-back
+        // the moment a slow poll releases the executor -- and the client
+        // timeout (5s, agentclient) exceeds this 2s period, so one slow poll
+        // can trigger 2-3 polls in a row. The charts equate one history
+        // sample with one fixed time slice (PX_PER_SAMPLE), so a burst
+        // silently compresses the time axis instead of just running late.
+        // `Delay` waits a full period from completion instead, so a slow
+        // poll shifts later polls rather than bunching them.
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
             if !token_configured {

@@ -23,8 +23,12 @@ pub enum Connection {
     /// A poll failed, but a prior sample exists — the data below is real,
     /// just not current. `stale_secs` is how long ago the last successful
     /// poll landed; surfaced so "last thing we heard" can never be mistaken
-    /// for "this is live".
-    Stale { message: String, stale_secs: u64 },
+    /// for "this is live". `None` when that age itself is unknown — renders
+    /// as "unknown", never a fabricated `0s ago`.
+    Stale {
+        message: String,
+        stale_secs: Option<u64>,
+    },
 }
 
 fn connection_badge(c: &Connection) -> Value {
@@ -37,11 +41,14 @@ fn connection_badge(c: &Connection) -> Value {
         Connection::Stale {
             message,
             stale_secs,
-        } => json!({
-            "state": "stale",
-            "color": color::hex(color::RED),
-            "message": format!("{message} — last update {}", relative_age(*stale_secs)),
-        }),
+        } => {
+            let age = stale_secs.map_or_else(|| "unknown".to_string(), relative_age);
+            json!({
+                "state": "stale",
+                "color": color::hex(color::RED),
+                "message": format!("{message} — last update {age}"),
+            })
+        }
     }
 }
 
@@ -403,7 +410,7 @@ mod tests {
             &Connection::Stale {
                 message: "Couldn't reach the agent. Check the host is up and the agent is running."
                     .to_string(),
-                stale_secs: 95,
+                stale_secs: Some(95),
             },
         );
         assert_eq!(stale["cpuValue"], live["cpuValue"]);
@@ -415,6 +422,31 @@ mod tests {
         assert!(
             msg.contains("1m ago"),
             "expected a relative age, got {msg:?}"
+        );
+    }
+
+    /// `stale_secs: None` is unreachable via the shell's own poll loop today
+    /// (see `app/src-tauri/src/main.rs`'s `view_for`), but `host_card` is a
+    /// public API and must not fall back to a fabricated `0s ago` for an
+    /// unknown age -- that would be exactly the kind of defaulted number this
+    /// codebase's "unknown renders an em dash/placeholder, never zero" rule
+    /// exists to catch.
+    #[test]
+    fn a_stale_host_card_with_an_unknown_age_says_unknown_never_zero() {
+        let vm = host_card(
+            "ubu-3xdv",
+            &fixture(),
+            &HostHistories::new(),
+            &Connection::Stale {
+                message: "Couldn't reach the agent.".to_string(),
+                stale_secs: None,
+            },
+        );
+        let msg = vm["connection"]["message"].as_str().unwrap();
+        assert!(msg.contains("last update unknown"), "got {msg:?}");
+        assert!(
+            !msg.contains("0s ago"),
+            "must not fabricate an age, got {msg:?}"
         );
     }
 
