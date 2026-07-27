@@ -31,9 +31,14 @@ fn load_token(host_id: &str) -> Option<String> {
         .ok()
 }
 
-#[tauri::command]
-fn snapshot(state: tauri::State<'_, Shared>) -> Value {
-    let s = state.lock().unwrap();
+/// The whole `(latest, error)` -> view-model decision, pulled out of the
+/// `#[tauri::command]` so it's a plain function over `&HostState`: no
+/// locking, no `tauri::State`, trivial to unit-test all four combinations
+/// against directly. This is deliberately where CRITICAL 1 (a stale
+/// snapshot rendering as live forever) would reappear if it ever did — see
+/// the tests below, which fail loudly if this match ever grows a wildcard
+/// arm again.
+fn view_for(s: &HostState) -> Value {
     match (&s.latest, &s.error) {
         // A snapshot exists and the most recent poll succeeded: live.
         (Some(snap), None) => host_card(&s.name, snap, &s.histories, &Connection::Live),
@@ -57,6 +62,12 @@ fn snapshot(state: tauri::State<'_, Shared>) -> Value {
         // Never connected, still waiting on the first tick.
         (None, None) => pending_card(&s.name, &Pending::Connecting),
     }
+}
+
+#[tauri::command]
+fn snapshot(state: tauri::State<'_, Shared>) -> Value {
+    let s = state.lock().unwrap();
+    view_for(&s)
 }
 
 fn main() {
@@ -150,4 +161,87 @@ fn main() {
 
     // Keep the runtime alive for the lifetime of the app.
     drop(rt);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> metrics::Snapshot {
+        const FIXTURE: &str = include_str!("../../../crates/metrics/tests/fixtures/snapshot.json");
+        serde_json::from_str(FIXTURE).unwrap()
+    }
+
+    fn state_with(
+        latest: Option<metrics::Snapshot>,
+        error: Option<&str>,
+        last_success: Option<Instant>,
+    ) -> HostState {
+        HostState {
+            name: "test-host".to_string(),
+            histories: HostHistories::new(),
+            latest,
+            error: error.map(str::to_string),
+            last_success,
+        }
+    }
+
+    #[test]
+    fn live_when_a_snapshot_exists_and_the_last_poll_succeeded() {
+        let s = state_with(Some(fixture()), None, Some(Instant::now()));
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "live");
+        assert_eq!(vm["connection"]["color"], "#33d17a");
+        assert!(vm["connection"]["message"].is_null());
+        assert_eq!(vm["cpuValue"], "34%");
+    }
+
+    /// CRITICAL 1's exact regression case: a snapshot exists, but the most
+    /// recent poll failed. The old `(Some(snap), _) => host_card(...,
+    /// &Connection::Live)` wildcard landed here too and reported "live"
+    /// forever. Reintroducing that wildcard must fail this test — see the
+    /// task report for the round where that was confirmed by hand.
+    #[test]
+    fn stale_when_a_snapshot_exists_but_the_last_poll_failed_and_the_data_is_retained() {
+        let s = state_with(
+            Some(fixture()),
+            Some("Couldn't reach the agent. Check the host is up and the agent is running."),
+            Some(Instant::now()),
+        );
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "stale");
+        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        let msg = vm["connection"]["message"].as_str().unwrap();
+        assert!(msg.contains("Couldn't reach the agent"));
+        assert!(msg.contains("ago"), "expected a relative age, got {msg:?}");
+        // The data itself must be exactly what a `Connection::Live` render of
+        // the same snapshot would have produced -- staleness changes the
+        // badge, never the numbers.
+        assert_eq!(vm["cpuValue"], "34%");
+        assert_eq!(vm["hostName"], "test-host");
+    }
+
+    #[test]
+    fn failed_when_never_connected_and_the_last_attempt_failed() {
+        let s = state_with(None, Some("Couldn't reach the agent."), None);
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "failed");
+        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(vm["error"]["message"], "Couldn't reach the agent.");
+        assert_eq!(vm["error"]["hostName"], "test-host");
+        assert!(
+            vm.get("cpuValue").is_none(),
+            "a host that never connected must never carry data fields"
+        );
+    }
+
+    #[test]
+    fn connecting_when_never_connected_and_still_waiting() {
+        let s = state_with(None, None, None);
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "connecting");
+        assert_eq!(vm["connection"]["color"], "#e09a26");
+        assert_eq!(vm["error"]["message"], "waiting for first sample…");
+        assert!(vm.get("cpuValue").is_none());
+    }
 }
