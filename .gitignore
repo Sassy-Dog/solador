@@ -98,3 +98,6 @@ Logs/
 # Build products
 Products/
 Archives/
+
+# Rust
+target/
