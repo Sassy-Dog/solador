@@ -46,7 +46,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .core { background:var(--panelAlt); border-radius:8px; padding:8px; display:flex;
   flex-direction:column; gap:4px; min-width:0; min-height:0; overflow:hidden; }
 .core .cap { display:flex; font-size:10px; color:var(--muted); }
-.core .cap b { font-weight:700; }
+.core .cap b { font-weight:700; margin-left:auto; }
 .core .plot { flex:1; min-height:0; }
 
 .cols2 { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:24px; }
@@ -54,6 +54,12 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .legends { display:flex; flex-direction:column; gap:1px; align-items:flex-end; }
 .lg { display:flex; align-items:center; gap:4px; font-size:9px; color:var(--muted); }
 .lg i { width:6px; height:6px; border-radius:50%; flex:none; }
+/* Legend swatch colours as classes, not `style=""` attributes — a `style-src
+   'self'` CSP (no 'unsafe-inline') blocks inline style attributes outright. */
+.sw-read { background:var(--read); }
+.sw-write { background:var(--write); }
+.sw-net { background:var(--net); }
+.sw-netup { background:var(--netup); }
 .lg b { color:var(--ink); font-weight:700; min-width:62px; text-align:right; }
 .vols { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:6px 16px; }
 .vol { display:flex; flex-direction:column; gap:3px; height:28px; }

@@ -12,6 +12,15 @@ const esc = (v) =>
 
 const CHARTS = new Map();
 
+// A `style-src 'self'` CSP (no 'unsafe-inline') blocks `<style>` elements
+// outright, even an empty one created before its content is set — Tauri's
+// nonce injection only stamps <style> tags already present in the built
+// HTML, and this one is built at runtime. A *constructable* stylesheet is
+// exempt: it's reachable only via script, the same trust boundary CSP's
+// script-src already governs, so style-src doesn't re-gate it.
+const coreLadderSheet = new CSSStyleSheet();
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, coreLadderSheet];
+
 function paint(el) {
   const spec = CHARTS.get(el);
   if (!spec) return;
@@ -54,12 +63,13 @@ function spark(el, series, lo, hi, capacity, grid = true) {
 
 /** Rust computes which column counts leave a full last row; CSS distributes. */
 function installCoreLadder(ladder) {
+  // Rust-generated today, not user text, but this is still the one
+  // string->CSS sink with no `esc()` between it and the source: coerce to
+  // integers rather than trust the shape of the JSON.
   const rules = ladder.map((r) =>
-    `@container cores (min-width: ${r.minWidth}px){.cores{grid-template-columns:repeat(${r.cols},1fr)}}`
+    `@container cores (min-width: ${Number(r.minWidth) | 0}px){.cores{grid-template-columns:repeat(${Number(r.cols) | 0},1fr)}}`
   ).join("\n");
-  let el = document.getElementById("coreLadder");
-  if (!el) { el = document.createElement("style"); el.id = "coreLadder"; document.head.appendChild(el); }
-  el.textContent = rules;
+  coreLadderSheet.replaceSync(rules);
 }
 
 function render(d) {
@@ -82,11 +92,19 @@ function render(d) {
 
   spark($("cpuChart"), [{ values: d.cpuHistory, color: d.theme.cpu }], 0, 100, d.capacity);
 
+  // No `style=""` here: a `style-src 'self'` CSP blocks inline style
+  // attributes just as it blocks `<style>` elements. The value's colour is
+  // data-driven (usage-dependent), so it's set below via `.style.color` on
+  // the created node — the CSSOM setter, unlike the attribute, is exempt.
   $("cores").innerHTML = d.cores.map((c) =>
-    `<div class="core"><div class="cap">${esc(c.label)}<b style="margin-left:auto;color:${esc(c.valueColor)}">${esc(c.value)}</b></div><div class="plot"></div></div>`
+    `<div class="core"><div class="cap">${esc(c.label)}<b></b></div><div class="plot"></div></div>`
   ).join("");
-  document.querySelectorAll("#cores .plot").forEach((el, i) => {
-    spark(el, [{ values: d.cores[i].history, color: d.cores[i].hue }], 0, 100, d.capacity, false);
+  document.querySelectorAll("#cores .core").forEach((el, i) => {
+    const core = d.cores[i];
+    const val = el.querySelector(".cap b");
+    val.textContent = core.value;
+    val.style.color = core.valueColor;
+    spark(el.querySelector(".plot"), [{ values: core.history, color: core.hue }], 0, 100, d.capacity, false);
   });
 
   $("memValue").textContent = d.memValue;
@@ -117,9 +135,20 @@ function render(d) {
   ], 0, d.netMax, d.capacity);
 
   $("volumeCount").textContent = d.volumeCount;
+  // Same CSP constraint as the core cells above: fraction-driven width and
+  // tint are set via CSSOM after creation, never as a `style=""` attribute.
   $("volumes").innerHTML = d.volumes.map((v) =>
-    `<div class="vol"><div class="top"><span class="mount">${esc(v.mount)}</span><span class="detail" style="color:${esc(v.tint)}">${esc(v.detail)}</span></div><div class="bar"><span style="width:${(v.fraction * 100).toFixed(1)}%;background:${esc(v.tint)}"></span></div></div>`
+    `<div class="vol"><div class="top"><span class="mount">${esc(v.mount)}</span><span class="detail"></span></div><div class="bar"><span></span></div></div>`
   ).join("");
+  document.querySelectorAll("#volumes .vol").forEach((el, i) => {
+    const v = d.volumes[i];
+    const detail = el.querySelector(".detail");
+    detail.textContent = v.detail;
+    detail.style.color = v.tint;
+    const fill = el.querySelector(".bar > span");
+    fill.style.width = (v.fraction * 100).toFixed(1) + "%";
+    fill.style.background = v.tint;
+  });
 
   const procs = (list) => list.map((p) =>
     `<div class="proc"><span>${esc(p.name)}</span><span class="v">${esc(p.value)}</span></div>`
@@ -135,7 +164,9 @@ function render(d) {
       : await (await fetch("sample.json")).json();
     render(data);
   } catch (e) {
-    document.body.innerHTML =
-      `<pre style="color:#e05a4f;padding:20px">failed to load snapshot: ${esc(e)}</pre>`;
+    document.body.innerHTML = `<pre>failed to load snapshot: ${esc(e)}</pre>`;
+    const pre = document.body.querySelector("pre");
+    pre.style.color = "#e05a4f";
+    pre.style.padding = "20px";
   }
 })();
