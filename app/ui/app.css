@@ -13,8 +13,14 @@ html, body {
 .card { margin:12px; padding:18px; background:var(--panel); border:1px solid var(--line);
   border-radius:12px; display:flex; flex-direction:column; gap:10px; }
 .hdr { display:flex; align-items:center; gap:8px; }
-.dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
+/* Default is neutral, not green: this colour is a *fact* about the poll
+   loop (live / connecting / stale / failed), not a decoration, and app.js
+   always overwrites it via CSSOM once a `connection` badge exists. Baking
+   "green" in here is what let the dot look connected before anything had
+   actually connected. */
+.dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
 .host { font-size:14px; font-weight:700; }
+.stale { font-size:10px; font-weight:700; }
 .grow { flex:1; } .muted { color:var(--muted); }
 /* SF Symbols have no web equivalent; a filled square stands in until an icon
    font is bundled (tracked separately). */

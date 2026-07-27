@@ -7,21 +7,31 @@ test.beforeEach(async ({ page }) => {
   // test in this file fails loudly on a regression, instead of the app
   // quietly falling back to unstyled/default markup while assertions that
   // don't happen to probe the broken bit keep passing.
+  //
+  // Navigation itself is NOT done here: the connection-state test below has
+  // to install a `window.__TAURI__` mock via `addInitScript` before its
+  // first navigation, and a beforeEach at file scope always runs before a
+  // describe-scoped one, so navigating here would run the real (un-mocked)
+  // page load first. Every test calls `gotoApp(page)` itself instead.
   page.cspErrors = [];
   page.on("console", (msg) => {
     if (msg.type() === "error" && /content security policy|refused to (apply|load)/i.test(msg.text())) {
       page.cspErrors.push(msg.text());
     }
   });
-  await page.goto("/index.html");
-  await page.waitForFunction(() => document.querySelectorAll("#cores .core").length > 0);
 });
 
 test.afterEach(async ({ page }) => {
   expect(page.cspErrors, "no CSP violations while the page ran").toEqual([]);
 });
 
+async function gotoApp(page) {
+  await page.goto("/index.html");
+  await page.waitForFunction(() => document.querySelectorAll("#cores .core").length > 0);
+}
+
 test("core grid uses only column counts that leave a full last row", async ({ page }) => {
+  await gotoApp(page);
   // 16 cores -> divisors 1,2,4,8,16. Any other count would orphan the last row.
   for (const [width, expected] of [[1900, 16], [900, 8], [500, 4], [300, 2], [150, 1]]) {
     const got = await page.evaluate((w) => {
@@ -40,6 +50,7 @@ test("core grid uses only column counts that leave a full last row", async ({ pa
 });
 
 test("cores block holds a fixed height at every width", async ({ page }) => {
+  await gotoApp(page);
   const expectedPx = await page.evaluate(async () => {
     const data = await (await fetch("sample.json")).json();
     return `${data.coreBlockHeight}px`;
@@ -70,6 +81,7 @@ test("cores block holds a fixed height at every width", async ({ page }) => {
 });
 
 test("charts widen their time window instead of stretching", async ({ page }) => {
+  await gotoApp(page);
   const density = async (w) =>
     page.evaluate(async (width) => {
       document.body.style.width = width + "px";
@@ -96,11 +108,13 @@ test("charts widen their time window instead of stretching", async ({ page }) =>
 });
 
 test("a host with no discrete GPU renders an em dash, never zero", async ({ page }) => {
+  await gotoApp(page);
   await expect(page.locator("#gpuValue")).toHaveText("—");
   await expect(page.locator("#vramText")).toHaveText("VRAM: —");
 });
 
 test("volume bar width is proportional to its fraction, not fixed full", async ({ page }) => {
+  await gotoApp(page);
   // Under a CSP that silently blocks `style="width:…;background:…"`, every
   // bar renders at its track's full width with a transparent fill -- a
   // fabricated 100%-full reading regardless of the real fraction. None of
@@ -121,6 +135,7 @@ test("volume bar width is proportional to its fraction, not fixed full", async (
 });
 
 test("a core cell's value text renders its usage colour", async ({ page }) => {
+  await gotoApp(page);
   // Under the broken CSP this fell back to `.cap`'s inherited --muted grey
   // (the attribute carrying the real colour was blocked outright, and it
   // still sat unused in the markup, so nothing about the DOM's structure
@@ -138,4 +153,52 @@ test("a core cell's value text renders its usage colour", async ({ page }) => {
     return { computed: getComputedStyle(cell).color, expected };
   });
   expect(computed).toBe(expected);
+});
+
+test("a host that fails after connecting keeps its last-known data, with an unmissable stale indicator", async ({ page }) => {
+  // Regression test for the "stale value presented as current" defect: a
+  // host that dies after a good poll used to render a fully live-looking
+  // card forever. Simulates that sequence by stubbing `window.__TAURI__` (no
+  // real Tauri IPC in a browser context) so the first `invoke("snapshot")`
+  // returns a live view-model and every call after returns a "stale" one
+  // built from the SAME data -- the whole point is that the numbers must
+  // not change, only the connection badge.
+  const live = await (await fetch("http://127.0.0.1:4173/sample.json")).json();
+  const stale = {
+    ...live,
+    connection: {
+      state: "stale",
+      color: "#e05a4f",
+      message:
+        "Couldn't reach the agent. Check the host is up and the agent is running. — last update 2s ago",
+    },
+  };
+
+  await page.addInitScript(
+    ([liveVm, staleVm]) => {
+      let calls = 0;
+      window.__TAURI__ = {
+        core: { invoke: async () => (calls++ === 0 ? liveVm : staleVm) },
+      };
+    },
+    [live, stale]
+  );
+
+  await gotoApp(page);
+
+  // First poll: live and green, real numbers on screen.
+  await expect(page.locator("#connDot")).toHaveAttribute("data-state", "live");
+  const cpuBefore = await page.locator("#cpuValue").textContent();
+  expect(cpuBefore).not.toBe("—");
+
+  // The app's own 2s `setInterval` (only armed when `window.__TAURI__`
+  // exists) drives the second poll -- wait for that real transition rather
+  // than calling into app.js internals directly.
+  await expect(page.locator("#connDot")).toHaveAttribute("data-state", "stale", { timeout: 5000 });
+
+  const cpuAfter = await page.locator("#cpuValue").textContent();
+  expect(cpuAfter, "the reading must not change just because the poll failed").toBe(cpuBefore);
+  expect(cpuAfter).not.toBe("—");
+  await expect(page.locator("#staleMsg")).toContainText("Couldn't reach the agent");
+  await expect(page.locator("#staleMsg")).toContainText("ago");
 });

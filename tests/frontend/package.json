@@ -2,6 +2,9 @@
   "name": "devcanopy-frontend-tests",
   "private": true,
   "version": "0.0.0",
-  "scripts": { "test": "playwright test" },
+  "scripts": {
+    "pretest": "cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump ../../app/ui/sample.json",
+    "test": "playwright test"
+  },
   "devDependencies": { "@playwright/test": "^1.50.0" }
 }

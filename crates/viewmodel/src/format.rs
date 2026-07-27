@@ -36,6 +36,21 @@ pub fn memory_label(mb: f64) -> String {
     }
 }
 
+/// "12s ago" / "3m ago" / "1h ago" / "2d ago" — same bucket boundaries as
+/// `PanelStatusFooter.relative` (Swift), so a stale reading reads the same
+/// way here as it does in the shipped app.
+pub fn relative_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,5 +77,16 @@ mod tests {
     fn memory_label_switches_unit_at_1024_mb() {
         assert_eq!(memory_label(612.0), "612 MB");
         assert_eq!(memory_label(2150.0), "2.1 GB");
+    }
+
+    #[test]
+    fn relative_age_buckets_at_minutes_hours_and_days() {
+        assert_eq!(relative_age(0), "0s ago");
+        assert_eq!(relative_age(59), "59s ago");
+        assert_eq!(relative_age(60), "1m ago");
+        assert_eq!(relative_age(3599), "59m ago");
+        assert_eq!(relative_age(3600), "1h ago");
+        assert_eq!(relative_age(86_399), "23h ago");
+        assert_eq!(relative_age(86_400), "1d ago");
     }
 }

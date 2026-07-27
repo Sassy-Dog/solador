@@ -164,15 +164,40 @@ function render(d) {
       : await (await fetch("sample.json")).json();
 
   const draw = (d) => {
+    // The dot's colour and the "connecting"/"live"/"stale"/"failed" state
+    // both come from Rust (`viewmodel::color`), never chosen here — same
+    // discipline as every other colour in the card. `data-state` (not a
+    // `style=""` attribute) is what the connection-state Playwright test
+    // reads to confirm the transition happened.
+    const dot = $("connDot");
+    const stale = $("staleMsg");
+    if (d.connection) {
+      dot.style.background = d.connection.color;
+      dot.dataset.state = d.connection.state;
+    }
+
     if (d.error) {
-      // A failed host shows its cause, never fabricated numbers.
+      // No prior sample exists yet (still connecting, or every attempt has
+      // failed): the cause, never fabricated numbers.
       $("hostName").textContent = d.error.hostName;
       $("cpuValue").textContent = "—";
       $("cpuModel").textContent = d.error.message;
-      $("cpuModel").style.color = "#e05a4f";
+      $("cpuModel").style.color = d.connection ? d.connection.color : "#e05a4f";
+      stale.textContent = "";
       return;
     }
     $("cpuModel").style.color = "";
+
+    // A snapshot exists but the latest poll failed: this is real, still
+    // rendered, data -- just not current. Say so plainly rather than let a
+    // stale reading sit there looking exactly like a live one.
+    if (d.connection && d.connection.state === "stale") {
+      stale.textContent = d.connection.message;
+      stale.style.color = d.connection.color;
+    } else {
+      stale.textContent = "";
+      stale.style.color = "";
+    }
     render(d);
   };
 
