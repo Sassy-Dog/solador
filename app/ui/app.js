@@ -12,6 +12,11 @@ const esc = (v) =>
 
 const CHARTS = new Map();
 
+// Set only when #cores' element count actually changes (see render()). Lets
+// repeated polls skip the innerHTML rebuild entirely instead of leaking a
+// CHARTS entry + a live ResizeObserver target per core, every 2s, forever.
+let coreCount = -1;
+
 // A `style-src 'self'` CSP (no 'unsafe-inline') blocks `<style>` elements
 // outright, even an empty one created before its content is set — Tauri's
 // nonce injection only stamps <style> tags already present in the built
@@ -96,9 +101,26 @@ function render(d) {
   // attributes just as it blocks `<style>` elements. The value's colour is
   // data-driven (usage-dependent), so it's set below via `.style.color` on
   // the created node — the CSSOM setter, unlike the attribute, is exempt.
-  $("cores").innerHTML = d.cores.map((c) =>
-    `<div class="core"><div class="cap">${esc(c.label)}<b></b></div><div class="plot"></div></div>`
-  ).join("");
+  //
+  // Rebuild the cell markup only when the core count itself changes (a real
+  // host doesn't grow/shrink cores between 2s polls, so in practice this
+  // means "once"). Every OTHER poll used to replace all 16 cells' innerHTML
+  // unconditionally, discarding the old `.plot` nodes while CHARTS (a strong
+  // Map) and chartObserver kept holding onto them — ~32 detached nodes
+  // leaked per poll, indefinitely, in an app meant to run full-screen
+  // forever. Pruning both before the swap, only when a swap actually
+  // happens, is what stops that.
+  const coresEl = $("cores");
+  if (d.cores.length !== coreCount) {
+    coresEl.querySelectorAll(".plot").forEach((el) => {
+      CHARTS.delete(el);
+      chartObserver.unobserve(el);
+    });
+    coresEl.innerHTML = d.cores.map((c) =>
+      `<div class="core"><div class="cap">${esc(c.label)}<b></b></div><div class="plot"></div></div>`
+    ).join("");
+    coreCount = d.cores.length;
+  }
   document.querySelectorAll("#cores .core").forEach((el, i) => {
     const core = d.cores[i];
     const val = el.querySelector(".cap b");
@@ -156,6 +178,13 @@ function render(d) {
   $("topCpu").innerHTML = procs(d.topCpu);
   $("topRam").innerHTML = procs(d.topRam);
 }
+
+// Test-only introspection (tests/frontend/layout.spec.js's leak-regression
+// check). `render` and `CHARTS` are otherwise unreachable from outside this
+// closure -- this is what lets a test drive many renders directly and assert
+// chart bookkeeping stays flat, instead of waiting on real 2s poll ticks.
+// Read-only, no production behaviour depends on it.
+window.__DEVCANOPY_TEST__ = { render, chartCount: () => CHARTS.size };
 
 (async () => {
   const load = async () =>
