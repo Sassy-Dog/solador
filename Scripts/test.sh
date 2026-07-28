@@ -83,7 +83,11 @@ fi
 
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
-if command_exists npm; then
+# Needs BOTH npm and cargo: the suite's `pretest` shells out to
+# `cargo run -p devcanopy-app -- --dump` to generate its fixtures, so npm alone
+# is not enough. Checking only npm let the Swift-only runner get as far as
+# downloading 94 MB of Chromium before dying on `cargo: command not found`.
+if command_exists npm && command_exists cargo; then
     if [[ ! -d "tests/frontend/node_modules" ]]; then
         log_info "Installing frontend test dependencies…"
         (cd tests/frontend && npm ci)
@@ -97,7 +101,7 @@ if command_exists npm; then
         exit 1
     fi
 else
-    log_warning "npm not found — skipping frontend e2e tests (tests/frontend)"
+    log_warning "npm and/or cargo not found — skipping frontend e2e tests (tests/frontend)"
 fi
 
 log_success "All tests passed"
