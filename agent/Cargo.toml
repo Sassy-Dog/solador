@@ -1,3 +1,10 @@
+# Deliberately its own workspace root, not a member of the repo-root workspace:
+# the agent keeps its own Cargo.lock, toolchain pin, release profile and CI job
+# (agent-tests, on the Linux fleet it actually deploys to). An EMPTY [workspace]
+# table is what stops cargo walking up — parent-side `exclude` breaks down inside
+# a worktree nested under the repo, where cargo then finds the outer workspace.
+[workspace]
+
 [package]
 name = "devcanopy-agent"
 version = "0.2.0"
@@ -13,6 +20,8 @@ path = "src/main.rs"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
+# The wire contract itself. One definition, shared with the app.
+metrics = { path = "../crates/metrics" }
 serde_json = "1"
 sysinfo = "0.39"
 time = { version = "0.3", features = ["formatting", "macros"] }

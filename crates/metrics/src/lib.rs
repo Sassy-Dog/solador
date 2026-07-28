@@ -70,6 +70,28 @@ pub struct Gpu {
     pub vram_total_gb: f64,
 }
 
+impl Gpu {
+    /// All-zero GPU placeholder, used when a host has no portable GPU metrics
+    /// source. The agent emits this rather than omitting the field.
+    pub fn zeros() -> Self {
+        Gpu {
+            usage: 0.0,
+            vram_used_gb: 0.0,
+            vram_total_gb: 0.0,
+        }
+    }
+
+    /// Whether this host actually reports a GPU.
+    ///
+    /// VRAM capacity is the discriminator, not `usage`: a real GPU sitting idle
+    /// reports `usage == 0.0` and must still render as `0%`, while a host with
+    /// no adapter reports zeros throughout and must render as unknown. Consumers
+    /// deciding "number or em dash" should ask this, never re-derive it.
+    pub fn is_present(&self) -> bool {
+        self.vram_total_gb > 0.0
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Battery {
     pub level: f64,
@@ -84,7 +106,10 @@ pub struct Volume {
     pub used_gb: f64,
     #[serde(rename = "totalGB")]
     pub total_gb: f64,
-    #[serde(default)]
+    // `default` for lenient decoding, `skip_serializing_if` to preserve the
+    // agent's wire behaviour: a volume with no fstype OMITS the key rather than
+    // emitting `"fstype": null`. Dropping either half is a wire change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fstype: Option<String>,
 }
 

@@ -110,3 +110,51 @@ fn live_capture_deserialises_when_present() {
     let s: Snapshot = serde_json::from_str(&raw).expect("live agent JSON must deserialise");
     assert!(!s.cpu.core_usages.is_empty());
 }
+
+/// The agent omits `fstype` entirely when a volume has none, rather than
+/// emitting `"fstype": null`. That is wire behaviour, not a formatting detail:
+/// this crate is the single definition of the contract, so dropping
+/// `skip_serializing_if` here would silently change what every agent sends.
+#[test]
+fn a_volume_without_fstype_omits_the_key_rather_than_emitting_null() {
+    let absent = metrics::Volume {
+        mount: "/x".into(),
+        used_gb: 1.0,
+        total_gb: 2.0,
+        fstype: None,
+    };
+    let json = serde_json::to_string(&absent).unwrap();
+    assert!(
+        !json.contains("fstype"),
+        "fstype must be omitted, got {json}"
+    );
+
+    let present = metrics::Volume {
+        mount: "/y".into(),
+        used_gb: 1.0,
+        total_gb: 2.0,
+        fstype: Some("ext4".into()),
+    };
+    assert!(serde_json::to_string(&present)
+        .unwrap()
+        .contains(r#""fstype":"ext4""#));
+}
+
+/// "Does this host have a GPU" now has ONE definition, shared by the agent that
+/// produces the data and the app that decides between a number and an em dash.
+#[test]
+fn gpu_absence_is_one_definition_shared_by_producer_and_consumer() {
+    assert!(
+        !metrics::Gpu::zeros().is_present(),
+        "an all-zero GPU is absent"
+    );
+
+    // A real GPU sitting idle reports usage 0.0 and must still count as present
+    // — it renders "0%", not an em dash. VRAM capacity is the discriminator.
+    let idle = metrics::Gpu {
+        usage: 0.0,
+        vram_used_gb: 0.5,
+        vram_total_gb: 24.0,
+    };
+    assert!(idle.is_present());
+}

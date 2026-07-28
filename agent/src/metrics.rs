@@ -1,14 +1,20 @@
-//! Host metrics sampling via `sysinfo`.
+//! Host metric sampling.
 //!
-//! A background task refreshes `sysinfo` roughly once per second and stores the
-//! latest computed [`Snapshot`] in shared state. Disk-I/O and network values are
-//! *rates* (bytes/s), which require a delta between two refreshes — hence the
-//! background sampler rather than computing on-demand inside the HTTP handler.
+//! The wire types are NOT defined here — they live in the `metrics` crate and
+//! are re-exported below, so the agent that produces the JSON and the app that
+//! consumes it cannot drift. This module owns only the sampling: how each value
+//! is measured, and the `MetricsState` handle the server reads from.
+
+// Re-exported so `crate::metrics::Snapshot` keeps resolving for server.rs,
+// main.rs and this module's tests. `allow(unused_imports)`: this is a binary
+// crate, so a re-export nothing references internally still warns even though
+// it is the module's documented surface.
+#[allow(unused_imports)]
+pub use metrics::{Battery, Cpu, Disk, Gpu, Memory, Network, Process, Snapshot, Volume};
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 use tokio::sync::RwLock;
 
@@ -31,120 +37,12 @@ const PROCESS_TOP_LIMIT: usize = 5;
 pub const STALE_INTERVALS: u32 = 3;
 
 // ---------------------------------------------------------------------------
-// Wire contract types.
-//
-// These serialize to the EXACT JSON shape the Swift `Codable` decoder expects.
-// camelCase keys; explicit `#[serde(rename)]` where snake_case would not produce
-// the canonical key (e.g. `usedGB`, `readMBps`, `vramUsedGB`).
+// Wire contract types: see the `metrics` crate, re-exported at the top of this
+// module. They used to be defined here, duplicated field-for-field against the
+// Swift decoder — which is exactly how `HostMetricsError.decodeFailed` ("agent/
+// app version skew") came to exist. One definition now; a rename here is a
+// rename everywhere, and `crates/metrics/tests/wire.rs` pins the JSON shape.
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Snapshot {
-    /// RFC3339 / ISO-8601 UTC, e.g. `2026-06-04T22:00:00Z`.
-    pub timestamp: String,
-    pub cpu: Cpu,
-    pub memory: Memory,
-    pub disk: Disk,
-    pub network: Network,
-    pub gpu: Gpu,
-    /// `null` on servers (no battery).
-    pub battery: Option<Battery>,
-    /// Per-mounted-volume usage. A full volume fails even when the disk has
-    /// space, so each is reported separately.
-    pub volumes: Vec<Volume>,
-    /// Top CPU/RAM-consuming processes (sampled on a slow cadence).
-    pub processes: Vec<Process>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Cpu {
-    #[serde(rename = "totalUsage")]
-    pub total_usage: f64,
-    #[serde(rename = "coreUsages")]
-    pub core_usages: Vec<f64>,
-    pub model: String,
-    /// 0 = nominal. Defaulted to 0 (no portable thermal source).
-    #[serde(rename = "thermalState")]
-    pub thermal_state: i64,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Memory {
-    #[serde(rename = "usedGB")]
-    pub used_gb: f64,
-    #[serde(rename = "totalGB")]
-    pub total_gb: f64,
-    #[serde(rename = "swapUsedGB")]
-    pub swap_used_gb: f64,
-    /// macOS-style memory pressure has no simple Linux analogue; defaulted to 0.0.
-    /// NOTE: deliberately no `usagePercentage` key — the Swift side computes it.
-    pub pressure: f64,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Disk {
-    #[serde(rename = "readMBps")]
-    pub read_mbps: f64,
-    #[serde(rename = "writeMBps")]
-    pub write_mbps: f64,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Network {
-    #[serde(rename = "downloadMBps")]
-    pub download_mbps: f64,
-    #[serde(rename = "uploadMBps")]
-    pub upload_mbps: f64,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Gpu {
-    pub usage: f64,
-    #[serde(rename = "vramUsedGB")]
-    pub vram_used_gb: f64,
-    #[serde(rename = "vramTotalGB")]
-    pub vram_total_gb: f64,
-}
-
-/// Battery wire contract. The minimal cross-platform shape — `level` (0–100) and
-/// `isCharging` — which is all a generic host agent can produce. The Swift
-/// `BatteryMetrics` decoder treats exactly these two keys as required and any
-/// richer (macOS-local) keys as optional. The shape is locked by both this
-/// crate's tests and the Swift wire-contract suite via the shared fixture
-/// `TestFixtures/battery_contract.json`.
-///
-/// Derives `Deserialize` so the round-trip test can read the shared fixture; the
-/// production agent only ever serializes (and currently always emits `null`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Battery {
-    pub level: f64,
-    #[serde(rename = "isCharging")]
-    pub is_charging: bool,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Volume {
-    pub mount: String,
-    #[serde(rename = "usedGB")]
-    pub used_gb: f64,
-    #[serde(rename = "totalGB")]
-    pub total_gb: f64,
-    /// Filesystem type, lowercased (e.g. "ext4"). Absent from the wire when
-    /// unknown — the Swift decoder treats the key as optional.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fstype: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Process {
-    pub pid: i64,
-    pub name: String,
-    /// Can exceed 100 on multi-core hosts.
-    #[serde(rename = "cpuPercent")]
-    pub cpu_percent: f64,
-    #[serde(rename = "memoryMB")]
-    pub memory_mb: f64,
-}
 
 // ---------------------------------------------------------------------------
 // Volume filtering.
@@ -304,17 +202,6 @@ fn top_processes(sys: &System, limit: usize) -> Vec<Process> {
     }
     out.sort_by(cmp_desc(|p| p.cpu_percent));
     out
-}
-
-impl Gpu {
-    /// All-zero GPU placeholder (no portable GPU metrics source).
-    pub fn zeros() -> Self {
-        Gpu {
-            usage: 0.0,
-            vram_used_gb: 0.0,
-            vram_total_gb: 0.0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
