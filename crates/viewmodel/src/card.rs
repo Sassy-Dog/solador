@@ -123,9 +123,11 @@ impl HostHistories {
     }
 }
 
-/// A host reports no discrete adapter as zero VRAM. Render `—`, never `0%`.
+/// Delegates to the wire crate so "does this host have a GPU" has exactly one
+/// definition, shared with the agent that produces the data. Re-deriving the
+/// `vram_total_gb > 0.0` test here is how the two sides drift.
 fn has_gpu(s: &metrics::Snapshot) -> bool {
-    s.gpu.vram_total_gb > 0.0
+    s.gpu.is_present()
 }
 
 pub fn host_card(
