@@ -1,0 +1,9 @@
+# Pin the Rust toolchain so CI (and local `cargo` for the root workspace --
+# crates/*, app/src-tauri) is deterministic. Without this, dtolnay/rust-toolchain
+# @stable floats to whatever the latest six-week release is, and `cargo clippy
+# -- -D warnings` can red-mark untouched code on a release this repo never
+# changed. Same convention as agent/rust-toolchain.toml; bump deliberately via
+# Dependabot/PR, keeping this at or above workspace.rust-version (Cargo.toml).
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

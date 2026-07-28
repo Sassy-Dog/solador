@@ -1,0 +1,80 @@
+:root {
+  --panel:#050805; --panelAlt:#0a0f0c; --line:#13301f; --green:#33d17a;
+  --muted:#5a6b60; --ink:#cfe9d8; --read:#3fb950; --write:#e0922a;
+  --net:#5b8def; --netup:#9bd34a;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin:0; background:#000; color:var(--ink); font-family:var(--mono);
+  font-variant-numeric: tabular-nums; font-size:12px; line-height:1.45;
+  -webkit-font-smoothing: antialiased;
+}
+.card { margin:12px; padding:18px; background:var(--panel); border:1px solid var(--line);
+  border-radius:12px; display:flex; flex-direction:column; gap:10px; }
+.hdr { display:flex; align-items:center; gap:8px; }
+/* Default is neutral, not green: this colour is a *fact* about the poll
+   loop (live / connecting / stale / failed), not a decoration, and app.js
+   always overwrites it via CSSOM once a `connection` badge exists. Baking
+   "green" in here is what let the dot look connected before anything had
+   actually connected. */
+.dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+.host { font-size:14px; font-weight:700; }
+.stale { font-size:10px; font-weight:700; }
+.grow { flex:1; } .muted { color:var(--muted); }
+/* SF Symbols have no web equivalent; a filled square stands in until an icon
+   font is bundled (tracked separately). */
+.glyph { width:7px; height:7px; border-radius:1px; background:var(--green);
+  display:inline-block; flex:none; }
+.sec-hdr { display:flex; align-items:center; gap:8px; min-width:0; }
+.sec-hdr .title { font-size:13px; font-weight:700; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.big { font-size:18px; font-weight:700; white-space:nowrap; }
+.badge { font-size:10px; font-weight:700; padding:2px 7px; border-radius:8px;
+  white-space:nowrap; flex:none; }
+hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
+.chart { display:flex; gap:6px; align-items:stretch; }
+.axis { width:30px; flex:none; display:flex; flex-direction:column;
+  justify-content:space-between; align-items:flex-end; font-size:8px; color:var(--muted); }
+.plot { flex:1; min-width:0; position:relative; }
+.plot svg { display:block; width:100%; height:100%; }
+.foot { display:flex; font-size:10px; color:var(--muted); }
+
+/* The grid's own wrapper is the query container, so each card reflows against
+   ITS width, not the viewport's — what CockpitBreakpoints.reflow() does by hand. */
+.cores-wrap {
+  container-type: inline-size; container-name: cores;
+  /* fixed block from core_block_height(); cells divide it, it never grows */
+  height: var(--core-block-h, 220px);
+}
+.cores { display:grid; height:100%; grid-auto-rows:1fr;
+  grid-template-columns: repeat(1, 1fr); gap:8px; }
+.core { background:var(--panelAlt); border-radius:8px; padding:8px; display:flex;
+  flex-direction:column; gap:4px; min-width:0; min-height:0; overflow:hidden; }
+.core .cap { display:flex; font-size:10px; color:var(--muted); }
+.core .cap b { font-weight:700; margin-left:auto; }
+.core .plot { flex:1; min-height:0; }
+
+.cols2 { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:24px; }
+.cols2 > section { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.legends { display:flex; flex-direction:column; gap:1px; align-items:flex-end; }
+.lg { display:flex; align-items:center; gap:4px; font-size:9px; color:var(--muted); }
+.lg i { width:6px; height:6px; border-radius:50%; flex:none; }
+/* Legend swatch colours as classes, not `style=""` attributes — a `style-src
+   'self'` CSP (no 'unsafe-inline') blocks inline style attributes outright. */
+.sw-read { background:var(--read); }
+.sw-write { background:var(--write); }
+.sw-net { background:var(--net); }
+.sw-netup { background:var(--netup); }
+.lg b { color:var(--ink); font-weight:700; min-width:62px; text-align:right; }
+.vols { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:6px 16px; }
+.vol { display:flex; flex-direction:column; gap:3px; height:28px; }
+.vol .top { display:flex; font-size:10px; }
+.vol .top .mount { font-weight:700; }
+.vol .top .detail { margin-left:auto; font-size:9px; }
+.vol .bar { height:4px; border-radius:2px; background:var(--panelAlt); overflow:hidden; }
+.vol .bar > span { display:block; height:100%; border-radius:2px; }
+.lbl { font-size:10px; font-weight:700; color:var(--muted); }
+.procs { display:flex; flex-direction:column; gap:6px; }
+.proc { display:flex; font-size:10px; }
+.proc .v { margin-left:auto; font-weight:700; color:var(--muted); }

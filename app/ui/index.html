@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>DevCanopy</title>
+<link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="card">
+    <header class="hdr"><span class="dot" id="connDot"></span><span class="host" id="hostName"></span>
+      <span class="grow"></span><span class="stale" id="staleMsg"></span></header>
+    <div class="sec-hdr">
+      <i class="glyph"></i><span class="title" id="cpuModel"></span>
+      <span class="badge" id="thermal"></span><span class="grow"></span>
+      <span class="big" id="cpuValue"></span>
+    </div>
+    <div class="chart">
+      <div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
+      <div class="plot" id="cpuChart" data-h="110"></div>
+    </div>
+    <div class="cores-wrap"><div class="cores" id="cores"></div></div>
+    <hr />
+    <div class="cols2">
+      <section>
+        <div class="sec-hdr"><i class="glyph"></i><span class="title">Memory</span>
+          <span class="grow"></span><span class="big" id="memValue"></span></div>
+        <div class="chart"><div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
+          <div class="plot" id="memChart" data-h="90"></div></div>
+        <div class="foot"><span id="swapText"></span><span class="grow"></span><span id="pressureText"></span></div>
+      </section>
+      <section>
+        <div class="sec-hdr"><i class="glyph"></i><span class="title">Graphics</span>
+          <span class="grow"></span><span class="big" id="gpuValue"></span></div>
+        <div class="chart"><div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
+          <div class="plot" id="gpuChart" data-h="90"></div></div>
+        <div class="foot"><span id="vramText"></span></div>
+      </section>
+    </div>
+    <hr />
+    <div class="cols2">
+      <section>
+        <div class="sec-hdr"><i class="glyph"></i><span class="title">Disk I/O</span><span class="grow"></span>
+          <div class="legends">
+            <span class="lg"><i class="sw-read"></i>Read:<b id="diskRead"></b></span>
+            <span class="lg"><i class="sw-write"></i>Write:<b id="diskWrite"></b></span>
+          </div></div>
+        <div class="chart"><div class="axis two"><span id="diskAxis"></span><span>0</span></div>
+          <div class="plot" id="diskChart" data-h="90"></div></div>
+      </section>
+      <section>
+        <div class="sec-hdr"><i class="glyph"></i><span class="title">Network I/O</span><span class="grow"></span>
+          <div class="legends">
+            <span class="lg"><i class="sw-net"></i>Down:<b id="netDown"></b></span>
+            <span class="lg"><i class="sw-netup"></i>Up:<b id="netUp"></b></span>
+          </div></div>
+        <div class="chart"><div class="axis two"><span id="netAxis"></span><span>0</span></div>
+          <div class="plot" id="netChart" data-h="90"></div></div>
+      </section>
+    </div>
+    <hr />
+    <div class="sec-hdr"><i class="glyph"></i><span class="title">Volumes</span>
+      <span class="grow"></span><span class="big muted" id="volumeCount"></span></div>
+    <div class="vols" id="volumes"></div>
+    <hr />
+    <div class="cols2">
+      <section><div class="lbl">TOP CPU</div><div class="procs" id="topCpu"></div></section>
+      <section><div class="lbl">TOP RAM</div><div class="procs" id="topRam"></div></section>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

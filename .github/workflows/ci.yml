@@ -204,3 +204,99 @@ jobs:
 
       - name: Test
         run: cargo test --locked --verbose
+
+  rust-workspace:
+    name: Rust workspace + frontend e2e
+    # The Tauri app (app/src-tauri) only builds on macOS/Windows targets, and the
+    # frontend suite needs a real WebView-capable desktop to serve/build against,
+    # so this runs on the same self-hosted Mac pool as swift-tests/lint rather
+    # than the Linux pool agent-tests uses.
+    runs-on: [self-hosted, macOS, sassy-dog]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Toolchain version is pinned in the workspace-root rust-toolchain.toml
+      # (matching agent/rust-toolchain.toml's convention); this action honors
+      # it the same way it honors agent's on the agent-tests job above.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          workspaces: .
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
+      # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does
+      # for cargo above.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/frontend/package-lock.json
+
+      - name: Install frontend test dependencies
+        working-directory: tests/frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: tests/frontend
+        run: npx playwright install chromium
+
+      # `npm test`'s `pretest` script builds devcanopy-app and runs its --dump
+      # mode to (re)generate the gitignored app/ui/sample.json fixture the
+      # suite serves, so the build always happens before Playwright runs
+      # against it — npm's pretest/test ordering is what enforces that, not
+      # step order here. This suite is the only thing that exercises app/ui/
+      # and the real CSP from app/src-tauri/tauri.conf.json (csp_server.py
+      # reads it directly) — a Critical CSP regression in an earlier task was
+      # caught solely by this suite, not by the Rust tests above.
+      - name: Frontend e2e (Playwright)
+        working-directory: tests/frontend
+        run: npm test
+
+  windows-tests:
+    name: Windows workspace tests
+    # GitHub-hosted, deliberately not self-hosted: the sassy-dog fleet is
+    # macOS/Linux only. This replaces what used to be a `cargo check --target
+    # x86_64-pc-windows-msvc` cross-check inside rust-workspace above. That
+    # check was only ever a proxy for "does this still compile on Windows",
+    # and it failed on macOS for a toolchain reason, not a portability defect:
+    # agentclient's reqwest/rustls-tls dependency pulls in `ring`, whose
+    # build.rs compiles C sources that need Windows CRT headers macOS doesn't
+    # have. A real Windows runner removes that gap entirely and verifies
+    # strictly more than a cross-check ever could — it actually links and runs
+    # the tests.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # GitHub-hosted runners are ephemeral (no persistent disk between runs,
+      # unlike the self-hosted pool above), so caching matters more here, not
+      # less — same action as the other two Rust jobs in this file, just
+      # pointed at this job's own cache key via runner.os.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          workspaces: .
+
+      # Full workspace, including app/src-tauri: windows-latest's runner image
+      # ships the WebView2 Runtime, and tauri's build.rs/webview2-com resolve
+      # the WebView2 SDK bindings themselves at build time, so no extra
+      # apt/choco-equivalent setup should be needed — unlike Linux, which needs
+      # webkit2gtk/appindicator system packages this repo doesn't install
+      # anywhere. Narrow this to `-p metrics -p viewmodel -p agentclient` only
+      # if a real run shows app/src-tauri needs something this image doesn't
+      # have, and say why in the job/PR rather than narrowing silently.
+      - name: Test
+        run: cargo test --locked --workspace

@@ -47,9 +47,12 @@ cd devcanopy
 - `./dev` - Build and run in debug mode
 - `./dev run --release` - Run release build
 - `./dev run --log console --log-level debug` - Run with console logging
-- `./dev test` - Run all tests
-- `./dev lint` - Run SwiftLint + SwiftFormat checks (mirrors CI)
-- `./dev format` - Auto-fix formatting with SwiftFormat
+- `./dev test` - Run all tests: the Swift app, plus the root Rust workspace
+  (`crates/*`, `app/src-tauri` — an experimental cross-platform walking skeleton,
+  see below) and its `tests/frontend` Playwright e2e suite
+- `./dev lint` - Run SwiftLint + SwiftFormat, plus `cargo fmt`/`clippy` for the
+  root Rust workspace (mirrors CI)
+- `./dev format` - Auto-fix formatting with SwiftFormat + `cargo fmt`
 - `./dev clean` - Clean build artifacts
 - `./dev xcode` - Open in Xcode
 - `./dev publish` - Create a new release (CalVer minted from git)
@@ -70,7 +73,9 @@ with `git push --no-verify`). With Claude Code, a `PostToolUse` hook
 - Xcode 15.0 or later
 - XcodeGen (`brew install xcodegen`)
 - SwiftLint + SwiftFormat (`brew install swiftlint swiftformat`) — for `./dev lint`
-- [Rust toolchain](https://rustup.rs) — only if building/deploying the agent (`agent/`)
+- [Rust toolchain](https://rustup.rs) — for the agent (`agent/`) and, since this
+  branch, the root Rust workspace (`crates/*`, `app/src-tauri`); each pins its own
+  version via its own `rust-toolchain.toml`
 
 ### Project Structure
 
@@ -80,7 +85,7 @@ DevCanopy/
 ├── prd                     # Production build script
 ├── Scripts/                # Build and utility scripts
 ├── project.yml             # XcodeGen configuration
-├── DevCanopy/              # macOS app source
+├── DevCanopy/              # macOS app source (the shipped app)
 │   ├── App/               # App lifecycle, ContentView, CockpitView host
 │   ├── Models/            # SwiftData models (MonitoredHost, AppSettings, WorkflowRunModels)
 │   ├── Services/          # Host/agent, GitHub CI, containers, Claude usage, worktrees
@@ -89,7 +94,15 @@ DevCanopy/
 ├── DevCanopyTests/         # App unit tests
 ├── Packages/
 │   └── HostMetricsKit/    # Local Swift package: local-machine metrics collection
-└── agent/                  # Rust per-host metrics agent
+├── agent/                  # Rust per-host metrics agent -- own Cargo workspace
+│
+│                           # Experimental cross-platform walking skeleton
+│                           # (a Tauri app rendering one live host card; the
+│                           # SwiftUI app above stays the shipped product):
+├── Cargo.toml              # Root Rust workspace: crates/* + app/src-tauri
+├── crates/                 # metrics (wire types), viewmodel (host_card), agentclient
+├── app/                    # app/src-tauri (Tauri shell) + app/ui (plain HTML/CSS/JS)
+└── tests/frontend/         # Playwright e2e suite for app/ui/
 ```
 
 ## Configuration

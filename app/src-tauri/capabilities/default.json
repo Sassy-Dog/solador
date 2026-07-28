@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The cockpit window may call the read-only snapshot command and nothing else. Narrowed (not just described that way): `snapshot` is an app-defined command, which Tauri's ACL always permits without a grant, and the frontend never calls any Tauri-provided `core:*` API -- so `permissions` is empty rather than `core:default`, which would otherwise hand the webview every core-plugin default (window, webview, app, event, menu, tray, image, path, resources) it never uses. Verified with tauri::test::mock_builder against the real generated context: `snapshot` still resolves with this file empty.",
+  "windows": ["main"],
+  "permissions": []
+}

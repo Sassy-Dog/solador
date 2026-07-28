@@ -16,12 +16,12 @@ $(color_yellow "Usage:") $(color_green "$0") [command] [options]
 $(color_yellow "Commands:")
   $(color_green "run")      $(color_gray "[r]")    Build and run the app (default)
   $(color_green "build")    $(color_gray "[b]")    Build the app
-  $(color_green "test")     $(color_gray "[t]")    Run tests
+  $(color_green "test")     $(color_gray "[t]")    Run tests (Swift app + Rust workspace + frontend e2e)
   $(color_green "clean")    $(color_gray "[c]")    Clean build artifacts
   $(color_green "xcode")    $(color_gray "[x]")    Open project in Xcode
   $(color_green "publish")  $(color_gray "[p]")    Publish a new release
-  $(color_green "lint")     $(color_gray "[l]")    Run SwiftLint + SwiftFormat checks (mirrors CI)
-  $(color_green "format")   $(color_gray "[f]")    Auto-fix formatting with SwiftFormat
+  $(color_green "lint")     $(color_gray "[l]")    Run SwiftLint/SwiftFormat + cargo fmt/clippy checks (mirrors CI)
+  $(color_green "format")   $(color_gray "[f]")    Auto-fix formatting with SwiftFormat + cargo fmt
   $(color_green "help")     $(color_gray "[h]")    Show this help
 
 $(color_yellow "Build Options:")

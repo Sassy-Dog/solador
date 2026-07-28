@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/viewmodel", "crates/metrics", "crates/agentclient", "app/src-tauri"]
+# agent/ is a SEPARATE cargo workspace with its own Cargo.lock, rust-toolchain
+# and CI job (agent-tests). Without this exclude, cargo walks up from agent/,
+# finds this workspace, and every command inside agent/ dies with "current
+# package believes it's in a workspace when it's not" — which is exactly how
+# `cargo fmt --check` broke in agent-tests on PR #126.
+exclude = ["agent"]
+
+[workspace.package]
+edition = "2021"
+# 1.90 is the real floor: `is_multiple_of` (crates/viewmodel) needs 1.87+.
+# Members opt in via `rust-version.workspace = true`; rust-toolchain.toml
+# pins the exact dev/CI toolchain the same way agent/'s does.
+rust-version = "1.90"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
