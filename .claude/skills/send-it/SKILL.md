@@ -13,7 +13,18 @@ description: >
 
 End-to-end PR flow for this repo, in order: worktree audit → pre-flight guardrails → PR body → commit/push → watch + merge (delegated to `ai-agent-skills:pr-shepherd`).
 
-**Merge policy: DIRECT squash merge.** This repo has no merge queue and auto-merge is disabled — merge green PRs with `gh pr merge --squash --delete-branch`. Never use `gh pr merge --auto`; with auto-merge disabled it errors or silently never merges.
+**Merge policy: MERGE QUEUE.** Since #117, `main` is governed by the **"main protection" ruleset** carrying a `merge_queue` rule (`merge_method: SQUASH`, `grouping_strategy: ALLGREEN`, `min_entries_to_merge: 1`, `min_entries_to_merge_wait_minutes: 5`). Enqueue green PRs with `gh pr merge <N> --auto` — **no method flag, no `--delete-branch`** (the queue owns both; passing a method flag is the trap where the PR silently never merges). Confirm `isInMergeQueue: true` afterwards via GraphQL — it is not exposed by `gh pr view --json`.
+
+Expect a ~5 minute hold even for a lone PR (`min_entries_to_merge_wait_minutes`); that is the queue working, not a stall.
+
+> **Verify, don't trust this line.** It said "DIRECT squash merge, no merge queue" until 2026-07-26 — generated before #117 and silently wrong for weeks, because this skill is generated once and never re-detects repo state. Classic branch protection is **not** in use: `gh api repos/Sassy-Dog/devcanopy/branches/main/protection` returns 404 "Branch not protected", which reads like "no protection" but only means the rules live in a ruleset. Check the real thing before merging:
+>
+> ```bash
+> gh api repos/Sassy-Dog/devcanopy/rulesets --jq '.[].id' \
+>   | xargs -I{} gh api repos/Sassy-Dog/devcanopy/rulesets/{} --jq '.rules[].type'
+> ```
+>
+> If `merge_queue` is absent, fall back to `gh pr merge <N> --squash --delete-branch`.
 
 ## 1. Worktree audit
 
@@ -77,19 +88,31 @@ Why, briefly.
 
 Closes #<N>
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Co-Authored-By: <your Co-Authored-By trailer> <noreply@anthropic.com>
 EOF
 )"
 git push -u origin "$(git branch --show-current)"
 gh pr create --title "..." --body "..."   # template-compliant body from §3
 ```
 
+**The co-author trailer names whichever model is running — don't copy one from this file.** Use the exact `Co-Authored-By` line your own harness instructions specify. This template hardcoded `Claude Fable 5` until 2026-07-26; the last 60 commits carry three different Claude trailers (`Opus 4.8 (1M context)`, `Fable 5`, `Opus 5 (1M context)`), so any fixed name here is wrong most of the time. Check what history actually shows with:
+
+```bash
+git log --format='%(trailers:key=Co-Authored-By,valueonly)' -60 | grep -v '^$' | sort | uniq -c | sort -rn
+```
+
 **Watch + merge (delegated).** Do NOT reimplement polling/merging inline:
 
 Skill: `ai-agent-skills:pr-shepherd`
-Args: "Shepherd PR #<N> in Sassy-Dog/devcanopy: mergeable check first, watch checks, then squash-merge with `--delete-branch`. After merge, reconcile local main and delete the feature branch."
+Args: "Shepherd PR #<N> in Sassy-Dog/devcanopy: mergeable check first, watch checks, then enqueue to the merge queue (`--auto`, no method flag, no `--delete-branch`) and confirm `isInMergeQueue`. After merge, reconcile local main and delete the feature branch."
 
 If `ai-agent-skills:pr-shepherd` is not in your available skills, STOP and tell the user to install the plugin (`claude plugin install ai-agent-skills`) — do not improvise the merge flow from memory.
+
+**Delete the local branch yourself.** The queue's squash merge leaves the local feature branch behind, and `git branch -d` refuses it — the squashed commit isn't an ancestor. `merge-shepherd.sh` reconciles `main` and drops the remote branch but does not remove it. Finish with:
+
+```bash
+git branch -D "<feature-branch>" && git remote prune origin
+```
 
 ## Guardrails
 
