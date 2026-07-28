@@ -64,17 +64,21 @@ fi
 # app/src-tauri) --- additive: does not touch anything above. agent/ is a
 # separate Cargo workspace with its own CI job (agent-tests) and is
 # deliberately not run here.
-if ! command_exists cargo; then
-    log_error "cargo not found — install the Rust toolchain (rust-toolchain.toml pins the version) to run the Rust workspace"
-    exit 1
-fi
-
-log_info "Running Rust workspace tests (crates/*, app/src-tauri)…"
-if cargo test --locked --workspace; then
-    log_success "Rust workspace tests passed"
+# Skip-with-a-warning when the toolchain is absent, matching how the frontend
+# suite below handles a missing npm. This script is a convenience aggregator;
+# CI gates each stack in its own job (rust-workspace, agent-tests), so a
+# machine without Rust should get a loud skip, not a red run. Hard-failing here
+# turned the Swift-only CI runner red after 350 passing Swift tests (PR #126).
+if command_exists cargo; then
+    log_info "Running Rust workspace tests (crates/*, app/src-tauri)…"
+    if cargo test --locked --workspace; then
+        log_success "Rust workspace tests passed"
+    else
+        log_error "Rust workspace tests failed"
+        exit 1
+    fi
 else
-    log_error "Rust workspace tests failed"
-    exit 1
+    log_warning "cargo not found — skipping Rust workspace tests (crates/*, app/src-tauri)"
 fi
 
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
