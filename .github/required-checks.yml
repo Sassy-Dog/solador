@@ -1,0 +1,17 @@
+# Checks that must pass before a PR merges to the default branch.
+# Rendered into this repo's branch ruleset by Sassy-Dog/platform.
+# `satisfies` claims org-wide floor categories; every repo must claim
+# lint and test at least once across its checks.
+#
+# Contract: https://github.com/Sassy-Dog/platform/blob/main/docs/GITHUB-CI-GATES.md
+required_checks:
+  - context: "Swift app tests"
+    satisfies: [unit]
+  - context: "Rust agent"
+    satisfies: [lint, unit]
+  - context: "Lint"
+    satisfies: [lint]
+  - context: "Rust workspace + frontend e2e"
+    satisfies: [lint, unit, e2e]
+  - context: "Windows workspace tests"
+    satisfies: [unit]
