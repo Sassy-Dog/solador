@@ -8,7 +8,7 @@ description: >
   to remove stale worktrees/branches/stashes. DevCanopy-specific.
 ---
 
-<!-- generated-by: ai-agent-skills:create-dev-workflows | template: clean-it | template-version: 1 -->
+<!-- generated-by: ai-agent-skills:refresh-sassydog-skills | template: clean-it | template-version: 1 -->
 
 # DevCanopy Clean-It
 

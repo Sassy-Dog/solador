@@ -7,7 +7,7 @@ description: >
   "create a PR", or asks to merge a branch. DevCanopy-specific.
 ---
 
-<!-- generated-by: ai-agent-skills:create-dev-workflows | template: send-it | template-version: 1 -->
+<!-- generated-by: ai-agent-skills:refresh-sassydog-skills | template: send-it | template-version: 1 -->
 
 # DevCanopy Send-It
 
@@ -104,7 +104,7 @@ git log --format='%(trailers:key=Co-Authored-By,valueonly)' -60 | grep -v '^$' |
 **Watch + merge (delegated).** Do NOT reimplement polling/merging inline:
 
 Skill: `ai-agent-skills:pr-shepherd`
-Args: "Shepherd PR #<N> in Sassy-Dog/devcanopy: mergeable check first, watch checks, then enqueue to the merge queue (`--auto`, no method flag, no `--delete-branch`) and confirm `isInMergeQueue`. After merge, reconcile local main and delete the feature branch."
+Args: "Shepherd PR #<N> in Sassy-Dog/devcanopy: mergeable check first, watch checks, then enqueue via merge queue (`--auto`, no method flag, confirm isInMergeQueue). After merge, reconcile local main and delete the feature branch."
 
 If `ai-agent-skills:pr-shepherd` is not in your available skills, STOP and tell the user to install the plugin (`claude plugin install ai-agent-skills`) — do not improvise the merge flow from memory.
 

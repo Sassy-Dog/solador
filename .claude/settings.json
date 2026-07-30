@@ -10,6 +10,11 @@
             "command": "$CLAUDE_PROJECT_DIR/Scripts/format-hook.sh",
             "timeout": 30,
             "statusMessage": "Formatting Swift…"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/sassydog-post-edit.sh\"",
+            "timeout": 30
           }
         ]
       }

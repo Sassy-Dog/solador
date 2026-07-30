@@ -9,7 +9,7 @@ description: >
   DevCanopy-specific
 ---
 
-<!-- generated-by: ai-agent-skills:create-dev-workflows | template: take-it | template-version: 1 -->
+<!-- generated-by: ai-agent-skills:refresh-sassydog-skills | template: take-it | template-version: 3 -->
 
 # DevCanopy Take-It
 
@@ -56,12 +56,14 @@ git switch main >/dev/null 2>&1 && git pull --ff-only origin main
 >
 > **Issue title:** {title} · **Labels:** {labels}
 > **Issue body:**
+>
 > ```
 > {body}
 > ```
 >
 > **Your job:**
-> 1. **Stay inside your assigned worktree.** cwd resets between Bash calls — prefix every call with `cd <your worktree path> &&`, and verify `pwd && git rev-parse --show-toplevel && git branch --show-current` before your first edit. **Never `git stash`** (worktrees share one `.git`; a stash collides with the other parallel agents). Commit WIP to your branch or discard explicitly.
+>
+> 1. **Stay inside your assigned worktree.** cwd resets between Bash calls — prefix every call with `cd <your worktree path> &&`, and verify `pwd && git rev-parse --show-toplevel && git branch --show-current` before your first edit. **Never `git stash`** (worktrees share one `.git`; a stash collides with the other parallel agents). Commit WIP to your branch or discard explicitly. **Never run an editable/dev install into a shared interpreter or global store** — under parallel worktree agents, whoever installs last repoints imports for everyone, so a green test run may silently be testing another agent's source (Python: `pip install -e` writes the editable link into the shared interpreter's `site-packages`; Node: `npm link`/global installs are the same trap). Work isolated: create a throwaway venv/env *inside your worktree* (and never commit it), or run against your tree without installing (`PYTHONPATH=src …` for pure-Python). Verify the import resolves inside YOUR worktree before trusting a green run.
 > 2. Read the issue carefully. If scope is genuinely unclear after the body and linked issues/PRs, STOP and report back — do not guess.
 > 3. Implement the change following the repo's `CLAUDE.md`.
 <!-- BEGIN PROJECT-SPECIFIC: subagent-rules -->
@@ -69,17 +71,17 @@ git switch main >/dev/null 2>&1 && git pull --ff-only origin main
 > - For `agent/` (Rust) changes, pre-flight MUST include `cargo fmt --check && cargo clippy -- -D warnings` — CI has a Format-check + Clippy gate, so a clean `cargo build`/`cargo test` still fails CI if formatting/lints are off.
 > - For CI / build-config changes (`.github/workflows/`, toolchain pins): pin tool versions to what a recent **green** run actually used (verify in the run log — e.g. Xcode is `latest-stable` = a 26.x today, NOT a guessed 16.x), and never rename the `Swift app tests` / `Rust agent` job names — the `main` branch-protection ruleset requires those exact check contexts.
 <!-- END PROJECT-SPECIFIC -->
-> 4. Run the send-it pre-flight locally and fix anything red: `./dev build && ./dev test`
-> 5. Commit on branch `{prefix}/issue-{N}-{slug}` with a conventional-commit message containing a literal `Closes #{N}` line.
-> 6. Push and open a PR per the send-it template — the body MUST contain `Closes #{N}` on its own line (Summary / Changes / Testing sections).
-> 7. **Do NOT merge.** Report back: `RESULT: pr=<N> branch=<name> status=<opened|skipped|failed> note=<one-line>`
+> 5. Run the send-it pre-flight locally and fix anything red: `./dev build && ./dev test`
+> 6. Commit on branch `{prefix}/issue-{N}-{slug}` with a conventional-commit message containing a literal `Closes #{N}` line.
+> 7. Push and open a PR per the send-it template — the body MUST contain `Closes #{N}` on its own line (Summary / Changes / Testing sections).
+> 8. **Do NOT merge.** Report back: `RESULT: pr=<N> branch=<name> status=<opened|skipped|failed> note=<one-line>`
 
 ## 5. Coordinator: watch + merge (delegated)
 
 Use the plugin capability skill for ALL polling/merge/teardown mechanics — do NOT reimplement them inline:
 
 Skill: `ai-agent-skills:pr-shepherd`
-Args: "Watch PRs <numbers from the RESULT lines> in Sassy-Dog/devcanopy. Merge policy: DIRECT — `gh pr merge --squash --delete-branch`, serialize coupled PRs. After all PRs are terminal, tear down these worktrees: <paths from the batch manifest>, then reconcile local main."
+Args: "Watch PRs <numbers from the RESULT lines> in Sassy-Dog/devcanopy. Merge policy: MERGE QUEUE — enqueue greens with `gh pr merge --auto` (no method flag, no --delete-branch), confirm isInMergeQueue, handle ejects. After all PRs are terminal, tear down these worktrees: <paths from the batch manifest>, then reconcile local main."
 
 If `ai-agent-skills:pr-shepherd` is not in your available skills, STOP and tell the user to install the plugin (`claude plugin install ai-agent-skills`) — do not improvise the merge loop from memory.
 

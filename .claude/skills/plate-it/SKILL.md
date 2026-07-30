@@ -11,7 +11,7 @@ description: >
   Read-only — never files issues, never mutates state.
 ---
 
-<!-- generated-by: ai-agent-skills:create-dev-workflows | template: plate-it | template-version: 1 -->
+<!-- generated-by: ai-agent-skills:refresh-sassydog-skills | template: plate-it | template-version: 1 -->
 
 # DevCanopy Plate-It
 
@@ -54,6 +54,7 @@ Invoke `ai-agent-skills:repo-health`:
 
 - tech-debt scan with `SCAN_PATHS="DevCanopy DevCanopyTests Packages agent/src Scripts"`, `EXCLUDE_PATHSPECS=":!agent/target :!*.xcodeproj"`
 - CI health with `WORKFLOW=ci.yml`
+- dependency exposure + remediation (no env needed; `REPO` defaults to cwd)
 
 Its `references/scoring.md` thresholds apply unless overridden below.
 
@@ -80,6 +81,8 @@ Score each category independently; surface a cross-category top-5 by relative ra
 **Backlog**: lead with the issue's own priority label (`sev:high` / `sev:medium` / `sev:low`), tie-break by reactions + comments. Don't re-derive a priority the maintainer already assigned.
 
 **Tech debt + dev experience**: `ai-agent-skills:repo-health` scoring defaults.
+
+**Dependency exposure**: rank by REMEDIATION STATE, never by alert count — a count only falls when a fix merges, so a fresh CVE batch with fixes already queued looks identical to a year of neglect. A `parked_green` PR aged ≥ 3 days is **P0** and belongs under Dev experience with its number and merge command: the fix exists, it is green, and only a human press is missing. `unremediated_packages` with an available patch is **P1** (**P0** past 14 days). A `BLOCKED`/`DIRTY` fix PR is **P1** — name the failing check, since it is usually a lockfile the updater cannot regenerate. A fresh batch (≤ 2 days) that is fully covered by open fix PRs is not a finding; it goes on the `✓ Clean today:` line.
 
 <!-- BEGIN PROJECT-SPECIFIC: scoring-overrides -->
 <!-- Project-specific re-weights (e.g. "funnel drop-off below PRD target overrides the formula → P0") go here. -->
