@@ -25,7 +25,7 @@ jobs:
     name: Swift app tests
     runs-on: [self-hosted, macOS, sassy-dog]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # XcodeGen emits the newest project format, so pair it with a pinned Xcode
       # that can read it. Both are pinned: a floating xcode-version or XcodeGen
@@ -120,7 +120,7 @@ jobs:
     name: Lint
     runs-on: [self-hosted, macOS, sassy-dog]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pin SwiftLint to a specific release (not the floating Homebrew formula) so
       # the rule set can't drift silently and re-baseline us. Matches the local
@@ -181,7 +181,7 @@ jobs:
       run:
         working-directory: agent
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Toolchain version is pinned in agent/rust-toolchain.toml; this action
       # honors it. Pinned to the stable-channel action at a fixed commit.
@@ -213,7 +213,7 @@ jobs:
     # than the Linux pool agent-tests uses.
     runs-on: [self-hosted, macOS, sassy-dog]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Toolchain version is pinned in the workspace-root rust-toolchain.toml
       # (matching agent/rust-toolchain.toml's convention); this action honors
@@ -278,7 +278,7 @@ jobs:
     # the tests.
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
