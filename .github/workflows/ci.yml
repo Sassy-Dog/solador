@@ -31,14 +31,18 @@ jobs:
       # that can read it. Both are pinned: a floating xcode-version or XcodeGen
       # is a silent build input (the .xcodeproj is gitignored).
       #
-      # 26.4.1 is the ONLY Xcode installed on the org's self-hosted Mac, so the
-      # pin has to match it — setup-xcode selects an installed version, it does
-      # not download one. Bumped from 26.3 with this runner move; if another
-      # version is ever added to the image, re-pin deliberately rather than
-      # floating.
+      # setup-xcode SELECTS an installed version; it does not download one, so
+      # this pin must name a version the golden image actually carries.
+      #
+      # The fleet now carries TWO (platform#544/#553): 26.6, which is what
+      # xcode-select points at, and the base image's 26.4.1 alongside it. That
+      # is why the old '26.4.1' pin kept passing after the roll — it resolved
+      # fine and silently built on the older toolchain (platform#552). Track the
+      # fleet's selected version deliberately rather than leaving a pin that
+      # works but is stale.
       - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
-          xcode-version: '26.4.1'
+          xcode-version: '26.6'
 
       - name: Show toolchain
         run: |
