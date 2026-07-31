@@ -102,7 +102,7 @@ Archives/
 # Rust
 target/
 # Live-agent capture for the wire drift-detector (#124) — local pre-merge check only; CI must stay hermetic
-crates/metrics/tests/fixtures/snapshot-live.json
+crates/wire/tests/fixtures/snapshot-live.json
 
 # Frontend (Tauri app + Playwright tests)
 app/ui/sample.json

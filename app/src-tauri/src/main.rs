@@ -12,7 +12,7 @@ use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pendin
 struct HostState {
     name: String,
     histories: HostHistories,
-    latest: Option<metrics::Snapshot>,
+    latest: Option<wire::Snapshot>,
     error: Option<String>,
     /// When the last *successful* poll landed. Together with `error`, this is
     /// what lets `snapshot()` tell "still live" apart from "dead since Xs
@@ -84,7 +84,7 @@ fn view_for(s: &HostState) -> Value {
 /// has real (if old) data, or downgrade a dated "last update 4m ago" badge to
 /// "last update unknown" — and it would do so silently, since one failed poll
 /// looks identical to a hundred from inside the loop.
-fn record_poll(s: &mut HostState, result: Result<metrics::Snapshot, AgentError>, at: Instant) {
+fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at: Instant) {
     match result {
         Ok(snap) => {
             s.histories.record(&snap);
@@ -112,8 +112,8 @@ fn snapshot(state: tauri::State<'_, Shared>) -> Value {
 /// data_but_turns_red_and_says_how_old_it_is`), and the Playwright suite
 /// depends on that holding for its dumped fixtures too.
 fn dump_view_model(connection: &Connection) -> Value {
-    const FIXTURE: &str = include_str!("../../../crates/metrics/tests/fixtures/snapshot.json");
-    let snap: metrics::Snapshot = serde_json::from_str(FIXTURE).expect("fixture");
+    const FIXTURE: &str = include_str!("../../../crates/wire/tests/fixtures/snapshot.json");
+    let snap: wire::Snapshot = serde_json::from_str(FIXTURE).expect("fixture");
     let mut h = HostHistories::new();
     // A full history buffer is what lets the Playwright suite assert "wider
     // charts show proportionally more samples" without needing hundreds of
@@ -229,13 +229,13 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn fixture() -> metrics::Snapshot {
-        const FIXTURE: &str = include_str!("../../../crates/metrics/tests/fixtures/snapshot.json");
+    fn fixture() -> wire::Snapshot {
+        const FIXTURE: &str = include_str!("../../../crates/wire/tests/fixtures/snapshot.json");
         serde_json::from_str(FIXTURE).unwrap()
     }
 
     fn state_with(
-        latest: Option<metrics::Snapshot>,
+        latest: Option<wire::Snapshot>,
         error: Option<&str>,
         last_success: Option<Instant>,
     ) -> HostState {

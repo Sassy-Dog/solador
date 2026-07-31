@@ -10,7 +10,7 @@ updates:
       prefix: chore
       include: scope
 
-  # Root Rust workspace: crates/{metrics,viewmodel,agentclient} + app/src-tauri
+  # Root Rust workspace: crates/{wire,viewmodel,agentclient} + app/src-tauri
   # (473 locked deps -- ring, rustls, reqwest, tauri, keyring among them).
   # Separate entry from /agent: distinct Cargo.lock, distinct toolchain pin
   # (rust-toolchain.toml).

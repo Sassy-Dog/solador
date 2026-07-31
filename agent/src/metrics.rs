@@ -1,16 +1,17 @@
 //! Host metric sampling.
 //!
-//! The wire types are NOT defined here — they live in the `metrics` crate and
-//! are re-exported below, so the agent that produces the JSON and the app that
-//! consumes it cannot drift. This module owns only the sampling: how each value
-//! is measured, and the `MetricsState` handle the server reads from.
+//! The wire types are NOT defined here — they live in the `devcanopy-wire`
+//! crate (imported as `wire`) and are re-exported below, so the agent that
+//! produces the JSON and the app that consumes it cannot drift. This module
+//! owns only the sampling: how each value is measured, and the `MetricsState`
+//! handle the server reads from.
 
 // Re-exported so `crate::metrics::Snapshot` keeps resolving for server.rs,
 // main.rs and this module's tests. `allow(unused_imports)`: this is a binary
 // crate, so a re-export nothing references internally still warns even though
 // it is the module's documented surface.
 #[allow(unused_imports)]
-pub use metrics::{Battery, Cpu, Disk, Gpu, Memory, Network, Process, Snapshot, Volume};
+pub use wire::{Battery, Cpu, Disk, Gpu, Memory, Network, Process, Snapshot, Volume};
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,11 +38,12 @@ const PROCESS_TOP_LIMIT: usize = 5;
 pub const STALE_INTERVALS: u32 = 3;
 
 // ---------------------------------------------------------------------------
-// Wire contract types: see the `metrics` crate, re-exported at the top of this
-// module. They used to be defined here, duplicated field-for-field against the
-// Swift decoder — which is exactly how `HostMetricsError.decodeFailed` ("agent/
-// app version skew") came to exist. One definition now; a rename here is a
-// rename everywhere, and `crates/metrics/tests/wire.rs` pins the JSON shape.
+// Wire contract types: see the `devcanopy-wire` crate, re-exported at the top
+// of this module. They used to be defined here, duplicated field-for-field
+// against the Swift decoder — which is exactly how
+// `HostMetricsError.decodeFailed` ("agent/app version skew") came to exist. One
+// definition now; a rename here is a rename everywhere, and
+// `crates/wire/tests/wire.rs` pins the JSON shape.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

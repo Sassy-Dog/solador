@@ -299,7 +299,7 @@ jobs:
       # the WebView2 SDK bindings themselves at build time, so no extra
       # apt/choco-equivalent setup should be needed — unlike Linux, which needs
       # webkit2gtk/appindicator system packages this repo doesn't install
-      # anywhere. Narrow this to `-p metrics -p viewmodel -p agentclient` only
+      # anywhere. Narrow this to `-p devcanopy-wire -p viewmodel -p agentclient`
       # if a real run shows app/src-tauri needs something this image doesn't
       # have, and say why in the job/PR rather than narrowing silently.
       - name: Test

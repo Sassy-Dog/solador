@@ -21,7 +21,7 @@ log_info "Formatting Swift sources in place (swiftformat $("$SWIFTFORMAT" --vers
 "$SWIFTFORMAT" .
 log_success "Swift formatting complete"
 
-# Rust workspace (crates/metrics, crates/viewmodel, crates/agentclient,
+# Rust workspace (crates/wire, crates/viewmodel, crates/agentclient,
 # app/src-tauri) -- additive, matches ./dev lint's `cargo fmt --check`.
 # agent/ has its own toolchain/CI and is left to it.
 if command_exists cargo; then

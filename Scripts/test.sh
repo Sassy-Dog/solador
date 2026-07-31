@@ -60,7 +60,7 @@ else
     exit 1
 fi
 
-# --- Rust workspace (crates/metrics, crates/viewmodel, crates/agentclient,
+# --- Rust workspace (crates/wire, crates/viewmodel, crates/agentclient,
 # app/src-tauri) --- additive: does not touch anything above. agent/ is a
 # separate Cargo workspace with its own CI job (agent-tests) and is
 # deliberately not run here.

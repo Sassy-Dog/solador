@@ -7,4 +7,4 @@ rust-version.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-metrics = { path = "../metrics" }
+devcanopy-wire = { path = "../wire" }
