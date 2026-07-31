@@ -145,9 +145,29 @@ mod tests {
         assert_eq!(thermal_badge(ThermalState::Critical), ("Critical", RED));
     }
 
+    /// `card::host_card` picks a core's hue with `CORE_COLORS[i % len]`, so
+    /// "cycling" means two things, and this asserts both: the 10 hues are
+    /// pairwise distinct (otherwise a shorter cycle would be invisible), and
+    /// index 10 wraps onto index 0 while index 9 -- the last one before the
+    /// wrap -- does not.
+    ///
+    /// The previous body compared `CORE_COLORS[0]` to
+    /// `CORE_COLORS[10 % CORE_COLORS.len()]`; `10 % 10 == 0`, so it compared
+    /// element zero to itself and could not fail.
     #[test]
     fn ten_core_hues_cycle() {
         assert_eq!(CORE_COLORS.len(), 10);
-        assert_eq!(CORE_COLORS[0], CORE_COLORS[10 % CORE_COLORS.len()]);
+
+        for (i, a) in CORE_COLORS.iter().enumerate() {
+            for (j, b) in CORE_COLORS.iter().enumerate().skip(i + 1) {
+                assert_ne!(a, b, "cores {i} and {j} share a hue");
+            }
+        }
+
+        let hue = |i: usize| CORE_COLORS[i % CORE_COLORS.len()];
+        assert_eq!(hue(10), hue(0), "core 10 must wrap onto core 0's hue");
+        assert_ne!(hue(9), hue(0), "core 9 is still inside the first cycle");
+        assert_eq!(hue(11), hue(1));
+        assert_eq!(hue(20), hue(0));
     }
 }

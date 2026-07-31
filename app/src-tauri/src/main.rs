@@ -1,7 +1,7 @@
 //! DevCanopy shell. The frontend receives a finished view-model and paints;
 //! all logic lives in `viewmodel`.
 
-use agentclient::AgentClient;
+use agentclient::{AgentClient, AgentError};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -70,6 +70,29 @@ fn view_for(s: &HostState) -> Value {
         (None, Some(msg)) => pending_card(&s.name, &Pending::Failed(msg.clone())),
         // Never connected, still waiting on the first tick.
         (None, None) => pending_card(&s.name, &Pending::Connecting),
+    }
+}
+
+/// The write side of the poll loop, pulled out of the spawned task for the
+/// same reason `view_for` was pulled out of the `#[tauri::command]`: a plain
+/// function over `&mut HostState` is testable without a runtime, a mutex or a
+/// live agent.
+///
+/// The invariant it carries is that a failure moves `error` and NOTHING else.
+/// `latest` and `last_success` are the record of the last thing we actually
+/// heard, so clearing either on failure would either blank a card that still
+/// has real (if old) data, or downgrade a dated "last update 4m ago" badge to
+/// "last update unknown" — and it would do so silently, since one failed poll
+/// looks identical to a hundred from inside the loop.
+fn record_poll(s: &mut HostState, result: Result<metrics::Snapshot, AgentError>, at: Instant) {
+    match result {
+        Ok(snap) => {
+            s.histories.record(&snap);
+            s.latest = Some(snap);
+            s.error = None;
+            s.last_success = Some(at);
+        }
+        Err(e) => s.error = Some(e.user_message().to_string()),
     }
 }
 
@@ -188,15 +211,7 @@ fn main() {
             // No lock is held across this await.
             let result = client.snapshot().await;
             let mut s = poll_target.lock().unwrap();
-            match result {
-                Ok(snap) => {
-                    s.histories.record(&snap);
-                    s.latest = Some(snap);
-                    s.error = None;
-                    s.last_success = Some(Instant::now());
-                }
-                Err(e) => s.error = Some(e.user_message().to_string()),
-            }
+            record_poll(&mut s, result, Instant::now());
         }
     });
 
@@ -233,6 +248,14 @@ mod tests {
         }
     }
 
+    /// The fixture's CPU reading as a card renders it. Derived from the
+    /// parsed fixture rather than written out as `"34%"`, so editing
+    /// `snapshot.json` can't leave a literal behind that has to be chased
+    /// across this file.
+    fn fixture_cpu_value() -> String {
+        format!("{}%", fixture().cpu.total_usage.round() as i64)
+    }
+
     #[test]
     fn live_when_a_snapshot_exists_and_the_last_poll_succeeded() {
         let s = state_with(Some(fixture()), None, Some(Instant::now()));
@@ -240,7 +263,7 @@ mod tests {
         assert_eq!(vm["connection"]["state"], "live");
         assert_eq!(vm["connection"]["color"], "#33d17a");
         assert!(vm["connection"]["message"].is_null());
-        assert_eq!(vm["cpuValue"], "34%");
+        assert_eq!(vm["cpuValue"], fixture_cpu_value());
     }
 
     /// CRITICAL 1's exact regression case: a snapshot exists, but the most
@@ -261,10 +284,21 @@ mod tests {
         let msg = vm["connection"]["message"].as_str().unwrap();
         assert!(msg.contains("Couldn't reach the agent"));
         assert!(msg.contains("ago"), "expected a relative age, got {msg:?}");
+
         // The data itself must be exactly what a `Connection::Live` render of
         // the same snapshot would have produced -- staleness changes the
-        // badge, never the numbers.
-        assert_eq!(vm["cpuValue"], "34%");
+        // badge, never the numbers. Compared against a live render of the
+        // same fixture rather than a hardcoded `"34%"`, so this covers every
+        // data field at once and survives edits to `snapshot.json`.
+        let live = view_for(&state_with(Some(fixture()), None, Some(Instant::now())));
+        assert_eq!(vm["cpuValue"], live["cpuValue"]);
+        assert_eq!(vm["cores"], live["cores"]);
+        assert_eq!(vm["volumes"], live["volumes"]);
+        assert_eq!(vm["memValue"], live["memValue"]);
+        assert_ne!(
+            vm["connection"], live["connection"],
+            "the badge is the only thing staleness may change"
+        );
         assert_eq!(vm["hostName"], "test-host");
     }
 
@@ -290,5 +324,81 @@ mod tests {
         assert_eq!(vm["connection"]["color"], "#e09a26");
         assert_eq!(vm["error"]["message"], "waiting for first sample…");
         assert!(vm.get("cpuValue").is_none());
+    }
+
+    #[test]
+    fn a_successful_poll_records_the_snapshot_its_history_and_the_success_time() {
+        let mut s = state_with(None, Some("Couldn't reach the agent."), None);
+        let at = Instant::now();
+        record_poll(&mut s, Ok(fixture()), at);
+        assert!(s.latest.is_some());
+        assert_eq!(s.last_success, Some(at));
+        assert!(s.error.is_none(), "a success must clear the prior error");
+        assert_eq!(s.histories.cpu.len(), 1);
+        assert_eq!(view_for(&s)["connection"]["state"], "live");
+    }
+
+    /// A host that goes down stays down: the poll loop keeps ticking and each
+    /// failure runs the same `Err` arm. `last_success` must record when we
+    /// last actually heard from the host, not when we last tried, so the
+    /// stale badge's age keeps GROWING across a run of failures. One failure
+    /// is not enough to prove that — an implementation that stamped
+    /// `last_success` on every poll, or cleared it on failure, passes a
+    /// single-failure test and breaks here.
+    #[test]
+    fn last_success_survives_a_run_of_consecutive_poll_failures() {
+        let mut s = state_with(None, None, None);
+        let first_success = Instant::now();
+        record_poll(&mut s, Ok(fixture()), first_success);
+
+        for i in 1..=5 {
+            record_poll(
+                &mut s,
+                Err(AgentError::Unreachable("connection refused".into())),
+                Instant::now(),
+            );
+            assert_eq!(
+                s.last_success,
+                Some(first_success),
+                "failure {i} moved last_success off the last real sample"
+            );
+            assert!(
+                s.latest.is_some(),
+                "failure {i} discarded the retained snapshot"
+            );
+            assert_eq!(
+                s.histories.cpu.len(),
+                1,
+                "failure {i} recorded a sample it never received"
+            );
+        }
+
+        // …so the card still dates its staleness instead of falling back to
+        // the "unknown" branch `view_for` reserves for a missing
+        // `last_success`.
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "stale");
+        let msg = vm["connection"]["message"].as_str().unwrap();
+        assert!(msg.contains("ago"), "expected a relative age, got {msg:?}");
+        assert!(
+            !msg.contains("unknown"),
+            "the age is known -- a run of failures must not erase it: {msg:?}"
+        );
+        assert_eq!(vm["cpuValue"], fixture_cpu_value());
+    }
+
+    #[test]
+    fn a_success_after_failures_clears_the_error_and_re_dates_the_host() {
+        let mut s = state_with(None, None, None);
+        let first_success = Instant::now();
+        record_poll(&mut s, Ok(fixture()), first_success);
+        record_poll(&mut s, Err(AgentError::AuthFailed), Instant::now());
+        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+
+        let recovered = Instant::now();
+        record_poll(&mut s, Ok(fixture()), recovered);
+        assert_eq!(s.last_success, Some(recovered));
+        assert!(s.error.is_none());
+        assert_eq!(view_for(&s)["connection"]["state"], "live");
     }
 }

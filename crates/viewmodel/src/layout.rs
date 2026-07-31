@@ -29,7 +29,10 @@ pub fn core_column_ladder(count: usize, min_cell: f64, gap: f64) -> Vec<(f64, us
         .filter(|d| count.is_multiple_of(*d))
         .map(|d| (d as f64 * min_cell + (d.saturating_sub(1)) as f64 * gap, d))
         .collect();
-    l.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    // `total_cmp`, not `partial_cmp(..).unwrap()`: the latter panics the
+    // moment any width is NaN. No caller produces one today, but this is
+    // public API and a total order costs nothing.
+    l.sort_by(|a, b| a.0.total_cmp(&b.0));
     l
 }
 
@@ -126,6 +129,18 @@ mod tests {
             HISTORY_CAPACITY
         );
         assert_eq!(visible_samples(0.0, PX_PER_SAMPLE, HISTORY_CAPACITY), 2);
+    }
+
+    /// A NaN width used to abort the whole render: `sort_by` reached
+    /// `partial_cmp(..).unwrap()` on it and panicked. `total_cmp` is a total
+    /// order, so the ladder still comes back -- every divisor present, in
+    /// insertion order, because a stable sort leaves equal keys alone.
+    #[test]
+    fn a_nan_cell_width_sorts_instead_of_panicking() {
+        let l = core_column_ladder(16, f64::NAN, CORE_GAP);
+        let cols: Vec<usize> = l.iter().map(|(_, c)| *c).collect();
+        assert_eq!(cols, vec![1, 2, 4, 8, 16]);
+        assert!(l.iter().all(|(w, _)| w.is_nan()));
     }
 
     #[test]
