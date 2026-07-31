@@ -59,7 +59,8 @@ log_info "Building..."
 # Forward the Sentry DSN (issue #18) into the SentryDSN Info.plist key via the
 # SENTRY_DSN build setting. Defaults to empty when unset (project.yml), so a
 # normal local build ships no DSN and Sentry no-ops — telemetry stays opt-in.
-# Release/CI sets SENTRY_DSN from the GitHub Actions secret; never hardcoded.
+# publish.sh resolves it from Doppler and exports it (issue #75); CI deliberately
+# leaves it unset so the no-op path stays exercised. Never hardcoded.
 SENTRY_DSN="${SENTRY_DSN:-}"
 
 if command_exists xcbeautify; then
