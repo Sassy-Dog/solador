@@ -17,7 +17,7 @@ app/
 
 Every string and colour the frontend paints comes from Rust
 ([`crates/viewmodel`](../crates/viewmodel)); the frontend does layout and nothing
-else. It lives in the root Cargo workspace alongside `crates/metrics`,
+else. It lives in the root Cargo workspace alongside `crates/wire`,
 `crates/viewmodel`, and `crates/agentclient` — distinct from `agent/`, which pins
 its own toolchain and has its own CI job.
 

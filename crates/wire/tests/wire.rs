@@ -1,4 +1,4 @@
-use metrics::Snapshot;
+use wire::Snapshot;
 
 const FIXTURE: &str = include_str!("fixtures/snapshot.json");
 
@@ -29,7 +29,7 @@ fn percent_used_guards_against_a_zero_total() {
     let root = s.volumes.iter().find(|v| v.mount == "/").unwrap();
     assert!((root.percent_used() - 44.978).abs() < 0.01);
 
-    let empty = metrics::Volume {
+    let empty = wire::Volume {
         mount: "/x".into(),
         used_gb: 1.0,
         total_gb: 0.0,
@@ -94,7 +94,7 @@ fn battery_deserialises_from_shared_contract_fixture() {
     );
     let raw = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("read shared battery fixture {path}: {e}"));
-    let battery: metrics::Battery =
+    let battery: wire::Battery =
         serde_json::from_str(&raw).expect("shared fixture must deserialize into Battery");
     assert_eq!(battery.level, 82.5, "battery level must be 82.5");
     assert!(battery.is_charging, "battery must be charging");
@@ -121,7 +121,7 @@ fn live_capture_deserialises_when_present() {
 /// `skip_serializing_if` here would silently change what every agent sends.
 #[test]
 fn a_volume_without_fstype_omits_the_key_rather_than_emitting_null() {
-    let absent = metrics::Volume {
+    let absent = wire::Volume {
         mount: "/x".into(),
         used_gb: 1.0,
         total_gb: 2.0,
@@ -133,7 +133,7 @@ fn a_volume_without_fstype_omits_the_key_rather_than_emitting_null() {
         "fstype must be omitted, got {json}"
     );
 
-    let present = metrics::Volume {
+    let present = wire::Volume {
         mount: "/y".into(),
         used_gb: 1.0,
         total_gb: 2.0,
@@ -149,13 +149,13 @@ fn a_volume_without_fstype_omits_the_key_rather_than_emitting_null() {
 #[test]
 fn gpu_absence_is_one_definition_shared_by_producer_and_consumer() {
     assert!(
-        !metrics::Gpu::zeros().is_present(),
+        !wire::Gpu::zeros().is_present(),
         "an all-zero GPU is absent"
     );
 
     // A real GPU sitting idle reports usage 0.0 and must still count as present
     // — it renders "0%", not an em dash. VRAM capacity is the discriminator.
-    let idle = metrics::Gpu {
+    let idle = wire::Gpu {
         usage: 0.0,
         vram_used_gb: 0.5,
         vram_total_gb: 24.0,

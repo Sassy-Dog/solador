@@ -98,7 +98,7 @@ impl HostHistories {
         Self::default()
     }
 
-    pub fn record(&mut self, s: &metrics::Snapshot) {
+    pub fn record(&mut self, s: &wire::Snapshot) {
         self.cpu.push(s.cpu.total_usage);
         let mem_pct = if s.memory.total_gb > 0.0 {
             s.memory.used_gb / s.memory.total_gb * 100.0
@@ -126,13 +126,13 @@ impl HostHistories {
 /// Delegates to the wire crate so "does this host have a GPU" has exactly one
 /// definition, shared with the agent that produces the data. Re-deriving the
 /// `vram_total_gb > 0.0` test here is how the two sides drift.
-fn has_gpu(s: &metrics::Snapshot) -> bool {
+fn has_gpu(s: &wire::Snapshot) -> bool {
     s.gpu.is_present()
 }
 
 pub fn host_card(
     host_name: &str,
-    s: &metrics::Snapshot,
+    s: &wire::Snapshot,
     h: &HostHistories,
     connection: &Connection,
 ) -> Value {
@@ -154,7 +154,7 @@ pub fn host_card(
         })
         .collect();
 
-    let mut vols: Vec<&metrics::Volume> = s.volumes.iter().collect();
+    let mut vols: Vec<&wire::Volume> = s.volumes.iter().collect();
     vols.sort_by(|a, b| b.percent_used().partial_cmp(&a.percent_used()).unwrap());
     let volumes: Vec<Value> = vols
         .iter()
@@ -169,9 +169,9 @@ pub fn host_card(
         })
         .collect();
 
-    let mut by_cpu: Vec<&metrics::Process> = s.processes.iter().collect();
+    let mut by_cpu: Vec<&wire::Process> = s.processes.iter().collect();
     by_cpu.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap());
-    let mut by_mem: Vec<&metrics::Process> = s.processes.iter().collect();
+    let mut by_mem: Vec<&wire::Process> = s.processes.iter().collect();
     by_mem.sort_by(|a, b| b.memory_mb.partial_cmp(&a.memory_mb).unwrap());
 
     let disk_max = h
@@ -270,8 +270,8 @@ pub fn host_card(
 mod tests {
     use super::*;
 
-    fn fixture() -> metrics::Snapshot {
-        serde_json::from_str(include_str!("../../metrics/tests/fixtures/snapshot.json")).unwrap()
+    fn fixture() -> wire::Snapshot {
+        serde_json::from_str(include_str!("../../wire/tests/fixtures/snapshot.json")).unwrap()
     }
 
     #[test]
@@ -338,13 +338,13 @@ mod tests {
         // correlated cpu/mem values and can't distinguish the two sorts.
         let mut s = fixture();
         s.processes = vec![
-            metrics::Process {
+            wire::Process {
                 pid: 1,
                 name: "burst".to_string(),
                 cpu_percent: 195.0,
                 memory_mb: 800.0,
             },
-            metrics::Process {
+            wire::Process {
                 pid: 2,
                 name: "hog".to_string(),
                 cpu_percent: 12.0,

@@ -43,7 +43,7 @@ else
     log_error "Swift lint failed"
 fi
 
-# --- Rust workspace (crates/metrics, crates/viewmodel, crates/agentclient,
+# --- Rust workspace (crates/wire, crates/viewmodel, crates/agentclient,
 # app/src-tauri) --- additive: does not touch the Swift status above. Mirrors
 # CI's rust-workspace job (fmt --check + clippy -D warnings). agent/ has its
 # own CI job (agent-tests) and is deliberately not linted here.

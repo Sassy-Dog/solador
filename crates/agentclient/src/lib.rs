@@ -74,7 +74,7 @@ impl AgentClient {
         }
     }
 
-    pub async fn snapshot(&self) -> Result<metrics::Snapshot, AgentError> {
+    pub async fn snapshot(&self) -> Result<wire::Snapshot, AgentError> {
         let url = format!("{}/v1/snapshot", self.base_url);
         let resp = self
             .http
@@ -110,7 +110,7 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    const FIXTURE: &str = include_str!("../../metrics/tests/fixtures/snapshot.json");
+    const FIXTURE: &str = include_str!("../../wire/tests/fixtures/snapshot.json");
 
     #[tokio::test]
     async fn sends_a_bearer_token_and_decodes_the_snapshot() {
