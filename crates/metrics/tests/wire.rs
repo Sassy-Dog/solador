@@ -43,13 +43,17 @@ fn percent_used_guards_against_a_zero_total() {
 /// It CANNOT catch the app and the live agent drifting apart: that needs a
 /// real agent payload, which is what `live_capture_deserialises_when_present`
 /// below checks (and only when `snapshot-live.json` is actually present).
+///
+/// Every wire struct derives `PartialEq`, so this compares the whole
+/// `Snapshot` rather than a hand-picked pair of fields -- a field that
+/// serialised lossily (or not at all) used to survive here as long as
+/// `core_usages` and the volume count came back intact.
 #[test]
 fn round_tripping_through_json_preserves_the_snapshot() {
     let s: Snapshot = serde_json::from_str(FIXTURE).unwrap();
     let out = serde_json::to_string(&s).unwrap();
-    let again: Snapshot = serde_json::from_str(&out).unwrap();
-    assert_eq!(s.cpu.core_usages, again.cpu.core_usages);
-    assert_eq!(s.volumes.len(), again.volumes.len());
+    let again: Snapshot = serde_json::from_str(&out).expect("re-read own output");
+    assert_eq!(s, again, "every field must survive a round trip");
 }
 
 /// Volume without fstype key exercises #[serde(default)] on the omitted field.

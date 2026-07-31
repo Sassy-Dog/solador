@@ -285,6 +285,23 @@ mod tests {
         assert_eq!(vm["vramText"], "VRAM: —");
     }
 
+    /// The exact edge the em-dash rule pivots on. `usage == 0.0` is what an
+    /// idle-but-present GPU reports, and it is indistinguishable from an
+    /// absent one on that field alone — VRAM capacity is the discriminator.
+    /// Deciding on `usage` instead would render a working GPU as "—" every
+    /// time the host went quiet.
+    #[test]
+    fn a_gpu_that_is_present_but_idle_renders_zero_percent_not_an_em_dash() {
+        let mut s = fixture();
+        s.gpu.usage = 0.0;
+        s.gpu.vram_used_gb = 0.5;
+        s.gpu.vram_total_gb = 24.0;
+        let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
+        assert_eq!(vm["gpuValue"], "0%");
+        assert_eq!(vm["gpuValueColor"], color::hex(color::GPU));
+        assert_eq!(vm["vramText"], "VRAM: 0.5 / 24.0 GB");
+    }
+
     #[test]
     fn a_host_with_a_gpu_renders_the_percentage() {
         let mut s = fixture();
@@ -370,17 +387,51 @@ mod tests {
         assert_eq!(cores[0]["label"], "Core 0");
         // core 3 is at 94% in the fixture -> red
         assert_eq!(cores[3]["valueColor"], "#e05a4f");
+
+        // 16 cores and 10 hues, so the fixture actually exercises the
+        // `i % CORE_COLORS.len()` wraparound: core 10 returns to core 0's hue
+        // and core 9 -- the last of the first cycle -- must not.
+        assert_eq!(cores[10]["hue"], cores[0]["hue"]);
+        assert_ne!(cores[9]["hue"], cores[0]["hue"]);
+        assert_eq!(cores[11]["hue"], cores[1]["hue"]);
     }
 
+    /// "Every series" means all eight `HostHistories` fields, each holding
+    /// its OWN reading. Lengths alone can't tell the seven scalar series
+    /// apart, so a copy-paste that recorded `disk.read_mbps` into
+    /// `disk_write` would have gone unnoticed; the fixture's values are
+    /// pairwise distinct, so asserting them pins each series to its source.
     #[test]
     fn recording_a_snapshot_populates_every_series() {
-        let s = fixture();
+        let mut s = fixture();
+        // The fixture's host has no GPU, so its usage is 0.0 -- the one value
+        // that would collide with an unrecorded series.
+        s.gpu.usage = 55.0;
+
         let mut h = HostHistories::new();
         h.record(&s);
         h.record(&s);
-        assert_eq!(h.cpu.len(), 2);
+
+        assert_eq!(h.cpu.values(), &[34.2, 34.2]);
+        assert_eq!(h.gpu.values(), &[55.0, 55.0]);
+        assert_eq!(h.disk_read.values(), &[12.4, 12.4]);
+        assert_eq!(h.disk_write.values(), &[88.1, 88.1]);
+        assert_eq!(h.net_down.values(), &[2.1, 2.1]);
+        assert_eq!(h.net_up.values(), &[0.4, 0.4]);
+
+        // Memory is the one derived series: a percentage of total, never the
+        // raw 18.2 GB.
+        assert_eq!(h.mem.len(), 2);
+        for v in h.mem.values() {
+            assert!(
+                (v - 18.2 / 62.7 * 100.0).abs() < 1e-9,
+                "mem must be a percentage, got {v}"
+            );
+        }
+
         assert_eq!(h.cores.len(), 16);
-        assert_eq!(h.cores[0].len(), 2);
+        assert!(h.cores.iter().all(|c| c.len() == 2), "every core series");
+        assert_eq!(h.cores[3].values(), &[94.0, 94.0]);
     }
 
     #[test]
