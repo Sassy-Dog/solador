@@ -1,0 +1,16 @@
+# Cargo configuration for the root Rust workspace (crates/*, app/src-tauri).
+#
+# The macOS deployment floor is declared here rather than left to whatever the
+# build host's SDK defaults to. This is the mechanism that reaches plain
+# `cargo build` / `cargo test` / `cargo clippy` — which is how `./dev test`,
+# `./dev lint` and CI's "Rust workspace + frontend e2e" job build the workspace;
+# they never go through the Tauri CLI. `app/src-tauri/tauri.conf.json` declares
+# the same floor as `bundle.macOS.minimumSystemVersion` for the eventual
+# `tauri build`, so the two can't drift.
+#
+# 14.0 matches the sibling SwiftUI app's floor (`project.yml`). The frontend's
+# real requirement is lower (macOS 13.3+ for `adoptedStyleSheets`), so 14.0
+# comfortably covers it. This is ignored when targeting non-Apple platforms, so
+# the Windows workspace job is unaffected.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.0"
