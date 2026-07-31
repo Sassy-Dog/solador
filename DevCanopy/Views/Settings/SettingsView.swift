@@ -253,6 +253,7 @@ struct UsageSettingsView: View {
     var body: some View {
         Form {
             NeonUsageSettingsSection()
+            SentryUsageSettingsSection()
         }
         .formStyle(.grouped)
         .padding()
@@ -323,6 +324,82 @@ struct NeonUsageSettingsSection: View {
         NeonUsageService.shared.configureFromKeychain()
         hasStoredKey = false
         apiKey = ""
+        statusMessage = "Cleared."
+    }
+}
+
+/// Sentry credentials: the API token (Keychain) and the non-secret org slug + monthly
+/// event quota (`@AppStorage`, per the `azureMonthlyBudgetUSD` precedent). Unrelated to
+/// the app's own crash reporting — this token only reads org event counts.
+struct SentryUsageSettingsSection: View {
+    @State private var token: String = ""
+    @State private var hasStoredToken: Bool = KeychainHelper.shared.loadSentryUsageToken()?.isEmpty == false
+    @State private var statusMessage: String?
+
+    @AppStorage(SentryUsageService.orgSlugDefaultsKey) private var orgSlug: String = ""
+    @AppStorage(SentryUsageService.monthlyEventQuotaDefaultsKey) private var monthlyEventQuota: Int = 0
+
+    var body: some View {
+        Section {
+            TextField("Organization slug", text: $orgSlug)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: orgSlug) { SentryUsageService.shared.configureFromKeychain() }
+
+            SecureField("API token", text: $token)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Button("Save") { save() }
+                    .disabled(token.isEmpty)
+                Button("Clear") { clear() }
+                    .disabled(!hasStoredToken)
+                Spacer()
+                if hasStoredToken {
+                    Label("Token stored", systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                }
+            }
+
+            TextField("Monthly error quota (events)", value: $monthlyEventQuota, format: .number)
+                .textFieldStyle(.roundedBorder)
+
+            Text("Leave the quota at 0 to hide the quota bar.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let statusMessage {
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Powers the Sentry row on the Usage panel (accepted error events over the last 30 days). Create a **personal token** under User settings → Auth Tokens, or an internal-integration token, with the read-only **`org:read`** scope — organization auth tokens carry a fixed CI-oriented scope set that doesn't include it. Stored in your macOS Keychain; the org slug and quota are not secrets and are stored as normal preferences.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Sentry")
+                .font(.headline)
+        }
+    }
+
+    private func save() {
+        do {
+            try KeychainHelper.shared.saveSentryUsageToken(token)
+            SentryUsageService.shared.configureFromKeychain()
+            hasStoredToken = true
+            token = ""
+            statusMessage = "Saved."
+        } catch {
+            statusMessage = "Failed to save: \(error.localizedDescription)"
+        }
+    }
+
+    private func clear() {
+        KeychainHelper.shared.deleteSentryUsageToken()
+        SentryUsageService.shared.configureFromKeychain()
+        hasStoredToken = false
+        token = ""
         statusMessage = "Cleared."
     }
 }

@@ -12,7 +12,8 @@ glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
   elapsed, plus local/remote branch and worktree counts (folds in the former Git Worktrees panel)
 - **GitHub Runners** — self-hosted runner availability/activity
 - **Usage** — token rollups from local Claude Code usage logs (subscription; no USD),
-  plus per-provider usage sections (Neon compute/storage MTD)
+  plus per-provider usage sections (Neon compute/storage MTD, Sentry accepted error
+  events over 30d)
 
 It has three parts:
 - **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit. This is the shipped app.
@@ -142,6 +143,10 @@ DevCanopy/
 - Neon consumption: `Services/NeonUsage/` (org-wide `consumption_history` read, MTD
   compute + branch storage). Own fixed 1h poll cadence, not the shared refresh
   interval; renders `—` when the key/org is missing or the API fails.
+- Sentry usage: `Services/SentryUsage/` (org `stats_v2` read, accepted error events
+  over a rolling 30d window, optional quota bar). Same 1h cadence + `—` rules as Neon.
+  Distinct from `Services/SentrySetup.swift`, which is the app's own crash-reporting
+  bootstrap — nothing in `SentryUsage*` touches the Sentry SDK.
 
 ### Authentication
 - **Repos / GitHub Runners panels**: a fine-grained PAT with read-only access to
@@ -152,6 +157,10 @@ DevCanopy/
 - **Usage panel → Neon**: an *organization* API key (scoped to the org's projects,
   not tied to a user account), entered in Settings → Usage. The non-secret `org_id`
   is a normal `@AppStorage` preference, not a Keychain item.
+- **Usage panel → Sentry**: a personal or internal-integration token carrying only
+  the read-only `org:read` scope, entered in Settings → Usage (org auth tokens carry
+  a fixed CI-oriented scope set that excludes it). The non-secret org slug and
+  monthly event quota are `@AppStorage` preferences, not Keychain items.
 - All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);
   never persisted in SwiftData.
 

@@ -182,6 +182,23 @@ final class KeychainHelper {
         try? delete(for: "neon_api_key")
     }
 
+    /// Sentry API token for the org event-count read behind the Usage panel. Needs
+    /// only the read-only `org:read` scope — a personal or internal-integration token,
+    /// since organization auth tokens carry a fixed CI-oriented scope set. Unrelated to
+    /// the app's own crash-reporting DSN in `SentrySetup`. Keychain only: the
+    /// non-secret org slug lives in `@AppStorage` instead.
+    func saveSentryUsageToken(_ token: String) throws {
+        try saveString(token, for: "sentry_usage_token")
+    }
+
+    func loadSentryUsageToken() -> String? {
+        try? loadString(for: "sentry_usage_token")
+    }
+
+    func deleteSentryUsageToken() {
+        try? delete(for: "sentry_usage_token")
+    }
+
     // MARK: - OpenClaw
 
     /// Optional bearer token for the OpenClaw gateway. Most installs authenticate

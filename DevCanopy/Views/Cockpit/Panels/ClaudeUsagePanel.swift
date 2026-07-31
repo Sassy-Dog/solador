@@ -2,13 +2,19 @@ import SwiftUI
 
 /// Usage panel — today's Claude tokens (header), rolling 5h + weekly windows, and a
 /// compact top-projects breakdown, plus per-provider usage sections beneath. Reads
-/// from `ClaudeUsageService` (local logs, no network) and `NeonUsageService`. Claude
-/// is subscription-based, so token counts (not USD costs) are what's shown.
+/// from `ClaudeUsageService` (local logs, no network), `NeonUsageService`, and
+/// `SentryUsageService`. Claude is subscription-based, so token counts (not USD costs)
+/// are what's shown.
 struct ClaudeUsagePanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .claudeUsage
 
     @EnvironmentObject private var service: ClaudeUsageService
     @EnvironmentObject private var neon: NeonUsageService
+    @EnvironmentObject private var sentry: SentryUsageService
+
+    /// Monthly accepted-error quota for the Sentry bar. 0 (the default) hides the bar;
+    /// non-secret, so it comes from the same `@AppStorage` key Settings writes.
+    @AppStorage(SentryUsageService.monthlyEventQuotaDefaultsKey) private var sentryEventQuota: Int = 0
 
     var body: some View {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
@@ -30,6 +36,10 @@ struct ClaudeUsagePanel: CockpitPanelView {
                 if neon.isConfigured {
                     neonSection
                 }
+                // Same guarantee for Sentry: no token ⇒ no section, no layout shift.
+                if sentry.isConfigured {
+                    sentrySection
+                }
                 PanelStatusFooter(lastUpdated: service.lastUpdated, error: service.lastError, staleAfter: 150)
             }
         }
@@ -43,14 +53,37 @@ struct ClaudeUsagePanel: CockpitPanelView {
     @ViewBuilder
     private var neonSection: some View {
         Divider().overlay(CockpitTheme.line)
-        neonRow("NEON COMPUTE (MTD)", Self.cuHours(neon.summary?.computeUnitHours))
-        neonRow("NEON STORAGE", Self.gibibytes(neon.summary?.storageGiB))
+        providerRow("NEON COMPUTE (MTD)", Self.cuHours(neon.summary?.computeUnitHours))
+        providerRow("NEON STORAGE", Self.gibibytes(neon.summary?.storageGiB))
         // Poll cadence is 1h, so the stale threshold sits above it — 90m flags a
         // genuinely stuck poller rather than the normal gap between polls.
         PanelStatusFooter(lastUpdated: neon.lastUpdated, error: neon.lastError, staleAfter: 90 * 60)
     }
 
-    private func neonRow(_ label: String, _ value: String?) -> some View {
+    // MARK: - Sentry
+
+    /// Accepted error events over the rolling 30d window, with an optional quota bar.
+    /// Rendering only — the fold lives in `SentryUsageMapping`. An unknown figure
+    /// renders `—`, and the bar is suppressed rather than drawn at a defaulted 0.
+    @ViewBuilder
+    private var sentrySection: some View {
+        Divider().overlay(CockpitTheme.line)
+        providerRow(
+            "SENTRY ERRORS (\(SentryStatsQuery.windowDays)D)",
+            Self.events(sentry.summary?.acceptedErrorEvents)
+        )
+        if sentryEventQuota > 0, let accepted = sentry.summary?.acceptedErrorEvents {
+            // Same thresholds as the Azure budget bar: amber at 90%, red at quota.
+            CockpitProgressBar(
+                fraction: Double(accepted) / Double(sentryEventQuota),
+                amberAt: 0.9,
+                redAt: 1.0
+            )
+        }
+        PanelStatusFooter(lastUpdated: sentry.lastUpdated, error: sentry.lastError, staleAfter: 90 * 60)
+    }
+
+    private func providerRow(_ label: String, _ value: String?) -> some View {
         HStack(spacing: 7) {
             Text(label)
                 .font(CockpitTheme.mono(9, weight: .bold))
@@ -141,6 +174,13 @@ struct ClaudeUsagePanel: CockpitPanelView {
     static func gibibytes(_ gib: Double?) -> String? {
         guard let gib else { return nil }
         return String(format: "%.1f GiB", gib)
+    }
+
+    /// Accepted error events in the panel's abbreviated-count style, e.g. `12k`. nil in
+    /// ⇒ nil out, which the row renders as `—`.
+    static func events(_ count: Int?) -> String? {
+        guard let count else { return nil }
+        return tokens(count)
     }
 
     /// Abbreviated token count: 1_234 -> "1.2k", 1_200_000 -> "1.2M".
