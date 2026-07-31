@@ -92,7 +92,7 @@ fn record_poll(s: &mut HostState, result: Result<metrics::Snapshot, AgentError>,
             s.error = None;
             s.last_success = Some(at);
         }
-        Err(e) => s.error = Some(e.user_message().to_string()),
+        Err(e) => s.error = Some(e.user_message().into_owned()),
     }
 }
 
