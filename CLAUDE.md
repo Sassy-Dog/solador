@@ -11,7 +11,8 @@ glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **Repos** — one fixed row per watched repo: running-workflow count + longest-running
   elapsed, plus local/remote branch and worktree counts (folds in the former Git Worktrees panel)
 - **GitHub Runners** — self-hosted runner availability/activity
-- **Claude Usage** — token rollups from local Claude Code usage logs (subscription; no USD)
+- **Usage** — token rollups from local Claude Code usage logs (subscription; no USD),
+  plus per-provider usage sections (Neon compute/storage MTD)
 
 It has three parts:
 - **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit. This is the shipped app.
@@ -138,6 +139,9 @@ DevCanopy/
   remote branch / open-issue / open-PR counts via the GitHub API).
 - Claude Code usage rollups: `Services/ClaudeUsage/` (tokens only — USD is computed and
   unit-tested but never displayed, since the account is subscription-based).
+- Neon consumption: `Services/NeonUsage/` (org-wide `consumption_history` read, MTD
+  compute + branch storage). Own fixed 1h poll cadence, not the shared refresh
+  interval; renders `—` when the key/org is missing or the API fails.
 
 ### Authentication
 - **Repos / GitHub Runners panels**: a fine-grained PAT with read-only access to
@@ -145,6 +149,9 @@ DevCanopy/
   (open-issue counts), and **Pull requests** (open-PR counts), entered in
   Settings → GitHub Token (`Views/Settings/SettingsView.swift`).
 - **Remote hosts**: per-host bearer token entered in Settings → Hosts.
+- **Usage panel → Neon**: an *organization* API key (scoped to the org's projects,
+  not tied to a user account), entered in Settings → Usage. The non-secret `org_id`
+  is a normal `@AppStorage` preference, not a Keychain item.
 - All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);
   never persisted in SwiftData.
 

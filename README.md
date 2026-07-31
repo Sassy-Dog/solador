@@ -13,7 +13,8 @@ DevCanopy renders a grid of glanceable panels:
 - **Repos** — one fixed row per watched repo: running-workflow count and longest-running
   elapsed, alongside local/remote branch and worktree counts, across your portfolio.
 - **GitHub Runners** — self-hosted runner availability and activity.
-- **Claude Usage** — token rollups from your local Claude Code usage logs.
+- **Usage** — token rollups from your local Claude Code usage logs, plus per-provider
+  usage: month-to-date Neon compute and branch storage.
 
 ## Architecture
 

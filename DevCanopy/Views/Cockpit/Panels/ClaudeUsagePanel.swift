@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Claude Usage panel — today's tokens (header), rolling 5h + weekly windows, and
-/// a compact top-projects breakdown. Reads from `ClaudeUsageService`; no network.
-/// Subscription-based, so token counts (not USD costs) are what's shown.
+/// Usage panel — today's Claude tokens (header), rolling 5h + weekly windows, and a
+/// compact top-projects breakdown, plus per-provider usage sections beneath. Reads
+/// from `ClaudeUsageService` (local logs, no network) and `NeonUsageService`. Claude
+/// is subscription-based, so token counts (not USD costs) are what's shown.
 struct ClaudeUsagePanel: CockpitPanelView {
     static let kind: CockpitPanelKind = .claudeUsage
 
     @EnvironmentObject private var service: ClaudeUsageService
+    @EnvironmentObject private var neon: NeonUsageService
 
     var body: some View {
         CockpitPanelContainer(kind: Self.kind, trailing: trailingLabel) {
@@ -23,8 +25,40 @@ struct ClaudeUsagePanel: CockpitPanelView {
                         .foregroundStyle(CockpitTheme.muted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                // No Neon API key ⇒ no section at all, so the panel is pixel-identical
+                // to its Claude-only self.
+                if neon.isConfigured {
+                    neonSection
+                }
                 PanelStatusFooter(lastUpdated: service.lastUpdated, error: service.lastError, staleAfter: 150)
             }
+        }
+    }
+
+    // MARK: - Neon
+
+    /// Month-to-date Neon compute + branch storage. Rendering only — the fold and the
+    /// unit conversion live in `NeonUsageMapping`. An unknown figure renders `—`,
+    /// never a defaulted 0.
+    @ViewBuilder
+    private var neonSection: some View {
+        Divider().overlay(CockpitTheme.line)
+        neonRow("NEON COMPUTE (MTD)", Self.cuHours(neon.summary?.computeUnitHours))
+        neonRow("NEON STORAGE", Self.gibibytes(neon.summary?.storageGiB))
+        // Poll cadence is 1h, so the stale threshold sits above it — 90m flags a
+        // genuinely stuck poller rather than the normal gap between polls.
+        PanelStatusFooter(lastUpdated: neon.lastUpdated, error: neon.lastError, staleAfter: 90 * 60)
+    }
+
+    private func neonRow(_ label: String, _ value: String?) -> some View {
+        HStack(spacing: 7) {
+            Text(label)
+                .font(CockpitTheme.mono(9, weight: .bold))
+                .foregroundStyle(CockpitTheme.muted)
+            Spacer()
+            Text(value ?? "—")
+                .font(CockpitTheme.mono(12, weight: .bold))
+                .foregroundStyle(value == nil ? CockpitTheme.muted : CockpitTheme.ink)
         }
     }
 
@@ -94,6 +128,20 @@ struct ClaudeUsagePanel: CockpitPanelView {
     }
 
     // MARK: - Formatting
+
+    /// Compute-unit hours to one decimal, e.g. `12.4 CU-h`. nil in ⇒ nil out, which
+    /// the row renders as `—`.
+    static func cuHours(_ hours: Double?) -> String? {
+        guard let hours else { return nil }
+        return String(format: "%.1f CU-h", hours)
+    }
+
+    /// Storage in GiB to one decimal, e.g. `3.2 GiB`. Real units only — the API
+    /// exposes no quota, so there is no percentage to show.
+    static func gibibytes(_ gib: Double?) -> String? {
+        guard let gib else { return nil }
+        return String(format: "%.1f GiB", gib)
+    }
 
     /// Abbreviated token count: 1_234 -> "1.2k", 1_200_000 -> "1.2M".
     static func tokens(_ count: Int) -> String {

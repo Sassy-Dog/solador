@@ -165,6 +165,23 @@ final class KeychainHelper {
         try? delete(for: "azure_cost_sas_url")
     }
 
+    /// Neon organization API key for the consumption-history read behind the Usage
+    /// panel. An *organization* key (admin-created, scoped to the org's projects) is
+    /// the minimal credential for org-wide consumption — never a personal key, which
+    /// would be tied to one user account. Keychain only: the non-secret `org_id`
+    /// lives in `@AppStorage` instead.
+    func saveNeonAPIKey(_ apiKey: String) throws {
+        try saveString(apiKey, for: "neon_api_key")
+    }
+
+    func loadNeonAPIKey() -> String? {
+        try? loadString(for: "neon_api_key")
+    }
+
+    func deleteNeonAPIKey() {
+        try? delete(for: "neon_api_key")
+    }
+
     // MARK: - OpenClaw
 
     /// Optional bearer token for the OpenClaw gateway. Most installs authenticate
