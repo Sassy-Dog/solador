@@ -35,6 +35,7 @@ $(color_yellow "Run Options:")
 
 $(color_yellow "Publish Options:")
   $(color_green "--skip-tests")   Skip running tests
+  $(color_green "--skip-sentry")  Skip resolving SENTRY_DSN from Doppler (Sentry no-ops)
   $(color_gray "(no --bump: the version is CalVer minted from git — Docs/VERSIONING.md)")
 
 $(color_yellow "Examples:")

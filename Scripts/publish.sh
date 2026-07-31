@@ -11,20 +11,25 @@ source "$SCRIPT_DIR/config.sh"
 # and nothing to keep in sync — the old semver --bump flow and the
 # config.sh/project.yml verified-in-sync duplicate pair are gone (issue #98).
 #
-# Flow: pre-flight guards → CI-green check → tests → mint (probe/reuse/bump
-# ladder, creates + pushes the vYYYY.M.P tag) → Release build stamped with the
-# MINTED version. The tag lands before the build on purpose: if the build
-# fails, re-running publish reuses the same tag idempotently (§4 same-commit
-# reuse) — the same order a CI mint would use.
+# Flow: pre-flight guards → CI-green check → Sentry DSN → tests → mint
+# (probe/reuse/bump ladder, creates + pushes the vYYYY.M.P tag) → Release build
+# stamped with the MINTED version. The tag lands before the build on purpose: if
+# the build fails, re-running publish reuses the same tag idempotently (§4
+# same-commit reuse) — the same order a CI mint would use.
 
 # Default values
 SKIP_TESTS=0
+SKIP_SENTRY=0
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-tests)
             SKIP_TESTS=1
+            shift
+            ;;
+        --skip-sentry)
+            SKIP_SENTRY=1
             shift
             ;;
         --bump)
@@ -83,6 +88,42 @@ if [[ "${CI_GREEN_COUNT:-0}" -lt 1 ]]; then
     exit 1
 fi
 log_success "CI is green for HEAD"
+
+# Resolve the Sentry DSN (issue #75). #18's integration reads the DSN from the
+# SENTRY_DSN build setting (→ SentryDSN Info.plist key) and no-ops when it is
+# empty; local and CI builds leave it empty on purpose, but a *release* that
+# silently never reports is the bug this guards. Doppler is the source of truth
+# (devcanopy/dev). Resolved here — in pre-flight, not right before build.sh — so
+# a missing DSN fails before the tag is minted and pushed, not after.
+# Never log the value; log only that resolution happened.
+if [[ $SKIP_SENTRY -eq 1 ]]; then
+    SENTRY_DSN=""
+    log_warning "--skip-sentry: releasing without a DSN (Sentry will no-op in this build)."
+elif [[ -n "${SENTRY_DSN:-}" ]]; then
+    log_info "Using SENTRY_DSN from the environment"
+else
+    log_info "Resolving SENTRY_DSN from Doppler (devcanopy/dev)..."
+    if ! command_exists doppler; then
+        log_error "doppler CLI is required to resolve SENTRY_DSN (brew install dopplerhq/cli/doppler)."
+        log_error "Or pre-set SENTRY_DSN in the environment, or pass --skip-sentry."
+        exit 1
+    fi
+    # --plain writes the value to stdout only, so doppler's stderr is safe to
+    # surface — it explains *why* (not logged in, no access, no such secret).
+    if ! SENTRY_DSN="$(doppler secrets get SENTRY_DSN --project devcanopy --config dev --plain)"; then
+        log_error "Could not read SENTRY_DSN from Doppler (project devcanopy, config dev)."
+        log_error "Check 'doppler login' and your access, or pass --skip-sentry."
+        exit 1
+    fi
+    if [[ -z "$SENTRY_DSN" ]]; then
+        log_error "Doppler returned an empty SENTRY_DSN (project devcanopy, config dev)."
+        log_error "Set the secret in Doppler, or pass --skip-sentry."
+        exit 1
+    fi
+    log_success "Resolved SENTRY_DSN from Doppler (value not logged)"
+fi
+# build.sh reads SENTRY_DSN from the environment and forwards it to xcodebuild.
+export SENTRY_DSN
 
 # Run tests unless skipped
 if [[ $SKIP_TESTS -eq 0 ]]; then
