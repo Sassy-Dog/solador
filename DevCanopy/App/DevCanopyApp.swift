@@ -106,6 +106,7 @@ struct DevCanopyApp: App {
                 .environmentObject(agentRuntimes)
                 .environmentObject(AzureCostService.shared)
                 .environmentObject(NeonUsageService.shared)
+                .environmentObject(SentryUsageService.shared)
                 .task {
                     let interval = refreshInterval
 
@@ -140,6 +141,9 @@ struct DevCanopyApp: App {
                     // Neon consumption is billing-grade and slow-moving — own fixed
                     // 1h cadence, not the shared refresh interval (#103).
                     NeonUsageService.shared.start()
+                    // Sentry quota consumption moves over a 30d window — own fixed
+                    // 1h cadence, not the shared refresh interval (#104).
+                    SentryUsageService.shared.start()
                     // Self-reconnecting WebSocket; not on the poll cadence.
                     agentRuntimes.start()
                     if DemoMode.isEnabled {
