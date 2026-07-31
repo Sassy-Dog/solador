@@ -105,6 +105,7 @@ struct DevCanopyApp: App {
                 .environmentObject(portfolioStore)
                 .environmentObject(agentRuntimes)
                 .environmentObject(AzureCostService.shared)
+                .environmentObject(NeonUsageService.shared)
                 .task {
                     let interval = refreshInterval
 
@@ -136,6 +137,9 @@ struct DevCanopyApp: App {
                     // Azure cost is a daily export — own fixed 4h cadence, not the
                     // shared refresh interval (#114).
                     AzureCostService.shared.start()
+                    // Neon consumption is billing-grade and slow-moving — own fixed
+                    // 1h cadence, not the shared refresh interval (#103).
+                    NeonUsageService.shared.start()
                     // Self-reconnecting WebSocket; not on the poll cadence.
                     agentRuntimes.start()
                     if DemoMode.isEnabled {
@@ -155,6 +159,7 @@ struct DevCanopyApp: App {
                     ghRunnersService.restart(interval: interval)
                     // Azure cost intentionally not restarted here — it runs on its own
                     // fixed 4h cadence, independent of the shared refresh interval (#114).
+                    // Neon usage likewise runs on its own fixed 1h cadence (#103).
                 }
         }
         .modelContainer(modelContainer)

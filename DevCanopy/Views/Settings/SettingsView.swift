@@ -33,6 +33,11 @@ struct SettingsView: View {
                     Label("Azure Cost", systemImage: "dollarsign.circle")
                 }
 
+            UsageSettingsView()
+                .tabItem {
+                    Label("Usage", systemImage: "gauge.with.needle")
+                }
+
             AboutView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
@@ -237,6 +242,87 @@ struct AzureCostSettingsView: View {
         AzureCostService.shared.configureFromKeychain()
         hasStoredSAS = false
         sasURL = ""
+        statusMessage = "Cleared."
+    }
+}
+
+/// The shared "Usage" tab — credentials for the per-provider usage sections on the
+/// cockpit's Usage panel. One self-contained `View` per provider (each owning its own
+/// state), composed into this Form; adding a provider is adding a section here.
+struct UsageSettingsView: View {
+    var body: some View {
+        Form {
+            NeonUsageSettingsSection()
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+}
+
+/// Neon credentials: the organization API key (Keychain) and the org id (the
+/// non-secret `org_id` query parameter, so `@AppStorage` per the
+/// `azureMonthlyBudgetUSD` precedent).
+struct NeonUsageSettingsSection: View {
+    @State private var apiKey: String = ""
+    @State private var hasStoredKey: Bool = KeychainHelper.shared.loadNeonAPIKey()?.isEmpty == false
+    @State private var statusMessage: String?
+
+    @AppStorage(NeonUsageService.orgIDDefaultsKey) private var orgID: String = ""
+
+    var body: some View {
+        Section {
+            TextField("Organization ID", text: $orgID)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: orgID) { NeonUsageService.shared.configureFromKeychain() }
+
+            SecureField("Organization API key", text: $apiKey)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Button("Save") { save() }
+                    .disabled(apiKey.isEmpty)
+                Button("Clear") { clear() }
+                    .disabled(!hasStoredKey)
+                Spacer()
+                if hasStoredKey {
+                    Label("Key stored", systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                }
+            }
+
+            if let statusMessage {
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Powers the Neon rows on the Usage panel (month-to-date compute and branch storage). Create an **organization API key** in the Neon console — it is scoped to the org's projects and, unlike a personal key, isn't tied to one user account. Consumption history requires a Launch, Scale, Agent, or Enterprise plan. Stored in your macOS Keychain; the org ID is not a secret and is stored as a normal preference.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Neon")
+                .font(.headline)
+        }
+    }
+
+    private func save() {
+        do {
+            try KeychainHelper.shared.saveNeonAPIKey(apiKey)
+            NeonUsageService.shared.configureFromKeychain()
+            hasStoredKey = true
+            apiKey = ""
+            statusMessage = "Saved."
+        } catch {
+            statusMessage = "Failed to save: \(error.localizedDescription)"
+        }
+    }
+
+    private func clear() {
+        KeychainHelper.shared.deleteNeonAPIKey()
+        NeonUsageService.shared.configureFromKeychain()
+        hasStoredKey = false
+        apiKey = ""
         statusMessage = "Cleared."
     }
 }

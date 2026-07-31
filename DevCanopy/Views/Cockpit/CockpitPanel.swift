@@ -23,7 +23,10 @@ enum CockpitPanelKind: String, CaseIterable, Identifiable {
         case .ghRunners: "GitHub Runners"
         case .containers: "Containers / VMs"
         case .ghWorkflows: "Repos"
-        case .claudeUsage: "Claude Usage"
+        // "Usage" (not "Claude Usage") because the panel now carries per-provider
+        // usage beside the Claude token rollups. The case/rawValue stays
+        // `claudeUsage` so persisted layout state is untouched.
+        case .claudeUsage: "Usage"
         case .openclawAgents: "OpenClaw"
         case .azureCost: "Azure Cost"
         }
