@@ -6,20 +6,26 @@ import XCTest
 /// the warmup fills the full history window, and profile shape (cores, battery,
 /// volumes) is honored — so demo screenshots don't silently degrade.
 final class DemoSnapshotGeneratorTests: XCTestCase {
-    func testSnapshotValuesStayInPlausibleRanges() {
+    /// The demo source stands in for a fully-instrumented host: it measures
+    /// everything, so every Optional the wire contract allows to be unknown must
+    /// arrive populated here. A nil would mean a demo card full of em dashes.
+    func testSnapshotValuesStayInPlausibleRanges() throws {
         let gen = DemoSnapshotGenerator(profile: .localMac)
         // Sweep a range of phases to exercise the periodic components.
         for i in 0 ..< 200 {
             let snap = gen.snapshot(at: Double(i) * DemoSnapshotGenerator.step)
+            let gpuUsage = try XCTUnwrap(snap.gpu.usage)
+            let pressure = try XCTUnwrap(snap.memory.pressure)
             XCTAssert((0 ... 100).contains(snap.cpu.totalUsage), "cpu out of range: \(snap.cpu.totalUsage)")
-            XCTAssert((0 ... 100).contains(snap.gpu.usage), "gpu out of range: \(snap.gpu.usage)")
+            XCTAssert((0 ... 100).contains(gpuUsage), "gpu out of range: \(gpuUsage)")
             XCTAssert((0 ... 100).contains(snap.memory.usagePercentage), "mem out of range")
-            XCTAssert((0 ... 100).contains(snap.memory.pressure), "pressure out of range")
-            XCTAssertGreaterThanOrEqual(snap.disk.readMBps, 0)
-            XCTAssertGreaterThanOrEqual(snap.disk.writeMBps, 0)
-            XCTAssertGreaterThanOrEqual(snap.network.downloadMBps, 0)
-            XCTAssertGreaterThanOrEqual(snap.network.uploadMBps, 0)
-            XCTAssertLessThanOrEqual(snap.gpu.vramUsedGB, snap.gpu.vramTotalGB)
+            XCTAssert((0 ... 100).contains(pressure), "pressure out of range")
+            XCTAssertGreaterThanOrEqual(try XCTUnwrap(snap.disk.readMBps), 0)
+            XCTAssertGreaterThanOrEqual(try XCTUnwrap(snap.disk.writeMBps), 0)
+            XCTAssertGreaterThanOrEqual(try XCTUnwrap(snap.network.downloadMBps), 0)
+            XCTAssertGreaterThanOrEqual(try XCTUnwrap(snap.network.uploadMBps), 0)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(snap.gpu.vramUsedGB), try XCTUnwrap(snap.gpu.vramTotalGB))
+            XCTAssertNotNil(snap.cpu.thermalState, "a demo host measures its thermal state")
         }
     }
 

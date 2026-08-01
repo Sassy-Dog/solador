@@ -62,6 +62,10 @@ class HostMetricsService: ObservableObject {
 
     private var volumeStabilizer = VolumeStabilizer()
 
+    /// The last sample's unmeasured-field list, so the log line fires on the
+    /// transition rather than on every poll. Readable for tests.
+    private(set) var lastUnmeasuredFields: [String] = []
+
     /// The volumes the cockpit renders: debounced and minus the hide list.
     /// `HostsPanel.volumeSlots` and `HostMetricsPanel` must BOTH read this so slot
     /// reservation and rendering can never disagree.
@@ -154,17 +158,44 @@ class HostMetricsService: ObservableObject {
 
     /// Records a snapshot and updates the capped history buffers.
     /// Internal so tests and subclasses can drive it.
+    ///
+    /// A value the host could not measure is never pushed into a series: a chart
+    /// is a claim about measurements, and a fabricated zero in the buffer draws a
+    /// flat line that looks exactly like an idle disk. The buffers therefore hold
+    /// only real readings and stay plottable on the sample where the latest is
+    /// unknown — the panel's "—" is what says the newest one is missing.
     func ingest(_ snap: HostSnapshot) {
         snapshot = snap
         stableVolumes = volumeStabilizer.observe(snap.volumes)
+        logUnmeasuredIfChanged(snap)
         append(&cpuHistory, snap.cpu.totalUsage)
         append(&memoryHistory, snap.memory.usagePercentage)
-        append(&gpuHistory, snap.gpu.usage)
+        // A pre-#183 agent reports an absent GPU as a literal `usage: 0.0` on
+        // every sample, so gating on the reading alone would still fill the
+        // buffer. `isPresent` is the only thing that can see through that.
+        append(&gpuHistory, snap.gpu.isPresent ? snap.gpu.usage : nil)
         append(&diskReadHistory, snap.disk.readMBps)
         append(&diskWriteHistory, snap.disk.writeMBps)
         append(&netDownHistory, snap.network.downloadMBps)
         append(&netUpHistory, snap.network.uploadMBps)
         ingestCores(snap.cpu.coreUsages)
+    }
+
+    /// Logs which figures this host stopped (or started) reporting, so every "—"
+    /// the card paints is diagnosable rather than mysterious. Logged only when
+    /// the set changes — a Linux host omits the same fields on every poll, and
+    /// one line per second would bury the transition that matters.
+    private func logUnmeasuredIfChanged(_ snap: HostSnapshot) {
+        let unmeasured = snap.unmeasuredFields
+        guard unmeasured != lastUnmeasuredFields else { return }
+        lastUnmeasuredFields = unmeasured
+        if unmeasured.isEmpty {
+            serviceLogger.info("Host \(hostName) now reports every metric")
+        } else {
+            serviceLogger.info(
+                "Host \(hostName) reports no measurement for \(unmeasured.joined(separator: ", ")) — those cells render \u{2014}"
+            )
+        }
     }
 
     func setConnection(_ state: HostConnectionState) {
@@ -180,7 +211,9 @@ class HostMetricsService: ObservableObject {
         }
     }
 
-    private func append(_ buffer: inout [Double], _ value: Double) {
+    /// Appends one sample, or nothing at all when the host didn't measure it.
+    private func append(_ buffer: inout [Double], _ value: Double?) {
+        guard let value else { return }
         buffer.append(value)
         if buffer.count > Self.historyCapacity {
             buffer.removeFirst(buffer.count - Self.historyCapacity)

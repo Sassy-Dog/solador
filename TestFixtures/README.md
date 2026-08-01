@@ -17,3 +17,23 @@ of this floor.
 
 - Rust lock: `agent/src/metrics.rs` (`battery_*` tests)
 - Swift lock: `DevCanopyTests/HostSnapshotWireContractTests.swift` (`testSharedBatteryContractFixture*`)
+
+## `snapshot_unknowns.json`
+
+A post-#183 snapshot from a producer that cannot measure everything: the keys it
+has no reading for are **omitted**, never sent as `null` and never faked as `0`.
+Here that is `cpu.thermalState`, `memory.pressure`, both `disk` rates and every
+`gpu` field (both objects present but empty), plus a zero-capacity volume. Both
+decoders must read an absent key as *unknown* — the distinction that keeps a
+green `Pressure: 0%` off a card for a figure Linux never reports.
+
+`snapshot.json`'s counterpart (the all-keys-present payload, including the
+literal zeros pre-#183 agents send) stays the backward-compatibility case.
+
+- Rust lock: `crates/wire/tests/wire.rs`, via its own byte-identical copy at
+  `crates/wire/tests/fixtures/snapshot-unknowns.json` — the wire crate's tests
+  read fixtures from inside their own crate. The Swift lock below asserts the
+  two files decode to the same snapshot, so the copy cannot drift; folding them
+  onto this one file is a follow-up (#192 was a Swift-only change).
+- Swift lock: `DevCanopyTests/HostSnapshotWireContractTests.swift`
+  (`testSharedUnknownsFixture*`)
