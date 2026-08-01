@@ -33,6 +33,12 @@ body { padding:var(--cockpit-gap, 16px); }
    never push its column past its share. */
 .cockpit { display:grid; gap:var(--cockpit-gap, 16px);
   grid-template-columns: repeat(1, minmax(0, 1fr)); align-items:start; }
+/* The host tab bar. It shares `.tabs`/`.tab[data-active]` with Settings, so
+   the two read as the same control; only the spacing below is its own. Whether
+   it is on screen at all is `hostTabs` in the payload — never a CSS rule and
+   never a JS breakpoint (see app.js's `applyHostTabs`), and the grid's
+   `min-height` is Rust's number for the same reason. */
+.host-tabs { margin:0 0 var(--cockpit-gap, 16px); }
 .card { padding:18px; background:var(--panel); border:1px solid var(--line);
   border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
 .hdr { display:flex; align-items:center; gap:8px; }
@@ -299,6 +305,17 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .result { font-size:10px; color:var(--muted); }
 .hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }
 .hidden-row .mount { font-size:10px; font-weight:700; }
+/* One container group rule, laid out like the Swift editor's HStack: action,
+   pattern, then the Collapse-only label + expected count, the host scope and
+   the delete. WHICH of those exist is `collapseOnly` in the payload, never a
+   CSS or JS test against the action string. */
+.rule-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:6px 0; border-top:1px solid var(--line); }
+.rule-row:first-of-type { border-top:0; }
+.rule-row .input { max-width:none; min-width:0; }
+.rule-row .rule-expected { width:96px; flex:none; }
+.rule-row .rule-host { flex:none; width:auto; }
+.rule-arrow { color:var(--muted); }
 .about-name { font-size:20px; font-weight:700; margin:0; }
 .about-tagline { font-size:13px; font-weight:700; margin:0; }
 .link-row { display:flex; gap:10px; font-size:11px; flex-wrap:wrap; }

@@ -383,6 +383,73 @@ test("the grid lays out exactly the columns the view-model asked for", async ({ 
   }
 });
 
+test("the tabs overflow mode shows one host at a time, and the bar switches between them", async ({ page, baseURL }) => {
+  // The two fixtures hold the SAME four cards at the SAME width (1000pt, where
+  // 900pt cards cannot pair) and differ only in the General tab's overflow
+  // preference — so this is purely about the frontend applying `hostTabs`
+  // rather than deciding it. A JS `columns <= 1 && hosts > 1` here would pass
+  // the tabbed case and quietly tab the stacked one too.
+  const stacked = await fixture(baseURL, "sample-cockpit-stacked.json");
+  const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
+  expect(stacked.hostColumns, "both fixtures must be below the breakpoint").toBe(1);
+  expect(tabbed.hostColumns).toBe(1);
+  expect(stacked.hostTabs, "stack is the default and produces no tab bar").toBeNull();
+
+  await stubCockpit(page, [tabbed]);
+  await gotoApp(page);
+
+  // One tab per card, labelled and ordered by Rust — this machine leads the
+  // bar exactly as it leads the grid.
+  const bar = page.locator("#hostTabs");
+  await expect(bar).toBeVisible();
+  await expect(bar.locator(".tab")).toHaveText(tabbed.hostTabs.tabs.map((t) => t.label));
+
+  // Every card is still in the DOM (hiding, not tearing down, is what keeps
+  // each host's sparkline history), but exactly one is on screen.
+  const cards = page.locator(".cockpit .card");
+  await expect(cards).toHaveCount(tabbed.hosts.length);
+  await expect(cards.filter({ visible: true })).toHaveCount(1);
+  await expect(cards.first()).toBeVisible();
+
+  // The container carries Rust's floor, or it would collapse to the height of
+  // the tab bar with one card on screen.
+  const minHeight = await page.evaluate(
+    () => getComputedStyle(document.querySelector(".cockpit")).minHeight
+  );
+  expect(minHeight).toBe(`${tabbed.hostTabs.minHeight}px`);
+
+  // Switching tabs swaps which card is visible, without waiting on a poll.
+  const second = tabbed.hostTabs.tabs[1];
+  await bar.locator(`.tab[data-host="${second.id}"]`).click();
+  await expect(bar.locator(`.tab[data-host="${second.id}"]`)).toHaveAttribute("data-active", "true");
+  const shown = cards.filter({ visible: true });
+  await expect(shown).toHaveCount(1);
+  await expect(shown.locator(".hostName")).toHaveText(second.label);
+});
+
+test("stack keeps every host on screen, and leaves no tab bar behind", async ({ page, baseURL }) => {
+  // The default, and the regression this guards: a payload that turns tabs OFF
+  // (the preference changed, or the window widened past the breakpoint) must
+  // put every card back and drop the height floor — a tab bar left on screen
+  // over a full grid is worse than never having had one.
+  const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
+  const stacked = await fixture(baseURL, "sample-cockpit-stacked.json");
+  await stubCockpit(page, [tabbed, stacked]);
+  await gotoApp(page);
+
+  await expect(page.locator("#hostTabs")).toBeVisible();
+  // The app's own 1s poll delivers the stacked payload.
+  await expect(page.locator("#hostTabs")).toBeHidden({ timeout: 5000 });
+
+  const cards = page.locator(".cockpit .card");
+  await expect(cards).toHaveCount(stacked.hosts.length);
+  await expect(cards.filter({ visible: true })).toHaveCount(stacked.hosts.length);
+  const minHeight = await page.evaluate(
+    () => document.querySelector(".cockpit").style.minHeight
+  );
+  expect(minHeight, "the tabbed floor must not outlive the tab bar").toBe("");
+});
+
 test("the Hosts panel title comes from Rust's panel table", async ({ page, baseURL }) => {
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);

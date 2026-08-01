@@ -19,6 +19,15 @@
       <button class="btn" id="settingsToggle" type="button" hidden></button>
     </div>
     <p class="empty" id="emptyMsg"></p>
+    <!-- The host tab bar, for the "Show as tabs" overflow mode. Hidden unless
+         the cockpit payload carries a `hostTabs` block: WHETHER the cards
+         collapse is `viewmodel::cockpit::host_tabs`'s decision (below the
+         side-by-side breakpoint, more than one host, and the user having asked
+         for it), and re-deriving any of that here would be a second
+         implementation of it. Its buttons are built by app.js from that
+         block -- there is no static label here, for the same reason the
+         Settings tabs have none. -->
+    <nav class="tabs host-tabs" id="hostTabs" hidden></nav>
     <div class="cockpit" id="cockpit"></div>
 
     <!-- The panel block below the host grid. Which panels share a row, and in
