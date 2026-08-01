@@ -132,6 +132,7 @@ app/ui/sample-openclaw-pairing.json
 app/ui/sample-openclaw-error.json
 app/ui/sample-openclaw-idle.json
 app/ui/sample-openclaw-empty.json
+app/ui/sample-openclaw-unmeasured.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/

@@ -232,7 +232,7 @@ pub struct SettingsFacts {
 /// `{:.1}` round half to even, so the two apps abbreviate the same count
 /// identically.
 #[must_use]
-pub fn tokens(n: i64) -> String {
+pub fn tokens(n: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
     let value = n as f64;
     if n >= 1_000_000 {
@@ -242,6 +242,19 @@ pub fn tokens(n: i64) -> String {
         return format!("{:.1}k", value / 1_000.0);
     }
     format!("{n}")
+}
+
+/// The em dash a counter the gateway did not report renders as. Same character
+/// and same reason as `local.rs`'s and `azure.rs`'s: "we could not find out" is
+/// not zero.
+const UNKNOWN: &str = "—";
+
+/// One counter for the usage line — an abbreviated figure, or the em dash.
+///
+/// `Some(0)` is a measured zero and renders `0`; only `None` renders the dash.
+/// That distinction is the whole of #184.
+fn token_text(count: Option<u64>) -> String {
+    count.map_or_else(|| UNKNOWN.to_owned(), tokens)
 }
 
 /// The colour of a status dot. Port of `OpenClawPanel.color(for:)`.
@@ -385,12 +398,23 @@ fn channel_row(channel: &ChannelStatus) -> Value {
     })
 }
 
+/// The token line: `1.2M tokens · ctx 5.0k`, with an em dash per counter the
+/// gateway did not report.
+///
+/// A session that reported **nothing** still renders the line, as
+/// `— tokens · ctx —`, rather than being dropped. Dropping it was the other
+/// candidate and it is the wrong one here: `runtime_section` already omits this
+/// slot when `snapshot.usage` is `None`, which is "there is no session". A live
+/// session with unreported counters is a different fact, and hiding it behind
+/// the no-session rendering is exactly the conflation the em dash exists to
+/// prevent — the same call `github::counts` and `usage::row` make, keeping the
+/// row and swapping the value.
 fn usage_row(usage: SessionUsageRollup) -> Value {
     json!({
         "text": format!(
             "{} tokens · ctx {}",
-            tokens(usage.total_tokens),
-            tokens(usage.context_tokens)
+            token_text(usage.total_tokens),
+            token_text(usage.context_tokens)
         ),
         "color": color::hex(color::MUTED),
     })
@@ -668,6 +692,9 @@ pub async fn run_session(
 pub enum Fixture {
     /// A live farm: agents, cron, channels and a usage line.
     Connected,
+    /// The same live farm, but the session reported no token counters at all —
+    /// the case that used to paint `0 tokens · ctx 0` (#184).
+    Unmeasured,
     /// The banner an operator has to act on, with the approve command.
     Pairing,
     /// A failed connect — red, and the reason named.
@@ -707,7 +734,7 @@ pub fn fixture_state(kind: Fixture) -> OpenClawState {
             },
             "awaiting device pairing",
         ),
-        Fixture::Connected => {
+        Fixture::Connected | Fixture::Unmeasured => {
             state.connected(1_700_000_000_000);
             state.snapshot.agents = vec![
                 AgentRollupItem::new("main", "Sebastian", AgentStatus::Running)
@@ -744,12 +771,23 @@ pub fn fixture_state(kind: Fixture) -> OpenClawState {
                     last_error: None,
                 },
             ];
-            state.snapshot.usage = Some(SessionUsageRollup {
-                total_tokens: 1_234_567,
-                context_tokens: 5_000,
-                input_tokens: 900_000,
-                output_tokens: 334_567,
-                updated_at_ms: Some(1_700_000_000_000),
+            // The unmeasured fixture keeps the session — and therefore the
+            // line — and only drops the counters. `SessionUsageRollup::default`
+            // is four `None`s, which is precisely "a session that reported
+            // nothing".
+            state.snapshot.usage = Some(if kind == Fixture::Unmeasured {
+                SessionUsageRollup {
+                    updated_at_ms: Some(1_700_000_000_000),
+                    ..SessionUsageRollup::default()
+                }
+            } else {
+                SessionUsageRollup {
+                    total_tokens: Some(1_234_567),
+                    context_tokens: Some(5_000),
+                    input_tokens: Some(900_000),
+                    output_tokens: Some(334_567),
+                    updated_at_ms: Some(1_700_000_000_000),
+                }
             });
         }
     }
@@ -1155,6 +1193,55 @@ mod tests {
         assert_eq!(runtime["usage"]["color"], color::hex(color::MUTED));
     }
 
+    /// #184: a session that reported no counters renders em dashes, never a
+    /// `0` nobody measured — and the line stays, because dropping it would
+    /// read as "there is no session", which is a different fact.
+    #[test]
+    fn unreported_counters_render_em_dashes_and_keep_the_line() {
+        let runtime = section(&fixture_view(Fixture::Unmeasured));
+        assert_eq!(runtime["usage"]["text"], "— tokens · ctx —");
+        assert_eq!(runtime["usage"]["color"], color::hex(color::MUTED));
+        assert!(
+            !runtime["usage"]["text"]
+                .as_str()
+                .expect("text")
+                .contains('0'),
+            "no fabricated zero anywhere in the line"
+        );
+    }
+
+    /// The other half of the rule: a counter that really is zero says `0`. The
+    /// em dash would be just as much of a lie in this direction.
+    #[test]
+    fn a_measured_zero_still_renders_as_zero() {
+        let mut state = connected();
+        state.snapshot.usage = Some(SessionUsageRollup {
+            total_tokens: Some(0),
+            context_tokens: Some(0),
+            ..SessionUsageRollup::default()
+        });
+        assert_eq!(
+            section(&view(state.snapshots()))["usage"]["text"],
+            "0 tokens · ctx 0"
+        );
+    }
+
+    /// Per-counter, not all-or-nothing: one reported figure and one absent
+    /// renders one of each.
+    #[test]
+    fn a_partially_reported_session_dashes_only_the_missing_counter() {
+        let mut state = connected();
+        state.snapshot.usage = Some(SessionUsageRollup {
+            total_tokens: Some(900),
+            context_tokens: None,
+            ..SessionUsageRollup::default()
+        });
+        assert_eq!(
+            section(&view(state.snapshots()))["usage"]["text"],
+            "900 tokens · ctx —"
+        );
+    }
+
     /// An absent section is absent, not an empty header. `AGENTS (0)` over
     /// nothing is a heading for a list that does not exist.
     #[test]
@@ -1258,5 +1345,12 @@ mod tests {
             "disconnected"
         );
         assert_eq!(fixture_view(Fixture::Idle)["trailing"], "");
+        // Same live farm as Connected, so `trailing` matches — the fixture
+        // exists for its usage line, which must be the unknown rendering.
+        assert_eq!(fixture_view(Fixture::Unmeasured)["trailing"], "3 agents");
+        assert_eq!(
+            section(&fixture_view(Fixture::Unmeasured))["usage"]["text"],
+            "— tokens · ctx —"
+        );
     }
 }

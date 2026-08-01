@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(snapshot.cron.total(), 2);
         assert_eq!(snapshot.cron.last_error.as_deref(), Some("disk full"));
         assert_eq!(snapshot.channels.len(), 1);
-        assert_eq!(snapshot.usage.expect("usage").total_tokens, 900);
+        assert_eq!(snapshot.usage.expect("usage").total_tokens, Some(900));
         // Sections only: the caller owns the clock and the connection state.
         assert!(snapshot.last_updated_ms.is_none());
         assert_eq!(snapshot.connection, RuntimeConnectionState::Idle);

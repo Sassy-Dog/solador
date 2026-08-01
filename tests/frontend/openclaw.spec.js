@@ -148,6 +148,32 @@ test("the usage line is abbreviated by Rust", async ({ page, baseURL }) => {
   expect(vm.runtimes[0].usage.text).toMatch(/^\d+(\.\d)?[kM]? tokens · ctx \d+(\.\d)?[kM]?$/);
 });
 
+test("a session that reported no counters shows em dashes, not zeros", async ({ page, baseURL }) => {
+  // #184. Both fixtures are the SAME live farm — same agents, same cron, same
+  // channels — and differ only in whether the session reported its token
+  // counts. So a panel that printed a falsy number as `0` would pass the
+  // measured case and paint "0 tokens · ctx 0" here for a farm nobody measured.
+  const measured = await gotoWith(page, baseURL);
+  expect(measured.runtimes[0].usage.text).not.toContain("—");
+
+  const vm = await gotoWith(page, baseURL, "sample-openclaw-unmeasured.json");
+  const line = page.locator("#openclawBody .oc-usage");
+  await expect(line).toHaveText(vm.runtimes[0].usage.text);
+  await expect(line).toHaveText("— tokens · ctx —");
+  expect(vm.runtimes[0].usage.text, "no fabricated figure anywhere").not.toMatch(/\d/);
+
+  // The line survives: it is still one live session, and dropping it would be
+  // indistinguishable from the runtime having no session at all — which is a
+  // different fact, and the one the idle fixture renders.
+  await expect(line).toHaveCount(1);
+  await expect(section(page, "agents").locator(".oc-row")).toHaveCount(
+    vm.runtimes[0].agents.rows.length
+  );
+  const idle = await gotoWith(page, baseURL, "sample-openclaw-idle.json");
+  expect(idle.runtimes[0].usage).toBeNull();
+  await expect(page.locator("#openclawBody .oc-usage")).toHaveCount(0);
+});
+
 test("the pairing banner carries the approve command verbatim and pulses", async ({ page, baseURL }) => {
   const vm = await gotoWith(page, baseURL, "sample-openclaw-pairing.json");
   const pairing = vm.runtimes[0].pairing;

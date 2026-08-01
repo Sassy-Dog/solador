@@ -481,6 +481,15 @@ same muted colour — the opacity (0.4 for disabled) is the only thing separatin
 channel someone switched off from one nobody has heard from. Both travel, and
 `openclaw.js` applies both.
 
+**A token counter the gateway did not report is an em dash, not a zero.** The
+gateway sends each counter optionally, so `SessionUsageRollup` carries
+`Option<u64>` all the way to `usage_row` and the line reads
+`— tokens · ctx —` when nothing was reported (`0 tokens · ctx 0` was #184: a
+figure nobody measured, in the one panel with no em dash anywhere). A session
+that genuinely burned nothing still says `0`. The line itself stays either way —
+`"usage": null`, which drops it, means *there is no session*, and folding the two
+together would hide a live session behind the rendering for an absent one.
+
 ### Pairing
 
 The gateway authenticates this install by an Ed25519 key it mints on first
@@ -844,7 +853,8 @@ cargo run -p devcanopy-app -- --dump-azure sample-azure.json         # the Azure
 cargo run -p devcanopy-app -- --dump-openclaw sample-openclaw.json   # the OpenClaw panel
 #   …plus `--pairing` (the banner with the approve command), `--error` (a
 #   rejected handshake, red), `--idle` (no gateway URL: the muted Settings
-#   hint) and `--empty` (no runtime at all).
+#   hint), `--empty` (no runtime at all) and `--unmeasured` (the same live farm
+#   whose session reported no token counters: `— tokens · ctx —`).
 ```
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
@@ -872,8 +882,9 @@ unreachable one, and remembered runners in both absence states.
 them they pin the quota bar's amber step, its suppression when the count is
 unknown, the em dash beside a measured figure, the amber rollover caption, the
 muted-setup-vs-red-failure split, and — for OpenClaw — a disabled dot beside an
-unknown one at the same colour, the approve command, and the four trailing
-labels. `--dump-settings` is also dumped **mid-pairing** on purpose: the Device
+unknown one at the same colour, the approve command, the four trailing labels,
+and a session whose token counters went unreported beside one whose did not
+(the em dash the panel used to render as a fabricated `0`, #184). `--dump-settings` is also dumped **mid-pairing** on purpose: the Device
 Pairing block is the only part of Settings built from live session state, so a
 fixture without one would leave it uncovered. The rest are full `cockpit` payloads — the same shape the command returns,
 so the offline path cannot diverge from the real one — built from the committed

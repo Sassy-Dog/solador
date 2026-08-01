@@ -288,8 +288,21 @@ pub fn decode_agents(payload: &Value) -> Option<Vec<AgentInfo>> {
         .and_then(|response| response.agents)
 }
 
+/// One wire counter as a domain counter.
+///
+/// Absent stays absent — the whole point of #184. A negative is not a token
+/// count either, so it reads as "not reported" rather than being clamped to a
+/// figure the gateway never sent; the em dash is the honest rendering of both.
+fn counter(raw: Option<i64>) -> Option<u64> {
+    raw.and_then(|value| u64::try_from(value).ok())
+}
+
 /// `sessions.list` arrives as `{sessions:[…]}` or a bare array. The glance
 /// shows the most-recently-updated session's totals.
+///
+/// The `max_by_key` below is *ordering*, not display: a session with no
+/// `updatedAt` sorts as the oldest, which is the only defensible place to put
+/// one. Nothing that reaches the screen is defaulted here.
 #[must_use]
 pub fn decode_usage(payload: &Value) -> Option<SessionUsageRollup> {
     let sessions: Vec<SessionInfo> = decode_list(payload, &["sessions"])?;
@@ -297,10 +310,10 @@ pub fn decode_usage(payload: &Value) -> Option<SessionUsageRollup> {
         .into_iter()
         .max_by_key(|session| session.updated_at.unwrap_or(0))?;
     Some(SessionUsageRollup {
-        total_tokens: latest.total_tokens.unwrap_or(0),
-        context_tokens: latest.context_tokens.unwrap_or(0),
-        input_tokens: latest.input_tokens.unwrap_or(0),
-        output_tokens: latest.output_tokens.unwrap_or(0),
+        total_tokens: counter(latest.total_tokens),
+        context_tokens: counter(latest.context_tokens),
+        input_tokens: counter(latest.input_tokens),
+        output_tokens: counter(latest.output_tokens),
         updated_at_ms: latest.updated_at,
     })
 }
@@ -485,20 +498,47 @@ mod tests {
             ]}}"#
         ));
         let usage = reducer.usage_rollup().expect("usage");
-        assert_eq!(usage.total_tokens, 900, "the updatedAt=5000 one");
-        assert_eq!(usage.context_tokens, 42);
+        assert_eq!(usage.total_tokens, Some(900), "the updatedAt=5000 one");
+        assert_eq!(usage.context_tokens, Some(42));
         assert_eq!(usage.updated_at_ms, Some(5000));
-        // Absent counters currently collapse to zero — which *is* a fabricated
-        // figure, and the one place in the app that still produces one. The
-        // gateway sends these as `Option<i64>` (`rpc.rs`), `usage_rollup`
-        // flattens them with `unwrap_or(0)` above, and the panel then paints
-        // "0 tokens · ctx 0" for a session that simply did not report. Pinned
-        // here as the known-wrong behaviour so the fix — `Option` through
-        // `SessionUsageRollup` and an em dash in `openclaw::usage_row` — has to
-        // come past this assertion and rewrite it deliberately. Tracked in the
-        // #178 deferred register (#150 close-out).
-        assert_eq!(usage.input_tokens, 0);
-        assert_eq!(usage.output_tokens, 0);
+        // Absent counters stay absent. This assertion used to pin the opposite
+        // — `unwrap_or(0)` collapsed them, and the panel painted
+        // "0 tokens · ctx 0" for a session that simply did not report, the one
+        // fabricated figure left in the app (#184). `None` here is what lets
+        // `openclaw::usage_row` paint an em dash instead.
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.output_tokens, None);
+    }
+
+    /// The distinction the em dash exists for: a session that reported zero
+    /// really did burn zero, and must not be dressed up as unknown.
+    #[test]
+    fn a_reported_zero_survives_as_a_measured_zero() {
+        let mut reducer = SnapshotReducer::new();
+        assert!(ingest(
+            &mut reducer,
+            r#"{"type":"res","id":"sessions.list","payload":{"sessions":[
+              {"key":"agent:main:a","totalTokens":0,"contextTokens":0,"updatedAt":1000}
+            ]}}"#
+        ));
+        let usage = reducer.usage_rollup().expect("usage");
+        assert_eq!(usage.total_tokens, Some(0));
+        assert_eq!(usage.context_tokens, Some(0));
+        assert_eq!(usage.input_tokens, None, "this one really was not reported");
+    }
+
+    /// A negative token count is not a measurement, so it reads as unknown
+    /// rather than being clamped to a zero the gateway never sent.
+    #[test]
+    fn a_negative_counter_reads_as_unknown_not_as_zero() {
+        let mut reducer = SnapshotReducer::new();
+        assert!(ingest(
+            &mut reducer,
+            r#"{"type":"res","id":"sessions.list","payload":{"sessions":[
+              {"key":"agent:main:a","totalTokens":-1,"updatedAt":1000}
+            ]}}"#
+        ));
+        assert_eq!(reducer.usage_rollup().expect("usage").total_tokens, None);
     }
 
     #[test]
@@ -518,7 +558,7 @@ mod tests {
             &mut reducer,
             r#"{"type":"res","id":"sessions.list","payload":[{"sessionKey":"agent:main:a","totalTokens":7}]}"#
         ));
-        assert_eq!(reducer.usage_rollup().expect("usage").total_tokens, 7);
+        assert_eq!(reducer.usage_rollup().expect("usage").total_tokens, Some(7));
     }
 
     // MARK: - agents.list
