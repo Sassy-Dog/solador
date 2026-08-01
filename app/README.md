@@ -11,11 +11,14 @@ app/
 ├── src-tauri/            # Rust shell
 │   ├── src/main.rs       # per-host poll tasks + the `#[tauri::command]` surface
 │   ├── src/settings.rs   # the Settings view-model and its pure rules
+│   ├── src/containers/   # the Containers/VMs panel: local runtimes, grouping,
+│   │                     #   presence, and every string it paints
 │   ├── capabilities/     # default.json — the webview's ACL
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
     ├── app.js            # the cockpit
-    └── settings.js       # the Settings view
+    ├── settings.js       # the Settings view
+    └── containers.js     # the Containers/VMs panel
 ```
 
 Every string and colour the frontend paints comes from Rust
@@ -48,6 +51,65 @@ The column count is decided in Rust, not by a CSS `repeat(auto-fit, minmax(900px
 1fr))`: that CSS would be a second implementation of
 `CockpitBreakpoints.hostColumns`, free to disagree with the tested one. The
 frontend passes the grid's measured width and applies the answer.
+
+## The `containers` command
+
+The Containers/VMs panel, on its own 10s cadence — the cockpit's 1s tick is a
+metrics cadence, and `docker ps` is a process spawn:
+
+```js
+await window.__TAURI__.core.invoke("containers");
+```
+
+```jsonc
+{
+  "id": "containers",
+  "title": "Containers / VMs",
+  "trailing": "6 total · 4 up · 2 stopped · 1 missing",
+  "empty": null,                     // or {"message": "no containers detected"}
+  "sections": [{
+    "host": "this machine",          // local first, then remotes by name
+    "label": "THIS MACHINE",
+    "empty": null,                   // "no container runtimes" vs "no containers"
+    "rows": [{
+      "kind": "present",             // present | absent | aggregate
+      "name": "devcanopy-db", "runtime": "docker",
+      "dotColor": "#33d17a",
+      "status": "Up 3 hours", "statusColor": "#33d17a"
+    }]
+  }],
+  "footer": null                     // or {"text": "⚠ stale · updated 2m ago", "color": …}
+}
+```
+
+Three sources feed it, all in [`src-tauri/src/containers/`](src-tauri/src/containers):
+
+- **This machine** — `docker`/`podman`/`tart`, spawned by absolute path
+  (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) because a macOS GUI app
+  inherits a `launchd` environment whose `PATH` has none of them; on Windows it
+  is a `PATH` lookup and tart is skipped. A runtime whose invocation fails
+  contributes its **last-known list**, so one transient `tart list` failure
+  cannot blank every VM row.
+- **Each host with a token** — `agentclient::containers()`, one in-flight
+  request each. A failed fetch leaves that section's previous rows alone.
+- **Grouping rules + presence**, from [`crates/store`](../crates/store). Rules
+  collapse ephemeral entities into one aggregate row, hide never-interesting
+  ones, or *expect* them — an expected name keeps a standing row while absent
+  (amber `recycling 40s`, red `missing 12m` past 300s) instead of vanishing
+  with the VM. Absence is measured against the section's last **successful**
+  poll, never render time, so a failing source freezes its clocks rather than
+  ageing everything toward a false alarm.
+
+Seeded rules match Swift's (`sassydog-ghr-ubu-*` → "ghr runners" and `api-*` →
+"workflow jobs" on `ubu-3xdv`, `ghcr.io/*` hidden) and seed **only** when the
+store has never carried rules: a deliberately emptied list stays empty.
+**Editing the rules is not in this slice** — Swift keeps that editor in
+Settings → Hosts, and the engine ships before its UI.
+
+Two counts are deliberately not the same number: the rollup counts *every*
+container the runtimes reported, including the ones rules hid or collapsed (so
+cruft building up stays visible), while `· N missing` counts exactly what the
+rollup can no longer see.
 
 ## Hosts
 
@@ -162,12 +224,19 @@ cargo run -p devcanopy-app -- --dump-cockpit sample-cockpit.json # three hosts: 
 #   …plus `--width <pt>` (which column count to compute) and `--hosts <n>`
 #   (how many of the three to include; 0 is the unconfigured cockpit).
 cargo run -p devcanopy-app -- --dump-settings sample-settings.json # the Settings surface
+cargo run -p devcanopy-app -- --dump-containers sample-containers.json # the Containers panel
+#   …plus `--empty`, which dumps the no-runtimes state with a failed-tool footer.
 ```
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
 (one enabled host with a token and a hidden volume, one disabled host with
 neither; two credentials stored, two not) with hard-coded uuids, so it is
-byte-stable across regenerations and covers both sides of every badge. The rest
+byte-stable across regenerations and covers both sides of every badge.
+`--dump-containers` is the same idea one panel over: a hand-made state at a
+**fixed** timestamp (a relative age like "recycling 40s" would otherwise drift
+on every dump and no test could assert one), covering a present container, a
+stopped one, a VM recycling, one missing past grace, and a collapsed group on a
+remote section. The rest
 are full `cockpit` payloads — the same shape the command returns, so
 the offline path cannot diverge from the real one — built from the committed
 agent-contract fixture, so they reproduce on a clean checkout with no agent
@@ -179,10 +248,10 @@ gitignored) — which matters for the smoke test below.
 **Nothing automated exercises the Tauri IPC boundary**
 ([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)). Both sides of the
 seam are tested and the seam itself is not: the Rust tests call
-`cockpit_view(&[HostState], width)` and `settings::view(…)` directly rather than
-through their `#[tauri::command]` wrappers, and the Playwright suite stubs
-`window.__TAURI__.core.invoke` — every command, cockpit and settings alike —
-with Rust-dumped JSON. A break in the ACL
+`cockpit_view(&[HostState], width)`, `settings::view(…)` and
+`containers::view(…)` directly rather than through their `#[tauri::command]`
+wrappers, and the Playwright suite stubs `window.__TAURI__.core.invoke` — every
+command, cockpit, settings and containers alike — with Rust-dumped JSON. A break in the ACL
 ([`src-tauri/capabilities/default.json`](src-tauri/capabilities/default.json)), in
 the `invoke_handler` registration, or in the IPC transport itself would leave every
 one of those tests green.
@@ -211,7 +280,9 @@ So this is a manual step. Run it after changing anything under
    ```
 
    `app/ui/app.js` falls back to `fetch("sample.json")` whenever `window.__TAURI__`
-   is absent. If a fixture is sitting there from a Playwright run, a completely
+   is absent — and `containers.js` falls back to `sample-containers.json` the same
+   way, which the glob above covers. If a fixture is sitting there from a
+   Playwright run, a completely
    broken IPC boundary still paints a full, plausible, green-dotted card — the one
    failure mode that looks exactly like success. With the fixtures gone, nothing
    can paint the card except a successful `invoke` round-trip.
@@ -271,6 +342,23 @@ So this is a manual step. Run it after changing anything under
    host down or agent stopped` against a dead one, and `✗ auth failed (401) —
    check token` with no token set. **Done** returns to the cockpit.
 
+6. **Back on the cockpit, read the terminal once more** for the containers
+   command's own one-line signal (it prints on the panel's first request, which
+   happens at load — so it is usually already there):
+
+   ```
+   containers: first frontend request (1 section(s))
+   ```
+
+   The section count is this machine's own: 1 with no reachable agent, 2 once a
+   host has answered `/v1/containers`. Below the host grid, the **Containers /
+   VMs** heading should carry a `N total · N up · N stopped` line and a
+   **THIS MACHINE** section listing whatever docker/podman/tart report here — or
+   the sentence `no container runtimes` if none are installed, which is a pass:
+   that string is `containers::view`'s and has no path to the DOM except a
+   successful `invoke("containers")`. The first pass can take up to 10s (the
+   panel's cadence), so give it a tick before reading it as broken.
+
 ### Pass
 
 The terminal prints the `cockpit: first frontend request …` line above, and the
@@ -299,6 +387,12 @@ store's real counts and the Hosts tab names the host from step 2 — the same
 argument, one command over: every string in that view is `settings::view`'s, and
 its only path to the DOM is a successful `invoke("settings_view")`.
 
+Step 6 passes when `containers: first frontend request …` prints and the panel
+carries a heading, a rollup line and at least one section — the same argument a
+third time: `"Containers / VMs"`, `"no container runtimes"` and every count are
+`containers::view`'s, reachable only through `invoke("containers")`. An empty
+machine passes; a missing panel does not.
+
 Seeding a second host — run once more with a different address, against the same
 `DEVCANOPY_STORE_DIR` — is the multi-card version of the same check: two cards,
 side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
@@ -314,6 +408,8 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The window opens and stays up, but the `cockpit: first frontend request …` line never prints.  | The boundary is broken and the window is hiding it. This is the definitive terminal-side failure: `invoke` never reached Rust. Verified as a real discriminator on 2026-07-31 by renaming the command in `app.js` — the app still launched and still held a window, and the line stayed absent. |
 | The cards paint, but clicking **Settings** does nothing and `settings: first frontend request …` never prints. | The cockpit half of the boundary is fine and the settings half is not: an unregistered `settings_view`, or a script error in `settings.js` that stopped it before it wired the button. Check the webview console. |
 | Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or `app.js` painted a cockpit payload with no `settingsLabel`. Regenerate the fixtures and check the payload shape, not the ACL. |
+| The cards paint but there is no **Containers / VMs** panel at all, and `containers: first frontend request …` never prints. | The containers half of the boundary is broken: an unregistered `containers` command, or a script error in `containers.js`. The panel stays hidden until a payload arrives — deliberately, so a broken boundary cannot masquerade as an idle machine. Check the webview console. |
+| The panel renders but every section says `no containers` on a machine that is definitely running some. | The boundary is fine; the *discovery* is not. The tools are resolved by absolute path (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) — a docker installed anywhere else is invisible. A failing tool would instead name itself in the footer (`⚠ couldn't read docker`). |
 
 For the underlying error, open the webview console: right-click in the window →
 **Inspect Element** (devtools are enabled in debug builds). An ACL rejection names

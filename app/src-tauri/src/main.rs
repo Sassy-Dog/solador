@@ -10,8 +10,10 @@ use uuid::Uuid;
 use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending};
 use viewmodel::cockpit::{host_columns, panel_table, HOST_CARD_MIN_WIDTH, SPACING};
 
+mod containers;
 mod settings;
 
+use containers::ContainersState;
 use settings::{SecretField, StoredSecrets};
 
 /// How often each host is polled. Matches the Swift side's
@@ -65,6 +67,13 @@ struct HostKey {
 struct PolledHost {
     key: HostKey,
     state: Arc<Mutex<HostState>>,
+    /// Shared with the poll task rather than moved into it, so the containers
+    /// loop can reach the same agent — one client (and therefore one
+    /// connection pool and one token read) per host, not one per feature.
+    client: Arc<AgentClient>,
+    /// A host with no token never reaches the network; its container section
+    /// is simply not polled, exactly as its snapshot is not.
+    token_configured: bool,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -85,6 +94,12 @@ struct App {
     credentials: Box<dyn CredentialStore + Send + Sync>,
     /// The poll set, in cockpit display order.
     hosts: Mutex<Vec<PolledHost>>,
+    /// The Containers panel's own state, on its own 10s cadence.
+    ///
+    /// Its own lock, and never held while the store's is: the containers loop
+    /// takes them one at a time, in sequence, so there is no order to get
+    /// wrong between them.
+    containers: Mutex<ContainersState>,
     /// Where poll tasks are spawned. A `Handle`, not the `Runtime`: the
     /// runtime itself stays owned by `main`, so it can never be dropped from
     /// inside a command (dropping a runtime from an async context panics).
@@ -224,7 +239,7 @@ fn record_missing_token(s: &mut HostState) {
 ///
 /// No lock is ever held across the `await`, which is what lets a slow poll on
 /// one host leave every other host — and the `cockpit` command — untouched.
-async fn poll_loop(state: Arc<Mutex<HostState>>, client: AgentClient, token_configured: bool) {
+async fn poll_loop(state: Arc<Mutex<HostState>>, client: Arc<AgentClient>, token_configured: bool) {
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     // `interval`'s default (`Burst`) fires every missed tick back-to-back the
     // moment a slow poll releases the executor -- and the client timeout (5s,
@@ -295,14 +310,22 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
         })
         .unwrap_or_default();
     let token_configured = !token.is_empty();
-    // Immutable, so it is owned by the poll task rather than the mutex.
-    let client = AgentClient::new(key.base_url.clone(), token);
+    // Immutable, so it is shared rather than guarded: the snapshot loop and
+    // the containers loop both poll this host through this one client.
+    let client = Arc::new(AgentClient::new(key.base_url.clone(), token));
 
     let task_state = Arc::clone(&state);
+    let task_client = Arc::clone(&client);
     let task = app
         .runtime
-        .spawn(async move { poll_loop(task_state, client, token_configured).await });
-    PolledHost { key, state, task }
+        .spawn(async move { poll_loop(task_state, task_client, token_configured).await });
+    PolledHost {
+        key,
+        state,
+        client,
+        token_configured,
+        task,
+    }
 }
 
 /// Rebuilds the poll set from the store, keeping every task whose host is
@@ -353,6 +376,170 @@ fn reload_hosts(app: &App) {
         leftover.task.abort();
     }
     *hosts = next;
+}
+
+// MARK: containers
+//
+// Its own loop rather than a branch of the per-host one: the containers view
+// is a *panel*, polled on the panel's cadence (10s), and it has a source no
+// host task could own — this machine's own docker/podman/tart.
+
+/// One pass over every container source: this machine's runtimes, then each
+/// reachable host's agent.
+///
+/// The three locks it needs are taken **one at a time, in sequence** (poll set,
+/// then store, then containers state) and never nested, so there is no lock
+/// order for a future caller to get wrong.
+async fn poll_containers(app: &Arc<App>) {
+    let now = containers::now_unix();
+
+    // Spawning `docker ps` blocks; keep it off the async executor.
+    let last_known = app
+        .containers
+        .lock()
+        .expect("containers state poisoned")
+        .last_known();
+    let local = tokio::task::spawn_blocking(containers::local::poll)
+        .await
+        .map(|poll| poll.merge_with(last_known))
+        .map_err(|e| eprintln!("local container discovery failed: {e}"))
+        .ok();
+
+    // One in-flight request per host, so a hung agent delays only itself: the
+    // client's own 5s timeout is shorter than the 10s cadence, but two
+    // sequential timeouts would not be.
+    let (configured, targets) = {
+        let hosts = app.hosts.lock().expect("poll set poisoned");
+        let mut configured = std::collections::BTreeSet::new();
+        let mut targets = Vec::new();
+        for polled in hosts.iter() {
+            let name = polled
+                .state
+                .lock()
+                .expect("host state poisoned")
+                .name
+                .clone();
+            configured.insert(name.clone());
+            if polled.token_configured {
+                targets.push((name, Arc::clone(&polled.client)));
+            }
+        }
+        (configured, targets)
+    };
+
+    let mut requests = Vec::with_capacity(targets.len());
+    for (name, client) in targets {
+        requests.push(tokio::spawn(
+            async move { (name, client.containers().await) },
+        ));
+    }
+    let mut fetched: Vec<(String, Vec<wire::Container>)> = Vec::new();
+    for request in requests {
+        // A failed fetch is deliberately silent here and leaves the host's
+        // previous rows in place (`RemoteHostsCoordinator`, Swift): the panel
+        // must not blank a section because one poll missed, and an unreachable
+        // host already reports itself on its own card.
+        if let Ok((name, Ok(list))) = request.await {
+            fetched.push((name, list));
+        }
+    }
+
+    // Presence is the only thing that touches the store, and it writes only
+    // when a poll actually learned something.
+    let clocks = {
+        let mut store = app.store.lock().expect("store poisoned");
+        let rules = store.container_rules().to_vec();
+        let mut records = store.container_presence().clone();
+        let mut clocks: Vec<String> = Vec::new();
+
+        if let Some((_, outcome)) = local.as_ref() {
+            let succeeded: std::collections::BTreeSet<&str> =
+                outcome.succeeded.iter().map(|r| r.id()).collect();
+            let noted = containers::presence::note(
+                &mut records,
+                store::LOCAL_HOST_SCOPE,
+                &outcome.merged,
+                Some(&succeeded),
+                &rules,
+                now,
+            );
+            if noted.clock_advances {
+                clocks.push(store::LOCAL_HOST_SCOPE.to_owned());
+            }
+        }
+        for (name, list) in &fetched {
+            // `None`: a remote fetch is all-or-nothing, so reaching here at
+            // all means this host reported.
+            let noted = containers::presence::note(&mut records, name, list, None, &rules, now);
+            if noted.clock_advances {
+                clocks.push(name.clone());
+            }
+        }
+
+        if store.set_container_presence(records) {
+            if let Err(e) = store.save() {
+                eprintln!("could not persist container presence: {e}");
+            }
+        }
+        clocks
+    };
+
+    let mut state = app.containers.lock().expect("containers state poisoned");
+    if let Some((detected, outcome)) = local {
+        state.apply_local(detected, outcome, now);
+    }
+    for (name, list) in fetched {
+        state.apply_remote(name, list);
+    }
+    // After applying, so a host removed mid-poll cannot leave a ghost section.
+    state.retain_hosts(&configured);
+    for host in clocks {
+        state.advance_clock(&host, now);
+    }
+}
+
+/// The containers panel's poll loop: tick, poll every source, record.
+async fn containers_loop(app: Arc<App>) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+        containers::POLL_INTERVAL_SECS,
+    ));
+    // Same reason as the metrics loop: `Burst` would fire every missed tick
+    // back-to-back after one slow pass, turning a 10s cadence into a spawn
+    // storm of `docker ps` invocations.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        poll_containers(&app).await;
+    }
+}
+
+/// Guards the containers surface's counterpart to [`FIRST_REQUEST`].
+static FIRST_CONTAINERS_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
+    // Rules and presence first, then the panel state — one lock at a time, in
+    // the same sequence `poll_containers` uses.
+    let (rules, presence) = {
+        let store = state.store.lock().expect("store poisoned");
+        (
+            store.container_rules().to_vec(),
+            store.container_presence().clone(),
+        )
+    };
+    let payload = {
+        let panel = state.containers.lock().expect("containers state poisoned");
+        containers::view(&panel, &rules, &presence, containers::now_unix())
+    };
+    // The same terminal-side signal `cockpit` and `settings_view` print, and
+    // for the same reason: this is a third command on an IPC boundary with no
+    // automated coverage (#123), and every way it can break from outside Rust
+    // looks identical from in here — this function never runs.
+    FIRST_CONTAINERS_REQUEST.call_once(|| {
+        let sections = payload["sections"].as_array().map_or(0, Vec::len);
+        eprintln!("containers: first frontend request ({sections} section(s))");
+    });
+    payload
 }
 
 /// Which credentials currently hold a value — the "stored" badges, and nothing
@@ -871,6 +1058,36 @@ fn dump_settings() -> Value {
     settings::view(&settings, &[live, spare], &store::seeded_repos(), &stored)
 }
 
+/// The Containers panel as a fixture.
+///
+/// Built from [`containers::fixture_state`] — a hand-made state rather than a
+/// real poll, because the states worth testing (a collapsed group, a VM
+/// recycling, one missing beyond grace, a remote section beside the local one)
+/// cannot be produced on demand by whatever machine happens to run this.
+///
+/// `now` is fixed, not `now_unix()`, so the file is byte-stable across
+/// regenerations: relative ages ("recycling 40s") would otherwise drift on
+/// every dump and no test could assert one.
+fn dump_containers(empty: bool) -> Value {
+    const NOW: u64 = 1_700_000_000;
+    if empty {
+        // The zero-setup machine, plus a failed runtime: one sentence and a
+        // footer, which is the other half of the panel's rendering.
+        let mut state = containers::ContainersState::new();
+        state.apply_local(
+            Vec::new(),
+            containers::parse::merge(
+                vec![(containers::parse::LocalRuntime::Docker, None)],
+                std::collections::BTreeMap::new(),
+            ),
+            NOW - 90,
+        );
+        return containers::view(&state, &[], &std::collections::BTreeMap::new(), NOW);
+    }
+    let (state, rules, presence) = containers::fixture_state(NOW);
+    containers::view(&state, &rules, &presence, NOW)
+}
+
 /// Returns the path argument following `flag` if `flag` is present, falling
 /// back to `default` when the flag is given with no path.
 fn dump_flag_path(args: &[String], flag: &str, default: &str) -> Option<String> {
@@ -932,6 +1149,13 @@ fn run_dump(args: &[String]) -> bool {
     }
     if let Some(path) = dump_flag_path(args, "--dump-settings", "sample-settings.json") {
         write_json(&path, &dump_settings());
+        return true;
+    }
+    if let Some(path) = dump_flag_path(args, "--dump-containers", "sample-containers.json") {
+        write_json(
+            &path,
+            &dump_containers(args.iter().any(|arg| arg == "--empty")),
+        );
         return true;
     }
     false
@@ -1066,17 +1290,23 @@ fn main() {
         store: Mutex::new(store),
         credentials: Box::new(credentials),
         hosts: Mutex::new(Vec::new()),
+        containers: Mutex::new(ContainersState::new()),
         runtime: rt.handle().clone(),
     });
     // One task per host: an unreachable host's 5s client timeout must not hold
     // up any other host's tick. Startup is the same code path a settings edit
     // takes, so there is one definition of "which hosts are polled".
     reload_hosts(&app);
+    // The containers panel polls on its own 10s cadence and reads the poll set
+    // rather than owning one, so a host added in Settings joins it on the next
+    // tick with no reload of its own.
+    rt.spawn(containers_loop(Arc::clone(&app)));
 
     tauri::Builder::default()
         .manage(Arc::clone(&app))
         .invoke_handler(tauri::generate_handler![
             cockpit,
+            containers,
             settings_view,
             settings_save_general,
             settings_save_providers,

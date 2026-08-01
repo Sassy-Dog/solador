@@ -26,7 +26,9 @@ There is also an experimental cross-platform walking skeleton, kept separate fro
 the shipped SwiftUI app above (which stays untouched): a Rust workspace
 (`crates/wire`, `crates/viewmodel`, `crates/agentclient`) plus a Tauri v2 app
 (`app/`) that polls every configured agent, renders one host-monitoring card
-per host in a width-aware grid, and carries an in-app Settings surface over
+per host in a width-aware grid, renders the Containers/VMs panel (local
+docker/podman/tart plus every host's agent, with grouping rules and presence
+memory), and carries an in-app Settings surface over
 `crates/store` (hosts CRUD, portfolio, credentials, general prefs — applied
 without a restart), proving out a macOS/Windows-portable stack. Its frontend is plain HTML/CSS/JS with no bundler
 (`app/ui/`) and its own Playwright e2e suite (`tests/frontend/`). See
@@ -105,13 +107,16 @@ DevCanopy/
 │   │                      # (package `devcanopy-wire`, imported as `wire`)
 │   ├── viewmodel/         # host_card(): every string/colour the frontend paints
 │   ├── agentclient/       # HTTP client polling the same agent the Swift app polls
-│   ├── store/             # settings/hosts/repos JSON + OS credential-store wrappers
+│   ├── store/             # settings/hosts/repos/container-rules JSON + OS
+│   │                      # credential-store wrappers
 │   └── github/            # GitHub REST client (workflows, runners)
 ├── app/
-│   ├── src-tauri/         # Tauri v2 shell: one poll task per host; `cockpit` +
-│   │                      # the `settings_*` command surface (src/settings.rs)
+│   ├── src-tauri/         # Tauri v2 shell: one poll task per host; `cockpit`,
+│   │                      # `containers` (src/containers/) + the `settings_*`
+│   │                      # command surface (src/settings.rs)
 │   └── ui/                # Frontend: plain HTML/CSS/JS, no bundler
-│                          # (app.js = cockpit, settings.js = Settings view)
+│                          # (app.js = cockpit, settings.js = Settings view,
+│                          #  containers.js = Containers/VMs panel)
 └── tests/frontend/         # Playwright e2e suite for app/ui/ (own package.json)
 ```
 

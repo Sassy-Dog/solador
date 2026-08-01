@@ -20,6 +20,23 @@
     </div>
     <p class="empty" id="emptyMsg"></p>
     <div class="cockpit" id="cockpit"></div>
+
+    <!-- Containers / VMs. Hidden until Rust has supplied a payload: a panel
+         that renders its own chrome before anything has answered would be a
+         heading this file invented. Its rows are built by containers.js from
+         the `containers` command; there is no static copy of any label,
+         status word or colour here, for the same reason the cockpit has none.
+         It sits full-width below the host grid — multi-panel rows come with
+         the panels that will share them. -->
+    <section class="panel" id="containersPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="containersTitle"></h2>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="containersTrailing"></span>
+      </header>
+      <div class="panel-body" id="containersBody"></div>
+      <p class="panel-footer" id="containersFooter" hidden></p>
+    </section>
   </div>
 
   <!-- Settings. An in-app view, not a second window: a window would need
@@ -110,5 +127,6 @@
        and wires its own listeners once app.js has defined them. -->
   <script src="app.js"></script>
   <script src="settings.js"></script>
+  <script src="containers.js"></script>
 </body>
 </html>
