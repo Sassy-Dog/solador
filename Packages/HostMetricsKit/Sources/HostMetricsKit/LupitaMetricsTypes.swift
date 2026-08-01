@@ -194,17 +194,31 @@ struct ProcessItem: Identifiable {
     var name: String
     var cpuUsage: Double // CPU usage percentage
     var memoryUsage: Double // Memory usage in MB
-    var diskReadBytes: UInt64 // Disk read bytes per second
-    var diskWriteBytes: UInt64 // Disk write bytes per second
+
+    /// Disk read bytes per second, or `nil` when the rate is *unknown*.
+    ///
+    /// Unknown is not zero. `proc_pid_rusage` returns EPERM for processes this
+    /// app does not own (most of the system), and the first sample for a pid has
+    /// no previous counter to diff against. Both cases must stay distinguishable
+    /// from a process that genuinely did no I/O, so a renderer can paint "—".
+    var diskReadBytes: UInt64?
+
+    /// Disk write bytes per second, or `nil` when unknown — see `diskReadBytes`.
+    var diskWriteBytes: UInt64?
+
     var isSystemProcess: Bool
 
+    /// - Note: `diskReadBytes`/`diskWriteBytes` deliberately have **no** default.
+    ///   A `= 0` default is a fake-zero trap at the type level: it lets a caller
+    ///   that never measured anything silently publish a hard zero. Callers must
+    ///   pass a measured value or an explicit `nil`.
     init(
         pid: Int32,
         name: String,
         cpuUsage: Double = 0,
         memoryUsage: Double = 0,
-        diskReadBytes: UInt64 = 0,
-        diskWriteBytes: UInt64 = 0,
+        diskReadBytes: UInt64?,
+        diskWriteBytes: UInt64?,
         isSystemProcess: Bool = false
     ) {
         id = pid
@@ -226,8 +240,14 @@ struct ApplicationItem: Identifiable {
     var processCount: Int
     var cpuUsage: Double // Total CPU usage percentage
     var memoryUsage: Double // Total memory usage in MB
-    var diskReadBytes: UInt64 // Total disk read bytes per second
-    var diskWriteBytes: UInt64 // Total disk write bytes per second
+
+    /// Total disk read bytes per second across this app's processes, counting
+    /// only the ones whose rate is known; `nil` when none of them are.
+    var diskReadBytes: UInt64?
+
+    /// Total disk write bytes per second — same unknown handling as `diskReadBytes`.
+    var diskWriteBytes: UInt64?
+
     var isSystemApp: Bool
     var processes: [ProcessItem] // Individual processes in this app
 
@@ -241,9 +261,24 @@ struct ApplicationItem: Identifiable {
         processCount = processes.count
         cpuUsage = processes.reduce(0) { $0 + $1.cpuUsage }
         memoryUsage = processes.reduce(0) { $0 + $1.memoryUsage }
-        diskReadBytes = processes.reduce(0) { $0 + $1.diskReadBytes }
-        diskWriteBytes = processes.reduce(0) { $0 + $1.diskWriteBytes }
+        diskReadBytes = Self.sumKnownRates(processes.map(\.diskReadBytes))
+        diskWriteBytes = Self.sumKnownRates(processes.map(\.diskWriteBytes))
         isSystemApp = processes.first?.isSystemProcess ?? false
+    }
+
+    /// Sums the known per-process rates and skips the unknown ones.
+    ///
+    /// Returns `nil` when *every* input is unknown: an application whose
+    /// processes all refused a rusage read has an unknown total, not a zero one.
+    /// Folding an unknown in as 0 is exactly the fabricated number the cockpit
+    /// must never render. Saturates at `UInt64.max` instead of trapping.
+    static func sumKnownRates(_ rates: [UInt64?]) -> UInt64? {
+        let known = rates.compactMap(\.self)
+        guard !known.isEmpty else { return nil }
+        return known.reduce(UInt64(0)) { total, rate in
+            let (sum, overflowed) = total.addingReportingOverflow(rate)
+            return overflowed ? .max : sum
+        }
     }
 }
 
