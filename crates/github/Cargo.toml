@@ -1,0 +1,28 @@
+[package]
+# Prefixed like `devcanopy-wire`/`devcanopy-store` to stay clear of the popular
+# `github` name on crates.io. The lib below keeps the short import name.
+name = "devcanopy-github"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "github"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Same HTTP stack (and feature set) as crates/agentclient, so the workspace
+# resolves one reqwest and one TLS backend.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `join3` for the per-repo side counts the Swift fires with `async let`.
+# Already in the lock via reqwest/tauri — a new edge, not a new package.
+futures-util = "0.3"
+# GitHub timestamps are RFC 3339 strings and the stuck/presence clocks are
+# instant arithmetic. Already in the lock via tauri's tree.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
