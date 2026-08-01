@@ -10,8 +10,23 @@ html, body {
   font-variant-numeric: tabular-nums; font-size:12px; line-height:1.45;
   -webkit-font-smoothing: antialiased;
 }
-.card { margin:12px; padding:18px; background:var(--panel); border:1px solid var(--line);
-  border-radius:12px; display:flex; flex-direction:column; gap:10px; }
+body { padding:var(--cockpit-gap, 16px); }
+/* The Hosts panel's own heading. Text comes from Rust's panel table. */
+.panel-title { font-size:13px; font-weight:700; margin:0 0 var(--cockpit-gap, 16px); }
+/* Empty only when there is nothing to say — `hidden` is set from app.js, and
+   an unstyled `[hidden]` is already display:none, so no rule is needed here. */
+.empty { color:var(--muted); margin:0 0 var(--cockpit-gap, 16px); }
+
+/* The host grid. `grid-template-columns` is assigned from the payload's
+   `hostColumns` and nothing else: a CSS `repeat(auto-fit, minmax(900px, 1fr))`
+   here would be a SECOND implementation of CockpitBreakpoints.hostColumns,
+   free to disagree with the tested one in `viewmodel::cockpit`. `minmax(0,1fr)`
+   rather than `1fr` so a wide card (the core ladder, long mount paths) can
+   never push its column past its share. */
+.cockpit { display:grid; gap:var(--cockpit-gap, 16px);
+  grid-template-columns: repeat(1, minmax(0, 1fr)); align-items:start; }
+.card { padding:18px; background:var(--panel); border:1px solid var(--line);
+  border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
 .hdr { display:flex; align-items:center; gap:8px; }
 /* Default is neutral, not green: this colour is a *fact* about the poll
    loop (live / connecting / stale / failed), not a decoration, and app.js

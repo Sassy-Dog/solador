@@ -619,11 +619,12 @@ name = "devcanopy-app"
 version = "0.1.0"
 dependencies = [
  "agentclient",
+ "devcanopy-store",
  "devcanopy-wire",
- "keyring",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
  "viewmodel",
 ]

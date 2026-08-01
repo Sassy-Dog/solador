@@ -27,8 +27,28 @@ test.afterEach(async ({ page }) => {
 
 async function gotoApp(page) {
   await page.goto("/index.html");
-  await page.waitForFunction(() => document.querySelectorAll("#cores .core").length > 0);
+  await page.waitForFunction(() => document.querySelectorAll(".cores .core").length > 0);
 }
+
+/**
+ * Stubs `window.__TAURI__.core.invoke("cockpit")` with Rust-dumped payloads
+ * (there is no real Tauri IPC in a browser context), returning each in turn
+ * and repeating the last one forever.
+ */
+async function stubCockpit(page, payloads) {
+  await page.addInitScript((vms) => {
+    let calls = 0;
+    window.__TAURI__ = {
+      core: { invoke: async () => vms[Math.min(calls++, vms.length - 1)] },
+    };
+  }, payloads);
+}
+
+const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
+
+/** The one live host `--dump` writes, as the offline fallback serves it. */
+const firstHost = async (page) =>
+  page.evaluate(async () => (await (await fetch("sample.json")).json()).hosts[0]);
 
 test("core grid uses only column counts that leave a full last row", async ({ page }) => {
   await gotoApp(page);
@@ -51,10 +71,7 @@ test("core grid uses only column counts that leave a full last row", async ({ pa
 
 test("cores block holds a fixed height at every width", async ({ page }) => {
   await gotoApp(page);
-  const expectedPx = await page.evaluate(async () => {
-    const data = await (await fetch("sample.json")).json();
-    return `${data.coreBlockHeight}px`;
-  });
+  const expectedPx = `${(await firstHost(page)).coreBlockHeight}px`;
   // app.css's fallback is `var(--core-block-h, 220px)`: if render() silently
   // failed to set the property (exactly the failure mode a blocked style
   // sink produces), the fallback would still make the height assertions
@@ -92,7 +109,7 @@ test("charts widen their time window instead of stretching", async ({ page }) =>
       // reading the SVG it produces.
       await new Promise(requestAnimationFrame);
       await new Promise(requestAnimationFrame);
-      const pts = document.querySelector("#cpuChart svg polyline")
+      const pts = document.querySelector(".cpuChart svg polyline")
         .getAttribute("points").trim().split(" ");
       const xs = pts.map((p) => parseFloat(p.split(",")[0]));
       document.body.style.width = "";
@@ -109,8 +126,8 @@ test("charts widen their time window instead of stretching", async ({ page }) =>
 
 test("a host with no discrete GPU renders an em dash, never zero", async ({ page }) => {
   await gotoApp(page);
-  await expect(page.locator("#gpuValue")).toHaveText("—");
-  await expect(page.locator("#vramText")).toHaveText("VRAM: —");
+  await expect(page.locator(".gpuValue")).toHaveText("—");
+  await expect(page.locator(".vramText")).toHaveText("VRAM: —");
 });
 
 test("volume bar width is proportional to its fraction, not fixed full", async ({ page }) => {
@@ -121,7 +138,7 @@ test("volume bar width is proportional to its fraction, not fixed full", async (
   // the fixture's volumes are actually full, so a correct render must be
   // narrower than its track and actually painted.
   const { fillWidth, trackWidth, background } = await page.evaluate(() => {
-    const track = document.querySelector("#volumes .vol .bar");
+    const track = document.querySelector(".volumes .vol .bar");
     const fill = track.querySelector("span");
     return {
       fillWidth: fill.getBoundingClientRect().width,
@@ -143,10 +160,10 @@ test("a core cell's value text renders its usage colour", async ({ page }) => {
   // normalised through the browser's own colour parser so hex vs. rgb()
   // formatting can't produce a false pass or fail.
   const { computed, expected } = await page.evaluate(async () => {
-    const data = await (await fetch("sample.json")).json();
-    const cell = document.querySelector("#cores .core .cap b");
+    const host = (await (await fetch("sample.json")).json()).hosts[0];
+    const cell = document.querySelector(".cores .core .cap b");
     const probe = document.createElement("div");
-    probe.style.color = data.cores[0].valueColor;
+    probe.style.color = host.cores[0].valueColor;
     document.body.appendChild(probe);
     const expected = getComputedStyle(probe).color;
     probe.remove();
@@ -159,63 +176,150 @@ test("a host that fails after connecting keeps its last-known data, with an unmi
   // Regression test for the "stale value presented as current" defect: a
   // host that dies after a good poll used to render a fully live-looking
   // card forever. Simulates that sequence by stubbing `window.__TAURI__` (no
-  // real Tauri IPC in a browser context) so the first `invoke("snapshot")`
-  // returns a live view-model and every call after returns a "stale" one --
+  // real Tauri IPC in a browser context) so the first `invoke("cockpit")`
+  // returns a live payload and every call after returns a "stale" one --
   // the whole point is that the numbers must not change, only the connection
   // badge.
   //
   // Both fixtures are dumped by the real Rust binary (`--dump` / `--dump-stale`,
-  // see tests/frontend/package.json's pretest and app/src-tauri/src/main.rs),
-  // from the identical underlying snapshot/history, rather than the stale one
-  // being hand-built here from `live` with a copy-pasted "stale"/message
-  // string: a hand-built copy can't notice viewmodel's own strings drifting
-  // out from under it (see finding M4).
-  const live = await (await fetch(`${baseURL}/sample.json`)).json();
-  const stale = await (await fetch(`${baseURL}/sample-stale.json`)).json();
-
-  await page.addInitScript(
-    ([liveVm, staleVm]) => {
-      let calls = 0;
-      window.__TAURI__ = {
-        core: { invoke: async () => (calls++ === 0 ? liveVm : staleVm) },
-      };
-    },
-    [live, stale]
-  );
+  // see tests/frontend/package.json's fixtures script and
+  // app/src-tauri/src/main.rs), from the identical underlying
+  // snapshot/history, rather than the stale one being hand-built here from
+  // `live` with a copy-pasted "stale"/message string: a hand-built copy can't
+  // notice viewmodel's own strings drifting out from under it (see finding M4).
+  await stubCockpit(page, [
+    await fixture(baseURL, "sample.json"),
+    await fixture(baseURL, "sample-stale.json"),
+  ]);
 
   await gotoApp(page);
 
   // First poll: live and green, real numbers on screen.
-  await expect(page.locator("#connDot")).toHaveAttribute("data-state", "live");
-  const cpuBefore = await page.locator("#cpuValue").textContent();
+  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "live");
+  const cpuBefore = await page.locator(".cpuValue").textContent();
   expect(cpuBefore).not.toBe("—");
 
-  // The app's own 2s `setInterval` (only armed when `window.__TAURI__`
+  // The app's own poll `setInterval` (only armed when `window.__TAURI__`
   // exists) drives the second poll -- wait for that real transition rather
   // than calling into app.js internals directly.
-  await expect(page.locator("#connDot")).toHaveAttribute("data-state", "stale", { timeout: 5000 });
+  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "stale", { timeout: 5000 });
 
-  const cpuAfter = await page.locator("#cpuValue").textContent();
+  const cpuAfter = await page.locator(".cpuValue").textContent();
   expect(cpuAfter, "the reading must not change just because the poll failed").toBe(cpuBefore);
   expect(cpuAfter).not.toBe("—");
-  await expect(page.locator("#staleMsg")).toContainText("Couldn't reach the agent");
-  await expect(page.locator("#staleMsg")).toContainText("ago");
+  await expect(page.locator(".staleMsg")).toContainText("Couldn't reach the agent");
+  await expect(page.locator(".staleMsg")).toContainText("ago");
 });
 
-test("repeated renders do not leak chart bookkeeping (#cores)", async ({ page, baseURL }) => {
+test("every configured host gets its own card, in payload order", async ({ page, baseURL }) => {
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  const cards = page.locator(".cockpit .card");
+  await expect(cards).toHaveCount(vm.hosts.length);
+  // Names, in order: one card painting another host's name is the failure a
+  // count-only assertion would sail past.
+  await expect(cards.locator(".hostName")).toHaveText(
+    vm.hosts.map((h) => h.hostName ?? h.error.hostName)
+  );
+});
+
+test("one unreachable host shows its error card while the others stay live", async ({ page, baseURL }) => {
+  // Per-host failure isolation, at the DOM. The fixture is deliberately mixed
+  // (live / stale / failed, dumped together by `--dump-cockpit`) so a shared
+  // error path -- one connection badge for the page, one `cpuValue` id shared
+  // across cards -- shows up as cards agreeing when they must not.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  const cards = page.locator(".cockpit .card");
+  await expect(cards).toHaveCount(3);
+  expect(await cards.evaluateAll((els) => els.map((e) => e.dataset.state)))
+    .toEqual(["live", "stale", "failed"]);
+
+  // The live host is untouched by its neighbours' trouble.
+  await expect(cards.nth(0).locator(".cpuValue")).toHaveText(vm.hosts[0].cpuValue);
+  await expect(cards.nth(0).locator(".staleMsg")).toHaveText("");
+
+  // The stale host keeps the numbers it last heard, and says how old they are.
+  await expect(cards.nth(1).locator(".cpuValue")).toHaveText(vm.hosts[1].cpuValue);
+  await expect(cards.nth(1).locator(".staleMsg")).toContainText("Couldn't reach the agent");
+
+  // The host that never connected shows the cause, never a fabricated number.
+  await expect(cards.nth(2).locator(".cpuValue")).toHaveText("—");
+  await expect(cards.nth(2).locator(".cpuModel")).toHaveText(vm.hosts[2].error.message);
+});
+
+test("the grid lays out exactly the columns the view-model asked for", async ({ page, baseURL }) => {
+  // Both fixtures hold the SAME three hosts and differ only in the width Rust
+  // computed them for (`--dump-cockpit` vs `--width 1000`), so this is purely
+  // about the frontend applying `hostColumns` rather than deciding it. A CSS
+  // `repeat(auto-fit, minmax(900px, 1fr))` here would pass the wide case in a
+  // wide browser and fail the stacked one -- which is the point.
+  for (const name of ["sample-cockpit.json", "sample-cockpit-stacked.json"]) {
+    const vm = await fixture(baseURL, name);
+    await stubCockpit(page, [vm]);
+    await gotoApp(page);
+
+    const { tracks, gap } = await page.evaluate(() => {
+      const style = getComputedStyle(document.querySelector(".cockpit"));
+      return {
+        tracks: style.gridTemplateColumns.trim().split(/\s+/).length,
+        gap: parseFloat(style.columnGap),
+      };
+    });
+    expect(tracks, `${name}: grid tracks`).toBe(vm.hostColumns);
+    expect(gap, `${name}: grid gap`).toBe(vm.spacing);
+  }
+});
+
+test("the Hosts panel title comes from Rust's panel table", async ({ page, baseURL }) => {
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+  const hosts = vm.panels.find((p) => p.id === "hosts");
+  await expect(page.locator("#hostsTitle")).toHaveText(hosts.title);
+});
+
+test("a cockpit with no hosts says so instead of rendering an empty page", async ({ page, baseURL }) => {
+  // The message is Rust's (`cockpit_payload`, dumped by `--hosts 0`), not a
+  // string invented here: an unconfigured app must read as unconfigured, never
+  // as broken.
+  const empty = await fixture(baseURL, "sample-cockpit-empty.json");
+  await stubCockpit(page, [await fixture(baseURL, "sample.json"), empty]);
+  await gotoApp(page);
+
+  // Every card is torn down when its host leaves the payload...
+  await expect(page.locator(".cockpit .card")).toHaveCount(0, { timeout: 5000 });
+  // ...and the placeholder takes over rather than leaving a blank page.
+  await expect(page.locator("#emptyMsg")).toHaveText(empty.empty.message);
+  await expect(page.locator("#emptyMsg")).toBeVisible();
+});
+
+test("repeated renders do not leak chart bookkeeping (multi-host)", async ({ page, baseURL }) => {
   // Regression test for finding I1: render() used to replace #cores'
   // innerHTML on every single poll without pruning the discarded cells from
   // CHARTS (a strong Map) or unregistering them from chartObserver -- ~32
   // detached nodes leaked per poll, forever, in an app meant to run
-  // full-screen indefinitely. app.js exposes a read-only test hook
-  // (window.__DEVCANOPY_TEST__) specifically so this can be driven directly
-  // rather than waiting on real 2s poll ticks.
+  // full-screen indefinitely. Driven against the three-host payload so the
+  // per-card core-count bookkeeping is covered too: a single module-level
+  // counter matches on the first card and then rebuilds every other card's
+  // cells on every poll, which is the same leak with more cards.
+  //
+  // app.js exposes a read-only test hook (window.__DEVCANOPY_TEST__)
+  // specifically so this can be driven directly rather than waiting on real
+  // poll ticks.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubCockpit(page, [vm]);
   await gotoApp(page);
-  const data = await (await fetch(`${baseURL}/sample.json`)).json();
-  const coreCount = data.cores.length;
+
   // 5 fixed top-level charts (cpu/mem/gpu/disk/net) that exist once and are
-  // never rebuilt, plus one per core.
-  const expectedCharts = 5 + coreCount;
+  // never rebuilt, plus one per core -- for each host that actually has data.
+  const expectedCharts = vm.hosts
+    .filter((h) => !h.error)
+    .reduce((n, h) => n + 5 + h.cores.length, 0);
 
   const counts = await page.evaluate(
     ({ d, n }) => {
@@ -226,7 +330,7 @@ test("repeated renders do not leak chart bookkeeping (#cores)", async ({ page, b
       }
       return results;
     },
-    { d: data, n: 20 }
+    { d: vm, n: 20 }
   );
 
   // Flat at every single render, not just the last one -- if CHARTS grew by
@@ -235,8 +339,36 @@ test("repeated renders do not leak chart bookkeeping (#cores)", async ({ page, b
     expect(count, `chart bookkeeping size after render #${i + 1}`).toBe(expectedCharts);
   }
 
-  // The DOM itself must also still show exactly one cell per core, not a
-  // pile-up of orphaned ones sitting outside #cores.
-  const cells = await page.locator("#cores .core").count();
-  expect(cells).toBe(coreCount);
+  // The DOM itself must also still show exactly one cell per core per card,
+  // not a pile-up of orphaned ones.
+  for (const [i, host] of vm.hosts.entries()) {
+    const cells = await page.locator(".cockpit .card").nth(i).locator(".cores .core").count();
+    expect(cells, `core cells on card ${i}`).toBe(host.cores ? host.cores.length : 0);
+  }
+});
+
+test("a host that leaves the payload takes its chart bookkeeping with it", async ({ page, baseURL }) => {
+  // The multi-host counterpart of the leak above: removing a card must prune
+  // CHARTS and unobserve its plots, or every host ever configured stays
+  // pinned in memory with a live ResizeObserver target for the life of the
+  // process.
+  //
+  // Driven through the real poll path (the stub serves three hosts, then one)
+  // rather than the test hook: the app's own interval keeps re-rendering the
+  // last stubbed payload, so a hook-driven teardown would be undone within a
+  // tick.
+  const many = await fixture(baseURL, "sample-cockpit.json");
+  const one = await fixture(baseURL, "sample.json");
+  await stubCockpit(page, [many, one]);
+  await gotoApp(page);
+
+  const cards = page.locator(".cockpit .card");
+  await expect(cards).toHaveCount(many.hosts.length);
+  const before = await page.evaluate(() => window.__DEVCANOPY_TEST__.chartCount());
+
+  await expect(cards).toHaveCount(1, { timeout: 5000 });
+  const after = await page.evaluate(() => window.__DEVCANOPY_TEST__.chartCount());
+
+  expect(after).toBe(5 + one.hosts[0].cores.length);
+  expect(after).toBeLessThan(before);
 });
