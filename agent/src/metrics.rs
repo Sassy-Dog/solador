@@ -5,6 +5,33 @@
 //! produces the JSON and the app that consumes it cannot drift. This module
 //! owns only the sampling: how each value is measured, and the `MetricsState`
 //! handle the server reads from.
+//!
+//! # Measured, or absent
+//!
+//! Every optional field in the contract is here for one reason: this agent
+//! either measures it or says nothing. `Some(0.0)` is a **reading** of zero —
+//! an idle disk, a host with no memory stalls — and an omitted key means
+//! nobody measured it, which a consumer renders as an em dash rather than a
+//! reassuring green zero.
+//!
+//! What that means field by field (#183):
+//!
+//! - `memory.pressure` — **measured** on Linux from `/proc/pressure/memory`
+//!   (PSI, see [`parse_psi_some_avg10`]); omitted where that file does not
+//!   exist (macOS, or a kernel built without `CONFIG_PSI`).
+//! - `cpu.thermalState` — **always omitted**. The contract's 0–3 ladder is
+//!   macOS's `ProcessInfo.ThermalState`. Linux exposes thermal *zones* in
+//!   millidegrees, and collapsing those into the ladder needs per-machine trip
+//!   points nothing here knows — a different fabrication, not a fix for this
+//!   one.
+//! - `gpu` — **always omitted** ([`Gpu::unknown`]): `sysinfo` reports no GPU at
+//!   all, so there is nothing to measure. Serialises as `{}`.
+//! - `disk` / `network` rates — **measured** from the sampler's byte deltas,
+//!   so they are present (and often a legitimate `0.0`) in every real sample.
+//!   Absent only from [`empty_snapshot`], which predates the first delta.
+//! - `battery` — still `null` rather than omitted: it is the one optional the
+//!   contract deliberately keeps emitting (see `wire::Snapshot::battery`), and
+//!   `null` already reads as "no battery" on both consumers.
 
 // Re-exported so `crate::metrics::Snapshot` keeps resolving for server.rs,
 // main.rs and this module's tests. `allow(unused_imports)`: this is a binary
@@ -207,6 +234,52 @@ fn top_processes(sys: &System, limit: usize) -> Vec<Process> {
 }
 
 // ---------------------------------------------------------------------------
+// Memory pressure (Linux PSI).
+// ---------------------------------------------------------------------------
+
+/// Linux Pressure Stall Information for memory. Present since 4.20 on kernels
+/// built with `CONFIG_PSI` (Ubuntu's are); absent everywhere else, including
+/// macOS — which is exactly the case the `Option` exists for.
+const MEMORY_PRESSURE_PATH: &str = "/proc/pressure/memory";
+
+/// Read memory pressure, 0–100, or `None` where the host has no such figure.
+///
+/// One small procfs read per sample — cheap enough to do inline in the sampler,
+/// and the reason `pressure` is measured rather than omitted on Linux.
+fn read_memory_pressure() -> Option<f64> {
+    let body = std::fs::read_to_string(MEMORY_PRESSURE_PATH).ok()?;
+    parse_psi_some_avg10(&body)
+}
+
+/// Pull `some avg10` out of a PSI file body:
+///
+/// ```text
+/// some avg10=0.00 avg60=0.12 avg300=0.03 total=8419234
+/// full avg10=0.00 avg60=0.09 avg300=0.02 total=6217881
+/// ```
+///
+/// `some` is the share of the last 10 seconds during which *at least one* task
+/// stalled waiting on memory — the standard "how squeezed is this host" figure,
+/// and already a percentage, so it lands in the contract's 0–100 range without
+/// rescaling. (`full`, where *every* task stalled, is the thrashing signal; it
+/// is near-permanently 0 and would read as "nothing to see" right up until the
+/// host fell over.)
+///
+/// `None` for anything that isn't that: an empty body, a kernel that grew a
+/// different layout, a non-finite number. Guessing is what this change exists
+/// to stop.
+fn parse_psi_some_avg10(body: &str) -> Option<f64> {
+    let value = body
+        .lines()
+        .find_map(|line| line.strip_prefix("some "))?
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("avg10="))?
+        .parse::<f64>()
+        .ok()?;
+    value.is_finite().then(|| value.clamp(0.0, 100.0))
+}
+
+// ---------------------------------------------------------------------------
 // Sampler.
 // ---------------------------------------------------------------------------
 
@@ -362,6 +435,7 @@ async fn sampler_loop(state: MetricsState) {
             SAMPLE_INTERVAL.as_secs_f64(),
             cached_processes.clone(),
             &skip,
+            read_memory_pressure(),
         );
         *state.inner.write().await = snap;
         state.mark_sampled();
@@ -371,12 +445,14 @@ async fn sampler_loop(state: MetricsState) {
     }
 }
 
-/// A zero-valued snapshot used before the first sample lands.
+/// The snapshot served before the first sample lands.
 ///
-/// The `Some(0.0)`s below are the contract's #191 shape carrying **exactly**
-/// today's bytes, not a new claim: `skip_serializing_if` only omits `None`, so
-/// each one still serialises as the literal `0.0` this agent has always sent.
-/// Replacing them with honest omissions is #183's job, agent-side.
+/// Nothing has been measured yet, so every field that *can* say so does:
+/// pressure, thermal state, the GPU and both rate pairs are all absent, not
+/// zero. The handful of non-optional fields (`totalUsage`, the memory sizes)
+/// still read `0.0` — the contract cannot express their absence, and
+/// `/v1/health` is what tells a consumer this sample is a placeholder
+/// (`samplerStale`, #182).
 pub(crate) fn empty_snapshot() -> Snapshot {
     Snapshot {
         timestamp: now_rfc3339(),
@@ -384,23 +460,18 @@ pub(crate) fn empty_snapshot() -> Snapshot {
             total_usage: 0.0,
             core_usages: Vec::new(),
             model: String::new(),
-            thermal_state: Some(0),
+            thermal_state: None,
         },
         memory: Memory {
             used_gb: 0.0,
             total_gb: 0.0,
             swap_used_gb: 0.0,
-            pressure: Some(0.0),
+            pressure: None,
         },
-        disk: Disk {
-            read_mbps: Some(0.0),
-            write_mbps: Some(0.0),
-        },
-        network: Network {
-            download_mbps: Some(0.0),
-            upload_mbps: Some(0.0),
-        },
-        gpu: Gpu::zeros(),
+        // A rate is a delta, and no interval has elapsed to take one over.
+        disk: Disk::default(),
+        network: Network::default(),
+        gpu: Gpu::unknown(),
         battery: None,
         volumes: Vec::new(),
         processes: Vec::new(),
@@ -411,6 +482,10 @@ pub(crate) fn empty_snapshot() -> Snapshot {
 ///
 /// `interval_secs` is the elapsed time over which the network/disk byte deltas
 /// were accumulated, used to convert byte deltas into bytes/sec.
+///
+/// `pressure` is passed in rather than read here so this stays a pure function
+/// of its inputs: the sampler owns the procfs read ([`read_memory_pressure`]),
+/// and a test can hand this both a measured value and a `None`.
 fn compute_snapshot(
     sys: &System,
     networks: &Networks,
@@ -418,6 +493,7 @@ fn compute_snapshot(
     interval_secs: f64,
     processes: Vec<Process>,
     skip_fstypes: &std::collections::HashSet<String>,
+    pressure: Option<f64>,
 ) -> Snapshot {
     let interval = if interval_secs > 0.0 {
         interval_secs
@@ -479,17 +555,16 @@ fn compute_snapshot(
             total_usage,
             core_usages,
             model,
-            // Still fabricated, and still emitted: `Some(0)` serialises as the
-            // same `"thermalState": 0` this agent has always sent. The contract
-            // gained the ability to say "unknown" in #191; teaching *this* side
-            // to use it — here and for `pressure` below — is #183.
-            thermal_state: Some(0),
+            // Omitted, never guessed: there is no Linux source for the
+            // contract's macOS 0–3 thermal ladder. See the module docs.
+            thermal_state: None,
         },
         memory: Memory {
             used_gb,
             total_gb,
             swap_used_gb,
-            pressure: Some(0.0),
+            // Measured from PSI where the host has it, absent where it doesn't.
+            pressure,
         },
         disk: Disk {
             read_mbps: Some(read_mbps),
@@ -499,7 +574,8 @@ fn compute_snapshot(
             download_mbps: Some(download_mbps),
             upload_mbps: Some(upload_mbps),
         },
-        gpu: Gpu::zeros(),
+        // Nothing here samples a GPU, so this claims nothing about one.
+        gpu: Gpu::unknown(),
         battery: None,
         volumes,
         processes,
@@ -511,8 +587,16 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
-    /// The canonical wire sample. Decoded byte-for-key by the Swift `Codable` type.
-    /// This test is the lock on the wire format.
+    /// The canonical wire sample: every optional key present. Decoded
+    /// byte-for-key by the Swift `Codable` type, and the lock on how a *present*
+    /// value serialises.
+    ///
+    /// It is deliberately NOT what this agent emits any more — since #183 it
+    /// omits `thermalState` and the GPU, and `pressure` only appears where PSI
+    /// exists. This shape is still on the wire (every agent deployed before
+    /// #183 sends it) and both consumers must keep decoding it, which is what
+    /// this pins. What the agent emits *today* is pinned by
+    /// `linux_snapshot_*`/`empty_snapshot_*` below.
     fn canonical_sample() -> Value {
         json!({
             "timestamp": "2026-06-04T22:00:00Z",
@@ -577,6 +661,128 @@ mod tests {
             canonical_sample(),
             "serialized Snapshot diverged from the canonical wire contract"
         );
+    }
+
+    /// A snapshot from the live sampling path, over deliberately empty sysinfo
+    /// state: the numbers are uninteresting (and deterministic), the *keys* are
+    /// the point.
+    fn sampled_snapshot(pressure: Option<f64>) -> Snapshot {
+        compute_snapshot(
+            &System::new(),
+            &Networks::new(),
+            &Disks::new(),
+            1.0,
+            Vec::new(),
+            &skip_fstypes(None),
+            pressure,
+        )
+    }
+
+    /// CONTRACT LOCK (#183): the keys this agent never measures are ABSENT from
+    /// what it serves, not zero. A hardcoded `"thermalState": 0` /
+    /// `"gpu": {…0.0}` is indistinguishable from a reading once it is on the
+    /// wire — which is how every remote card came to paint a green
+    /// `Pressure: 0%` for a figure Linux never produced.
+    #[test]
+    fn sampled_snapshot_omits_the_thermal_state_and_gpu_it_cannot_measure() {
+        let v = serde_json::to_value(sampled_snapshot(Some(4.5))).unwrap();
+
+        let cpu = v["cpu"].as_object().unwrap();
+        assert!(
+            !cpu.contains_key("thermalState"),
+            "no Linux source for the 0–3 ladder; the key must be absent, got {cpu:?}"
+        );
+        assert_eq!(
+            v["gpu"],
+            json!({}),
+            "nothing samples a GPU, so every GPU key must be absent"
+        );
+    }
+
+    /// The measured half of the same rule: a value this agent *does* sample is
+    /// present, including when it legitimately reads zero.
+    #[test]
+    fn sampled_snapshot_keeps_the_rates_and_pressure_it_does_measure() {
+        let v = serde_json::to_value(sampled_snapshot(Some(4.5))).unwrap();
+
+        assert_eq!(v["memory"]["pressure"], json!(4.5));
+        // Empty disk/network lists are a real reading of "no traffic" — a
+        // measured 0.0 stays a number, never an omission.
+        assert_eq!(v["disk"], json!({ "readMBps": 0.0, "writeMBps": 0.0 }));
+        assert_eq!(
+            v["network"],
+            json!({ "downloadMBps": 0.0, "uploadMBps": 0.0 })
+        );
+    }
+
+    /// On a host with no PSI (macOS, or a kernel without `CONFIG_PSI`) the
+    /// pressure key disappears rather than defaulting to a comfortable zero.
+    #[test]
+    fn an_unmeasurable_pressure_omits_its_key_rather_than_reading_zero() {
+        let v = serde_json::to_value(sampled_snapshot(None)).unwrap();
+        let mem = v["memory"].as_object().unwrap();
+        assert!(
+            !mem.contains_key("pressure"),
+            "unmeasured pressure must be absent, got {mem:?}"
+        );
+        // The sizes around it are measured and still present.
+        assert!(mem.contains_key("usedGB") && mem.contains_key("totalGB"));
+    }
+
+    /// The pre-first-sample placeholder claims nothing it has not sampled: no
+    /// rates (no interval has elapsed to take a delta over), no pressure, no
+    /// thermal state, no GPU.
+    #[test]
+    fn empty_snapshot_claims_nothing_it_has_not_sampled() {
+        let v = serde_json::to_value(empty_snapshot()).unwrap();
+        assert_eq!(v["disk"], json!({}));
+        assert_eq!(v["network"], json!({}));
+        assert_eq!(v["gpu"], json!({}));
+        assert!(!v["memory"].as_object().unwrap().contains_key("pressure"));
+        assert!(!v["cpu"].as_object().unwrap().contains_key("thermalState"));
+    }
+
+    #[test]
+    fn psi_some_avg10_is_the_measured_pressure() {
+        let body = "some avg10=1.25 avg60=0.12 avg300=0.03 total=8419234\n\
+                    full avg10=99.00 avg60=0.09 avg300=0.02 total=6217881\n";
+        assert_eq!(
+            parse_psi_some_avg10(body),
+            Some(1.25),
+            "the `some` line is the pressure figure, never `full`"
+        );
+    }
+
+    #[test]
+    fn psi_parses_a_genuine_zero_as_a_reading() {
+        // The distinction the whole change rests on: an idle host measures 0.0,
+        // and that is a number — not the absence this agent used to fake.
+        let body = "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n";
+        assert_eq!(parse_psi_some_avg10(body), Some(0.0));
+    }
+
+    #[test]
+    fn psi_pressure_is_clamped_to_the_contract_range() {
+        let body = "some avg10=142.50 avg60=0.00 avg300=0.00 total=0\n";
+        assert_eq!(parse_psi_some_avg10(body), Some(100.0));
+    }
+
+    #[test]
+    fn unparseable_psi_is_unknown_rather_than_a_guess() {
+        for body in [
+            "",
+            "full avg10=0.30 avg60=0.00 avg300=0.00 total=0\n", // no `some` line
+            "some avg60=0.30 avg300=0.00 total=0\n",            // no avg10 field
+            "some avg10=NaN avg60=0.00 total=0\n",
+            "some avg10=banana avg60=0.00 total=0\n",
+            "somewhere avg10=0.30\n", // prefix match must not be a substring one
+        ] {
+            assert_eq!(
+                parse_psi_some_avg10(body),
+                None,
+                "unrecognised PSI body must read unknown: {body:?}"
+            );
+        }
     }
 
     /// Load the shared cross-language battery fixture

@@ -205,6 +205,36 @@ mod tests {
         assert_eq!(v["samplerStale"], true);
     }
 
+    /// The served payload carries the sampler's omissions through untouched:
+    /// what `/v1/snapshot` puts on the socket is what was measured, with no
+    /// re-defaulting between the sampler and `Json` (#183).
+    #[tokio::test]
+    async fn snapshot_endpoint_serves_unmeasured_fields_as_absent_keys() {
+        let request = Request::builder()
+            .uri("/v1/snapshot")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        for (object, key) in [("cpu", "thermalState"), ("memory", "pressure")] {
+            assert!(
+                !v[object].as_object().unwrap().contains_key(key),
+                "{object}.{key} was not measured and must not be served: {v}"
+            );
+        }
+        assert_eq!(v["gpu"], serde_json::json!({}));
+        // …while the measured keys around them still arrive.
+        assert!(v["cpu"]["totalUsage"].is_number());
+        assert!(v["memory"]["usedGB"].is_number());
+    }
+
     #[test]
     fn constant_time_eq_matches_equal_slices() {
         assert!(constant_time_eq(b"abc123", b"abc123"));

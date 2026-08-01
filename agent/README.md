@@ -23,11 +23,11 @@ All endpoints require `Authorization: Bearer <token>`. Missing or wrong token �
 ```json
 {
   "timestamp": "2026-06-04T22:00:00Z",
-  "cpu": { "totalUsage": 37.5, "coreUsages": [40.0, 35.0], "model": "Apple M1 Max", "thermalState": 0 },
-  "memory": { "usedGB": 12.3, "totalGB": 32.0, "swapUsedGB": 0.5, "pressure": 0.0 },
+  "cpu": { "totalUsage": 37.5, "coreUsages": [40.0, 35.0], "model": "Intel(R) Core(TM) i7-8559U" },
+  "memory": { "usedGB": 12.3, "totalGB": 32.0, "swapUsedGB": 0.5, "pressure": 1.25 },
   "disk": { "readMBps": 1.2, "writeMBps": 0.3 },
   "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
-  "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 },
+  "gpu": {},
   "battery": null
 }
 ```
@@ -38,9 +38,28 @@ Notes:
   ~1s `sysinfo` refreshes by a background sampler. `/v1/snapshot` returns the
   latest sampled values.
 - Percentages (`totalUsage`, `coreUsages`) are `0–100`.
-- `thermalState` is `0` (nominal). `gpu` is all zeros. `battery` is `null` on
-  servers. These are intentionally defaulted; the keys are never omitted (except
-  `battery`, which is JSON `null`).
+- **Measured, or absent** (agent ≥ 0.3.0). A key is only present when this agent
+  actually sampled it, so `0.0` always means a *reading* of zero and never "we
+  had nothing to say". Consumers render an absent key as `—`.
+  - `pressure` is memory PSI (`some avg10` from `/proc/pressure/memory`,
+    already a 0–100 percentage). Omitted where that file doesn't exist —
+    macOS, or a kernel built without `CONFIG_PSI`.
+  - `thermalState` is **always omitted**. The contract's 0–3 ladder is macOS's
+    `ProcessInfo.ThermalState`; Linux exposes thermal zones in millidegrees, and
+    collapsing those into the ladder needs per-machine trip points this agent
+    doesn't know.
+  - `gpu` is **always `{}`** — `sysinfo` reports no GPU, so there is nothing to
+    measure.
+  - `battery` stays JSON `null` (not omitted) — the one optional the contract
+    deliberately keeps emitting.
+  - Before the first sample lands, `disk`, `network`, `gpu` are all `{}` and
+    `pressure` is absent: a rate needs two readings to diff. `/v1/health`'s
+    `samplerStale` is how you tell that placeholder from a live sample.
+  - Agents **before 0.3.0** sent `"thermalState": 0`, `"pressure": 0.0` and an
+    all-zero `gpu` on every host. Those literals are indistinguishable from
+    readings once on the wire, which is why they had to stop at the source
+    (#183); a consumer that still needs to decode them keeps working, since
+    every one of these keys is optional in both directions.
 - Memory has **no** `usagePercentage` key — the Swift side computes it.
 - `volumes` entries are `{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0, "fstype": "ext4" }`.
   `fstype` is lowercased and omitted (not `null`) when unknown. Transient, remote,
