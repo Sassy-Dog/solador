@@ -63,8 +63,8 @@ final class OpenClawProtocolTests: XCTestCase {
         XCTAssertEqual(frame["method"] as? String, "connect")
 
         let params = try XCTUnwrap(frame["params"] as? [String: Any])
-        XCTAssertEqual(params["minProtocol"] as? Int, 3)
-        XCTAssertEqual(params["maxProtocol"] as? Int, 3)
+        XCTAssertEqual(params["minProtocol"] as? Int, 4)
+        XCTAssertEqual(params["maxProtocol"] as? Int, 4)
         XCTAssertEqual(params["role"] as? String, "operator")
         XCTAssertEqual(params["scopes"] as? [String], ["operator.read", "operator.approvals", "operator.admin"])
         XCTAssertNotNil(params["auth"]) // present because token supplied
