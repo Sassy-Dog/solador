@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "pretest": "npm run fixtures",
-    "fixtures": "cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump ../../app/ui/sample.json && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-stale ../../app/ui/sample-stale.json && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-cockpit ../../app/ui/sample-cockpit.json && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-cockpit ../../app/ui/sample-cockpit-stacked.json --width 1000 && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-cockpit ../../app/ui/sample-cockpit-empty.json --hosts 0",
+    "fixtures": "cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump ../../app/ui/sample.json && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-stale ../../app/ui/sample-stale.json && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-cockpit ../../app/ui/sample-cockpit.json && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-cockpit ../../app/ui/sample-cockpit-stacked.json --width 1000 && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-cockpit ../../app/ui/sample-cockpit-empty.json --hosts 0 && cargo run --quiet -p devcanopy-app --manifest-path ../../Cargo.toml -- --dump-settings ../../app/ui/sample-settings.json",
     "test": "playwright test"
   },
   "devDependencies": { "@playwright/test": "^1.50.0" }

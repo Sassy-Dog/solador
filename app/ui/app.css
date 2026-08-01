@@ -5,6 +5,12 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 * { box-sizing: border-box; }
+/* A class selector out-specifies the UA stylesheet's `[hidden] {display:none}`,
+   so an element that gets its `display` from a class stays on screen while
+   carrying the attribute -- which is how a hidden Settings pane rendered over
+   the cockpit. This gives the attribute back its meaning for every element,
+   whatever else styles it. */
+[hidden] { display: none !important; }
 html, body {
   margin:0; background:#000; color:var(--ink); font-family:var(--mono);
   font-variant-numeric: tabular-nums; font-size:12px; line-height:1.45;
@@ -12,7 +18,9 @@ html, body {
 }
 body { padding:var(--cockpit-gap, 16px); }
 /* The Hosts panel's own heading. Text comes from Rust's panel table. */
-.panel-title { font-size:13px; font-weight:700; margin:0 0 var(--cockpit-gap, 16px); }
+.panel-title { font-size:13px; font-weight:700; margin:0; }
+.topbar { display:flex; align-items:center; gap:8px;
+  margin:0 0 var(--cockpit-gap, 16px); }
 /* Empty only when there is nothing to say — `hidden` is set from app.js, and
    an unstyled `[hidden]` is already display:none, so no rule is needed here. */
 .empty { color:var(--muted); margin:0 0 var(--cockpit-gap, 16px); }
@@ -93,3 +101,44 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .procs { display:flex; flex-direction:column; gap:6px; }
 .proc { display:flex; font-size:10px; }
 .proc .v { margin-left:auto; font-weight:700; color:var(--muted); }
+
+/* ---- Settings ----------------------------------------------------------
+   An in-app view, so it shares the cockpit's palette and type scale rather
+   than opening a differently-styled window. Every control below is created by
+   settings.js; nothing here may set a colour that carries meaning (green =
+   good, red = error) -- those still come from Rust, as they do on the cards. */
+.settings { display:flex; flex-direction:column; gap:var(--cockpit-gap, 16px); }
+.settings .status { font-size:10px; color:var(--muted); }
+.btn { font:inherit; font-size:11px; font-weight:700; color:var(--ink);
+  background:var(--panelAlt); border:1px solid var(--line); border-radius:6px;
+  padding:4px 10px; cursor:pointer; }
+.btn:hover:not(:disabled) { border-color:var(--green); }
+.btn:disabled { color:var(--muted); cursor:default; }
+.tabs { display:flex; flex-wrap:wrap; gap:6px; }
+.tab[data-active] { border-color:var(--green); color:var(--green); }
+.settings-body { display:flex; flex-direction:column; gap:var(--cockpit-gap, 16px); }
+.group { padding:14px 18px; background:var(--panel); border:1px solid var(--line);
+  border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
+.group-hdr { font-size:13px; font-weight:700; margin:0; }
+.field { display:flex; flex-direction:column; gap:3px; }
+.input { font:inherit; font-size:12px; color:var(--ink); background:var(--panelAlt);
+  border:1px solid var(--line); border-radius:6px; padding:5px 8px; max-width:520px; }
+.input:disabled { color:var(--muted); }
+.row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.stack { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.help { font-size:10px; color:var(--muted); margin:0; max-width:640px; }
+.dim { color:var(--muted); }
+.badge-ok { font-size:10px; font-weight:700; color:var(--green); }
+.badge-dim { font-size:10px; font-weight:700; color:var(--muted); }
+.host-row, .repo-row { display:flex; flex-direction:column; gap:6px;
+  padding:8px 0; border-top:1px solid var(--line); }
+.host-row:first-of-type, .repo-row:first-of-type { border-top:0; }
+.host-name, .slug { font-size:13px; font-weight:700; }
+.result { font-size:10px; color:var(--muted); }
+.hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }
+.hidden-row .mount { font-size:10px; font-weight:700; }
+.about-name { font-size:20px; font-weight:700; margin:0; }
+.about-tagline { font-size:13px; font-weight:700; margin:0; }
+.link-row { display:flex; gap:10px; font-size:11px; flex-wrap:wrap; }
+.link-row .link-label { font-weight:700; min-width:150px; }
+.link-row .link-url { color:var(--muted); user-select:text; }

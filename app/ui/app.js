@@ -15,6 +15,30 @@ const esc = (v) =>
   String(v).replace(/[&<>"']/g, (ch) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 
+/**
+ * The one way this frontend talks to Rust.
+ *
+ * `fixture` is the offline fallback (`cargo run -p devcanopy-app -- --dump*`):
+ * the same payload shape the command returns, so that path can't diverge from
+ * the real one. See app/README.md's smoke test for why every fixture must be
+ * deleted before exercising the IPC boundary by hand. A command with no
+ * fixture (every mutation) simply does nothing outside Tauri -- a settings
+ * edit has nowhere to go in a plain browser, and pretending otherwise would
+ * show a saved-looking form that saved nothing.
+ */
+const callRust = async (command, args, fixture) => {
+  if (window.__TAURI__) return await window.__TAURI__.core.invoke(command, args);
+  if (!fixture) return null;
+  return await (await fetch(fixture)).json();
+};
+
+// Set by settings.js. While the Settings view is up the cockpit is off-screen,
+// so re-rendering it would only measure a zero width; Rust keeps polling
+// regardless, so nothing is missed. settings.js calls `refreshCockpit()` on
+// close to repaint at the real width immediately rather than up to a tick late.
+let settingsOpen = false;
+let refreshCockpit = async () => {};
+
 const CHARTS = new Map();
 
 // A `style-src 'self'` CSP (no 'unsafe-inline') blocks `<style>` elements
@@ -264,6 +288,12 @@ function renderCockpit(p) {
   const hostsPanel = (p.panels || []).find((panel) => panel.id === "hosts");
   $("hostsTitle").textContent = hostsPanel ? hostsPanel.title : "";
 
+  // The Settings button's label is Rust's too, and it arrives here because the
+  // button has to exist before anything has asked for the settings payload.
+  const toggle = $("settingsToggle");
+  toggle.textContent = p.settingsLabel || "";
+  toggle.hidden = !p.settingsLabel;
+
   const emptyEl = $("emptyMsg");
   emptyEl.textContent = p.empty ? p.empty.message : "";
   emptyEl.hidden = !p.empty;
@@ -306,16 +336,10 @@ window.__DEVCANOPY_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.si
   // an unmeasured 0 stacks there rather than assuming wide.
   const gridWidth = () => $("cockpit").clientWidth;
 
-  const load = async () =>
-    window.__TAURI__
-      ? await window.__TAURI__.core.invoke("cockpit", { width: gridWidth() })
-      // Offline fixture (`cargo run -p devcanopy-app -- --dump`): the same
-      // payload shape the command returns, so this path can't diverge from
-      // the real one. See app/README.md's smoke test for why it must be
-      // deleted before exercising the IPC boundary by hand.
-      : await (await fetch("sample.json")).json();
+  const poll = async () =>
+    renderCockpit(await callRust("cockpit", { width: gridWidth() }, "sample.json"));
 
-  const poll = async () => renderCockpit(await load());
+  refreshCockpit = async () => { try { await poll(); } catch {} };
 
   try { await poll(); } catch (e) {
     // CSSOM setters, not a `style=""` attribute: this string embeds `esc(e)`
@@ -327,14 +351,14 @@ window.__DEVCANOPY_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.si
     pre.style.padding = "20px";
   }
   if (window.__TAURI__) {
-    setInterval(async () => { try { await poll(); } catch {} }, 1000);
+    setInterval(async () => { if (!settingsOpen) await refreshCockpit(); }, 1000);
     // A resize changes the width Rust decides the column count from, so ask
     // again rather than waiting up to a full poll interval to reflow.
     let pending = false;
     window.addEventListener("resize", () => {
-      if (pending) return;
+      if (pending || settingsOpen) return;
       pending = true;
-      requestAnimationFrame(async () => { pending = false; try { await poll(); } catch {} });
+      requestAnimationFrame(async () => { pending = false; await refreshCockpit(); });
     });
   }
 })();
