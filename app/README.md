@@ -11,14 +11,18 @@ app/
 ├── src-tauri/            # Rust shell
 │   ├── src/main.rs       # per-host poll tasks + the `#[tauri::command]` surface
 │   ├── src/settings.rs   # the Settings view-model and its pure rules
+│   ├── src/panel.rs      # the refresh-health footer every panel shares
 │   ├── src/containers/   # the Containers/VMs panel: local runtimes, grouping,
 │   │                     #   presence, and every string it paints
+│   ├── src/github/       # the Repos + GitHub Runners panels, and the local
+│   │                     #   git scan behind their LOCAL/WT columns
 │   ├── capabilities/     # default.json — the webview's ACL
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
     ├── app.js            # the cockpit
     ├── settings.js       # the Settings view
-    └── containers.js     # the Containers/VMs panel
+    ├── containers.js     # the Containers/VMs panel
+    └── github.js         # the Repos + GitHub Runners panels
 ```
 
 Every string and colour the frontend paints comes from Rust
@@ -106,6 +110,109 @@ store has never carried rules: a deliberately emptied list stays empty.
 **Editing the rules is not in this slice** — Swift keeps that editor in
 Settings → Hosts, and the engine ships before its UI.
 
+## The `repos` and `runners` commands
+
+The CI-visibility half of the cockpit, both fed by one poll pass over
+[`crates/github`](../crates/github) and both on the store's
+**`refresh_interval_secs`** — the first consumer of that preference in this
+shell.
+
+```js
+await window.__TAURI__.core.invoke("repos");
+await window.__TAURI__.core.invoke("runners");
+```
+
+```jsonc
+// repos
+{
+  "id": "ghWorkflows", "title": "Repos",
+  "trailing": "1 needs approval · 1 running · 1 failed · 1 unreadable",
+  "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
+  "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
+  "rows": [{
+    "repo": "Sassy-Dog/velovate", "name": "velovate",
+    "dotColor": "#e05a4f", "blinking": false,
+    "cells": [{"text": "18", "color": "#cfe9d8", "width": 52.0}, …]
+  }],
+  "health": {"text": "✓ 4/6 healthy", "color": "#33d17a"}
+}
+
+// runners
+{
+  "id": "ghRunners", "title": "GitHub Runners",
+  "trailing": "3/4 · 1 missing",
+  "message": null,                       // or the connect / "loading runners…" line
+  "stats": [{"label": "ONLINE", "value": "3/4", "color": "#33d17a"}, …],
+  "chips": ["macOS 2/2", "Linux 1/2"],   // only for a platform the org actually has
+  "rows": [{"kind": "absent", "name": "ubu-1", "os": "LINUX",
+            "dotColor": "#e05a4f", "status": "missing 12m", "statusColor": "#e05a4f"}],
+  "footer": null                         // or {"text": "⚠ … · last ok 4m ago", "color": …}
+}
+```
+
+**Unknown is not zero, on every count cell.** `"—"` muted is "we could not find
+out" — a failed fetch, a PAT missing the Issues or Pull requests scope, a repo
+not checked out on this machine. `"0"` dimmed is "there are none". They are two
+different Rust decisions arriving as two different `{text, color}` pairs, and
+the frontend never derives either from a number: putting that distinction in JS
+would put it where no Rust test can see it. It is the same rule the `/issues`
+cursor-pagination guard in `crates/github` exists to protect.
+
+The **column widths are Rust's**, in points, for the same reason the host
+grid's column count is: seven fixed numeric columns summing to 312pt is what
+`PanelKind::GhWorkflows.min_width` (560pt) is built on, and a width re-typed in
+CSS is a second implementation free to disagree with the breakpoint.
+
+**LOCAL and WT come from this machine**, not from GitHub:
+[`src/github/git.rs`](src-tauri/src/github/git.rs) walks `~/Repos` three levels
+deep, treats a directory holding a `.git` entry as a repo root and does not
+descend into it (otherwise this repo's own `.claude/worktrees/…` checkouts
+would each register as a second repo of the same name), then spawns
+`git for-each-ref` and `git worktree list --porcelain` per repo. The join to a
+tracked slug is `PortfolioRepos.normalize` — lowercase, letters and digits only
+— which is what lets the slug `tailored-tip` find the folder `tailoredtip`. A
+git invocation that fails yields `None`, i.e. `"—"`. Swift's `localBranchCount`
+returns `0` there; that is a fabricated number and this deliberately does not
+copy it. The scan root is a parameter, so the tests drive real temporary
+repositories rather than a mock.
+
+**The runner roster is the memory that makes an absence visible.** The org's
+ephemeral runners de-register between jobs, so GitHub's registered list can
+never say "mac-s2 *should* exist". Every name it has shown us is remembered in
+`store.json`'s new `runner_roster` field (the Rust counterpart of the Swift
+app's `ghRunnerRoster` UserDefaults blob), with a 24h age-out for rotated
+names. An absent name renders amber `recycling 40s` inside the 300s grace and
+red `missing 12m` past it — and those clocks are folded forward **only by a
+successful fetch**, so an hour of GitHub being unreachable ages nothing. The
+panel keeps its last-good rows through a failure and puts the reason in the
+footer (`staleAfter: 150s`).
+
+**Applied without a restart.** The token and the portfolio are re-read on every
+pass, and `github_wake` cuts the sleep short after a Save, a Clear, a portfolio
+edit or a new refresh interval — shortening a 5-minute cadence to 30 seconds
+and then waiting five minutes for it to take is indistinguishable from the
+setting doing nothing. This is the periodic-service counterpart to
+`reload_hosts`, which reconciles tasks instead.
+
+Two things are deliberately **not** in this slice, both noted rather than
+hidden:
+
+- **Tapping a row does not open GitHub.** The Swift panel's `onTapGesture` calls
+  `NSWorkspace.open`; the equivalent here needs the opener plugin granted to
+  `capabilities/default.json`, which widens the one seam with no automated
+  coverage ([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)). No URL
+  is carried in the payload either — a field nothing can act on is a field that
+  reads as a missing feature. Same reasoning as the About links.
+- **No needs-approval notification, and no "Forget" on an absent runner.** The
+  first is platform notification wiring (its own concern); the second is a
+  right-click context menu over a `roster::forget` that `crates/github` already
+  implements. A remembered name still ages out on its own after 24h.
+
+Both panels stack full-width below the host grid, as Containers does. The
+shipped Swift layout puts Repos and Runners side by side in one row, and
+`viewmodel::cockpit::reflow` already computes that — wiring the multi-panel row
+is one change that moves all four panels at once, not a piece of this slice.
+
 Two counts are deliberately not the same number: the rollup counts *every*
 container the runtimes reported, including the ones rules hid or collapsed (so
 cruft building up stays visible), while `· N missing` counts exactly what the
@@ -154,6 +261,10 @@ empty `permissions` list.
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio |
 | `settings_save_secret` / `settings_clear_secret` | one credential, by key (`github`/`neon`/`sentry`/`azure`) |
 
+The portfolio, the refresh interval and the `github` credential all wake the
+GitHub poll loop as well as saving — see [the `repos` and `runners`
+commands](#the-repos-and-runners-commands).
+
 Every mutation answers in one shape — `{status, settings}` — and the frontend
 re-renders from the `settings` it gets back rather than patching its own copy,
 so it can never show an edit that failed to save.
@@ -171,12 +282,15 @@ reload entirely, mirroring the Swift view's `applyHiddenMounts()` vs `reload()`.
 
 Two gaps, deliberate and worth knowing:
 
-- **General is stored, not yet consumed.** The shell polls every host once a
-  second because one history sample is one fixed time slice, and it has none of
-  the periodic services the refresh interval governs in the Swift app; the core
-  row span and host-overflow mode are read by `viewmodel`'s card and cockpit
-  functions from their own constants. The preferences persist (same file, same
-  keys, same laundering rules as Swift); wiring them through is the next slice.
+- **The refresh interval is consumed; the other two General preferences are
+  not.** `refresh_interval_secs` is the GitHub panels' cadence, and changing it
+  applies immediately (see below). The host poll loop is deliberately *not* on
+  it — it stays at 1s because one history sample is one fixed time slice
+  (`PX_PER_SAMPLE`), so that cadence is part of the charts' time axis rather
+  than a preference. The core row span and host-overflow mode are still read by
+  `viewmodel`'s card and cockpit functions from their own constants; they
+  persist (same file, same keys, same laundering rules as Swift) and nothing
+  reads the stored value yet.
 - **About's version is hard-coded** to the crate version, not the CalVer the
   Swift app derives from git ([#15](https://github.com/Sassy-Dog/devcanopy/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
@@ -226,6 +340,9 @@ cargo run -p devcanopy-app -- --dump-cockpit sample-cockpit.json # three hosts: 
 cargo run -p devcanopy-app -- --dump-settings sample-settings.json # the Settings surface
 cargo run -p devcanopy-app -- --dump-containers sample-containers.json # the Containers panel
 #   …plus `--empty`, which dumps the no-runtimes state with a failed-tool footer.
+cargo run -p devcanopy-app -- --dump-repos sample-repos.json         # the Repos panel
+cargo run -p devcanopy-app -- --dump-runners sample-runners.json     # the Runners panel
+#   …both take `--empty`, which dumps the no-credential state.
 ```
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
@@ -236,7 +353,12 @@ byte-stable across regenerations and covers both sides of every badge.
 **fixed** timestamp (a relative age like "recycling 40s" would otherwise drift
 on every dump and no test could assert one), covering a present container, a
 stopped one, a VM recycling, one missing past grace, and a collapsed group on a
-remote section. The rest
+remote section. `--dump-repos` / `--dump-runners` are the same idea again, and
+their state is asserted by a Rust test (`the_fixture_covers_every_rendering_
+the_panels_have`) precisely so the Playwright suite cannot pass against a
+payload that quietly lost the case it claims to exercise — it carries an
+unknown count beside a genuine zero, an approval gate, a failing repo, an
+unreachable one, and remembered runners in both absence states. The rest
 are full `cockpit` payloads — the same shape the command returns, so
 the offline path cannot diverge from the real one — built from the committed
 agent-contract fixture, so they reproduce on a clean checkout with no agent
@@ -359,6 +481,35 @@ So this is a manual step. Run it after changing anything under
    successful `invoke("containers")`. The first pass can take up to 10s (the
    panel's cadence), so give it a tick before reading it as broken.
 
+7. **Read the terminal once more** for the two GitHub panels' own one-line
+   signals (they print at load, alongside the containers one):
+
+   ```
+   repos: first frontend request (6 repo row(s))
+   runners: first frontend request (4 runner row(s))
+   ```
+
+   **Zero rows on both is still a pass for the boundary** — with no GitHub
+   token in the scratch keychain both panels render `connect a GitHub token in
+   Settings`, and that sentence is `github::repos_view`'s with no path to the
+   DOM except a successful `invoke`. What the counts add is the *second* thing:
+   a non-zero repo count proves the loop read the seeded portfolio out of the
+   real store rather than a default, exactly as step 5's counts do.
+
+   To exercise the populated path, save a fine-grained PAT under Settings →
+   GitHub (Actions, Contents, Issues and Pull requests, all read-only, plus org
+   self-hosted runners read for the Runners panel). It applies without a
+   relaunch — `settings_save_secret` wakes the loop — so the panels should fill
+   within a few seconds rather than on the next refresh interval, and that
+   immediacy is itself the check on `github_wake`. Then **Clear** it and watch
+   both panels drop back to the connect line just as fast.
+
+   The Repos table is where the "—"-vs-`0` rule is visible: a repo not checked
+   out under `~/Repos` shows `—` in LOCAL and WT while one that is shows real
+   counts, and neither ever shows a zero it did not read. A PAT missing the
+   Issues scope shows `—` under ISSUES with the repo still green — a missing
+   scope is not an outage.
+
 ### Pass
 
 The terminal prints the `cockpit: first frontend request …` line above, and the
@@ -393,6 +544,12 @@ third time: `"Containers / VMs"`, `"no container runtimes"` and every count are
 `containers::view`'s, reachable only through `invoke("containers")`. An empty
 machine passes; a missing panel does not.
 
+Step 7 passes when both `repos:` and `runners: first frontend request …` print
+and both panels carry a heading plus *either* their table or the connect-a-token
+sentence — the same argument a fourth and fifth time. A missing panel does not
+pass: both stay hidden until a payload arrives, deliberately, so a broken
+boundary cannot masquerade as an unconfigured one.
+
 Seeding a second host — run once more with a different address, against the same
 `DEVCANOPY_STORE_DIR` — is the multi-card version of the same check: two cards,
 side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
@@ -410,6 +567,9 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or `app.js` painted a cockpit payload with no `settingsLabel`. Regenerate the fixtures and check the payload shape, not the ACL. |
 | The cards paint but there is no **Containers / VMs** panel at all, and `containers: first frontend request …` never prints. | The containers half of the boundary is broken: an unregistered `containers` command, or a script error in `containers.js`. The panel stays hidden until a payload arrives — deliberately, so a broken boundary cannot masquerade as an idle machine. Check the webview console. |
 | The panel renders but every section says `no containers` on a machine that is definitely running some. | The boundary is fine; the *discovery* is not. The tools are resolved by absolute path (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) — a docker installed anywhere else is invisible. A failing tool would instead name itself in the footer (`⚠ couldn't read docker`). |
+| The **Repos** or **GitHub Runners** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `repos`/`runners` command, or a script error in `github.js`. Both panels stay hidden until a payload arrives, so this cannot be mistaken for "no token configured" — that state renders a visible panel with one sentence in it. Check the webview console. |
+| Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
+| The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. |
 
 For the underlying error, open the webview console: right-click in the window →
 **Inspect Element** (devtools are enabled in debug builds). An ACL rejection names
@@ -425,6 +585,7 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
+| 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/Sassy-Dog/devcanopy/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Settings surface + `App` state restructure ([#163](https://github.com/Sassy-Dog/devcanopy/issues/163)) | **Pass.** Fixtures removed, scratch store, `DEVCANOPY_SEED_HOST="smoke-…\|100.87.202.125\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport still carry the call after `manage()` changed from `Cockpit` to `App` and the handler list grew from one command to fifteen. | **Not performed**, and neither was **step 5** — both need a click on a Mac someone else is working on. The settings half of the boundary is therefore *documented, not verified*: `settings: first frontend request …` has never been observed. Worth ten seconds from anyone who launches this next. |
 | 2026-07-31 | `snapshot` → `cockpit`, N-card grid ([#157](https://github.com/Sassy-Dog/devcanopy/issues/157)) | **Pass.** Fixtures removed, scratch store, `DEVCANOPY_SEED_HOST="smoke-233344\|100.87.202.125\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport all carried the call, and `width` arrived. App still up when the run ended. Negative control run immediately before (command renamed in `app.js`, rebuilt) printed nothing, so the signal discriminates. | **Not performed** — the Mac's screen was locked (`CGSSessionScreenIsLocked`), which makes `screencapture` return black frames, and no Accessibility grant was available to read the window's text. Worth a human glance next time someone has the screen in front of them. |
 

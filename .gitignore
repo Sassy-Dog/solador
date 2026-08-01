@@ -113,6 +113,10 @@ app/ui/sample-cockpit-empty.json
 app/ui/sample-settings.json
 app/ui/sample-containers.json
 app/ui/sample-containers-empty.json
+app/ui/sample-repos.json
+app/ui/sample-repos-empty.json
+app/ui/sample-runners.json
+app/ui/sample-runners-empty.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/

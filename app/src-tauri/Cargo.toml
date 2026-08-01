@@ -15,6 +15,16 @@ agentclient = { path = "../../crates/agentclient" }
 # crate reaches the OS credential store through `store::KeyringStore`, so
 # there is one spelling of the service/account naming, not two.
 devcanopy-store = { path = "../../crates/store" }
+# The Repos / GitHub Runners panels' data layer: the REST client plus the pure
+# workflow-health, runner and roster mappings. This crate is the view side.
+devcanopy-github = { path = "../../crates/github" }
+# The GitHub clocks are `DateTime<Utc>` (run start times, roster sightings), so
+# the panel layer speaks the same type rather than converting at every call.
+# Same feature set as crates/github's, so one chrono resolves for the workspace.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+# Locating `~/Repos` for the local branch/worktree scan. Already the store's
+# dependency for the platform config dir — a new edge, not a new package.
+dirs = { workspace = true }
 # Host ids arrive from the webview as strings; this parses them back into the
 # type `store::Host` keys on. Same major as the store's own, so one uuid
 # resolves for the workspace.

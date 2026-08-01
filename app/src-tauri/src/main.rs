@@ -11,9 +11,12 @@ use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pendin
 use viewmodel::cockpit::{host_columns, panel_table, HOST_CARD_MIN_WIDTH, SPACING};
 
 mod containers;
+mod github;
+mod panel;
 mod settings;
 
 use containers::ContainersState;
+use github::GitHubState;
 use settings::{SecretField, StoredSecrets};
 
 /// How often each host is polled. Matches the Swift side's
@@ -100,6 +103,20 @@ struct App {
     /// takes them one at a time, in sequence, so there is no order to get
     /// wrong between them.
     containers: Mutex<ContainersState>,
+    /// The Repos + GitHub Runners panels' state, on the store's
+    /// `refresh_interval_secs` cadence.
+    ///
+    /// One lock for both panels because they share a credential and a poll
+    /// pass; like the containers lock, it is never held while the store's is.
+    github: Mutex<GitHubState>,
+    /// Cuts the GitHub loop's sleep short.
+    ///
+    /// This is what makes "applies without a restart" true for a *periodic*
+    /// service, where reconciling tasks (as [`reload_hosts`] does for hosts) is
+    /// not the mechanism: saving a token, clearing one, editing the portfolio
+    /// or picking a new refresh interval all wake the loop instead of waiting
+    /// out a cadence that can be five minutes long.
+    github_wake: tokio::sync::Notify,
     /// Where poll tasks are spawned. A `Handle`, not the `Runtime`: the
     /// runtime itself stays owned by `main`, so it can never be dropped from
     /// inside a command (dropping a runtime from an async context panics).
@@ -542,6 +559,174 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
     payload
 }
 
+// MARK: the Repos + GitHub Runners panels
+//
+// One loop for both, because they share a credential and a cadence: the token
+// that authenticates one authenticates the other, and a single pass fills both.
+// This is the shell's **first consumer of `refresh_interval_secs`** — until
+// now that preference persisted and nothing read it.
+
+/// One pass over every GitHub source: each enabled repo's health, this
+/// machine's git checkouts, and the org's self-hosted runners.
+///
+/// No lock is ever held across an `await`; each is taken, used and dropped, in
+/// sequence, exactly as [`poll_containers`] does.
+async fn poll_github(app: &Arc<App>) {
+    // Re-read every pass rather than captured at startup: that is what makes a
+    // Save or Clear in Settings apply without a relaunch.
+    let token = app
+        .credentials
+        .secret(SecretKey::GitHubAccessToken)
+        .unwrap_or_else(|e| {
+            eprintln!("could not read the GitHub token: {e}");
+            None
+        })
+        .unwrap_or_default();
+    if token.is_empty() {
+        app.github
+            .lock()
+            .expect("github state poisoned")
+            .apply_unauthenticated();
+        return;
+    }
+
+    let repos: Vec<(String, Option<Vec<String>>)> = {
+        let store = app.store.lock().expect("store poisoned");
+        store
+            .repos()
+            .iter()
+            .filter(|repo| repo.enabled)
+            .map(|repo| (repo.slug.clone(), repo.watched_workflows.clone()))
+            .collect()
+    };
+    let roster = {
+        let store = app.store.lock().expect("store poisoned");
+        github::roster_from_records(store.runner_roster())
+    };
+
+    // Walking `~/Repos` and spawning `git` twice per repo blocks; keep it off
+    // the async executor, exactly as `docker ps` is.
+    let local = tokio::task::spawn_blocking(|| {
+        github::git::scan(&github::git::default_roots(), github::git::MAX_DEPTH)
+    })
+    .await
+    .map_err(|e| eprintln!("local git scan failed: {e}"))
+    .ok();
+
+    let client = github::GitHubClient::new(token);
+    let now = github::now_utc();
+    // Sequential per repo, matching `GHWorkflowsService.refresh()`: each
+    // `repo_health` already fires its three side counts concurrently, so a
+    // six-repo portfolio is 24 requests either way — doing them all at once
+    // would only spend the rate-limit budget faster.
+    let mut health = Vec::with_capacity(repos.len());
+    for (slug, watched) in &repos {
+        health.push(client.repo_health(slug, watched.as_deref(), now).await);
+    }
+    // The roster is only ever advanced by this call, and it only returns `Ok`
+    // on a successful fetch — so a failing GitHub leaves every absence clock
+    // frozen at the last successful poll instead of ageing a healthy runner
+    // into a red alarm.
+    let update = client
+        .runner_roster(github::ORG, &roster, now, github::RUNNER_GRACE_SECS)
+        .await;
+
+    {
+        let mut state = app.github.lock().expect("github state poisoned");
+        state.apply_repos(health);
+        if let Some(local) = local {
+            state.apply_local(local);
+        }
+        match &update {
+            Ok(update) => state.apply_runners(update, panel::now_unix()),
+            // The transport error is logged, not shown: a 403 for a missing
+            // scope is what this almost always is, and "HTTP 403" sends the
+            // operator to check the network instead of the PAT.
+            Err(e) => {
+                eprintln!("org runners fetch failed: {e}");
+                state.apply_runners_error(github::RUNNERS_ERROR_MESSAGE);
+            }
+        }
+    }
+
+    // Persisted only on success, and only when it actually changed — a steady
+    // org produces an identical roster poll after poll, and rewriting the store
+    // file every minute for no change is a write nobody asked for.
+    if let Ok(update) = &update {
+        let mut store = app.store.lock().expect("store poisoned");
+        if store.set_runner_roster(github::roster_to_records(&update.roster)) {
+            if let Err(e) = store.save() {
+                eprintln!("could not persist the runner roster: {e}");
+            }
+        }
+    }
+}
+
+/// The GitHub panels' poll loop, on the store's `refresh_interval_secs`.
+///
+/// The interval is re-read after every pass rather than baked into a
+/// `tokio::time::interval`, and the sleep is interruptible — together that is
+/// what makes a Settings change apply *now* rather than up to five minutes
+/// later, which is the periodic-service equivalent of [`reload_hosts`].
+async fn github_loop(app: Arc<App>) {
+    loop {
+        poll_github(&app).await;
+        let secs = {
+            let store = app.store.lock().expect("store poisoned");
+            u64::from(store.settings().refresh_interval_secs)
+        };
+        tokio::select! {
+            () = tokio::time::sleep(std::time::Duration::from_secs(secs)) => {}
+            // `notify_one`, not `notify_waiters`: a wake that lands while a
+            // pass is still running stores a permit and fires the moment this
+            // sleep begins, instead of being dropped for having no listener.
+            () = app.github_wake.notified() => {}
+        }
+    }
+}
+
+/// Cuts the GitHub loop's sleep short after an edit that changes what it should
+/// fetch, or how often.
+fn wake_github(app: &App) {
+    app.github_wake.notify_one();
+}
+
+/// Guards the Repos panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_REPOS_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn repos(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = {
+        let panel = state.github.lock().expect("github state poisoned");
+        github::repos_view(&panel, github::now_utc())
+    };
+    // The same terminal-side signal `cockpit`, `settings_view` and
+    // `containers` print, for the same reason: the IPC boundary has no
+    // automated coverage (#123), and every way it breaks from outside Rust
+    // looks identical from in here — this function never runs.
+    FIRST_REPOS_REQUEST.call_once(|| {
+        let rows = payload["rows"].as_array().map_or(0, Vec::len);
+        eprintln!("repos: first frontend request ({rows} repo row(s))");
+    });
+    payload
+}
+
+/// Guards the Runners panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_RUNNERS_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn runners(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = {
+        let panel = state.github.lock().expect("github state poisoned");
+        github::runners_view(&panel, panel::now_unix())
+    };
+    FIRST_RUNNERS_REQUEST.call_once(|| {
+        let rows = payload["rows"].as_array().map_or(0, Vec::len);
+        eprintln!("runners: first frontend request ({rows} runner row(s))");
+    });
+    payload
+}
+
 /// Which credentials currently hold a value — the "stored" badges, and nothing
 /// else. A read failure reads as "not stored": the badge is a hint, and an
 /// unreadable keychain must not take the Settings window down with it.
@@ -675,6 +860,11 @@ fn settings_save_general(
         current.host_overflow_mode = general.host_overflow_mode;
         save_status(&store, "Saved.")
     };
+    // The refresh interval is the GitHub loop's cadence, so picking a new one
+    // has to reach it before the *old* one elapses — shortening 5 minutes to 30
+    // seconds and then waiting five minutes for it to take is indistinguishable
+    // from the setting doing nothing.
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -872,6 +1062,9 @@ fn settings_add_repo(slug: String, state: tauri::State<'_, Arc<App>>) -> Value {
             None => Some("Skipped — invalid or already tracked.".to_owned()),
         }
     };
+    // The portfolio IS the Repos panel's row set, so an edit that does not
+    // reach the loop leaves the panel describing the previous portfolio.
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -884,6 +1077,7 @@ fn settings_remove_repo(slug: String, state: tauri::State<'_, Arc<App>>) -> Valu
             None => Some("Skipped — not tracked.".to_owned()),
         }
     };
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -903,6 +1097,7 @@ fn settings_set_repo_enabled(
             None => Some("Skipped — not tracked.".to_owned()),
         }
     };
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -922,6 +1117,7 @@ fn settings_set_repo_workflows(
             None => Some("Skipped — not tracked.".to_owned()),
         }
     };
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -945,6 +1141,11 @@ fn settings_save_secret(key: String, value: String, state: tauri::State<'_, Arc<
             "Failed to save — the credential store rejected the write.".to_owned()
         }
     };
+    // Only the GitHub token feeds the panels below; waking on a Neon save
+    // would spend a whole GitHub poll on a credential it has no use for.
+    if field == SecretField::GitHub {
+        wake_github(&state);
+    }
     settings_response(&state, Some(status))
 }
 
@@ -960,6 +1161,12 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
             "Failed to clear — the credential store rejected the delete.".to_owned()
         }
     };
+    // Clearing matters as much as saving: the panels must drop back to
+    // "connect a GitHub token in Settings" now, not on the next cadence, or a
+    // revoked token keeps painting data it can no longer refresh.
+    if field == SecretField::GitHub {
+        wake_github(&state);
+    }
     settings_response(&state, Some(status))
 }
 
@@ -1088,6 +1295,29 @@ fn dump_containers(empty: bool) -> Value {
     containers::view(&state, &rules, &presence, NOW)
 }
 
+/// The Repos and GitHub Runners panels as fixtures.
+///
+/// Built from [`github::fixture_state`] at a **fixed** `now`, for the same
+/// reason `--dump-containers` is: every relative age in these payloads
+/// (`3h37m` running, `recycling 40s`) would otherwise drift on every
+/// regeneration and no test could assert one. `--empty` dumps the
+/// no-credential state, which is the other half of both panels' rendering.
+fn dump_github(empty: bool, runners: bool) -> Value {
+    // 2026-05-29T12:05:00Z — the same instant `crates/github`'s own tests use
+    // as "now", so a fixture and a unit test can be read side by side.
+    let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
+    let state = if empty {
+        github::GitHubState::new()
+    } else {
+        github::fixture_state(now)
+    };
+    if runners {
+        github::runners_view(&state, u64::try_from(now.timestamp()).unwrap_or(0))
+    } else {
+        github::repos_view(&state, now)
+    }
+}
+
 /// Returns the path argument following `flag` if `flag` is present, falling
 /// back to `default` when the flag is given with no path.
 fn dump_flag_path(args: &[String], flag: &str, default: &str) -> Option<String> {
@@ -1156,6 +1386,15 @@ fn run_dump(args: &[String]) -> bool {
             &path,
             &dump_containers(args.iter().any(|arg| arg == "--empty")),
         );
+        return true;
+    }
+    let empty = args.iter().any(|arg| arg == "--empty");
+    if let Some(path) = dump_flag_path(args, "--dump-repos", "sample-repos.json") {
+        write_json(&path, &dump_github(empty, false));
+        return true;
+    }
+    if let Some(path) = dump_flag_path(args, "--dump-runners", "sample-runners.json") {
+        write_json(&path, &dump_github(empty, true));
         return true;
     }
     false
@@ -1291,6 +1530,8 @@ fn main() {
         credentials: Box::new(credentials),
         hosts: Mutex::new(Vec::new()),
         containers: Mutex::new(ContainersState::new()),
+        github: Mutex::new(GitHubState::new()),
+        github_wake: tokio::sync::Notify::new(),
         runtime: rt.handle().clone(),
     });
     // One task per host: an unreachable host's 5s client timeout must not hold
@@ -1301,12 +1542,18 @@ fn main() {
     // rather than owning one, so a host added in Settings joins it on the next
     // tick with no reload of its own.
     rt.spawn(containers_loop(Arc::clone(&app)));
+    // The GitHub panels run on the store's refresh interval and read the
+    // portfolio and the token on every pass, so an edit in Settings joins them
+    // on the next pass — which `wake_github` makes immediate.
+    rt.spawn(github_loop(Arc::clone(&app)));
 
     tauri::Builder::default()
         .manage(Arc::clone(&app))
         .invoke_handler(tauri::generate_handler![
             cockpit,
             containers,
+            repos,
+            runners,
             settings_view,
             settings_save_general,
             settings_save_providers,

@@ -49,6 +49,34 @@ impl RunnerOs {
         }
     }
 
+    /// The **persisted** spelling — the Swift `RunnerOS` raw value, and what
+    /// the `Serialize`/`Deserialize` impls above write.
+    ///
+    /// Deliberately not [`RunnerOs::label`]: that is display text (`"Linux"`,
+    /// `"Other"`) and this is a storage format (`"linux"`, `"other"`). They
+    /// differ for two of the three cases, and a roster written with the display
+    /// spelling would read back as `Other` on every entry.
+    #[must_use]
+    pub const fn as_raw(self) -> &'static str {
+        match self {
+            RunnerOs::MacOs => "macOS",
+            RunnerOs::Linux => "linux",
+            RunnerOs::Other => "other",
+        }
+    }
+
+    /// Inverse of [`RunnerOs::as_raw`]. An unrecognised value reads as
+    /// [`RunnerOs::Other`] rather than failing the whole roster: one entry
+    /// written by a newer build must not cost us every remembered runner.
+    #[must_use]
+    pub fn from_raw(raw: &str) -> Self {
+        match raw {
+            "macOS" => RunnerOs::MacOs,
+            "linux" => RunnerOs::Linux,
+            _ => RunnerOs::Other,
+        }
+    }
+
     /// Panel display order: macOS first, then Linux, then everything else.
     #[must_use]
     pub fn rank(self) -> u8 {
@@ -270,5 +298,28 @@ mod tests {
             serde_json::to_string(&RunnerOs::Other).expect("encode"),
             "\"other\""
         );
+    }
+
+    /// `as_raw` IS the serde spelling — asserted against `serde_json` rather
+    /// than restated, so a `#[serde(rename)]` edited on one side and not the
+    /// other fails here instead of silently splitting the stored format in two.
+    #[test]
+    fn as_raw_matches_the_serialised_spelling() {
+        for os in [RunnerOs::MacOs, RunnerOs::Linux, RunnerOs::Other] {
+            let encoded = serde_json::to_string(&os).expect("encode");
+            assert_eq!(encoded, format!("\"{}\"", os.as_raw()), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn from_raw_round_trips_and_tolerates_the_unknown() {
+        for os in [RunnerOs::MacOs, RunnerOs::Linux, RunnerOs::Other] {
+            assert_eq!(RunnerOs::from_raw(os.as_raw()), os);
+        }
+        // An entry a newer build wrote must not cost us the whole roster.
+        assert_eq!(RunnerOs::from_raw("freebsd"), RunnerOs::Other);
+        // The display spelling is NOT the stored one, and must not sneak in as
+        // a second accepted value.
+        assert_eq!(RunnerOs::from_raw("Linux"), RunnerOs::Other);
     }
 }
