@@ -36,19 +36,29 @@ pub fn memory_label(mb: f64) -> String {
     }
 }
 
+/// "12s" / "3m" / "1h" / "2d" — one unit, largest that fits.
+///
+/// The ladder Swift spells twice: `PanelStatusFooter.relative` adds " ago" to
+/// it, `Presence.duration` uses it bare ("recycling 40s"). One definition here,
+/// so a panel footer and a presence row can never disagree about where a
+/// minute becomes an hour.
+pub fn duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
 /// "12s ago" / "3m ago" / "1h ago" / "2d ago" — same bucket boundaries as
 /// `PanelStatusFooter.relative` (Swift), so a stale reading reads the same
 /// way here as it does in the shipped app.
 pub fn relative_age(secs: u64) -> String {
-    if secs < 60 {
-        format!("{secs}s ago")
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86_400)
-    }
+    format!("{} ago", duration(secs))
 }
 
 #[cfg(test)]
@@ -77,6 +87,17 @@ mod tests {
     fn memory_label_switches_unit_at_1024_mb() {
         assert_eq!(memory_label(612.0), "612 MB");
         assert_eq!(memory_label(2150.0), "2.1 GB");
+    }
+
+    #[test]
+    fn duration_is_relative_age_without_the_suffix() {
+        for secs in [0, 59, 60, 3599, 3600, 86_399, 86_400, 200_000] {
+            assert_eq!(relative_age(secs), format!("{} ago", duration(secs)));
+        }
+        assert_eq!(duration(40), "40s");
+        assert_eq!(duration(720), "12m");
+        assert_eq!(duration(7_200), "2h");
+        assert_eq!(duration(200_000), "2d");
     }
 
     #[test]

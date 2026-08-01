@@ -102,6 +102,32 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .proc { display:flex; font-size:10px; }
 .proc .v { margin-left:auto; font-weight:700; color:var(--muted); }
 
+/* ---- Cockpit panels -----------------------------------------------------
+   A panel is a card of rows rather than charts, so it shares the card's frame
+   and nothing else. Nothing here may set a colour that carries meaning (green
+   = running, amber = recycling, red = missing) -- those arrive from Rust and
+   are applied via CSSOM, exactly as the host cards' do. */
+.panel { margin-top:var(--cockpit-gap, 16px); padding:18px; background:var(--panel);
+  border:1px solid var(--line); border-radius:12px; display:flex;
+  flex-direction:column; gap:10px; min-width:0; }
+.panel-hdr { display:flex; align-items:baseline; gap:8px; }
+.panel-trailing { font-size:10px; color:var(--muted); white-space:nowrap; }
+.panel-body { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.panel-footer { font-size:9px; font-weight:700; margin:0; }
+.cont-section { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.cont-empty { font-size:10px; color:var(--muted); margin:0; }
+.cont-row { display:flex; align-items:center; gap:7px; min-width:0; }
+/* 6px here, not the header dot's 8px: a row of these reads as a list, not as
+   a row of connection lamps. */
+.cont-row .dot { width:6px; height:6px; flex:none; }
+.cont-name { font-size:11px; font-weight:700; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.cont-runtime { font-size:8px; color:var(--muted); flex:none; }
+.cont-status { font-size:9px; white-space:nowrap; flex:none; }
+/* A presence row's status ("recycling 40s" / "missing 12m") is an alarm, not
+   a description, and carries the weight the Swift panel gives it. */
+.cont-row[data-kind="absent"] .cont-status { font-weight:700; }
+
 /* ---- Settings ----------------------------------------------------------
    An in-app view, so it shares the cockpit's palette and type scale rather
    than opening a differently-styled window. Every control below is created by

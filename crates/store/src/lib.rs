@@ -20,6 +20,7 @@
 //! This crate is a pure library: it reads and writes its own file and nothing
 //! else. Wiring it into the Tauri shell is a later slice.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -28,11 +29,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod containers;
 pub mod hosts;
 pub mod repos;
 pub mod secrets;
 pub mod settings;
 
+pub use containers::{
+    matches_glob, presence_key, records_for_host, seeded_rules, ContainerGroupRule,
+    ContainerPresenceRecord, ContainerRuleAction, DEFAULT_GRACE_SECS, LOCAL_HOST_SCOPE,
+};
 pub use hosts::{Host, DEFAULT_AGENT_PORT};
 pub use repos::{seeded_repos, TrackedRepo};
 pub use secrets::{CredentialStore, KeyringStore, MemoryCredentialStore, SecretError, SecretKey};
@@ -120,6 +126,22 @@ pub struct StoreData {
     pub hosts: Vec<Host>,
     /// Tracked repo portfolio, in user-visible order.
     pub repos: Vec<TrackedRepo>,
+    /// Containers panel grouping rules.
+    ///
+    /// `None` is "never configured" (an absent, null or unreadable value) and
+    /// yields [`containers::seeded_rules`]; `Some(vec![])` is a user who
+    /// deliberately cleared every rule and is respected as-is. Collapsing the
+    /// two would either resurrect deleted rules on every launch or ship an
+    /// unconfigured panel with no grouping at all — see
+    /// [`Store::container_rules`].
+    #[serde(default, deserialize_with = "containers::lenient_rules")]
+    pub container_rules: Option<Vec<ContainerGroupRule>>,
+    /// Presence memory for expected containers, keyed `"<host>|<name>"`.
+    ///
+    /// A `BTreeMap` rather than a `HashMap` so the file's key order is stable
+    /// across saves — a map that reorders itself makes every save a diff.
+    #[serde(default)]
+    pub container_presence: BTreeMap<String, ContainerPresenceRecord>,
 }
 
 impl Default for StoreData {
@@ -133,6 +155,8 @@ impl Default for StoreData {
             settings: Settings::default(),
             hosts: Vec::new(),
             repos: Vec::new(),
+            container_rules: None,
+            container_presence: BTreeMap::new(),
         }
     }
 }
@@ -340,6 +364,43 @@ impl Store {
     pub fn remove_repo(&mut self, slug: &str) -> Option<TrackedRepo> {
         let index = self.data.repos.iter().position(|repo| repo.slug == slug)?;
         Some(self.data.repos.remove(index))
+    }
+
+    /// The Containers panel's grouping rules — the user's, or the seeds when
+    /// this store has never carried any.
+    ///
+    /// Callers get one shape either way and must not re-implement the
+    /// fallback: "no rules configured" and "every rule deleted" look identical
+    /// from a `&[ContainerGroupRule]`, and only this method knows the
+    /// difference.
+    #[must_use]
+    pub fn container_rules(&self) -> &[ContainerGroupRule] {
+        match &self.data.container_rules {
+            Some(rules) => rules,
+            None => containers::seeded_rules_ref(),
+        }
+    }
+
+    /// Replaces the grouping rules. An empty list is a decision and is stored
+    /// as one — it will **not** re-seed on the next read.
+    pub fn set_container_rules(&mut self, rules: Vec<ContainerGroupRule>) {
+        self.data.container_rules = Some(rules);
+    }
+
+    /// Presence memory for expected containers, keyed `"<host>|<name>"`.
+    #[must_use]
+    pub fn container_presence(&self) -> &BTreeMap<String, ContainerPresenceRecord> {
+        &self.data.container_presence
+    }
+
+    /// Replaces the presence memory. Call [`Store::save`] to persist.
+    pub fn set_container_presence(
+        &mut self,
+        records: BTreeMap<String, ContainerPresenceRecord>,
+    ) -> bool {
+        let changed = records != self.data.container_presence;
+        self.data.container_presence = records;
+        changed
     }
 }
 
@@ -873,6 +934,74 @@ mod tests {
         let rendered = format!("{store:?}");
         assert!(rendered.contains("Store"));
         assert!(!rendered.to_lowercase().contains("token"));
+    }
+
+    #[test]
+    fn a_store_with_no_rules_reads_as_the_seeded_defaults() {
+        let dir = temp_dir();
+        let store = Store::open_in(dir.path()).expect("open");
+        assert_eq!(store.container_rules(), containers::seeded_rules());
+        assert!(store.container_presence().is_empty());
+    }
+
+    #[test]
+    fn cleared_rules_stay_cleared_instead_of_re_seeding() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path()).expect("open");
+        // The user deletes every rule. That is a decision, not an unconfigured
+        // store — re-seeding here would resurrect them on the next launch.
+        store.set_container_rules(Vec::new());
+        store.save().expect("save");
+
+        let reopened = Store::open_in(dir.path()).expect("reopen");
+        assert!(reopened.container_rules().is_empty());
+    }
+
+    #[test]
+    fn unreadable_rules_fall_back_to_the_seeds_without_failing_the_open() {
+        let dir = temp_dir();
+        Store::open_in(dir.path()).expect("first open");
+        let path = dir.path().join(STORE_FILE_NAME);
+        let mut data: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        data["container_rules"] = serde_json::json!("not a rule list");
+        fs::write(&path, data.to_string()).expect("write");
+
+        let reopened = Store::open_in(dir.path()).expect("a bad rules value must still open");
+        assert_eq!(reopened.container_rules(), containers::seeded_rules());
+        // ...and the rest of the store is untouched by it.
+        assert_eq!(reopened.repos().len(), repos::SEED_SLUGS.len());
+    }
+
+    #[test]
+    fn rules_and_presence_round_trip_through_the_file() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path()).expect("open");
+
+        let mut rule = ContainerGroupRule::new("vm-*", "vms", ContainerRuleAction::Expect)
+            .on_host(LOCAL_HOST_SCOPE);
+        rule.expected_count = Some(3);
+        store.set_container_rules(vec![rule.clone()]);
+
+        let mut presence = BTreeMap::new();
+        presence.insert(
+            presence_key(LOCAL_HOST_SCOPE, "vm-1"),
+            ContainerPresenceRecord {
+                last_seen: 1_700_000_000,
+                runtime: Some("tart".into()),
+            },
+        );
+        assert!(store.set_container_presence(presence.clone()));
+        assert!(
+            !store.set_container_presence(presence.clone()),
+            "writing identical records must report no change, so a poll that \
+             learned nothing doesn't rewrite the file"
+        );
+        store.save().expect("save");
+
+        let reopened = Store::open_in(dir.path()).expect("reopen");
+        assert_eq!(reopened.container_rules(), [rule]);
+        assert_eq!(reopened.container_presence(), &presence);
     }
 
     #[test]
