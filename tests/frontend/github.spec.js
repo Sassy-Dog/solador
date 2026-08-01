@@ -299,6 +299,66 @@ test("registered and absent runner rows carry Rust's state words and colours", a
   expect(recycling.dotColor).not.toBe(missing.dotColor);
 });
 
+/**
+ * The status column is a reservation, not a measurement (#206).
+ *
+ * A presence label ("recycling 40s") is nearly three times the width of a
+ * state word ("idle"), so a column that sizes itself to its own text drags the
+ * OS chip left on exactly the rows something is wrong with — the panel loses
+ * its grid at the moment it is being read hardest. Rust hands every row the
+ * same `statusWidth`, so what the roster is doing cannot move a column.
+ */
+test("the OS column holds one position across every runner state", async ({ page, baseURL }) => {
+  const runners = await fixture(baseURL, "sample-runners.json");
+  const words = [...new Set(runners.rows.map((r) => r.status.split(" ")[0]))].sort();
+  expect(words, "the fixture must mix the steady states with both presence labels").toEqual([
+    "busy",
+    "idle",
+    "missing",
+    "offline",
+    "recycling",
+  ]);
+
+  await gotoWithFixtures(page, baseURL, { runners });
+  // The narrowest the cockpit ever hands this panel: `PanelKind::GhRunners`'s
+  // own 400pt min_width. Aligned there, aligned at every width above it.
+  await page.locator("#runnersPanel").evaluate((el) => {
+    el.style.width = "400px";
+  });
+
+  const rows = runnerRows(page);
+  await expect(rows).toHaveCount(runners.rows.length);
+  const chips = [];
+  for (let i = 0; i < runners.rows.length; i++) {
+    chips.push(await rows.nth(i).locator(".gh-runner-os").boundingBox());
+  }
+  // Every OS label is five characters of one monospace font, so a shared left
+  // edge and a shared right edge are the same claim made twice. Both are
+  // asserted because the reservation is what guarantees the right edge, and
+  // the left edge is what the eye actually reads as a column.
+  expect(new Set(chips.map((b) => b.x.toFixed(2))).size, "one x-position").toBe(1);
+  expect(new Set(chips.map((b) => (b.x + b.width).toFixed(2))).size, "one right edge").toBe(1);
+});
+
+test("the widest presence label fits the reserved slot without truncating", async ({ page, baseURL }) => {
+  const { runners } = await gotoWithFixtures(page, baseURL);
+  await page.locator("#runnersPanel").evaluate((el) => {
+    el.style.width = "400px";
+  });
+
+  const rows = runnerRows(page);
+  for (const [index, expected] of runners.rows.entries()) {
+    const status = rows.nth(index).locator(".gh-runner-status");
+    // Rust's figure reaches the element as a width, not as a minimum.
+    await expect(status).toHaveCSS("width", `${expected.statusWidth}px`);
+    // `overflow:hidden` means an outgrown reservation clips silently instead
+    // of shifting the row, so the panel would look right and read wrong —
+    // this is the assertion that would catch it.
+    const [scroll, client] = await status.evaluate((el) => [el.scrollWidth, el.clientWidth]);
+    expect(scroll, `"${expected.status}" is clipped by its reserved slot`).toBeLessThanOrEqual(client);
+  }
+});
+
 test("a healthy Runners panel shows no footer", async ({ page, baseURL }) => {
   const { runners } = await gotoWithFixtures(page, baseURL);
   expect(runners.footer).toBeNull();

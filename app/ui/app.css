@@ -187,8 +187,14 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-runner-name { font-size:11px; font-weight:700; white-space:nowrap;
   overflow:hidden; text-overflow:ellipsis; }
 .gh-runner-os { font-size:8px; color:var(--muted); flex:none; }
+/* The width is Rust's `statusWidth`, applied via CSSOM, and there is no
+   `min-width` fallback on purpose: a minimum is what let "recycling 1m" grow
+   its own column and shove the OS chip left on that one row (#206). `overflow`
+   keeps that promise absolute — a status longer than the reservation is
+   clipped rather than allowed to bleed over the chip beside it, which is the
+   same misalignment wearing a different hat. */
 .gh-runner-status { font-size:9px; font-weight:700; white-space:nowrap;
-  flex:none; min-width:48px; text-align:right; }
+  flex:none; text-align:right; overflow:hidden; }
 
 /* ---- Panel rows ---------------------------------------------------------
    Which panels share a row is `viewmodel::cockpit::reflow`'s answer, applied
