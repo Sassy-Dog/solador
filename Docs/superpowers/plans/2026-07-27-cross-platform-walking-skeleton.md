@@ -752,10 +752,10 @@ The fixture is only useful if it matches production. Fetch a live snapshot and c
 ```bash
 curl -s -H "Authorization: Bearer $DEVCANOPY_AGENT_TOKEN" \
   http://100.87.202.125:7878/v1/snapshot > /tmp/live-snapshot.json
-cp /tmp/live-snapshot.json crates/metrics/tests/fixtures/snapshot-live.json
+cp /tmp/live-snapshot.json crates/wire/tests/fixtures/snapshot-live.json
 ```
 
-Add to `crates/metrics/tests/wire.rs`:
+Add to `crates/wire/tests/wire.rs`:
 
 ```rust
 /// Guards against the committed fixture drifting from what the agent sends.
