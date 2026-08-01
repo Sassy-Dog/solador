@@ -37,9 +37,16 @@ pub struct CostAggregate {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CostSummary {
     pub spend_mtd: f64,
-    /// Best-effort: a missing prior-month export leaves this 0 rather than
-    /// failing the whole read.
-    pub spend_prior_month: f64,
+    /// Best-effort: a missing or unreadable prior-month export leaves this
+    /// `None` rather than failing the whole read.
+    ///
+    /// `Option` rather than the bare `f64` Swift carries
+    /// (`AzureCostModels.swift`, which folds a missing export to 0): a real
+    /// $0.00 month and "we could not read last month" are different facts, and
+    /// the no-fake-numbers rule says the panel must be able to tell them apart.
+    /// The renderer paints `None` as an em dash — see
+    /// `app/src-tauri/src/azure.rs::stat_row`.
+    pub spend_prior_month: Option<f64>,
     /// Computed at fetch time and **frozen** here (see
     /// [`crate::project_monthly_spend`]), so a carried-forward stale snapshot
     /// keeps a correct projection instead of re-extrapolating against a month

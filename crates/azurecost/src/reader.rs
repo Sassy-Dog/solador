@@ -184,8 +184,9 @@ where
 /// Three behaviours are load-bearing:
 ///
 /// - **MTD is required, prior month is best-effort.** A failed MTD read
-///   propagates; a missing prior-month export yields 0 and leaves `error`
-///   `None`, so half an outage never blanks the card.
+///   propagates; a missing prior-month export yields `None` — unknown, not a
+///   claimed $0 — and leaves `error` `None`, so half an outage never blanks the
+///   card.
 /// - **Month rollover falls back.** On the 1st the current month may not be
 ///   exported yet. Rather than showing an error, the read drops to the last
 ///   completed month, stamps `as_of_month`, and projects that month to itself
@@ -223,7 +224,7 @@ where
     let is_fallback = month_range_folder(covered_month) != month_range_folder(now);
 
     // Best-effort, and taken relative to whichever month is actually on show.
-    // A missing export leaves the path list empty, which folds prior to 0 —
+    // A missing export leaves the path list empty, which leaves prior unknown —
     // stable across polls, so cache hits keep working, and it flips to a miss
     // the cycle the export first appears.
     let prior_blobs = select_latest_run(
@@ -248,10 +249,12 @@ where
     }
 
     let mtd = aggregate(fetcher, &fingerprint.mtd).await?;
-    let mut spend_prior_month = 0.0;
+    // Stays `None` when the export is missing or unreadable, so the panel can
+    // say "unknown" instead of claiming last month cost nothing.
+    let mut spend_prior_month = None;
     if !fingerprint.prior.is_empty() {
         if let Ok(prior) = aggregate(fetcher, &fingerprint.prior).await {
-            spend_prior_month = prior.total;
+            spend_prior_month = Some(prior.total);
         }
     }
 
@@ -364,13 +367,14 @@ mod tests {
             .expect("should fetch")
             .summary;
         assert!((summary.spend_mtd - 15.0).abs() < 1e-6);
-        assert!((summary.spend_prior_month - 100.0).abs() < 1e-6);
+        assert_eq!(summary.spend_prior_month, Some(100.0));
         assert_eq!(summary.error, None);
         assert_resources(&summary.by_resource, &[("rg-a", 10.0), ("rg-b", 5.0)]);
     }
 
     /// Only the MTD export exists. The prior-month read fails and must not
-    /// blank the card: prior folds to 0 and `error` stays `None`.
+    /// blank the card: prior stays `None` — unknown, not a claimed $0 — and
+    /// `error` stays `None`.
     #[tokio::test]
     async fn is_best_effort_about_the_prior_month() {
         let mtd = mtd_path("202606151800");
@@ -381,7 +385,7 @@ mod tests {
             .expect("should fetch")
             .summary;
         assert!((summary.spend_mtd - 42.0).abs() < 1e-6);
-        assert_eq!(summary.spend_prior_month, 0.0);
+        assert_eq!(summary.spend_prior_month, None);
         assert_eq!(summary.error, None);
     }
 
@@ -427,7 +431,7 @@ mod tests {
             .expect("should fetch")
             .summary;
         assert!((summary.spend_mtd - 688.46).abs() < 1e-6);
-        assert!((summary.spend_prior_month - 239.72).abs() < 1e-6);
+        assert_eq!(summary.spend_prior_month, Some(239.72));
         assert!(
             (summary.spend_projected - 688.46).abs() < 1e-6,
             "a completed month projects to itself"
@@ -561,7 +565,7 @@ mod tests {
 
     /// The prior-month export appearing for the first time is new data too —
     /// the fingerprint covers both halves, so it flips to a miss and the
-    /// month-over-month figure stops reading 0.
+    /// month-over-month figure stops reading as unknown.
     #[tokio::test]
     async fn a_first_prior_month_export_misses_the_cache() {
         let mtd = mtd_path("202606151800");
@@ -572,7 +576,7 @@ mod tests {
         )
         .await
         .expect("should fetch");
-        assert_eq!(first.summary.spend_prior_month, 0.0);
+        assert_eq!(first.summary.spend_prior_month, None);
 
         let prior = prior_path("202606010300");
         let stub = StubBlobFetcher::new(&[
@@ -583,7 +587,7 @@ mod tests {
             .await
             .expect("should fetch");
         assert_ne!(second.fingerprint, first.fingerprint);
-        assert!((second.summary.spend_prior_month - 100.0).abs() < 1e-6);
+        assert_eq!(second.summary.spend_prior_month, Some(100.0));
     }
 
     /// The cached summary is returned verbatim, projection included — that is
