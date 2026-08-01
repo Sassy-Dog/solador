@@ -496,6 +496,34 @@ fn elapsed(secs: i64) -> String {
 
 // MARK: - Runners
 
+/// The cockpit's monospace advance at the runner rows' 9pt, in points. Every
+/// glyph in `ui-monospace`/SF Mono is 0.6em wide, which is the only reason a
+/// *character* count below can become a *point* width at all.
+///
+/// Only the test that re-derives [`RUNNER_STATUS_W`] reads it: the shipped
+/// payload carries the points, not the arithmetic behind them.
+#[cfg(test)]
+const MONO_9_CHAR_W: f64 = 5.4;
+
+/// The longest status a runner row can hold, in characters: `"recycling 59s"`
+/// and `"missing 1234d"` both land here, and
+/// `the_reserved_status_column_fits_every_word_the_panel_can_say` walks the
+/// whole vocabulary to keep that true.
+#[cfg(test)]
+const RUNNER_STATUS_CHARS: usize = 13;
+
+/// The status column's reserved footprint, in points — `RUNNER_STATUS_CHARS`
+/// characters of the panel's 9pt monospace, rounded up.
+///
+/// **Fixed, not a minimum.** A row's status is the widest thing in it that
+/// changes: a presence label (`"recycling 40s"`) is nearly three times the
+/// width of a state word (`"idle"`), and a column that sizes itself to its
+/// content drags the OS chip left on exactly the rows something is wrong with —
+/// so the panel's alignment breaks at the moment it is being read hardest
+/// (#206). `GHRunnersPanel` reserves 48pt, which fits the state words and not
+/// the presence labels; this is the same reservation sized for both.
+const RUNNER_STATUS_W: f64 = 74.0;
+
 /// The whole GitHub Runners payload.
 ///
 /// `now` is wall-clock unix seconds, used only by the footer's staleness. Every
@@ -635,6 +663,9 @@ fn runner_row(row: &GhRunnerDisplayRow) -> Value {
         "dotColor": color::hex(tint),
         "status": status,
         "statusColor": color::hex(tint),
+        // Every row, registered or absent, reserves the same slot — that is
+        // what keeps the OS chips in one column while one runner recycles.
+        "statusWidth": RUNNER_STATUS_W,
     })
 }
 
@@ -1587,6 +1618,79 @@ mod tests {
                     color::hex(color::MUTED).as_str()
                 ),
             ]
+        );
+    }
+
+    /// #206: the status column is a *reservation*, not a measurement. A
+    /// registered row and an absent one hand the frontend the same footprint,
+    /// so the OS chip beside them cannot move when one runner starts recycling.
+    #[test]
+    fn every_runner_row_reserves_the_same_status_width() {
+        let state = with_runners(
+            &[
+                runner("mac-s1", RunnerOs::MacOs, RunnerState::Busy),
+                runner("ubu-1", RunnerOs::Linux, RunnerState::Idle),
+                runner("ubu-2", RunnerOs::Linux, RunnerState::Offline),
+            ],
+            &[
+                RunnerRosterEntry {
+                    name: "mac-s2".to_owned(),
+                    os: RunnerOs::MacOs,
+                    last_seen: now() - TimeDelta::seconds(40),
+                },
+                RunnerRosterEntry {
+                    name: "mac-s3".to_owned(),
+                    os: RunnerOs::MacOs,
+                    last_seen: now() - TimeDelta::seconds(720),
+                },
+            ],
+        );
+        let view = runners_view(&state, now_unix());
+        let rows = rows(&view);
+        assert_eq!(rows.len(), 5, "idle, busy, offline, recycling and missing");
+        for row in rows {
+            assert_eq!(
+                row["statusWidth"], RUNNER_STATUS_W,
+                "{} sized its status column to its own text",
+                row["name"]
+            );
+        }
+    }
+
+    /// And the reservation is big enough for every word that can land in it.
+    /// The state words are a closed set; the presence labels are a ladder, so
+    /// this walks the whole grace window a runner can recycle inside and years
+    /// of the one it can go missing for.
+    #[test]
+    fn the_reserved_status_column_fits_every_word_the_panel_can_say() {
+        let base = now();
+        let mut widest = [RunnerState::Idle, RunnerState::Busy, RunnerState::Offline]
+            .into_iter()
+            .map(|state| state.label().chars().count())
+            .max()
+            .expect("three states");
+
+        let absences = (0..=RUNNER_GRACE_SECS)
+            .chain((1..=3_650).map(|days| days * 86_400))
+            .chain([3_599, 3_600, 86_399, 86_400, 999 * 86_400]);
+        for absence_secs in absences {
+            let state = github::presence::state(
+                false,
+                base,
+                base + TimeDelta::seconds(absence_secs),
+                RUNNER_GRACE_SECS,
+            );
+            let label = github::presence::label(state).expect("an absence has a label");
+            widest = widest.max(label.chars().count());
+        }
+
+        assert_eq!(
+            widest, RUNNER_STATUS_CHARS,
+            "the widest status the panel can say moved; re-derive the reservation"
+        );
+        assert!(
+            RUNNER_STATUS_W >= RUNNER_STATUS_CHARS as f64 * MONO_9_CHAR_W,
+            "{RUNNER_STATUS_W}pt cannot hold {RUNNER_STATUS_CHARS} characters of 9pt monospace"
         );
     }
 

@@ -41,13 +41,24 @@ function node(tag, cls, text) {
   return n;
 }
 
+/**
+ * Reserves a column's footprint, in points, from Rust's figure.
+ *
+ * A *width*, never a minimum: these columns are the panel's whole legibility,
+ * and one that grows to fit its own text drags every column right of it out of
+ * line on exactly the rows that are interesting (#206). A payload with no
+ * figure leaves the element to the stylesheet rather than to a number invented
+ * here.
+ */
+function reserveWidth(el, width) {
+  if (width !== null && width !== undefined) el.style.width = width + "px";
+}
+
 /** A right-aligned fixed-width cell. Rust owns the width, in points. */
 function cellNode(cls, cell) {
   const el = node("span", cls, cell.text);
   el.style.color = cell.color;
-  if (cell.width !== null && cell.width !== undefined) {
-    el.style.width = cell.width + "px";
-  }
+  reserveWidth(el, cell.width);
   return el;
 }
 
@@ -72,7 +83,7 @@ function repoHeader(columns) {
   el.appendChild(node("span", "grow"));
   for (const column of fixed) {
     const cell = node("span", "gh-cell", column.label);
-    if (column.width !== null) cell.style.width = column.width + "px";
+    reserveWidth(cell, column.width);
     el.appendChild(cell);
   }
   return el;
@@ -178,8 +189,14 @@ function runnerRowNode(row) {
     node("span", "gh-runner-os", row.os)
   );
 
+  // The status is the widest thing in the row that changes — "idle" one poll,
+  // "recycling 40s" the next — so it is the one column that must be reserved
+  // rather than measured. Sized by Rust for the longest word it can produce,
+  // which is what holds the OS chips above in one line while a runner
+  // recycles.
   const status = node("span", "gh-runner-status", row.status);
   status.style.color = row.statusColor;
+  reserveWidth(status, row.statusWidth);
   el.appendChild(status);
   return el;
 }
