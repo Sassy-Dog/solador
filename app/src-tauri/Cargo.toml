@@ -11,7 +11,15 @@ tauri-build = "2"
 devcanopy-wire = { path = "../../crates/wire" }
 viewmodel = { path = "../../crates/viewmodel" }
 agentclient = { path = "../../crates/agentclient" }
-keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# Settings/hosts/credentials. The keyring dependency moved here with it: this
+# crate reaches the OS credential store through `store::KeyringStore`, so
+# there is one spelling of the service/account naming, not two.
+devcanopy-store = { path = "../../crates/store" }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tauri = "2"
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Seed/store tests write a real store file in a throwaway directory rather
+# than mocking the filesystem — same as crates/store's own tests.
+tempfile = "3"

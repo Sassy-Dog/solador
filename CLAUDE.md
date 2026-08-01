@@ -25,8 +25,8 @@ It has three parts:
 There is also an experimental cross-platform walking skeleton, kept separate from
 the shipped SwiftUI app above (which stays untouched): a Rust workspace
 (`crates/wire`, `crates/viewmodel`, `crates/agentclient`) plus a Tauri v2 app
-(`app/`) that polls one live agent and renders one host-monitoring card, proving out
-a macOS/Windows-portable stack. Its frontend is plain HTML/CSS/JS with no bundler
+(`app/`) that polls every configured agent and renders one host-monitoring card
+per host in a width-aware grid, proving out a macOS/Windows-portable stack. Its frontend is plain HTML/CSS/JS with no bundler
 (`app/ui/`) and its own Playwright e2e suite (`tests/frontend/`). See
 `.superpowers/sdd/2026-07-27-cross-platform-walking-skeleton/` for the plan/reviews
 that produced it.
@@ -104,7 +104,7 @@ DevCanopy/
 │   ├── viewmodel/         # host_card(): every string/colour the frontend paints
 │   └── agentclient/       # HTTP client polling the same agent the Swift app polls
 ├── app/
-│   ├── src-tauri/         # Tauri v2 shell: polls the agent, exposes `snapshot`
+│   ├── src-tauri/         # Tauri v2 shell: one poll task per host, exposes `cockpit`
 │   └── ui/                # Frontend: plain HTML/CSS/JS, no bundler
 └── tests/frontend/         # Playwright e2e suite for app/ui/ (own package.json)
 ```

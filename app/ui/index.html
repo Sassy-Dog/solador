@@ -6,67 +6,79 @@
 <link rel="stylesheet" href="app.css" />
 </head>
 <body>
-  <div class="card">
-    <header class="hdr"><span class="dot" id="connDot"></span><span class="host" id="hostName"></span>
-      <span class="grow"></span><span class="stale" id="staleMsg"></span></header>
-    <div class="sec-hdr">
-      <i class="glyph"></i><span class="title" id="cpuModel"></span>
-      <span class="badge" id="thermal"></span><span class="grow"></span>
-      <span class="big" id="cpuValue"></span>
+  <!-- The Hosts panel. Its title comes from Rust's panel table, like every
+       other string on the page; the grid's column count comes from the same
+       payload's `hostColumns`. -->
+  <h1 class="panel-title" id="hostsTitle"></h1>
+  <p class="empty" id="emptyMsg"></p>
+  <div class="cockpit" id="cockpit"></div>
+
+  <!-- One card per host, cloned from here. Hooks are classes, not ids: with N
+       hosts on the page an id would be duplicated N times, which makes
+       `getElementById` return whichever card happened to render first. -->
+  <template id="cardTpl">
+    <div class="card">
+      <header class="hdr"><span class="dot connDot"></span><span class="host hostName"></span>
+        <span class="grow"></span><span class="stale staleMsg"></span></header>
+      <div class="sec-hdr">
+        <i class="glyph"></i><span class="title cpuModel"></span>
+        <span class="badge thermal"></span><span class="grow"></span>
+        <span class="big cpuValue"></span>
+      </div>
+      <div class="chart">
+        <div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
+        <div class="plot cpuChart" data-h="110"></div>
+      </div>
+      <div class="cores-wrap"><div class="cores"></div></div>
+      <hr />
+      <div class="cols2">
+        <section>
+          <div class="sec-hdr"><i class="glyph"></i><span class="title">Memory</span>
+            <span class="grow"></span><span class="big memValue"></span></div>
+          <div class="chart"><div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
+            <div class="plot memChart" data-h="90"></div></div>
+          <div class="foot"><span class="swapText"></span><span class="grow"></span><span class="pressureText"></span></div>
+        </section>
+        <section>
+          <div class="sec-hdr"><i class="glyph"></i><span class="title">Graphics</span>
+            <span class="grow"></span><span class="big gpuValue"></span></div>
+          <div class="chart"><div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
+            <div class="plot gpuChart" data-h="90"></div></div>
+          <div class="foot"><span class="vramText"></span></div>
+        </section>
+      </div>
+      <hr />
+      <div class="cols2">
+        <section>
+          <div class="sec-hdr"><i class="glyph"></i><span class="title">Disk I/O</span><span class="grow"></span>
+            <div class="legends">
+              <span class="lg"><i class="sw-read"></i>Read:<b class="diskRead"></b></span>
+              <span class="lg"><i class="sw-write"></i>Write:<b class="diskWrite"></b></span>
+            </div></div>
+          <div class="chart"><div class="axis two"><span class="diskAxis"></span><span>0</span></div>
+            <div class="plot diskChart" data-h="90"></div></div>
+        </section>
+        <section>
+          <div class="sec-hdr"><i class="glyph"></i><span class="title">Network I/O</span><span class="grow"></span>
+            <div class="legends">
+              <span class="lg"><i class="sw-net"></i>Down:<b class="netDown"></b></span>
+              <span class="lg"><i class="sw-netup"></i>Up:<b class="netUp"></b></span>
+            </div></div>
+          <div class="chart"><div class="axis two"><span class="netAxis"></span><span>0</span></div>
+            <div class="plot netChart" data-h="90"></div></div>
+        </section>
+      </div>
+      <hr />
+      <div class="sec-hdr"><i class="glyph"></i><span class="title">Volumes</span>
+        <span class="grow"></span><span class="big muted volumeCount"></span></div>
+      <div class="vols volumes"></div>
+      <hr />
+      <div class="cols2">
+        <section><div class="lbl">TOP CPU</div><div class="procs topCpu"></div></section>
+        <section><div class="lbl">TOP RAM</div><div class="procs topRam"></div></section>
+      </div>
     </div>
-    <div class="chart">
-      <div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
-      <div class="plot" id="cpuChart" data-h="110"></div>
-    </div>
-    <div class="cores-wrap"><div class="cores" id="cores"></div></div>
-    <hr />
-    <div class="cols2">
-      <section>
-        <div class="sec-hdr"><i class="glyph"></i><span class="title">Memory</span>
-          <span class="grow"></span><span class="big" id="memValue"></span></div>
-        <div class="chart"><div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
-          <div class="plot" id="memChart" data-h="90"></div></div>
-        <div class="foot"><span id="swapText"></span><span class="grow"></span><span id="pressureText"></span></div>
-      </section>
-      <section>
-        <div class="sec-hdr"><i class="glyph"></i><span class="title">Graphics</span>
-          <span class="grow"></span><span class="big" id="gpuValue"></span></div>
-        <div class="chart"><div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
-          <div class="plot" id="gpuChart" data-h="90"></div></div>
-        <div class="foot"><span id="vramText"></span></div>
-      </section>
-    </div>
-    <hr />
-    <div class="cols2">
-      <section>
-        <div class="sec-hdr"><i class="glyph"></i><span class="title">Disk I/O</span><span class="grow"></span>
-          <div class="legends">
-            <span class="lg"><i class="sw-read"></i>Read:<b id="diskRead"></b></span>
-            <span class="lg"><i class="sw-write"></i>Write:<b id="diskWrite"></b></span>
-          </div></div>
-        <div class="chart"><div class="axis two"><span id="diskAxis"></span><span>0</span></div>
-          <div class="plot" id="diskChart" data-h="90"></div></div>
-      </section>
-      <section>
-        <div class="sec-hdr"><i class="glyph"></i><span class="title">Network I/O</span><span class="grow"></span>
-          <div class="legends">
-            <span class="lg"><i class="sw-net"></i>Down:<b id="netDown"></b></span>
-            <span class="lg"><i class="sw-netup"></i>Up:<b id="netUp"></b></span>
-          </div></div>
-        <div class="chart"><div class="axis two"><span id="netAxis"></span><span>0</span></div>
-          <div class="plot" id="netChart" data-h="90"></div></div>
-      </section>
-    </div>
-    <hr />
-    <div class="sec-hdr"><i class="glyph"></i><span class="title">Volumes</span>
-      <span class="grow"></span><span class="big muted" id="volumeCount"></span></div>
-    <div class="vols" id="volumes"></div>
-    <hr />
-    <div class="cols2">
-      <section><div class="lbl">TOP CPU</div><div class="procs" id="topCpu"></div></section>
-      <section><div class="lbl">TOP RAM</div><div class="procs" id="topRam"></div></section>
-    </div>
-  </div>
+  </template>
   <script src="app.js"></script>
 </body>
 </html>
