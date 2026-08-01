@@ -1,0 +1,60 @@
+[package]
+# Prefixed like `devcanopy-wire`/`devcanopy-store`/`devcanopy-github` to stay
+# clear of the short name on crates.io. The lib below keeps the short import
+# name.
+name = "devcanopy-openclaw"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "openclaw"
+
+[features]
+# The real socket lives behind a feature so the protocol, identity and reducer
+# layers can be consumed (and tested) with no networking stack at all. On by
+# default so `cargo clippy --workspace --all-targets` keeps linting it.
+default = ["ws"]
+ws = ["dep:tokio-tungstenite", "dep:http", "dep:futures-util"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+# Ed25519 device identity. RFC 8032 signatures are deterministic here, which is
+# what lets a fixture pin the exact signature bytes; CryptoKit's hedged
+# signatures differ per call but verify against the same public key and payload.
+# v3 over v2 deliberately: v2 hard-depends on rand_core and (through `ed25519`)
+# on the pkcs8/der/spki stack, none of which this crate uses.
+ed25519-dalek = "3"
+# SHA-256 behind the device id. 0.10 is the version already in the lock (via
+# tauri); dalek's own RustCrypto 0.11 tree arrives regardless, because
+# tungstenite's sha1 pulls digest 0.11.
+sha2 = "0.10"
+# Lowercase-hex device id and base64url-no-pad public keys/signatures. Both
+# already in the lock (hex via tauri's tree, base64 via reqwest's).
+hex = "0.4"
+base64 = "0.22"
+# 32 bytes of OS entropy for a fresh device seed. Already in the lock; `std`
+# is what makes its error type a `std::error::Error` we can chain from.
+getrandom = { version = "0.3", features = ["std"] }
+# Gateway-URL validation plus the `Origin` derivation. Already in the lock.
+url = "2"
+# Handshake deadlines and the heartbeat/ping cadences. `time` only — the
+# session is driven by whatever runtime the caller already has.
+tokio = { version = "1", features = ["time", "macros"] }
+
+# --- `ws` feature only ---
+# Same rustls stack the workspace already resolves for reqwest, so enabling the
+# socket adds a websocket codec rather than a second TLS implementation.
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-webpki-roots",
+], optional = true }
+http = { version = "1", optional = true }
+# Same version/features as crates/github's, so the workspace resolves one.
+futures-util = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
