@@ -130,6 +130,11 @@ The script:
 4. Installs the **user** unit `~/.config/systemd/user/devcanopy-agent.service`,
    then `systemctl --user enable --now devcanopy-agent` and enables lingering so
    it starts on boot and survives logout.
+5. **Verifies** by polling `/v1/health` (at the bind/port it just wrote, so this
+   works on a tailnet-only agent) until it reports the `[package]` version from
+   `Cargo.toml`. A healthy unit only proves *a* binary is up — if the version
+   being served isn't the one just built, the script fails loudly naming both
+   numbers rather than reporting a successful install over stale code.
 
 It runs as **your user** (not root) so rootless `podman ps` works.
 

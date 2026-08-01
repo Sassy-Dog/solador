@@ -25,6 +25,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# crate_version / verify_health are shared with install.sh, which runs the same
+# served-version-vs-source assertion after its own restart.
+# shellcheck source=agent/deploy/lib.sh
+source "$SCRIPT_DIR/lib.sh"
 CRATE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_NAME="devcanopy-agent"
 ENV_FILE="$HOME/.config/devcanopy-agent.env"
@@ -67,65 +71,6 @@ if [ ! -w "$INSTALL_DIR" ]; then
     fi
 fi
 
-# ---- health verification (shared by deploy + rollback) ---------------------
-# Polls /v1/health (bind/port/token read from the env file) until it answers,
-# then optionally asserts the reported version. Pass an expected version to
-# require an exact match (deploy); pass "" to only require the agent to come
-# back online (rollback, where we can't statically know the .prev version
-# because the binary has no --version flag). Never prints the token.
-verify_health() {
-    local expected_version="${1:-}"
-    [ -f "$ENV_FILE" ] || { echo "ERROR: env file $ENV_FILE not found; cannot verify." >&2; return 1; }
-
-    local token bind port url
-    token="$(grep -E '^DEVCANOPY_AGENT_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
-    bind="$(grep -E '^DEVCANOPY_AGENT_BIND=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
-    port="$(grep -E '^DEVCANOPY_AGENT_PORT=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
-    bind="${bind:-127.0.0.1}"
-    port="${port:-7878}"
-    url="http://${bind}:${port}/v1/health"
-
-    if [ -z "$token" ]; then
-        echo "ERROR: no DEVCANOPY_AGENT_TOKEN in $ENV_FILE; cannot verify." >&2
-        return 1
-    fi
-
-    if [ -n "$expected_version" ]; then
-        echo "==> Verifying $url reports version $expected_version ..."
-    else
-        echo "==> Verifying $url is back online ..."
-    fi
-
-    local attempt body got
-    for attempt in $(seq 1 15); do
-        body="$(curl -fsS -H "Authorization: Bearer ${token}" "$url" 2>/dev/null || true)"
-        if [ -n "$body" ]; then
-            # Pull the version field without assuming jq is installed.
-            got="$(printf '%s' "$body" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-            if [ -z "$expected_version" ]; then
-                echo "==> Health OK: agent online, reports version ${got:-unknown}"
-                return 0
-            fi
-            if [ "$got" = "$expected_version" ]; then
-                echo "==> Health OK: agent reports version $got"
-                return 0
-            fi
-            if [ -n "$got" ]; then
-                echo "    attempt $attempt: agent reports $got (want $expected_version), retrying..."
-            fi
-        fi
-        sleep 1
-    done
-
-    if [ -n "$expected_version" ]; then
-        echo "ERROR: /v1/health did not report version $expected_version within timeout." >&2
-    else
-        echo "ERROR: /v1/health did not come back online within timeout." >&2
-    fi
-    echo "       Last response: ${body:-<no response>}" >&2
-    return 1
-}
-
 restart_unit() {
     systemctl --user restart "$UNIT_NAME"
 }
@@ -158,7 +103,7 @@ do_rollback() {
 
     # The agent binary has no --version flag, so we can't statically know which
     # version .prev embeds. Verify it simply comes back online (status ok).
-    if verify_health ""; then
+    if verify_health "$ENV_FILE" ""; then
         echo "==> Rollback complete. The agent is back online on the previous binary."
         echo "    The binary you rolled back over is now $PREV_BIN (re-run this to roll forward)."
     else
@@ -185,8 +130,8 @@ do_deploy() {
     fi
 
     local target_version
-    target_version="$(grep -E '^version[[:space:]]*=' "$CRATE_DIR/Cargo.toml" | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
-    [ -n "$target_version" ] || { echo "ERROR: could not read version from Cargo.toml." >&2; exit 1; }
+    target_version="$(crate_version "$CRATE_DIR/Cargo.toml")"
+    [ -n "$target_version" ] || { echo "ERROR: could not read the [package] version from Cargo.toml." >&2; exit 1; }
 
     echo "==> Building release binary (target version $target_version)..."
     ( cd "$CRATE_DIR" && cargo build --release )
@@ -212,7 +157,7 @@ do_deploy() {
     echo "==> Restarting service..."
     restart_unit
 
-    if verify_health "$target_version"; then
+    if verify_health "$ENV_FILE" "$target_version"; then
         echo "==> Redeploy complete: $BIN_NAME is on $target_version."
         echo "    Previous binary kept at $PREV_BIN (run './deploy/redeploy.sh rollback' to revert)."
     else
