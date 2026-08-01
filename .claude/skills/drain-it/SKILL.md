@@ -2,7 +2,7 @@
 name: drain-it
 description: >
   Loop-driven dispatcher for DevCanopy: each invocation is one idempotent tick that
-  reconciles in-flight PRs, then tops the pipeline back up to 5 concurrent
+  reconciles in-flight PRs, then tops the pipeline back up to 3 concurrent
   issues pulled ONLY from the board's Ready column, respecting dependencies and
   migration/codegen sequencing, until Ready is empty. Designed to run under
   "/loop 5m /drain-it" but a single manual invocation is also valid. Use when the user says
@@ -26,7 +26,7 @@ Find work this loop already started. **The board snapshot is the source of truth
 
 ## 2. Compute capacity
 
-`in-flight` = cards in In progress/In review claimed by this loop (claim = assignee @me + board status). **Capacity = 5 − in-flight.** A green PR sitting in the merge queue still counts as in-flight until it is actually MERGED — compute capacity from post-reconcile live state and accept that a queue-pending slot frees up next tick, not this one. Capacity ≤ 0 → emit the tick report and stop; the next tick tops up.
+`in-flight` = cards in In progress/In review claimed by this loop (claim = assignee @me + board status). **Capacity = 3 − in-flight.** A green PR sitting in the merge queue still counts as in-flight until it is actually MERGED — compute capacity from post-reconcile live state and accept that a queue-pending slot frees up next tick, not this one. Capacity ≤ 0 → emit the tick report and stop; the next tick tops up.
 
 ## 3. Select from Ready — and only Ready
 
@@ -53,7 +53,7 @@ Sub-agents NEVER merge (single-writer: merges happen in §1 of a tick).
 ## 5. Tick report (terse — this prints every few minutes under /loop)
 
 ```
-DRAIN TICK — in-flight 3/5 | merged this tick: #1712 | dispatched: #1707 #1711 | Ready remaining: 4
+DRAIN TICK — in-flight 3/3 | merged this tick: #1712 | dispatched: #1707 #1711 | Ready remaining: 4
 holds: #1713 (Depends on #1717, still open) · #1708 (migration slot busy) · #1709 (touches overlaps in-flight #1707)
 unannotated (dispatched without a touches set — coupling unchecked): #1711
 ```
@@ -86,10 +86,23 @@ Safety rails: self-cancel ONLY on the confirmed complete state above. Anything s
 ## Guardrails
 
 - **Ready only.** Backlog items are fill-it's job — drain-it never promotes, never grooms, never files issues.
-- **Hard cap 5 in flight**, counting carry-over from previous ticks, not just this tick's dispatches.
+- **Hard cap 3 in flight**, counting carry-over from previous ticks, not just this tick's dispatches.
 - **Idempotent ticks**: every action re-checks live GitHub state first; a crashed tick must be safely re-runnable (worktrees reclaimable via the batch manifest).
 - **Single-writer**: only the coordinator merges/enqueues; max one redispatch per issue without a human.
 - If `ai-agent-skills:pr-shepherd` or take-it is missing, STOP and say so — do not improvise dispatch or merge mechanics.
 
 <!-- BEGIN PROJECT-SPECIFIC: extra-sequencing -->
+**Dispatch cap is deliberately 3 in this repo, not the template default of 5.** Four places encode
+it and must agree: the frontmatter description, §2 capacity, the §5 tick-report example's
+`in-flight n/3` denominator, and the §Guardrails hard cap. The binding constraint is
+self-hosted macOS runner capacity, not agent throughput: `ci.yml` runs **three** jobs on
+`[self-hosted, macOS, sassy-dog]` — `swift-tests`, `lint`, `rust-workspace` (lines 26, 125, 218) —
+against exactly **two** org macOS runners (`sassydog-ghr-mac-s1` / `-s2`). A 5-wide burst plus
+merge-queue and push runs stacks 15+ macOS-bound jobs onto 2 slots, which is what turned CI's p90
+into queue wait (Jul 29–30: jobs executed in 0.3–3.1 min while waiting 42–73 min). At 3 wide the
+steady-state macOS demand fits the runners. See issue #145.
+
+**If a template re-sync (`ai-agent-skills:refresh-sassydog-skills`) restores 5, re-apply 3** in all
+four places above. Revisit the number only if the macOS runner count changes or ci.yml's macOS job
+count changes — those are the two inputs.
 <!-- END PROJECT-SPECIFIC -->
