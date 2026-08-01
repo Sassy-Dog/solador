@@ -1,0 +1,23 @@
+[package]
+# Prefixed like `devcanopy-wire`/`devcanopy-agent` to stay clear of the popular
+# `store` name on crates.io. The lib below keeps the short import name.
+name = "devcanopy-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "store"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+uuid = { version = "1", features = ["serde", "v4"] }
+# Same version/features as app/src-tauri's own keyring line, so the workspace
+# resolves one keyring and one native backend per platform.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
