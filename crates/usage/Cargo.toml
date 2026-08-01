@@ -1,0 +1,35 @@
+[package]
+# Prefixed like `devcanopy-wire`/`devcanopy-github` to stay clear of the popular
+# `usage` name on crates.io. The lib below keeps the short import name.
+name = "devcanopy-usage"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "usage"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Same HTTP stack (and feature set) as crates/agentclient and crates/github, so
+# the workspace resolves one reqwest and one TLS backend.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Log timestamps are RFC 3339 strings and every window is instant arithmetic.
+# Deliberately without the `clock` feature: nothing here reads the wall clock —
+# `now` is always an argument, as in crates/github.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+# Home directory for the default Claude log root (`~/.claude/projects` on macOS,
+# `%USERPROFILE%\.claude\projects` on Windows). Already a workspace dependency.
+dirs = { workspace = true }
+# Percent-encodes the Sentry org slug before it lands in a path segment.
+# Already in the lock via reqwest's `url` tree — a new edge, not a new package.
+percent-encoding = "2"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+# Temp dirs for the log-walker tests, so the default `~/.claude/projects` root
+# is never touched and the suite runs the same on macOS and Windows CI.
+tempfile = "3"
