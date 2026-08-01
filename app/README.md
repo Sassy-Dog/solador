@@ -788,7 +788,22 @@ it is why the checklist below grew a tap-to-open line.
 There is **no Tauri CLI in this repo**: no `cargo-tauri` dependency, no
 `package.json` under `app/`, and `tauri.conf.json` points `frontendDist` at the
 static `../ui` directory with no `beforeDevCommand`. There is nothing for
-`tauri dev` to do that plain cargo does not, so the launch command is:
+`tauri dev` to do that plain cargo does not, so the front door is the repo's own
+entry point:
+
+```bash
+./dev run --tauri                   # from the repo root; --release composes
+```
+
+That builds the same package plain cargo does and then, on macOS, re-signs the
+binary with the stable `Apple Development` identity (team `52YMXC3348`) before
+launching it. That step is the whole reason to prefer it: cargo stamps a *fresh
+ad-hoc* signature on every relink, and each new identity invalidates the Keychain
+ACLs on the app's stored credentials — so a bare-cargo launch re-prompts for every
+stored item on every rebuild. Where no identity is installed (CI, a non-macOS
+machine) the step is skipped silently and you get the bare-cargo behaviour.
+
+The bare command still works and is what everything non-interactive uses:
 
 ```bash
 cargo run -p devcanopy-app          # from the repo root

@@ -32,6 +32,7 @@ $(color_yellow "Run Options:")
   $(color_green "--clean-first")   Clean before building
   $(color_green "--log") <mode>    Enable logging (console, file, both)
   $(color_green "--log-level") <level>  Set log level (debug, info, warn, error)
+  $(color_green "--tauri")         Run the cross-platform Tauri app instead of the SwiftUI app
 
 $(color_yellow "Publish Options:")
   $(color_green "--skip-tests")   Skip running tests
@@ -41,6 +42,7 @@ $(color_yellow "Publish Options:")
 $(color_yellow "Examples:")
   $(color_green "$0")                    # Build and run (debug)
   $(color_green "$0 run --release")      # Build and run (release)
+  $(color_green "$0 run --tauri")        # Build and run the Tauri cockpit (debug)
   $(color_green "$0 build --release")    # Build release version
   $(color_green "$0 publish")            # Mint CalVer tag + release build
 
