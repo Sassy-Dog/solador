@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The cockpit window may call the read-only cockpit command and nothing else. Narrowed (not just described that way): `cockpit` is an app-defined command, which Tauri's ACL always permits without a grant, and the frontend never calls any Tauri-provided `core:*` API -- so `permissions` is empty rather than `core:default`, which would otherwise hand the webview every core-plugin default (window, webview, app, event, menu, tray, image, path, resources) it never uses. VERIFICATION STATUS: unverified by any automated test. An earlier note here claimed a passing tauri::test::mock_builder check; that harness is not an oracle -- against the real generated context it reports `<command> not allowed. Plugin not found` identically under `[]`, under `core:default`, and with this file deleted, so it measures nothing about the ACL (issue #123). The only check that exercises the real IPC boundary is the manual smoke test in `app/README.md`; run it after editing this file.",
+  "description": "The cockpit window may call the app's own commands, plus exactly one plugin command: opening a repo row's GitHub Actions page. Every `settings_*`, `cockpit`, `containers`, `repos`, `runners`, `usage`, `azure_cost` and `openclaw` command is app-defined, which Tauri's ACL always permits without a grant, and the frontend calls no Tauri-provided `core:*` API -- so `core:default` stays out, and with it the window, webview, app, event, menu, tray, image, path and resources defaults this app never uses. The one entry below is the whole widening; `app/README.md`'s 'The one granted capability' section accounts for it line by line, and `github::actions_url` is the only thing that composes a URL for it. `tauri-plugin-notification` is a dependency and is granted NOTHING: needs-approval banners are built and shown in Rust, so the webview never invokes it. VERIFICATION STATUS: the scope glob is unit-tested against every URL the Repos panel can emit and against a list it must refuse (`actions_url_is_the_only_shape_the_granted_scope_admits`), but that test reads this file -- it does not exercise the IPC boundary that enforces it. Nothing automated does (issue #123). The only check that exercises the real boundary is the manual smoke test in `app/README.md`; run it after editing this file.",
   "windows": ["main"],
-  "permissions": []
+  "permissions": [
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/*/*/actions" }]
+    }
+  ]
 }

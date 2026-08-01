@@ -25,6 +25,7 @@
 //! view of it did.
 
 pub mod git;
+pub mod notify;
 
 use std::collections::BTreeMap;
 
@@ -257,6 +258,30 @@ fn status_blinks(status: RepoStatus) -> bool {
     status == RepoStatus::NeedsApproval
 }
 
+/// A repo row's tap target — `GHWorkflowsPanel.openActions(_:)`'s
+/// `https://github.com/\(slug)/actions`, character for character.
+///
+/// Built **here**, from the slug the poll pass fetched, and never assembled in
+/// the webview. That is not style: this string is the only thing the granted
+/// `opener:allow-open-url` scope will accept, and a frontend free to compose it
+/// would be a frontend free to compose everything else that scope's glob also
+/// matches. See `actions_url_is_the_only_shape_the_granted_scope_admits`.
+#[must_use]
+pub fn actions_url(slug: &str) -> String {
+    format!("https://github.com/{slug}/actions")
+}
+
+/// What a screen reader announces for the row, and the only *label* the click
+/// target carries.
+///
+/// The Swift panel has none — an `onTapGesture` on a `VStack` is invisible to
+/// VoiceOver — so this is not parity, it is the web platform's own floor: a
+/// `role="link"` whose accessible name would otherwise be the row's seven
+/// numbers read aloud in a row.
+fn open_label(slug: &str) -> String {
+    format!("Open {slug} on GitHub Actions")
+}
+
 /// The whole Repos payload.
 ///
 /// `now` is render time, and it is only used for the LONGEST column: a running
@@ -403,6 +428,11 @@ fn repo_row(
         "name": health.short_name(),
         "dotColor": color::hex(status_color(status)),
         "blinking": status_blinks(status),
+        // The row's click target. Present on every row, including an
+        // unreachable one: not being able to read a repo's runs is precisely
+        // when you want to go and look at them.
+        "url": actions_url(&health.repo),
+        "linkLabel": open_label(&health.repo),
         "cells": [
             count_cell(health.open_issues, ISSUES_W, color::INK),
             count_cell(health.open_prs, PRS_W, color::INK),
@@ -921,6 +951,97 @@ mod tests {
             repos_view(&state, now())["message"]["text"],
             UNAUTHENTICATED_MESSAGE
         );
+    }
+
+    // MARK: - Repos: the row's tap target
+
+    /// Character-for-character parity with `GHWorkflowsPanel.openActions(_:)`.
+    #[test]
+    fn a_row_carries_the_swift_tap_target() {
+        let state = ready(vec![health_of(
+            "Sassy-Dog/devcanopy",
+            &[],
+            RepoCounts::default(),
+        )]);
+        let row = only_row(&state, now());
+        assert_eq!(row["url"], "https://github.com/Sassy-Dog/devcanopy/actions");
+        assert_eq!(
+            row["linkLabel"],
+            "Open Sassy-Dog/devcanopy on GitHub Actions"
+        );
+    }
+
+    /// Not being able to read a repo's runs is exactly when you want to go and
+    /// look at them, so the unreachable row is clickable too.
+    #[test]
+    fn an_unreachable_row_is_still_clickable() {
+        let state = ready(vec![RepoWorkflowHealth::unreachable("Sassy-Dog/platform")]);
+        assert_eq!(
+            only_row(&state, now())["url"],
+            "https://github.com/Sassy-Dog/platform/actions"
+        );
+    }
+
+    /// The security half of tap-to-open, and the closest thing to an automated
+    /// check the ACL has (#123 still owns the IPC boundary itself).
+    ///
+    /// Reads the **real** `capabilities/default.json`, rebuilds the granted
+    /// glob with the same `glob::Pattern` the plugin uses, and asserts it both
+    /// admits every URL [`actions_url`] can produce and refuses everything
+    /// else — including the App links this app deliberately still cannot open.
+    /// Widening the scope in that file breaks this test, which is the point.
+    #[test]
+    fn actions_url_is_the_only_shape_the_granted_scope_admits() {
+        const CAPABILITY: &str = include_str!("../../capabilities/default.json");
+        let capability: Value = serde_json::from_str(CAPABILITY).expect("valid capability JSON");
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("permissions array");
+
+        // One grant, and it is the opener's. A second entry here is a widening
+        // that has to be argued for in app/README.md first.
+        assert_eq!(
+            permissions.len(),
+            1,
+            "the ACL grants exactly one permission"
+        );
+        assert_eq!(permissions[0]["identifier"], "opener:allow-open-url");
+
+        let allow = permissions[0]["allow"].as_array().expect("allow array");
+        assert_eq!(allow.len(), 1, "one URL shape, not a list of them");
+        // No `app` key: the entry keeps `Application::Default`, so the webview
+        // cannot name *which* program opens the URL either.
+        assert!(
+            allow[0].get("app").is_none(),
+            "the scope must not let the caller pick an application"
+        );
+        let pattern =
+            glob::Pattern::new(allow[0]["url"].as_str().expect("scope url")).expect("valid glob");
+
+        for slug in [
+            "Sassy-Dog/devcanopy",
+            "Sassy-Dog/qr-ninja",
+            "o/r",
+            "some-org/some.repo",
+        ] {
+            let url = actions_url(slug);
+            assert!(pattern.matches(&url), "the scope must admit {url}");
+        }
+
+        for refused in [
+            // The About tab's links — still unopenable, and that is deliberate.
+            "https://github.com/Sassy-Dog/devcanopy",
+            "https://github.com/Sassy-Dog/devcanopy/issues",
+            "https://github.com/settings/tokens",
+            // Anywhere else at all.
+            "https://evil.example/actions",
+            "http://github.com/o/r/actions",
+            "https://github.com.evil.example/o/r/actions",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+        ] {
+            assert!(!pattern.matches(refused), "the scope must refuse {refused}");
+        }
     }
 
     // MARK: - Repos: the "—" vs dimmed-0 rule

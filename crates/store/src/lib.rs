@@ -585,6 +585,9 @@ mod tests {
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 100_000,
             openclaw_gateway_url: "https://gateway.example".into(),
+            // Flipped off the default so the round trip proves the field
+            // persists rather than reappearing from `Default`.
+            notify_on_approval_needed: false,
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
         });
 
@@ -604,6 +607,7 @@ mod tests {
         let reopened = Store::open_in(dir.path()).expect("reopen");
         assert_eq!(reopened.data(), store.data());
         assert_eq!(reopened.settings().refresh_interval_secs, 300);
+        assert!(!reopened.settings().notify_on_approval_needed);
         assert_eq!(reopened.hosts().len(), 2);
         assert_eq!(
             reopened.host(host_id).expect("host").hidden_volume_mounts,

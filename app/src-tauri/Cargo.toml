@@ -55,8 +55,16 @@ uuid = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tauri = "2"
 serde_json = { workspace = true }
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-notification = "2.3.3"
 
 [dev-dependencies]
 # Seed/store tests write a real store file in a throwaway directory rather
 # than mocking the filesystem — same as crates/store's own tests.
 tempfile = "3"
+# The ACL scope test rebuilds the granted `opener:allow-open-url` glob with the
+# **same** matcher `tauri-plugin-opener` enforces it with, so the assertion is
+# about the real rule rather than a second reading of it. Same pin as the
+# plugin's, so one glob resolves for the workspace; test-only, so it adds
+# nothing to the shipped binary.
+glob = "0.3"

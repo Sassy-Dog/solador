@@ -157,6 +157,18 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-row .grow { min-width:8px; }
 .panel-health { font-size:10px; margin:4px 0 0; }
 
+/* A repo row opens its GitHub Actions page. The affordance is deliberately
+   quiet -- this is a glanceable cockpit on a second monitor, and a row that
+   underlines or brightens at rest would compete with the status dot beside it.
+   The negative margin plus matching padding keeps the highlight bleeding a
+   little past the text without moving a single column, which the whole panel's
+   legibility depends on. `:focus-visible`, not `:focus`, so the ring appears
+   for the keyboard and never for the mouse. */
+.gh-row-link { cursor:pointer; border-radius:3px;
+  margin:0 -4px; padding:0 4px; }
+.gh-row-link:hover { background:rgba(255,255,255,0.06); }
+.gh-row-link:focus-visible { outline:1px solid var(--muted); outline-offset:0; }
+
 /* A repo parked at a deployment-protection gate. The pulse is what separates
    "a human must act" from "a machine is working" -- both are amber, and a
    second amber would not have told them apart. */

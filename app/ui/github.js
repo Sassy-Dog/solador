@@ -78,6 +78,29 @@ function repoHeader(columns) {
   return el;
 }
 
+/**
+ * Opens a repo row's GitHub Actions page in the user's real browser.
+ *
+ * `row.url` is Rust's (`github::actions_url`) and is never built here: the
+ * granted ACL scope in `src-tauri/capabilities/default.json` admits exactly
+ * that one URL shape, so a URL composed in this file would be a second author
+ * of the only string the webview is trusted with. It is passed straight
+ * through, unmodified.
+ *
+ * `plugin:opener|open_url` is the raw IPC spelling of the opener plugin's
+ * command. Using it rather than `window.__TAURI__.opener.openUrl` keeps this
+ * file on the same single seam as every other call the app makes — `invoke`,
+ * which the Playwright suite already stubs and records — instead of a second
+ * injected global that offline (and under test) is not there at all.
+ */
+function openRepo(url) {
+  if (!window.__TAURI__ || !url) return;
+  // A rejected scope surfaces here as a rejected promise. Swallowed on
+  // purpose: `NSWorkspace.open` is a discard in Swift too, and a cockpit panel
+  // is the wrong place to report that a click went nowhere.
+  window.__TAURI__.core.invoke("plugin:opener|open_url", { url }).catch(() => {});
+}
+
 function repoRowNode(row) {
   const el = node("div", "gh-row");
   const dot = node("span", "dot");
@@ -87,6 +110,22 @@ function repoRowNode(row) {
   if (row.blinking) dot.classList.add("blink");
   el.append(dot, node("span", "gh-repo-name", row.name), node("span", "grow"));
   for (const cell of row.cells) el.appendChild(cellNode("gh-cell", cell));
+
+  // The Swift panel's `onTapGesture` + `NSWorkspace.open`. A `div` is not a
+  // link, so the affordances a real one would carry are spelled out: a role
+  // and a Rust-authored accessible name (the row's own text is seven numbers),
+  // a tab stop, and Enter — a click-only target is a target a keyboard cannot
+  // reach.
+  if (row.url) {
+    el.classList.add("gh-row-link");
+    el.setAttribute("role", "link");
+    el.setAttribute("aria-label", row.linkLabel);
+    el.tabIndex = 0;
+    el.addEventListener("click", () => openRepo(row.url));
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") openRepo(row.url);
+    });
+  }
   return el;
 }
 
