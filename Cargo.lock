@@ -629,6 +629,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "devcanopy-github"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "devcanopy-store"
 version = "0.1.0"
 dependencies = [

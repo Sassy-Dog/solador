@@ -1,0 +1,47 @@
+{
+  "total_count": 4,
+  "runners": [
+    {
+      "id": 12,
+      "name": "mac-s1",
+      "os": "macOS",
+      "status": "online",
+      "busy": true,
+      "labels": [
+        { "id": 1, "name": "self-hosted", "type": "read-only" },
+        { "id": 2, "name": "macOS", "type": "read-only" },
+        { "id": 3, "name": "ARM64", "type": "read-only" }
+      ]
+    },
+    {
+      "id": 13,
+      "name": "mac-s2",
+      "os": "macOS",
+      "status": "online",
+      "busy": false,
+      "labels": [
+        { "id": 1, "name": "self-hosted", "type": "read-only" },
+        { "id": 2, "name": "macOS", "type": "read-only" }
+      ]
+    },
+    {
+      "id": 21,
+      "name": "ubu-3xdv",
+      "os": "Linux",
+      "status": "online",
+      "busy": false,
+      "labels": [
+        { "id": 1, "name": "self-hosted", "type": "read-only" },
+        { "id": 4, "name": "Linux", "type": "read-only" }
+      ]
+    },
+    {
+      "id": 22,
+      "name": "ubu-old",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "labels": [{ "id": 1, "name": "self-hosted", "type": "read-only" }]
+    }
+  ]
+}
