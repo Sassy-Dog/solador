@@ -154,6 +154,57 @@ mod tests {
         );
     }
 
+    /// Every panel's staleness window, pinned against the Swift panel that
+    /// owns it.
+    ///
+    /// The ladder above being right is worth nothing if a panel hands it the
+    /// wrong window, and a drifted constant is otherwise invisible: a footer
+    /// that appears an hour late looks exactly like a panel that is simply
+    /// fresh. Swift ground truth, panel for panel:
+    ///
+    /// | panel | window | Swift |
+    /// |---|---|---|
+    /// | Containers | 30s | `Views/Cockpit/Panels/ContainersPanel.swift:40` |
+    /// | Runners | 150s | `Views/Cockpit/Panels/GHRunnersPanel.swift:37` |
+    /// | Claude usage | 150s | `Views/Cockpit/Panels/ClaudeUsagePanel.swift:43` |
+    /// | Neon + Sentry | 5400s | `ClaudeUsagePanel.swift:60`, `:83` |
+    /// | Azure Cost | 18000s | `Views/Cockpit/Panels/AzureCostPanel.swift:27` |
+    ///
+    /// Hosts, Repos and OpenClaw are absent on purpose — none of the three
+    /// renders a status footer on either side. Hosts carries staleness on the
+    /// per-card connection dot instead, Repos degrades the per-repo dot to
+    /// unreachable, and OpenClaw is event-driven so it has no cadence to be
+    /// late against.
+    #[test]
+    fn every_panels_staleness_window_matches_its_swift_panel() {
+        let windows: [(&str, u64, u64); 5] = [
+            ("containers", crate::containers::STALE_AFTER_SECS, 30),
+            ("runners", crate::github::RUNNERS_STALE_AFTER_SECS, 150),
+            ("claude usage", crate::usage::CLAUDE_STALE_AFTER_SECS, 150),
+            (
+                "neon + sentry",
+                crate::usage::PROVIDER_STALE_AFTER_SECS,
+                90 * 60,
+            ),
+            ("azure cost", crate::azure::STALE_AFTER_SECS, 5 * 60 * 60),
+        ];
+        for (panel, window, swift) in windows {
+            assert_eq!(window, swift, "{panel} drifted from its Swift panel");
+            // And the constant is live, not merely declared: exactly at the
+            // window is still fresh, one second past it is a footer.
+            assert_eq!(
+                status_footer(Some(NOW - window), None, NOW, window),
+                Value::Null,
+                "{panel} should be fresh at exactly its window"
+            );
+            assert!(
+                text_of(&status_footer(Some(NOW - window - 1), None, NOW, window))
+                    .is_some_and(|text| text.starts_with("⚠ stale")),
+                "{panel} should be stale one second past its window"
+            );
+        }
+    }
+
     #[test]
     fn the_footer_is_always_amber() {
         let footer = status_footer(Some(NOW - 900), None, NOW, 150);

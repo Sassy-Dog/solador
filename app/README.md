@@ -1,10 +1,19 @@
-# DevCanopy Walking Skeleton (`app/`)
+# DevCanopy Cross-Platform Cockpit (`app/`)
 
 An experimental cross-platform shell proving out a macOS/Windows-portable stack: a
-[Tauri v2](https://v2.tauri.app) app that samples this machine and polls every
-configured DevCanopy [agent](../agent/README.md), rendering one host-monitoring
-card per host in a width-aware grid. The shipped product is still the SwiftUI app
-in [`DevCanopy/`](../DevCanopy) — this is a skeleton, not a replacement.
+[Tauri v2](https://v2.tauri.app) app that renders the **whole cockpit** the SwiftUI
+app renders — the local card plus one card per configured DevCanopy
+[agent](../agent/README.md), then the **Containers/VMs**, **Repos**, **GitHub
+Runners**, **Usage** (Claude + Neon + Sentry), **Azure Cost** and **OpenClaw**
+panels — reflowed into rows for the measured width, and configured from an in-app
+**Settings** surface backed by the OS credential store.
+
+It began as a walking skeleton (one host card, one command). It is not one any
+more: [#150](https://github.com/Sassy-Dog/devcanopy/issues/150) took it to panel
+parity across fourteen slices. What it still is not is *shipped* — the product you
+install is the SwiftUI app in [`DevCanopy/`](../DevCanopy), which stays untouched.
+Packaging, signing and updates are [#15](https://github.com/Sassy-Dog/devcanopy/issues/15)'s,
+not this tree's.
 
 ```
 app/
@@ -36,9 +45,24 @@ app/
 
 Every string and colour the frontend paints comes from Rust
 ([`crates/viewmodel`](../crates/viewmodel)); the frontend does layout and nothing
-else. It lives in the root Cargo workspace alongside `crates/wire`,
-`crates/viewmodel`, `crates/agentclient`, and `crates/store` — distinct from
-`agent/`, which pins its own toolchain and has its own CI job.
+else. That split is why the panels are testable without a webview at all: a panel
+is a function returning JSON, and the offline fixtures below are that same JSON
+dumped to disk.
+
+The shell sits at the top of the root Cargo workspace — distinct from `agent/`,
+which pins its own toolchain and has its own CI job:
+
+| crate | what it owns |
+|---|---|
+| [`wire`](../crates/wire) | the agent's JSON contract (package `devcanopy-wire`, imported as `wire`) |
+| [`agentclient`](../crates/agentclient) | the HTTP client for `/v1/snapshot`, `/v1/containers`, `/v1/health` |
+| [`viewmodel`](../crates/viewmodel) | every string, colour and layout number the frontend paints |
+| [`store`](../crates/store) | settings / hosts / repos / rules / roster JSON + the OS credential store |
+| [`localhost`](../crates/localhost) | this machine's metrics; every field the platform can decline is an `Option` |
+| [`github`](../crates/github) | the GitHub REST client: workflows, runners, roster/presence |
+| [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats |
+| [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
+| [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
 
 ## The `cockpit` command
 
@@ -668,13 +692,72 @@ capability file deleted outright. Three configurations, one result — it is not
 measuring the ACL at all. WebDriver automation was considered and rejected on
 2026-07-31: `tauri-driver` has no macOS support (WKWebView ships no WebDriver), so
 the only automatable host would be the GitHub-hosted Windows job — an oversized
-harness for a walking skeleton, covering only the Windows build path. Trade-off
-accepted: ACL and command-registration regressions are **documented, not
-prevented**. Revisit if the skeleton graduates.
+harness for what was then a walking skeleton, covering only the Windows build
+path. Trade-off accepted: ACL and command-registration regressions are
+**documented, not prevented**.
+
+**That rationale is now weaker than it was.** It was priced against one command
+and one card; the surface it leaves unguarded is now nine commands and eight
+panels, and the checklist below has grown with it. The trade-off still holds —
+`tauri-driver` still has no macOS support, so the cost side has not moved — but
+"revisit if the skeleton graduates" has arguably come due. Re-priced during the
+#150 close-out audit (#178) and left standing; the deferred register there names
+it.
 
 So this is a manual step. Run it after changing anything under
 `src-tauri/capabilities/`, the `invoke_handler` registration, or any frontend
 `invoke` call — including the settings ones, which is what step 5 is for.
+
+### The five-minute checklist
+
+Every command's boundary check, in one pass, with no credentials and no live
+agent. This is the whole test for a routine change; the annotated procedure
+below explains *why* each line is the signal, and the credentialed and live-agent
+paths are the ⏱ extras at the end.
+
+```bash
+rm -f app/ui/sample*.json                      # 1. fixtures MUST be gone
+DEVCANOPY_STORE_DIR=$(mktemp -d) \
+DEVCANOPY_SEED_HOST="smoke-$(date +%H%M%S)|100.87.202.125|7878" \
+  cargo run -p devcanopy-app                   # 2. scratch store, distinctive name
+```
+
+Then tick these off. Seven terminal lines and four on-screen reads — the terminal
+half works on a machine whose screen you cannot see.
+
+- [ ] **Terminal** — `cockpit: first frontend request (1 host(s), <N>pt)`
+- [ ] **Terminal** — `containers: first frontend request (N section(s))`
+- [ ] **Terminal** — `repos: first frontend request (N repo row(s))` — **0 is a pass**
+- [ ] **Terminal** — `runners: first frontend request (N runner row(s))` — **0 is a pass**
+- [ ] **Terminal** — `usage: first frontend request (N provider section(s))` — **0 is a pass**
+- [ ] **Terminal** — `azure_cost: first frontend request (headline: false)` — **false is a pass**
+- [ ] **Terminal** — `openclaw: first frontend request (trailing: "")` — **empty is a pass**
+- [ ] **Screen** — the **local card** leads the host grid with this machine's name, a
+      green dot, CPU/memory changing between ticks, and on macOS `Pressure: —` and
+      `VRAM: —`. Those em dashes are the check, not a defect.
+- [ ] **Screen** — the seeded host card shows the name you passed, then either live
+      figures or one of the two named failure sentences (see [Pass](#pass)).
+- [ ] **Screen** — **Containers / VMs** shows a `N total · N up · N stopped` line, or
+      the sentence `no container runtimes`. Allow 10s — that is the panel's cadence.
+- [ ] **Click Settings** → terminal prints
+      `settings: first frontend request (N host(s), N repo(s))`, the Hosts tab lists
+      your seeded host, and **Done** returns to the cockpit.
+
+All eleven ticked ⇒ every registered command round-tripped through the ACL and the
+IPC transport. **A zero, a `false` or an empty string is a pass**: those are Rust's
+own unconfigured sentences, and none of them has a path to the DOM except a
+successful `invoke`. What fails this test is a *missing line* or a blank panel.
+
+⏱ **Extras** — only when you touched that surface. Each applies without a relaunch,
+and that immediacy is itself the check on the corresponding wake:
+
+| Touched | Do | Expect |
+|---|---|---|
+| `github_wake` / Repos / Runners | save a fine-grained PAT under Settings → GitHub | both panels fill within seconds; **Clear** drops them back just as fast. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
+| `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
+| usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
+| `openclaw_wake` | put a gateway URL under Settings → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
+| a live agent | re-run step 2 with `\|$TOKEN` appended to `DEVCANOPY_SEED_HOST` | the host card fills with live figures and a green dot |
 
 ### Procedure
 

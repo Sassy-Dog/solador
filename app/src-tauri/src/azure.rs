@@ -219,10 +219,16 @@ impl AzureState {
 // MARK: - View
 
 /// A `LABEL … $value` row (PRIOR MONTH, PROJECTED).
-fn stat_row(label: &str, amount: f64) -> Value {
+///
+/// `None` is the em dash, not `$0.00`. Swift's panel renders a missing
+/// prior-month export as a real-looking `$0.00` (`AzureCostPanel.swift:59` over
+/// a non-optional `spendPriorMonth`); the port diverges deliberately because the
+/// no-fake-numbers rule outranks bug-for-bug parity — a month that genuinely
+/// cost nothing and a month nobody could read must not print the same string.
+fn stat_row(label: &str, amount: Option<f64>) -> Value {
     json!({
         "label": label,
-        "value": usd(amount),
+        "value": amount.map_or_else(|| UNKNOWN.to_owned(), usd),
         "valueColor": color::hex(color::INK),
     })
 }
@@ -308,7 +314,7 @@ pub fn view(state: &AzureState, budget: f64, now: u64) -> Value {
     });
     payload["stats"] = json!([
         stat_row("PRIOR MONTH", summary.spend_prior_month),
-        stat_row("PROJECTED", summary.spend_projected),
+        stat_row("PROJECTED", Some(summary.spend_projected)),
     ]);
 
     // No budget set means no bar — not a bar against a defaulted zero, which
@@ -377,7 +383,7 @@ pub fn fixture_state(kind: Fixture, at: u64) -> AzureState {
     };
     let summary = azurecost::CostSummary {
         spend_mtd: 1_284.55,
-        spend_prior_month: 2_011.40,
+        spend_prior_month: Some(2_011.40),
         spend_projected: 1_942.18,
         by_resource: costs(&[
             ("rg-platform", 612.10),
@@ -608,6 +614,38 @@ mod tests {
         assert_eq!(stats[0]["value"], "$2,011.40");
         assert_eq!(stats[1]["label"], "PROJECTED");
         assert_eq!(stats[1]["value"], "$1,942.18");
+    }
+
+    /// The no-fake-numbers rule at its sharpest: a month nobody could read must
+    /// not print the same string as a month that genuinely cost nothing. The
+    /// crate keeps them apart as `None` vs `Some(0.0)` and the row must too.
+    #[test]
+    fn an_unreadable_prior_month_renders_the_em_dash_not_a_zero() {
+        let mut state = measured();
+        if let Some(summary) = state.summary.as_mut() {
+            summary.spend_prior_month = None;
+        }
+        let payload = view(&state, BUDGET, NOW);
+        let stats = payload["stats"].as_array().unwrap();
+        assert_eq!(stats[0]["label"], "PRIOR MONTH");
+        assert_eq!(stats[0]["value"], UNKNOWN);
+        assert_eq!(
+            stats[1]["value"], "$1,942.18",
+            "an unknown prior month must not disturb the projection"
+        );
+    }
+
+    /// The other half of the same distinction: a real $0.00 month still prints
+    /// a real $0.00, so the em dash above is carrying information rather than
+    /// swallowing the low end of the range.
+    #[test]
+    fn a_genuinely_zero_prior_month_still_renders_as_money() {
+        let mut state = measured();
+        if let Some(summary) = state.summary.as_mut() {
+            summary.spend_prior_month = Some(0.0);
+        }
+        let payload = view(&state, BUDGET, NOW);
+        assert_eq!(payload["stats"][0]["value"], "$0.00");
     }
 
     #[test]

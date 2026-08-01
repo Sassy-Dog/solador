@@ -2465,6 +2465,71 @@ mod tests {
         format!("{}%", fixture().cpu.total_usage.round() as i64)
     }
 
+    // MARK: cadences
+
+    /// Which clock each data source runs on, pinned against the Swift service
+    /// that owns it.
+    ///
+    /// The user-facing refresh interval governs the two GitHub panels and
+    /// Claude usage **and nothing else** — every other source has a fixed
+    /// cadence chosen by what it is polling, and wiring one of them to the
+    /// user's setting would be a real bug that no other test would catch. A
+    /// 4h Azure export polled every 30s is 480 pointless blob listings an
+    /// hour; a 1s host poll slowed to 300s is a dead chart axis, since one
+    /// history sample is one fixed time slice.
+    ///
+    /// | source | cadence | governed by `refresh_interval_secs`? | Swift |
+    /// |---|---|---|---|
+    /// | Hosts (local + remote) | 1s | no | `RemoteHostMetricsService.swift:94` |
+    /// | Containers | 10s | no | `LocalContainerService.swift:132` |
+    /// | Repos + Runners | user's | **yes** — `github_loop` | `DevCanopyApp.swift:136-137` |
+    /// | Claude usage | user's | **yes** — `usage_loop` | `DevCanopyApp.swift:134` |
+    /// | Neon + Sentry | 1h | no | `NeonUsageService.swift:81` |
+    /// | Azure Cost | 4h | no | `AzureCostService.swift:343` |
+    /// | OpenClaw | none — event-driven | no | `OpenClawService.swift:72` |
+    ///
+    /// The "yes" rows are structural rather than constants, so they are pinned
+    /// by where they read the store rather than here: `github_loop` reads
+    /// `refresh_interval_secs` at its top and `usage_loop` at its own, and no
+    /// other loop in this file reads it at all.
+    #[test]
+    fn every_data_source_polls_on_its_swift_services_cadence() {
+        let cadences: [(&str, u64, u64); 4] = [
+            ("hosts", POLL_INTERVAL.as_secs(), 1),
+            ("containers", containers::POLL_INTERVAL_SECS, 10),
+            ("neon + sentry", usage::PROVIDER_POLL_INTERVAL_SECS, 60 * 60),
+            (
+                "azure cost",
+                azurecost::POLL_INTERVAL.as_secs(),
+                4 * 60 * 60,
+            ),
+        ];
+        for (source, cadence, swift) in cadences {
+            assert_eq!(cadence, swift, "{source} drifted from its Swift service");
+        }
+
+        // The user's choices, which the two governed loops read. Pinned here
+        // too because a fourth choice — or a changed default — silently
+        // redefines what "the refresh interval" means for those loops.
+        assert_eq!(
+            store::settings::REFRESH_INTERVAL_CHOICES,
+            [30, 60, 300],
+            "the refresh-interval choices are Swift's RefreshInterval cases"
+        );
+        assert_eq!(store::settings::DEFAULT_REFRESH_INTERVAL_SECS, 60);
+
+        // No fixed cadence may coincide with the default refresh interval:
+        // that is what would let a loop be wired to the wrong clock and still
+        // look correct out of the box.
+        for (source, cadence, _) in cadences {
+            assert_ne!(
+                cadence,
+                u64::from(store::settings::DEFAULT_REFRESH_INTERVAL_SECS),
+                "{source}'s fixed cadence must not be confusable with the default refresh interval"
+            );
+        }
+    }
+
     // MARK: view_for
 
     #[test]

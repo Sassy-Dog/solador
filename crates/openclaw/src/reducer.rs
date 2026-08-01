@@ -488,7 +488,15 @@ mod tests {
         assert_eq!(usage.total_tokens, 900, "the updatedAt=5000 one");
         assert_eq!(usage.context_tokens, 42);
         assert_eq!(usage.updated_at_ms, Some(5000));
-        // Absent counters are zero, not a fabricated figure.
+        // Absent counters currently collapse to zero — which *is* a fabricated
+        // figure, and the one place in the app that still produces one. The
+        // gateway sends these as `Option<i64>` (`rpc.rs`), `usage_rollup`
+        // flattens them with `unwrap_or(0)` above, and the panel then paints
+        // "0 tokens · ctx 0" for a session that simply did not report. Pinned
+        // here as the known-wrong behaviour so the fix — `Option` through
+        // `SessionUsageRollup` and an em dash in `openclaw::usage_row` — has to
+        // come past this assertion and rewrite it deliberately. Tracked in the
+        // #178 deferred register (#150 close-out).
         assert_eq!(usage.input_tokens, 0);
         assert_eq!(usage.output_tokens, 0);
     }
