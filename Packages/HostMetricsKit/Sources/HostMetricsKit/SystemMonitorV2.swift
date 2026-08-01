@@ -35,8 +35,12 @@ class SystemMonitorV2 {
     private var metalDevice: MTLDevice?
     private let gpuMonitor = GPUMonitor()
 
-    // Process CPU tracking for percentage calculation
+    /// Process CPU tracking for percentage calculation
     private var previousProcessCPUTimes: [pid_t: UInt64] = [:]
+
+    /// Process disk I/O tracking — see `ProcessDiskIOSampler`.
+    private var processDiskIO = ProcessDiskIOSampler()
+
     private var lastProcessUpdateTime = Date()
 
     init() {
@@ -236,13 +240,20 @@ class SystemMonitorV2 {
             // Get process CPU usage
             let cpuUsage = getProcessCPUUsage(pid: pid, proc: proc)
 
+            // Get process disk I/O rates (nil where rusage is denied or there is
+            // no prior sample — unknown, never a fabricated 0)
+            let diskIO = processDiskIO.rates(
+                pid: pid,
+                elapsedSeconds: Date().timeIntervalSince(lastProcessUpdateTime)
+            )
+
             let process = ProcessItem(
                 pid: pid,
                 name: name,
                 cpuUsage: cpuUsage,
                 memoryUsage: memoryUsage,
-                diskReadBytes: 0, // TODO: Get disk I/O stats
-                diskWriteBytes: 0,
+                diskReadBytes: diskIO.read,
+                diskWriteBytes: diskIO.written,
                 isSystemProcess: isSystem
             )
 
@@ -261,9 +272,10 @@ class SystemMonitorV2 {
             Logger.monitor.warning("No processes collected!")
         }
 
-        // Clean up stale CPU time entries for processes that no longer exist
+        // Clean up stale CPU time / disk I/O baselines for processes that no longer exist
         let currentPIDs = Set(processes.map(\.id))
         previousProcessCPUTimes = previousProcessCPUTimes.filter { currentPIDs.contains($0.key) }
+        processDiskIO.forgetPIDs(notIn: currentPIDs)
 
         // Update the timestamp for next CPU percentage calculation
         lastProcessUpdateTime = Date()
