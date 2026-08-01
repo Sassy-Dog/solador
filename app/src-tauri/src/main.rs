@@ -2208,8 +2208,12 @@ fn dump_container_rules() -> Vec<ContainerGroupRule> {
             .on_host(store::LOCAL_HOST_SCOPE),
     );
     rules.push(
-        ContainerGroupRule::new("legacy-*", "legacy jobs", store::ContainerRuleAction::Collapse)
-            .on_host("retired-box"),
+        ContainerGroupRule::new(
+            "legacy-*",
+            "legacy jobs",
+            store::ContainerRuleAction::Collapse,
+        )
+        .on_host("retired-box"),
     );
     rules
 }
@@ -3084,6 +3088,89 @@ mod tests {
         assert_eq!(stacked_view(None, &hosts, 0.0)["hostColumns"], 1);
     }
 
+    // MARK: the tab-bar decision
+
+    /// N host cards, named, in payload order — enough of a card for the tab
+    /// bar, which reads only `id` and the host name.
+    fn tab_cards(names: &[&str]) -> Vec<Value> {
+        names
+            .iter()
+            .map(|name| json!({ "id": *name, "hostName": *name }))
+            .collect()
+    }
+
+    /// The mode's whole purpose: below the side-by-side breakpoint, `tabs`
+    /// produces a tab bar where `stack` produces nothing — with the *same*
+    /// cards and the same width, so nothing but the preference moved.
+    #[test]
+    fn the_tabs_preference_collapses_the_stacked_grid_into_a_tab_bar() {
+        let cards = tab_cards(&["mac-studio", "ubu-3xdv", "nuc-spare"]);
+
+        let tabbed = cockpit_payload(cards.clone(), 2, 1000.0, HostOverflowMode::Tabs);
+        assert_eq!(tabbed["hostColumns"], 1, "1000pt cannot pair 900pt cards");
+        let tabs = tabbed["hostTabs"]["tabs"].as_array().expect("tabs");
+        // One per card, in payload order, so this machine leads the bar exactly
+        // as it leads the grid.
+        assert_eq!(
+            tabs.iter()
+                .map(|tab| tab["label"].as_str().expect("label"))
+                .collect::<Vec<_>>(),
+            vec!["mac-studio", "ubu-3xdv", "nuc-spare"]
+        );
+        assert_eq!(tabs[1]["id"], "ubu-3xdv");
+        // The container's floor is Rust's, matching HostsPanel's
+        // `.frame(minHeight: 780)`: only one card is on screen at a time, so
+        // nothing else is sizing it.
+        assert_eq!(tabbed["hostTabs"]["minHeight"], 780.0);
+
+        // Stack is the default and is unchanged — every card stays on the page.
+        let stacked = stacked_payload(cards, 2, 1000.0);
+        assert!(stacked["hostTabs"].is_null());
+        assert_eq!(stacked["hostColumns"], 1);
+    }
+
+    /// Above the breakpoint the preference is inert: the cards fit side by
+    /// side, so there is no overflow to resolve. A frontend deciding this for
+    /// itself would be `host_tabs` re-implemented in JS.
+    #[test]
+    fn the_tabs_preference_does_nothing_while_the_cards_still_fit() {
+        let cards = tab_cards(&["mac-studio", "ubu-3xdv"]);
+        // 2 * 900 + 16 = 1816: exactly enough for two cards.
+        let paired = cockpit_payload(cards.clone(), 1, 1816.0, HostOverflowMode::Tabs);
+        assert_eq!(paired["hostColumns"], 2);
+        assert!(paired["hostTabs"].is_null());
+
+        // One point narrower and they stack — which is where tabs take over.
+        let narrow = cockpit_payload(cards, 1, 1815.0, HostOverflowMode::Tabs);
+        assert_eq!(narrow["hostColumns"], 1);
+        assert!(!narrow["hostTabs"].is_null());
+    }
+
+    /// A tab bar over a single card is chrome around nothing — and a fresh
+    /// install is exactly that: the local card, alone.
+    #[test]
+    fn a_lone_host_gets_no_tab_bar_however_narrow_the_window() {
+        let vm = cockpit_payload(tab_cards(&["mac-studio"]), 0, 320.0, HostOverflowMode::Tabs);
+        assert_eq!(vm["hostColumns"], 1);
+        assert!(vm["hostTabs"].is_null());
+    }
+
+    /// A host that never connected carries its name under `error`, not at the
+    /// top level. Labelling from the wrong key leaves the tab blank for
+    /// precisely the host you opened the cockpit to find.
+    #[test]
+    fn a_failed_host_still_gets_a_labelled_tab() {
+        let mut failed = pending_card("nuc-spare", &Pending::Failed("down".to_owned()));
+        failed["id"] = json!("nuc-spare");
+        assert!(failed.get("hostName").is_none(), "the shape this guards");
+
+        let cards = vec![json!({ "id": "local", "hostName": "mac-studio" }), failed];
+        let vm = cockpit_payload(cards, 1, 1000.0, HostOverflowMode::Tabs);
+        let tabs = vm["hostTabs"]["tabs"].as_array().expect("tabs");
+        assert_eq!(tabs[1]["label"], "nuc-spare");
+        assert_eq!(tabs[1]["id"], "nuc-spare");
+    }
+
     #[test]
     fn the_payload_carries_the_grid_constants_and_the_panel_table() {
         let vm = stacked_payload(vec![], 0, 1000.0);
@@ -3486,6 +3573,21 @@ mod tests {
         // against numbers Rust produced.
         assert_eq!(stacked_dump(1000.0, 3)["hostColumns"], 1);
 
+        // The same cards, the same width, and the tabs preference: the fixture
+        // the Playwright suite drives the tab bar with. If this ever stopped
+        // producing one, that suite would be asserting against a stacked grid
+        // and passing.
+        let tabs = dump_cockpit(1000.0, 3, HostOverflowMode::Tabs);
+        assert_eq!(tabs["hostColumns"], 1);
+        assert_eq!(
+            tabs["hostTabs"]["tabs"]
+                .as_array()
+                .expect("the tabs fixture must carry a tab bar")
+                .len(),
+            4,
+            "one tab per card, the local one included"
+        );
+
         // …and no *remote* hosts at all is the unconfigured cockpit: the local
         // card still leads it, because this machine is always there.
         let none = stacked_dump(1000.0, 0);
@@ -3532,6 +3634,71 @@ mod tests {
             .as_array()
             .expect("repo rows")
             .is_empty());
+    }
+
+    /// The rules half of the same fixture, and for the same reason: the
+    /// Playwright suite must not be able to pass against a payload that
+    /// quietly lost the rendering it claims to exercise. Between them these
+    /// rows carry every action, both sides of the Collapse-only fields, an
+    /// expectation set and unset, an unscoped rule, and a scope naming a host
+    /// that is not configured.
+    #[test]
+    fn the_settings_fixture_covers_every_rule_rendering_the_editor_has() {
+        let rows = dump_settings()["hosts"]["rules"]["rows"]
+            .as_array()
+            .expect("rule rows")
+            .clone();
+
+        let actions: Vec<&str> = rows
+            .iter()
+            .map(|row| row["action"].as_str().expect("action"))
+            .collect();
+        for action in store::ContainerRuleAction::ALL {
+            assert!(
+                actions.contains(&action.as_str()),
+                "no {} rule in the fixture",
+                action.as_str()
+            );
+        }
+
+        // Collapse-only fields show for Collapse and for nothing else.
+        for row in &rows {
+            assert_eq!(
+                row["collapseOnly"],
+                row["action"] == "collapse",
+                "collapseOnly disagrees with the action on {row}"
+            );
+        }
+
+        // The expected-count field, both ways: a set expectation is a string
+        // (never a number), and an unset one is empty (never "0").
+        assert!(
+            rows.iter().any(|row| row["expected"] == "4"),
+            "no rule carries an expected count"
+        );
+        assert!(
+            rows.iter().any(|row| row["expected"] == ""),
+            "every rule carries an expected count"
+        );
+
+        // An unscoped rule, a scoped one, and one whose host no longer exists —
+        // the case `rule_host_options` grows an extra option for, and the one
+        // where a picker renders blank if it doesn't.
+        assert!(rows.iter().any(|row| row["host"] == ""), "none unscoped");
+        let orphan = rows
+            .iter()
+            .find(|row| row["host"] == "retired-box")
+            .expect("no orphaned host scope in the fixture");
+        let options: Vec<&str> = orphan["hostOptions"]
+            .as_array()
+            .expect("host options")
+            .iter()
+            .map(|option| option["value"].as_str().expect("value"))
+            .collect();
+        assert!(
+            options.contains(&"retired-box"),
+            "the orphaned scope is missing from its own picker: {options:?}"
+        );
     }
 
     #[test]
