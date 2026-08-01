@@ -69,10 +69,17 @@ function paint(el) {
     if (all.length < 2) continue;
     const win = all.slice(Math.max(0, all.length - visible));
     const span = Math.max(hi - lo, 1e-4);
-    const step = win.length > 1 ? w / (win.length - 1) : 0;
+    // Swift parity (Sparkline.swift): the newest sample is pinned at the
+    // right edge and points step left by a FIXED step derived from the
+    // window this width can show — a filling history grows in from the
+    // right at constant density instead of stretching across the full
+    // width and then snapping to a slide once the buffer fills. When
+    // win.length === visible the two formulas agree exactly.
+    const step = visible > 1 ? w / (visible - 1) : 0;
     const pts = win.map((v, i) => {
       const y = 100 - Math.min(Math.max((v - lo) / span, 0), 1) * 100;
-      return `${(i * step).toFixed(2)},${y.toFixed(2)}`;
+      const x = w - (win.length - 1 - i) * step;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
     }).join(" ");
     parts.push(`<polyline points="${pts}" fill="none" stroke="${esc(sr.color)}" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
   }
