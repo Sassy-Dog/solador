@@ -101,6 +101,11 @@ impl GitHubClient {
             token: token.into(),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
+                // GitHub's REST API rejects requests without a User-Agent with
+                // a blanket 403, token permissions notwithstanding. reqwest
+                // sends none by default (URLSession always does, which is why
+                // the Swift port never hit this). Observed live, issue #186.
+                .user_agent(concat!("DevCanopy/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("reqwest client"),
         }
@@ -334,7 +339,7 @@ mod tests {
     use crate::presence::{PresenceState, DEFAULT_GRACE_SECS};
     use crate::runners::{RunnerOs, RunnerState};
     use crate::workflows::RunConclusion;
-    use wiremock::matchers::{header as header_matcher, method, path, query_param};
+    use wiremock::matchers::{header as header_matcher, header_exists, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const RUNS_FIXTURE: &str = include_str!("../tests/fixtures/workflow_runs.json");
@@ -372,6 +377,7 @@ mod tests {
             .and(header_matcher("authorization", "Bearer ghp_s3cret"))
             .and(header_matcher("accept", "application/vnd.github+json"))
             .and(header_matcher("x-github-api-version", API_VERSION))
+            .and(header_exists("user-agent"))
             .and(query_param("per_page", RUNS_PER_PAGE))
             .respond_with(json(RUNS_FIXTURE))
             .mount(&server)

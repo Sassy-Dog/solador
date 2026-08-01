@@ -27,9 +27,13 @@ pub const ROLE: &str = "operator";
 /// Requested scopes, in the exact order they are joined into the signed
 /// payload. Reordering them changes the signature the gateway reconstructs.
 pub const SCOPES: [&str; 3] = ["operator.read", "operator.approvals", "operator.admin"];
-/// Both bounds of the supported WS protocol range. v3 is the only version this
-/// client speaks.
-pub const PROTOCOL_VERSION: u8 = 3;
+/// Both bounds of the supported WS protocol range. The gateway requires a
+/// UI-mode operator client to cover v4 (`maxProtocol >= 4 && minProtocol <= 4`
+/// in its connect gate — v3 tolerance exists only for probe/node modes), and
+/// rejects v3-only clients with `PROTOCOL_MISMATCH`. Observed live against
+/// OpenClaw 2026.7.1-2 (issue #186); the Swift port's v3 predates that gate
+/// and was never live-verified.
+pub const PROTOCOL_VERSION: u8 = 4;
 /// The fixed id used for the connect request, matching the gateway reference
 /// client; the gateway echoes it on the `res`.
 pub const CONNECT_ID: &str = "connect-1";
@@ -367,8 +371,8 @@ mod tests {
         assert_eq!(frame["method"], "connect");
 
         let params = &frame["params"];
-        assert_eq!(params["minProtocol"], 3);
-        assert_eq!(params["maxProtocol"], 3);
+        assert_eq!(params["minProtocol"], 4);
+        assert_eq!(params["maxProtocol"], 4);
         assert_eq!(params["role"], "operator");
         assert_eq!(
             params["scopes"],
