@@ -1,10 +1,12 @@
 //! CockpitTheme, verbatim from `DevCanopy/Views/Cockpit/CockpitTheme.swift`,
 //! plus the chart hues from `HostMetricsPanel.swift`.
 
+pub const BACKGROUND: u32 = 0x0000_0000;
 pub const PANEL: u32 = 0x0005_0805;
 pub const PANEL_ALT: u32 = 0x000A_0F0C;
 pub const LINE: u32 = 0x0013_301F;
 pub const GREEN: u32 = 0x0033_D17A;
+pub const GREEN_DIM: u32 = 0x001C_6B41;
 pub const AMBER: u32 = 0x00E0_9A26;
 pub const RED: u32 = 0x00E0_5A4F;
 pub const MUTED: u32 = 0x005A_6B60;
@@ -110,6 +112,17 @@ mod tests {
     fn hex_renders_six_digit_lowercase() {
         assert_eq!(hex(GREEN), "#33d17a");
         assert_eq!(hex(PANEL), "#050805");
+        // Black must survive as six zeroes, not collapse to "#0".
+        assert_eq!(hex(BACKGROUND), "#000000");
+    }
+
+    /// `greenDim` is the resting/among-the-lines green — it must stay visibly
+    /// darker than `green`, or the two stop reading as a pair.
+    #[test]
+    fn green_dim_is_darker_than_green() {
+        assert_eq!(hex(GREEN_DIM), "#1c6b41");
+        let lum = |c: u32| ((c >> 16) & 0xFF) + ((c >> 8) & 0xFF) + (c & 0xFF);
+        assert!(lum(GREEN_DIM) < lum(GREEN));
     }
 
     #[test]

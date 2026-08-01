@@ -12,6 +12,8 @@ pub const CORE_ROW_SPAN_DEFAULT: usize = 2;
 pub const CORE_GAP: f64 = 8.0;
 /// Narrowest legible core cell; below this the `Core N xx%` label truncates.
 pub const CORE_MIN_CELL: f64 = 104.0;
+/// Widest per-core grid the cockpit will ask for (`coreColumns`' cap).
+pub const CORE_MAX_COLUMNS: usize = 10;
 
 /// Samples retained. Deliberately larger than any chart can show, so widening
 /// a chart reveals more history rather than stretching the same samples.
@@ -52,6 +54,102 @@ pub fn core_visual_rows(count: usize, cols: usize) -> usize {
         return 1;
     }
     count.div_ceil(cols).max(1)
+}
+
+/// Chooses how many columns the per-core CPU grid uses for a given core count —
+/// `coreColumns`, ported from `DevCanopy/Views/Cockpit/CoreGridLayout.swift`.
+/// Where [`core_column_ladder`] offers every rung so the shell can pick by
+/// width, this picks the single count for a fixed-width grid.
+///
+/// Two goals:
+///   1. Divide evenly so the last row is full — no stranded trailing cell.
+///   2. Use **at least 2 rows**, so low-core hosts don't render as one giant
+///      row of tall cells stretched over the fixed block height.
+///
+/// So: the **largest proper divisor of `core_count` that is <= `max_columns`
+/// and leaves >= 2 rows**. Examples (`max_columns` = 10): 36 -> 9 (x4),
+/// 16 -> 8 (x2), 12 -> 6 (x2), 10 -> 5 (x2), 8 -> 4 (x2), 9 -> 3 (x3),
+/// 4 -> 2 (x2).
+///
+/// For prime core counts (5, 7, 11, 13) there is no usable divisor, so we fall
+/// back to the column count with the least last-row waste, keeping >= 2 rows
+/// and ties broken toward fewer rows: 13 -> 7 (x2), 11 -> 6 (x2), 7 -> 4 (x2).
+/// This never collapses to a single row.
+pub fn core_columns(core_count: usize, max_columns: usize) -> usize {
+    // 1 or 2 cores can't sensibly fill two columns: a single column gives <= 2 rows.
+    if core_count <= 2 {
+        return 1;
+    }
+
+    // Largest proper divisor (rows = core_count / c >= 2) within the cap ->
+    // fewest rows, no waste.
+    let best = (1..=max_columns.min(core_count))
+        .rfind(|c| core_count.is_multiple_of(*c) && core_count / c >= 2)
+        .unwrap_or(0);
+    if best >= 2 {
+        return best;
+    }
+
+    // Prime core count: no even split. Least-waste columns that still leave
+    // >= 2 rows.
+    let mut best_columns = 2;
+    let mut best_waste = usize::MAX;
+    let mut best_rows = usize::MAX;
+    for c in 2..=max_columns.max(2) {
+        let rows = core_count.div_ceil(c);
+        if rows < 2 {
+            continue;
+        }
+        let waste = rows * c - core_count;
+        if waste < best_waste || (waste == best_waste && rows < best_rows) {
+            best_waste = waste;
+            best_rows = rows;
+            best_columns = c;
+        }
+    }
+    best_columns
+}
+
+/// How many rows `count` volumes occupy with `columns` columns —
+/// `VolumeGridLayout.rowCount`. Sibling host cards reserve the same number of
+/// slots from this, which is what keeps their volume blocks aligned.
+pub fn volume_row_count(count: usize, columns: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    if columns <= 1 {
+        return count;
+    }
+    if count <= 1 {
+        return 1;
+    }
+    if count.is_multiple_of(2) {
+        count / 2
+    } else {
+        1 + (count - 1) / 2
+    }
+}
+
+/// Splits importance-sorted volumes into rows of one (full width) or two —
+/// `VolumeGridLayout.rows`.
+///
+/// One column -> each volume is its own full-width row. Two columns -> an odd
+/// count gives the most-important (first) volume a full-width top row and pairs
+/// the rest; an even count pairs all.
+pub fn volume_rows<T: Clone>(volumes: &[T], columns: usize) -> Vec<Vec<T>> {
+    if columns < 2 {
+        return volumes.iter().map(|v| vec![v.clone()]).collect();
+    }
+    let mut rows: Vec<Vec<T>> = Vec::new();
+    let rest = if volumes.len().is_multiple_of(2) {
+        volumes
+    } else {
+        // most-important, full-width top row
+        rows.push(vec![volumes[0].clone()]);
+        &volumes[1..]
+    };
+    rows.extend(rest.chunks(2).map(<[T]>::to_vec));
+    rows
 }
 
 /// How many retained samples fit `width_px` at fixed density.
@@ -147,5 +245,126 @@ mod tests {
     fn zero_cores_does_not_panic() {
         assert!(core_column_ladder(0, CORE_MIN_CELL, CORE_GAP).is_empty());
         assert_eq!(core_visual_rows(0, 0), 1);
+    }
+
+    // MARK: core_columns
+
+    fn cols(count: usize) -> usize {
+        core_columns(count, CORE_MAX_COLUMNS)
+    }
+
+    /// Largest proper divisor <= 10 with >= 2 rows — divides evenly, never a
+    /// single tall row.
+    #[test]
+    fn core_columns_prefers_the_largest_even_divisor() {
+        assert_eq!(cols(36), 9); // ubu-3xdv: 9 x 4
+        assert_eq!(cols(16), 8); // 8 x 2
+        assert_eq!(cols(12), 6); // 6 x 2
+        assert_eq!(cols(10), 5); // 5 x 2
+        assert_eq!(cols(9), 3); // 3 x 3
+        assert_eq!(cols(8), 4); // 4 x 2
+        assert_eq!(cols(4), 2); // 2 x 2
+        assert_eq!(cols(64), 8); // 8 x 8 (10 is not a divisor)
+    }
+
+    /// Prime core counts have no even split: least-waste columns keeping >= 2
+    /// rows, ties broken toward fewer rows.
+    #[test]
+    fn core_columns_falls_back_to_least_waste_for_primes() {
+        assert_eq!(cols(7), 4); // 4 x 2, waste 1
+        assert_eq!(cols(13), 7); // 7 x 2, waste 1
+        assert_eq!(cols(11), 6); // 6 x 2, waste 1
+    }
+
+    /// No host should ever render as a single row (rows >= 2 whenever there are
+    /// >= 3 cores).
+    #[test]
+    fn core_columns_always_leaves_at_least_two_rows() {
+        for n in 3..=128usize {
+            let c = cols(n);
+            assert!(c <= CORE_MAX_COLUMNS, "core count {n} exceeded the cap");
+            assert!(
+                core_visual_rows(n, c) >= 2,
+                "core count {n} produced a single row"
+            );
+        }
+    }
+
+    #[test]
+    fn core_columns_edge_cases() {
+        assert_eq!(cols(1), 1);
+        assert_eq!(cols(0), 1);
+        assert_eq!(cols(2), 1); // 1 x 2
+    }
+
+    // MARK: the volume grid
+
+    fn vols(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("/v{i}")).collect()
+    }
+
+    #[test]
+    fn volume_row_count_single_column_is_one_row_per_volume() {
+        assert_eq!(volume_row_count(1, 1), 1);
+        assert_eq!(volume_row_count(5, 1), 5);
+        assert_eq!(volume_row_count(0, 1), 0);
+    }
+
+    #[test]
+    fn volume_row_count_two_columns() {
+        assert_eq!(volume_row_count(1, 2), 1); // single -> one full-width row
+        assert_eq!(volume_row_count(2, 2), 1); // a pair
+        assert_eq!(volume_row_count(3, 2), 2); // full-width top + 1 pair
+        assert_eq!(volume_row_count(8, 2), 4); // four pairs
+        assert_eq!(volume_row_count(7, 2), 4); // full-width top + 3 pairs
+    }
+
+    #[test]
+    fn a_single_volume_is_one_full_width_row() {
+        let rows = volume_rows(&vols(1), 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 1, "a lone volume spans the row");
+    }
+
+    #[test]
+    fn an_odd_count_gives_the_most_important_volume_a_full_width_top_row() {
+        let rows = volume_rows(&vols(5), 2);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].len(), 1, "top row is the most-important volume");
+        let rest: Vec<usize> = rows[1..].iter().map(Vec::len).collect();
+        assert_eq!(rest, vec![2, 2], "rest are paired");
+        assert_eq!(rows[0][0], "/v0", "first (importance-sorted) leads");
+    }
+
+    #[test]
+    fn an_even_count_pairs_all() {
+        let rows = volume_rows(&vols(6), 2);
+        assert_eq!(rows.iter().map(Vec::len).collect::<Vec<_>>(), vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn a_single_column_makes_every_volume_full_width() {
+        let rows = volume_rows(&vols(3), 1);
+        assert_eq!(rows.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 1, 1]);
+    }
+
+    /// Every volume appears exactly once regardless of layout, and the rendered
+    /// row count matches the count sibling cards reserved slots from.
+    #[test]
+    fn no_volume_lost_or_duplicated() {
+        for n in 0..=9usize {
+            for c in 1..=2usize {
+                let rows = volume_rows(&vols(n), c);
+                let flat: Vec<&String> = rows.iter().flatten().collect();
+                assert_eq!(flat.len(), n, "n={n} cols={c}");
+                let unique: std::collections::HashSet<&&String> = flat.iter().collect();
+                assert_eq!(unique.len(), n, "n={n} cols={c}");
+                assert_eq!(
+                    rows.len(),
+                    volume_row_count(n, c),
+                    "reserved slots must match rendered rows at n={n} cols={c}"
+                );
+            }
+        }
     }
 }
