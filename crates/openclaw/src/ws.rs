@@ -34,20 +34,113 @@ impl WebSocketTransport {
     /// at the upgrade, so a rejected `Origin` surfaces here rather than as a
     /// protocol error later.
     pub async fn connect(request: &UpgradeRequest) -> Result<Self, TransportError> {
-        let mut builder = http::Request::builder()
-            .method("GET")
-            .uri(request.url.as_str());
-        for (name, value) in &request.headers {
-            builder = builder.header(*name, value);
-        }
-        let http_request = builder
-            .body(())
-            .map_err(|error| TransportError::Io(error.to_string()))?;
+        let http_request = build_http_request(request)?;
 
         let (socket, _response) = tokio_tungstenite::connect_async(http_request)
             .await
             .map_err(classify)?;
         Ok(WebSocketTransport { socket })
+    }
+}
+
+fn build_http_request(request: &UpgradeRequest) -> Result<http::Request<()>, TransportError> {
+    let uri: http::Uri = request
+        .url
+        .parse()
+        .map_err(|error: http::uri::InvalidUri| TransportError::Io(error.to_string()))?;
+    // tungstenite passes a prebuilt `http::Request` through verbatim: the
+    // upgrade headers a bare URL would get generated for free must be supplied
+    // by hand, or the handshake is rejected before any frame is exchanged.
+    let host = uri
+        .authority()
+        .ok_or_else(|| TransportError::Io("gateway URL has no host".to_string()))?
+        .as_str()
+        .to_string();
+    let mut builder = http::Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Host", host)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        );
+    for (name, value) in &request.headers {
+        builder = builder.header(*name, value);
+    }
+    builder
+        .body(())
+        .map_err(|error| TransportError::Io(error.to_string()))
+}
+
+#[cfg(test)]
+mod upgrade_request_tests {
+    use super::*;
+
+    fn upgrade() -> UpgradeRequest {
+        UpgradeRequest {
+            url: "ws://127.0.0.1:18789/".into(),
+            headers: vec![
+                ("Origin", "http://127.0.0.1:18789".into()),
+                ("Authorization", "Bearer test-token".into()),
+            ],
+        }
+    }
+
+    /// tungstenite passes a prebuilt `http::Request` through verbatim — the
+    /// upgrade headers a bare URL would get for free must be supplied by hand,
+    /// or the handshake dies with "Missing, duplicated or incorrect header
+    /// sec-websocket-key" (observed live against a real gateway, issue #186).
+    #[test]
+    fn prebuilt_request_carries_every_mandatory_upgrade_header() {
+        let req = build_http_request(&upgrade()).expect("request must build");
+        let h = req.headers();
+        assert_eq!(
+            h.get("Host").map(|v| v.to_str().unwrap()),
+            Some("127.0.0.1:18789"),
+            "Host must come from the URL authority"
+        );
+        assert_eq!(
+            h.get("Connection").map(|v| v.to_str().unwrap()),
+            Some("Upgrade")
+        );
+        assert_eq!(
+            h.get("Upgrade").map(|v| v.to_str().unwrap()),
+            Some("websocket")
+        );
+        assert_eq!(
+            h.get("Sec-WebSocket-Version").map(|v| v.to_str().unwrap()),
+            Some("13")
+        );
+        let key = h
+            .get("Sec-WebSocket-Key")
+            .expect("Sec-WebSocket-Key must be present")
+            .to_str()
+            .unwrap();
+        assert_eq!(key.len(), 24, "key must be a base64 16-byte nonce");
+        assert_eq!(
+            h.get_all("Sec-WebSocket-Key").iter().count(),
+            1,
+            "exactly one key — duplicates are rejected too"
+        );
+    }
+
+    /// The caller's own headers survive alongside the mandatory ones.
+    #[test]
+    fn caller_headers_survive() {
+        let req = build_http_request(&upgrade()).expect("request must build");
+        assert_eq!(
+            req.headers().get("Origin").map(|v| v.to_str().unwrap()),
+            Some("http://127.0.0.1:18789")
+        );
+        assert_eq!(
+            req.headers()
+                .get("Authorization")
+                .map(|v| v.to_str().unwrap()),
+            Some("Bearer test-token")
+        );
     }
 }
 
