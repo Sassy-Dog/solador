@@ -569,6 +569,60 @@ A failed poll is debounced two ticks before the card stops claiming to be
 current, matching `RemoteHostMetricsService.failureThreshold`: one missed poll on
 a flappy tailnet is a blip, not an outage.
 
+### A succeeding poll is not proof the data is current
+
+The card's four states — connecting, live, stale, failed — are facts about
+*this* side's polling, and there is one way for all four to be wrong at once.
+The agent answers `/v1/snapshot` from a sampler running on its own clock, so a
+sampler that has stopped (or has not yet produced its first sample, where
+`empty_snapshot()` supplies zeros) is served as a perfectly successful 200. Every
+poll succeeds, the dot stays green, and the numbers are frozen — the failure mode
+[#182](https://github.com/Sassy-Dog/devcanopy/issues/182) is named after.
+
+The agent already publishes the answer and nothing consumed it: `/v1/health`
+carries `samplerStale` and `sampleAgeSeconds`. So each host with a token is
+**also polled for health, every 10s**, alongside its 1s snapshot poll
+(`health_loop` in `src/main.rs`), and `samplerStale: true` renders the *existing*
+stale badge — red, real data, unmissable — rather than a fifth state. What
+differs is the message and the clock:
+
+- The message names the **agent**, not the link
+  (`viewmodel::card::SAMPLER_STALLED_MESSAGE`). A stalled sampler wants the agent
+  restarted; an unreachable host wants the tailnet checked. Sharing one "not
+  current" phrasing would send an operator to the wrong layer.
+- The age is the **agent's** `sampleAgeSeconds`, not this side's elapsed. Our
+  last successful request is about a second old however long the sampler has
+  been dead, so a coordinator-side age is precisely the number that makes frozen
+  data read as current.
+
+Three rules make this a diagnostic rather than a second failure mode:
+
+- **A failed health poll changes nothing.** It publishes no error, does not
+  touch the failure streak, and cannot redden a card whose snapshots are
+  arriving. A probe nobody asked for must not gain the power to fail the host it
+  was added to describe — the `Err` arm of `record_health` is deliberately not
+  written.
+- **Withheld is not reset.** A sampler known to be stalled keeps its badge
+  through a health poll that fails: a request we could not make is not evidence
+  of recovery, and putting the green dot back over frozen numbers is the whole
+  defect. Recovery arrives as a health poll that lands saying `samplerStale:
+  false`.
+- **Unknown is not healthy.** `None` — no health poll yet, or an agent older
+  than [#35](https://github.com/Sassy-Dog/devcanopy/issues/35) that never sends
+  the field — leaves the card exactly as the snapshot poll found it, and a
+  stalled agent that reports no age gets `last update unknown` rather than a
+  fabricated `0s`.
+
+When the link *is* down, the transport failure wins the badge: it is both the
+more proximate cause and the fresher fact (`samplerStale` is by then up to a
+health cadence old), and naming the sampler would send someone to restart a
+daemon they cannot reach.
+
+**The Swift app has the same gap and is deliberately untouched here** —
+`RemoteHostMetricsService` decodes `samplerStale`/`sampleAgeSeconds` into
+`HealthInfo` and uses them only for the Settings → Test result line, so its cards
+still show a stalled agent as live.
+
 ## Settings
 
 The **Settings** button opens an in-app view over the cockpit: General, GitHub,
@@ -766,6 +820,9 @@ the wrong layer.
 ```bash
 cargo run -p devcanopy-app -- --dump sample.json                 # one live host
 cargo run -p devcanopy-app -- --dump-stale sample-stale.json     # …stale, same numbers
+cargo run -p devcanopy-app -- --dump-sampler-stale sample-sampler-stale.json
+#   …the poll SUCCEEDED and the card is stale anyway: the agent's own
+#   `/v1/health` says its sampler stopped, dated by the agent's clock.
 cargo run -p devcanopy-app -- --dump-cockpit sample-cockpit.json # three hosts: live / stale / failed
 #   …plus `--width <pt>` (which column count to compute), `--hosts <n>` (how
 #   many of the three to include; 0 is the unconfigured cockpit) and `--tabs`
