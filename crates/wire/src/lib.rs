@@ -3,7 +3,9 @@
 //! One definition, serialised by the agent and deserialised by the app. That
 //! is the point: the Swift app defines these types a second time, which is
 //! why `HostMetricsError.decodeFailed` exists ("agent/app version skew").
-//! Field names mirror `agent/src/metrics.rs` exactly.
+//! Field names mirror the agent sources exactly — `agent/src/metrics.rs` for
+//! [`Snapshot`], `agent/src/containers.rs` for [`Container`], and the `json!`
+//! literal in `agent/src/server.rs::health_handler` for [`Health`].
 
 use serde::{Deserialize, Serialize};
 
@@ -131,4 +133,54 @@ pub struct Process {
     pub cpu_percent: f64,
     #[serde(rename = "memoryMB")]
     pub memory_mb: f64,
+}
+
+/// One container or VM from `GET /v1/containers`.
+///
+/// Keys are copied from the `#[serde(rename)]` attributes on
+/// `agent/src/containers.rs::Container` and match the Swift `ContainerInfo`
+/// decoder (`DevCanopy/Services/Containers/ContainerInfo.swift`) key for key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Container {
+    pub name: String,
+    #[serde(rename = "statusText")]
+    pub status_text: String,
+    #[serde(rename = "isRunning")]
+    pub is_running: bool,
+    /// One of `"docker"`, `"podman"`, `"tart"`. Deliberately the agent's
+    /// `String` rather than an enum: a runtime added agent-side would then
+    /// fail the whole list's decode instead of arriving as an unknown label.
+    pub runtime: String,
+    /// Image reference; `null` for tart VMs.
+    ///
+    /// Note the asymmetry with [`Volume::fstype`]: the agent has no
+    /// `skip_serializing_if` here, so an imageless container emits
+    /// `"image": null` rather than omitting the key (pinned by
+    /// `container_serializes_to_exact_wire_keys` in `agent/src/containers.rs`).
+    /// `default` only adds decode tolerance; it must not gain a
+    /// `skip_serializing_if`, which would change what this contract emits.
+    #[serde(default)]
+    pub image: Option<String>,
+}
+
+/// The `GET /v1/health` payload — the Settings "Test" probe.
+///
+/// Keys are copied from the `json!` literal in
+/// `agent/src/server.rs::health_handler` and match the Swift `HealthInfo`
+/// decoder (`DevCanopy/Services/HostMetrics/RemoteHostMetricsService.swift`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Health {
+    /// `"ok"`, or `"degraded"` when the agent's sampler has gone stale and is
+    /// therefore serving frozen numbers.
+    pub status: String,
+    pub hostname: String,
+    pub version: String,
+    /// Optional because agents older than #35 don't send it — same tolerance
+    /// the Swift decoder gives it (`let sampleAgeSeconds: Int?`). An older
+    /// agent must decode, not fail.
+    #[serde(default, rename = "sampleAgeSeconds")]
+    pub sample_age_seconds: Option<u64>,
+    /// Optional for the same reason as [`Health::sample_age_seconds`].
+    #[serde(default, rename = "samplerStale")]
+    pub sampler_stale: Option<bool>,
 }

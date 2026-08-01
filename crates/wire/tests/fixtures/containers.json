@@ -1,0 +1,5 @@
+[
+  { "name": "llm", "statusText": "Up 2 days", "isRunning": true, "runtime": "podman", "image": "llama-swap:latest" },
+  { "name": "db", "statusText": "Exited (0) 3 hours ago", "isRunning": false, "runtime": "docker", "image": "postgres:16" },
+  { "name": "build-runner", "statusText": "running", "isRunning": true, "runtime": "tart", "image": null }
+]

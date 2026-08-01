@@ -1,6 +1,19 @@
-use wire::Snapshot;
+use wire::{Container, Health, Snapshot};
 
 const FIXTURE: &str = include_str!("fixtures/snapshot.json");
+
+/// `GET /v1/containers`, in the agent's exact wire format. Keys are copied from
+/// the `#[serde(rename)]` attributes on `agent/src/containers.rs::Container`
+/// (`statusText`, `isRunning`, and the un-renamed `name`/`runtime`/`image`);
+/// do not invent names. The three rows cover every runtime the agent can emit,
+/// and the tart row carries the `"image": null` that only tart produces.
+const CONTAINERS_FIXTURE: &str = include_str!("fixtures/containers.json");
+
+/// `GET /v1/health`, in the agent's exact wire format. Keys are copied from the
+/// `json!` literal in `agent/src/server.rs::health_handler` — `status`,
+/// `hostname`, `version`, `sampleAgeSeconds`, `samplerStale`; do not invent
+/// names.
+const HEALTH_FIXTURE: &str = include_str!("fixtures/health.json");
 
 #[test]
 fn deserialises_the_agents_wire_format() {
@@ -181,4 +194,109 @@ fn gpu_absence_is_one_definition_shared_by_producer_and_consumer() {
         vram_total_gb: 24.0,
     };
     assert!(idle.is_present());
+}
+
+#[test]
+fn deserialises_the_agents_container_list() {
+    let cs: Vec<Container> =
+        serde_json::from_str(CONTAINERS_FIXTURE).expect("agent JSON must deserialise");
+    assert_eq!(cs.len(), 3);
+
+    assert_eq!(cs[0].name, "llm");
+    assert_eq!(cs[0].status_text, "Up 2 days");
+    assert!(cs[0].is_running);
+    assert_eq!(cs[0].runtime, "podman");
+    assert_eq!(cs[0].image.as_deref(), Some("llama-swap:latest"));
+
+    assert!(
+        !cs[1].is_running,
+        "an exited container must not read running"
+    );
+    assert_eq!(cs[1].runtime, "docker");
+
+    // tart VMs have no image, and the agent sends the key as JSON null.
+    assert_eq!(cs[2].runtime, "tart");
+    assert!(cs[2].image.is_none());
+}
+
+/// The mirror image of `a_volume_without_fstype_omits_the_key_rather_than_
+/// emitting_null`: `agent/src/containers.rs` has no `skip_serializing_if` on
+/// `image`, and its `container_serializes_to_exact_wire_keys` test asserts the
+/// key survives as null. Adding `skip_serializing_if` here would silently
+/// change the contract in the opposite direction.
+#[test]
+fn an_imageless_container_emits_a_null_image_rather_than_omitting_the_key() {
+    let vm = Container {
+        name: "build-runner".into(),
+        status_text: "running".into(),
+        is_running: true,
+        runtime: "tart".into(),
+        image: None,
+    };
+    let json = serde_json::to_value(&vm).unwrap();
+    assert!(
+        json.as_object().unwrap().contains_key("image"),
+        "image key must be present, got {json}"
+    );
+    assert!(json["image"].is_null(), "image must be null, got {json}");
+}
+
+/// Why `runtime` is a `String` and not an enum. A future agent that learns a
+/// fourth runtime must not break the *whole* list's decode for an app that
+/// hasn't shipped yet — the unknown label arrives intact and renders as itself.
+#[test]
+fn an_unknown_runtime_label_decodes_instead_of_failing_the_whole_list() {
+    let json = r#"[
+        { "name": "ci", "statusText": "Up 1 hour", "isRunning": true, "runtime": "containerd", "image": null }
+    ]"#;
+    let cs: Vec<Container> = serde_json::from_str(json).expect("unknown runtime must decode");
+    assert_eq!(cs[0].runtime, "containerd");
+}
+
+/// A host with no containers at all serves `[]`. That is a legitimate answer,
+/// not skew — it must never surface as `DecodeFailed`.
+#[test]
+fn an_empty_container_list_is_not_a_decode_failure() {
+    let cs: Vec<Container> = serde_json::from_str("[]").expect("empty list must decode");
+    assert!(cs.is_empty());
+}
+
+#[test]
+fn deserialises_the_agents_health_payload() {
+    let h: Health = serde_json::from_str(HEALTH_FIXTURE).expect("agent JSON must deserialise");
+    assert_eq!(h.status, "ok");
+    assert_eq!(h.hostname, "ubu-3xdv");
+    assert_eq!(h.version, "0.4.0");
+    assert_eq!(h.sample_age_seconds, Some(2));
+    assert_eq!(h.sampler_stale, Some(false));
+}
+
+/// `sampleAgeSeconds`/`samplerStale` arrived in #35; an agent that predates the
+/// redeploy omits them. Decoding must yield `None` — the same tolerance the
+/// Swift `HealthInfo` gives them (`Int?`/`Bool?`) — never a decode failure and
+/// never a fabricated `0`/`false`, which would read as a healthy fresh sampler.
+#[test]
+fn health_from_a_pre_35_agent_decodes_with_none_sampler_fields() {
+    let json = r#"{ "status": "ok", "hostname": "old-host", "version": "0.1.0" }"#;
+    let h: Health = serde_json::from_str(json).expect("older agent payload must decode");
+    assert_eq!(h.hostname, "old-host");
+    assert!(h.sample_age_seconds.is_none());
+    assert!(h.sampler_stale.is_none());
+}
+
+/// Whole-value round trips, for the same reason
+/// `round_tripping_through_json_preserves_the_snapshot` compares whole
+/// `Snapshot`s: a field that serialised lossily (or under the wrong key) would
+/// otherwise survive behind a hand-picked assertion.
+#[test]
+fn round_tripping_through_json_preserves_containers_and_health() {
+    let cs: Vec<Container> = serde_json::from_str(CONTAINERS_FIXTURE).unwrap();
+    let again: Vec<Container> = serde_json::from_str(&serde_json::to_string(&cs).unwrap())
+        .expect("re-read own container output");
+    assert_eq!(cs, again);
+
+    let h: Health = serde_json::from_str(HEALTH_FIXTURE).unwrap();
+    let again: Health = serde_json::from_str(&serde_json::to_string(&h).unwrap())
+        .expect("re-read own health output");
+    assert_eq!(h, again);
 }
