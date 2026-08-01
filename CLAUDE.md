@@ -172,6 +172,15 @@ DevCanopy/
 - Remote polling lives in `Services/HostMetrics/` and `Services/RemoteHosts/`;
   local-machine metrics come from `Packages/HostMetricsKit`.
 - Container discovery: `Services/Containers/`.
+- **Unknown is representable.** Every metric a producer may not be able to measure
+  (memory pressure, thermal state, the GPU fields, disk/network rates) is an
+  Optional in `HostSnapshot.swift`, mirroring the `Option` in `crates/wire`: an
+  absent key decodes to `nil`, `nil` re-encodes as an *omitted* key, and `0` means
+  measured zero. `HostMetricLabels` is the one place `nil` becomes "—"; unmeasured
+  samples never enter a history buffer, and `HostSnapshot.unmeasuredFields` is
+  logged on change so every em dash is diagnosable. Known limit: agents predating
+  #183 send literal zeros, which decode as measurements — only the agent can fix
+  that.
 
 ### Git worktrees & branches
 - `Services/GitMonitor/` parses git/worktree state without modifying files

@@ -1,6 +1,24 @@
 import Foundation
 
 /// A point-in-time snapshot of host machine metrics.
+///
+/// # Unknown is representable
+///
+/// Every field a producer may be unable to measure — ``MemoryMetrics/pressure``,
+/// ``CPUMetrics/thermalState``, the ``GPUMetrics`` fields and the
+/// ``DiskMetrics``/``NetworkMetrics`` rates — is an Optional, mirroring the
+/// `Option` the Rust wire contract carries for it (`crates/wire/src/lib.rs`).
+/// An absent key decodes to `nil` rather than failing, and `nil` re-encodes by
+/// *omitting* the key rather than emitting `null` — `VolumeUsage.fstype`'s
+/// existing tolerance, applied to every measurable figure. `0` therefore means
+/// measured zero (an idle disk, a cool CPU) and `nil` means nobody measured it;
+/// `HostMetricLabels` renders the two differently — a number and an em dash.
+///
+/// **The limit:** this only stops the *decoder* fabricating. Agents predating
+/// #183 hardcode `pressure: 0.0` and `thermalState: 0` for figures Linux never
+/// measures, and those literals decode here as `0` — indistinguishable from a
+/// real reading, because on the wire they *are* one. That fabrication can only
+/// die at the source (#183's agent rollout); nothing on this side can tell.
 public struct HostSnapshot: Sendable, Codable, Equatable {
     public let timestamp: Date
     public let cpu: CPUMetrics
@@ -40,6 +58,33 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         self.processes = processes
     }
 
+    /// The measurable figures this snapshot carries no reading for, as dotted
+    /// paths in a stable order; empty when everything was measured.
+    ///
+    /// Every entry here is a cell the cockpit paints as "—". Callers log the
+    /// list (once, on change) so an em dash is diagnosable rather than
+    /// mysterious — the no-fake-numbers rule's other half.
+    ///
+    /// The GPU collapses to a single `gpu` entry when the host reports no
+    /// adapter at all (see ``GPUMetrics/isPresent``): its three fields are then
+    /// one fact, not three, and that is how the card renders it.
+    public var unmeasuredFields: [String] {
+        var out: [String] = []
+        if cpu.thermalState == nil { out.append("cpu.thermalState") }
+        if memory.pressure == nil { out.append("memory.pressure") }
+        if disk.readMBps == nil { out.append("disk.readMBps") }
+        if disk.writeMBps == nil { out.append("disk.writeMBps") }
+        if network.downloadMBps == nil { out.append("network.downloadMBps") }
+        if network.uploadMBps == nil { out.append("network.uploadMBps") }
+        if !gpu.isPresent {
+            out.append("gpu")
+        } else {
+            if gpu.usage == nil { out.append("gpu.usage") }
+            if gpu.vramUsedGB == nil { out.append("gpu.vramUsedGB") }
+        }
+        return out
+    }
+
     private enum CodingKeys: String, CodingKey {
         case timestamp, cpu, memory, disk, network, gpu, battery, volumes, processes
     }
@@ -52,9 +97,13 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
         timestamp = try c.decode(Date.self, forKey: .timestamp)
         cpu = try c.decode(CPUMetrics.self, forKey: .cpu)
         memory = try c.decode(MemoryMetrics.self, forKey: .memory)
-        disk = try c.decode(DiskMetrics.self, forKey: .disk)
-        network = try c.decode(NetworkMetrics.self, forKey: .network)
-        gpu = try c.decode(GPUMetrics.self, forKey: .gpu)
+        // An agent that measures no rates at all may omit the whole object
+        // rather than send one with every key missing, and that must decode as
+        // unknown rather than as version skew — the same one-sided tolerance
+        // the wire contract gives `Snapshot::{disk,network,gpu}`.
+        disk = try c.decodeIfPresent(DiskMetrics.self, forKey: .disk) ?? .unknown
+        network = try c.decodeIfPresent(NetworkMetrics.self, forKey: .network) ?? .unknown
+        gpu = try c.decodeIfPresent(GPUMetrics.self, forKey: .gpu) ?? .unknown
         // Tolerant battery decode: a malformed or unexpected battery object must
         // not sink the whole snapshot (which would flip an otherwise-healthy host
         // unreachable). `null`/absent → nil; a present-but-undecodable object →
@@ -138,18 +187,53 @@ public struct CPUMetrics: Sendable, Codable, Equatable {
     /// Per-core CPU usage, each 0–100.
     public let coreUsages: [Double]
     public let model: String
-    public let thermalState: ThermalState
+    /// Thermal pressure level. `nil` where the platform exposes no thermal
+    /// source at all — Linux is that platform, which is why every pre-#183 agent
+    /// sends a hardcoded `0` here and every remote card reads "Normal". A badge
+    /// must never claim a state nobody measured, so `nil` renders no badge.
+    public let thermalState: ThermalState?
 
     public init(
         totalUsage: Double,
         coreUsages: [Double],
         model: String,
-        thermalState: ThermalState
+        thermalState: ThermalState?
     ) {
         self.totalUsage = totalUsage
         self.coreUsages = coreUsages
         self.model = model
         self.thermalState = thermalState
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case totalUsage, coreUsages, model, thermalState
+    }
+
+    /// Custom decode for `thermalState` only: absent key, `null`, an
+    /// out-of-range level, or an outright wrong type all yield `nil` rather than
+    /// sinking the whole snapshot (which would flip an otherwise-healthy host to
+    /// "decode failed"). The wire carries a plain integer, so an unrecognised one
+    /// is a producer we don't understand yet — that is unknown, not broken.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        totalUsage = try c.decode(Double.self, forKey: .totalUsage)
+        coreUsages = try c.decode([Double].self, forKey: .coreUsages)
+        model = try c.decode(String.self, forKey: .model)
+        // `try?` over `decodeIfPresent` nests two optionals — "the key wasn't
+        // there" and "it didn't decode" are the same answer here, so flatten
+        // before mapping the level.
+        let raw: Int?? = try? c.decodeIfPresent(Int.self, forKey: .thermalState)
+        thermalState = raw.flatMap(\.self).flatMap(ThermalState.init(rawValue:))
+    }
+
+    /// Encode omits an unmeasured thermal state rather than emitting
+    /// `"thermalState": null`, so a round-trip re-emits the payload's own shape.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(totalUsage, forKey: .totalUsage)
+        try c.encode(coreUsages, forKey: .coreUsages)
+        try c.encode(model, forKey: .model)
+        try c.encodeIfPresent(thermalState, forKey: .thermalState)
     }
 }
 
@@ -164,8 +248,10 @@ public struct MemoryMetrics: Sendable, Codable, Equatable {
     public let usedGB: Double
     public let totalGB: Double
     public let swapUsedGB: Double
-    /// Memory pressure, 0–100.
-    public let pressure: Double
+    /// Memory pressure, 0–100. `nil` where the platform has no such figure —
+    /// Linux again. A defaulted `0` paints a permanently green pressure badge,
+    /// which is the fabrication this Optional exists to stop.
+    public let pressure: Double?
 
     public var usagePercentage: Double {
         totalGB > 0 ? usedGB / totalGB * 100 : 0
@@ -175,7 +261,7 @@ public struct MemoryMetrics: Sendable, Codable, Equatable {
         usedGB: Double,
         totalGB: Double,
         swapUsedGB: Double,
-        pressure: Double
+        pressure: Double?
     ) {
         self.usedGB = usedGB
         self.totalGB = totalGB
@@ -184,21 +270,30 @@ public struct MemoryMetrics: Sendable, Codable, Equatable {
     }
 }
 
+/// Disk I/O rates. Both `nil` before a producer has two cumulative readings to
+/// diff — a rate is a delta, and the first sample has nothing to subtract from.
 public struct DiskMetrics: Sendable, Codable, Equatable {
-    public let readMBps: Double
-    public let writeMBps: Double
+    public let readMBps: Double?
+    public let writeMBps: Double?
 
-    public init(readMBps: Double, writeMBps: Double) {
+    /// Rates nobody measured. What an omitted `disk` object decodes to.
+    public static let unknown = DiskMetrics(readMBps: nil, writeMBps: nil)
+
+    public init(readMBps: Double?, writeMBps: Double?) {
         self.readMBps = readMBps
         self.writeMBps = writeMBps
     }
 }
 
+/// Network rates. `nil` for the same reason as ``DiskMetrics``'.
 public struct NetworkMetrics: Sendable, Codable, Equatable {
-    public let downloadMBps: Double
-    public let uploadMBps: Double
+    public let downloadMBps: Double?
+    public let uploadMBps: Double?
 
-    public init(downloadMBps: Double, uploadMBps: Double) {
+    /// Rates nobody measured. What an omitted `network` object decodes to.
+    public static let unknown = NetworkMetrics(downloadMBps: nil, uploadMBps: nil)
+
+    public init(downloadMBps: Double?, uploadMBps: Double?) {
         self.downloadMBps = downloadMBps
         self.uploadMBps = uploadMBps
     }
@@ -206,14 +301,33 @@ public struct NetworkMetrics: Sendable, Codable, Equatable {
 
 public struct GPUMetrics: Sendable, Codable, Equatable {
     /// GPU usage, 0–100.
-    public let usage: Double
-    public let vramUsedGB: Double
-    public let vramTotalGB: Double
+    public let usage: Double?
+    public let vramUsedGB: Double?
+    public let vramTotalGB: Double?
 
-    public init(usage: Double, vramUsedGB: Double, vramTotalGB: Double) {
+    /// A GPU nobody measured: every field absent. What an omitted `gpu` object
+    /// decodes to, and what a producer with no portable GPU read should send —
+    /// ``isPresent`` reads it as "no GPU" and the card renders "—".
+    public static let unknown = GPUMetrics(usage: nil, vramUsedGB: nil, vramTotalGB: nil)
+
+    public init(usage: Double?, vramUsedGB: Double?, vramTotalGB: Double?) {
         self.usage = usage
         self.vramUsedGB = vramUsedGB
         self.vramTotalGB = vramTotalGB
+    }
+
+    /// Whether this host actually reports a GPU.
+    ///
+    /// VRAM capacity is the discriminator, not `usage`: a real GPU sitting idle
+    /// reports `usage == 0` and must still render as `0%`, while a host with no
+    /// adapter reports zeros (or, post-#183, nothing) and must render as unknown.
+    /// Callers deciding "number or em dash" ask this, never re-derive it — the
+    /// same rule, and the same `vramTotalGB > 0` test, as `wire::Gpu::is_present`.
+    ///
+    /// Absent capacity and a capacity of zero are the same answer here, which is
+    /// what keeps a pre-#183 agent's all-zero GPU reading as absent too.
+    public var isPresent: Bool {
+        (vramTotalGB ?? 0) > 0
     }
 }
 

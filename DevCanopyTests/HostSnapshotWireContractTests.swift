@@ -32,9 +32,9 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertEqual(snap.memory.usedGB, 12.3, accuracy: 0.001)
         XCTAssertEqual(snap.memory.totalGB, 32.0, accuracy: 0.001)
         XCTAssertEqual(snap.memory.usagePercentage, 12.3 / 32.0 * 100, accuracy: 0.001) // computed, not in JSON
-        XCTAssertEqual(snap.disk.readMBps, 1.2, accuracy: 0.001)
-        XCTAssertEqual(snap.network.uploadMBps, 0.1, accuracy: 0.001)
-        XCTAssertEqual(snap.gpu.usage, 0.0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(snap.disk.readMBps), 1.2, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(snap.network.uploadMBps), 0.1, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(snap.gpu.usage), 0.0, accuracy: 0.001)
         XCTAssertNil(snap.battery)
         XCTAssertEqual(snap.volumes.count, 1)
         XCTAssertEqual(snap.volumes.first?.mount, "/")
@@ -81,6 +81,213 @@ final class HostSnapshotWireContractTests: XCTestCase {
         let volumes = try RemoteHostMetricsService.snapshotDecoder.decode([VolumeUsage].self, from: Data(json.utf8))
         XCTAssertEqual(volumes.first?.mount, "/")
         XCTAssertNil(volumes.first?.fstype, "missing fstype key decodes to nil, not a failure")
+    }
+
+    // MARK: - Unknown is representable (#192 / wire contract #191)
+
+    /// A #183-era payload: every figure the producer could not measure is
+    /// *omitted*. Each one must decode to nil — the whole point of the Optionals.
+    private let unknownsJSON = """
+    {
+      "timestamp": "2026-06-04T22:00:00Z",
+      "cpu": { "totalUsage": 11.5, "coreUsages": [9.0, 14.0], "model": "x" },
+      "memory": { "usedGB": 5.5, "totalGB": 16.0, "swapUsedGB": 0.0 },
+      "disk": {},
+      "network": {},
+      "gpu": {}
+    }
+    """
+
+    func testOmittedKeysDecodeToUnknownNotZero() throws {
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(unknownsJSON.utf8)
+        )
+        XCTAssertNil(snap.cpu.thermalState, "absent thermalState is unknown, not Nominal")
+        XCTAssertNil(snap.memory.pressure, "absent pressure is unknown, not 0%")
+        XCTAssertNil(snap.disk.readMBps)
+        XCTAssertNil(snap.disk.writeMBps)
+        XCTAssertNil(snap.network.downloadMBps)
+        XCTAssertNil(snap.network.uploadMBps)
+        XCTAssertNil(snap.gpu.usage)
+        XCTAssertNil(snap.gpu.vramUsedGB)
+        XCTAssertNil(snap.gpu.vramTotalGB)
+        XCTAssertFalse(snap.gpu.isPresent, "a GPU with no reported capacity is absent")
+        // The measured fields around them are untouched.
+        XCTAssertEqual(snap.cpu.totalUsage, 11.5, accuracy: 0.001)
+        XCTAssertEqual(snap.memory.usedGB, 5.5, accuracy: 0.001)
+    }
+
+    /// A whole object may be missing, not just its keys: an agent that measures
+    /// no rates at all may drop `disk`/`network`/`gpu` outright, and that is
+    /// unknown — not the version skew a thrown decode would report it as.
+    func testOmittedWholeObjectsDecodeToUnknown() throws {
+        let json = """
+        {
+          "timestamp": "2026-06-04T22:00:00Z",
+          "cpu": { "totalUsage": 1.0, "coreUsages": [1.0], "model": "x" },
+          "memory": { "usedGB": 1.0, "totalGB": 8.0, "swapUsedGB": 0.0 }
+        }
+        """
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(json.utf8)
+        )
+        XCTAssertEqual(snap.disk, .unknown)
+        XCTAssertEqual(snap.network, .unknown)
+        XCTAssertEqual(snap.gpu, .unknown)
+        XCTAssertEqual(snap.cpu.totalUsage, 1.0, accuracy: 0.001, "rest of the snapshot still decodes")
+    }
+
+    /// The distinction the Optionals exist for: an idle host reporting real
+    /// zeros is NOT the host that reported nothing. Both decode, differently.
+    func testMeasuredZeroIsDistinctFromUnknown() throws {
+        let idle = """
+        {
+          "timestamp": "2026-06-04T22:00:00Z",
+          "cpu": { "totalUsage": 0.0, "coreUsages": [0.0], "model": "x", "thermalState": 0 },
+          "memory": { "usedGB": 1.0, "totalGB": 8.0, "swapUsedGB": 0.0, "pressure": 0.0 },
+          "disk": { "readMBps": 0.0, "writeMBps": 0.0 },
+          "network": { "downloadMBps": 0.0, "uploadMBps": 0.0 },
+          "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 24.0 }
+        }
+        """
+        let measured = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(idle.utf8)
+        )
+        let unknown = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(unknownsJSON.utf8)
+        )
+        XCTAssertEqual(measured.memory.pressure, 0.0)
+        XCTAssertEqual(measured.cpu.thermalState, .nominal)
+        XCTAssertEqual(measured.disk.readMBps, 0.0)
+        XCTAssertEqual(measured.gpu.usage, 0.0)
+        XCTAssertTrue(measured.gpu.isPresent, "an idle GPU with capacity is still present")
+        XCTAssertNotEqual(measured.memory.pressure, unknown.memory.pressure)
+        XCTAssertNotEqual(measured.disk, unknown.disk)
+        XCTAssertEqual(measured.unmeasuredFields, [], "a fully-measured host reports nothing missing")
+    }
+
+    /// THE DOCUMENTED LIMIT: agents predating #183 hardcode `pressure: 0.0`,
+    /// `thermalState: 0` and an all-zero `gpu` for figures Linux never measures.
+    /// Those literals decode as measurements, because on the wire they *are* one
+    /// — nothing on this side can tell. The GPU is the one exception: capacity,
+    /// not usage, decides presence, so an all-zero GPU still reads as absent
+    /// across the rollout. The rest dies only when #183 reaches the hosts.
+    func testPre183FabricatedZerosStillDecodeAsMeasurements() throws {
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(canonicalJSON.utf8)
+        )
+        XCTAssertEqual(snap.memory.pressure, 0.0, "indistinguishable from a real 0% — by construction")
+        XCTAssertEqual(snap.cpu.thermalState, .nominal)
+        XCTAssertFalse(snap.gpu.isPresent, "an all-zero GPU reads as absent, pre- and post-#183")
+        XCTAssertEqual(snap.unmeasuredFields, ["gpu"], "only the GPU can be seen through")
+    }
+
+    /// An unrecognised thermal level is a producer we don't understand yet —
+    /// unknown, not broken. It must not sink an otherwise-healthy snapshot.
+    func testOutOfRangeThermalStateDecodesToUnknown() throws {
+        for raw in ["7", "null", "\"hot\""] {
+            let json = """
+            {
+              "timestamp": "2026-06-04T22:00:00Z",
+              "cpu": { "totalUsage": 2.0, "coreUsages": [2.0], "model": "x", "thermalState": \(raw) },
+              "memory": { "usedGB": 1.0, "totalGB": 8.0, "swapUsedGB": 0.0 }
+            }
+            """
+            let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+                HostSnapshot.self, from: Data(json.utf8)
+            )
+            XCTAssertNil(snap.cpu.thermalState, "thermalState \(raw) is unknown")
+            XCTAssertEqual(snap.cpu.totalUsage, 2.0, accuracy: 0.001, "\(raw) didn't sink the snapshot")
+        }
+    }
+
+    /// Unknown is *omitted* on re-encode, never emitted as `null` — the same
+    /// half of `VolumeUsage.fstype`'s tolerance the wire contract keeps.
+    func testUnknownFieldsEncodeAsOmittedKeys() throws {
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(unknownsJSON.utf8)
+        )
+        let data = try JSONEncoder().encode(snap)
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let cpu = try XCTUnwrap(root["cpu"] as? [String: Any])
+        let memory = try XCTUnwrap(root["memory"] as? [String: Any])
+        let disk = try XCTUnwrap(root["disk"] as? [String: Any])
+        let gpu = try XCTUnwrap(root["gpu"] as? [String: Any])
+        XCTAssertNil(cpu["thermalState"], "an unread thermal state is omitted, not null")
+        XCTAssertNil(memory["pressure"])
+        XCTAssertTrue(disk.isEmpty, "both rates omitted: \(disk)")
+        XCTAssertTrue(gpu.isEmpty, "every GPU field omitted: \(gpu)")
+        XCTAssertNotNil(cpu["totalUsage"], "measured fields are still emitted")
+    }
+
+    /// The list behind every em dash, so a "—" is diagnosable from the log.
+    func testUnmeasuredFieldsNamesEveryDashTheCardPaints() throws {
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(unknownsJSON.utf8)
+        )
+        XCTAssertEqual(snap.unmeasuredFields, [
+            "cpu.thermalState", "memory.pressure",
+            "disk.readMBps", "disk.writeMBps",
+            "network.downloadMBps", "network.uploadMBps",
+            "gpu"
+        ])
+    }
+
+    /// A present GPU with an unreadable usage names only that field — the absent
+    /// adapter collapses to one `gpu` entry, a broken sensor doesn't.
+    func testPresentGPUWithUnreadableUsageNamesOnlyThatField() throws {
+        let json = """
+        {
+          "timestamp": "2026-06-04T22:00:00Z",
+          "cpu": { "totalUsage": 1.0, "coreUsages": [1.0], "model": "x", "thermalState": 0 },
+          "memory": { "usedGB": 1.0, "totalGB": 8.0, "swapUsedGB": 0.0, "pressure": 10.0 },
+          "disk": { "readMBps": 0.0, "writeMBps": 0.0 },
+          "network": { "downloadMBps": 0.0, "uploadMBps": 0.0 },
+          "gpu": { "vramUsedGB": 3.5, "vramTotalGB": 24.0 }
+        }
+        """
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(json.utf8)
+        )
+        XCTAssertTrue(snap.gpu.isPresent)
+        XCTAssertEqual(snap.unmeasuredFields, ["gpu.usage"])
+    }
+
+    // MARK: - Shared unknowns contract fixture
+
+    /// CONTRACT LOCK (shared fixture): the omitted-key payload decodes to
+    /// unknowns from the SAME committed JSON the Rust side reads. A zero-capacity
+    /// volume rides along because that payload is what a real Linux agent sends.
+    func testSharedUnknownsFixtureDecodesToUnknowns() throws {
+        let data = try Data(contentsOf: repoFixtureURL("TestFixtures/snapshot_unknowns.json"))
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(HostSnapshot.self, from: data)
+        XCTAssertNil(snap.cpu.thermalState)
+        XCTAssertNil(snap.memory.pressure)
+        XCTAssertEqual(snap.disk, .unknown, "\"disk\": {} is every rate omitted")
+        XCTAssertEqual(snap.gpu, .unknown)
+        XCTAssertFalse(snap.gpu.isPresent)
+        // …while the keys it does send still arrive as measurements.
+        XCTAssertEqual(try XCTUnwrap(snap.network.downloadMBps), 0.9, accuracy: 0.001)
+        XCTAssertEqual(snap.volumes.count, 2)
+        XCTAssertEqual(snap.processes.first?.name, "devcanopy-agent")
+    }
+
+    /// The wire crate's tests read fixtures from inside their own crate, so its
+    /// copy of this payload lives there. Decoding both files and comparing pins
+    /// them identical: if either side edits its copy alone, this fails.
+    func testSharedUnknownsFixtureMatchesTheWireCrateCopy() throws {
+        let shared = try Data(contentsOf: repoFixtureURL("TestFixtures/snapshot_unknowns.json"))
+        let wire = try Data(
+            contentsOf: repoFixtureURL("crates/wire/tests/fixtures/snapshot-unknowns.json")
+        )
+        let decoder = RemoteHostMetricsService.snapshotDecoder
+        XCTAssertEqual(
+            try decoder.decode(HostSnapshot.self, from: shared),
+            try decoder.decode(HostSnapshot.self, from: wire),
+            "the two copies of the omitted-key payload have drifted apart"
+        )
     }
 
     // MARK: - Shared battery contract fixture

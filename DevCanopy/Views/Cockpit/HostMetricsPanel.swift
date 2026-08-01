@@ -121,7 +121,10 @@ struct HostMetricsPanel: View {
             sectionHeader(
                 icon: "cpu",
                 title: model.isEmpty ? "Processor" : model,
-                badge: thermalBadge(snap.cpu.thermalState),
+                // An unread thermal state renders no badge at all, deliberately
+                // rather than via the encoding coincidence that `0` means
+                // Nominal. The badge must never claim a state nobody measured.
+                badge: snap.cpu.thermalState.map { AnyView(ThermalBadge(state: $0)) },
                 value: "\(Int(snap.cpu.totalUsage.rounded()))%",
                 valueColor: usageColor(snap.cpu.totalUsage)
             )
@@ -188,8 +191,10 @@ struct HostMetricsPanel: View {
             HStack {
                 Text("Swap: \(fmt(snap.memory.swapUsedGB)) GB")
                 Spacer()
-                Text("Pressure: \(Int(snap.memory.pressure.rounded()))%")
-                    .foregroundStyle(pressureColor(snap.memory.pressure))
+                // Unmeasured pressure reads "—" in the muted tint: a green 0%
+                // is the exact fabrication this panel must not paint.
+                Text("Pressure: \(HostMetricLabels.percent(snap.memory.pressure))")
+                    .foregroundStyle(snap.memory.pressure.map(pressureColor) ?? CockpitTheme.muted)
             }
             .font(CockpitTheme.mono(10))
             .foregroundStyle(CockpitTheme.muted)
@@ -198,16 +203,21 @@ struct HostMetricsPanel: View {
     }
 
     private func graphicsSection(_ snap: HostSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // No adapter means no reading, not a reading of zero — and no series
+        // either. `HostMetricsService` never records a sample for an absent GPU,
+        // so the chart draws its grid and nothing else rather than a flat 0%
+        // line underneath the em dash above.
+        let present = snap.gpu.isPresent
+        return VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
                 icon: "display",
                 title: "Graphics",
                 badge: nil,
-                value: "\(Int(snap.gpu.usage.rounded()))%",
-                valueColor: gpuColor
+                value: HostMetricLabels.gpuUsage(snap.gpu),
+                valueColor: present ? gpuColor : CockpitTheme.muted
             )
             percentChart(service.gpuHistory, color: gpuColor, height: 90)
-            Text("VRAM: \(fmt(snap.gpu.vramUsedGB)) / \(fmt(snap.gpu.vramTotalGB)) GB")
+            Text(HostMetricLabels.vram(snap.gpu))
                 .font(CockpitTheme.mono(10))
                 .foregroundStyle(CockpitTheme.muted)
         }
@@ -221,8 +231,8 @@ struct HostMetricsPanel: View {
             ioHeader(
                 icon: "internaldrive",
                 title: "Disk I/O",
-                left: ("Read", fmtRate(snap.disk.readMBps), readColor),
-                right: ("Write", fmtRate(snap.disk.writeMBps), writeColor)
+                left: ("Read", HostMetricLabels.rate(snap.disk.readMBps), readColor),
+                right: ("Write", HostMetricLabels.rate(snap.disk.writeMBps), writeColor)
             )
             ioChart(
                 seriesA: service.diskReadHistory,
@@ -239,8 +249,8 @@ struct HostMetricsPanel: View {
             ioHeader(
                 icon: "network",
                 title: "Network I/O",
-                left: ("Down", fmtRate(snap.network.downloadMBps), netColor),
-                right: ("Up", fmtRate(snap.network.uploadMBps), netUpColor)
+                left: ("Down", HostMetricLabels.rate(snap.network.downloadMBps), netColor),
+                right: ("Up", HostMetricLabels.rate(snap.network.uploadMBps), netUpColor)
             )
             ioChart(
                 seriesA: service.netDownHistory,
@@ -361,7 +371,7 @@ struct HostMetricsPanel: View {
     }
 
     private func memoryLabel(_ mb: Double) -> String {
-        mb >= 1024 ? "\(fmt(mb / 1024)) GB" : "\(Int(mb.rounded())) MB"
+        HostMetricLabels.processMemory(mb)
     }
 
     // MARK: Chart helpers
@@ -505,25 +515,6 @@ struct HostMetricsPanel: View {
             }
     }
 
-    private func thermalBadge(_ state: ThermalState) -> AnyView {
-        let (text, color): (String, Color) = switch state {
-        case .nominal: ("Normal", CockpitTheme.green)
-        case .fair: ("Fair", CockpitTheme.green)
-        case .serious: ("Hot", CockpitTheme.amber)
-        case .critical: ("Critical", CockpitTheme.red)
-        }
-        return AnyView(
-            HStack(spacing: 4) {
-                Image(systemName: "thermometer.medium").font(.system(size: 9))
-                Text(text).font(CockpitTheme.mono(10, weight: .bold))
-            }
-            .foregroundStyle(color)
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(color.opacity(0.12))
-            .clipShape(Capsule())
-        )
-    }
-
     private func usageColor(_ v: Double) -> Color {
         switch v { case ..<70: CockpitTheme.green
         case ..<90: CockpitTheme.amber
@@ -536,21 +527,14 @@ struct HostMetricsPanel: View {
         default: CockpitTheme.red }
     }
 
+    /// Formatting lives in `HostMetricLabels` — the same code that decides what
+    /// an unmeasured value looks like — so a number's shape can't drift between
+    /// the cells that can be unknown and the cells that can't.
     private func fmt(_ v: Double) -> String {
-        v >= 100 ? String(Int(v)) : String(format: "%.1f", v)
+        HostMetricLabels.number(v)
     }
 
-    /// A throughput rate with bounded width and unit: stays in MB/s up to
-    /// 1000, then switches to GB/s. Caps the label so bursts (e.g. 17 GB/s
-    /// disk reads) don't blow out the anchored legend column.
-    private func fmtRate(_ mbps: Double) -> String {
-        mbps >= 1000 ? String(format: "%.1f GB/s", mbps / 1024) : "\(fmt(mbps)) MB/s"
-    }
-
-    /// A unitless axis tick with bounded width: collapses thousands to a `k`
-    /// suffix ("17151" → "17k") so the chart's auto-scaled max never widens
-    /// the y-axis column and shifts the plot.
     private func fmtAxis(_ v: Double) -> String {
-        v >= 1000 ? String(format: "%.0fk", v / 1000) : fmt(v)
+        HostMetricLabels.axis(v)
     }
 }
