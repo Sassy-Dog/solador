@@ -234,22 +234,116 @@ test("one unreachable host shows its error card while the others stay live", asy
   await stubCockpit(page, [vm]);
   await gotoApp(page);
 
+  // Four cards: this machine leads, then the three remotes.
   const cards = page.locator(".cockpit .card");
-  await expect(cards).toHaveCount(3);
+  await expect(cards).toHaveCount(4);
   expect(await cards.evaluateAll((els) => els.map((e) => e.dataset.state)))
-    .toEqual(["live", "stale", "failed"]);
+    .toEqual(["live", "live", "stale", "failed"]);
 
   // The live host is untouched by its neighbours' trouble.
-  await expect(cards.nth(0).locator(".cpuValue")).toHaveText(vm.hosts[0].cpuValue);
-  await expect(cards.nth(0).locator(".staleMsg")).toHaveText("");
+  await expect(cards.nth(1).locator(".cpuValue")).toHaveText(vm.hosts[1].cpuValue);
+  await expect(cards.nth(1).locator(".staleMsg")).toHaveText("");
 
   // The stale host keeps the numbers it last heard, and says how old they are.
-  await expect(cards.nth(1).locator(".cpuValue")).toHaveText(vm.hosts[1].cpuValue);
-  await expect(cards.nth(1).locator(".staleMsg")).toContainText("Couldn't reach the agent");
+  await expect(cards.nth(2).locator(".cpuValue")).toHaveText(vm.hosts[2].cpuValue);
+  await expect(cards.nth(2).locator(".staleMsg")).toContainText("Couldn't reach the agent");
 
   // The host that never connected shows the cause, never a fabricated number.
-  await expect(cards.nth(2).locator(".cpuValue")).toHaveText("—");
-  await expect(cards.nth(2).locator(".cpuModel")).toHaveText(vm.hosts[2].error.message);
+  await expect(cards.nth(3).locator(".cpuValue")).toHaveText("—");
+  await expect(cards.nth(3).locator(".cpuModel")).toHaveText(vm.hosts[3].error.message);
+});
+
+test("this machine leads the grid and admits what it could not measure", async ({ page, baseURL }) => {
+  // The local card is not a remote host with a shorter address: it is collected
+  // in-process, so its connection dot is green by construction, and the figures
+  // the platform declines to answer (memory pressure has no portable source,
+  // the GPU has no dependency-free read) must render "—" rather than the 0.0
+  // the wire contract would lower them to. Both are Rust's decisions
+  // (`local::lower_unknowns`) and both are asserted against Rust's own dump.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  const local = page.locator(".cockpit .card").first();
+  expect(vm.hosts[0].id, "the local card leads the payload").toBe("local");
+  await expect(local.locator(".hostName")).toHaveText(vm.hosts[0].hostName);
+  await expect(local.locator(".connDot")).toHaveAttribute("data-state", "live");
+
+  await expect(local.locator(".pressureText")).toHaveText("Pressure: —");
+  await expect(local.locator(".gpuValue")).toHaveText("—");
+  await expect(local.locator(".vramText")).toHaveText("VRAM: —");
+
+  // …and what it DID measure is still a number: an em dash everywhere would
+  // pass the assertions above while saying nothing.
+  await expect(local.locator(".cpuValue")).toHaveText(vm.hosts[0].cpuValue);
+  await expect(local.locator(".cpuValue")).not.toHaveText("—");
+  await expect(local.locator(".diskRead")).toHaveText(vm.hosts[0].diskRead);
+});
+
+test("the panel rows below the grid are the ones Rust reflowed", async ({ page, baseURL }) => {
+  // The pairing is `viewmodel::cockpit::reflow`'s, applied here and not decided
+  // here — a CSS `auto-fit` would be a second implementation of every panel's
+  // `min_width`. The fixture is dumped wide enough for every authored pair, so
+  // Usage and Azure Cost share the last row.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  // Rows carrying only panels this frontend has no section for (`hosts`, which
+  // is the grid above, and `openclawAgents`, which is not built) are skipped.
+  const known = ["containers", "ghWorkflows", "ghRunners", "claudeUsage", "azureCost"];
+  const expected = vm.panelRows
+    .map((row) => row.map((p) => p.id).filter((id) => known.includes(id)))
+    .filter((row) => row.length);
+
+  const rows = page.locator("#panelRows .panel-row");
+  await expect(rows).toHaveCount(expected.length);
+  const tracks = await rows.evaluateAll((els) =>
+    els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
+  );
+  expect(tracks).toEqual(expected.map((row) => row.length));
+
+  // Usage and Azure Cost are the pair the whole per-panel breakpoint model
+  // exists for: they stay side by side at widths where the hungrier pairs split.
+  const last = expected[expected.length - 1];
+  expect(last).toEqual(["claudeUsage", "azureCost"]);
+  await expect(rows.last().locator("section")).toHaveCount(2);
+});
+
+test("a reflow re-parents every panel without losing one", async ({ page, baseURL }) => {
+  // The row containers are rebuilt when the shape changes, and rebuilding them
+  // MOVES the existing sections. Get the order wrong — replaceChildren before
+  // the moves — and the panels are destroyed with their old containers, which
+  // no single-render test can see because the memo skips the rebuild entirely
+  // when the shape is unchanged. So this drives a real shape change: a wide
+  // payload with every authored pair, then a 700pt one where every row splits.
+  const wide = await fixture(baseURL, "sample-cockpit.json");
+  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
+  expect(
+    narrow.panelRows.map((r) => r.length),
+    "the narrow fixture must actually reflow, or this test proves nothing"
+  ).not.toEqual(wide.panelRows.map((r) => r.length));
+
+  await stubCockpit(page, [wide, narrow]);
+  await gotoApp(page);
+
+  const sections = ["containersPanel", "reposPanel", "runnersPanel", "usagePanel", "azurePanel"];
+  const rows = page.locator("#panelRows .panel-row");
+  // Wide: three rendered rows (the `hosts` row is the grid above, and the
+  // `containers` row loses its unbuilt OpenClaw half). Narrow: one per section.
+  await expect(rows).toHaveCount(3);
+
+  // The app's own 1s poll delivers the narrow payload; wait for the reflow.
+  await expect(rows).toHaveCount(sections.length, { timeout: 5000 });
+  for (const id of sections) {
+    await expect(page.locator(`#${id}`), `${id} survived the reflow`).toHaveCount(1);
+    await expect(page.locator(`#panelRows .panel-row > #${id}`)).toHaveCount(1);
+  }
+  // …and each is alone in its row now, one track apiece.
+  const tracks = await rows.evaluateAll((els) =>
+    els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
+  );
+  expect(tracks).toEqual(sections.map(() => 1));
 });
 
 test("the grid lays out exactly the columns the view-model asked for", async ({ page, baseURL }) => {
@@ -291,8 +385,11 @@ test("a cockpit with no hosts says so instead of rendering an empty page", async
   await stubCockpit(page, [await fixture(baseURL, "sample.json"), empty]);
   await gotoApp(page);
 
-  // Every card is torn down when its host leaves the payload...
-  await expect(page.locator(".cockpit .card")).toHaveCount(0, { timeout: 5000 });
+  // Every *remote* card is torn down when its host leaves the payload. The
+  // local one stays: this machine is always there, so "nothing configured" is a
+  // statement about monitored hosts, not about the page being empty.
+  await expect(page.locator(".cockpit .card")).toHaveCount(1, { timeout: 5000 });
+  await expect(page.locator(".cockpit .card .hostName")).toHaveText(empty.hosts[0].hostName);
   // ...and the placeholder takes over rather than leaving a blank page.
   await expect(page.locator("#emptyMsg")).toHaveText(empty.empty.message);
   await expect(page.locator("#emptyMsg")).toBeVisible();

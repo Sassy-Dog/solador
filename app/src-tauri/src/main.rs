@@ -10,14 +10,20 @@ use uuid::Uuid;
 use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending};
 use viewmodel::cockpit::{host_columns, panel_table, HOST_CARD_MIN_WIDTH, SPACING};
 
+mod azure;
 mod containers;
 mod github;
+mod local;
 mod panel;
 mod settings;
+mod usage;
 
+use azure::AzureState;
 use containers::ContainersState;
 use github::GitHubState;
+use local::LocalHostState;
 use settings::{SecretField, StoredSecrets};
+use usage::UsageState;
 
 /// How often each host is polled. Matches the Swift side's
 /// `RemoteHostMetricsService.start(interval:)` default of 1s, which is also
@@ -97,6 +103,12 @@ struct App {
     credentials: Box<dyn CredentialStore + Send + Sync>,
     /// The poll set, in cockpit display order.
     hosts: Mutex<Vec<PolledHost>>,
+    /// This machine's own card — the one that leads the grid.
+    ///
+    /// Its own lock, like every other subsystem's: sampling blocks (sysinfo
+    /// enumerates mounts and processes), and a `cockpit` call must never queue
+    /// behind it any more than it queues behind a remote poll.
+    local: Arc<Mutex<LocalHostState>>,
     /// The Containers panel's own state, on its own 10s cadence.
     ///
     /// Its own lock, and never held while the store's is: the containers loop
@@ -117,6 +129,25 @@ struct App {
     /// or picking a new refresh interval all wake the loop instead of waiting
     /// out a cadence that can be five minutes long.
     github_wake: tokio::sync::Notify,
+    /// The Usage panel's state: Claude token rollups on the store's refresh
+    /// interval, Neon and Sentry on their own fixed hourly cadence.
+    usage: Mutex<UsageState>,
+    /// Cuts the usage loop's sleep short, for the same reason
+    /// [`App::github_wake`] exists.
+    usage_wake: tokio::sync::Notify,
+    /// Set alongside a wake when the edit changed *provider* configuration (a
+    /// Neon key, a Sentry token or slug) rather than the Claude cadence.
+    ///
+    /// Without it, saving a Neon key would repaint the panel with an empty Neon
+    /// section and then wait out the full hour before filling it — which reads
+    /// exactly like the key having been rejected.
+    usage_providers_due: std::sync::atomic::AtomicBool,
+    /// The Azure Cost panel's state, on its own 4h cadence.
+    azure: Mutex<AzureState>,
+    /// Cuts the Azure loop's sleep short after a SAS URL is saved or cleared.
+    /// A four-hour cadence is long enough that waiting one out is
+    /// indistinguishable from the credential not having been accepted.
+    azure_wake: tokio::sync::Notify,
     /// Where poll tasks are spawned. A `Handle`, not the `Runtime`: the
     /// runtime itself stays owned by `main`, so it can never be dropped from
     /// inside a command (dropping a runtime from an async context panics).
@@ -169,22 +200,30 @@ fn view_for(s: &HostState) -> Value {
 /// and colour is: `host_columns` is the tested breakpoint math (a card needs
 /// [`HOST_CARD_MIN_WIDTH`]), and a CSS `auto-fit` restating it is a second
 /// implementation free to disagree with the first.
-fn cockpit_view(hosts: &[Arc<Mutex<HostState>>], available: f64) -> Value {
-    let cards: Vec<Value> = hosts
+fn cockpit_view(local: Option<Value>, hosts: &[Arc<Mutex<HostState>>], available: f64) -> Value {
+    let remote: Vec<Value> = hosts
         .iter()
         .map(|host| view_for(&host.lock().expect("host state poisoned")))
         .collect();
-    cockpit_payload(cards, available)
+    let remote_count = remote.len();
+    // Local first, matching `HostsPanel.hosts` in Swift (`[local] + remoteHosts`).
+    // This machine is the one you are looking at; it leads.
+    let cards: Vec<Value> = local.into_iter().chain(remote).collect();
+    cockpit_payload(cards, remote_count, available)
 }
 
 /// The payload shape, over already-rendered cards. Split from
 /// [`cockpit_view`] so the tests can drive it without locks.
-fn cockpit_payload(cards: Vec<Value>, available: f64) -> Value {
+///
+/// `remote_count` is deliberately separate from `cards.len()`: the local card is
+/// always there, so "is anything configured" is a question about *monitored*
+/// hosts and counting cards would answer it wrong forever.
+fn cockpit_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Value {
     let columns = host_columns(available, cards.len(), HOST_CARD_MIN_WIDTH, SPACING);
-    // A cockpit with nothing to show says so in words made here, like every
-    // other string the frontend paints -- an empty grid would read as a
-    // broken app rather than an unconfigured one.
-    let empty = if cards.is_empty() {
+    // A cockpit with no monitored host says so in words made here, like every
+    // other string the frontend paints -- the local card alone would read as a
+    // finished setup rather than an untouched one.
+    let empty = if remote_count == 0 {
         json!({ "message": "No hosts configured. Add one in Settings." })
     } else {
         Value::Null
@@ -195,6 +234,7 @@ fn cockpit_payload(cards: Vec<Value>, available: f64) -> Value {
         "hostCardMinWidth": HOST_CARD_MIN_WIDTH,
         "spacing": SPACING,
         "panels": panel_table(),
+        "panelRows": panel_rows(available),
         "empty": empty,
         // The Settings surface is opened from the cockpit, so its button's
         // label has to arrive before anything has asked for the settings
@@ -203,6 +243,44 @@ fn cockpit_payload(cards: Vec<Value>, available: f64) -> Value {
         // Settings view itself renders too.
         "settingsLabel": settings::OPEN_LABEL,
     })
+}
+
+/// The shipped panel arrangement, reflowed for `available` — which row each
+/// panel sits in, and how many panels share it.
+///
+/// The *arrangement* is `CockpitLayout::hosts_forward()` and the *packing* is
+/// `viewmodel::cockpit::reflow`, both already tested there. It travels as data
+/// for exactly the reason `hostColumns` does: a CSS `auto-fit` over the panels
+/// would be a second implementation of `PanelKind::min_width`, free to disagree
+/// with the tested one — and the case that matters (Usage + Azure Cost staying
+/// paired at a width where Repos + Runners must split) is precisely the case a
+/// global breakpoint tier gets wrong.
+///
+/// Rows the frontend has no section for (`hosts`, which it renders above this
+/// block, and `openclawAgents`, whose panel is not built yet) still travel: a
+/// row silently dropped here would be indistinguishable from one this function
+/// never produced.
+fn panel_rows(available: f64) -> Value {
+    let layout = viewmodel::cockpit::CockpitLayout::hosts_forward();
+    Value::Array(
+        viewmodel::cockpit::reflow(&layout.rows, available, SPACING)
+            .into_iter()
+            .map(|row| {
+                Value::Array(
+                    row.into_iter()
+                        .map(|placement| {
+                            json!({
+                                "id": placement.kind.id(),
+                                "title": placement.kind.title(),
+                                "minWidth": placement.kind.min_width(),
+                                "span": placement.span.as_str(),
+                            })
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// The write side of the poll loop, pulled out of the spawned task for the
@@ -810,7 +888,330 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
             hosts.len()
         );
     });
-    cockpit_view(&hosts, width)
+    let local = state.local.lock().expect("local state poisoned").card();
+    cockpit_view(Some(local), &hosts, width)
+}
+
+// MARK: the Usage + Azure Cost panels
+//
+// Two loops rather than one because they share nothing: different credentials,
+// different sources, and cadences an order of magnitude apart (an hourly API
+// read vs a daily blob export). Both follow `github_loop`'s shape — poll,
+// re-read the interval, sleep interruptibly — so a Settings edit applies now
+// rather than on the far side of a cadence that can be four hours long.
+
+/// One pass over the Usage panel's sources.
+///
+/// Claude is a local file walk and runs every pass. Neon and Sentry are network
+/// reads on their own hourly cadence, so they run only when `providers` says
+/// they are due — either the hour elapsed, or a Settings edit changed what they
+/// would fetch.
+async fn poll_usage(app: &Arc<App>, providers: bool) {
+    let now = panel::now_unix();
+
+    // Blocking: this walks a directory tree that can hold ~1600 files.
+    let claude = tokio::task::spawn_blocking(read_claude_usage)
+        .await
+        .map_err(|e| eprintln!("Claude usage walk failed: {e}"))
+        .ok();
+    if let Some((summary, error)) = claude {
+        app.usage
+            .lock()
+            .expect("usage state poisoned")
+            .apply_claude(summary, now, error);
+    }
+
+    if !providers {
+        return;
+    }
+
+    // Re-read every pass rather than captured at startup: that is what makes a
+    // Save or Clear in Settings apply without a relaunch.
+    let (neon_key, sentry_token) = (
+        read_credential(app, SecretKey::NeonApiKey),
+        read_credential(app, SecretKey::SentryUsageToken),
+    );
+    let (neon_org, sentry_slug) = {
+        let store = app.store.lock().expect("store poisoned");
+        (
+            store.settings().neon_org_id.clone(),
+            store.settings().sentry_org_slug.clone(),
+        )
+    };
+
+    // "No key" hides the section; "the keychain would not answer" must not,
+    // because that would delete a live section — and its retained figure — for
+    // a full hour with nothing on screen to say why.
+    match neon_key {
+        Credential::Absent => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .neon_mut()
+            .unconfigure(),
+        Credential::Unreadable => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .neon_mut()
+            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
+        Credential::Present(key) => {
+            // `NeonClient::new` returns `None` only for a blank key, which
+            // `Credential::Present` has already excluded.
+            let Some(client) = usage::NeonClient::new(&key) else {
+                return;
+            };
+            let result = client.month_to_date(&neon_org, github::now_utc()).await;
+            let mut state = app.usage.lock().expect("usage state poisoned");
+            match result {
+                // A successful call that measured nothing keeps the `—` and
+                // explains itself: an empty org, the wrong org id, or a plan
+                // without consumption history.
+                Ok(summary) => state.neon_mut().succeeded(
+                    summary,
+                    now,
+                    summary
+                        .is_unmeasured()
+                        .then(|| usage::NEON_NO_CONSUMPTION_MESSAGE.to_owned()),
+                ),
+                Err(e) => state.neon_mut().failed(e.user_message()),
+            }
+        }
+    }
+
+    match sentry_token {
+        Credential::Absent => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .sentry_mut()
+            .unconfigure(),
+        Credential::Unreadable => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .sentry_mut()
+            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
+        Credential::Present(token) => {
+            let Some(client) = usage::SentryClient::new(&token) else {
+                return;
+            };
+            let result = client.accepted_errors(&sentry_slug).await;
+            let mut state = app.usage.lock().expect("usage state poisoned");
+            match result {
+                Ok(summary) => state.sentry_mut().succeeded(
+                    summary,
+                    now,
+                    summary
+                        .is_unmeasured()
+                        .then(|| usage::SENTRY_NO_STATS_MESSAGE.to_owned()),
+                ),
+                Err(e) => state.sentry_mut().failed(e.user_message()),
+            }
+        }
+    }
+}
+
+/// Walks Claude Code's log root, returning the summary and the shell's own
+/// "the root isn't there" note.
+///
+/// The existence check is the *shell's*, exactly as it is in Swift: the walk
+/// itself skips what it cannot read rather than failing, so a missing root would
+/// otherwise be indistinguishable from a quiet week. An unlocatable home
+/// directory yields no summary at all — nothing was read, so there is nothing to
+/// report, not even a zero.
+fn read_claude_usage() -> (Option<usage::UsageSummary>, Option<String>) {
+    let Some(dir) = usage::default_projects_dir() else {
+        return (None, Some(usage::NO_LOG_ROOT_MESSAGE.to_owned()));
+    };
+    if !dir.exists() {
+        return (None, Some(usage::NO_LOG_ROOT_MESSAGE.to_owned()));
+    }
+    // The one place in this shell that reads the machine's timezone: "today" is
+    // a *local* calendar day, and `crates/usage` takes the offset as an argument
+    // precisely so it never has to.
+    let offset = *chrono::Local::now().offset();
+    (
+        Some(usage::summarize_logs(&dir, github::now_utc(), offset)),
+        None,
+    )
+}
+
+/// The Usage panel's poll loop.
+async fn usage_loop(app: Arc<App>) {
+    use std::sync::atomic::Ordering;
+
+    let mut providers_last = None::<std::time::Instant>;
+    loop {
+        let due = app.usage_providers_due.swap(false, Ordering::SeqCst)
+            || providers_last
+                .is_none_or(|at| at.elapsed().as_secs() >= usage::PROVIDER_POLL_INTERVAL_SECS);
+        poll_usage(&app, due).await;
+        if due {
+            providers_last = Some(std::time::Instant::now());
+        }
+
+        let secs = {
+            let store = app.store.lock().expect("store poisoned");
+            u64::from(store.settings().refresh_interval_secs)
+        };
+        tokio::select! {
+            () = tokio::time::sleep(std::time::Duration::from_secs(secs)) => {}
+            () = app.usage_wake.notified() => {}
+        }
+    }
+}
+
+/// What a credential read actually learned.
+///
+/// The three cases are genuinely different and collapsing them is the
+/// unknown-is-not-zero rule in credential form. `unwrap_or_default()` on a
+/// `Result<Option<String>>` turns "the keychain would not answer" into an empty
+/// string, which every consumer downstream reads as "the user has not set this
+/// up" — so a locked keychain silently deletes a configured panel, tells the
+/// operator to paste a credential they already pasted, and (for Azure) discards
+/// the fingerprint cache that keeps an unchanged export free.
+enum Credential {
+    /// No credential is stored. The panel's zero-setup state.
+    Absent,
+    Present(String),
+    /// The credential store refused to answer. We do not know either way.
+    Unreadable,
+}
+
+/// The operator-facing line for [`Credential::Unreadable`]. Names the layer to
+/// go and look at, and carries no account name or value — `SecretError` is
+/// value-free by construction and this string must stay that way.
+const CREDENTIAL_UNREADABLE_MESSAGE: &str = "couldn't read the credential store";
+
+/// Reads one credential, keeping "there is none" apart from "we could not ask".
+fn read_credential(app: &App, key: SecretKey) -> Credential {
+    match app.credentials.secret(key) {
+        Ok(Some(value)) if !value.trim().is_empty() => Credential::Present(value),
+        Ok(_) => Credential::Absent,
+        Err(e) => {
+            eprintln!("could not read a stored credential: {e}");
+            Credential::Unreadable
+        }
+    }
+}
+
+/// Cuts the usage loop's sleep short. `providers` also forces the hourly half to
+/// run on that pass — a newly-saved Neon key must fill its section now.
+fn wake_usage(app: &App, providers: bool) {
+    if providers {
+        app.usage_providers_due
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    app.usage_wake.notify_one();
+}
+
+/// One Azure cost read.
+///
+/// The SAS URL *is* the credential, so it never leaves this function: it goes
+/// straight into the fetcher, whose `Debug` redacts it and whose errors are
+/// stripped of their URL before they become strings.
+async fn poll_azure(app: &Arc<App>) {
+    let sas = match read_credential(app, SecretKey::AzureCostSasUrl) {
+        Credential::Present(sas) => sas,
+        Credential::Absent => {
+            app.azure
+                .lock()
+                .expect("azure state poisoned")
+                .unconfigure();
+            return;
+        }
+        // Not `unconfigure()`: that paints "Add an Azure Cost SAS URL in
+        // Settings" — the one state this panel must never confuse with a
+        // failure — over a configuration that is perfectly fine, and it throws
+        // away the fingerprint cache, so the next good read re-downloads every
+        // partition. A locked keychain is a failure, and it says so.
+        Credential::Unreadable => {
+            app.azure
+                .lock()
+                .expect("azure state poisoned")
+                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
+            return;
+        }
+    };
+
+    let previous = {
+        let mut state = app.azure.lock().expect("azure state poisoned");
+        state.begin();
+        state.cached()
+    };
+    // An unchanged export costs one blob listing and no partition bodies — the
+    // fingerprint from the last success is what buys that.
+    let result = azurecost::fetch_summary(
+        &azurecost::SasBlobFetcher::new(&sas),
+        github::now_utc(),
+        previous.as_ref(),
+    )
+    .await;
+
+    let now = panel::now_unix();
+    let mut state = app.azure.lock().expect("azure state poisoned");
+    match result {
+        Ok(fetched) => state.succeeded(fetched, now),
+        Err(e) => state.failed(e.user_message()),
+    }
+}
+
+/// The Azure Cost panel's poll loop, on the reader's own fixed 4h cadence.
+async fn azure_loop(app: Arc<App>) {
+    loop {
+        poll_azure(&app).await;
+        tokio::select! {
+            () = tokio::time::sleep(azurecost::POLL_INTERVAL) => {}
+            () = app.azure_wake.notified() => {}
+        }
+    }
+}
+
+/// Guards the Usage panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn usage(state: tauri::State<'_, Arc<App>>) -> Value {
+    // Read at render time, not captured by the poller: changing the quota must
+    // repaint the bar now, and no API call is involved in it.
+    let quota = {
+        let store = state.store.lock().expect("store poisoned");
+        store.settings().sentry_monthly_event_quota
+    };
+    let payload = {
+        let panel = state.usage.lock().expect("usage state poisoned");
+        usage::view(&panel, quota, panel::now_unix())
+    };
+    FIRST_USAGE_REQUEST.call_once(|| {
+        let providers = payload["providers"].as_array().map_or(0, Vec::len);
+        eprintln!("usage: first frontend request ({providers} provider section(s))");
+    });
+    payload
+}
+
+/// Guards the Azure Cost panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_AZURE_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn azure_cost(state: tauri::State<'_, Arc<App>>) -> Value {
+    let budget = {
+        let store = state.store.lock().expect("store poisoned");
+        store.settings().azure_monthly_budget_usd
+    };
+    let payload = {
+        let panel = state.azure.lock().expect("azure state poisoned");
+        azure::view(&panel, budget, panel::now_unix())
+    };
+    FIRST_AZURE_REQUEST.call_once(|| {
+        // A headline exists only once a read has landed, so this separates "the
+        // round-trip worked and there is data" from "the round-trip worked and
+        // the panel is in one of its message states" — both are a pass for the
+        // boundary, and the smoke test in app/README.md says which is which.
+        let has_headline = !payload["headline"].is_null();
+        eprintln!("azure_cost: first frontend request (headline: {has_headline})");
+    });
+    payload
 }
 
 // MARK: the Settings command surface
@@ -860,11 +1261,14 @@ fn settings_save_general(
         current.host_overflow_mode = general.host_overflow_mode;
         save_status(&store, "Saved.")
     };
-    // The refresh interval is the GitHub loop's cadence, so picking a new one
-    // has to reach it before the *old* one elapses — shortening 5 minutes to 30
-    // seconds and then waiting five minutes for it to take is indistinguishable
-    // from the setting doing nothing.
+    // The refresh interval is the GitHub *and* Claude-usage loops' cadence, so
+    // picking a new one has to reach both before the *old* one elapses —
+    // shortening 5 minutes to 30 seconds and then waiting five minutes for it
+    // to take is indistinguishable from the setting doing nothing. The Usage
+    // panel's provider half is on its own hourly clock and is deliberately not
+    // forced here: nothing about a cadence change alters what Neon returns.
     wake_github(&state);
+    wake_usage(&state, false);
     settings_response(&state, status)
 }
 
@@ -891,6 +1295,11 @@ fn settings_save_providers(
         };
         save_status(&store, "Saved.")
     };
+    // The Neon org id and the Sentry slug are *what those reads ask for*, so an
+    // edit that does not reach the loop leaves both sections describing the
+    // previous configuration for up to an hour. The Azure budget and the Sentry
+    // quota need no wake — both are read at render time, by design.
+    wake_usage(&state, true);
     settings_response(&state, status)
 }
 
@@ -1141,11 +1550,7 @@ fn settings_save_secret(key: String, value: String, state: tauri::State<'_, Arc<
             "Failed to save — the credential store rejected the write.".to_owned()
         }
     };
-    // Only the GitHub token feeds the panels below; waking on a Neon save
-    // would spend a whole GitHub poll on a credential it has no use for.
-    if field == SecretField::GitHub {
-        wake_github(&state);
-    }
+    wake_for(&state, field);
     settings_response(&state, Some(status))
 }
 
@@ -1161,13 +1566,25 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
             "Failed to clear — the credential store rejected the delete.".to_owned()
         }
     };
-    // Clearing matters as much as saving: the panels must drop back to
-    // "connect a GitHub token in Settings" now, not on the next cadence, or a
-    // revoked token keeps painting data it can no longer refresh.
-    if field == SecretField::GitHub {
-        wake_github(&state);
-    }
+    // Clearing matters as much as saving: a panel must drop back to its
+    // zero-credential state now, not on the next cadence, or a revoked token
+    // keeps painting data it can no longer refresh.
+    wake_for(&state, field);
     settings_response(&state, Some(status))
+}
+
+/// Wakes exactly the loop a credential feeds.
+///
+/// Each panel has its own poll pass and its own cadence, and a wake spends one:
+/// nudging the GitHub loop after a Neon save would burn a full portfolio fetch
+/// on a credential it has no use for. The host token is the exception with no
+/// loop to wake — its caller reconciles poll *tasks* instead.
+fn wake_for(app: &App, field: SecretField) {
+    match field {
+        SecretField::GitHub => wake_github(app),
+        SecretField::Neon | SecretField::Sentry => wake_usage(app, true),
+        SecretField::Azure => app.azure_wake.notify_one(),
+    }
 }
 
 /// Test-fixture generation only, decoupled from the live-agent path below
@@ -1204,8 +1621,82 @@ fn unreachable_message() -> String {
 
 /// One live host, the offline fallback `app/ui/app.js` fetches when
 /// `window.__TAURI__` is absent.
+///
+/// Deliberately *without* the local card, unlike [`dump_cockpit`]: this fixture
+/// exists to exercise one remote host's live/stale transition, and a second card
+/// on the page would only make every locator in that test ambiguous.
 fn dump_single(connection: &Connection) -> Value {
-    cockpit_payload(vec![dump_card("ubu-3xdv", connection)], 1000.0)
+    cockpit_payload(vec![dump_card("ubu-3xdv", connection)], 1, 1000.0)
+}
+
+/// This machine's card as a fixture — hand-made, at a fixed shape, so the file
+/// is byte-stable across regenerations and reproduces on any machine.
+///
+/// The unknowns are the *real* ones the shipped card carries on macOS today:
+/// memory pressure has no portable source and the GPU has no dependency-free
+/// read, so both render "—" on every run. Baking them in is what lets the
+/// Playwright suite assert the em-dash rule against a payload Rust built rather
+/// than one hand-written in JS.
+fn dump_local_card() -> Value {
+    let snapshot = localhost::LocalSnapshot {
+        timestamp: "2026-07-31T12:00:00Z".to_string(),
+        cpu: localhost::LocalCpu {
+            usage: Some(localhost::CpuUsage {
+                total: 21.5,
+                per_core: vec![18.0, 24.0, 9.5, 34.0, 12.0, 7.5, 41.0, 15.0],
+            }),
+            model: "Apple M4 Pro".to_string(),
+            thermal_state: Some(localhost::ThermalState::Nominal),
+        },
+        memory: localhost::LocalMemory {
+            used_gb: 22.4,
+            total_gb: 64.0,
+            swap_used_gb: 0.0,
+            // Unknown on every platform this shell runs on — see
+            // `localhost::LocalMemory::pressure`.
+            pressure: None,
+        },
+        disk: Some(wire::Disk {
+            read_mbps: 3.2,
+            write_mbps: 14.8,
+        }),
+        network: Some(wire::Network {
+            download_mbps: 1.4,
+            upload_mbps: 0.6,
+        }),
+        // No portable read on either platform; renders "—" via `Gpu::zeros()`.
+        gpu: None,
+        battery: None,
+        volumes: vec![wire::Volume {
+            mount: "/".to_string(),
+            fstype: Some("apfs".to_string()),
+            used_gb: 412.0,
+            total_gb: 994.0,
+        }],
+        processes: vec![
+            wire::Process {
+                pid: 501,
+                name: "Xcode".to_string(),
+                cpu_percent: 62.0,
+                memory_mb: 4096.0,
+            },
+            wire::Process {
+                pid: 733,
+                name: "rust-analyzer".to_string(),
+                cpu_percent: 18.5,
+                memory_mb: 2048.0,
+            },
+        ],
+    };
+
+    let mut histories = HostHistories::new();
+    let wired = snapshot.to_wire();
+    for _ in 0..viewmodel::layout::HISTORY_CAPACITY {
+        histories.record(&wired);
+    }
+    // The same function the live card goes through, so the fixture cannot
+    // diverge from what the app actually paints.
+    local::card_from("mac-studio", &snapshot, &histories)
 }
 
 /// Three hosts in three different connection states, so the Playwright suite
@@ -1213,8 +1704,10 @@ fn dump_single(connection: &Connection) -> Value {
 /// rather than one hand-assembled in JS. A hand-built envelope could not
 /// notice `host_columns` or the payload's own key names drifting.
 ///
-/// `hosts` takes the first N of them — 0 is the unconfigured cockpit, which
-/// is a real state with its own rendering and no host card to build it from.
+/// `hosts` takes the first N of them — 0 is the unconfigured cockpit, which is
+/// a real state with its own rendering. The **local card always leads**, exactly
+/// as it does in the live payload, so `--hosts 0` is a fresh install (one local
+/// card plus the "add a host" line) rather than a blank page.
 fn dump_cockpit(available: f64, hosts: usize) -> Value {
     let cards = vec![
         dump_card("ubu-3xdv", &Connection::Live),
@@ -1231,7 +1724,28 @@ fn dump_cockpit(available: f64, hosts: usize) -> Value {
             card
         },
     ];
-    cockpit_payload(cards.into_iter().take(hosts).collect(), available)
+    let remote: Vec<Value> = cards.into_iter().take(hosts).collect();
+    let remote_count = remote.len();
+    cockpit_payload(
+        std::iter::once(dump_local_card()).chain(remote).collect(),
+        remote_count,
+        available,
+    )
+}
+
+/// The Usage and Azure Cost panels as fixtures, at a fixed `now` for the same
+/// reason `--dump-containers` is: every relative age in a footer would otherwise
+/// drift on each regeneration and no test could assert one.
+fn dump_usage(kind: usage::Fixture) -> Value {
+    const NOW: u64 = 1_700_000_000;
+    // A quota the fixture's own count lands at 94% of, so the amber step is
+    // exercised rather than a flat green bar.
+    usage::view(&usage::fixture_state(kind, NOW), 10_000, NOW)
+}
+
+fn dump_azure(kind: azure::Fixture) -> Value {
+    const NOW: u64 = 1_700_000_000;
+    azure::view(&azure::fixture_state(kind, NOW), 2_000.0, NOW)
 }
 
 /// The Settings payload as a fixture, built from a hand-made configuration
@@ -1397,6 +1911,30 @@ fn run_dump(args: &[String]) -> bool {
         write_json(&path, &dump_github(empty, true));
         return true;
     }
+    if let Some(path) = dump_flag_path(args, "--dump-usage", "sample-usage.json") {
+        let kind = if empty {
+            usage::Fixture::Empty
+        } else if args.iter().any(|arg| arg == "--unmeasured") {
+            usage::Fixture::Unmeasured
+        } else {
+            usage::Fixture::Measured
+        };
+        write_json(&path, &dump_usage(kind));
+        return true;
+    }
+    if let Some(path) = dump_flag_path(args, "--dump-azure", "sample-azure.json") {
+        let kind = if empty {
+            azure::Fixture::Unconfigured
+        } else if args.iter().any(|arg| arg == "--fallback") {
+            azure::Fixture::Fallback
+        } else if args.iter().any(|arg| arg == "--error") {
+            azure::Fixture::Failed
+        } else {
+            azure::Fixture::Measured
+        };
+        write_json(&path, &dump_azure(kind));
+        return true;
+    }
     false
 }
 
@@ -1484,13 +2022,12 @@ fn seed_from_env(
     Ok(Some(id.to_string()))
 }
 
-/// Enabled hosts in the cockpit's display order.
+/// Enabled **remote** hosts in the cockpit's display order.
 ///
-/// Remotes sorted by name, matching the Swift coordinator's
-/// `SortDescriptor(\.name)`. The Swift cockpit puts the *local* machine first
-/// (`HostsPanel.hosts` is `[local] + remoteHosts.hosts`); this shell has no
-/// local collector — `HostMetricsKit` is Swift-only — so there is nothing to
-/// put in front yet, and the remote ordering is the whole ordering.
+/// Sorted by name, matching the Swift coordinator's `SortDescriptor(\.name)`.
+/// The local machine is not in this list and never sorts against it: the Swift
+/// cockpit puts it first unconditionally (`HostsPanel.hosts` is
+/// `[local] + remoteHosts.hosts`), and so does [`cockpit_view`].
 fn display_order(hosts: &[Host]) -> Vec<&Host> {
     let mut enabled: Vec<&Host> = hosts.iter().filter(|h| h.enabled).collect();
     enabled.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1529,9 +2066,15 @@ fn main() {
         store: Mutex::new(store),
         credentials: Box::new(credentials),
         hosts: Mutex::new(Vec::new()),
+        local: Arc::new(Mutex::new(LocalHostState::new())),
         containers: Mutex::new(ContainersState::new()),
         github: Mutex::new(GitHubState::new()),
         github_wake: tokio::sync::Notify::new(),
+        usage: Mutex::new(UsageState::new()),
+        usage_wake: tokio::sync::Notify::new(),
+        usage_providers_due: std::sync::atomic::AtomicBool::new(false),
+        azure: Mutex::new(AzureState::new()),
+        azure_wake: tokio::sync::Notify::new(),
         runtime: rt.handle().clone(),
     });
     // One task per host: an unreachable host's 5s client timeout must not hold
@@ -1546,6 +2089,13 @@ fn main() {
     // portfolio and the token on every pass, so an edit in Settings joins them
     // on the next pass — which `wake_github` makes immediate.
     rt.spawn(github_loop(Arc::clone(&app)));
+    // This machine, on the host cadence — the card that leads the grid.
+    rt.spawn(local::poll_loop(Arc::clone(&app.local), POLL_INTERVAL));
+    // Usage: Claude on the store's refresh interval, Neon and Sentry hourly
+    // inside the same loop.
+    rt.spawn(usage_loop(Arc::clone(&app)));
+    // Azure cost, on the reader's own 4h cadence.
+    rt.spawn(azure_loop(Arc::clone(&app)));
 
     tauri::Builder::default()
         .manage(Arc::clone(&app))
@@ -1554,6 +2104,8 @@ fn main() {
             containers,
             repos,
             runners,
+            usage,
+            azure_cost,
             settings_view,
             settings_save_general,
             settings_save_providers,
@@ -1900,7 +2452,7 @@ mod tests {
                 Some(Instant::now()),
             )),
         ];
-        let vm = cockpit_view(&hosts, 2000.0);
+        let vm = cockpit_view(None, &hosts, 2000.0);
         let cards = vm["hosts"].as_array().expect("hosts array");
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0]["hostName"], "alpha");
@@ -1934,7 +2486,7 @@ mod tests {
                 None,
             )),
         ];
-        let vm = cockpit_view(&hosts, 3000.0);
+        let vm = cockpit_view(None, &hosts, 3000.0);
         let cards = vm["hosts"].as_array().expect("hosts array");
 
         assert_eq!(cards[0]["connection"]["state"], "live");
@@ -1964,17 +2516,17 @@ mod tests {
             .collect();
 
         // 3 * 900 + 2 * 16 = 2732
-        assert_eq!(cockpit_view(&hosts, 2732.0)["hostColumns"], 3);
-        assert_eq!(cockpit_view(&hosts, 2731.0)["hostColumns"], 2);
-        assert_eq!(cockpit_view(&hosts, 1000.0)["hostColumns"], 1);
+        assert_eq!(cockpit_view(None, &hosts, 2732.0)["hostColumns"], 3);
+        assert_eq!(cockpit_view(None, &hosts, 2731.0)["hostColumns"], 2);
+        assert_eq!(cockpit_view(None, &hosts, 1000.0)["hostColumns"], 1);
         // Unknown width stacks rather than assuming wide -- assuming wide is
         // what let a dead measurement masquerade as a deliberate layout.
-        assert_eq!(cockpit_view(&hosts, 0.0)["hostColumns"], 1);
+        assert_eq!(cockpit_view(None, &hosts, 0.0)["hostColumns"], 1);
     }
 
     #[test]
     fn the_payload_carries_the_grid_constants_and_the_panel_table() {
-        let vm = cockpit_payload(vec![], 1000.0);
+        let vm = cockpit_payload(vec![], 0, 1000.0);
         assert_eq!(vm["hostCardMinWidth"], 900.0);
         assert_eq!(vm["spacing"], 16.0);
         let panels = vm["panels"].as_array().expect("panel table");
@@ -1982,18 +2534,93 @@ mod tests {
         assert_eq!(panels[0]["title"], "Hosts");
     }
 
+    /// Rows as ids — what the assertions below are about.
+    fn row_ids(vm: &Value) -> Vec<Vec<String>> {
+        vm["panelRows"]
+            .as_array()
+            .expect("panelRows")
+            .iter()
+            .map(|row| {
+                row.as_array()
+                    .expect("row")
+                    .iter()
+                    .map(|p| p["id"].as_str().expect("id").to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The payload carries the *reflowed* arrangement, not the authored one, and
+    /// carries it as data. A frontend re-deriving these rows from `minWidth`
+    /// would be a second implementation of `PanelKind::min_width`.
+    #[test]
+    fn the_payload_carries_the_reflowed_panel_rows() {
+        // Wide enough for every authored pair.
+        let wide = row_ids(&cockpit_payload(vec![], 0, 3000.0));
+        assert_eq!(
+            wide,
+            vec![
+                vec!["hosts"],
+                vec!["ghWorkflows", "ghRunners"],
+                vec!["containers", "openclawAgents"],
+                vec!["claudeUsage", "azureCost"],
+            ]
+        );
+
+        // The case the whole per-panel breakpoint model exists for: at 840pt the
+        // two hungrier pairs break apart and Usage + Azure Cost (360 + 16 + 400
+        // = 776) do not. A global sm/md/lg tier cannot express that.
+        let narrow = row_ids(&cockpit_payload(vec![], 0, 840.0));
+        assert_eq!(
+            narrow.last().expect("a last row"),
+            &["claudeUsage", "azureCost"]
+        );
+        assert_eq!(narrow.len(), 6, "two pairs split, one survives");
+
+        // Every panel still travels, exactly once, at any width — a row silently
+        // dropped here is a panel the frontend can never render.
+        for width in [0.0, 100.0, 840.0, 976.0, 3000.0] {
+            let mut flat: Vec<String> = row_ids(&cockpit_payload(vec![], 0, width))
+                .into_iter()
+                .flatten()
+                .collect();
+            flat.sort();
+            let mut expected: Vec<String> = viewmodel::cockpit::PanelKind::ALL
+                .iter()
+                .map(|k| k.id().to_owned())
+                .collect();
+            expected.sort();
+            assert_eq!(flat, expected, "at {width}pt");
+        }
+    }
+
+    /// Each entry carries what the frontend needs to place and title it. The
+    /// span travels too, so a future layout can use it without a payload change.
+    #[test]
+    fn every_panel_row_entry_carries_its_id_title_min_width_and_span() {
+        let vm = cockpit_payload(vec![], 0, 3000.0);
+        let first = &vm["panelRows"][0][0];
+        assert_eq!(first["id"], "hosts");
+        assert_eq!(first["title"], "Hosts");
+        assert_eq!(first["minWidth"], 900.0);
+        assert_eq!(first["span"], "full");
+        assert_eq!(vm["panelRows"][3][0]["span"], "half");
+        assert_eq!(vm["panelRows"][3][1]["id"], "azureCost");
+        assert_eq!(vm["panelRows"][3][1]["title"], "Azure Cost");
+    }
+
     /// No hosts is a configuration state, not a broken app — so it arrives as
     /// a sentence made here, like every other string the frontend paints.
     #[test]
     fn an_empty_cockpit_says_so_instead_of_rendering_nothing() {
-        let vm = cockpit_payload(vec![], 1000.0);
+        let vm = cockpit_payload(vec![], 0, 1000.0);
         assert!(vm["hosts"].as_array().expect("hosts array").is_empty());
         assert_eq!(
             vm["empty"]["message"],
             "No hosts configured. Add one in Settings."
         );
 
-        let populated = cockpit_payload(vec![view_for(&state_with(None, None, None))], 1000.0);
+        let populated = cockpit_payload(vec![view_for(&state_with(None, None, None))], 1, 1000.0);
         assert!(
             populated["empty"].is_null(),
             "a populated cockpit must not carry an empty-state message"
@@ -2258,38 +2885,66 @@ mod tests {
     }
 
     /// The multi-host fixture must actually be mixed — three live cards would
-    /// let the frontend's per-card state handling regress unnoticed.
+    /// let the frontend's per-card state handling regress unnoticed — and the
+    /// local card must lead it, because that is where the live payload puts it.
     #[test]
-    fn the_cockpit_dump_carries_three_hosts_in_three_different_states() {
+    fn the_cockpit_dump_leads_with_the_local_card_then_three_remote_states() {
         let vm = dump_cockpit(3.0 * HOST_CARD_MIN_WIDTH + 2.0 * SPACING, 3);
         let cards = vm["hosts"].as_array().expect("hosts array");
-        assert_eq!(cards.len(), 3);
+        assert_eq!(cards.len(), 4, "one local card plus three remotes");
+        // Four cards, three columns' worth of width: the count is the grid's,
+        // not the payload's.
         assert_eq!(vm["hostColumns"], 3);
 
         let states: Vec<&str> = cards
             .iter()
             .map(|c| c["connection"]["state"].as_str().expect("state"))
             .collect();
-        assert_eq!(states, vec!["live", "stale", "failed"]);
+        assert_eq!(states, vec!["live", "live", "stale", "failed"]);
 
         let ids: Vec<&str> = cards
             .iter()
             .map(|c| c["id"].as_str().expect("id"))
             .collect();
-        assert_eq!(ids, vec!["ubu-3xdv", "mac-mini", "nuc-spare"]);
+        assert_eq!(
+            ids,
+            vec![local::CARD_ID, "ubu-3xdv", "mac-mini", "nuc-spare"]
+        );
+
+        // The local card carries the em dashes the shipped one really does —
+        // no portable memory-pressure source and no dependency-free GPU read —
+        // so the Playwright suite exercises that rule against Rust's own output.
+        assert_eq!(cards[0]["pressureText"], "Pressure: —");
+        assert_eq!(cards[0]["gpuValue"], "—");
+        assert_eq!(cards[0]["vramText"], "VRAM: —");
+        // …and everything the sampler *did* measure is still a number.
+        assert_eq!(cards[0]["cpuValue"], "22%");
+        assert_eq!(cards[0]["diskRead"], "3.2 MB/s");
 
         // The same payload at a narrow width is the stacked fixture -- same
         // cards, one column, so the frontend's grid can be tested both ways
         // against numbers Rust produced.
         assert_eq!(dump_cockpit(1000.0, 3)["hostColumns"], 1);
 
-        // …and no hosts at all is the unconfigured cockpit.
+        // …and no *remote* hosts at all is the unconfigured cockpit: the local
+        // card still leads it, because this machine is always there.
         let none = dump_cockpit(1000.0, 0);
-        assert!(none["hosts"].as_array().expect("hosts array").is_empty());
+        let cards = none["hosts"].as_array().expect("hosts array");
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["id"], local::CARD_ID);
         assert_eq!(
             none["empty"]["message"],
             "No hosts configured. Add one in Settings."
         );
+    }
+
+    /// The fixture must reproduce byte-for-byte on any machine, or the
+    /// Playwright suite is asserting against whatever the dumping box happened
+    /// to be doing.
+    #[test]
+    fn the_local_fixture_card_does_not_vary_per_run() {
+        assert_eq!(dump_local_card(), dump_local_card());
+        assert_eq!(dump_local_card()["hostName"], "mac-studio");
     }
 
     /// The settings fixture must be stable across dumps (ids the Playwright

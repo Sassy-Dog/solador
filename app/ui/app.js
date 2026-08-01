@@ -272,6 +272,65 @@ function drawCard(card, d) {
 const CARDS = new Map();
 
 /**
+ * Which `<section>` each panel id owns.
+ *
+ * `hosts` is absent on purpose — it is the grid above this block, not a section
+ * — and so is `openclawAgents`, whose panel is not built yet. Rust still sends
+ * both rows; an id with no section here contributes nothing, and a row that
+ * ends up empty is skipped rather than rendered as a gap.
+ */
+const PANEL_SECTIONS = {
+  containers: "containersPanel",
+  ghWorkflows: "reposPanel",
+  ghRunners: "runnersPanel",
+  claudeUsage: "usagePanel",
+  azureCost: "azurePanel",
+};
+
+// The row shape currently on screen. Rebuilding the containers moves the
+// sections, which restarts CSS animations (the needs-approval dot pulses) and
+// throws away scroll position — so it happens on a real reflow and not on every
+// one-second poll.
+let panelRowShape = "";
+
+/**
+ * Arranges the panel sections into rows.
+ *
+ * The arrangement is `viewmodel::cockpit`'s `hosts_forward` layout reflowed for
+ * the measured width (`panelRows` in the payload) — applied here, never decided
+ * here. A CSS `repeat(auto-fit, minmax(…))` over these panels would be a second
+ * implementation of every panel's own `min_width`, and it would get the case
+ * that matters wrong: Usage + Azure Cost stay paired at a width where Repos +
+ * Runners must split, which no single global breakpoint can express.
+ */
+function applyPanelRows(rows) {
+  if (!Array.isArray(rows) || !rows.length) return;
+  const shape = JSON.stringify(rows.map((row) => (row || []).map((p) => p && p.id)));
+  if (shape === panelRowShape) return;
+  panelRowShape = shape;
+
+  const built = [];
+  for (const row of rows) {
+    const sections = (row || [])
+      .map((panel) => (panel && PANEL_SECTIONS[panel.id]) || null)
+      .map((domId) => (domId ? $(domId) : null))
+      .filter(Boolean);
+    if (!sections.length) continue;
+    const container = document.createElement("div");
+    container.className = "panel-row";
+    // CSSOM, not a `style=""` attribute: a `style-src 'self'` CSP blocks the
+    // attribute outright. Same setter the host grid's column count uses.
+    container.style.gridTemplateColumns = `repeat(${sections.length}, minmax(0, 1fr))`;
+    // `append` MOVES the existing sections, so each panel keeps whatever its
+    // own script last painted into it — nothing is rebuilt, only re-parented.
+    container.append(...sections);
+    built.push(container);
+  }
+  // Safe after the moves above: the old containers are empty by now.
+  $("panelRows").replaceChildren(...built);
+}
+
+/**
  * The whole page, from one `cockpit` payload.
  *
  * The grid's column count is applied, never computed: `hostColumns` is
@@ -297,6 +356,8 @@ function renderCockpit(p) {
   const emptyEl = $("emptyMsg");
   emptyEl.textContent = p.empty ? p.empty.message : "";
   emptyEl.hidden = !p.empty;
+
+  applyPanelRows(p.panelRows);
 
   installCoreLadders(p.hosts);
 

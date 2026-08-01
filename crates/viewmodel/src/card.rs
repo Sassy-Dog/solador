@@ -206,6 +206,12 @@ pub fn host_card(
             "VRAM: —".to_string(),
         )
     };
+    // …and no series either. `HostHistories::record` pushes `gpu.usage` on every
+    // sample whether or not a GPU exists, so an absent one accumulates a buffer
+    // of zeros — which the frontend would draw as a flat 0% line *underneath*
+    // the em dash above. A chart is a claim about measurements; there are none
+    // to plot here, and an empty series draws the grid and nothing else.
+    let gpu_history: &[f64] = if has_gpu(s) { h.gpu.values() } else { &[] };
 
     let mut card = json!({
         "theme": {
@@ -237,7 +243,7 @@ pub fn host_card(
         "pressureColor": color::hex(color::pressure_color(s.memory.pressure)),
         "gpuValue": gpu_value,
         "gpuValueColor": gpu_color,
-        "gpuHistory": h.gpu.values(),
+        "gpuHistory": gpu_history,
         "vramText": vram,
         "diskRead": fmt_rate(s.disk.read_mbps),
         "diskWrite": fmt_rate(s.disk.write_mbps),
@@ -283,6 +289,48 @@ mod tests {
         let vm = host_card("ubu-3xdv", &s, &h, &Connection::Live);
         assert_eq!(vm["gpuValue"], "—");
         assert_eq!(vm["vramText"], "VRAM: —");
+    }
+
+    /// The em dash above and a flat 0% line under it would say opposite things.
+    /// `HostHistories::record` pushes `gpu.usage` on every sample regardless, so
+    /// an absent GPU really does accumulate a full buffer of zeros — the series
+    /// has to be dropped at the same place the value is, or the card renders a
+    /// measurement nobody took.
+    #[test]
+    fn an_absent_gpu_plots_nothing_rather_than_a_flat_line_of_zeros() {
+        let mut s = fixture();
+        s.gpu.vram_total_gb = 0.0;
+        s.gpu.usage = 0.0;
+        let mut h = HostHistories::new();
+        for _ in 0..10 {
+            h.record(&s);
+        }
+        assert_eq!(h.gpu.len(), 10, "the buffer really does fill with zeros");
+
+        let vm = host_card("ubu-3xdv", &s, &h, &Connection::Live);
+        assert_eq!(vm["gpuValue"], "—");
+        assert!(
+            vm["gpuHistory"].as_array().expect("gpuHistory").is_empty(),
+            "got {}",
+            vm["gpuHistory"]
+        );
+    }
+
+    /// …and a GPU that *is* present still plots, including while idle at 0%.
+    #[test]
+    fn a_present_gpu_plots_its_series_even_when_idle() {
+        let mut s = fixture();
+        s.gpu.usage = 0.0;
+        s.gpu.vram_used_gb = 0.5;
+        s.gpu.vram_total_gb = 24.0;
+        let mut h = HostHistories::new();
+        for _ in 0..10 {
+            h.record(&s);
+        }
+
+        let vm = host_card("m4", &s, &h, &Connection::Live);
+        assert_eq!(vm["gpuValue"], "0%");
+        assert_eq!(vm["gpuHistory"].as_array().expect("gpuHistory").len(), 10);
     }
 
     /// The exact edge the em-dash rule pivots on. `usage == 0.0` is what an

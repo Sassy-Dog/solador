@@ -25,12 +25,16 @@ It has three parts:
 There is also an experimental cross-platform walking skeleton, kept separate from
 the shipped SwiftUI app above (which stays untouched): a Rust workspace
 (`crates/wire`, `crates/viewmodel`, `crates/agentclient`) plus a Tauri v2 app
-(`app/`) that polls every configured agent, renders one host-monitoring card
-per host in a width-aware grid, renders the Containers/VMs panel (local
-docker/podman/tart plus every host's agent, with grouping rules and presence
-memory), renders the Repos + GitHub Runners panels (per-repo CI health and
-counts, local branch/worktree counts, the org's self-hosted runners with the
-absence roster — on the store's `refresh_interval_secs`), and carries an in-app
+(`app/`) that samples this machine and polls every configured agent, renders the
+local card plus one host-monitoring card per host in a width-aware grid, renders
+the Containers/VMs panel (local docker/podman/tart plus every host's agent, with
+grouping rules and presence memory), renders the Repos + GitHub Runners panels
+(per-repo CI health and counts, local branch/worktree counts, the org's
+self-hosted runners with the absence roster — on the store's
+`refresh_interval_secs`), renders the Usage panel (Claude token rollups on that
+same interval; Neon + Sentry hourly) and the Azure Cost panel (the daily cost
+export, on its own 4h cadence), arranges those panels into the rows
+`viewmodel::cockpit` reflowed for the measured width, and carries an in-app
 Settings surface over
 `crates/store` (hosts CRUD, portfolio, credentials, general prefs — applied
 without a restart), proving out a macOS/Windows-portable stack. Its frontend is plain HTML/CSS/JS with no bundler
@@ -112,16 +116,24 @@ DevCanopy/
 │   ├── agentclient/       # HTTP client polling the same agent the Swift app polls
 │   ├── store/             # settings/hosts/repos/container-rules/runner-roster
 │   │                      # JSON + OS credential-store wrappers
-│   └── github/            # GitHub REST client (workflows, runners)
+│   ├── github/            # GitHub REST client (workflows, runners)
+│   ├── localhost/         # this machine's metrics (sysinfo); every field the
+│   │                      # platform can decline is an Option, never a 0
+│   ├── usage/             # Claude Code log rollups + Neon + Sentry usage
+│   ├── azurecost/         # Azure Cost Management export reader (SAS blob + CSV)
+│   └── openclaw/          # OpenClaw gateway client
 ├── app/
-│   ├── src-tauri/         # Tauri v2 shell: one poll task per host; `cockpit`,
-│   │                      # `containers` (src/containers/), `repos`/`runners`
-│   │                      # (src/github/) + the `settings_*` command surface
-│   │                      # (src/settings.rs)
+│   ├── src-tauri/         # Tauri v2 shell: one poll task per host plus this
+│   │                      # machine (src/local.rs); `cockpit`, `containers`
+│   │                      # (src/containers/), `repos`/`runners` (src/github/),
+│   │                      # `usage` (src/usage.rs), `azure_cost` (src/azure.rs)
+│   │                      # + the `settings_*` command surface (src/settings.rs)
 │   └── ui/                # Frontend: plain HTML/CSS/JS, no bundler
-│                          # (app.js = cockpit, settings.js = Settings view,
+│                          # (app.js = cockpit + panel-row layout,
+│                          #  settings.js = Settings view,
 │                          #  containers.js = Containers/VMs panel,
-│                          #  github.js = Repos + GitHub Runners panels)
+│                          #  github.js = Repos + GitHub Runners panels,
+│                          #  usage.js = Usage panel, azure.js = Azure Cost)
 └── tests/frontend/         # Playwright e2e suite for app/ui/ (own package.json)
 ```
 

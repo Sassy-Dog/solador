@@ -172,6 +172,57 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-runner-status { font-size:9px; font-weight:700; white-space:nowrap;
   flex:none; min-width:48px; text-align:right; }
 
+/* ---- Panel rows ---------------------------------------------------------
+   Which panels share a row is `viewmodel::cockpit::reflow`'s answer, applied
+   by app.js — NOT a CSS `repeat(auto-fit, minmax(…))`, which would be a second
+   implementation of every panel's own `min_width` and free to disagree with
+   the tested one. The track count is assigned via CSSOM per row; this rule
+   only supplies the fallback and the gap. `minmax(0,1fr)` so a long resource
+   name can never push its column past its share. */
+.panel-rows { display:flex; flex-direction:column; }
+.panel-row { display:grid; gap:var(--cockpit-gap, 16px); align-items:start;
+  grid-template-columns: repeat(1, minmax(0, 1fr)); }
+
+/* ---- The shared progress bar -------------------------------------------
+   `CockpitProgressBar`. The width and the fill colour both arrive from Rust
+   (`panel::progress_bar`) — the thresholds are the Swift panel's and must not
+   be re-derived here. `min-width` mirrors its `max(2, …)`: a bar at a real 0
+   still shows a sliver, so "measured zero" and "no bar at all" stay visibly
+   different. */
+.pbar { height:4px; border-radius:2px; background:var(--panelAlt); overflow:hidden; }
+.pbar > span { display:block; height:100%; border-radius:2px; min-width:2px; }
+
+/* ---- Usage + Azure Cost -------------------------------------------------
+   Both are label/value stacks rather than tables, so they share one row rule.
+   Nothing here sets a colour that carries meaning: green tokens, the muted em
+   dash for an unmeasured figure, the amber fallback caption and every bar
+   colour arrive from Rust and are applied via CSSOM. */
+.pv-row { display:flex; align-items:baseline; gap:7px; min-width:0; }
+.pv-row .lbl { font-size:9px; }
+.pv-row .val { margin-left:auto; font-size:12px; font-weight:700;
+  white-space:nowrap; font-variant-numeric:tabular-nums; }
+/* The 5H / WEEK window rows: a fixed label column so the two figures align. */
+.pv-row.window .lbl { font-size:10px; min-width:42px; }
+.pv-message { font-size:11px; color:var(--muted); margin:0; }
+.pv-divider { border:0; border-top:1px solid var(--line); margin:0; width:100%; }
+.pv-section { display:flex; flex-direction:column; gap:6px; min-width:0; }
+/* A named breakdown line (a project, a resource group): dot, name, figure. */
+.pv-item { display:flex; align-items:center; gap:7px; min-width:0; }
+.pv-item .dot { width:5px; height:5px; flex:none; }
+.pv-item .name { font-size:11px; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.pv-item .val { margin-left:auto; font-size:10px; color:var(--muted);
+  white-space:nowrap; font-variant-numeric:tabular-nums; }
+.pv-footer { font-size:9px; font-weight:700; margin:0; }
+
+.az-headline { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.az-headline .value { font-size:22px; font-weight:700;
+  font-variant-numeric:tabular-nums; }
+.az-headline .caption { font-size:10px; }
+/* The two top-N lists sit side by side and share the row evenly. */
+.az-columns { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap:16px; }
+
 /* ---- Settings ----------------------------------------------------------
    An in-app view, so it shares the cockpit's palette and type scale rather
    than opening a differently-styled window. Every control below is created by

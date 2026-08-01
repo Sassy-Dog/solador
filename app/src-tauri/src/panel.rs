@@ -1,10 +1,13 @@
-//! The one refresh-health footer every panel shares. Port of
-//! `DevCanopy/Views/Cockpit/PanelStatusFooter.swift`.
+//! The two pieces of chrome every panel shares: the refresh-health footer
+//! (`DevCanopy/Views/Cockpit/PanelStatusFooter.swift`) and the thin progress
+//! bar (`CockpitProgressBar.swift`).
 //!
-//! Swift passes this view a `staleAfter` per panel — 30s for Containers, 150s
+//! Swift passes the footer a `staleAfter` per panel — 30s for Containers, 150s
 //! for GitHub Runners — and the *ladder* is identical for all of them. One
 //! definition here means two panels can never disagree about whether an error
-//! outranks staleness, or about where a minute becomes an hour.
+//! outranks staleness, or about where a minute becomes an hour. Same argument
+//! for the bar: the Usage panel's Sentry quota and the Azure Cost panel's
+//! budget are the same widget at the same thresholds.
 
 use serde_json::{json, Value};
 use viewmodel::color;
@@ -56,6 +59,32 @@ pub fn status_footer(
         Some(text) => json!({ "text": text, "color": color::hex(color::AMBER) }),
         None => Value::Null,
     }
+}
+
+/// One thin progress bar: how much of the track to fill, and what colour.
+///
+/// Port of `CockpitProgressBar` (Swift), including its one subtlety — **the
+/// width is clamped and the colour is not**. An over-quota bar pins full rather
+/// than overflowing its track, but it still reads red, because a bar sitting at
+/// 100% in green would say "at budget" when the truth is "past it".
+///
+/// `fraction` is the raw ratio. A non-finite one (a divide by a zero
+/// denominator) is not a measurement, so it renders an empty green bar rather
+/// than a `NaN` width the frontend would silently drop.
+#[must_use]
+pub fn progress_bar(fraction: f64, amber_at: f64, red_at: f64) -> Value {
+    let raw = if fraction.is_finite() { fraction } else { 0.0 };
+    let color = if raw >= red_at {
+        color::RED
+    } else if raw >= amber_at {
+        color::AMBER
+    } else {
+        color::GREEN
+    };
+    json!({
+        "fraction": raw.clamp(0.0, 1.0),
+        "color": color::hex(color),
+    })
 }
 
 #[cfg(test)]
@@ -129,5 +158,51 @@ mod tests {
     fn the_footer_is_always_amber() {
         let footer = status_footer(Some(NOW - 900), None, NOW, 150);
         assert_eq!(footer["color"], color::hex(color::AMBER));
+    }
+
+    // MARK: progress_bar
+
+    #[test]
+    fn the_bar_steps_green_amber_red_at_its_thresholds() {
+        assert_eq!(
+            progress_bar(0.5, 0.9, 1.0)["color"],
+            color::hex(color::GREEN)
+        );
+        assert_eq!(
+            progress_bar(0.899, 0.9, 1.0)["color"],
+            color::hex(color::GREEN)
+        );
+        assert_eq!(
+            progress_bar(0.9, 0.9, 1.0)["color"],
+            color::hex(color::AMBER)
+        );
+        assert_eq!(progress_bar(1.0, 0.9, 1.0)["color"], color::hex(color::RED));
+    }
+
+    /// The one asymmetry worth pinning: an over-budget bar pins its width full
+    /// and keeps its red. Clamping the colour too would paint 300% of budget
+    /// exactly like 100% of it.
+    #[test]
+    fn an_over_budget_bar_pins_full_but_still_reads_red() {
+        let bar = progress_bar(3.0, 0.9, 1.0);
+        assert_eq!(bar["fraction"], 1.0);
+        assert_eq!(bar["color"], color::hex(color::RED));
+    }
+
+    #[test]
+    fn a_negative_fraction_floors_at_empty() {
+        assert_eq!(progress_bar(-2.0, 0.9, 1.0)["fraction"], 0.0);
+    }
+
+    /// A zero denominator upstream yields `NaN`/`inf`, which is not a
+    /// measurement. It must not travel as a width the frontend then drops
+    /// silently, and it must not read as "over budget" either.
+    #[test]
+    fn a_non_finite_fraction_renders_an_empty_green_bar() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let bar = progress_bar(bad, 0.9, 1.0);
+            assert_eq!(bar["fraction"], 0.0, "for {bad}");
+            assert_eq!(bar["color"], color::hex(color::GREEN), "for {bad}");
+        }
     }
 }

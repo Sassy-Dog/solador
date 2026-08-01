@@ -1,28 +1,34 @@
 # DevCanopy Walking Skeleton (`app/`)
 
 An experimental cross-platform shell proving out a macOS/Windows-portable stack: a
-[Tauri v2](https://v2.tauri.app) app that polls every configured DevCanopy
-[agent](../agent/README.md) and renders one host-monitoring card per host in a
-width-aware grid. The shipped product is still the SwiftUI app in
-[`DevCanopy/`](../DevCanopy) — this is a skeleton, not a replacement.
+[Tauri v2](https://v2.tauri.app) app that samples this machine and polls every
+configured DevCanopy [agent](../agent/README.md), rendering one host-monitoring
+card per host in a width-aware grid. The shipped product is still the SwiftUI app
+in [`DevCanopy/`](../DevCanopy) — this is a skeleton, not a replacement.
 
 ```
 app/
 ├── src-tauri/            # Rust shell
 │   ├── src/main.rs       # per-host poll tasks + the `#[tauri::command]` surface
 │   ├── src/settings.rs   # the Settings view-model and its pure rules
-│   ├── src/panel.rs      # the refresh-health footer every panel shares
+│   ├── src/panel.rs      # the refresh-health footer + progress bar every panel shares
+│   ├── src/local.rs      # this machine's card: the sampler's poll state and
+│   │                     #   the honest-unknown rendering
 │   ├── src/containers/   # the Containers/VMs panel: local runtimes, grouping,
 │   │                     #   presence, and every string it paints
 │   ├── src/github/       # the Repos + GitHub Runners panels, and the local
 │   │                     #   git scan behind their LOCAL/WT columns
+│   ├── src/usage.rs      # the Usage panel: Claude tokens + Neon + Sentry
+│   ├── src/azure.rs      # the Azure Cost panel
 │   ├── capabilities/     # default.json — the webview's ACL
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
-    ├── app.js            # the cockpit
+    ├── app.js            # the cockpit (host grid + the panel-row layout)
     ├── settings.js       # the Settings view
     ├── containers.js     # the Containers/VMs panel
-    └── github.js         # the Repos + GitHub Runners panels
+    ├── github.js         # the Repos + GitHub Runners panels
+    ├── usage.js          # the Usage panel
+    └── azure.js          # the Azure Cost panel
 ```
 
 Every string and colour the frontend paints comes from Rust
@@ -41,12 +47,13 @@ await window.__TAURI__.core.invoke("cockpit", { width: gridWidth });
 
 ```jsonc
 {
-  "hosts": [ /* one host_card / pending_card per enabled host, each with its `id` */ ],
+  "hosts": [ /* the local card, then one card per enabled host, each with its `id` */ ],
   "hostColumns": 2,        // viewmodel::cockpit::host_columns for `width`
   "hostCardMinWidth": 900, // …and the numbers it used, so the frontend can't
   "spacing": 16,           //    re-derive them and disagree
   "panels": [ /* the panel table: id, title, minWidth */ ],
-  "empty": null,           // or {"message": …} when no host is configured
+  "panelRows": [ /* the reflowed layout: which panels share a row, in order */ ],
+  "empty": null,           // or {"message": …} when no REMOTE host is configured
   "settingsLabel": "Settings"  // the button that opens the Settings view
 }
 ```
@@ -55,6 +62,21 @@ The column count is decided in Rust, not by a CSS `repeat(auto-fit, minmax(900px
 1fr))`: that CSS would be a second implementation of
 `CockpitBreakpoints.hostColumns`, free to disagree with the tested one. The
 frontend passes the grid's measured width and applies the answer.
+
+`panelRows` is the same argument for the panels *below* the grid:
+`CockpitLayout::hosts_forward()` reflowed for that width by
+`viewmodel::cockpit::reflow`. It is not a global `sm`/`md`/`lg` tier and it is
+not a CSS `auto-fit` — **every panel declares its own `min_width`**, and a row
+splits only when *its* panels stop fitting. The case that model exists for is
+visible in the shipped layout: Usage + Azure Cost (360 + 16 + 400 = 776pt) stay
+side by side at a width where Repos + Runners (976pt) must break apart. Rows
+naming a panel this frontend has no section for — `hosts`, which is the grid
+above, and `openclawAgents`, which is not built — still travel; app.js skips
+them rather than Rust silently omitting a row it did produce.
+
+`empty` keys on the count of *monitored* hosts, not on the number of cards: the
+local card is always there, so counting cards would answer "is anything
+configured" wrong forever.
 
 ## The `containers` command
 
@@ -208,15 +230,108 @@ hidden:
   right-click context menu over a `roster::forget` that `crates/github` already
   implements. A remembered name still ages out on its own after 24h.
 
-Both panels stack full-width below the host grid, as Containers does. The
-shipped Swift layout puts Repos and Runners side by side in one row, and
-`viewmodel::cockpit::reflow` already computes that — wiring the multi-panel row
-is one change that moves all four panels at once, not a piece of this slice.
+Both panels now sit in whichever row `panelRows` puts them — side by side at
+≥976pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).
 
 Two counts are deliberately not the same number: the rollup counts *every*
 container the runtimes reported, including the ones rules hid or collapsed (so
 cruft building up stays visible), while `· N missing` counts exactly what the
 rollup can no longer see.
+
+## The `usage` and `azure_cost` commands
+
+```js
+await window.__TAURI__.core.invoke("usage");
+await window.__TAURI__.core.invoke("azure_cost");
+```
+
+```jsonc
+// usage
+{
+  "id": "claudeUsage", "title": "Usage",
+  "trailing": "1.2M today",              // "" when no summary exists
+  "message": null,                       // or {"text": "reading logs…"} / "no usage data"
+                                         //    / "no Claude usage in the last 7 days"
+  "windows": [{"label": "5H", "value": "820k", "valueColor": "#33d17a"}, …],
+  "projects": {"label": "TOP PROJECTS (7D)", "rows": [{"name": …, "value": …, "dotColor": …}]},
+  "providers": [
+    {"id": "neon", "rows": [{"label": "NEON COMPUTE (MTD)", "value": "—", "valueColor": …}], "footer": …},
+    {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"}, "footer": …}
+  ],
+  "footer": null                         // Claude's own, staleAfter 150s
+}
+
+// azure_cost
+{
+  "id": "azureCost", "title": "Azure Cost",
+  "trailing": "$1,284.55 MTD",           // or "$1,284.55 · Jun" in the fallback
+  "message": null,                       // or {"text": …, "color": …} — muted setup vs red failure
+  "headline": {"value": "$1,284.55", "caption": "month-to-date", "captionColor": …},
+  "stats": [{"label": "PRIOR MONTH", "value": "$2,011.40"}, …],
+  "budget": {"label": "PROJECTED VS BUDGET", "value": "$1,942.18 / $2,000.00", "bar": …},
+  "breakdowns": [{"title": "TOP RESOURCE GROUPS", "rows": […]}, …],
+  "footer": null                         // staleAfter 5h
+}
+```
+
+**Three sources, three cadences, three footers.** Claude Code's token rollups are
+a walk of `~/.claude/projects` on the store's `refresh_interval_secs`
+(`staleAfter` 150s). Neon consumption and Sentry event stats are hourly API reads
+inside the same loop (`staleAfter` 90m — above their own cadence, so a warning
+means a stuck poller and not the gap between polls). Azure cost is its own loop
+on `azurecost::POLL_INTERVAL` (4h), because the export is published about once a
+day and the crate's fingerprint cache makes an unchanged cycle cost one blob
+listing and zero partition bodies.
+
+**Unknown is not zero, again — and this time it also suppresses a bar.**
+`crates/usage` models Neon's and Sentry's summaries as enums whose *unmeasured*
+variant carries no figures at all, so `—` can never be typed into a `0` by
+mistake. The Sentry quota bar therefore needs **both** a configured quota and a
+known count: a bar drawn at a defaulted zero would read "comfortably under quota"
+when the truth is "nobody measured". A measured `0` does get its bar, empty.
+
+**An unconfigured provider has no section at all** — no heading, no em dash, no
+layout shift; the panel is pixel-identical to its Claude-only self. The em dash
+is reserved for "configured, and we could not find out". Azure draws the same
+line in a different colour: **no SAS URL is a muted setup instruction**, a failed
+read is **red** and names the failure, and rendering the first as the second
+would send an operator hunting a break that does not exist.
+
+**A credential the store refuses to read is a fourth state**, and it is neither
+of those. `Credential::Unreadable` (`main.rs`) deliberately does *not*
+unconfigure anything: a locked keychain would otherwise delete a live Neon
+section for an hour, or paint "Add an Azure Cost SAS URL in Settings" over a
+perfectly good configuration *and* discard the fingerprint cache, so the next
+successful read re-downloads every partition. Instead the panel keeps its figures
+and the footer says `couldn't read the credential store`. A provider that was
+never configured stays silent — a hiccup must not conjure a section for something
+nobody set up. This is a deliberate divergence from Swift, whose `KeychainHelper`
+collapses a read failure into `nil`.
+
+**One fabricated zero survives, and it is named rather than hidden.** Azure's
+`PRIOR MONTH` renders `$0.00` when the prior-month export is missing, because
+`azurecost::CostSummary::spend_prior_month` is a bare `f64` the crate documents
+as best-effort ("a missing prior-month export leaves this 0 rather than failing
+the whole read") and Swift's `AzureCostService` does the same. It is the one
+figure on either panel that cannot tell "we spent nothing" from "we could not
+look" — the Usage panel solved exactly this shape with `Unmeasured` enums, and
+lifting `spend_prior_month` to an `Option` is the same fix, in `crates/azurecost`
+rather than here.
+
+Two things the Claude half deliberately does not have. There is **no progress bar
+on the 5H / WEEK rows** — Swift's `fiveHourTokenLimit` and `weeklyTokenLimit` are
+both `nil`, a subscription publishes no ceiling, and a bar against an invented
+one is a percentage of a number nobody set. And **no USD**: `crates/usage` prices
+every record and the figure is unit-tested, but the account is subscription-based
+so it is never displayed.
+
+**Applied without a restart**, like the GitHub panels: saving or clearing a Neon
+key, a Sentry token, an org id or a slug wakes the usage loop *and* forces its
+hourly half to run on that pass, so a newly-saved key fills its section in
+seconds rather than within the hour. A SAS URL wakes the Azure loop the same way.
+The Sentry quota and the Azure budget wake nothing on purpose — both are read at
+render time, so changing one repaints its bar on the next 10s frontend tick with
+no fetch involved.
 
 ## Hosts
 
@@ -225,9 +340,39 @@ file under the platform config dir), and their bearer tokens from the OS
 credential store, never from that file. Each **enabled** host gets its own poll
 task, its own `AgentClient` and its own history buffers, so an unreachable host
 shows its own error card while every other card stays live; cards are ordered by
-name, mirroring the Swift coordinator's `SortDescriptor(\.name)`. (The SwiftUI
-cockpit puts the *local* machine first; this shell has no local collector —
-`HostMetricsKit` is Swift-only — so the remote ordering is the whole ordering.)
+name, mirroring the Swift coordinator's `SortDescriptor(\.name)`.
+
+### This machine leads
+
+The first card is the local machine, matching `HostsPanel.hosts` in Swift
+(`[local] + remoteHosts`). It is sampled in-process by
+[`crates/localhost`](../crates/localhost) on the same 1s cadence, and its
+connection dot is **always green**: this process *is* the host, so there is no
+link to lose and no staleness to report (`ConnectionState.local`). Its name is
+the platform host name minus macOS's cosmetic `.local`, exactly as
+`LocalHostMetricsService` derives it.
+
+It is otherwise the *same* card a remote host gets — same charts, same core grid,
+same volume bars — because it is built by the same `viewmodel::card::host_card`.
+What [`src/local.rs`](src-tauri/src/local.rs) adds is the honest-unknown pass.
+`LocalSnapshot::to_wire()` is lossy **by construction**: `wire::Memory::pressure`
+and the two rate pairs are bare `f64`s where the sampler has `Option`s, so an
+unmeasured pressure lands as `0.0` and would paint a permanently green
+"Pressure: 0%". So each field whose *source* was `None` is replaced with the
+muted em dash afterwards — driven by matching on the `Option` itself, never by
+testing the lowered number for zero. An idle disk really does read `0.0 MB/s`,
+and hiding that would be the mirror-image bug.
+
+On macOS today that means memory pressure (no portable source: the Swift
+collector reaches into mach for wired and compressed page counts) and the GPU (no
+dependency-free read on either platform) render `—` permanently, and the disk and
+network rates render `—` for exactly one tick at startup, before there are two
+samples to diff. A partially-measured sample is **shown but not plotted**:
+pushing the wire lowering's `0.0` into a history buffer would draw a spike from a
+floor nobody measured.
+
+"No hosts configured. Add one in Settings." is therefore about *monitored* hosts
+and still appears beside the local card on a fresh install.
 
 A failed poll is debounced two ticks before the card stops claiming to be
 current, matching `RemoteHostMetricsService.failureThreshold`: one missed poll on
@@ -261,9 +406,18 @@ empty `permissions` list.
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio |
 | `settings_save_secret` / `settings_clear_secret` | one credential, by key (`github`/`neon`/`sentry`/`azure`) |
 
-The portfolio, the refresh interval and the `github` credential all wake the
-GitHub poll loop as well as saving — see [the `repos` and `runners`
-commands](#the-repos-and-runners-commands).
+**Every mutation wakes exactly the loop its data feeds, and no other.** A wake
+spends a whole poll pass, so nudging the GitHub loop after a Neon save would burn
+a portfolio fetch on a credential it has no use for.
+
+| Edit | Wakes |
+|---|---|
+| the portfolio, the refresh interval, the `github` credential | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
+| the refresh interval | …and the usage loop's Claude half, which shares that cadence |
+| the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
+| the `azure` credential | the Azure loop |
+| the Sentry quota, the Azure budget | nothing — both are read at render time |
+| a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
 
 Every mutation answers in one shape — `{status, settings}` — and the frontend
 re-renders from the `settings` it gets back rather than patching its own copy,
@@ -283,11 +437,14 @@ reload entirely, mirroring the Swift view's `applyHiddenMounts()` vs `reload()`.
 Two gaps, deliberate and worth knowing:
 
 - **The refresh interval is consumed; the other two General preferences are
-  not.** `refresh_interval_secs` is the GitHub panels' cadence, and changing it
-  applies immediately (see below). The host poll loop is deliberately *not* on
-  it — it stays at 1s because one history sample is one fixed time slice
+  not.** `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
+  rollup's cadence, and changing it applies immediately (see below). Neither the
+  host poll loop nor the provider reads are on it: the host loop stays at 1s
+  because one history sample is one fixed time slice
   (`PX_PER_SAMPLE`), so that cadence is part of the charts' time axis rather
-  than a preference. The core row span and host-overflow mode are still read by
+  than a preference, and Neon, Sentry and the Azure export publish on the order
+  of hours or days, so each keeps its own fixed cadence. The core row span and
+  host-overflow mode are still read by
   `viewmodel`'s card and cockpit functions from their own constants; they
   persist (same file, same keys, same laundering rules as Swift) and nothing
   reads the stored value yet.
@@ -343,6 +500,13 @@ cargo run -p devcanopy-app -- --dump-containers sample-containers.json # the Con
 cargo run -p devcanopy-app -- --dump-repos sample-repos.json         # the Repos panel
 cargo run -p devcanopy-app -- --dump-runners sample-runners.json     # the Runners panel
 #   …both take `--empty`, which dumps the no-credential state.
+cargo run -p devcanopy-app -- --dump-usage sample-usage.json         # the Usage panel
+#   …plus `--unmeasured` (both providers answering, neither measuring: the em
+#   dash path, with the quota set and the bar therefore suppressed) and
+#   `--empty` (no summary, no provider configured).
+cargo run -p devcanopy-app -- --dump-azure sample-azure.json         # the Azure Cost panel
+#   …plus `--fallback` (the rollover gap: amber caption, month stamped),
+#   `--error` (red, an expired SAS) and `--empty` (no SAS URL at all).
 ```
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
@@ -358,11 +522,18 @@ their state is asserted by a Rust test (`the_fixture_covers_every_rendering_
 the_panels_have`) precisely so the Playwright suite cannot pass against a
 payload that quietly lost the case it claims to exercise — it carries an
 unknown count beside a genuine zero, an approval gate, a failing repo, an
-unreachable one, and remembered runners in both absence states. The rest
-are full `cockpit` payloads — the same shape the command returns, so
-the offline path cannot diverge from the real one — built from the committed
+unreachable one, and remembered runners in both absence states.
+`--dump-usage` / `--dump-azure` carry the same guard (`the_fixtures_cover_every_
+rendering_the_panel_has`, one per module): between them they pin the quota bar's
+amber step, its suppression when the count is unknown, the em dash beside a
+measured figure, the amber rollover caption, and the muted-setup-vs-red-failure
+split. The rest are full `cockpit` payloads — the same shape the command returns,
+so the offline path cannot diverge from the real one — built from the committed
 agent-contract fixture, so they reproduce on a clean checkout with no agent
-involved. `npm test` in `tests/frontend` writes them under `app/ui/` (all
+involved. Their **local card is hand-made** at a fixed shape for the same
+byte-stability reason, and it carries the em dashes the shipped card really does
+(pressure, GPU) so the Playwright suite asserts that rule against Rust's own
+output. `npm test` in `tests/frontend` writes them all under `app/ui/` (all
 gitignored) — which matters for the smoke test below.
 
 ## Manual IPC smoke test
@@ -370,10 +541,10 @@ gitignored) — which matters for the smoke test below.
 **Nothing automated exercises the Tauri IPC boundary**
 ([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)). Both sides of the
 seam are tested and the seam itself is not: the Rust tests call
-`cockpit_view(&[HostState], width)`, `settings::view(…)` and
-`containers::view(…)` directly rather than through their `#[tauri::command]`
+`cockpit_view(…)`, `settings::view(…)`, `containers::view(…)`, `usage::view(…)`
+and `azure::view(…)` directly rather than through their `#[tauri::command]`
 wrappers, and the Playwright suite stubs `window.__TAURI__.core.invoke` — every
-command, cockpit, settings and containers alike — with Rust-dumped JSON. A break in the ACL
+command alike — with Rust-dumped JSON. A break in the ACL
 ([`src-tauri/capabilities/default.json`](src-tauri/capabilities/default.json)), in
 the `invoke_handler` registration, or in the IPC transport itself would leave every
 one of those tests green.
@@ -510,6 +681,43 @@ So this is a manual step. Run it after changing anything under
    Issues scope shows `—` under ISSUES with the repo still green — a missing
    scope is not an outage.
 
+8. **Read the terminal a last time** for the Usage and Azure Cost panels' own
+   one-line signals (both print at load, alongside the others):
+
+   ```
+   usage: first frontend request (0 provider section(s))
+   azure_cost: first frontend request (headline: false)
+   ```
+
+   **Both zero/false is still a pass for the boundary.** With no Neon key and no
+   Sentry token in the scratch keychain the Usage panel is its Claude-only self —
+   the provider sections are *absent*, deliberately, not blank — and with no SAS
+   URL the Azure panel is the single sentence `Add an Azure Cost SAS URL in
+   Settings`. That sentence is `azure::UNCONFIGURED_MESSAGE`'s and has no path to
+   the DOM except a successful `invoke("azure_cost")`.
+
+   The Usage panel is the one surface here that needs **no credential at all** to
+   populate: it walks `~/.claude/projects` on this machine. On a machine that has
+   run Claude Code, expect `5H` and `WEEK` token counts, a `TOP PROJECTS (7D)`
+   list, and an `N today` trailing label within one refresh interval. On one that
+   has not, expect `no ~/.claude/projects` in the footer with `no usage data`
+   above it — also a pass, and the two are different Rust sentences.
+
+   To exercise the provider half, save a Neon org API key (plus its org id under
+   Settings → Usage) and/or a Sentry `org:read` token and slug. Both apply
+   without a relaunch — `settings_save_secret` wakes the usage loop *and* forces
+   its hourly half — so the sections should appear within seconds. That
+   immediacy is itself the check on the wake. A key with no org id is the
+   interesting case: the section appears, both figures render `—`, and the footer
+   says `Add your Neon org ID in Settings` — never a fabricated `0.0 CU-h`.
+
+9. **Read the local card**, at the head of the host grid. It should carry this
+   machine's name (hostname minus `.local`), a green dot, live CPU and memory
+   that change between ticks, and — on macOS — `Pressure: —` and `VRAM: —`. Those
+   two em dashes are the point: neither figure has a portable source, and the
+   card says so rather than painting a permanently green 0%. Disk and network
+   read `—` for the first tick only, then real rates.
+
 ### Pass
 
 The terminal prints the `cockpit: first frontend request …` line above, and the
@@ -550,6 +758,16 @@ sentence — the same argument a fourth and fifth time. A missing panel does not
 pass: both stay hidden until a payload arrives, deliberately, so a broken
 boundary cannot masquerade as an unconfigured one.
 
+Step 8 passes when `usage:` and `azure_cost: first frontend request …` both
+print and both panels carry a heading plus *either* their content or their
+zero-credential state — the same argument a sixth and seventh time.
+
+Step 9 passes when the **first** card in the grid is this machine, named after
+this machine, with a green dot. It is the one card no configuration can produce
+and no configuration can remove, so it is also the cheapest read on the whole
+procedure: a grid that leads with `ubu-3xdv` means either the local sampler never
+started or step 1 was skipped.
+
 Seeding a second host — run once more with a different address, against the same
 `DEVCANOPY_STORE_DIR` — is the multi-card version of the same check: two cards,
 side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
@@ -570,6 +788,11 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The **Repos** or **GitHub Runners** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `repos`/`runners` command, or a script error in `github.js`. Both panels stay hidden until a payload arrives, so this cannot be mistaken for "no token configured" — that state renders a visible panel with one sentence in it. Check the webview console. |
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. |
+| The **Usage** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`azure_cost` command, or a script error in `usage.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
+| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Usage shows **Stored** for the credential; if it does, the hourly read has not run yet — saving wakes it, so re-save to force a pass. |
+| Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
+| The local card is missing, or the grid leads with a remote host. | The local sampler never started, or its first sample has not landed (it renders `waiting for first sample…` for one tick). A card that never appears at all points at the poll task, not the ACL: the card is built in `cockpit`, which the terminal line in step 3 already proved runs. |
+| The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. Note that `Pressure: —` and `VRAM: —` are permanent and correct on macOS — see [This machine leads](#this-machine-leads). |
 
 For the underlying error, open the webview console: right-click in the window →
 **Inspect Element** (devtools are enabled in debug builds). An ACL rejection names
@@ -585,6 +808,7 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
+| 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/Sassy-Dog/devcanopy/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/Sassy-Dog/devcanopy/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Settings surface + `App` state restructure ([#163](https://github.com/Sassy-Dog/devcanopy/issues/163)) | **Pass.** Fixtures removed, scratch store, `DEVCANOPY_SEED_HOST="smoke-…\|100.87.202.125\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport still carry the call after `manage()` changed from `Cockpit` to `App` and the handler list grew from one command to fifteen. | **Not performed**, and neither was **step 5** — both need a click on a Mac someone else is working on. The settings half of the boundary is therefore *documented, not verified*: `settings: first frontend request …` has never been observed. Worth ten seconds from anyone who launches this next. |
 | 2026-07-31 | `snapshot` → `cockpit`, N-card grid ([#157](https://github.com/Sassy-Dog/devcanopy/issues/157)) | **Pass.** Fixtures removed, scratch store, `DEVCANOPY_SEED_HOST="smoke-233344\|100.87.202.125\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport all carried the call, and `width` arrived. App still up when the run ended. Negative control run immediately before (command renamed in `app.js`, rebuilt) printed nothing, so the signal discriminates. | **Not performed** — the Mac's screen was locked (`CGSSessionScreenIsLocked`), which makes `screencapture` return black frames, and no Accessibility grant was available to read the window's text. Worth a human glance next time someone has the screen in front of them. |
