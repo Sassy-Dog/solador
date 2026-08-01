@@ -2639,6 +2639,8 @@ fn run_dump(args: &[String]) -> bool {
             openclaw::Fixture::Idle
         } else if args.iter().any(|arg| arg == "--error") {
             openclaw::Fixture::Disconnected
+        } else if args.iter().any(|arg| arg == "--unmeasured") {
+            openclaw::Fixture::Unmeasured
         } else {
             openclaw::Fixture::Connected
         };

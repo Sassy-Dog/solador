@@ -120,12 +120,22 @@ pub struct ChannelStatus {
 }
 
 /// Token-usage rollup for the most relevant session.
+///
+/// Every counter is optional because the gateway sends them optionally: a
+/// session that did not report `totalTokens` is a session whose token count is
+/// **unknown**, which is a different fact from a session that burned none.
+/// `None` renders the em dash; `Some(0)` renders `0`. Flattening the two here
+/// is what made this the one panel that could paint a figure nobody measured.
+///
+/// `u64` rather than the wire's `i64`: a token count cannot be negative, so the
+/// domain refuses to represent one. [`crate::reducer::decode_usage`] does the
+/// narrowing and treats an out-of-range value as unknown.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct SessionUsageRollup {
-    pub total_tokens: i64,
-    pub context_tokens: i64,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
+    pub total_tokens: Option<u64>,
+    pub context_tokens: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
     /// Milliseconds since the UNIX epoch, kept in the gateway's own unit. The
     /// presentation layer decides how to render it; converting here would bake
     /// in a timezone and a clock this crate does not have.
