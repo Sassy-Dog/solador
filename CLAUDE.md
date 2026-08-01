@@ -22,27 +22,36 @@ It has three parts:
 - **HostMetricsKit** (`Packages/HostMetricsKit/`) — local Swift package for
   local-machine metric collection (CPU/GPU/battery via IOKit), shared by the app.
 
-There is also an experimental cross-platform walking skeleton, kept separate from
-the shipped SwiftUI app above (which stays untouched): a Rust workspace
-(`crates/wire`, `crates/viewmodel`, `crates/agentclient`) plus a Tauri v2 app
-(`app/`) that samples this machine and polls every configured agent, renders the
-local card plus one host-monitoring card per host in a width-aware grid, renders
-the Containers/VMs panel (local docker/podman/tart plus every host's agent, with
-grouping rules and presence memory), renders the Repos + GitHub Runners panels
-(per-repo CI health and counts, local branch/worktree counts, the org's
-self-hosted runners with the absence roster — on the store's
-`refresh_interval_secs`), renders the Usage panel (Claude token rollups on that
-same interval; Neon + Sentry hourly), the Azure Cost panel (the daily cost
-export, on its own 4h cadence) and the OpenClaw panel (an agent farm over a live
-WebSocket — **event-driven, on no cadence at all**, which is why it is the one
-panel with no staleness footer), arranges those panels into the rows
-`viewmodel::cockpit` reflowed for the measured width, and carries an in-app
-Settings surface over
-`crates/store` (hosts CRUD, portfolio, credentials, general prefs — applied
-without a restart), proving out a macOS/Windows-portable stack. Its frontend is plain HTML/CSS/JS with no bundler
-(`app/ui/`) and its own Playwright e2e suite (`tests/frontend/`). See
-`.superpowers/sdd/2026-07-27-cross-platform-walking-skeleton/` for the plan/reviews
-that produced it.
+There is also an **experimental cross-platform cockpit** — a Rust workspace
+(`crates/*`) plus a Tauri v2 app (`app/`) proving out a macOS/Windows-portable
+stack. It is kept strictly separate from the shipped SwiftUI app above, which
+stays untouched, and it is *experimental in distribution, not in scope*: it
+renders every panel the SwiftUI cockpit renders. It began as a walking skeleton
+(one host card); epic #150 took it to panel parity across fourteen slices, and
+`app/README.md` is its reference doc.
+
+- **Hosts** — this machine's card plus one per configured agent, in a
+  width-aware grid (1s poll).
+- **Containers/VMs** — local docker/podman/tart plus every host's agent, with
+  grouping rules and presence memory (10s).
+- **Repos + GitHub Runners** — per-repo CI health and counts, local
+  branch/worktree counts, the org's self-hosted runners with the absence roster
+  (the store's `refresh_interval_secs`).
+- **Usage** — Claude token rollups (same interval); Neon + Sentry (hourly).
+- **Azure Cost** — the daily cost export, on its own 4h cadence.
+- **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
+  cadence at all**, which is why it is the one panel with no staleness footer.
+
+Those panels are arranged into rows `viewmodel::cockpit` reflows for the measured
+width, and an in-app Settings surface over `crates/store` (hosts CRUD, portfolio,
+credentials, general prefs) applies changes without a restart. The frontend is
+plain HTML/CSS/JS with no bundler (`app/ui/`) and has its own Playwright e2e suite
+(`tests/frontend/`). The Tauri IPC boundary itself is **not** automatically
+tested — `app/README.md` carries a five-minute manual smoke checklist that is the
+only thing covering it (see #123).
+
+See `.superpowers/sdd/2026-07-27-cross-platform-walking-skeleton/` for the
+plan/reviews that produced the original skeleton.
 
 ## Development Workflow
 
@@ -107,8 +116,9 @@ DevCanopy/
 │                          # workspace/toolchain/CI job, not part of the
 │                          # root Cargo.toml below
 │
-│                          # Cross-platform walking skeleton (experimental,
-│                          # see Project Overview):
+│                          # Cross-platform cockpit (experimental
+│                          # distribution, full panel parity — see
+│                          # Project Overview):
 ├── Cargo.toml             # Root Rust workspace: crates/* + app/src-tauri
 ├── rust-toolchain.toml    # Pins the root workspace's toolchain (agent/'s convention)
 ├── crates/

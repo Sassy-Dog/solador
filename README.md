@@ -49,7 +49,7 @@ cd devcanopy
 - `./dev run --release` - Run release build
 - `./dev run --log console --log-level debug` - Run with console logging
 - `./dev test` - Run all tests: the Swift app, plus the root Rust workspace
-  (`crates/*`, `app/src-tauri` — an experimental cross-platform walking skeleton,
+  (`crates/*`, `app/src-tauri` — the experimental cross-platform cockpit,
   see below) and its `tests/frontend` Playwright e2e suite
 - `./dev lint` - Run SwiftLint + SwiftFormat, plus `cargo fmt`/`clippy` for the
   root Rust workspace (mirrors CI)
@@ -97,11 +97,12 @@ DevCanopy/
 │   └── HostMetricsKit/    # Local Swift package: local-machine metrics collection
 ├── agent/                  # Rust per-host metrics agent -- own Cargo workspace
 │
-│                           # Experimental cross-platform walking skeleton
-│                           # (a Tauri app rendering one live host card; the
+│                           # Experimental cross-platform cockpit (a Tauri app
+│                           # rendering every panel the SwiftUI app does; the
 │                           # SwiftUI app above stays the shipped product):
 ├── Cargo.toml              # Root Rust workspace: crates/* + app/src-tauri
-├── crates/                 # metrics (wire types), viewmodel (host_card), agentclient
+├── crates/                 # wire, viewmodel, agentclient, store, localhost,
+│                           #   github, usage, azurecost, openclaw
 ├── app/                    # app/src-tauri (Tauri shell) + app/ui (plain HTML/CSS/JS)
 └── tests/frontend/         # Playwright e2e suite for app/ui/
 ```
