@@ -75,7 +75,39 @@ impl AgentClient {
     }
 
     pub async fn snapshot(&self) -> Result<wire::Snapshot, AgentError> {
-        let url = format!("{}/v1/snapshot", self.base_url);
+        let body = self.get_body("/v1/snapshot").await?;
+        serde_json::from_str(&body).map_err(decode_failed)
+    }
+
+    /// The Containers panel's source: every podman/docker/tart container and VM
+    /// the agent can see. An empty list is a legitimate answer (a host running
+    /// none), not a failure.
+    pub async fn containers(&self) -> Result<Vec<wire::Container>, AgentError> {
+        let body = self.get_body("/v1/containers").await?;
+        serde_json::from_str(&body).map_err(decode_failed)
+    }
+
+    /// The Settings "Test" probe: agent hostname/version plus sampler liveness.
+    pub async fn health(&self) -> Result<wire::Health, AgentError> {
+        let body = self.get_body("/v1/health").await?;
+        serde_json::from_str(&body).map_err(decode_failed)
+    }
+
+    /// The one request path every endpoint goes through: bearer auth, status
+    /// classification, body read. Returns the raw body so each endpoint decodes
+    /// its own type — everything *above* the decode is shared, which is the
+    /// point. An `AgentError` must not depend on which URL produced it: a 401
+    /// on `/v1/health` has to read exactly like a 401 on `/v1/snapshot`, or the
+    /// operator gets different guidance for the same broken token.
+    ///
+    /// Deliberately exact `200`, not all-2xx: each `/v1` endpoint answers a
+    /// successful request with 200 and a body, so any other 2xx (a 204, say)
+    /// means the agent is not speaking the contract this client decodes and is
+    /// better surfaced than silently decoded as an empty body. Pinned by
+    /// `a_204_is_not_treated_as_success` — loosening this is a contract change,
+    /// so it should break that test rather than drift.
+    async fn get_body(&self, path: &str) -> Result<String, AgentError> {
+        let url = format!("{}{path}", self.base_url);
         let resp = self
             .http
             .get(&url)
@@ -84,24 +116,22 @@ impl AgentClient {
             .await
             .map_err(|e| AgentError::Unreachable(e.to_string()))?;
 
-        // Deliberately exact `200`, not all-2xx: `/v1/snapshot` answers a
-        // successful poll with 200 and a body, so any other 2xx (a 204, say)
-        // means the agent is not speaking the contract this client decodes and
-        // is better surfaced than silently decoded as an empty body. Pinned by
-        // `a_204_is_not_treated_as_success` — loosening this is a contract
-        // change, so it should break that test rather than drift.
         match resp.status().as_u16() {
             200 => {}
             401 | 403 => return Err(AgentError::AuthFailed),
             other => return Err(AgentError::HttpStatus(other)),
         }
 
-        let body = resp
-            .text()
+        resp.text()
             .await
-            .map_err(|e| AgentError::Unreachable(e.to_string()))?;
-        serde_json::from_str(&body).map_err(|e| AgentError::DecodeFailed(e.to_string()))
+            .map_err(|e| AgentError::Unreachable(e.to_string()))
     }
+}
+
+/// One place that turns a deserialisation failure into `DecodeFailed`, so all
+/// three endpoints report agent/app skew identically.
+fn decode_failed(e: serde_json::Error) -> AgentError {
+    AgentError::DecodeFailed(e.to_string())
 }
 
 #[cfg(test)]
@@ -110,7 +140,53 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    const FIXTURE: &str = include_str!("../../wire/tests/fixtures/snapshot.json");
+    const SNAPSHOT_FIXTURE: &str = include_str!("../../wire/tests/fixtures/snapshot.json");
+    const CONTAINERS_FIXTURE: &str = include_str!("../../wire/tests/fixtures/containers.json");
+    const HEALTH_FIXTURE: &str = include_str!("../../wire/tests/fixtures/health.json");
+
+    /// The three endpoints, each erased to `Result<(), AgentError>` so one
+    /// table drives the classification tests for all of them. That is the
+    /// acceptance criterion in issue #153: the error an operator sees must not
+    /// depend on which endpoint failed. A new endpoint added without a row here
+    /// is an endpoint whose classification nobody checked.
+    #[derive(Clone, Copy)]
+    enum Endpoint {
+        Snapshot,
+        Containers,
+        Health,
+    }
+
+    impl Endpoint {
+        const ALL: [Endpoint; 3] = [Endpoint::Snapshot, Endpoint::Containers, Endpoint::Health];
+
+        fn path(self) -> &'static str {
+            match self {
+                Endpoint::Snapshot => "/v1/snapshot",
+                Endpoint::Containers => "/v1/containers",
+                Endpoint::Health => "/v1/health",
+            }
+        }
+
+        /// Call it, discarding the payload — these tests assert on the error.
+        async fn call(self, c: &AgentClient) -> Result<(), AgentError> {
+            match self {
+                Endpoint::Snapshot => c.snapshot().await.map(|_| ()),
+                Endpoint::Containers => c.containers().await.map(|_| ()),
+                Endpoint::Health => c.health().await.map(|_| ()),
+            }
+        }
+    }
+
+    /// A mock agent that answers `route` with `template` and nothing else.
+    async fn agent_replying(route: &str, template: ResponseTemplate) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        server
+    }
 
     #[tokio::test]
     async fn sends_a_bearer_token_and_decodes_the_snapshot() {
@@ -118,7 +194,9 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/v1/snapshot"))
             .and(header("authorization", "Bearer s3cret"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(FIXTURE, "application/json"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(SNAPSHOT_FIXTURE, "application/json"),
+            )
             .mount(&server)
             .await;
 
@@ -127,38 +205,99 @@ mod tests {
         assert_eq!(snap.cpu.core_usages.len(), 16);
     }
 
+    /// The `header` matcher is the assertion that the token travels: without
+    /// it the mock never matches and the call comes back `HttpStatus(404)`.
     #[tokio::test]
-    async fn a_401_is_auth_failed_not_a_generic_status() {
+    async fn sends_a_bearer_token_and_decodes_the_container_list() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/snapshot"))
-            .respond_with(ResponseTemplate::new(401))
+            .and(path("/v1/containers"))
+            .and(header("authorization", "Bearer s3cret"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(CONTAINERS_FIXTURE, "application/json"),
+            )
             .mount(&server)
             .await;
 
-        let err = AgentClient::new(server.uri(), "wrong")
-            .snapshot()
+        let cs = AgentClient::new(server.uri(), "s3cret")
+            .containers()
             .await
-            .unwrap_err();
-        assert!(matches!(err, AgentError::AuthFailed));
-        assert!(err.user_message().contains("token"));
+            .expect("should decode");
+        assert_eq!(cs.len(), 3);
+        assert_eq!(cs[0].name, "llm");
+        assert!(cs.iter().any(|c| c.runtime == "tart" && c.image.is_none()));
+    }
+
+    #[tokio::test]
+    async fn sends_a_bearer_token_and_decodes_health() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .and(header("authorization", "Bearer s3cret"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(HEALTH_FIXTURE, "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let h = AgentClient::new(server.uri(), "s3cret")
+            .health()
+            .await
+            .expect("should decode");
+        assert_eq!(h.status, "ok");
+        assert_eq!(h.hostname, "ubu-3xdv");
+        assert_eq!(h.sampler_stale, Some(false));
+    }
+
+    /// A host running no containers answers `[]`. That is a real answer, not
+    /// skew, and must not be classified as `DecodeFailed`.
+    #[tokio::test]
+    async fn an_empty_container_list_is_a_success_not_a_decode_failure() {
+        let server = agent_replying(
+            "/v1/containers",
+            ResponseTemplate::new(200).set_body_raw("[]", "application/json"),
+        )
+        .await;
+
+        let cs = AgentClient::new(server.uri(), "t")
+            .containers()
+            .await
+            .expect("an empty list is a valid answer");
+        assert!(cs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_401_is_auth_failed_not_a_generic_status() {
+        for ep in Endpoint::ALL {
+            let server = agent_replying(ep.path(), ResponseTemplate::new(401)).await;
+            let err = ep
+                .call(&AgentClient::new(server.uri(), "wrong"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, AgentError::AuthFailed),
+                "{}: expected AuthFailed, got {err:?}",
+                ep.path()
+            );
+            assert!(err.user_message().contains("token"));
+        }
     }
 
     #[tokio::test]
     async fn a_503_is_reported_with_its_status() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/snapshot"))
-            .respond_with(ResponseTemplate::new(503))
-            .mount(&server)
-            .await;
-
-        let err = AgentClient::new(server.uri(), "t")
-            .snapshot()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentError::HttpStatus(503)));
-        assert!(err.user_message().contains("503"));
+        for ep in Endpoint::ALL {
+            let server = agent_replying(ep.path(), ResponseTemplate::new(503)).await;
+            let err = ep
+                .call(&AgentClient::new(server.uri(), "t"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, AgentError::HttpStatus(503)),
+                "{}: expected HttpStatus(503), got {err:?}",
+                ep.path()
+            );
+            assert!(err.user_message().contains("503"));
+        }
     }
 
     /// The whole point of carrying `u16` instead of a flag: two different
@@ -175,50 +314,62 @@ mod tests {
         );
     }
 
-    /// Pins the exact-`200` success rule in `snapshot()`. A 204 has no body to
+    /// Pins the exact-`200` success rule in `get_body()`. A 204 has no body to
     /// decode, so treating it as success would hand `serde_json` an empty
-    /// string and report a decode failure — or, worse, silently succeed if the
-    /// payload ever gained defaults. Loosening to all-2xx should break here.
+    /// string and report a decode failure — or, worse, silently succeed if a
+    /// payload ever gained defaults (`Vec<Container>` is one `#[serde(default)]`
+    /// away from that). Loosening to all-2xx should break here.
     #[tokio::test]
     async fn a_204_is_not_treated_as_success() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/snapshot"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&server)
-            .await;
-
-        let err = AgentClient::new(server.uri(), "t")
-            .snapshot()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentError::HttpStatus(204)));
-        assert!(err.user_message().contains("204"));
+        for ep in Endpoint::ALL {
+            let server = agent_replying(ep.path(), ResponseTemplate::new(204)).await;
+            let err = ep
+                .call(&AgentClient::new(server.uri(), "t"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, AgentError::HttpStatus(204)),
+                "{}: expected HttpStatus(204), got {err:?}",
+                ep.path()
+            );
+            assert!(err.user_message().contains("204"));
+        }
     }
 
+    /// One body that is valid JSON but the wrong shape for all three: an object
+    /// missing every field `Snapshot`/`Health` require, and not an array at all
+    /// for `containers()`.
     #[tokio::test]
     async fn malformed_json_is_decode_failed_so_skew_is_diagnosable() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/snapshot"))
-            .respond_with(
+        for ep in Endpoint::ALL {
+            let server = agent_replying(
+                ep.path(),
                 ResponseTemplate::new(200).set_body_raw("{\"cpu\":1}", "application/json"),
             )
-            .mount(&server)
             .await;
-
-        let err = AgentClient::new(server.uri(), "t")
-            .snapshot()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentError::DecodeFailed(_)));
-        assert!(err.user_message().contains("version skew"));
+            let err = ep
+                .call(&AgentClient::new(server.uri(), "t"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, AgentError::DecodeFailed(_)),
+                "{}: expected DecodeFailed, got {err:?}",
+                ep.path()
+            );
+            assert!(err.user_message().contains("version skew"));
+        }
     }
 
     #[tokio::test]
     async fn an_unroutable_host_is_unreachable() {
         let c = AgentClient::new("http://127.0.0.1:1", "t");
-        let err = c.snapshot().await.unwrap_err();
-        assert!(matches!(err, AgentError::Unreachable(_)));
+        for ep in Endpoint::ALL {
+            let err = ep.call(&c).await.unwrap_err();
+            assert!(
+                matches!(err, AgentError::Unreachable(_)),
+                "{}: expected Unreachable, got {err:?}",
+                ep.path()
+            );
+        }
     }
 }
