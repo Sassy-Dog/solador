@@ -20,6 +20,8 @@ app/
 │   │                     #   git scan behind their LOCAL/WT columns
 │   ├── src/usage.rs      # the Usage panel: Claude tokens + Neon + Sentry
 │   ├── src/azure.rs      # the Azure Cost panel
+│   ├── src/openclaw.rs   # the OpenClaw panel: the device-key store, the live
+│   │                     #   session, and every string the panel paints
 │   ├── capabilities/     # default.json — the webview's ACL
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
@@ -28,7 +30,8 @@ app/
     ├── containers.js     # the Containers/VMs panel
     ├── github.js         # the Repos + GitHub Runners panels
     ├── usage.js          # the Usage panel
-    └── azure.js          # the Azure Cost panel
+    ├── azure.js          # the Azure Cost panel
+    └── openclaw.js       # the OpenClaw panel
 ```
 
 Every string and colour the frontend paints comes from Rust
@@ -71,8 +74,8 @@ splits only when *its* panels stop fitting. The case that model exists for is
 visible in the shipped layout: Usage + Azure Cost (360 + 16 + 400 = 776pt) stay
 side by side at a width where Repos + Runners (976pt) must break apart. Rows
 naming a panel this frontend has no section for — `hosts`, which is the grid
-above, and `openclawAgents`, which is not built — still travel; app.js skips
-them rather than Rust silently omitting a row it did produce.
+above — still travel; app.js skips them rather than Rust silently omitting a row
+it did produce.
 
 `empty` keys on the count of *monitored* hosts, not on the number of cards: the
 local card is always there, so counting cards would answer "is anything
@@ -333,6 +336,104 @@ The Sentry quota and the Azure budget wake nothing on purpose — both are read 
 render time, so changing one repaints its bar on the next 10s frontend tick with
 no fetch involved.
 
+## The `openclaw` command
+
+The **OpenClaw** panel: a glanceable rollup of an OpenClaw agent farm — per-agent
+status, cron health, channel connectivity and token usage.
+
+```js
+await window.__TAURI__.core.invoke("openclaw");
+```
+
+```jsonc
+{
+  "id": "openclawAgents",
+  "title": "OpenClaw",
+  "trailing": "3 agents",       // "pairing required" > "N agent(s)" > "connecting…" > "disconnected"
+  "message": null,              // or {"text": "no agent runtime configured", …}
+  "runtimes": [{
+    "id": "openclaw",
+    "heading": null,            // "OPENCLAW" once a SECOND runtime exists
+    // At most one of the next three, mirroring the Swift panel's if/else chain:
+    "pairing": null,            // {title, command, device, blinking, …}
+    "connection": null,         // {"text": "connecting…", "dotColor": …}
+    "hint": null,               // {"text": "add a gateway URL in Settings → OpenClaw"}
+    "agents": {"header": "AGENTS (3)", "rows": [
+      {"dot": {"color": "#e09a26", "opacity": 1.0}, "emoji": "🦀",
+       "name": "Sebastian", "detail": "anthropic/claude-opus-4-8",
+       "trailing": "running"}
+    ]},
+    "cron": {"header": "CRON (4)", "summary": "2 ok · 1 running · 1 error",
+             "dot": {}, "error": {"text": "backup: disk full", "color": "#e05a4f"}},
+    "channels": {"header": "CHANNELS (3)", "rows": [{"name": "slack", "dot": {}}]},
+    "usage": {"text": "1.2M tokens · ctx 5.0k", "color": "#5a6b60"}
+  }]
+}
+```
+
+**This is the one panel that is not a poll.** Everything beneath it is
+[`crates/openclaw`](../crates/openclaw): WS protocol v3, an Ed25519 device
+identity, and a frame→snapshot reducer. `src/openclaw.rs` runs one `Session` over
+a real socket and rewrites the panel state as frames land — `hello-ok` marks it
+connected, a data frame folds through the reducer, and a liveness broadcast
+(`health`/`heartbeat`/`tick`) bumps freshness *without* rebuilding a section, or
+the snapshot would churn several times a minute for no visible reason. The
+command only reads what the socket has already published; the 2s frontend
+interval decides how soon the window notices, and drives nothing.
+
+**Which is why there is no footer.** Every other panel here carries a
+`status_footer` because it polls and can therefore be stale. This one's
+connection line already answers "is this current", exactly; a staleness clock
+beside it would be a second, weaker answer to the same question.
+
+**A dot needs both its colour and its opacity.** `unknown` and `disabled` are the
+same muted colour — the opacity (0.4 for disabled) is the only thing separating a
+channel someone switched off from one nobody has heard from. Both travel, and
+`openclaw.js` applies both.
+
+### Pairing
+
+The gateway authenticates this install by an Ed25519 key it mints on first
+connect and stores as **32 raw bytes** in the OS credential store, under account
+`openclaw_device_key` — byte-for-byte what the Swift app writes, under the same
+account, on purpose: the operator approves one device id rather than one per app.
+That is also why the seed is not base64-encoded here. Each app would then read
+the other's entry as corrupt and replace it, and the pairing would never settle.
+
+Until the operator approves it, every connect is rejected with `PAIRING_REQUIRED`
+and the panel shows the banner — a pulsing amber dot, which kind of approval is
+pending, and the **literal** line to paste:
+
+```
+openclaw devices approve req-7f31
+```
+
+It is rendered selectable in both the panel and Settings → OpenClaw, and it is
+built in Rust. A frontend that assembled it from a request id would be a second
+implementation of the one string whose entire value is being exactly right.
+
+Reconnect pacing is `openclaw::Backoff`, and the two cases it keeps apart are the
+point: an ordinary drop escalates 0.5s → 30s, while a pending approval waits on a
+**fixed 15s** and deliberately does not touch the exponential state — a human
+being slow says nothing about whether the network is healthy. **Retry now** in
+Settings skips that wait, because the operator knows something the app cannot:
+that they have just run the command.
+
+### Reconnects keep the rows; a new gateway does not
+
+The reducer outlives a session. A dropped socket is not new information about the
+farm, so reconnecting keeps the agent list on screen instead of blanking it and
+repainting a second later. Changing the *gateway URL* resets both the reducer and
+the published sections — those rows describe a different farm, and carrying them
+across would attribute one farm's agents to another.
+
+**Applied without a restart**, and more literally than anywhere else here: the
+session is raced against its wake, so saving a URL or a bearer token tears down a
+live socket rather than waiting it out. A healthy socket never ends on its own,
+so without that race a new gateway would apply only whenever the old one happened
+to drop. The bearer token in particular cannot be swapped mid-session — it is
+folded into the *signed connect payload*, so it needs a fresh handshake.
+
 ## Hosts
 
 Hosts come from [`crates/store`](../crates/store) (`Store::open()` — one JSON
@@ -381,10 +482,9 @@ a flappy tailnet is a blip, not an outage.
 ## Settings
 
 The **Settings** button opens an in-app view over the cockpit: General, GitHub,
-Portfolio, Hosts, Azure Cost, Usage and About — the Swift window's tabs, minus
-OpenClaw (deferred to the OpenClaw slice; the store already carries its gateway
-URL and bearer-token key). Every label, help string and result line it paints
-comes from `src/settings.rs`, exactly as the cards' do from `crates/viewmodel`.
+Portfolio, Hosts, Azure Cost, Usage, OpenClaw and About — the Swift window's
+tabs. Every label, help string and result line it paints comes from
+`src/settings.rs`, exactly as the cards' do from `crates/viewmodel`.
 
 **In-app view, not a second window.** A second window means the frontend calls
 `WebviewWindow`, which means granting the webview
@@ -404,7 +504,9 @@ empty `permissions` list.
 | `settings_unhide_volume` | one mount, on a host or on the local list |
 | `settings_test_host` | one `/v1/health` probe → the Swift result line |
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio |
-| `settings_save_secret` / `settings_clear_secret` | one credential, by key (`github`/`neon`/`sentry`/`azure`) |
+| `settings_save_openclaw` | the OpenClaw gateway URL |
+| `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
+| `settings_save_secret` / `settings_clear_secret` | one credential, by key (`github`/`neon`/`sentry`/`azure`/`openclaw`) |
 
 **Every mutation wakes exactly the loop its data feeds, and no other.** A wake
 spends a whole poll pass, so nudging the GitHub loop after a Neon save would burn
@@ -416,6 +518,7 @@ a portfolio fetch on a credential it has no use for.
 | the refresh interval | …and the usage loop's Claude half, which shares that cadence |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
 | the `azure` credential | the Azure loop |
+| the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget | nothing — both are read at render time |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
 
@@ -507,6 +610,10 @@ cargo run -p devcanopy-app -- --dump-usage sample-usage.json         # the Usage
 cargo run -p devcanopy-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS) and `--empty` (no SAS URL at all).
+cargo run -p devcanopy-app -- --dump-openclaw sample-openclaw.json   # the OpenClaw panel
+#   …plus `--pairing` (the banner with the approve command), `--error` (a
+#   rejected handshake, red), `--idle` (no gateway URL: the muted Settings
+#   hint) and `--empty` (no runtime at all).
 ```
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
@@ -523,11 +630,15 @@ the_panels_have`) precisely so the Playwright suite cannot pass against a
 payload that quietly lost the case it claims to exercise — it carries an
 unknown count beside a genuine zero, an approval gate, a failing repo, an
 unreachable one, and remembered runners in both absence states.
-`--dump-usage` / `--dump-azure` carry the same guard (`the_fixtures_cover_every_
-rendering_the_panel_has`, one per module): between them they pin the quota bar's
-amber step, its suppression when the count is unknown, the em dash beside a
-measured figure, the amber rollover caption, and the muted-setup-vs-red-failure
-split. The rest are full `cockpit` payloads — the same shape the command returns,
+`--dump-usage` / `--dump-azure` / `--dump-openclaw` carry the same guard
+(`the_fixtures_cover_every_rendering_the_panel_has`, one per module): between
+them they pin the quota bar's amber step, its suppression when the count is
+unknown, the em dash beside a measured figure, the amber rollover caption, the
+muted-setup-vs-red-failure split, and — for OpenClaw — a disabled dot beside an
+unknown one at the same colour, the approve command, and the four trailing
+labels. `--dump-settings` is also dumped **mid-pairing** on purpose: the Device
+Pairing block is the only part of Settings built from live session state, so a
+fixture without one would leave it uncovered. The rest are full `cockpit` payloads — the same shape the command returns,
 so the offline path cannot diverge from the real one — built from the committed
 agent-contract fixture, so they reproduce on a clean checkout with no agent
 involved. Their **local card is hand-made** at a fixed shape for the same
@@ -541,8 +652,9 @@ gitignored) — which matters for the smoke test below.
 **Nothing automated exercises the Tauri IPC boundary**
 ([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)). Both sides of the
 seam are tested and the seam itself is not: the Rust tests call
-`cockpit_view(…)`, `settings::view(…)`, `containers::view(…)`, `usage::view(…)`
-and `azure::view(…)` directly rather than through their `#[tauri::command]`
+`cockpit_view(…)`, `settings::view(…)`, `containers::view(…)`, `usage::view(…)`,
+`azure::view(…)` and `openclaw::view(…)` directly rather than through their
+`#[tauri::command]`
 wrappers, and the Playwright suite stubs `window.__TAURI__.core.invoke` — every
 command alike — with Rust-dumped JSON. A break in the ACL
 ([`src-tauri/capabilities/default.json`](src-tauri/capabilities/default.json)), in
@@ -711,7 +823,41 @@ So this is a manual step. Run it after changing anything under
    interesting case: the section appears, both figures render `—`, and the footer
    says `Add your Neon org ID in Settings` — never a fabricated `0.0 CU-h`.
 
-9. **Read the local card**, at the head of the host grid. It should carry this
+9. **Read the terminal for the OpenClaw panel's own one-line signal** (it prints
+   at load, alongside the others):
+
+   ```
+   openclaw: first frontend request (trailing: "")
+   ```
+
+   An **empty trailing label is a pass for the boundary.** With no gateway URL
+   in the scratch store the session never starts, the runtime stays *idle*, and
+   the panel is the single muted sentence `add a gateway URL in Settings →
+   OpenClaw` — which is `openclaw::IDLE_HINT`'s and has no path to the DOM
+   except a successful `invoke("openclaw")`. Idle is deliberately not
+   "disconnected": nothing was attempted.
+
+   To exercise the live path, put a gateway URL under **Settings → OpenClaw**
+   (`ws://host:7878` or `wss://host`) and press **Save**. It applies without a
+   relaunch — the save cuts the *session* short, not a sleep — so the panel
+   should move to `connecting…` (amber) within a second or two, and that
+   immediacy is itself the check on `openclaw_wake`.
+
+   The first connect against a gateway that has never seen this device is the
+   interesting one: expect the amber **pairing banner**, `device pairing
+   required`, and a selectable `openclaw devices approve <requestId>`. Run that
+   command on the gateway host, then press **Retry now** in Settings rather than
+   waiting out the 15s pairing backoff — the panel should go green and fill with
+   AGENTS / CRON / CHANNELS rows. A gateway that rejects the upgrade instead
+   (`controlUi.allowedOrigins` not permitting this host) shows a **red**
+   connection line naming the rejection, which is the right answer and also a
+   pass for the boundary.
+
+   Settings → OpenClaw should show a 64-character **Device ID** once a key
+   exists, or `Device key is generated on first connect.` before one does — and
+   never a blank row, which would claim an identity that has not been minted.
+
+10. **Read the local card**, at the head of the host grid. It should carry this
    machine's name (hostname minus `.local`), a green dot, live CPU and memory
    that change between ticks, and — on macOS — `Pressure: —` and `VRAM: —`. Those
    two em dashes are the point: neither figure has a portable source, and the
@@ -762,7 +908,14 @@ Step 8 passes when `usage:` and `azure_cost: first frontend request …` both
 print and both panels carry a heading plus *either* their content or their
 zero-credential state — the same argument a sixth and seventh time.
 
-Step 9 passes when the **first** card in the grid is this machine, named after
+Step 9 passes when `openclaw: first frontend request …` prints and the panel
+carries a heading plus *either* its runtime sections, its connection line, its
+pairing banner, or the muted `add a gateway URL in Settings → OpenClaw` hint —
+the same argument an eighth time. Every one of those strings is
+`openclaw::view`'s, reachable only through `invoke("openclaw")`. A machine with
+no gateway configured passes; a missing panel does not.
+
+Step 10 passes when the **first** card in the grid is this machine, named after
 this machine, with a green dot. It is the one card no configuration can produce
 and no configuration can remove, so it is also the cheapest read on the whole
 procedure: a grid that leads with `ubu-3xdv` means either the local sampler never
@@ -791,6 +944,9 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The **Usage** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`azure_cost` command, or a script error in `usage.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
 | The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Usage shows **Stored** for the credential; if it does, the hourly read has not run yet — saving wakes it, so re-save to force a pass. |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
+| The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |
+| The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |
+| The pairing banner keeps returning after the approve command was run. | Also not a failure. The command has to run **on the gateway host**, and the request id is single-use — a stale one from a previous banner will not clear it. Press **Retry now** and re-read the id from the fresh banner. If the device id in Settings changes between attempts, the credential store is refusing to persist the seed; the terminal says so (`openclaw: could not persist the device key: …`). |
 | The local card is missing, or the grid leads with a remote host. | The local sampler never started, or its first sample has not landed (it renders `waiting for first sample…` for one tick). A card that never appears at all points at the poll task, not the ACL: the card is built in `cockpit`, which the terminal line in step 3 already proved runs. |
 | The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. Note that `Pressure: —` and `VRAM: —` are permanent and correct on macOS — see [This machine leads](#this-machine-leads). |
 
@@ -808,6 +964,7 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
+| 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/Sassy-Dog/devcanopy/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/Sassy-Dog/devcanopy/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/Sassy-Dog/devcanopy/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Settings surface + `App` state restructure ([#163](https://github.com/Sassy-Dog/devcanopy/issues/163)) | **Pass.** Fixtures removed, scratch store, `DEVCANOPY_SEED_HOST="smoke-…\|100.87.202.125\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport still carry the call after `manage()` changed from `Cockpit` to `App` and the handler list grew from one command to fifteen. | **Not performed**, and neither was **step 5** — both need a click on a Mac someone else is working on. The settings half of the boundary is therefore *documented, not verified*: `settings: first frontend request …` has never been observed. Worth ten seconds from anyone who launches this next. |

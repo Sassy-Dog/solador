@@ -46,6 +46,18 @@ pub enum SecretKey {
     AzureCostSasUrl,
     /// Optional bearer token for the OpenClaw gateway.
     OpenClawBearerToken,
+    /// The 32-byte Ed25519 seed behind this install's OpenClaw device identity.
+    ///
+    /// The only credential that is **not** text: it is raw key material, read
+    /// and written through [`CredentialStore::secret_bytes`] /
+    /// [`CredentialStore::set_secret_bytes`]. The account below is byte-for-byte
+    /// the Swift app's (`KeychainHelper.saveOpenClawDeviceKey`) *and* the one
+    /// `openclaw::identity::DEVICE_KEY_ACCOUNT` names, which is deliberate: both
+    /// apps store the same 32 raw bytes under the same account, so the operator
+    /// approves one device id rather than one per app. Storing it base64-encoded
+    /// here would make each app read the other's entry as corrupt and overwrite
+    /// it — a pairing that never settles.
+    OpenClawDeviceKey,
 }
 
 impl SecretKey {
@@ -59,6 +71,7 @@ impl SecretKey {
             SecretKey::SentryUsageToken => "sentry_usage_token".to_owned(),
             SecretKey::AzureCostSasUrl => "azure_cost_sas_url".to_owned(),
             SecretKey::OpenClawBearerToken => "openclaw_bearer_token".to_owned(),
+            SecretKey::OpenClawDeviceKey => "openclaw_device_key".to_owned(),
         }
     }
 }
@@ -100,6 +113,26 @@ pub trait CredentialStore {
     /// # Errors
     /// Returns [`SecretError::Backend`] when the store rejects the delete.
     fn delete_secret(&self, key: SecretKey) -> Result<(), SecretError>;
+
+    /// The stored value as raw bytes, for the one credential that is key
+    /// material rather than text ([`SecretKey::OpenClawDeviceKey`]).
+    ///
+    /// Separate methods rather than base64 over the string API on purpose: the
+    /// Swift app writes those 32 bytes raw under the same account, and an
+    /// encoding this side would make each app read the other's entry as
+    /// unusable and replace it.
+    ///
+    /// # Errors
+    /// Returns [`SecretError::Backend`] when the store itself fails. A missing
+    /// entry is `Ok(None)`.
+    fn secret_bytes(&self, key: SecretKey) -> Result<Option<Vec<u8>>, SecretError>;
+
+    /// Stores (or replaces) raw bytes for `key`. See
+    /// [`secret_bytes`](CredentialStore::secret_bytes).
+    ///
+    /// # Errors
+    /// Returns [`SecretError::Backend`] when the store rejects the write.
+    fn set_secret_bytes(&self, key: SecretKey, value: &[u8]) -> Result<(), SecretError>;
 }
 
 /// The real thing: `keyring` over the platform credential store.
@@ -165,15 +198,34 @@ impl CredentialStore for KeyringStore {
             Err(source) => Err(SecretError::Backend { account, source }),
         }
     }
+
+    fn secret_bytes(&self, key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
+        let account = key.account();
+        match self.entry(&account)?.get_secret() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(source) => Err(SecretError::Backend { account, source }),
+        }
+    }
+
+    fn set_secret_bytes(&self, key: SecretKey, value: &[u8]) -> Result<(), SecretError> {
+        let account = key.account();
+        self.entry(&account)?
+            .set_secret(value)
+            .map_err(|source| SecretError::Backend { account, source })
+    }
 }
 
 /// An in-memory [`CredentialStore`] for tests — nothing here reaches the OS.
 ///
 /// Public because the code that *consumes* credentials (the later Settings/poll
 /// wiring) has to be testable without prompting for a keychain unlock.
+/// Values are held as bytes, not `String`, so the one binary credential
+/// ([`SecretKey::OpenClawDeviceKey`]) round-trips through this store exactly as
+/// it does through the real one.
 #[derive(Default)]
 pub struct MemoryCredentialStore {
-    entries: Mutex<HashMap<String, String>>,
+    entries: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl MemoryCredentialStore {
@@ -204,20 +256,34 @@ impl std::fmt::Debug for MemoryCredentialStore {
 }
 
 impl CredentialStore for MemoryCredentialStore {
+    /// A stored value that is not UTF-8 reads as absent through the *string*
+    /// API — it is key material, not a password, and handing back a lossy
+    /// transcription of it would be worse than admitting it is not text.
     fn secret(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
         let entries = self.entries.lock().expect("credential map poisoned");
-        Ok(entries.get(&key.account()).cloned())
+        Ok(entries
+            .get(&key.account())
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok()))
     }
 
     fn set_secret(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
-        let mut entries = self.entries.lock().expect("credential map poisoned");
-        entries.insert(key.account(), value.to_owned());
-        Ok(())
+        self.set_secret_bytes(key, value.as_bytes())
     }
 
     fn delete_secret(&self, key: SecretKey) -> Result<(), SecretError> {
         let mut entries = self.entries.lock().expect("credential map poisoned");
         entries.remove(&key.account());
+        Ok(())
+    }
+
+    fn secret_bytes(&self, key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
+        let entries = self.entries.lock().expect("credential map poisoned");
+        Ok(entries.get(&key.account()).cloned())
+    }
+
+    fn set_secret_bytes(&self, key: SecretKey, value: &[u8]) -> Result<(), SecretError> {
+        let mut entries = self.entries.lock().expect("credential map poisoned");
+        entries.insert(key.account(), value.to_vec());
         Ok(())
     }
 }
@@ -255,6 +321,17 @@ mod tests {
         );
     }
 
+    /// The device seed's account is shared with the Swift app on purpose: both
+    /// write the same raw 32 bytes there, so one device id gets approved rather
+    /// than one per app. A rename here silently splits the identity in two.
+    #[test]
+    fn the_device_key_account_is_the_one_both_apps_agree_on() {
+        assert_eq!(
+            SecretKey::OpenClawDeviceKey.account(),
+            "openclaw_device_key"
+        );
+    }
+
     #[test]
     fn every_account_is_distinct() {
         let keys = [
@@ -265,6 +342,7 @@ mod tests {
             SecretKey::SentryUsageToken,
             SecretKey::AzureCostSasUrl,
             SecretKey::OpenClawBearerToken,
+            SecretKey::OpenClawDeviceKey,
         ];
         let mut accounts: Vec<String> = keys.iter().map(SecretKey::account).collect();
         let total = accounts.len();
@@ -341,6 +419,47 @@ mod tests {
                 .expect("get b")
                 .as_deref(),
             Some("token-b")
+        );
+    }
+
+    /// The device seed is 32 bytes of key material and is almost never valid
+    /// UTF-8. Round-tripping it through the *string* API would corrupt it, so
+    /// the byte API has to be the one that carries it — intact, and byte-equal
+    /// to what went in.
+    #[test]
+    fn raw_bytes_round_trip_without_going_through_a_string() {
+        let store = MemoryCredentialStore::new();
+        let seed: Vec<u8> = (0u8..32)
+            .map(|i| i.wrapping_mul(7).wrapping_add(200))
+            .collect();
+        assert!(
+            String::from_utf8(seed.clone()).is_err(),
+            "the fixture must not accidentally be valid UTF-8"
+        );
+
+        store
+            .set_secret_bytes(SecretKey::OpenClawDeviceKey, &seed)
+            .expect("set");
+        assert_eq!(
+            store
+                .secret_bytes(SecretKey::OpenClawDeviceKey)
+                .expect("get"),
+            Some(seed)
+        );
+        // …and it does not masquerade as a password.
+        assert_eq!(
+            store.secret(SecretKey::OpenClawDeviceKey).expect("get"),
+            None
+        );
+
+        store
+            .delete_secret(SecretKey::OpenClawDeviceKey)
+            .expect("delete");
+        assert_eq!(
+            store
+                .secret_bytes(SecretKey::OpenClawDeviceKey)
+                .expect("get"),
+            None
         );
     }
 

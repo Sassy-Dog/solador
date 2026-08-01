@@ -20,6 +20,9 @@ use serde_json::{json, Value};
 use store::settings::{CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES};
 use store::{Host, HostOverflowMode, SecretKey, Settings, TrackedRepo, DEFAULT_AGENT_PORT};
 use uuid::Uuid;
+use viewmodel::color;
+
+use crate::openclaw;
 
 /// The app's marketing version.
 ///
@@ -49,6 +52,10 @@ pub struct StoredSecrets {
     pub neon: bool,
     pub sentry: bool,
     pub azure: bool,
+    /// Whether an OpenClaw *bearer* token is stored. The device key is not
+    /// represented here at all: it is minted by the app, and whether one exists
+    /// is answered by the device id the Device Pairing block shows.
+    pub openclaw: bool,
     /// Host ids with a non-empty agent token.
     pub hosts: HashSet<Uuid>,
 }
@@ -63,6 +70,11 @@ pub enum SecretField {
     Neon,
     Sentry,
     Azure,
+    /// The OpenClaw gateway's *bearer* token, which is optional — most gateways
+    /// authenticate by device pairing instead. Deliberately not the device key:
+    /// that is 32 raw bytes minted by this app, never typed by a human, and it
+    /// has no field on this surface for exactly that reason.
+    OpenClaw,
 }
 
 impl SecretField {
@@ -74,6 +86,7 @@ impl SecretField {
             SecretField::Neon => "neon",
             SecretField::Sentry => "sentry",
             SecretField::Azure => "azure",
+            SecretField::OpenClaw => "openclaw",
         }
     }
 
@@ -85,6 +98,7 @@ impl SecretField {
             SecretField::Neon => SecretKey::NeonApiKey,
             SecretField::Sentry => SecretKey::SentryUsageToken,
             SecretField::Azure => SecretKey::AzureCostSasUrl,
+            SecretField::OpenClaw => SecretKey::OpenClawBearerToken,
         }
     }
 
@@ -96,6 +110,7 @@ impl SecretField {
             SecretField::Neon,
             SecretField::Sentry,
             SecretField::Azure,
+            SecretField::OpenClaw,
         ]
         .into_iter()
         .find(|field| field.id() == raw)
@@ -230,16 +245,13 @@ pub fn view(
     hosts: &[Host],
     repos: &[TrackedRepo],
     stored: &StoredSecrets,
+    openclaw: &openclaw::SettingsFacts,
 ) -> Value {
     json!({
         "title": OPEN_LABEL,
         "openLabel": OPEN_LABEL,
         "closeLabel": "Done",
-        // The Swift window's tab order, minus OpenClaw: that tab configures a
-        // gateway this shell has no client for yet, and a tab whose controls
-        // drive nothing is worse than an absent one. It returns with the
-        // OpenClaw slice; `Settings::openclaw_gateway_url` and
-        // `SecretKey::OpenClawBearerToken` are already in the store for it.
+        // The Swift window's tab order.
         "tabs": [
             { "id": "general", "title": "General" },
             { "id": "github", "title": "GitHub" },
@@ -247,6 +259,7 @@ pub fn view(
             { "id": "hosts", "title": "Hosts" },
             { "id": "azure", "title": "Azure Cost" },
             { "id": "usage", "title": "Usage" },
+            { "id": "openclaw", "title": "OpenClaw" },
             { "id": "about", "title": "About" },
         ],
         "general": general_tab(settings),
@@ -255,6 +268,7 @@ pub fn view(
         "hosts": hosts_tab(settings, hosts, stored),
         "azure": azure_tab(settings, stored),
         "usage": usage_tab(settings, stored),
+        "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(),
     })
 }
@@ -441,6 +455,82 @@ fn usage_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
                 "Powers the Sentry row on the Usage panel (accepted error events over the last 30 days). Create a personal token under User settings → Auth Tokens, or an internal-integration token, with the read-only org:read scope — organization auth tokens carry a fixed CI-oriented scope set that doesn't include it. Stored in your OS credential store; the org slug and quota are not secrets and are stored as normal preferences.",
             ),
         },
+    })
+}
+
+/// The Device Pairing block's status row: one word for the connection, plus the
+/// colour that word is worth.
+///
+/// Port of `OpenClawSettingsView.connectionRow`, including the one place it
+/// disagrees with the panel: a disconnect is **amber** here and red there. The
+/// panel is a glance across the whole cockpit, where red means "go look"; this
+/// row is what you see *after* you have gone and looked, on the screen where
+/// you fix it, and shouting there adds nothing.
+#[must_use]
+pub fn openclaw_status(connection: &openclaw::RuntimeConnectionState) -> (String, u32) {
+    use openclaw::RuntimeConnectionState as State;
+    match connection {
+        State::Connected => ("Connected".to_owned(), color::GREEN),
+        State::Connecting => ("Connecting…".to_owned(), color::AMBER),
+        State::Idle => ("Idle".to_owned(), color::MUTED),
+        State::Disconnected { reason } => (reason.clone(), color::AMBER),
+    }
+}
+
+/// The OpenClaw tab: the gateway URL, the optional bearer token, and the device
+/// pairing block.
+///
+/// The pairing block is the reason this tab is worth having a live half at all.
+/// Without it an operator is told the gateway rejected them and left to find the
+/// device id and the approve command themselves — which is the fingerprint of
+/// the very key this app minted and never showed anyone.
+fn openclaw_tab(
+    settings: &Settings,
+    stored: &StoredSecrets,
+    facts: &openclaw::SettingsFacts,
+) -> Value {
+    let (status_text, status_color) = openclaw_status(&facts.connection);
+    json!({
+        "heading": "OpenClaw Gateway",
+        "gateway": {
+            "label": "Gateway URL",
+            // The Swift field's placeholder, which doubles as the format hint.
+            "placeholder": "ws://host:7878  or  wss://host",
+            "value": settings.openclaw_gateway_url,
+            "saveLabel": "Save",
+        },
+        "secret": secret_section(
+            SecretField::OpenClaw,
+            "Bearer token (optional)",
+            stored.openclaw,
+            "Token stored",
+            "DevCanopy monitors an OpenClaw agent farm over a WebSocket. Most gateways authenticate via device pairing (below); a bearer token is only needed if the gateway requires one. The gateway's controlUi.allowedOrigins must permit this host. Stored in your OS credential store.",
+        ),
+        "pairingHeading": "Device Pairing",
+        "statusLabel": "Status",
+        "status": { "text": status_text, "color": color::hex(status_color) },
+        "deviceLabel": "Device ID",
+        // Null until a key exists. Rendering an empty row instead would claim
+        // an identity that has not been minted.
+        "deviceId": facts.device_id,
+        "noDeviceLabel": "Device key is generated on first connect.",
+        "pairing": facts.pairing.as_ref().map(|pairing| json!({
+            "explanation": match pairing.kind {
+                openclaw::PairingKind::ScopeUpgrade =>
+                    "The gateway needs to approve broader scopes for this device.",
+                openclaw::PairingKind::FirstPair =>
+                    "This device isn't paired yet. Approve it on the gateway host:",
+            },
+            // The literal line to paste, or nothing — never a command with a
+            // placeholder where the request id should be.
+            "command": pairing
+                .request_id
+                .as_ref()
+                .map(|request| format!("openclaw devices approve {request}")),
+            // The gateway's own words, shown verbatim when it sent any.
+            "hint": pairing.remediation_hint,
+            "retryLabel": "Retry now",
+        })),
     })
 }
 
@@ -642,15 +732,22 @@ mod tests {
             neon: false,
             sentry: true,
             azure: false,
+            openclaw: false,
             hosts: [host.id].into_iter().collect(),
         };
         (settings, vec![host, off], store::seeded_repos(), stored)
     }
 
+    /// The default OpenClaw facts: nothing connected, nothing paired, no key.
+    /// Tests that care about a live state build their own.
+    fn facts() -> openclaw::SettingsFacts {
+        openclaw::SettingsFacts::default()
+    }
+
     #[test]
     fn the_payload_carries_every_tab_the_window_shows() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored);
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
         let ids: Vec<&str> = vm["tabs"]
             .as_array()
             .expect("tabs")
@@ -666,6 +763,7 @@ mod tests {
                 "hosts",
                 "azure",
                 "usage",
+                "openclaw",
                 "about"
             ]
         );
@@ -674,15 +772,12 @@ mod tests {
         for id in ids {
             assert!(!vm[id].is_null(), "tab {id} has no payload section");
         }
-        // OpenClaw is deferred, and deferred means absent -- not a tab whose
-        // controls quietly drive nothing.
-        assert!(vm["openclaw"].is_null());
     }
 
     #[test]
     fn the_general_tab_shows_the_stored_values_and_the_offered_choices() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored);
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
         let general = &vm["general"];
         assert_eq!(general["refreshInterval"]["value"], 300);
         assert_eq!(general["coreRowSpan"]["value"], 3);
@@ -702,7 +797,7 @@ mod tests {
     #[test]
     fn the_hosts_tab_lists_every_host_enabled_or_not_with_its_endpoint() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored);
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
         let rows = vm["hosts"]["rows"].as_array().expect("rows");
         // Settings edits a *configuration*, so a disabled host must still be
         // listed -- the cockpit is what filters on `enabled`.
@@ -725,7 +820,7 @@ mod tests {
         let (settings, hosts, mut repos, stored) = sample();
         repos[0].watched_workflows = Some(vec!["release.yml".into()]);
         repos[1].enabled = false;
-        let vm = view(&settings, &hosts, &repos, &stored);
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
         let rows = vm["portfolio"]["rows"].as_array().expect("rows");
         assert_eq!(rows.len(), repos.len());
         assert_eq!(rows[0]["slug"], repos[0].slug);
@@ -737,7 +832,7 @@ mod tests {
     #[test]
     fn a_stored_credential_is_a_badge_and_nothing_more() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored);
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["github"]["secret"]["stored"], true);
         assert_eq!(vm["github"]["secret"]["storedLabel"], "Token stored");
         assert_eq!(vm["usage"]["neon"]["secret"]["stored"], false);
@@ -757,7 +852,7 @@ mod tests {
     #[test]
     fn the_payload_can_carry_no_credential_value_at_all() {
         let (settings, hosts, repos, stored) = sample();
-        let raw = view(&settings, &hosts, &repos, &stored).to_string();
+        let raw = view(&settings, &hosts, &repos, &stored, &facts()).to_string();
         // Every credential-store account name, so a section that ever grew a
         // value field under its own key would be caught here too.
         for account in [
@@ -765,17 +860,124 @@ mod tests {
             SecretKey::NeonApiKey.account(),
             SecretKey::SentryUsageToken.account(),
             SecretKey::AzureCostSasUrl.account(),
+            SecretKey::OpenClawBearerToken.account(),
+            // The one credential that is raw key material. Nothing on this
+            // surface may name it, let alone carry it.
+            SecretKey::OpenClawDeviceKey.account(),
             SecretKey::HostToken(hosts[0].id).account(),
         ] {
             assert!(!raw.contains(&account), "payload names {account}");
         }
-        assert!(!raw.to_lowercase().contains("bearer"));
+
+        // …and structurally: a credential section is a label, two button
+        // labels, a badge and a boolean. The moment one grows a field that
+        // could *hold* a value, this fails — which a substring search over the
+        // rendered payload could not do, because it cannot know what the value
+        // would have been.
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        for secret in [
+            &vm["github"]["secret"],
+            &vm["usage"]["neon"]["secret"],
+            &vm["usage"]["sentry"]["secret"],
+            &vm["azure"]["secret"],
+            &vm["openclaw"]["secret"],
+        ] {
+            let mut keys: Vec<&str> = secret
+                .as_object()
+                .expect("a secret section")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "clearLabel",
+                    "fieldLabel",
+                    "help",
+                    "key",
+                    "saveLabel",
+                    "stored",
+                    "storedLabel"
+                ]
+            );
+            assert!(secret["stored"].is_boolean());
+        }
+    }
+
+    /// The device id is a *public* SHA-256 fingerprint the operator has to read
+    /// off this screen and approve on the gateway — the opposite of a secret,
+    /// and the reason the Device Pairing block exists. The seed behind it never
+    /// appears here in any form.
+    #[test]
+    fn the_pairing_block_shows_the_fingerprint_and_the_approve_command() {
+        let (settings, hosts, repos, stored) = sample();
+        let live = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
+        let vm = view(&settings, &hosts, &repos, &stored, &live);
+        let tab = &vm["openclaw"];
+
+        assert_eq!(tab["deviceId"], live.device_id.expect("a device id"));
+        assert_eq!(
+            tab["pairing"]["explanation"],
+            "This device isn't paired yet. Approve it on the gateway host:"
+        );
+        assert_eq!(
+            tab["pairing"]["command"],
+            "openclaw devices approve req-7f31"
+        );
+        assert_eq!(tab["pairing"]["retryLabel"], "Retry now");
+        assert_eq!(tab["status"]["text"], "awaiting device pairing");
+    }
+
+    /// Nothing configured yet: no pairing block at all, and a sentence saying
+    /// the key does not exist rather than an empty Device ID row claiming an
+    /// identity that has never been minted.
+    #[test]
+    fn with_no_device_key_the_tab_says_so_instead_of_showing_a_blank_id() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let tab = &vm["openclaw"];
+
+        assert!(tab["deviceId"].is_null());
+        assert_eq!(
+            tab["noDeviceLabel"],
+            "Device key is generated on first connect."
+        );
+        assert!(tab["pairing"].is_null());
+        assert_eq!(tab["status"]["text"], "Idle");
+        assert_eq!(tab["gateway"]["value"], "");
+    }
+
+    /// The status row is amber for a disconnect where the *panel* is red. Two
+    /// audiences: the cockpit glance says "go look", and this screen — the one
+    /// you went and looked at — says what to fix without shouting it twice.
+    #[test]
+    fn the_status_row_names_each_connection_state_in_its_own_colour() {
+        use self::openclaw::RuntimeConnectionState as State;
+        let hex = viewmodel::color::hex;
+        assert_eq!(
+            openclaw_status(&State::Connected),
+            ("Connected".to_owned(), viewmodel::color::GREEN)
+        );
+        assert_eq!(
+            openclaw_status(&State::Connecting),
+            ("Connecting…".to_owned(), viewmodel::color::AMBER)
+        );
+        assert_eq!(
+            openclaw_status(&State::Idle),
+            ("Idle".to_owned(), viewmodel::color::MUTED)
+        );
+        let (text, colour) = openclaw_status(&State::Disconnected {
+            reason: "gateway rejected: nope".to_owned(),
+        });
+        assert_eq!(text, "gateway rejected: nope", "the gateway's own words");
+        assert_eq!(hex(colour), hex(viewmodel::color::AMBER));
     }
 
     #[test]
     fn the_non_secret_provider_settings_are_shown_so_they_can_be_edited() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored);
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["usage"]["neon"]["orgId"], "org-abc");
         assert_eq!(vm["usage"]["sentry"]["orgSlug"], "sassy-dog");
         assert_eq!(vm["usage"]["sentry"]["quota"], 50_000);
@@ -785,7 +987,7 @@ mod tests {
     #[test]
     fn the_about_tab_names_the_app_and_its_version() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored);
+        let vm = view(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["about"]["name"], "DevCanopy");
         assert_eq!(vm["about"]["version"], format!("Version {VERSION}"));
         assert_eq!(vm["about"]["links"].as_array().expect("links").len(), 3);
@@ -798,12 +1000,15 @@ mod tests {
             SecretField::Neon,
             SecretField::Sentry,
             SecretField::Azure,
+            SecretField::OpenClaw,
         ];
         for field in fields {
             assert_eq!(SecretField::parse(field.id()), Some(field));
         }
-        assert_eq!(SecretField::parse("openclaw"), None);
         assert_eq!(SecretField::parse(""), None);
+        // The device key is minted, never typed, so it is deliberately not a
+        // writable field — a webview asking to set one is a rejected command.
+        assert_eq!(SecretField::parse("openclaw_device_key"), None);
 
         let mut accounts: Vec<String> = fields.iter().map(|f| f.key().account()).collect();
         accounts.sort();

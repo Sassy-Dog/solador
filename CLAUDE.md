@@ -32,8 +32,10 @@ grouping rules and presence memory), renders the Repos + GitHub Runners panels
 (per-repo CI health and counts, local branch/worktree counts, the org's
 self-hosted runners with the absence roster — on the store's
 `refresh_interval_secs`), renders the Usage panel (Claude token rollups on that
-same interval; Neon + Sentry hourly) and the Azure Cost panel (the daily cost
-export, on its own 4h cadence), arranges those panels into the rows
+same interval; Neon + Sentry hourly), the Azure Cost panel (the daily cost
+export, on its own 4h cadence) and the OpenClaw panel (an agent farm over a live
+WebSocket — **event-driven, on no cadence at all**, which is why it is the one
+panel with no staleness footer), arranges those panels into the rows
 `viewmodel::cockpit` reflowed for the measured width, and carries an in-app
 Settings surface over
 `crates/store` (hosts CRUD, portfolio, credentials, general prefs — applied
@@ -121,19 +123,22 @@ DevCanopy/
 │   │                      # platform can decline is an Option, never a 0
 │   ├── usage/             # Claude Code log rollups + Neon + Sentry usage
 │   ├── azurecost/         # Azure Cost Management export reader (SAS blob + CSV)
-│   └── openclaw/          # OpenClaw gateway client
+│   └── openclaw/          # OpenClaw gateway client: WS protocol v3, the Ed25519
+│                          # device identity, the frame→snapshot reducer
 ├── app/
 │   ├── src-tauri/         # Tauri v2 shell: one poll task per host plus this
 │   │                      # machine (src/local.rs); `cockpit`, `containers`
 │   │                      # (src/containers/), `repos`/`runners` (src/github/),
-│   │                      # `usage` (src/usage.rs), `azure_cost` (src/azure.rs)
-│   │                      # + the `settings_*` command surface (src/settings.rs)
+│   │                      # `usage` (src/usage.rs), `azure_cost` (src/azure.rs),
+│   │                      # `openclaw` (src/openclaw.rs — a live session, not a
+│   │                      # poll) + the `settings_*` surface (src/settings.rs)
 │   └── ui/                # Frontend: plain HTML/CSS/JS, no bundler
 │                          # (app.js = cockpit + panel-row layout,
 │                          #  settings.js = Settings view,
 │                          #  containers.js = Containers/VMs panel,
 │                          #  github.js = Repos + GitHub Runners panels,
-│                          #  usage.js = Usage panel, azure.js = Azure Cost)
+│                          #  usage.js = Usage panel, azure.js = Azure Cost,
+│                          #  openclaw.js = OpenClaw panel)
 └── tests/frontend/         # Playwright e2e suite for app/ui/ (own package.json)
 ```
 

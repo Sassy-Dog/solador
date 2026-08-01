@@ -223,6 +223,47 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .az-columns { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap:16px; }
 
+/* ---- OpenClaw ----------------------------------------------------------
+   Per-agent rows, a cron line, a wrapping row of channel dots, and the pairing
+   banner. Every dot's colour AND its opacity arrive from Rust: `unknown` and
+   `disabled` share one muted colour, so the opacity is the only thing that
+   tells a switched-off channel from one nobody has heard from — which is why
+   there is no `.dot[data-state]` rule here dimming anything on its own. */
+.oc-runtime { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.oc-runtime + .oc-runtime { padding-top:6px; border-top:1px solid var(--line); }
+.oc-runtime-hdr { font-size:10px; font-weight:700; }
+.oc-section { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.oc-hdr { font-size:10px; font-weight:700; }
+.oc-row { display:flex; align-items:center; gap:7px; min-width:0; }
+.oc-row .dot { width:6px; height:6px; flex:none; }
+.oc-emoji { font-size:11px; flex:none; }
+.oc-name { font-size:11px; font-weight:700; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.oc-detail { font-size:9px; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.oc-badge { font-size:9px; font-weight:700; flex:none; }
+.oc-summary { font-size:11px; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.oc-error { font-size:9px; margin:0; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.oc-connection, .oc-message { font-size:11px; margin:0; }
+.oc-usage { font-size:10px; margin:0; }
+/* The channel row wraps rather than scrolling or truncating: with many
+   providers the glance stays compact, and no channel silently disappears off
+   the right-hand edge. */
+.oc-flow { display:flex; flex-wrap:wrap; gap:5px 12px; }
+.oc-chip { display:flex; align-items:center; gap:5px; }
+.oc-chip .dot { width:6px; height:6px; flex:none; }
+.oc-channel { font-size:10px; }
+.oc-pairing { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.oc-pairing .dot { width:6px; height:6px; flex:none; }
+.oc-pairing-title { font-size:11px; font-weight:700; }
+/* Selectable, and that is the point: the operator has to be able to copy this
+   line into a shell on the gateway host. */
+.oc-command { font:inherit; font-size:9px; user-select:text; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.oc-device { font-size:9px; user-select:text; }
+
 /* ---- Settings ----------------------------------------------------------
    An in-app view, so it shares the cockpit's palette and type scale rather
    than opening a differently-styled window. Every control below is created by

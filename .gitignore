@@ -125,6 +125,11 @@ app/ui/sample-azure.json
 app/ui/sample-azure-fallback.json
 app/ui/sample-azure-error.json
 app/ui/sample-azure-empty.json
+app/ui/sample-openclaw.json
+app/ui/sample-openclaw-pairing.json
+app/ui/sample-openclaw-error.json
+app/ui/sample-openclaw-idle.json
+app/ui/sample-openclaw-empty.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/

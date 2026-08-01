@@ -412,6 +412,76 @@ function usageTab(t) {
   return [neon, sentry, actionRow(apply)];
 }
 
+/**
+ * The OpenClaw tab: the gateway URL, the optional bearer token, and the device
+ * pairing block.
+ *
+ * The pairing block is the only part of Settings built from *live* session
+ * state, which is why every mutation here re-renders from the `{status,
+ * settings}` answer like the rest of the surface — saving a URL restarts the
+ * session, and the status row has to show what that produced.
+ */
+function openclawTab(t) {
+  const gateway = group(t.heading);
+  const url = textInput(t.gateway.value);
+  url.placeholder = t.gateway.placeholder;
+  url.autocapitalize = "off";
+  url.spellcheck = false;
+  gateway.appendChild(field("openclaw-gateway", t.gateway.label, url));
+
+  const save = button(t.gateway.saveLabel, "apply");
+  const submitUrl = () => mutate("settings_save_openclaw", { gatewayUrl: url.value });
+  save.addEventListener("click", submitUrl);
+  url.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitUrl();
+  });
+  gateway.appendChild(actionRow(save));
+  // The bearer token rides the shared credential controls, so it is stored,
+  // cleared and badged exactly like every other secret on this surface.
+  secretControls(gateway, t.secret);
+
+  const pairing = group(t.pairingHeading);
+
+  const status = node("div", "row");
+  status.dataset.row = "status";
+  const statusValue = node("span", "result", t.status.text);
+  statusValue.style.color = t.status.color;
+  status.append(node("span", "lbl", t.statusLabel), node("span", "grow"), statusValue);
+  pairing.appendChild(status);
+
+  if (t.deviceId) {
+    const device = node("div", "row");
+    device.dataset.row = "device";
+    // Selectable: the operator reads this fingerprint off the screen and
+    // matches it against the gateway's device list.
+    const value = node("span", "link-url", t.deviceId);
+    device.append(node("span", "lbl", t.deviceLabel), node("span", "grow"), value);
+    pairing.appendChild(device);
+  } else {
+    // Not an empty Device ID row: no key has been minted, and a blank value
+    // would claim an identity that does not exist.
+    pairing.appendChild(help(t.noDeviceLabel));
+  }
+
+  if (t.pairing) {
+    const block = node("div", "stack");
+    block.dataset.row = "pairing";
+    block.appendChild(help(t.pairing.explanation));
+    if (t.pairing.command) {
+      const command = node("code", "oc-command", t.pairing.command);
+      block.appendChild(command);
+    }
+    // The gateway's own remediation text, shown verbatim when it sent any.
+    if (t.pairing.hint) block.appendChild(help(t.pairing.hint));
+    const retry = button(t.pairing.retryLabel, "retry");
+    retry.addEventListener("click", () => mutate("settings_openclaw_retry", {}));
+    block.appendChild(actionRow(retry));
+    pairing.appendChild(block);
+  }
+
+  return [gateway, pairing];
+}
+
 function aboutTab(t) {
   const box = group(null);
   box.append(
@@ -441,6 +511,7 @@ function renderBody() {
     hosts: hostsTab,
     azure: azureTab,
     usage: usageTab,
+    openclaw: openclawTab,
     about: aboutTab,
   }[S.tab];
   body.replaceChildren(...(build ? build(S.view[S.tab]) : []));
