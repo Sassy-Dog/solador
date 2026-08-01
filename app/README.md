@@ -31,7 +31,8 @@ app/
 │   ├── src/azure.rs      # the Azure Cost panel
 │   ├── src/openclaw.rs   # the OpenClaw panel: the device-key store, the live
 │   │                     #   session, and every string the panel paints
-│   ├── capabilities/     # default.json — the webview's ACL
+│   ├── capabilities/     # default.json — the webview's ACL (one grant; see
+│   │                     #   "The one granted capability")
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
     ├── app.js            # the cockpit (host grid + the panel-row layout)
@@ -201,6 +202,8 @@ await window.__TAURI__.core.invoke("runners");
   "rows": [{
     "repo": "Sassy-Dog/velovate", "name": "velovate",
     "dotColor": "#e05a4f", "blinking": false,
+    "url": "https://github.com/Sassy-Dog/velovate/actions",   // the row's click target
+    "linkLabel": "Open Sassy-Dog/velovate on GitHub Actions", // its accessible name
     "cells": [{"text": "18", "color": "#cfe9d8", "width": 52.0}, …]
   }],
   "health": {"text": "✓ 4/6 healthy", "color": "#33d17a"}
@@ -263,19 +266,62 @@ and then waiting five minutes for it to take is indistinguishable from the
 setting doing nothing. This is the periodic-service counterpart to
 `reload_hosts`, which reconciles tasks instead.
 
-Two things are deliberately **not** in this slice, both noted rather than
-hidden:
+**Tapping a row opens its Actions page**, the way the Swift panel's
+`onTapGesture` + `NSWorkspace.open` does
+([#187](https://github.com/Sassy-Dog/devcanopy/issues/187)). The URL is
+`github::actions_url`'s and is never composed in the webview — it is the only
+string the granted ACL scope accepts, and a second author of it would be a
+second author of the app's whole browser-opening surface. See
+[The one granted capability](#the-one-granted-capability).
 
-- **Tapping a row does not open GitHub.** The Swift panel's `onTapGesture` calls
-  `NSWorkspace.open`; the equivalent here needs the opener plugin granted to
-  `capabilities/default.json`, which widens the one seam with no automated
-  coverage ([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)). No URL
-  is carried in the payload either — a field nothing can act on is a field that
-  reads as a missing feature. Same reasoning as the About links.
-- **No needs-approval notification, and no "Forget" on an absent runner.** The
-  first is platform notification wiring (its own concern); the second is a
-  right-click context menu over a `roster::forget` that `crates/github` already
-  implements. A remembered name still ages out on its own after 24h.
+The row is a `div`, not an `<a>`, so github.js spells out what a real link would
+carry for free: `role="link"`, Rust's `linkLabel` as the accessible name (the
+row's own text is seven numbers), a tab stop and an Enter handler. That is
+*more* than the Swift panel, whose `onTapGesture` on a `VStack` is invisible to
+VoiceOver and unreachable from a keyboard — parity with a gap is not a reason to
+reproduce the gap.
+
+**A run entering an approval gate raises an OS notification**, one per run, on
+the transition only. The rule lives in
+[`src/github/notify.rs`](src-tauri/src/github/notify.rs) — a port of
+`GHWorkflowsService.notifyApprovalTransitions(in:)` — and it is pure, so the
+part that decides *whether* to alert is unit-tested without a notification
+centre anywhere near it:
+
+- **Transition, not state.** A parked run stays parked for as many passes as it
+  takes a human to notice. The banner fires on the pass where the run *enters*
+  `waiting` and never again; re-alerting every 60 seconds is how a signal
+  becomes noise.
+- **The first pass only seeds.** Launching must not alert for gates that were
+  already open. The first `observe` records the baseline and returns nothing.
+- **The baseline advances even when the preference is off.** Swift updates
+  `knownApprovalRunIDs` in a `defer` outside its preference guard; skipping that
+  would make re-enabling the alert fire a backlog for everything that parked
+  while it was off.
+- **The preference is `notify_on_approval_needed`, default true, and has no
+  UI** — exactly as in Swift, where `WorkflowDisplayOptions.notifyOnApprovalNeeded`
+  likewise persists with no control anywhere in Settings. It is re-read on every
+  pass, so editing the store file applies without a relaunch.
+
+Two honest gaps against Swift, both platform, neither hidden:
+
+- **The banner is not tappable.** Swift attaches the run's `htmlURL` to the
+  notification's `userInfo` and opens it from the delegate;
+  `tauri-plugin-notification`'s desktop path is fire-and-forget through
+  `notify-rust`, with no action callback to hang that on. So `ApprovalNotice`
+  carries two fields, not three — a URL nothing can act on is the same
+  "field that reads as a feature" this panel refused before there was a click to
+  spend it on.
+- **The sound is macOS-only.** `content.sound = .default` becomes
+  `NSUserNotificationDefaultSoundName`, which is a platform *resource name*
+  rather than a portable "make a noise" flag. There is no Windows spelling of
+  "the default one", so the banner is silent there rather than named with
+  something the platform would ignore.
+
+One thing is still deliberately **not** here: **no "Forget" on an absent
+runner**. That is a right-click context menu over a `roster::forget` that
+`crates/github` already implements, and a remembered name ages out on its own
+after 24h regardless.
 
 Both panels now sit in whichever row `panelRows` puts them — side by side at
 ≥976pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).
@@ -536,8 +582,9 @@ tabs. Every label, help string and result line it paints comes from
 widening the one seam in this app with no automated coverage
 ([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)), for a surface that
 needs no platform capability at all. Every command below is *app-defined*, which
-Tauri's ACL permits without a grant, so `capabilities/default.json` keeps its
-empty `permissions` list.
+Tauri's ACL permits without a grant, so none of them appears in
+`capabilities/default.json` — see [The one granted
+capability](#the-one-granted-capability) for the single entry that does.
 
 | Command | What it does |
 |---|---|
@@ -621,8 +668,66 @@ Two gaps, deliberate and worth knowing:
 - **About's version is hard-coded** to the crate version, not the CalVer the
   Swift app derives from git ([#15](https://github.com/Sassy-Dog/devcanopy/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
-  one would navigate the cockpit's own webview away from the app, and opening it
-  externally needs the opener plugin granted to the ACL.
+  one would navigate the cockpit's own webview away from the app, and the opener
+  scope granted below deliberately does **not** reach them. They are repo roots
+  and issue pages; the grant admits `/{owner}/{repo}/actions` and nothing else,
+  so making those links openable would be a second widening, argued separately.
+
+## The one granted capability
+
+`src-tauri/capabilities/default.json` grants the cockpit window **one** plugin
+command. Everything else it calls is app-defined, which Tauri's ACL permits
+without a grant. Here is the whole `permissions` list, line by line:
+
+```jsonc
+"permissions": [
+  {
+    "identifier": "opener:allow-open-url",              // 1
+    "allow": [{ "url": "https://github.com/*/*/actions" }]   // 2
+  }
+]
+```
+
+1. **`opener:allow-open-url`** — the `plugin:opener|open_url` command, and only
+   it. `tauri-plugin-opener` also ships `allow-open-path` (opens a file or
+   directory with the system handler) and `allow-reveal-item-in-dir`; neither is
+   granted, so the webview can reach no path on this machine. The plugin's own
+   `opener:default` bundles all three, which is why it is not used here.
+2. **`allow: [{url}]`** — a *scope* on that one command. The plugin compiles the
+   string into a `glob::Pattern` and rejects any `open_url` whose URL does not
+   match ([`src/commands.rs`](https://docs.rs/tauri-plugin-opener) →
+   `scope.is_url_allowed`), so the grant is "this shape of URL", not "URLs". The
+   glob is the tightest static expression of the Repos row's target: the scheme
+   and host are literal, and the two `*`s are the owner and repo, which are
+   user-editable at runtime and so cannot be enumerated in a file compiled at
+   build time. Omitting the entry's optional `app` key leaves it at
+   `Application::Default`, which additionally means the caller cannot name
+   *which* program opens the URL.
+
+**What is deliberately absent:**
+
+- **`core:default`.** Never granted, and this is not an oversight: it hands the
+  webview every core-plugin default — window, webview, app, event, menu, tray,
+  image, path, resources — none of which this frontend calls.
+- **Anything for `tauri-plugin-notification`.** It is a dependency and is
+  registered with `.plugin(...)`, but the ACL grants it *nothing*. Needs-approval
+  banners are built and shown in Rust (`deliver_approval_notices` →
+  `NotificationExt`), which does not pass through the ACL at all, so the webview
+  is never in the path and needs no permission to be in it. The plugin's
+  `notify` / `request_permission` / `is_permission_granted` commands remain
+  unreachable from JavaScript.
+
+**How far it is verified.** `actions_url_is_the_only_shape_the_granted_scope_admits`
+(in `src/github/mod.rs`) reads the real capability file, rebuilds the glob with
+the same `glob::Pattern` the plugin enforces it with, and asserts it admits every
+URL `github::actions_url` can produce and refuses a list it must not — including
+the About tab's own links, `http://` instead of `https://`, and
+`https://github.com.evil.example/…`. Widening the scope fails that test.
+
+What the test does **not** do is exercise the IPC boundary that enforces the
+scope: it reads the file, it does not invoke through it. Nothing automated does
+— that is still [#123](https://github.com/Sassy-Dog/devcanopy/issues/123), and
+it is why the checklist below grew a tap-to-open line.
 
 ## Build & run
 
@@ -755,6 +860,15 @@ panels, and the checklist below has grown with it. The trade-off still holds —
 #150 close-out audit (#178) and left standing; the deferred register there names
 it.
 
+**And weaker again since [#187](https://github.com/Sassy-Dog/devcanopy/issues/187).**
+Until then the ACL's `permissions` list was empty, so "an ACL break" could only
+mean *losing* access to app-defined commands — a failure that blanks a panel and
+is therefore loud. There is now [one granted
+capability](#the-one-granted-capability), and a break in *its* direction is the
+quiet kind: a scope that admits more than it should changes nothing on screen.
+The unit test named there is what covers the file; step 11 below is what covers
+the boundary, and it is a human clicking a row.
+
 So this is a manual step. Run it after changing anything under
 `src-tauri/capabilities/`, the `invoke_handler` registration, or any frontend
 `invoke` call — including the settings ones, which is what step 5 is for.
@@ -806,6 +920,8 @@ and that immediacy is itself the check on the corresponding wake:
 | Touched | Do | Expect |
 |---|---|---|
 | `github_wake` / Repos / Runners | save a fine-grained PAT under Settings → GitHub | both panels fill within seconds; **Clear** drops them back just as fast. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
+| **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
+| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Portfolio | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | the rules editor | under Settings → Hosts, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
 | the tabs mode | set Settings → General to **Show as tabs**, **Apply**, then narrow the window below ~1816pt with two hosts configured | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind |
@@ -1001,6 +1117,56 @@ and that immediacy is itself the check on the corresponding wake:
    card says so rather than painting a permanently green 0%. Disk and network
    read `—` for the first tick only, then real rates.
 
+11. **Exercise the two seams that leave the app** — the only two, and the only
+    ones that need a credential. Both are ⏱ extras, not part of the
+    credential-free pass above, but **step 11a is not optional after any change
+    under `src-tauri/capabilities/`**: it is the sole check that the granted
+    scope is enforced at the boundary rather than merely written in a file.
+
+    **11a — tap to open (the ACL).** With a PAT saved (step 7) and the Repos
+    table populated, click any repo row. Your default browser should open
+    `https://github.com/{owner}/{repo}/actions` for that repo. Then press
+    **Tab** until a row takes the focus ring and press **Enter** — same result,
+    because a click-only target is one a keyboard cannot reach.
+
+    Nothing happening is the failure, and it has exactly two shapes worth
+    telling apart: **Inspect Element** → Console shows
+    `opener.open_url not allowed` (the permission is missing from
+    `capabilities/default.json`) or a `Forbidden URL` error naming the URL (the
+    permission is there and its *scope* rejected it). A row that is not
+    clickable at all is neither — that is `row.url` missing from the payload,
+    i.e. a Rust-side regression the unit tests should have caught.
+
+    The negative half cannot be clicked, only reasoned about: the granted scope
+    admits `/{owner}/{repo}/actions` and nothing else, which
+    `actions_url_is_the_only_shape_the_granted_scope_admits` asserts against the
+    real file. The About tab's links are the visible proof — they render as
+    selectable text and stay unopenable.
+
+    **11b — a needs-approval banner.** The transition rule is unit-tested
+    (`src/github/notify.rs`); what is not is delivery. Forcing a real transition
+    without a real gate is the awkward part, and the trick is that the watch is
+    **per process and already seeded** by the pass in step 7: any repo added
+    *after* that is diffed against a baseline that never contained it.
+
+    So — with the panel already populated — add a repo whose CI has a run parked
+    at a deployment-protection gate under Settings → Portfolio. Saving wakes the
+    loop, and the pass that first sees the gate is not the seeding pass, so it
+    delivers: one banner reading `{repo} · needs approval`, body
+    `{workflow} · {branch} is parked at an approval gate.` Watch two more passes
+    go by (a minute at the default interval) and confirm **no second banner** —
+    the alert is on the transition, not on the state.
+
+    Under `cargo run` on macOS the banner is attributed to **Terminal**, not to
+    DevCanopy: `notify-rust` sets the bundle id to `com.apple.Terminal` when
+    `tauri::is_dev()`, because an unbundled binary has no identity of its own to
+    notify under. That is expected, not a defect — and it means a *bundled*
+    build's notification permission prompt is still unexercised
+    ([#15](https://github.com/Sassy-Dog/devcanopy/issues/15) owns packaging). If
+    macOS Focus is on, or notifications are denied for Terminal, delivery is a
+    silent no-op with nothing on the terminal either; check
+    System Settings → Notifications before concluding the code is wrong.
+
 ### Pass
 
 The terminal prints the `cockpit: first frontend request …` line above, and the
@@ -1058,6 +1224,14 @@ and no configuration can remove, so it is also the cheapest read on the whole
 procedure: a grid that leads with `ubu-3xdv` means either the local sampler never
 started or step 1 was skipped.
 
+Step 11 is the only part of this procedure whose pass condition is **outside the
+app**: a browser window at the right URL, and a banner in Notification Center.
+Everything above proves a payload reached the DOM; 11a proves the webview can
+reach *out* through the one grant it has, and only to where that grant points.
+11b proves the notifier can, without the webview being in the path at all.
+Neither has an in-app symptom, which is exactly why they are steps rather than
+tick-boxes: nothing on screen changes if either is broken.
+
 Seeding a second host — run once more with a different address, against the same
 `DEVCANOPY_STORE_DIR` — is the multi-card version of the same check: two cards,
 side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
@@ -1086,6 +1260,11 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The pairing banner keeps returning after the approve command was run. | Also not a failure. The command has to run **on the gateway host**, and the request id is single-use — a stale one from a previous banner will not clear it. Press **Retry now** and re-read the id from the fresh banner. If the device id in Settings changes between attempts, the credential store is refusing to persist the seed; the terminal says so (`openclaw: could not persist the device key: …`). |
 | The local card is missing, or the grid leads with a remote host. | The local sampler never started, or its first sample has not landed (it renders `waiting for first sample…` for one tick). A card that never appears at all points at the poll task, not the ACL: the card is built in `cockpit`, which the terminal line in step 3 already proved runs. |
 | The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. Note that `Pressure: —` and `VRAM: —` are permanent and correct on macOS — see [This machine leads](#this-machine-leads). |
+| Clicking a repo row does nothing, and the console says `opener.open_url not allowed`. | The **permission** is missing: `opener:allow-open-url` is not in `capabilities/default.json`, or the plugin is not registered on the builder. Not a scope problem — the command was rejected before any URL was looked at. |
+| Clicking a repo row does nothing, and the console names a `Forbidden URL`. | The permission is there and its **scope** rejected the URL. Either the glob was narrowed, or something other than `github::actions_url` composed the string — the two live one line apart in `capabilities/default.json` and `src/github/mod.rs`, and only they may disagree. |
+| The rows render but none of them is clickable, and no console error appears. | Neither: `row.url` is absent from the payload, so github.js never wires a handler. A Rust-side regression, and `a_row_carries_the_swift_tap_target` should have caught it — check the fixtures are not stale first (step 1). |
+| No needs-approval banner for a run that is definitely parked at a gate. | Four ordinary causes before suspecting the code: it was the **seeding** pass (the first pass after launch never alerts — see step 11b for how to force a real transition); the run was already parked on the previous pass, so this one is not a transition; `notify_on_approval_needed` is `false` in the store file; or macOS Focus / denied notifications for **Terminal** (the id an unbundled dev build notifies under) is swallowing it silently. |
+| A needs-approval banner repeats every poll pass. | A real failure, and the one this feature exists to avoid: the baseline is not being retained across passes. `ApprovalWatch` lives on `App`, so a per-pass instance would produce exactly this. |
 
 For the underlying error, open the webview console: right-click in the window →
 **Inspect Element** (devtools are enabled in debug builds). An ACL rejection names
@@ -1101,6 +1280,7 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
+| 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/Sassy-Dog/devcanopy/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `DEVCANOPY_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |
 | 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/Sassy-Dog/devcanopy/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/Sassy-Dog/devcanopy/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/Sassy-Dog/devcanopy/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |

@@ -9,6 +9,7 @@ use store::{
     ContainerGroupRule, CredentialStore, Host, HostOverflowMode, KeyringStore, SecretKey, Store,
     StoreError, TrackedRepo,
 };
+use tauri_plugin_notification::NotificationExt;
 use uuid::Uuid;
 use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending};
 use viewmodel::cockpit::{host_columns, panel_table, HOST_CARD_MIN_WIDTH, SPACING};
@@ -162,6 +163,21 @@ struct App {
     /// while a session is up must not have to wait out that session, which on a
     /// healthy socket never ends.
     openclaw_wake: tokio::sync::Notify,
+    /// Which parked runs the needs-approval notifier has already alerted on.
+    ///
+    /// Its own lock rather than a field on [`GitHubState`], because it is not
+    /// something either panel renders — that struct's contract is "everything
+    /// both panels render from", and a delivery ledger inside it would make
+    /// that sentence false.
+    approvals: Mutex<github::notify::ApprovalWatch>,
+    /// The Tauri handle, once the app has started — the notifier's way out to
+    /// the OS.
+    ///
+    /// A `OnceLock` because the poll loops are spawned *before*
+    /// `tauri::Builder::run`, and under `--dump-*` they are never spawned at
+    /// all: "not up yet" and "not an app at all" are both real, and neither is
+    /// a reason to panic.
+    handle: std::sync::OnceLock<tauri::AppHandle>,
     /// Where poll tasks are spawned. A `Handle`, not the `Runtime`: the
     /// runtime itself stays owned by `main`, so it can never be dropped from
     /// inside a command (dropping a runtime from an async context panics).
@@ -771,6 +787,20 @@ async fn poll_github(app: &Arc<App>) {
         .runner_roster(github::ORG, &roster, now, github::RUNNER_GRACE_SECS)
         .await;
 
+    // Re-read like the token, so switching the preference off applies on the
+    // next pass rather than on the next launch.
+    let notify_approvals = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().notify_on_approval_needed
+    };
+    // Diffed before `health` is handed to the panel state, because the diff
+    // needs the *previous* pass and `apply_repos` replaces it wholesale. Its
+    // own lock: this is delivery memory, not anything either panel renders.
+    let notices = {
+        let mut watch = app.approvals.lock().expect("approval watch poisoned");
+        watch.observe(&health, notify_approvals)
+    };
+
     {
         let mut state = app.github.lock().expect("github state poisoned");
         state.apply_repos(health);
@@ -798,6 +828,62 @@ async fn poll_github(app: &Arc<App>) {
             if let Err(e) = store.save() {
                 eprintln!("could not persist the runner roster: {e}");
             }
+        }
+    }
+
+    // Last, and outside every lock: showing a banner is the one thing in this
+    // pass that leaves the process.
+    deliver_approval_notices(app, &notices);
+}
+
+/// Swift's `content.sound = .default`, spelled the way `notify-rust` wants it.
+///
+/// macOS-only on purpose. The plugin's `sound()` is a platform-specific
+/// *resource name*, not a portable "make a noise" flag, and there is no
+/// Windows spelling of "the default one" to pair with this. A name the
+/// platform does not know is a name it ignores, so the honest port is to name
+/// the sound where the name means something and stay silent where it does not.
+#[cfg(target_os = "macos")]
+const APPROVAL_SOUND: Option<&str> = Some("NSUserNotificationDefaultSoundName");
+#[cfg(not(target_os = "macos"))]
+const APPROVAL_SOUND: Option<&str> = None;
+
+/// Show this pass's needs-approval banners.
+///
+/// The only impure half of the feature — [`github::notify::ApprovalWatch`]
+/// decided *whether* each of these exists, and this decides nothing.
+///
+/// Delivery goes through `tauri-plugin-notification`'s **Rust** API, which is
+/// why the ACL grants that plugin nothing at all: the webview is never in the
+/// path. A notice arriving before `tauri::Builder::run` has handed us a handle
+/// is dropped rather than queued — the poll loops are spawned first, so that
+/// window exists, but the pass that opens it is the seeding pass, which by
+/// construction produces no notices.
+fn deliver_approval_notices(app: &App, notices: &[github::notify::ApprovalNotice]) {
+    if notices.is_empty() {
+        return;
+    }
+    let Some(handle) = app.handle.get() else {
+        eprintln!(
+            "dropping {} needs-approval notification(s): the app is not up yet",
+            notices.len()
+        );
+        return;
+    };
+    for notice in notices {
+        let mut builder = handle
+            .notification()
+            .builder()
+            .title(notice.title.as_str())
+            .body(notice.body.as_str());
+        if let Some(sound) = APPROVAL_SOUND {
+            builder = builder.sound(sound);
+        }
+        // Logged, not surfaced: this is the same silent no-op Swift takes when
+        // the user has denied notification permission, and a cockpit panel is
+        // the wrong place to report that the OS declined a banner.
+        if let Err(e) = builder.show() {
+            eprintln!("could not show a needs-approval notification: {e}");
         }
     }
 }
@@ -2545,6 +2631,8 @@ fn main() {
         azure_wake: tokio::sync::Notify::new(),
         openclaw: Mutex::new(OpenClawState::new()),
         openclaw_wake: tokio::sync::Notify::new(),
+        approvals: Mutex::new(github::notify::ApprovalWatch::new()),
+        handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
     });
     // One task per host: an unreachable host's 5s client timeout must not hold
@@ -2571,7 +2659,23 @@ fn main() {
     rt.spawn(openclaw_loop(Arc::clone(&app)));
 
     tauri::Builder::default()
+        // Opening a repo row's Actions page. The webview's grant is one
+        // command, scoped to one URL shape — see `capabilities/default.json`.
+        .plugin(tauri_plugin_opener::init())
+        // Needs-approval banners. Registered so `NotificationExt` resolves in
+        // `deliver_approval_notices`; granted nothing, because only Rust ever
+        // calls it.
+        .plugin(tauri_plugin_notification::init())
         .manage(Arc::clone(&app))
+        .setup({
+            let app = Arc::clone(&app);
+            move |shell| {
+                // The poll loops are already running; this is the moment they
+                // gain a way to reach the OS.
+                let _ = app.handle.set(shell.handle().clone());
+                Ok(())
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             cockpit,
             containers,

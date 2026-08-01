@@ -96,6 +96,15 @@ pub struct Settings {
     pub sentry_monthly_event_quota: u64,
     /// OpenClaw gateway URL (non-secret; the bearer token is a credential).
     pub openclaw_gateway_url: String,
+    /// Fire an OS notification once when a tracked run transitions into the
+    /// `waiting` deployment-protection gate (a human must approve it).
+    ///
+    /// Swift's `WorkflowDisplayOptions.notifyOnApprovalNeeded`, which is
+    /// likewise default-true and likewise has **no Settings control** — the
+    /// preference persists and is read on every poll pass, but nothing in
+    /// either app's UI writes it. Editing the store file by hand is the only
+    /// way to turn it off, in both.
+    pub notify_on_approval_needed: bool,
     /// Mount paths hidden from the *local* machine's Volumes section. Remote
     /// hosts carry their own list on [`crate::Host`].
     pub local_hidden_volume_mounts: Vec<String>,
@@ -112,6 +121,7 @@ impl Default for Settings {
             sentry_org_slug: String::new(),
             sentry_monthly_event_quota: 0,
             openclaw_gateway_url: String::new(),
+            notify_on_approval_needed: true,
             local_hidden_volume_mounts: Vec::new(),
         }
     }
@@ -150,7 +160,23 @@ mod tests {
         assert!(s.neon_org_id.is_empty());
         assert!(s.sentry_org_slug.is_empty());
         assert!(s.openclaw_gateway_url.is_empty());
+        assert!(s.notify_on_approval_needed);
         assert!(s.local_hidden_volume_mounts.is_empty());
+    }
+
+    /// The one preference with no UI on either side: a store file written
+    /// before it existed must still opt *in*, because Swift's
+    /// `WorkflowDisplayOptions()` default is `true` and an upgrade that
+    /// silently disabled the alert would look exactly like the feature not
+    /// working.
+    #[test]
+    fn a_store_file_without_the_notify_key_still_opts_in() {
+        let s: Settings = serde_json::from_str(r#"{"core_row_span":3}"#).expect("deserialize");
+        assert!(s.notify_on_approval_needed);
+
+        let off: Settings =
+            serde_json::from_str(r#"{"notify_on_approval_needed":false}"#).expect("deserialize");
+        assert!(!off.notify_on_approval_needed);
     }
 
     #[test]
@@ -164,6 +190,7 @@ mod tests {
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 50_000,
             openclaw_gateway_url: "https://gateway.example".into(),
+            notify_on_approval_needed: false,
             local_hidden_volume_mounts: vec!["/Volumes/Backup".into()],
         };
         let json = serde_json::to_string(&s).expect("serialize");

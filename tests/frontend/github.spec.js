@@ -178,6 +178,78 @@ test("the loading state replaces the table rather than showing an empty one", as
   await expect(page.locator("#reposBody .gh-head")).toHaveCount(0);
 });
 
+// MARK: - Repos: tap to open
+
+test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", async ({ page, baseURL }) => {
+  const { repos } = await gotoWithFixtures(page, baseURL);
+
+  await repoRows(page).first().click();
+
+  const opens = await page.evaluate(() =>
+    window.__CALLS__.filter((c) => c.command === "plugin:opener|open_url")
+  );
+  // Exactly one call, exactly one argument, and it is the fixture's own
+  // string. A URL rebuilt in JS from the repo name would pass a "it opened
+  // something" assertion and still be a second author of the only string the
+  // granted ACL scope accepts.
+  expect(opens).toEqual([
+    { command: "plugin:opener|open_url", args: { url: repos.rows[0].url } },
+  ]);
+  expect(repos.rows[0].url).toBe("https://github.com/Sassy-Dog/devcanopy/actions");
+});
+
+test("every repo row is its own tap target, including the unreachable one", async ({ page, baseURL }) => {
+  const { repos } = await gotoWithFixtures(page, baseURL);
+  const rows = repoRows(page);
+  await expect(rows).toHaveCount(repos.rows.length);
+
+  for (const [i, row] of repos.rows.entries()) {
+    // Rust's accessible name, not the row's seven numbers read aloud.
+    await expect(rows.nth(i)).toHaveAttribute("aria-label", row.linkLabel);
+    await expect(rows.nth(i)).toHaveAttribute("role", "link");
+    await expect(rows.nth(i)).toHaveJSProperty("tabIndex", 0);
+  }
+  // `platform` is the repo whose runs could not be fetched — being unable to
+  // read a repo's CI is exactly when you want to go and look at it.
+  const unreachable = repos.rows.findIndex((r) => r.name === "platform");
+  expect(unreachable).toBeGreaterThan(-1);
+  await rows.nth(unreachable).click();
+  expect(
+    await page.evaluate(() => window.__CALLS__.filter((c) => c.command === "plugin:opener|open_url"))
+  ).toEqual([
+    { command: "plugin:opener|open_url", args: { url: repos.rows[unreachable].url } },
+  ]);
+});
+
+test("a repo row opens from the keyboard, not only from a click", async ({ page, baseURL }) => {
+  const { repos } = await gotoWithFixtures(page, baseURL);
+
+  await repoRows(page).first().focus();
+  await page.keyboard.press("Enter");
+  expect(
+    await page.evaluate(() => window.__CALLS__.filter((c) => c.command === "plugin:opener|open_url"))
+  ).toEqual([
+    { command: "plugin:opener|open_url", args: { url: repos.rows[0].url } },
+  ]);
+});
+
+test("a row with no URL is not a link and opens nothing", async ({ page, baseURL }) => {
+  const repos = await fixture(baseURL, "sample-repos.json");
+  // A payload from a build that predates tap-to-open. The row must degrade to
+  // the plain, unclickable row it used to be rather than throwing on click and
+  // taking the panel's rendering down with it.
+  repos.rows = repos.rows.map(({ url, linkLabel, ...rest }) => rest);
+  await gotoWithFixtures(page, baseURL, { repos });
+
+  const row = repoRows(page).first();
+  await expect(row).toHaveCount(1);
+  await expect(row).not.toHaveAttribute("role", "link");
+  await row.click();
+  expect(
+    await page.evaluate(() => window.__CALLS__.filter((c) => c.command === "plugin:opener|open_url"))
+  ).toEqual([]);
+});
+
 // MARK: - GitHub Runners
 
 test("the Runners panel paints Rust's stats, chips and trailing label", async ({ page, baseURL }) => {
