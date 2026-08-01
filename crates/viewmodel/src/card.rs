@@ -12,6 +12,17 @@ use crate::layout::{
 };
 use serde_json::{json, Value};
 
+/// What the card says when the link is healthy and the *agent* is the thing
+/// that stopped.
+///
+/// It deliberately says the agent is up: the operator's next move for a
+/// stalled sampler (restart the agent) is not the one an unreachable host
+/// asks for (check the tailnet, check the box is on), and a shared "not
+/// current" phrasing would send them to the wrong layer — the same argument
+/// `AgentError::user_message` makes one level down.
+pub const SAMPLER_STALLED_MESSAGE: &str =
+    "Agent is up but its sampler has stalled; these numbers are frozen";
+
 /// Connection health for a host that has at least one sample. `host_card`
 /// doesn't poll — the shell decides which case applies — but the colour for
 /// each case still comes from here, same as every other field this module
@@ -29,6 +40,19 @@ pub enum Connection {
         message: String,
         stale_secs: Option<u64>,
     },
+    /// Every poll is *succeeding* and the data is stale anyway: the agent's
+    /// own `/v1/health` reports `samplerStale`, so what it is serving is
+    /// whatever its sampler last produced — or, before its first sample,
+    /// `empty_snapshot()`'s zeros.
+    ///
+    /// The age is therefore the **agent's**, not this side's: `sampleAgeSeconds`
+    /// from the same health payload, measured against the sampler's own clock.
+    /// A coordinator-side elapsed would be the age of our last successful
+    /// *request*, which for a stalled sampler is about a second — the exact
+    /// number that makes frozen data read as current. `None` when the agent
+    /// declines to report one (pre-#35 agents don't), and then the badge says
+    /// "unknown" rather than inventing a figure.
+    SamplerStale { sample_age_secs: Option<u64> },
 }
 
 fn connection_badge(c: &Connection) -> Value {
@@ -41,15 +65,27 @@ fn connection_badge(c: &Connection) -> Value {
         Connection::Stale {
             message,
             stale_secs,
-        } => {
-            let age = stale_secs.map_or_else(|| "unknown".to_string(), relative_age);
-            json!({
-                "state": "stale",
-                "color": color::hex(color::RED),
-                "message": format!("{message} — last update {age}"),
-            })
+        } => stale_badge(message, *stale_secs),
+        // The same `"state"` and the same red as a failed poll, on purpose: the
+        // frontend keys its dot on that string, and a third state would mean a
+        // new rendering to design, style and test for a card that must simply
+        // stop looking live. What differs is the *message*, which is the part
+        // that tells an operator which layer to go and look at.
+        Connection::SamplerStale { sample_age_secs } => {
+            stale_badge(SAMPLER_STALLED_MESSAGE, *sample_age_secs)
         }
     }
+}
+
+/// The one stale badge both stale cases render, so "not current" can never
+/// arrive in two shapes the frontend has to tell apart.
+fn stale_badge(message: &str, age_secs: Option<u64>) -> Value {
+    let age = age_secs.map_or_else(|| "unknown".to_string(), relative_age);
+    json!({
+        "state": "stale",
+        "color": color::hex(color::RED),
+        "message": format!("{message} — last update {age}"),
+    })
 }
 
 /// A host with no sample yet: still waiting on its first poll, or every poll
@@ -541,6 +577,68 @@ mod tests {
             &Connection::Stale {
                 message: "Couldn't reach the agent.".to_string(),
                 stale_secs: None,
+            },
+        );
+        let msg = vm["connection"]["message"].as_str().unwrap();
+        assert!(msg.contains("last update unknown"), "got {msg:?}");
+        assert!(
+            !msg.contains("0s ago"),
+            "must not fabricate an age, got {msg:?}"
+        );
+    }
+
+    /// The #182 case: every poll succeeded, so nothing on this side can tell
+    /// the card is wrong — only the agent's own `samplerStale` can. It must
+    /// land on the *same* badge a failed poll does (red, `"stale"`), because
+    /// the frontend has exactly one not-live rendering and a card that is
+    /// serving frozen numbers must never be the green one.
+    #[test]
+    fn a_stalled_sampler_renders_the_stale_badge_and_names_the_agent() {
+        let s = fixture();
+        let h = HostHistories::new();
+        let live = host_card("ubu-3xdv", &s, &h, &Connection::Live);
+        let stalled = host_card(
+            "ubu-3xdv",
+            &s,
+            &h,
+            &Connection::SamplerStale {
+                sample_age_secs: Some(95),
+            },
+        );
+
+        assert_eq!(stalled["connection"]["state"], "stale");
+        assert_eq!(stalled["connection"]["color"], "#e05a4f");
+        let msg = stalled["connection"]["message"].as_str().unwrap();
+        assert!(msg.contains("sampler"), "got {msg:?}");
+        // The agent's own age, not this side's: 95s is what `/v1/health`
+        // reported, and it is the whole reason this variant exists.
+        assert!(
+            msg.contains("1m ago"),
+            "expected the agent's age, got {msg:?}"
+        );
+        // …and it must not read like an unreachable host, or the operator
+        // goes and checks the network instead of the agent.
+        assert!(!msg.contains("Couldn't reach"), "got {msg:?}");
+
+        // Same rule as the failed-poll case: staleness changes the badge,
+        // never the numbers.
+        assert_eq!(stalled["cpuValue"], live["cpuValue"]);
+        assert_eq!(stalled["cores"], live["cores"]);
+        assert_ne!(stalled["connection"], live["connection"]);
+    }
+
+    /// Reachable via the real poll loop, unlike its `Connection::Stale`
+    /// counterpart: an agent older than #35 answers `/v1/health` without
+    /// `sampleAgeSeconds`, and a `0s ago` invented there would say the frozen
+    /// numbers are a second old.
+    #[test]
+    fn a_stalled_sampler_with_no_reported_age_says_unknown_never_zero() {
+        let vm = host_card(
+            "ubu-3xdv",
+            &fixture(),
+            &HostHistories::new(),
+            &Connection::SamplerStale {
+                sample_age_secs: None,
             },
         );
         let msg = vm["connection"]["message"].as_str().unwrap();

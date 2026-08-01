@@ -46,6 +46,16 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// below 2 removes the debounce entirely.
 const FAILURE_THRESHOLD: u32 = 2;
 
+/// How often each host's `/v1/health` is read, alongside the 1s snapshot poll.
+///
+/// Deliberately much slower than [`POLL_INTERVAL`]: this answers "is the agent's
+/// sampler alive", which changes on the order of minutes, and paying a second
+/// request per host per second to learn it would double the tailnet traffic of
+/// the whole cockpit for a flag. Ten seconds is the containers panel's cadence
+/// for the same reason — fast enough that a stalled sampler is caught within one
+/// glance, slow enough to be free.
+const HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The mutable half of one watched host. The `AgentClient` is immutable and is
 /// held separately so the poll loop never locks across an await.
 struct HostState {
@@ -65,6 +75,24 @@ struct HostState {
     /// Back-to-back failed polls; reset to 0 on any success. `error` is only
     /// published once this reaches [`FAILURE_THRESHOLD`] — see `record_poll`.
     consecutive_failures: u32,
+    /// The agent's own verdict on its sampler, from `/v1/health` on
+    /// [`HEALTH_POLL_INTERVAL`]. `Some(true)` is the one thing that can tell
+    /// this side that a *succeeding* snapshot poll is serving frozen numbers —
+    /// or, before the sampler's first sample, `empty_snapshot()`'s zeros behind
+    /// a green dot, which is the defect this exists for (#182).
+    ///
+    /// `None` means nobody has told us: no health poll has landed yet, or the
+    /// agent is old enough not to report it (pre-#35). It is deliberately not
+    /// `false`-by-default — "we have not heard" is not "the sampler is fine",
+    /// and only the second of those may keep a card green on this field's say-so.
+    sampler_stale: Option<bool>,
+    /// How old the agent says its newest sample is, from the same payload.
+    ///
+    /// The stale badge's age when [`HostState::sampler_stale`] is `Some(true)`,
+    /// because in that case this side's own clocks are useless: the last
+    /// successful *request* is a second old however long the sampler has been
+    /// dead.
+    sample_age_seconds: Option<u64>,
 }
 
 /// What identifies a poll task's *subject*: which host, on which endpoint.
@@ -191,13 +219,39 @@ struct App {
 /// snapshot rendering as live forever) would reappear if it ever did — see
 /// the tests below, which fail loudly if this match ever grows a wildcard
 /// arm again.
+///
+/// The four states are a fact about *this side's* polling, and #182 is the case
+/// where that is not enough: a host whose agent is answering every request with
+/// numbers its sampler stopped producing lands in the live arm, and nothing
+/// here can see it. The guard below is the agent's own answer to that question,
+/// and it splits the live arm rather than adding a fifth state — the card still
+/// has real data and a stale badge, which is exactly the second arm's shape.
 fn view_for(s: &HostState) -> Value {
     let mut card = match (&s.latest, &s.error) {
+        // A snapshot exists, the poll succeeded — and the agent says its own
+        // sampler has stopped, so what just arrived is frozen (or, before the
+        // sampler's first sample, all zeros). Real data, unmissable badge, and
+        // never the green dot the poll's success would otherwise earn it.
+        (Some(snap), None) if s.sampler_stale == Some(true) => host_card(
+            &s.name,
+            snap,
+            &s.histories,
+            &Connection::SamplerStale {
+                sample_age_secs: s.sample_age_seconds,
+            },
+        ),
         // A snapshot exists and the most recent poll succeeded: live.
         (Some(snap), None) => host_card(&s.name, snap, &s.histories, &Connection::Live),
         // A snapshot exists but the most recent poll failed: show it anyway
         // (this is real data, just not current), with an unmissable stale
         // badge instead of silently going on looking live forever.
+        //
+        // No sampler guard here on purpose. Both facts produce the same badge,
+        // and when the link is down the transport failure is the more proximate
+        // cause *and* the more recent one: `sampler_stale` is by then whatever
+        // the last reachable health poll said, up to ten seconds before the
+        // agent went quiet. Naming the sampler would send an operator to
+        // restart a daemon they cannot currently reach.
         (Some(snap), Some(msg)) => {
             // `None` when a snapshot exists but no successful poll is on
             // record -- unreachable via the real poll loop below (latest and
@@ -395,6 +449,85 @@ fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at
     }
 }
 
+/// The write side of the health poll, and the whole of its failure policy.
+///
+/// **A failed health poll must change nothing.** This is the negative that
+/// matters more than the feature: `/v1/health` is a *second* request to a host
+/// the snapshot loop is already polling, and if a failure here could publish an
+/// error, bump the failure streak, or clear the flag it last learned, then a
+/// probe nobody asked for would have gained the power to redden a card whose
+/// data is arriving perfectly. That is a new failure mode traded for a
+/// diagnostic — the opposite of the trade #182 asked for. So the `Err` arm is
+/// not written: the signal is simply withheld, and the card goes on saying
+/// whatever the snapshot poll (and the last health poll that did land) support.
+///
+/// Withheld, note, is not *reset*. A sampler known to be stalled keeps its badge
+/// through a health poll that fails, because a request we could not make is not
+/// evidence the sampler recovered — and the one thing this must never do is put
+/// a green dot back over frozen numbers. Recovery arrives the same way the
+/// stall did: a health poll that succeeds and says `samplerStale: false`.
+fn record_health(s: &mut HostState, result: Result<wire::Health, AgentError>) {
+    if let Ok(info) = result {
+        // Both fields, together, from the same payload — including their
+        // `None`s. An agent that stopped reporting them (a rollback to a
+        // pre-#35 build) is telling us it no longer knows, and keeping the
+        // previous answer would date a badge from a build that is gone.
+        s.sampler_stale = info.sampler_stale;
+        s.sample_age_seconds = info.sample_age_seconds;
+    }
+}
+
+/// One pass of the health poll: every host with a token, concurrently.
+///
+/// Its own loop over the poll set rather than a branch of [`poll_loop`], for the
+/// reason the containers loop is one too — but here it is also a latency
+/// argument. Folded into the 1s task, a health request would sit in front of a
+/// snapshot on the same tick, and the client's 5s timeout would let one
+/// unreachable agent stretch its *own* card's chart axis, where one history
+/// sample is one fixed time slice.
+async fn poll_health(app: &Arc<App>) {
+    // The lock is released before anything is awaited, exactly as
+    // `poll_containers` does it: a hung agent must not hold the poll set.
+    let targets: Vec<(Arc<Mutex<HostState>>, Arc<AgentClient>)> = {
+        let hosts = app.hosts.lock().expect("poll set poisoned");
+        hosts
+            .iter()
+            // A host with no token never reaches the network for a snapshot;
+            // probing its health would be one guaranteed 401 per tick, and the
+            // card already names the real cause.
+            .filter(|polled| polled.token_configured)
+            .map(|polled| (Arc::clone(&polled.state), Arc::clone(&polled.client)))
+            .collect()
+    };
+
+    let mut requests = Vec::with_capacity(targets.len());
+    for (state, client) in targets {
+        requests.push(tokio::spawn(async move {
+            let result = client.health().await;
+            // Taken after the await, never across it.
+            record_health(&mut state.lock().expect("host state poisoned"), result);
+        }));
+    }
+    for request in requests {
+        // A panicked task is the only thing `JoinHandle` can report here —
+        // `record_health` swallows the network failure by design — and it must
+        // not take the loop down with it.
+        let _ = request.await;
+    }
+}
+
+/// The health poll's loop: tick, probe every host, record.
+async fn health_loop(app: Arc<App>) {
+    let mut tick = tokio::time::interval(HEALTH_POLL_INTERVAL);
+    // Same reason as every other loop here: `Burst` would fire every missed
+    // tick back-to-back after one slow pass.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        poll_health(&app).await;
+    }
+}
+
 /// A host with no token configured. Not debounced like a failed poll: an
 /// empty token never leaves this process to flap, so there is no momentary
 /// drop to absorb, and the operator should see the cause on the first tick.
@@ -472,6 +605,11 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
         error: None,
         last_success: None,
         consecutive_failures: 0,
+        // Unknown until the first health poll lands — never `Some(false)`,
+        // which would be this process asserting a fact about an agent it has
+        // not spoken to yet.
+        sampler_stale: None,
+        sample_age_seconds: None,
     }));
 
     let token = app
@@ -2409,6 +2547,24 @@ fn run_dump(args: &[String]) -> bool {
         );
         return true;
     }
+    // The #182 rendering, and the one no other fixture can reach: the poll
+    // SUCCEEDED and the card is stale anyway, because the agent's own
+    // `/v1/health` says its sampler stopped. Same underlying snapshot as
+    // `--dump` again, so the Playwright suite asserts the same "only the badge
+    // changes" rule against a case whose badge nothing on this side produced.
+    if let Some(path) = dump_flag_path(args, "--dump-sampler-stale", "sample-sampler-stale.json") {
+        write_json(
+            &path,
+            &dump_single(&Connection::SamplerStale {
+                // The agent's own `sampleAgeSeconds`, at a fixed value for the
+                // same byte-stability reason every other fixture pins its
+                // clocks: a relative age computed at dump time would drift on
+                // every regeneration.
+                sample_age_secs: Some(300),
+            }),
+        );
+        return true;
+    }
     if let Some(path) = dump_flag_path(args, "--dump-cockpit", "sample-cockpit.json") {
         // 3 * 900 + 2 * 16 — exactly the width three cards need side by side.
         let default_width = 3.0 * HOST_CARD_MIN_WIDTH + 2.0 * SPACING;
@@ -2643,6 +2799,11 @@ fn main() {
     // rather than owning one, so a host added in Settings joins it on the next
     // tick with no reload of its own.
     rt.spawn(containers_loop(Arc::clone(&app)));
+    // `/v1/health` on its own slow cadence, over the same poll set: the only
+    // source that can tell a *succeeding* poll it is being served frozen
+    // numbers. It reads the poll set rather than owning one, so a host added in
+    // Settings joins it on the next tick.
+    rt.spawn(health_loop(Arc::clone(&app)));
     // The GitHub panels run on the store's refresh interval and read the
     // portfolio and the token on every pass, so an edit in Settings joins them
     // on the next pass — which `wake_github` makes immediate.
@@ -2767,7 +2928,35 @@ mod tests {
             } else {
                 0
             },
+            sampler_stale: None,
+            sample_age_seconds: None,
         }
+    }
+
+    /// A host whose agent has answered `/v1/health` with this verdict — what
+    /// [`record_health`] would have written. Built through the real recorder
+    /// rather than by setting the fields, so a test cannot pin a combination
+    /// the health poll could never produce.
+    fn with_health(mut state: HostState, stale: Option<bool>, age: Option<u64>) -> HostState {
+        let info = wire::Health {
+            // The agent's own pairing: `/v1/health` answers "degraded" exactly
+            // when it sets `samplerStale` (agent/src/server.rs).
+            status: if stale == Some(true) {
+                "degraded".to_string()
+            } else {
+                "ok".to_string()
+            },
+            hostname: state.name.clone(),
+            version: "0.0.0-test".to_string(),
+            sample_age_seconds: age,
+            sampler_stale: stale,
+        };
+        record_health(&mut state, Ok(info));
+        state
+    }
+
+    fn live_state() -> HostState {
+        state_with(Some(fixture()), None, Some(Instant::now()))
     }
 
     fn shared(state: HostState) -> Arc<Mutex<HostState>> {
@@ -2932,6 +3121,188 @@ mod tests {
         ] {
             assert_eq!(view_for(&state)["id"], "id-test-host");
         }
+    }
+
+    // MARK: sampler staleness (#182)
+
+    /// The defect, exactly: every poll succeeds, so all four `(latest, error)`
+    /// states say "live" — while the agent is serving whatever its dead sampler
+    /// last produced, or `empty_snapshot()`'s zeros if it never produced one.
+    /// A green dot over that is the cockpit lying at its most confident.
+    #[test]
+    fn a_stalled_sampler_is_stale_not_live_even_though_every_poll_succeeded() {
+        let s = with_health(live_state(), Some(true), Some(300));
+        let vm = view_for(&s);
+
+        assert_eq!(vm["connection"]["state"], "stale");
+        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        let msg = vm["connection"]["message"].as_str().unwrap();
+        assert!(msg.contains("sampler"), "got {msg:?}");
+
+        // Dated by the AGENT's clock. This side's last successful request is a
+        // second old — the number that would make five-minute-old data read as
+        // current — so a badge saying anything but "5m" here is measuring the
+        // wrong thing.
+        assert!(msg.contains("5m ago"), "got {msg:?}");
+
+        // Real data, kept: the numbers are whatever last arrived, identical to
+        // what the live arm would have painted. Staleness changes the badge.
+        let live = view_for(&live_state());
+        assert_eq!(vm["cpuValue"], live["cpuValue"]);
+        assert_eq!(vm["cores"], live["cores"]);
+        assert_ne!(vm["connection"], live["connection"]);
+    }
+
+    /// Only `Some(true)` may redden a card. `Some(false)` is a healthy agent
+    /// and `None` is "no health poll has landed yet" — and a cockpit that
+    /// treated the second as a stall would paint every host red for the first
+    /// ten seconds after launch.
+    #[test]
+    fn a_healthy_or_unheard_from_sampler_leaves_the_card_live() {
+        for (stale, label) in [(Some(false), "healthy"), (None, "not yet heard from")] {
+            let s = with_health(live_state(), stale, Some(1));
+            assert_eq!(
+                view_for(&s)["connection"]["state"],
+                "live",
+                "a {label} sampler must not redden a card"
+            );
+        }
+        // …and the untouched state — no health poll at all — is the same case.
+        assert_eq!(view_for(&live_state())["connection"]["state"], "live");
+    }
+
+    /// The critical negative from #182: `/v1/health` is a second request to a
+    /// host whose data is arriving fine, and a probe nobody asked for must not
+    /// be able to redden the card. Whole-payload equality rather than a badge
+    /// check, because "changes nothing visible" is a claim about the entire
+    /// view-model — a failure that quietly blanked a figure would pass a
+    /// narrower assertion.
+    #[test]
+    fn a_failed_health_poll_changes_nothing_visible_while_snapshots_flow() {
+        let mut s = live_state();
+        let before = view_for(&s);
+
+        for err in [
+            AgentError::Unreachable("connection refused".into()),
+            AgentError::AuthFailed,
+            AgentError::HttpStatus(503),
+            AgentError::DecodeFailed("expected value".into()),
+        ] {
+            record_health(&mut s, Err(err));
+            assert_eq!(
+                view_for(&s),
+                before,
+                "a failed health poll repainted a card whose snapshots are fine"
+            );
+        }
+
+        // …and none of the snapshot loop's own state moved, so the *next*
+        // failed snapshot poll is still the first of its streak rather than the
+        // one that trips the debounce.
+        assert!(s.error.is_none());
+        assert_eq!(s.consecutive_failures, 0);
+        assert!(s.latest.is_some());
+    }
+
+    /// Withheld is not reset. A health poll that fails is not evidence the
+    /// sampler recovered, and putting the green dot back over frozen numbers on
+    /// the strength of a request we could not make would reintroduce the defect
+    /// on any flappy link.
+    #[test]
+    fn a_failed_health_poll_does_not_clear_a_known_stall() {
+        let mut s = with_health(live_state(), Some(true), Some(300));
+        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+
+        record_health(&mut s, Err(AgentError::Unreachable("blip".into())));
+        assert_eq!(
+            view_for(&s)["connection"]["state"],
+            "stale",
+            "a health poll we could not make said nothing about the sampler"
+        );
+
+        // Recovery arrives the one way it can: a health poll that lands and
+        // says so.
+        let s = with_health(s, Some(false), Some(1));
+        assert_eq!(view_for(&s)["connection"]["state"], "live");
+    }
+
+    /// When the link itself is down, the transport failure is the more
+    /// proximate cause *and* the fresher fact — `sampler_stale` is by then up
+    /// to a health cadence old. Naming the sampler would send an operator to
+    /// restart a daemon they cannot reach.
+    #[test]
+    fn a_poll_failure_names_the_link_even_when_the_sampler_was_last_seen_stalled() {
+        let s = with_health(
+            state_with(
+                Some(fixture()),
+                Some("Couldn't reach the agent. Check the host is up and the agent is running."),
+                Some(Instant::now()),
+            ),
+            Some(true),
+            Some(300),
+        );
+        let msg = view_for(&s)["connection"]["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+        assert!(msg.contains("Couldn't reach the agent"), "got {msg:?}");
+        assert!(!msg.contains("sampler"), "got {msg:?}");
+    }
+
+    /// A host with no snapshot has nothing to freeze, so a stalled sampler must
+    /// not conjure a card for it: "connecting" and "failed" are still the whole
+    /// truth, and inventing a data card here would be the zeros-behind-a-badge
+    /// version of the same bug.
+    #[test]
+    fn a_stalled_sampler_never_fabricates_a_card_for_a_host_with_no_snapshot() {
+        let connecting = with_health(state_with(None, None, None), Some(true), Some(300));
+        assert_eq!(view_for(&connecting)["connection"]["state"], "connecting");
+        assert!(view_for(&connecting).get("cpuValue").is_none());
+
+        let failed = with_health(
+            state_with(None, Some("Couldn't reach the agent."), None),
+            Some(true),
+            Some(300),
+        );
+        assert_eq!(view_for(&failed)["connection"]["state"], "failed");
+        assert!(view_for(&failed).get("cpuValue").is_none());
+    }
+
+    /// An agent too old to report the flag (pre-#35) must decode and be
+    /// believed about what it *did* say: nothing. It stays live, and if it is
+    /// ever reported stalled without an age the badge says "unknown" rather
+    /// than a fabricated `0s`.
+    #[test]
+    fn an_agent_that_reports_no_sampler_fields_is_not_treated_as_stalled() {
+        let quiet = with_health(live_state(), None, None);
+        assert_eq!(view_for(&quiet)["connection"]["state"], "live");
+
+        let ageless = with_health(live_state(), Some(true), None);
+        let msg = view_for(&ageless)["connection"]["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("last update unknown"), "got {msg:?}");
+        assert!(!msg.contains("0s ago"), "got {msg:?}");
+    }
+
+    /// The health poll is a second cadence over the same hosts, and its whole
+    /// justification is being cheap: at the snapshot cadence it would double
+    /// the cockpit's tailnet traffic to learn a flag that moves on the order of
+    /// minutes. It is also not the user's refresh interval — this is a
+    /// correctness probe, not a panel.
+    #[test]
+    fn the_health_poll_is_slower_than_the_snapshot_poll_and_is_not_the_users_interval() {
+        assert!(
+            HEALTH_POLL_INTERVAL > POLL_INTERVAL,
+            "a health probe on the metrics cadence is a request per host per second"
+        );
+        assert_eq!(HEALTH_POLL_INTERVAL.as_secs(), 10);
+        assert_ne!(
+            HEALTH_POLL_INTERVAL.as_secs(),
+            u64::from(store::settings::DEFAULT_REFRESH_INTERVAL_SECS)
+        );
     }
 
     // MARK: record_poll

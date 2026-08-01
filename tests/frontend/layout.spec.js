@@ -238,6 +238,44 @@ test("a host that fails after connecting keeps its last-known data, with an unmi
   await expect(page.locator(".staleMsg")).toContainText("ago");
 });
 
+test("a host whose agent stopped sampling loses the green dot even though every poll succeeded", async ({ page, baseURL }) => {
+  // Issue #182: the agent answers `/v1/snapshot` with whatever its sampler last
+  // produced -- or `empty_snapshot()`'s zeros before it ever produced one -- so
+  // every poll succeeds and nothing on the app's side can tell. Only the
+  // agent's own `/v1/health` (`samplerStale`) can, and the card must land on
+  // the SAME red badge a failed poll gets rather than a live green one over
+  // frozen numbers.
+  //
+  // Both fixtures come from the real binary (`--dump` / `--dump-sampler-stale`)
+  // over the identical snapshot, so this asserts the "only the badge changes"
+  // rule against a state whose badge nothing coordinator-side produced.
+  await stubCockpit(page, [
+    await fixture(baseURL, "sample.json"),
+    await fixture(baseURL, "sample-sampler-stale.json"),
+  ]);
+
+  await gotoApp(page);
+
+  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "live");
+  const cpuBefore = await page.locator(".cpuValue").textContent();
+  expect(cpuBefore).not.toBe("—");
+
+  // The app's own poll interval drives the second frame.
+  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "stale", { timeout: 5000 });
+
+  // Real data, kept.
+  expect(await page.locator(".cpuValue").textContent()).toBe(cpuBefore);
+
+  // The message names the agent rather than the link -- a stalled sampler and
+  // an unreachable host send an operator to different places.
+  await expect(page.locator(".staleMsg")).toContainText("sampler");
+  await expect(page.locator(".staleMsg")).not.toContainText("Couldn't reach");
+  // …dated by the agent's own clock (`sampleAgeSeconds`, 300 in the fixture).
+  // This side's last successful request is a second old, and a badge measuring
+  // that would say five-minute-old numbers are current.
+  await expect(page.locator(".staleMsg")).toContainText("5m ago");
+});
+
 test("every configured host gets its own card, in payload order", async ({ page, baseURL }) => {
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);

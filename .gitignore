@@ -107,6 +107,7 @@ crates/wire/tests/fixtures/snapshot-live.json
 # Frontend (Tauri app + Playwright tests)
 app/ui/sample.json
 app/ui/sample-stale.json
+app/ui/sample-sampler-stale.json
 app/ui/sample-cockpit.json
 app/ui/sample-cockpit-stacked.json
 app/ui/sample-cockpit-narrow.json
