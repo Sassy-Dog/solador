@@ -630,6 +630,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "devcanopy-azurecost"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "devcanopy-github"
 version = "0.1.0"
 dependencies = [
