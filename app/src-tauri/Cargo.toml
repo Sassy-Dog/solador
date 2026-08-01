@@ -18,10 +18,29 @@ devcanopy-store = { path = "../../crates/store" }
 # The Repos / GitHub Runners panels' data layer: the REST client plus the pure
 # workflow-health, runner and roster mappings. This crate is the view side.
 devcanopy-github = { path = "../../crates/github" }
+# This machine's own metrics, for the local host card that leads the grid. The
+# Swift app collects them through HostMetricsKit; this is the portable twin.
+devcanopy-localhost = { path = "../../crates/localhost" }
+# The Usage panel's three sources: Claude Code's local logs, Neon consumption,
+# Sentry event stats. This crate renders them.
+devcanopy-usage = { path = "../../crates/usage" }
+# The Azure Cost panel's reader — the SAS blob transport, the CSV fold, and the
+# fingerprint cache that keeps an unchanged export free.
+devcanopy-azurecost = { path = "../../crates/azurecost" }
 # The GitHub clocks are `DateTime<Utc>` (run start times, roster sightings), so
 # the panel layer speaks the same type rather than converting at every call.
-# Same feature set as crates/github's, so one chrono resolves for the workspace.
-chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+# Same pin as crates/github's, so one chrono resolves for the workspace.
+#
+# `clock` is on **here and nowhere else**: the Claude usage rollup's "today" is
+# a *local* calendar day (`usage::claude::local_day_start` takes the offset as an
+# argument precisely so the crates stay wall-clock-free), and this shell is the
+# layer that is allowed to read the machine. Every other clock in this crate
+# still comes from `panel::now_unix`, which is UTC.
+chrono = { version = "0.4", default-features = false, features = [
+  "std",
+  "serde",
+  "clock",
+] }
 # Locating `~/Repos` for the local branch/worktree scan. Already the store's
 # dependency for the platform config dir — a new edge, not a new package.
 dirs = { workspace = true }

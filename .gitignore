@@ -109,6 +109,7 @@ app/ui/sample.json
 app/ui/sample-stale.json
 app/ui/sample-cockpit.json
 app/ui/sample-cockpit-stacked.json
+app/ui/sample-cockpit-narrow.json
 app/ui/sample-cockpit-empty.json
 app/ui/sample-settings.json
 app/ui/sample-containers.json
@@ -117,6 +118,13 @@ app/ui/sample-repos.json
 app/ui/sample-repos-empty.json
 app/ui/sample-runners.json
 app/ui/sample-runners-empty.json
+app/ui/sample-usage.json
+app/ui/sample-usage-unmeasured.json
+app/ui/sample-usage-empty.json
+app/ui/sample-azure.json
+app/ui/sample-azure-fallback.json
+app/ui/sample-azure-error.json
+app/ui/sample-azure-empty.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/

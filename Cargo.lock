@@ -677,8 +677,11 @@ version = "0.1.0"
 dependencies = [
  "agentclient",
  "chrono",
+ "devcanopy-azurecost",
  "devcanopy-github",
+ "devcanopy-localhost",
  "devcanopy-store",
+ "devcanopy-usage",
  "devcanopy-wire",
  "dirs",
  "serde_json",

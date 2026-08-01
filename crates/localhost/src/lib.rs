@@ -370,6 +370,19 @@ impl LocalSampler {
     }
 }
 
+/// This machine's network host name, exactly as the platform reports it.
+///
+/// `None` when the platform declines to answer — an unknown name, not a guess
+/// at one, the same rule the rest of this crate follows. Cosmetic suffixes
+/// (macOS's `.local`) are left on: stripping them is a display decision, and
+/// the caller that paints the card is the one that owns it.
+#[must_use]
+pub fn host_name() -> Option<String> {
+    System::host_name()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
 /// The current instant as RFC3339/ISO-8601 UTC, e.g. `2026-06-04T22:00:00Z`.
 ///
 /// Byte-for-byte the agent's `now_rfc3339` (`agent/src/metrics.rs`), down to
@@ -498,6 +511,14 @@ mod tests {
 
         assert_eq!(wired.cpu.total_usage, 37.5);
         assert_eq!(wired.cpu.core_usages, vec![40.0, 35.0]);
+    }
+
+    /// Whatever this machine is called, the answer is never an empty or
+    /// whitespace-only string masquerading as a name — that would paint a
+    /// nameless card rather than admitting the name is unknown.
+    #[test]
+    fn the_host_name_is_either_absent_or_non_blank() {
+        assert!(host_name().is_none_or(|name| !name.is_empty() && name.trim() == name));
     }
 
     #[test]
