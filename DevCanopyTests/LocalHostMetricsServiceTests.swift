@@ -108,6 +108,30 @@ final class LocalHostMetricsServiceTests: XCTestCase {
         XCTAssertEqual(service.gpuHistory, [5, 0])
     }
 
+    /// #204: a host whose memory read failed has no usage percentage, so the
+    /// memory chart must not gain a point. A plotted `total * 0.5` would draw a
+    /// steady 50% line that looks exactly like a half-full machine.
+    func testUnreadMemoryIsNeverPlotted() {
+        let service = LocalHostMetricsService()
+        service.ingest(snapshot(cpu: 10, cores: [1])) // usedGB 8 / totalGB 32 = 25%
+        service.ingest(HostSnapshot(
+            timestamp: Date(),
+            cpu: CPUMetrics(totalUsage: 20, coreUsages: [2], model: "Test", thermalState: .nominal),
+            memory: MemoryMetrics(usedGB: nil, totalGB: 32, swapUsedGB: nil, pressure: nil),
+            disk: DiskMetrics(readMBps: 1, writeMBps: 2),
+            network: NetworkMetrics(downloadMBps: 3, uploadMBps: 4),
+            gpu: GPUMetrics(usage: 5, vramUsedGB: 1, vramTotalGB: 16),
+            battery: nil
+        ))
+        XCTAssertEqual(service.memoryHistory, [25], "the unread sample added nothing")
+        XCTAssertEqual(service.cpuHistory, [10, 20], "measured series keep growing alongside")
+        XCTAssertEqual(
+            service.lastUnmeasuredFields,
+            ["memory.usedGB", "memory.swapUsedGB", "memory.pressure"],
+            "and every dash is named in the log"
+        )
+    }
+
     /// The log line behind the em dashes fires on the transition, not per poll —
     /// a Linux host omits the same fields every second.
     func testUnmeasuredSetIsTrackedForTransitionOnlyLogging() {

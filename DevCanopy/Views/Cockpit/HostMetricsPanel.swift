@@ -184,12 +184,14 @@ struct HostMetricsPanel: View {
                 icon: "memorychip",
                 title: "Memory",
                 badge: nil,
-                value: "\(fmt(snap.memory.usedGB)) / \(Int(snap.memory.totalGB)) GB",
-                valueColor: CockpitTheme.ink
+                value: HostMetricLabels.memoryUsage(used: snap.memory.usedGB, total: snap.memory.totalGB),
+                valueColor: snap.memory.usedGB == nil ? CockpitTheme.muted : CockpitTheme.ink
             )
             percentChart(service.memoryHistory, color: memColor, height: 90)
             HStack {
-                Text("Swap: \(fmt(snap.memory.swapUsedGB)) GB")
+                // A failed VM-statistics read loses used, swap and pressure
+                // together, so all three go muted rather than one inventing a 0.
+                Text(HostMetricLabels.swap(snap.memory.swapUsedGB))
                 Spacer()
                 // Unmeasured pressure reads "—" in the muted tint: a green 0%
                 // is the exact fabrication this panel must not paint.
@@ -316,7 +318,7 @@ struct HostMetricsPanel: View {
                 Text(v.mount).font(CockpitTheme.mono(10, weight: .bold))
                     .foregroundStyle(CockpitTheme.ink).lineLimit(1)
                 Spacer()
-                Text("\(fmt(v.usedGB)) / \(fmt(v.totalGB)) GB · \(Int(pct.rounded()))%")
+                Text("\(HostMetricLabels.number(v.usedGB)) / \(HostMetricLabels.number(v.totalGB)) GB · \(Int(pct.rounded()))%")
                     .font(CockpitTheme.mono(9)).foregroundStyle(color)
             }
             GeometryReader { geo in
@@ -530,10 +532,6 @@ struct HostMetricsPanel: View {
     /// Formatting lives in `HostMetricLabels` — the same code that decides what
     /// an unmeasured value looks like — so a number's shape can't drift between
     /// the cells that can be unknown and the cells that can't.
-    private func fmt(_ v: Double) -> String {
-        HostMetricLabels.number(v)
-    }
-
     private func fmtAxis(_ v: Double) -> String {
         HostMetricLabels.axis(v)
     }

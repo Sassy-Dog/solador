@@ -29,9 +29,10 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertEqual(snap.cpu.coreUsages.count, 4)
         XCTAssertEqual(snap.cpu.model, "Apple M1 Max")
         XCTAssertEqual(snap.cpu.thermalState, .nominal) // 0
-        XCTAssertEqual(snap.memory.usedGB, 12.3, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(snap.memory.usedGB), 12.3, accuracy: 0.001)
         XCTAssertEqual(snap.memory.totalGB, 32.0, accuracy: 0.001)
-        XCTAssertEqual(snap.memory.usagePercentage, 12.3 / 32.0 * 100, accuracy: 0.001) // computed, not in JSON
+        // computed, not in JSON
+        XCTAssertEqual(try XCTUnwrap(snap.memory.usagePercentage), 12.3 / 32.0 * 100, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(snap.disk.readMBps), 1.2, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(snap.network.uploadMBps), 0.1, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(snap.gpu.usage), 0.0, accuracy: 0.001)
@@ -114,7 +115,7 @@ final class HostSnapshotWireContractTests: XCTestCase {
         XCTAssertFalse(snap.gpu.isPresent, "a GPU with no reported capacity is absent")
         // The measured fields around them are untouched.
         XCTAssertEqual(snap.cpu.totalUsage, 11.5, accuracy: 0.001)
-        XCTAssertEqual(snap.memory.usedGB, 5.5, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(snap.memory.usedGB), 5.5, accuracy: 0.001)
     }
 
     /// A whole object may be missing, not just its keys: an agent that measures
@@ -253,6 +254,65 @@ final class HostSnapshotWireContractTests: XCTestCase {
         )
         XCTAssertTrue(snap.gpu.isPresent)
         XCTAssertEqual(snap.unmeasuredFields, ["gpu.usage"])
+    }
+
+    // MARK: - Memory: a failed read is unknown, capacity survives (#204)
+
+    /// The shape the local collector produces when `host_statistics64` fails:
+    /// used, swap and pressure are gone together (one call produced all three)
+    /// while capacity, read from `ProcessInfo`, is still a measurement. All three
+    /// losses are named, so the em dashes the card paints are diagnosable.
+    func testLocallyUnreadMemoryNamesEveryFieldItLost() {
+        let snap = HostSnapshot(
+            timestamp: Date(),
+            cpu: CPUMetrics(totalUsage: 3, coreUsages: [3], model: "x", thermalState: .nominal),
+            memory: MemoryMetrics(usedGB: nil, totalGB: 32, swapUsedGB: nil, pressure: nil),
+            disk: DiskMetrics(readMBps: 0, writeMBps: 0),
+            network: NetworkMetrics(downloadMBps: 0, uploadMBps: 0),
+            gpu: GPUMetrics(usage: 0, vramUsedGB: 1, vramTotalGB: 24),
+            battery: nil
+        )
+        XCTAssertEqual(snap.unmeasuredFields, ["memory.usedGB", "memory.swapUsedGB", "memory.pressure"])
+        XCTAssertNil(snap.memory.usagePercentage, "no reading, no percentage — and so nothing to plot")
+        XCTAssertEqual(snap.memory.totalGB, 32, "capacity came from elsewhere and survived")
+    }
+
+    /// Receive-side tolerance, matching `thermalState`'s: a payload missing those
+    /// keys yields "—" rather than sinking an otherwise-healthy host into "decode
+    /// failed". `crates/wire` still requires them; no shipping agent omits them.
+    func testOmittedMemoryReadingsDecodeToUnknownAndReEncodeOmitted() throws {
+        let json = """
+        {
+          "timestamp": "2026-06-04T22:00:00Z",
+          "cpu": { "totalUsage": 1.0, "coreUsages": [1.0], "model": "x", "thermalState": 0 },
+          "memory": { "totalGB": 8.0 }
+        }
+        """
+        let snap = try RemoteHostMetricsService.snapshotDecoder.decode(
+            HostSnapshot.self, from: Data(json.utf8)
+        )
+        XCTAssertNil(snap.memory.usedGB)
+        XCTAssertNil(snap.memory.swapUsedGB)
+        XCTAssertEqual(snap.memory.totalGB, 8.0, accuracy: 0.001, "capacity is still required")
+        XCTAssertEqual(snap.cpu.totalUsage, 1.0, accuracy: 0.001, "the rest of the host still decodes")
+
+        let root = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(snap)) as? [String: Any]
+        )
+        let memory = try XCTUnwrap(root["memory"] as? [String: Any])
+        XCTAssertNil(memory["usedGB"], "an unread figure is omitted, not null")
+        XCTAssertNil(memory["swapUsedGB"])
+        XCTAssertNotNil(memory["totalGB"])
+    }
+
+    /// The distinction the Optionals exist for, on the memory row: a machine
+    /// using no swap is not a machine that failed to read swap.
+    func testMeasuredZeroSwapIsDistinctFromAnUnreadOne() {
+        let idle = MemoryMetrics(usedGB: 0, totalGB: 32, swapUsedGB: 0, pressure: 0)
+        let blind = MemoryMetrics(usedGB: nil, totalGB: 32, swapUsedGB: nil, pressure: nil)
+        XCTAssertEqual(idle.usagePercentage, 0, "a machine using no memory reports 0%, not unknown")
+        XCTAssertNil(blind.usagePercentage)
+        XCTAssertNotEqual(idle, blind)
     }
 
     // MARK: - Shared unknowns contract fixture

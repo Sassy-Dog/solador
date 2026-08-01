@@ -45,6 +45,39 @@ final class HostMetricLabelsTests: XCTestCase {
         XCTAssertEqual(HostMetricLabels.processMemory(2150), "2.1 GB")
     }
 
+    // MARK: - Memory: an unread reading dashes, capacity keeps rendering (#204)
+
+    func testUnreadMemoryDashesButStillReportsCapacity() {
+        XCTAssertEqual(
+            HostMetricLabels.memoryUsage(used: nil, total: 32),
+            "\(dash) / 32 GB",
+            "the failed read didn't take away how much RAM the machine has"
+        )
+        XCTAssertEqual(HostMetricLabels.swap(nil), "Swap: \(dash)", "no unit on a number nobody has")
+    }
+
+    func testMeasuredMemoryRendersItsNumbersIncludingZero() {
+        XCTAssertEqual(HostMetricLabels.memoryUsage(used: 12.34, total: 32), "12.3 / 32 GB")
+        XCTAssertEqual(HostMetricLabels.memoryUsage(used: 0, total: 32), "0.0 / 32 GB", "an idle machine reports 0")
+        XCTAssertEqual(HostMetricLabels.swap(0), "Swap: 0.0 GB", "an unused swap file is a measurement")
+        XCTAssertEqual(HostMetricLabels.swap(1.5), "Swap: 1.5 GB")
+    }
+
+    /// The whole memory row of a host whose VM-statistics read failed: three
+    /// dashes and one surviving capacity — never the `total * 0.5` the collector
+    /// used to invent (which would have painted a confident "16.0 / 32 GB").
+    func testAFailedMemoryReadPaintsDashesNotHalfOfTotal() {
+        let blind = MemoryMetrics(usedGB: nil, totalGB: 32, swapUsedGB: nil, pressure: nil)
+        XCTAssertEqual(HostMetricLabels.memoryUsage(used: blind.usedGB, total: blind.totalGB), "\(dash) / 32 GB")
+        XCTAssertEqual(HostMetricLabels.swap(blind.swapUsedGB), "Swap: \(dash)")
+        XCTAssertEqual(HostMetricLabels.percent(blind.pressure), dash)
+        XCTAssertNotEqual(
+            HostMetricLabels.memoryUsage(used: blind.usedGB, total: blind.totalGB),
+            "16.0 / 32 GB",
+            "the fabrication this issue exists to kill"
+        )
+    }
+
     // MARK: - GPU: presence decides, usage doesn't
 
     func testAbsentGPURendersUnknownNeverZero() {

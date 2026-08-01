@@ -173,14 +173,18 @@ DevCanopy/
   local-machine metrics come from `Packages/HostMetricsKit`.
 - Container discovery: `Services/Containers/`.
 - **Unknown is representable.** Every metric a producer may not be able to measure
-  (memory pressure, thermal state, the GPU fields, disk/network rates) is an
-  Optional in `HostSnapshot.swift`, mirroring the `Option` in `crates/wire`: an
+  (memory used/swap/pressure, thermal state, the GPU fields, disk/network rates) is
+  an Optional in `HostSnapshot.swift`, mirroring the `Option` in `crates/wire`: an
   absent key decodes to `nil`, `nil` re-encodes as an *omitted* key, and `0` means
   measured zero. `HostMetricLabels` is the one place `nil` becomes "—"; unmeasured
   samples never enter a history buffer, and `HostSnapshot.unmeasuredFields` is
   logged on change so every em dash is diagnosable. Known limit: agents predating
   #183 send literal zeros, which decode as measurements — only the agent can fix
   that.
+- **Local collection is unknown-first too**, not just the wire: `MemorySampler`
+  and `ProcessDiskIOSampler` return `nil` for a reading the kernel declined, and
+  log the failure on the *transition* rather than once per 1 Hz poll. Capacity
+  figures (`memory.totalGB`) come from infallible sources and stay non-Optional.
 
 ### Git worktrees & branches
 - `Services/GitMonitor/` parses git/worktree state without modifying files
