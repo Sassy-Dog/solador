@@ -27,17 +27,100 @@ final class HostMetricsCollectorTests: XCTestCase {
         }
     }
 
-    func testMemoryUsedDoesNotExceedTotal() async {
+    func testMemoryUsedDoesNotExceedTotal() async throws {
         let collector = HostMetricsCollector()
         let snapshot = await collector.collectSnapshot()
 
         XCTAssertGreaterThan(snapshot.memory.totalGB, 0, "Total memory must be positive")
-        XCTAssertGreaterThanOrEqual(snapshot.memory.usedGB, 0)
-        XCTAssertLessThanOrEqual(
-            snapshot.memory.usedGB,
-            snapshot.memory.totalGB,
-            "Used memory must not exceed total"
+        let used = try XCTUnwrap(snapshot.memory.usedGB, "a machine whose mach read works reports a number")
+        XCTAssertGreaterThanOrEqual(used, 0)
+        XCTAssertLessThanOrEqual(used, snapshot.memory.totalGB, "Used memory must not exceed total")
+    }
+
+    // MARK: - Memory: a failed read is unknown, never invented (#204)
+
+    private var sampleReading: MemoryReading {
+        MemoryReading(usedGB: 12.0, totalGB: 32.0, swapUsedGB: 0.5, pressure: 7.0)
+    }
+
+    private var readFailure: MonitoringResult<MemoryReading> {
+        .failure(.ioKitError(KERN_FAILURE, "host_statistics64"))
+    }
+
+    /// The bug: a failed `host_statistics64` used to publish
+    /// `usedMemory = totalMemory * 0.5` with swap and pressure defaulted to 0 —
+    /// a whole memory panel invented from a constant. Every figure that read
+    /// would have produced is now unknown.
+    func testFailedMemoryReadIsUnknownNotHalfOfTotal() {
+        let failure = readFailure
+        let monitor = SystemMonitorV2(memoryReader: { failure })
+
+        let data = monitor.getMemoryData()
+
+        XCTAssertNil(data.usedMemory, "never total * 0.5")
+        XCTAssertNil(data.swapUsed, "swap came from the same failed read")
+        XCTAssertNil(data.pressure, "so did pressure")
+        XCTAssertNil(data.usagePercentage, "and nothing downstream can derive a percentage from nothing")
+        // Capacity comes from ProcessInfo, a different and infallible source, so
+        // the failure does not take it away.
+        XCTAssertEqual(
+            data.totalMemory,
+            Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824,
+            accuracy: 0.001,
+            "physical memory is still measured"
         )
+    }
+
+    /// The other half: a real reading is passed through untouched, and a real
+    /// zero stays zero rather than being mistaken for the unknown case.
+    func testSuccessfulMemoryReadPassesThroughIncludingRealZeros() throws {
+        let reading = sampleReading
+        let monitor = SystemMonitorV2(memoryReader: { .success(reading) })
+
+        let data = monitor.getMemoryData()
+
+        XCTAssertEqual(try XCTUnwrap(data.usedMemory), 12.0, accuracy: 0.001)
+        XCTAssertEqual(data.totalMemory, 32.0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(data.swapUsed), 0.5, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(data.pressure), 7.0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(data.usagePercentage), 12.0 / 32.0 * 100, accuracy: 0.001)
+
+        let idleReading = MemoryReading(usedGB: 0, totalGB: 32, swapUsedGB: 0, pressure: 0)
+        let idle = SystemMonitorV2(memoryReader: { .success(idleReading) })
+        let idleData = idle.getMemoryData()
+        XCTAssertEqual(try XCTUnwrap(idleData.swapUsed), 0.0, "an unused swap file is a measurement")
+        XCTAssertEqual(try XCTUnwrap(idleData.pressure), 0.0, "so is an idle machine's pressure")
+        XCTAssertEqual(try XCTUnwrap(idleData.usagePercentage), 0.0)
+    }
+
+    /// Collection runs at 1 Hz and a broken mach call fails every tick, so the
+    /// failure is logged on the transition — the same rule the unmeasured-fields
+    /// log follows. This asserts the state that gates it.
+    func testMemoryFailureIsRecordedOnTransitionOnly() {
+        final class Switch {
+            var failing = false
+        }
+        let toggle = Switch()
+        let reading = sampleReading
+        let failure = readFailure
+        let monitor = SystemMonitorV2(memoryReader: {
+            toggle.failing ? failure : .success(reading)
+        })
+
+        _ = monitor.getMemoryData()
+        XCTAssertFalse(monitor.memoryReadIsFailing, "a working read has nothing to report")
+
+        toggle.failing = true
+        _ = monitor.getMemoryData()
+        XCTAssertTrue(monitor.memoryReadIsFailing, "the first failure is the one that logs")
+        _ = monitor.getMemoryData()
+        XCTAssertTrue(monitor.memoryReadIsFailing, "still failing — no second line")
+
+        toggle.failing = false
+        _ = monitor.getMemoryData()
+        XCTAssertFalse(monitor.memoryReadIsFailing, "recovery clears it, and logs once")
+        _ = monitor.getMemoryData()
+        XCTAssertFalse(monitor.memoryReadIsFailing)
     }
 
     func testThermalStateIsPopulated() async {

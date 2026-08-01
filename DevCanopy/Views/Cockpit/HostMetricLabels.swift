@@ -49,6 +49,21 @@ enum HostMetricLabels {
         megabytes >= 1024 ? "\(number(megabytes / 1024)) GB" : "\(Int(megabytes.rounded())) MB"
     }
 
+    /// The Memory header value. Capacity is always measured, so an unreadable
+    /// `used` blanks only its own half — "— / 32 GB" still says how much RAM the
+    /// machine has, which is a fact the failed read didn't take away.
+    static func memoryUsage(used: Double?, total: Double) -> String {
+        "\(number(used)) / \(Int(total)) GB"
+    }
+
+    /// The swap footer. Collapses to a bare "—" when unread rather than "— GB",
+    /// which would attach a unit to a number nobody has — the same call
+    /// ``vram(_:)`` makes for an absent adapter.
+    static func swap(_ gb: Double?) -> String {
+        guard let gb else { return "Swap: \(unknown)" }
+        return "Swap: \(number(gb)) GB"
+    }
+
     /// The Graphics header value. A host with no adapter is unknown outright —
     /// asking `isPresent` rather than re-deriving it keeps this in step with the
     /// producer — and a present-but-unreadable usage blanks only itself.

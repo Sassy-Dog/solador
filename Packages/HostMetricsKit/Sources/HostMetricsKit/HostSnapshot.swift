@@ -4,7 +4,8 @@ import Foundation
 ///
 /// # Unknown is representable
 ///
-/// Every field a producer may be unable to measure — ``MemoryMetrics/pressure``,
+/// Every field a producer may be unable to measure — ``MemoryMetrics``'
+/// ``MemoryMetrics/usedGB``/``MemoryMetrics/swapUsedGB``/``MemoryMetrics/pressure``,
 /// ``CPUMetrics/thermalState``, the ``GPUMetrics`` fields and the
 /// ``DiskMetrics``/``NetworkMetrics`` rates — is an Optional, mirroring the
 /// `Option` the Rust wire contract carries for it (`crates/wire/src/lib.rs`).
@@ -71,6 +72,8 @@ public struct HostSnapshot: Sendable, Codable, Equatable {
     public var unmeasuredFields: [String] {
         var out: [String] = []
         if cpu.thermalState == nil { out.append("cpu.thermalState") }
+        if memory.usedGB == nil { out.append("memory.usedGB") }
+        if memory.swapUsedGB == nil { out.append("memory.swapUsedGB") }
         if memory.pressure == nil { out.append("memory.pressure") }
         if disk.readMBps == nil { out.append("disk.readMBps") }
         if disk.writeMBps == nil { out.append("disk.writeMBps") }
@@ -244,29 +247,73 @@ public enum ThermalState: Int, Sendable, Codable {
     case critical
 }
 
+/// A host's memory reading. Every figure a producer derives from its kernel's VM
+/// statistics is Optional, because that read can fail as a unit: macOS's local
+/// collector loses used, swap and pressure together when `host_statistics64`
+/// declines (#204), and Linux never had a pressure figure to begin with (#192).
+///
+/// `totalGB` is deliberately **not** Optional: physical memory comes from a
+/// separate, infallible source on every platform that reports a host at all, so
+/// there is no failure that leaves a host with an unknown capacity.
+///
+/// Decoding is one-sidedly tolerant, matching ``CPUMetrics``' thermal state: an
+/// absent `usedGB`/`swapUsedGB` yields `nil` rather than sinking an otherwise
+/// healthy host into "decode failed", and `nil` re-encodes as an omitted key.
+/// The wire contract itself is unchanged — `crates/wire`'s `Memory` still
+/// *requires* those keys and every shipping agent sends them; this is receive-side
+/// generosity, and the worst it can produce is an em dash.
 public struct MemoryMetrics: Sendable, Codable, Equatable {
-    public let usedGB: Double
+    /// Used memory in GB. `nil` when the producer's VM statistics read failed.
+    public let usedGB: Double?
+    /// Total physical memory in GB — always measured. See the type's docs.
     public let totalGB: Double
-    public let swapUsedGB: Double
+    /// Swap in use in GB. `nil` for the same reason as ``usedGB``.
+    public let swapUsedGB: Double?
     /// Memory pressure, 0–100. `nil` where the platform has no such figure —
     /// Linux again. A defaulted `0` paints a permanently green pressure badge,
     /// which is the fabrication this Optional exists to stop.
     public let pressure: Double?
 
-    public var usagePercentage: Double {
-        totalGB > 0 ? usedGB / totalGB * 100 : 0
+    /// Used memory as a percentage of total, or `nil` when there is nothing to
+    /// compute it from. A percentage of an unmeasured figure is a fabrication,
+    /// and it would be plotted — so the history buffers must be able to skip it.
+    public var usagePercentage: Double? {
+        guard let usedGB, totalGB > 0 else { return nil }
+        return usedGB / totalGB * 100
     }
 
     public init(
-        usedGB: Double,
+        usedGB: Double?,
         totalGB: Double,
-        swapUsedGB: Double,
+        swapUsedGB: Double?,
         pressure: Double?
     ) {
         self.usedGB = usedGB
         self.totalGB = totalGB
         self.swapUsedGB = swapUsedGB
         self.pressure = pressure
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case usedGB, totalGB, swapUsedGB, pressure
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        usedGB = try c.decodeIfPresent(Double.self, forKey: .usedGB)
+        totalGB = try c.decode(Double.self, forKey: .totalGB)
+        swapUsedGB = try c.decodeIfPresent(Double.self, forKey: .swapUsedGB)
+        pressure = try c.decodeIfPresent(Double.self, forKey: .pressure)
+    }
+
+    /// Encode omits an unmeasured figure rather than emitting `null`, so a
+    /// round-trip re-emits the payload's own shape.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(usedGB, forKey: .usedGB)
+        try c.encode(totalGB, forKey: .totalGB)
+        try c.encodeIfPresent(swapUsedGB, forKey: .swapUsedGB)
+        try c.encodeIfPresent(pressure, forKey: .pressure)
     }
 }
 

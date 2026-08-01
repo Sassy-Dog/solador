@@ -23,7 +23,10 @@ import os
 /// it is in fact safe. We capture it once into this immutable global and route
 /// every call site through it. `mach_port_t` is `Sendable`, so the immutable
 /// `let` needs no concurrency annotation.
-private let machTaskSelf: mach_port_t = mach_task_self_
+///
+/// Package-internal rather than file-private because `MemorySampler` makes the
+/// same mach calls; one capture, one call site rule, for both.
+let machTaskSelf: mach_port_t = mach_task_self_
 
 // MARK: - Safe System Monitor with Comprehensive Error Handling
 
@@ -35,6 +38,16 @@ class SystemMonitorV2 {
     private var metalDevice: MTLDevice?
     private let gpuMonitor = GPUMonitor()
 
+    /// Memory sampling and its transition-only failure logging — see
+    /// `MemorySampler`.
+    private var memorySampler: MemorySampler
+
+    /// Whether the last memory read failed. Exposed for tests, which assert the
+    /// state that gates the log rather than the log line itself.
+    var memoryReadIsFailing: Bool {
+        memorySampler.isFailing
+    }
+
     /// Process CPU tracking for percentage calculation
     private var previousProcessCPUTimes: [pid_t: UInt64] = [:]
 
@@ -43,7 +56,10 @@ class SystemMonitorV2 {
 
     private var lastProcessUpdateTime = Date()
 
-    init() {
+    /// - Parameter memoryReader: overrides the live mach read. Tests pass a stub
+    ///   to drive the failure path; production uses the default.
+    init(memoryReader: @escaping () -> MonitoringResult<MemoryReading> = MemorySampler.readKernelCounters) {
+        memorySampler = MemorySampler(read: memoryReader)
         metalDevice = MTLCreateSystemDefaultDevice()
     }
 
@@ -75,26 +91,10 @@ class SystemMonitorV2 {
         return cpuData
     }
 
+    /// Collects the host's memory reading, or marks it unknown when the kernel
+    /// declines to give one — see `MemorySampler`.
     func getMemoryData() -> MemoryData {
-        var memoryData = MemoryData()
-
-        switch getMemoryInfo() {
-        case let .success(info):
-            memoryData.usedMemory = info.used
-            memoryData.totalMemory = info.total
-            memoryData.swapUsed = info.swapUsed
-            memoryData.pressure = info.pressure
-        case let .failure(error):
-            Logger.monitor.error("Memory monitoring failed: \(error.localizedDescription)")
-            // Use sensible defaults
-            let totalMemory = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
-            memoryData.totalMemory = totalMemory
-            memoryData.usedMemory = totalMemory * 0.5 // Assume 50% usage
-            memoryData.swapUsed = 0.0
-            memoryData.pressure = 0.0
-        }
-
-        return memoryData
+        memorySampler.sample()
     }
 
     func getDiskData() -> DiskData {
@@ -502,50 +502,6 @@ class SystemMonitorV2 {
             .trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
             ?? "Unknown"
         return .success(cpuModel)
-    }
-
-    // MARK: - Private Memory Methods
-
-    private func getMemoryInfo() -> MonitoringResult<(used: Double, total: Double, swapUsed: Double, pressure: Double)> {
-        // Get physical memory
-        let physicalMemory = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
-
-        // Get VM statistics
-        var vmInfo = vm_statistics64()
-        var vmInfoSize = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<natural_t>.size)
-        let hostPort = mach_host_self()
-        defer { mach_port_deallocate(machTaskSelf, hostPort) }
-
-        let vmResult = withUnsafeMutablePointer(to: &vmInfo) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(vmInfoSize)) {
-                host_statistics64(hostPort, HOST_VM_INFO64, $0, &vmInfoSize)
-            }
-        }
-
-        guard vmResult == KERN_SUCCESS else {
-            return .failure(.ioKitError(vmResult, "host_statistics64"))
-        }
-
-        let pageSize: Double = {
-            var size = vm_size_t()
-            let hostPort = mach_host_self()
-            host_page_size(hostPort, &size)
-            return Double(size)
-        }()
-        let usedPages = Double(vmInfo.active_count + vmInfo.wire_count)
-        let usedMemory = (usedPages * pageSize) / 1_073_741_824
-        let swapUsed = Double(vmInfo.swapouts) * pageSize / 1_073_741_824
-
-        // Calculate pressure safely
-        let compressions = Double(vmInfo.compressions)
-        let decompressions = Double(vmInfo.decompressions)
-        let pressure: Double = if compressions > 0 {
-            ((compressions - decompressions) / compressions) * 100
-        } else {
-            0
-        }
-
-        return .success((usedMemory, physicalMemory, swapUsed, pressure.clamped(to: 0 ... 100)))
     }
 
     // MARK: - Private Disk Methods

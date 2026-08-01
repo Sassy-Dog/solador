@@ -63,31 +63,41 @@ struct CPUData {
 /// Memory performance data including usage, pressure, and swap information
 ///
 /// Tracks physical memory usage, swap usage, and memory pressure metrics.
+///
+/// Everything derived from the kernel's VM statistics is Optional, because that
+/// one `host_statistics64` call is the only source for all of it and it can fail.
+/// `nil` is *unknown*; a defaulted number would be a whole invented memory panel
+/// — which is exactly what the failure path used to paint (`total * 0.5`).
+/// `totalMemory` is the exception: `ProcessInfo.physicalMemory` is an
+/// independent, infallible read, so it stays a measurement even when the VM call
+/// fails. It carries **no default** for the same reason `ProcessItem`'s disk
+/// rates don't: a default is a fake-zero trap at the type level.
 struct MemoryData {
-    /// Used memory in GB
-    var usedMemory = 0.0
+    /// Used memory in GB, or `nil` when the VM statistics read failed.
+    var usedMemory: Double?
 
-    /// Total available memory in GB
-    var totalMemory = 16.0
+    /// Total physical memory in GB. Always measured — see the type's docs.
+    var totalMemory: Double
 
-    /// Swap memory in use in GB
-    var swapUsed = 0.0
+    /// Swap memory in use in GB, or `nil` when the VM statistics read failed.
+    var swapUsed: Double?
 
-    /// Memory pressure (0-100, higher means more pressure)
-    var pressure = 0.0
+    /// Memory pressure (0-100, higher means more pressure), or `nil` when the VM
+    /// statistics read failed.
+    var pressure: Double?
 
     /// Historical memory usage percentages for charting
     var history = CircularBuffer<Double>(capacity: 300)
-
-    init() {}
 
     mutating func addHistoryPoint(_ value: Double) {
         history.append(value)
     }
 
-    /// Calculated memory usage percentage
-    var usagePercentage: Double {
-        totalMemory > 0 ? (usedMemory / totalMemory) * 100 : 0
+    /// Calculated memory usage percentage, or `nil` when there is no reading to
+    /// compute it from — a percentage of an unmeasured figure is a fabrication.
+    var usagePercentage: Double? {
+        guard let usedMemory, totalMemory > 0 else { return nil }
+        return (usedMemory / totalMemory) * 100
     }
 }
 

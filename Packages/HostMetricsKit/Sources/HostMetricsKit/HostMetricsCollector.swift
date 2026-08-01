@@ -43,6 +43,8 @@ public actor HostMetricsCollector {
             thermalState: thermalState
         )
 
+        // Unknowns pass straight through: a failed VM-statistics read leaves
+        // used/swap/pressure nil all the way to the card's "—" (#204).
         let memory = MemoryMetrics(
             usedGB: memoryData.usedMemory,
             totalGB: memoryData.totalMemory,
