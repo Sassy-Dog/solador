@@ -15,6 +15,10 @@ agentclient = { path = "../../crates/agentclient" }
 # crate reaches the OS credential store through `store::KeyringStore`, so
 # there is one spelling of the service/account naming, not two.
 devcanopy-store = { path = "../../crates/store" }
+# Host ids arrive from the webview as strings; this parses them back into the
+# type `store::Host` keys on. Same major as the store's own, so one uuid
+# resolves for the workspace.
+uuid = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tauri = "2"
 serde_json = { workspace = true }

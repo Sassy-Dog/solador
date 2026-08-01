@@ -9,9 +9,35 @@
   <!-- The Hosts panel. Its title comes from Rust's panel table, like every
        other string on the page; the grid's column count comes from the same
        payload's `hostColumns`. -->
-  <h1 class="panel-title" id="hostsTitle"></h1>
-  <p class="empty" id="emptyMsg"></p>
-  <div class="cockpit" id="cockpit"></div>
+  <div id="cockpitView">
+    <div class="topbar">
+      <h1 class="panel-title" id="hostsTitle"></h1>
+      <span class="grow"></span>
+      <!-- Hidden until the cockpit payload supplies its label: a button that
+           renders before Rust has named it would be a string this file
+           invented. -->
+      <button class="btn" id="settingsToggle" type="button" hidden></button>
+    </div>
+    <p class="empty" id="emptyMsg"></p>
+    <div class="cockpit" id="cockpit"></div>
+  </div>
+
+  <!-- Settings. An in-app view, not a second window: a window would need
+       `core:webview:allow-create-webview-window` granted to the webview,
+       widening the one seam with no automated coverage (#123), and this needs
+       no ACL surface at all. Every control below is built by settings.js from
+       the `settings_view` payload -- there is no static copy of any label
+       here, for the same reason the cockpit has none. -->
+  <section class="settings" id="settings" hidden>
+    <div class="topbar">
+      <h1 class="panel-title" id="settingsTitle"></h1>
+      <span class="grow"></span>
+      <span class="status" id="settingsStatus" role="status"></span>
+      <button class="btn" id="settingsClose" type="button"></button>
+    </div>
+    <nav class="tabs" id="settingsTabs"></nav>
+    <div class="settings-body" id="settingsBody"></div>
+  </section>
 
   <!-- One card per host, cloned from here. Hooks are classes, not ids: with N
        hosts on the page an id would be duplicated N times, which makes
@@ -79,6 +105,10 @@
       </div>
     </div>
   </template>
+  <!-- Order matters: settings.js reads `esc`, `callRust` and `refreshCockpit`
+       from app.js's top-level lexical scope (shared across classic scripts),
+       and wires its own listeners once app.js has defined them. -->
   <script src="app.js"></script>
+  <script src="settings.js"></script>
 </body>
 </html>

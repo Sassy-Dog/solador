@@ -626,6 +626,7 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "tokio",
+ "uuid",
  "viewmodel",
 ]
 

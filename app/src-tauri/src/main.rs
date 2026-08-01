@@ -5,9 +5,14 @@ use agentclient::{AgentClient, AgentError};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use store::{CredentialStore, Host, KeyringStore, SecretKey, Store, StoreError};
+use store::{CredentialStore, Host, KeyringStore, SecretKey, Store, StoreError, TrackedRepo};
+use uuid::Uuid;
 use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending};
 use viewmodel::cockpit::{host_columns, panel_table, HOST_CARD_MIN_WIDTH, SPACING};
+
+mod settings;
+
+use settings::{SecretField, StoredSecrets};
 
 /// How often each host is polled. Matches the Swift side's
 /// `RemoteHostMetricsService.start(interval:)` default of 1s, which is also
@@ -45,13 +50,45 @@ struct HostState {
     consecutive_failures: u32,
 }
 
-/// Every watched host, each behind its own lock.
+/// What identifies a poll task's *subject*: which host, on which endpoint.
 ///
-/// Per-host locks, not one lock over the list: a poll that is mid-flight to an
-/// unreachable host must not be able to hold up the `cockpit` command or any
-/// other host's tick. That isolation is the whole point of one task per host.
-struct Cockpit {
-    hosts: Vec<Arc<Mutex<HostState>>>,
+/// The endpoint is part of the identity because a task that keeps polling the
+/// old address after an edit is a task reporting on the wrong machine — under
+/// the right host's name, which is the worst version of that bug.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostKey {
+    id: Uuid,
+    base_url: String,
+}
+
+/// One host's live poll task and the state it writes into.
+struct PolledHost {
+    key: HostKey,
+    state: Arc<Mutex<HostState>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// Everything a command can reach: the persisted configuration, the credential
+/// store, and the live poll set.
+///
+/// Per-host locks inside the poll set, not one lock over everything: a poll
+/// that is mid-flight to an unreachable host must not be able to hold up the
+/// `cockpit` command or any other host's tick. That isolation is the whole
+/// point of one task per host.
+struct App {
+    /// The store file, in memory. Every command that mutates it saves before
+    /// returning, so "applied" and "persisted" are the same event.
+    store: Mutex<Store>,
+    /// The OS credential store. Boxed as a trait object so the command layer
+    /// can be exercised against `MemoryCredentialStore` in tests without
+    /// prompting for a keychain unlock.
+    credentials: Box<dyn CredentialStore + Send + Sync>,
+    /// The poll set, in cockpit display order.
+    hosts: Mutex<Vec<PolledHost>>,
+    /// Where poll tasks are spawned. A `Handle`, not the `Runtime`: the
+    /// runtime itself stays owned by `main`, so it can never be dropped from
+    /// inside a command (dropping a runtime from an async context panics).
+    runtime: tokio::runtime::Handle,
 }
 
 /// The whole `(latest, error)` -> view-model decision, pulled out of the
@@ -127,6 +164,12 @@ fn cockpit_payload(cards: Vec<Value>, available: f64) -> Value {
         "spacing": SPACING,
         "panels": panel_table(),
         "empty": empty,
+        // The Settings surface is opened from the cockpit, so its button's
+        // label has to arrive before anything has asked for the settings
+        // payload. Same rule as every other string on the page: made in Rust,
+        // and in exactly one place -- `settings::OPEN_LABEL` is what the
+        // Settings view itself renders too.
+        "settingsLabel": settings::OPEN_LABEL,
     })
 }
 
@@ -175,11 +218,202 @@ fn record_missing_token(s: &mut HostState) {
     s.error = Some("No agent token configured for this host. Add one in Settings.".to_string());
 }
 
+/// One host's poll loop: tick, poll, record. Lifted out of the spawn site so
+/// [`spawn_host`] reads as "make the state, start the loop" and the loop's own
+/// rules (the tick behaviour, the missing-token short-circuit) sit together.
+///
+/// No lock is ever held across the `await`, which is what lets a slow poll on
+/// one host leave every other host — and the `cockpit` command — untouched.
+async fn poll_loop(state: Arc<Mutex<HostState>>, client: AgentClient, token_configured: bool) {
+    let mut tick = tokio::time::interval(POLL_INTERVAL);
+    // `interval`'s default (`Burst`) fires every missed tick back-to-back the
+    // moment a slow poll releases the executor -- and the client timeout (5s,
+    // agentclient) exceeds this period, so one slow poll can trigger several
+    // polls in a row. The charts equate one history sample with one fixed time
+    // slice (PX_PER_SAMPLE), so a burst silently compresses the time axis
+    // instead of just running late. `Delay` waits a full period from
+    // completion instead, so a slow poll shifts later polls rather than
+    // bunching them.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if !token_configured {
+            record_missing_token(&mut state.lock().expect("host state poisoned"));
+            continue;
+        }
+        let result = client.snapshot().await;
+        let at = Instant::now();
+        record_poll(&mut state.lock().expect("host state poisoned"), result, at);
+    }
+}
+
+/// Which existing poll task each desired host should keep, or `None` when it
+/// needs a new one. Existing indices that appear nowhere in the result are the
+/// ones whose task must be aborted.
+///
+/// Pulled out as a pure function over keys because this is the whole of
+/// "settings apply without a restart": adding host B must not restart host A's
+/// task, because restarting it throws away the sparkline history that makes
+/// the card worth looking at. A reload that just rebuilt the list would pass
+/// every test that only checks *which* hosts are polled.
+fn reconcile(existing: &[HostKey], desired: &[HostKey]) -> Vec<Option<usize>> {
+    let mut taken = vec![false; existing.len()];
+    let mut plan = Vec::with_capacity(desired.len());
+    for want in desired {
+        let found = existing
+            .iter()
+            .enumerate()
+            .find(|(index, have)| !taken[*index] && *have == want)
+            .map(|(index, _)| index);
+        if let Some(index) = found {
+            taken[index] = true;
+        }
+        plan.push(found);
+    }
+    plan
+}
+
+/// Starts polling one host: fresh state, its token read from the credential
+/// store, its own task.
+fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
+    let state = Arc::new(Mutex::new(HostState {
+        id: key.id.to_string(),
+        name: name.clone(),
+        histories: HostHistories::new(),
+        latest: None,
+        error: None,
+        last_success: None,
+        consecutive_failures: 0,
+    }));
+
+    let token = app
+        .credentials
+        .secret(SecretKey::HostToken(key.id))
+        .unwrap_or_else(|e| {
+            eprintln!("could not read the token for host {name}: {e}");
+            None
+        })
+        .unwrap_or_default();
+    let token_configured = !token.is_empty();
+    // Immutable, so it is owned by the poll task rather than the mutex.
+    let client = AgentClient::new(key.base_url.clone(), token);
+
+    let task_state = Arc::clone(&state);
+    let task = app
+        .runtime
+        .spawn(async move { poll_loop(task_state, client, token_configured).await });
+    PolledHost { key, state, task }
+}
+
+/// Rebuilds the poll set from the store, keeping every task whose host is
+/// unchanged.
+///
+/// This is what "takes effect without a restart" means in practice, and it is
+/// deliberately *not* a teardown-and-rebuild: an unrelated edit (adding a
+/// host, renaming one, toggling another off) must leave every surviving host's
+/// history, failure streak and last-success time exactly where they were.
+/// Mirrors `RemoteHostsCoordinator.reload()` in Swift.
+fn reload_hosts(app: &App) {
+    let desired: Vec<(HostKey, String)> = {
+        let store = app.store.lock().expect("store poisoned");
+        display_order(store.hosts())
+            .into_iter()
+            .map(|host| {
+                (
+                    HostKey {
+                        id: host.id,
+                        base_url: host.base_url(),
+                    },
+                    host.name.clone(),
+                )
+            })
+            .collect()
+    };
+
+    let mut hosts = app.hosts.lock().expect("poll set poisoned");
+    let existing: Vec<HostKey> = hosts.iter().map(|polled| polled.key.clone()).collect();
+    let wanted: Vec<HostKey> = desired.iter().map(|(key, _)| key.clone()).collect();
+    let plan = reconcile(&existing, &wanted);
+
+    let mut slots: Vec<Option<PolledHost>> = hosts.drain(..).map(Some).collect();
+    let mut next = Vec::with_capacity(desired.len());
+    for ((key, name), keep) in desired.into_iter().zip(plan) {
+        match keep.and_then(|index| slots[index].take()) {
+            Some(polled) => {
+                // A rename has to reach the live card, and it must do so
+                // without costing the card its history.
+                polled.state.lock().expect("host state poisoned").name = name;
+                next.push(polled);
+            }
+            None => next.push(spawn_host(app, key, name)),
+        }
+    }
+    // Whatever nobody claimed is a host that left the cockpit.
+    for leftover in slots.into_iter().flatten() {
+        leftover.task.abort();
+    }
+    *hosts = next;
+}
+
+/// Which credentials currently hold a value — the "stored" badges, and nothing
+/// else. A read failure reads as "not stored": the badge is a hint, and an
+/// unreadable keychain must not take the Settings window down with it.
+fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSecrets {
+    let present = |key: SecretKey| {
+        credentials
+            .secret(key)
+            .unwrap_or_else(|e| {
+                // The account name only — `SecretError` is value-free by
+                // construction and this must stay that way.
+                eprintln!("could not read a stored credential: {e}");
+                None
+            })
+            .is_some_and(|value| !value.is_empty())
+    };
+    StoredSecrets {
+        github: present(SecretKey::GitHubAccessToken),
+        neon: present(SecretKey::NeonApiKey),
+        sentry: present(SecretKey::SentryUsageToken),
+        azure: present(SecretKey::AzureCostSasUrl),
+        hosts: hosts
+            .iter()
+            .filter(|host| present(SecretKey::HostToken(host.id)))
+            .map(|host| host.id)
+            .collect(),
+    }
+}
+
+/// The Settings payload for the app's current state.
+fn settings_payload(app: &App) -> Value {
+    let store = app.store.lock().expect("store poisoned");
+    let stored = stored_secrets(app.credentials.as_ref(), store.hosts());
+    settings::view(store.settings(), store.hosts(), store.repos(), &stored)
+}
+
+/// Every settings mutation answers in one shape: what happened, plus the whole
+/// surface as it now stands.
+///
+/// One shape rather than per-command payloads so the frontend re-renders from
+/// the store's actual state after every edit — it never patches its own copy,
+/// so it cannot drift from what was persisted (or quietly show an edit that
+/// failed to save).
+fn settings_response(app: &App, status: Option<String>) -> Value {
+    json!({ "status": status, "settings": settings_payload(app) })
+}
+
+/// Persists the store, turning a failure into the status line Swift shows.
+fn save_status(store: &Store, ok: impl Into<String>) -> Option<String> {
+    match store.save() {
+        Ok(()) => Some(ok.into()),
+        Err(e) => Some(format!("Failed: {e}")),
+    }
+}
+
 /// Guards the one-line "the frontend reached us" notice below.
 static FIRST_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
-fn cockpit(width: f64, state: tauri::State<'_, Arc<Cockpit>>) -> Value {
+fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
     // The IPC boundary has no automated coverage (#123), and every failure
     // mode the manual smoke test in `app/README.md` looks for — a rejected
     // ACL, an unregistered command, a CSP break that stops `app.js` before it
@@ -188,13 +422,358 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<Cockpit>>) -> Value {
     // terminal-side signal, and it makes the procedure runnable on a machine
     // whose screen you cannot see. It says nothing about what the frontend
     // then *painted* — that is what the visual read is still for.
+    // Cloned out from under the poll-set lock, which is then released: the
+    // per-host locks below are the only ones held while cards are built, so a
+    // settings edit landing mid-render waits on nothing.
+    let hosts: Vec<Arc<Mutex<HostState>>> = state
+        .hosts
+        .lock()
+        .expect("poll set poisoned")
+        .iter()
+        .map(|polled| Arc::clone(&polled.state))
+        .collect();
     FIRST_REQUEST.call_once(|| {
         eprintln!(
             "cockpit: first frontend request ({} host(s), {width}pt)",
-            state.hosts.len()
+            hosts.len()
         );
     });
-    cockpit_view(&state.hosts, width)
+    cockpit_view(&hosts, width)
+}
+
+// MARK: the Settings command surface
+//
+// All app-defined commands, which Tauri's ACL permits without a grant — so
+// this whole surface adds nothing to `capabilities/default.json`, and its
+// `permissions` stays empty. That is also the reason Settings is an in-app
+// view rather than a second window: a window would need
+// `core:webview:allow-create-webview-window` (or `core:default`) granted to
+// the webview, widening exactly the seam that has no automated coverage
+// (#123). See `app/README.md`.
+
+/// Guards the settings surface's counterpart to [`FIRST_REQUEST`].
+static FIRST_SETTINGS_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn settings_view(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = settings_payload(&state);
+    // The same terminal-side signal `cockpit` prints, for the same reason:
+    // every way this surface can be broken from outside Rust -- a rejected
+    // ACL, an unregistered command, a script error in settings.js -- looks
+    // identical from in here (this never runs), and the smoke test has to be
+    // runnable on a machine whose screen you cannot see. Opening Settings is
+    // one click, so this is the whole verification of the new command surface.
+    FIRST_SETTINGS_REQUEST.call_once(|| {
+        let hosts = payload["hosts"]["rows"].as_array().map_or(0, Vec::len);
+        let repos = payload["portfolio"]["rows"].as_array().map_or(0, Vec::len);
+        eprintln!("settings: first frontend request ({hosts} host(s), {repos} repo(s))");
+    });
+    payload
+}
+
+#[tauri::command]
+fn settings_save_general(
+    refresh_interval_secs: u32,
+    core_row_span: u8,
+    host_overflow_mode: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let general =
+            settings::normalized_general(refresh_interval_secs, core_row_span, &host_overflow_mode);
+        let current = store.settings_mut();
+        current.refresh_interval_secs = general.refresh_interval_secs;
+        current.core_row_span = general.core_row_span;
+        current.host_overflow_mode = general.host_overflow_mode;
+        save_status(&store, "Saved.")
+    };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_save_providers(
+    neon_org_id: String,
+    sentry_org_slug: String,
+    sentry_monthly_event_quota: u64,
+    azure_monthly_budget_usd: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let current = store.settings_mut();
+        current.neon_org_id = neon_org_id.trim().to_owned();
+        current.sentry_org_slug = sentry_org_slug.trim().to_owned();
+        current.sentry_monthly_event_quota = sentry_monthly_event_quota;
+        // A non-finite budget would make the whole store unserialisable
+        // (`StoreError::Serialize`), taking every other preference with it.
+        current.azure_monthly_budget_usd = if azure_monthly_budget_usd.is_finite() {
+            azure_monthly_budget_usd.max(0.0)
+        } else {
+            0.0
+        };
+        save_status(&store, "Saved.")
+    };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_add_host(
+    name: String,
+    address: String,
+    port: String,
+    token: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let name = name.trim().to_owned();
+    let address = address.trim().to_owned();
+    if name.is_empty() || address.is_empty() {
+        return settings_response(
+            &state,
+            Some("Skipped — name and address are required.".into()),
+        );
+    }
+
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let mut host = Host::new(&name, address);
+        host.port = settings::parse_port(&port);
+        let id = host.id;
+        store.upsert_host(host);
+        let status = save_status(&store, format!("Added {name}."));
+
+        if !token.is_empty() {
+            // Keyed by the id the store just minted, and never into the store
+            // file. A credential-store failure is reported and not fatal: the
+            // host row is saved, and the operator can re-enter the token --
+            // losing the row too would be the worse outcome.
+            if let Err(e) = state
+                .credentials
+                .set_secret(SecretKey::HostToken(id), &token)
+            {
+                eprintln!("could not store the new host's token: {e}");
+            }
+        }
+        status
+    };
+
+    reload_hosts(&state);
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_set_host_enabled(
+    id: String,
+    enabled: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some("Skipped — unknown host.".into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.host_mut(id) {
+            Some(host) => {
+                host.enabled = enabled;
+                save_status(&store, "Saved.")
+            }
+            None => Some("Skipped — unknown host.".to_owned()),
+        }
+    };
+    reload_hosts(&state);
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_remove_host(id: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some("Skipped — unknown host.".into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.remove_host(id) {
+            Some(host) => {
+                // The store deliberately does not touch the credential store,
+                // so deleting the token is this layer's job -- and it happens
+                // whatever the file write does, or a re-added host would
+                // inherit a stranger's token.
+                if let Err(e) = state.credentials.delete_secret(SecretKey::HostToken(id)) {
+                    eprintln!("could not delete the host's token: {e}");
+                }
+                save_status(&store, format!("Removed {}.", host.name))
+            }
+            None => Some("Skipped — unknown host.".to_owned()),
+        }
+    };
+    reload_hosts(&state);
+    settings_response(&state, status)
+}
+
+/// Unhides one mount — on a host when `host_id` is given, otherwise on the
+/// local machine's list.
+///
+/// Deliberately does **not** call [`reload_hosts`]: a volume edit must not
+/// cost the host card its sparkline history or its volume debounce. Same
+/// distinction the Swift view draws between `applyHiddenMounts()` and
+/// `reload()`.
+#[tauri::command]
+fn settings_unhide_volume(
+    host_id: Option<String>,
+    mount: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match host_id {
+            Some(raw) => {
+                let host = Uuid::parse_str(&raw).ok().and_then(|id| store.host_mut(id));
+                match host {
+                    Some(host) => {
+                        host.hidden_volume_mounts.retain(|m| m != &mount);
+                        save_status(&store, format!("Unhid {mount}."))
+                    }
+                    None => Some("Skipped — unknown host.".to_owned()),
+                }
+            }
+            None => {
+                store
+                    .settings_mut()
+                    .local_hidden_volume_mounts
+                    .retain(|m| m != &mount);
+                save_status(&store, format!("Unhid {mount}."))
+            }
+        }
+    };
+    settings_response(&state, status)
+}
+
+/// The Test button: one `/v1/health` probe, rendered as the Swift result line.
+#[tauri::command]
+async fn settings_test_host(
+    id: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| "unknown host".to_owned())?;
+    // Scoped so no lock is alive across the await below — the guard is not
+    // `Send`, so this is enforced by the compiler rather than by care.
+    let base_url = {
+        let store = state.store.lock().expect("store poisoned");
+        store
+            .host(uuid)
+            .map(Host::base_url)
+            .ok_or_else(|| "unknown host".to_owned())?
+    };
+    let token = state
+        .credentials
+        .secret(SecretKey::HostToken(uuid))
+        .unwrap_or_default()
+        .unwrap_or_default();
+
+    let result = AgentClient::new(base_url, token).health().await;
+    Ok(json!({ "id": id, "result": settings::health_result(&result) }))
+}
+
+#[tauri::command]
+fn settings_add_repo(slug: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match settings::validated_slug(&slug, store.repos()) {
+            Some(slug) => {
+                store.upsert_repo(TrackedRepo::new(&slug));
+                save_status(&store, format!("Added {slug}."))
+            }
+            None => Some("Skipped — invalid or already tracked.".to_owned()),
+        }
+    };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_remove_repo(slug: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.remove_repo(&slug) {
+            Some(repo) => save_status(&store, format!("Removed {}.", repo.slug)),
+            None => Some("Skipped — not tracked.".to_owned()),
+        }
+    };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_set_repo_enabled(
+    slug: String,
+    enabled: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.repo_mut(&slug) {
+            Some(repo) => {
+                repo.enabled = enabled;
+                save_status(&store, "Saved.")
+            }
+            None => Some("Skipped — not tracked.".to_owned()),
+        }
+    };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_set_repo_workflows(
+    slug: String,
+    workflows: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.repo_mut(&slug) {
+            Some(repo) => {
+                repo.watched_workflows = settings::parse_workflows(&workflows);
+                save_status(&store, "Saved.")
+            }
+            None => Some("Skipped — not tracked.".to_owned()),
+        }
+    };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_save_secret(key: String, value: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let Some(field) = SecretField::parse(&key) else {
+        return settings_response(&state, Some("Skipped — unknown credential.".into()));
+    };
+    // An empty Save would store an empty credential that reads as "configured"
+    // everywhere downstream. Clear is the way to remove one.
+    if value.is_empty() {
+        return settings_response(&state, Some("Skipped — nothing to save.".into()));
+    }
+    let status = match state.credentials.set_secret(field.key(), &value) {
+        Ok(()) => "Saved.".to_owned(),
+        // `SecretError` carries the account name and never the value; still,
+        // this string reaches the window, so it says what failed, not what was
+        // being written.
+        Err(e) => {
+            eprintln!("could not store a credential: {e}");
+            "Failed to save — the credential store rejected the write.".to_owned()
+        }
+    };
+    settings_response(&state, Some(status))
+}
+
+#[tauri::command]
+fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let Some(field) = SecretField::parse(&key) else {
+        return settings_response(&state, Some("Skipped — unknown credential.".into()));
+    };
+    let status = match state.credentials.delete_secret(field.key()) {
+        Ok(()) => "Cleared.".to_owned(),
+        Err(e) => {
+            eprintln!("could not clear a credential: {e}");
+            "Failed to clear — the credential store rejected the delete.".to_owned()
+        }
+    };
+    settings_response(&state, Some(status))
 }
 
 /// Test-fixture generation only, decoupled from the live-agent path below
@@ -261,6 +840,37 @@ fn dump_cockpit(available: f64, hosts: usize) -> Value {
     cockpit_payload(cards.into_iter().take(hosts).collect(), available)
 }
 
+/// The Settings payload as a fixture, built from a hand-made configuration
+/// rather than a real store.
+///
+/// Fixed uuids (not `Host::new`'s v4) so the file is byte-stable across dumps:
+/// a fixture that changes on every regeneration is a fixture a test cannot
+/// assert an id against. Deliberately mixed — one enabled host with a token
+/// and a hidden volume, one disabled host with neither, two credentials stored
+/// and two not — so the Playwright suite exercises both sides of every badge.
+fn dump_settings() -> Value {
+    let settings = store::Settings {
+        local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
+        ..store::Settings::default()
+    };
+
+    let mut live = Host::new("ubu-3xdv", "100.87.202.125");
+    live.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
+    live.hidden_volume_mounts = vec!["/mnt/scratch".into()];
+    let mut spare = Host::new("nuc-spare", "100.64.0.7");
+    spare.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0002);
+    spare.enabled = false;
+
+    let stored = StoredSecrets {
+        github: true,
+        neon: false,
+        sentry: true,
+        azure: false,
+        hosts: [live.id].into_iter().collect(),
+    };
+    settings::view(&settings, &[live, spare], &store::seeded_repos(), &stored)
+}
+
 /// Returns the path argument following `flag` if `flag` is present, falling
 /// back to `default` when the flag is given with no path.
 fn dump_flag_path(args: &[String], flag: &str, default: &str) -> Option<String> {
@@ -318,6 +928,10 @@ fn run_dump(args: &[String]) -> bool {
                 value_flag(args, "--hosts", 3),
             ),
         );
+        return true;
+    }
+    if let Some(path) = dump_flag_path(args, "--dump-settings", "sample-settings.json") {
+        write_json(&path, &dump_settings());
         return true;
     }
     false
@@ -448,62 +1062,36 @@ fn main() {
     }
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let mut states = Vec::new();
-    for host in display_order(store.hosts()) {
-        let state = Arc::new(Mutex::new(HostState {
-            id: host.id.to_string(),
-            name: host.name.clone(),
-            histories: HostHistories::new(),
-            latest: None,
-            error: None,
-            last_success: None,
-            consecutive_failures: 0,
-        }));
-        states.push(Arc::clone(&state));
-
-        let token = credentials
-            .secret(SecretKey::HostToken(host.id))
-            .unwrap_or_else(|e| {
-                eprintln!("could not read the token for host {}: {e}", host.name);
-                None
-            })
-            .unwrap_or_default();
-        let token_configured = !token.is_empty();
-        // Immutable, so it is owned by the poll task rather than the mutex.
-        let client = AgentClient::new(host.base_url(), token);
-
-        // One task per host: an unreachable host's 5s client timeout must not
-        // hold up any other host's tick, and no task ever holds a lock across
-        // an await, so a slow poll cannot block the `cockpit` command either.
-        rt.spawn(async move {
-            let mut tick = tokio::time::interval(POLL_INTERVAL);
-            // `interval`'s default (`Burst`) fires every missed tick
-            // back-to-back the moment a slow poll releases the executor -- and
-            // the client timeout (5s, agentclient) exceeds this period, so one
-            // slow poll can trigger several polls in a row. The charts equate
-            // one history sample with one fixed time slice (PX_PER_SAMPLE), so
-            // a burst silently compresses the time axis instead of just
-            // running late. `Delay` waits a full period from completion
-            // instead, so a slow poll shifts later polls rather than bunching
-            // them.
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tick.tick().await;
-                if !token_configured {
-                    record_missing_token(&mut state.lock().expect("host state poisoned"));
-                    continue;
-                }
-                // No lock is held across this await.
-                let result = client.snapshot().await;
-                let at = Instant::now();
-                record_poll(&mut state.lock().expect("host state poisoned"), result, at);
-            }
-        });
-    }
+    let app = Arc::new(App {
+        store: Mutex::new(store),
+        credentials: Box::new(credentials),
+        hosts: Mutex::new(Vec::new()),
+        runtime: rt.handle().clone(),
+    });
+    // One task per host: an unreachable host's 5s client timeout must not hold
+    // up any other host's tick. Startup is the same code path a settings edit
+    // takes, so there is one definition of "which hosts are polled".
+    reload_hosts(&app);
 
     tauri::Builder::default()
-        .manage(Arc::new(Cockpit { hosts: states }))
-        .invoke_handler(tauri::generate_handler![cockpit])
+        .manage(Arc::clone(&app))
+        .invoke_handler(tauri::generate_handler![
+            cockpit,
+            settings_view,
+            settings_save_general,
+            settings_save_providers,
+            settings_add_host,
+            settings_set_host_enabled,
+            settings_remove_host,
+            settings_unhide_volume,
+            settings_test_host,
+            settings_add_repo,
+            settings_remove_repo,
+            settings_set_repo_enabled,
+            settings_set_repo_workflows,
+            settings_save_secret,
+            settings_clear_secret,
+        ])
         .run(tauri::generate_context!())
         .expect("failed to start");
 
@@ -1118,6 +1706,68 @@ mod tests {
         assert_eq!(reopened.hosts()[0].name, "ubu-3xdv");
     }
 
+    // MARK: applying a settings edit to the live poll set
+
+    fn key(id: u128, base_url: &str) -> HostKey {
+        HostKey {
+            id: Uuid::from_u128(id),
+            base_url: base_url.to_owned(),
+        }
+    }
+
+    /// The point of reconciling instead of rebuilding: an edit to one host
+    /// must leave every other host's task — and therefore its sparkline
+    /// history, its failure streak, its last-success time — untouched.
+    #[test]
+    fn adding_a_host_keeps_every_existing_task() {
+        let a = key(1, "http://10.0.0.1:7878");
+        let b = key(2, "http://10.0.0.2:7878");
+        let existing = vec![a.clone()];
+        let desired = vec![a, b];
+        assert_eq!(reconcile(&existing, &desired), vec![Some(0), None]);
+    }
+
+    #[test]
+    fn removing_or_disabling_a_host_drops_only_that_task() {
+        let a = key(1, "http://10.0.0.1:7878");
+        let b = key(2, "http://10.0.0.2:7878");
+        let c = key(3, "http://10.0.0.3:7878");
+        let existing = vec![a.clone(), b, c.clone()];
+        // `b` left the enabled set; the survivors keep their own tasks even
+        // though their positions shifted.
+        let plan = reconcile(&existing, &[a, c]);
+        assert_eq!(plan, vec![Some(0), Some(2)]);
+        // Index 1 is claimed by nobody, which is exactly what the caller
+        // aborts.
+        assert!(!plan.contains(&Some(1)));
+    }
+
+    /// A task polling the old address would keep reporting numbers under the
+    /// right host's name — the worst shape of this bug, since the card looks
+    /// fine. The endpoint is part of the key precisely so that cannot happen.
+    #[test]
+    fn moving_a_host_to_a_new_address_replaces_its_task() {
+        let before = key(1, "http://10.0.0.1:7878");
+        let after = key(1, "http://10.0.0.1:9000");
+        assert_eq!(reconcile(&[before], &[after]), vec![None]);
+    }
+
+    #[test]
+    fn an_unchanged_set_starts_nothing_and_stops_nothing() {
+        let hosts = vec![
+            key(1, "http://10.0.0.1:7878"),
+            key(2, "http://10.0.0.2:7878"),
+        ];
+        assert_eq!(reconcile(&hosts, &hosts), vec![Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn a_first_reload_spawns_everything_and_an_emptied_set_keeps_nothing() {
+        let a = key(1, "http://10.0.0.1:7878");
+        assert_eq!(reconcile(&[], std::slice::from_ref(&a)), vec![None]);
+        assert!(reconcile(std::slice::from_ref(&a), &[]).is_empty());
+    }
+
     // MARK: the dumped fixtures the Playwright suite runs against
 
     #[test]
@@ -1163,6 +1813,33 @@ mod tests {
             none["empty"]["message"],
             "No hosts configured. Add one in Settings."
         );
+    }
+
+    /// The settings fixture must be stable across dumps (ids the Playwright
+    /// suite can address) and mixed (both sides of every badge), or the specs
+    /// it drives are only ever exercising one branch.
+    #[test]
+    fn the_settings_dump_is_stable_and_covers_both_sides_of_every_badge() {
+        let vm = dump_settings();
+        assert_eq!(vm, dump_settings(), "the fixture must not vary per run");
+
+        let rows = vm["hosts"]["rows"].as_array().expect("host rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["tokenStored"], true);
+        assert_eq!(rows[0]["enabled"], true);
+        assert!(!rows[0]["hiddenVolumes"]
+            .as_array()
+            .expect("hidden volumes")
+            .is_empty());
+        assert_eq!(rows[1]["tokenStored"], false);
+        assert_eq!(rows[1]["enabled"], false);
+
+        assert_eq!(vm["github"]["secret"]["stored"], true);
+        assert_eq!(vm["azure"]["secret"]["stored"], false);
+        assert!(!vm["portfolio"]["rows"]
+            .as_array()
+            .expect("repo rows")
+            .is_empty());
     }
 
     #[test]
