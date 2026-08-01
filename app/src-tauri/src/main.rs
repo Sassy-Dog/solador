@@ -14,6 +14,7 @@ mod azure;
 mod containers;
 mod github;
 mod local;
+mod openclaw;
 mod panel;
 mod settings;
 mod usage;
@@ -22,6 +23,7 @@ use azure::AzureState;
 use containers::ContainersState;
 use github::GitHubState;
 use local::LocalHostState;
+use openclaw::OpenClawState;
 use settings::{SecretField, StoredSecrets};
 use usage::UsageState;
 
@@ -148,6 +150,15 @@ struct App {
     /// A four-hour cadence is long enough that waiting one out is
     /// indistinguishable from the credential not having been accepted.
     azure_wake: tokio::sync::Notify,
+    /// The OpenClaw panel's state. **Not on a poll cadence**: it is written by
+    /// a live WebSocket session as frames arrive, and the `openclaw` command
+    /// only reads whatever the socket has published.
+    openclaw: Mutex<OpenClawState>,
+    /// Restarts the OpenClaw session — and, unlike every other wake here, cuts
+    /// short an in-flight *session* rather than a sleep. A gateway URL edited
+    /// while a session is up must not have to wait out that session, which on a
+    /// healthy socket never ends.
+    openclaw_wake: tokio::sync::Notify,
     /// Where poll tasks are spawned. A `Handle`, not the `Runtime`: the
     /// runtime itself stays owned by `main`, so it can never be dropped from
     /// inside a command (dropping a runtime from an async context panics).
@@ -825,6 +836,7 @@ fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSe
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
         azure: present(SecretKey::AzureCostSasUrl),
+        openclaw: present(SecretKey::OpenClawBearerToken),
         hosts: hosts
             .iter()
             .filter(|host| present(SecretKey::HostToken(host.id)))
@@ -835,9 +847,39 @@ fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSe
 
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
+    // Read before the store's lock is taken, and never while it is held: the
+    // OpenClaw session loop takes them in the same order, so there is one
+    // ordering between the two and no way to invert it here.
+    let facts = openclaw_settings_facts(app);
     let store = app.store.lock().expect("store poisoned");
     let stored = stored_secrets(app.credentials.as_ref(), store.hosts());
-    settings::view(store.settings(), store.hosts(), store.repos(), &stored)
+    settings::view(
+        store.settings(),
+        store.hosts(),
+        store.repos(),
+        &stored,
+        &facts,
+    )
+}
+
+/// The live half of the OpenClaw tab.
+///
+/// Falls back to reading the stored device key when the session has not run yet
+/// — a machine with no gateway URL configured never starts a session, and the
+/// operator should still be able to see (and pre-approve) the fingerprint from
+/// a previous install. `current_device_id` only *reads*: opening Settings must
+/// not mint a key as a side effect.
+fn openclaw_settings_facts(app: &App) -> openclaw::SettingsFacts {
+    let mut facts = app
+        .openclaw
+        .lock()
+        .expect("openclaw state poisoned")
+        .settings_facts();
+    if facts.device_id.is_none() {
+        facts.device_id =
+            openclaw::current_device_id(&openclaw::DeviceKeys(app.credentials.as_ref()));
+    }
+    facts
 }
 
 /// Every settings mutation answers in one shape: what happened, plus the whole
@@ -1214,6 +1256,172 @@ fn azure_cost(state: tauri::State<'_, Arc<App>>) -> Value {
     payload
 }
 
+// MARK: the OpenClaw panel
+//
+// The one subsystem here that is **not** a poll loop. Every other panel asks
+// its source on a cadence; this one holds a WebSocket open and is written as
+// frames arrive, which is why its state carries no "last polled" clock and its
+// payload carries no staleness footer — the connection line is the answer.
+//
+// What *is* a loop is reconnecting. `crates/openclaw`'s `Backoff` paces it, and
+// the two cases it separates are the point: an ordinary drop escalates
+// exponentially, while a pending device approval waits on a fixed, quiet timer,
+// because hammering a gateway that is waiting on a human helps nobody and
+// floods both logs.
+
+/// The gateway URL and bearer token, re-read every pass.
+///
+/// Re-read rather than captured at startup for the same reason the Usage loop
+/// re-reads its credentials: that is what makes a Settings edit apply without a
+/// relaunch. An unreadable credential store yields `None` here — a bearer token
+/// is optional, and refusing to connect because the keychain hiccuped would be
+/// worse than trying without it and letting the gateway decide.
+fn openclaw_config(app: &App) -> (String, Option<String>) {
+    let url = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().openclaw_gateway_url.trim().to_owned()
+    };
+    let token = match read_credential(app, SecretKey::OpenClawBearerToken) {
+        Credential::Present(token) => Some(token),
+        Credential::Absent | Credential::Unreadable => None,
+    };
+    (url, token)
+}
+
+/// The OpenClaw session loop: connect, stream, reconnect.
+///
+/// The reducer is created once per *gateway*, not once per session. A dropped
+/// socket says nothing new about the farm, so reconnecting keeps the agent rows
+/// on screen; pointing at a different gateway invalidates every one of them, so
+/// that resets both the reducer and the published sections.
+async fn openclaw_loop(app: Arc<App>) {
+    let mut backoff = openclaw::Backoff::new();
+    let mut reducer = openclaw::SnapshotReducer::new();
+    let mut identity: Option<openclaw::DeviceIdentity> = None;
+    let mut current_url: Option<String> = None;
+
+    loop {
+        let (url, token) = openclaw_config(&app);
+        if current_url.as_deref() != Some(url.as_str()) {
+            if current_url.is_some() {
+                reducer = openclaw::SnapshotReducer::new();
+                app.openclaw
+                    .lock()
+                    .expect("openclaw state poisoned")
+                    .forget_sections();
+            }
+            current_url = Some(url.clone());
+            // A deliberate change is not a failure, so the next attempt starts
+            // at the floor rather than inheriting the previous gateway's
+            // escalation.
+            backoff.reset();
+        }
+
+        if url.is_empty() {
+            // Idle, not disconnected: nothing was attempted, so the panel shows
+            // the Settings hint rather than a failure nobody caused.
+            app.openclaw.lock().expect("openclaw state poisoned").idle();
+            app.openclaw_wake.notified().await;
+            continue;
+        }
+
+        // Minted at most once per process, and only once a gateway is actually
+        // configured: generating a device key on a machine that never connects
+        // would leave an unapprovable fingerprint in the keychain.
+        if identity.is_none() {
+            // Bound to a `let` so the borrow of the credential store ends on
+            // this line. Holding it into the match below would carry a
+            // `!Sync` reference across the awaits in its arms, which makes the
+            // whole loop un-spawnable — and the compiler says so a hundred
+            // lines away from the cause.
+            let loaded = openclaw::load_or_create(&openclaw::DeviceKeys(app.credentials.as_ref()));
+            match loaded {
+                Ok(loaded) => {
+                    if let Some(e) = loaded.persist_error {
+                        // Non-fatal by design: the identity works for this run,
+                        // it just will not survive a relaunch — which beats
+                        // refusing to connect. The error names the account and
+                        // carries no key material.
+                        eprintln!("openclaw: could not persist the device key: {e}");
+                    }
+                    if loaded.generated {
+                        eprintln!(
+                            "openclaw: generated device identity {} — approve it on the gateway to pair",
+                            loaded.identity.device_id()
+                        );
+                    }
+                    app.openclaw
+                        .lock()
+                        .expect("openclaw state poisoned")
+                        .set_device_id(loaded.identity.device_id());
+                    identity = Some(loaded.identity);
+                }
+                Err(e) => {
+                    // The platform RNG refused. Pairing is impossible until it
+                    // does not, and substituting a weak key would be worse.
+                    eprintln!("openclaw: {e}");
+                    app.openclaw
+                        .lock()
+                        .expect("openclaw state poisoned")
+                        .disconnected("could not create a device key");
+                    app.openclaw_wake.notified().await;
+                    continue;
+                }
+            }
+        }
+        let Some(device) = identity.clone() else {
+            continue;
+        };
+
+        // The session is raced against the wake so an edit lands *now*. A
+        // healthy socket never returns on its own, so without this a new
+        // gateway URL would apply only after the old gateway happened to drop.
+        let outcome = tokio::select! {
+            outcome = openclaw::run_session(
+                &app.openclaw,
+                &mut reducer,
+                &url,
+                token,
+                device,
+                settings::VERSION,
+            ) => outcome,
+            () = app.openclaw_wake.notified() => continue,
+        };
+
+        let delay = backoff.delay_after(outcome);
+        tokio::select! {
+            () = tokio::time::sleep(delay) => {}
+            () = app.openclaw_wake.notified() => backoff.reset(),
+        }
+    }
+}
+
+/// Restarts the OpenClaw session. Cheap and idempotent: a wake with no session
+/// waiting is remembered, so a save that lands between sessions is not lost.
+fn wake_openclaw(app: &App) {
+    app.openclaw_wake.notify_one();
+}
+
+/// Guards the OpenClaw panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_OPENCLAW_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn openclaw(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = {
+        let panel = state.openclaw.lock().expect("openclaw state poisoned");
+        openclaw::view(panel.snapshots())
+    };
+    FIRST_OPENCLAW_REQUEST.call_once(|| {
+        // The trailing label is the panel's own one-line summary, so it says
+        // both that the round-trip worked and which state the session is in —
+        // and it can never contain a token: `trailing` is built from counts and
+        // connection states only.
+        let trailing = payload["trailing"].as_str().unwrap_or_default();
+        eprintln!("openclaw: first frontend request (trailing: {trailing:?})");
+    });
+    payload
+}
+
 // MARK: the Settings command surface
 //
 // All app-defined commands, which Tauri's ACL permits without a grant — so
@@ -1530,6 +1738,36 @@ fn settings_set_repo_workflows(
     settings_response(&state, status)
 }
 
+/// The OpenClaw gateway URL. Validation is deliberately the *session's*, not
+/// this command's: `upgrade_request` is the one place that decides what a usable
+/// `ws(s)://` address is, and a second rule here could reject a URL the client
+/// would have accepted — or accept one it then refuses, with the panel left to
+/// explain a failure Settings had already blessed.
+#[tauri::command]
+fn settings_save_openclaw(gateway_url: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        store.settings_mut().openclaw_gateway_url = gateway_url.trim().to_owned();
+        save_status(&store, "Saved.")
+    };
+    // The URL *is* what the session connects to, so a save that does not reach
+    // the loop leaves a live socket pointed at the previous gateway.
+    wake_openclaw(&state);
+    settings_response(&state, status)
+}
+
+/// The pairing block's "Retry now": reconnect immediately instead of waiting out
+/// the 15s pairing backoff.
+///
+/// The button exists because the operator knows something the app cannot: that
+/// they have just run the approve command. Making them wait for a timer after
+/// that is the difference between "it worked" and "did it work?".
+#[tauri::command]
+fn settings_openclaw_retry(state: tauri::State<'_, Arc<App>>) -> Value {
+    wake_openclaw(&state);
+    settings_response(&state, Some("Reconnecting…".to_owned()))
+}
+
 #[tauri::command]
 fn settings_save_secret(key: String, value: String, state: tauri::State<'_, Arc<App>>) -> Value {
     let Some(field) = SecretField::parse(&key) else {
@@ -1584,6 +1822,10 @@ fn wake_for(app: &App, field: SecretField) {
         SecretField::GitHub => wake_github(app),
         SecretField::Neon | SecretField::Sentry => wake_usage(app, true),
         SecretField::Azure => app.azure_wake.notify_one(),
+        // The bearer token is folded into the *signed connect payload*, so it
+        // cannot be swapped on a live socket — the session has to be torn down
+        // and re-handshaked, which is exactly what this wake does.
+        SecretField::OpenClaw => wake_openclaw(app),
     }
 }
 
@@ -1774,9 +2016,30 @@ fn dump_settings() -> Value {
         neon: false,
         sentry: true,
         azure: false,
+        openclaw: false,
         hosts: [live.id].into_iter().collect(),
     };
-    settings::view(&settings, &[live, spare], &store::seeded_repos(), &stored)
+    // A gateway configured *and* waiting on approval, so the fixture carries the
+    // pairing block — the one part of this tab that only exists in a live
+    // state, and therefore the one part a static fixture would otherwise never
+    // cover.
+    let settings = store::Settings {
+        openclaw_gateway_url: "ws://gateway.local:7878".into(),
+        ..settings
+    };
+    let facts = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
+    settings::view(
+        &settings,
+        &[live, spare],
+        &store::seeded_repos(),
+        &stored,
+        &facts,
+    )
+}
+
+/// The OpenClaw panel as a fixture, one per rendering it has.
+fn dump_openclaw(kind: openclaw::Fixture) -> Value {
+    openclaw::fixture_view(kind)
 }
 
 /// The Containers panel as a fixture.
@@ -1935,6 +2198,21 @@ fn run_dump(args: &[String]) -> bool {
         write_json(&path, &dump_azure(kind));
         return true;
     }
+    if let Some(path) = dump_flag_path(args, "--dump-openclaw", "sample-openclaw.json") {
+        let kind = if empty {
+            openclaw::Fixture::Empty
+        } else if args.iter().any(|arg| arg == "--pairing") {
+            openclaw::Fixture::Pairing
+        } else if args.iter().any(|arg| arg == "--idle") {
+            openclaw::Fixture::Idle
+        } else if args.iter().any(|arg| arg == "--error") {
+            openclaw::Fixture::Disconnected
+        } else {
+            openclaw::Fixture::Connected
+        };
+        write_json(&path, &dump_openclaw(kind));
+        return true;
+    }
     false
 }
 
@@ -2075,6 +2353,8 @@ fn main() {
         usage_providers_due: std::sync::atomic::AtomicBool::new(false),
         azure: Mutex::new(AzureState::new()),
         azure_wake: tokio::sync::Notify::new(),
+        openclaw: Mutex::new(OpenClawState::new()),
+        openclaw_wake: tokio::sync::Notify::new(),
         runtime: rt.handle().clone(),
     });
     // One task per host: an unreachable host's 5s client timeout must not hold
@@ -2096,6 +2376,9 @@ fn main() {
     rt.spawn(usage_loop(Arc::clone(&app)));
     // Azure cost, on the reader's own 4h cadence.
     rt.spawn(azure_loop(Arc::clone(&app)));
+    // OpenClaw: a live WebSocket, not a cadence. It idles at once when no
+    // gateway is configured and wakes the moment one is saved.
+    rt.spawn(openclaw_loop(Arc::clone(&app)));
 
     tauri::Builder::default()
         .manage(Arc::clone(&app))
@@ -2106,6 +2389,7 @@ fn main() {
             runners,
             usage,
             azure_cost,
+            openclaw,
             settings_view,
             settings_save_general,
             settings_save_providers,
@@ -2118,6 +2402,8 @@ fn main() {
             settings_remove_repo,
             settings_set_repo_enabled,
             settings_set_repo_workflows,
+            settings_save_openclaw,
+            settings_openclaw_retry,
             settings_save_secret,
             settings_clear_secret,
         ])

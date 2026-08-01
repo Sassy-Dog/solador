@@ -274,10 +274,9 @@ const CARDS = new Map();
 /**
  * Which `<section>` each panel id owns.
  *
- * `hosts` is absent on purpose — it is the grid above this block, not a section
- * — and so is `openclawAgents`, whose panel is not built yet. Rust still sends
- * both rows; an id with no section here contributes nothing, and a row that
- * ends up empty is skipped rather than rendered as a gap.
+ * `hosts` is absent on purpose — it is the grid above this block, not a section.
+ * Rust still sends its row; an id with no section here contributes nothing, and
+ * a row that ends up empty is skipped rather than rendered as a gap.
  */
 const PANEL_SECTIONS = {
   containers: "containersPanel",
@@ -285,6 +284,7 @@ const PANEL_SECTIONS = {
   ghRunners: "runnersPanel",
   claudeUsage: "usagePanel",
   azureCost: "azurePanel",
+  openclawAgents: "openclawPanel",
 };
 
 // The row shape currently on screen. Rebuilding the containers moves the

@@ -680,6 +680,7 @@ dependencies = [
  "devcanopy-azurecost",
  "devcanopy-github",
  "devcanopy-localhost",
+ "devcanopy-openclaw",
  "devcanopy-store",
  "devcanopy-usage",
  "devcanopy-wire",

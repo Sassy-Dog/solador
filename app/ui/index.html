@@ -104,6 +104,20 @@
       <p class="panel-footer" id="azureFooter" hidden></p>
     </section>
 
+    <!-- OpenClaw. An agent farm's per-agent status, cron health, channel
+         connectivity and token usage, fed by a live WebSocket rather than a
+         poll — which is why it has no footer element: the connection line
+         inside the body is what says whether the socket is up. Every string,
+         count and colour is built by openclaw.js from the `openclaw` command. -->
+    <section class="panel" id="openclawPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="openclawTitle"></h2>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="openclawTrailing"></span>
+      </header>
+      <div class="panel-body" id="openclawBody"></div>
+    </section>
+
     </div>
   </div>
 
@@ -199,5 +213,6 @@
   <script src="github.js"></script>
   <script src="usage.js"></script>
   <script src="azure.js"></script>
+  <script src="openclaw.js"></script>
 </body>
 </html>

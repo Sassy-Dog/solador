@@ -326,9 +326,70 @@ test("About names the app, its version and its links", async ({ page, baseURL })
   await expect(page.locator(".settings-body a")).toHaveCount(0);
 });
 
-test("OpenClaw is absent rather than present and inert", async ({ page, baseURL }) => {
+test("OpenClaw round-trips the gateway URL and its bearer token", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "openclaw").click();
+
+  const url = page.locator("#openclaw-gateway");
+  await expect(url).toHaveValue(settings.openclaw.gateway.value);
+  await url.fill("wss://gateway.example");
+  await page.locator(".btn.apply").click();
+  expect(await calls(page, "settings_save_openclaw")).toEqual([
+    { command: "settings_save_openclaw", args: { gatewayUrl: "wss://gateway.example" } },
+  ]);
+
+  // The bearer token rides the shared credential controls, so it is written
+  // through the same command every other secret is — and the field is emptied
+  // the moment the value is handed over.
+  const token = page.locator("#secret-openclaw");
+  await expect(token).toHaveAttribute("type", "password");
+  await token.fill("gateway-token");
+  await page.locator('.group[data-secret="openclaw"] .btn.save').click();
+  expect(await calls(page, "settings_save_secret")).toEqual([
+    { command: "settings_save_secret", args: { key: "openclaw", value: "gateway-token" } },
+  ]);
+  await expect(page.locator("#secret-openclaw")).toHaveValue("");
+});
+
+test("the pairing block shows the fingerprint, the approve command and a retry", async ({ page, baseURL }) => {
+  // The fixture is dumped mid-pairing precisely so this block exists: it is the
+  // only part of Settings built from live session state, and it is the part an
+  // operator actually has to act on.
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "openclaw").click();
+
+  await expect(page.locator('[data-row="status"] .result')).toHaveText(
+    settings.openclaw.status.text
+  );
+  await expect(page.locator('[data-row="device"] .link-url')).toHaveText(
+    settings.openclaw.deviceId
+  );
+
+  const block = page.locator('[data-row="pairing"]');
+  await expect(block).toContainText(settings.openclaw.pairing.explanation);
+  // Verbatim, and selectable: this is the line pasted into a shell, so a
+  // frontend-assembled variant of it would be a second implementation of the
+  // one string whose whole value is being exactly right.
+  await expect(block.locator(".oc-command")).toHaveText(settings.openclaw.pairing.command);
+  await expect(block.locator(".oc-command")).toHaveCSS("user-select", "text");
+  await expect(block).toContainText(settings.openclaw.pairing.hint);
+
+  await block.locator(".btn.retry").click();
+  expect(await calls(page, "settings_openclaw_retry")).toEqual([
+    { command: "settings_openclaw_retry", args: {} },
+  ]);
+});
+
+test("the device key is not a field anyone can type into", async ({ page, baseURL }) => {
+  // It is 32 bytes minted by the app, never entered by a human. The tab has one
+  // credential control and it is the bearer token; a second one here would be a
+  // way to overwrite the identity the gateway has already approved.
   await openSettings(page, baseURL);
-  // Deferred to the OpenClaw slice. A tab whose controls drive nothing reads
-  // as a broken feature, so there isn't one.
-  await expect(page.locator('.tab[data-tab="openclaw"]')).toHaveCount(0);
+  await tab(page, "openclaw").click();
+
+  await expect(page.locator(".settings-body [data-secret]")).toHaveCount(1);
+  await expect(page.locator(".settings-body [data-secret]")).toHaveAttribute(
+    "data-secret",
+    "openclaw"
+  );
 });

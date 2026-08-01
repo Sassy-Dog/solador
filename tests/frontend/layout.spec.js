@@ -290,8 +290,15 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
   await gotoApp(page);
 
   // Rows carrying only panels this frontend has no section for (`hosts`, which
-  // is the grid above, and `openclawAgents`, which is not built) are skipped.
-  const known = ["containers", "ghWorkflows", "ghRunners", "claudeUsage", "azureCost"];
+  // is the grid above) are skipped.
+  const known = [
+    "containers",
+    "openclawAgents",
+    "ghWorkflows",
+    "ghRunners",
+    "claudeUsage",
+    "azureCost",
+  ];
   const expected = vm.panelRows
     .map((row) => row.map((p) => p.id).filter((id) => known.includes(id)))
     .filter((row) => row.length);
@@ -327,10 +334,17 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
   await stubCockpit(page, [wide, narrow]);
   await gotoApp(page);
 
-  const sections = ["containersPanel", "reposPanel", "runnersPanel", "usagePanel", "azurePanel"];
+  const sections = [
+    "containersPanel",
+    "openclawPanel",
+    "reposPanel",
+    "runnersPanel",
+    "usagePanel",
+    "azurePanel",
+  ];
   const rows = page.locator("#panelRows .panel-row");
-  // Wide: three rendered rows (the `hosts` row is the grid above, and the
-  // `containers` row loses its unbuilt OpenClaw half). Narrow: one per section.
+  // Wide: three rendered rows (the `hosts` row is the grid above). Narrow: one
+  // per section.
   await expect(rows).toHaveCount(3);
 
   // The app's own 1s poll delivers the narrow payload; wait for the reflow.
