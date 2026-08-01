@@ -44,7 +44,8 @@ renders every panel the SwiftUI cockpit renders. It began as a walking skeleton
 
 Those panels are arranged into rows `viewmodel::cockpit` reflows for the measured
 width, and an in-app Settings surface over `crates/store` (hosts CRUD, portfolio,
-credentials, general prefs) applies changes without a restart. The frontend is
+credentials, container group rules, general prefs) applies changes without a
+restart. The frontend is
 plain HTML/CSS/JS with no bundler (`app/ui/`) and has its own Playwright e2e suite
 (`tests/frontend/`). The Tauri IPC boundary itself is **not** automatically
 tested — `app/README.md` carries a five-minute manual smoke checklist that is the

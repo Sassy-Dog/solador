@@ -18,7 +18,10 @@ use std::collections::HashSet;
 use agentclient::AgentError;
 use serde_json::{json, Value};
 use store::settings::{CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES};
-use store::{Host, HostOverflowMode, SecretKey, Settings, TrackedRepo, DEFAULT_AGENT_PORT};
+use store::{
+    ContainerGroupRule, ContainerRuleAction, Host, HostOverflowMode, SecretKey, Settings,
+    TrackedRepo, DEFAULT_AGENT_PORT, LOCAL_HOST_SCOPE,
+};
 use uuid::Uuid;
 use viewmodel::color;
 
@@ -213,6 +216,132 @@ pub fn workflows_text(repo: &TrackedRepo) -> String {
         .join(", ")
 }
 
+/// `ContainerRuleAction`'s picker labels (Swift's
+/// `ContainerGroupRulesSection.ruleRow`).
+#[must_use]
+pub const fn rule_action_label(action: ContainerRuleAction) -> &'static str {
+    match action {
+        ContainerRuleAction::Collapse => "Collapse",
+        ContainerRuleAction::Hide => "Hide",
+        ContainerRuleAction::Expect => "Expect",
+    }
+}
+
+/// One editable field of a container group rule — the Rust counterpart of the
+/// `WritableKeyPath`s Swift's bindings are built over.
+///
+/// A closed set, mapped from the identifier the frontend sends, so an unknown
+/// field is a rejected command rather than a silently-ignored edit. Same rule
+/// as [`SecretField`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleField {
+    Action,
+    Pattern,
+    Label,
+    /// Collapse only: how many matches there should be.
+    Expected,
+    /// The host section the rule applies to. Empty string = every host.
+    Host,
+}
+
+impl RuleField {
+    /// Every field, so the payload and the parser cannot drift apart.
+    pub const ALL: [RuleField; 5] = [
+        RuleField::Action,
+        RuleField::Pattern,
+        RuleField::Label,
+        RuleField::Expected,
+        RuleField::Host,
+    ];
+
+    /// The identifier the payload carries and the frontend sends back.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            RuleField::Action => "action",
+            RuleField::Pattern => "pattern",
+            RuleField::Label => "label",
+            RuleField::Expected => "expected",
+            RuleField::Host => "host",
+        }
+    }
+
+    /// Parses the identifier the frontend sent.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        RuleField::ALL.into_iter().find(|field| field.id() == raw)
+    }
+}
+
+/// The expected-count field's `String -> Option<u32>` shim.
+///
+/// Swift's `expectedCountBinding` in one expression, and the rule it encodes is
+/// the point: **empty, non-numeric, zero or negative input clears the
+/// expectation** rather than coercing to `0`. An expectation of zero is no
+/// expectation, and the panel must not render `×0/0` — a fabricated number the
+/// operator never typed. (`parse::<u32>` rejects `-1` and an overflowing
+/// figure outright, where Swift's `Int` parses them and the `> 0` guard then
+/// clears them; both arrive at `None`.)
+#[must_use]
+pub fn parse_expected_count(raw: &str) -> Option<u32> {
+    raw.trim().parse::<u32>().ok().filter(|count| *count > 0)
+}
+
+/// A blank rule, as **Add Rule** appends it.
+///
+/// `Collapse` with an empty pattern and label, matching Swift's
+/// `ContainerGroupRule(pattern: "", label: "")` — an empty pattern matches only
+/// the empty name, so a half-filled row cannot start hiding containers before
+/// the operator has finished typing.
+#[must_use]
+pub fn new_rule() -> ContainerGroupRule {
+    ContainerGroupRule::new("", "", ContainerRuleAction::Collapse)
+}
+
+/// Writes one field of one rule, in place.
+///
+/// The pure half of the concurrent-edit guard: the caller re-reads the
+/// persisted list, this writes **one** field into it, and the caller writes the
+/// whole list back. That is Swift's per-`keyPath` binding, which re-reads
+/// `groupRulesData` on every access precisely so editing a rule's label cannot
+/// clobber the pattern someone changed a moment earlier — a whole-row write
+/// from a captured snapshot would.
+///
+/// Returns `false` when the edit addressed nothing (an index no longer in the
+/// list, or an action string no picker can produce), and leaves `rules`
+/// untouched — the counterpart of Swift's `guard let index … else { return }`.
+#[must_use]
+pub fn apply_rule_edit(
+    rules: &mut [ContainerGroupRule],
+    index: usize,
+    field: RuleField,
+    value: &str,
+) -> bool {
+    let Some(rule) = rules.get_mut(index) else {
+        return false;
+    };
+    match field {
+        RuleField::Action => match ContainerRuleAction::parse(value) {
+            Some(action) => rule.action = action,
+            None => return false,
+        },
+        RuleField::Pattern => rule.pattern = value.to_owned(),
+        RuleField::Label => rule.label = value.to_owned(),
+        RuleField::Expected => rule.expected_count = parse_expected_count(value),
+        // The picker's "All hosts" is the empty string on the wire, because
+        // `null` and `""` both survive a JSON round-trip but only one of them
+        // survives a `<select>`'s value.
+        RuleField::Host => {
+            rule.host = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_owned())
+            }
+        }
+    }
+    true
+}
+
 /// The General tab's three values, laundered through the same rules the store
 /// enforces on deserialize: an unoffered cadence reads as the default, a
 /// row span outside 1–4 is clamped, an unknown overflow mode is `stack`.
@@ -244,6 +373,7 @@ pub fn view(
     settings: &Settings,
     hosts: &[Host],
     repos: &[TrackedRepo],
+    rules: &[ContainerGroupRule],
     stored: &StoredSecrets,
     openclaw: &openclaw::SettingsFacts,
 ) -> Value {
@@ -265,7 +395,7 @@ pub fn view(
         "general": general_tab(settings),
         "github": github_tab(stored),
         "portfolio": portfolio_tab(repos),
-        "hosts": hosts_tab(settings, hosts, stored),
+        "hosts": hosts_tab(settings, hosts, rules, stored),
         "azure": azure_tab(settings, stored),
         "usage": usage_tab(settings, stored),
         "openclaw": openclaw_tab(settings, stored, openclaw),
@@ -361,7 +491,94 @@ fn portfolio_tab(repos: &[TrackedRepo]) -> Value {
     })
 }
 
-fn hosts_tab(settings: &Settings, hosts: &[Host], stored: &StoredSecrets) -> Value {
+/// The host-scope picker's options for one rule: "All hosts", "this machine",
+/// every stored host by name — and the rule's own scope when it names a host
+/// that no longer exists.
+///
+/// That last case is `hostScopeOptions(current:)`'s whole reason to exist: a
+/// picker whose selection is absent from its options renders **blank**, so a
+/// rule scoped to a host you removed would read as unscoped while still
+/// matching nothing. Ordered by name, matching the Swift view's
+/// `@Query(sort: \MonitoredHost.name)`.
+fn rule_host_options(hosts: &[Host], current: Option<&str>) -> Vec<Value> {
+    let mut names: Vec<String> = hosts.iter().map(|host| host.name.clone()).collect();
+    names.sort();
+    let mut options = vec![LOCAL_HOST_SCOPE.to_owned()];
+    options.extend(names);
+    if let Some(current) = current {
+        if !options.iter().any(|option| option == current) {
+            options.push(current.to_owned());
+        }
+    }
+    // "All hosts" leads, and its value is the empty string — see `RuleField::Host`.
+    std::iter::once(json!({ "value": "", "label": "All hosts" }))
+        .chain(
+            options
+                .into_iter()
+                .map(|name| json!({ "value": name, "label": name })),
+        )
+        .collect()
+}
+
+/// The Container Group Rules editor.
+///
+/// Rows are addressed by **index**, not by an id: the persisted rule model has
+/// none (order is the contract — matching is first-match-wins), and every
+/// mutation is a read-modify-write of the whole list under the store's lock, so
+/// the index a row was rendered with addresses the same rule the frontend is
+/// looking at. A row whose index no longer exists is a rejected edit, not a
+/// misdirected one — see [`apply_rule_edit`].
+fn rules_section(rules: &[ContainerGroupRule], hosts: &[Host]) -> Value {
+    json!({
+        "heading": "Container Group Rules",
+        "addLabel": "Add Rule",
+        "deleteLabel": "Delete",
+        "actionLabel": "Action",
+        "actions": ContainerRuleAction::ALL
+            .into_iter()
+            .map(|action| json!({ "value": action.as_str(), "label": rule_action_label(action) }))
+            .collect::<Vec<_>>(),
+        "patternLabel": "Pattern",
+        "patternPrompt": "api-*",
+        "labelLabel": "Group label",
+        "labelPrompt": "group label",
+        "expectedLabel": "Expected count",
+        "expectedPrompt": "expected ×",
+        // The separator Swift draws as an `arrow.right` SF Symbol between the
+        // pattern and what it collapses into. A glyph the frontend picked would
+        // be a string this file did not make.
+        "arrow": "→",
+        "hostLabel": "Host",
+        "rows": rules
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| json!({
+                "index": index,
+                "action": rule.action.as_str(),
+                "pattern": rule.pattern,
+                "label": rule.label,
+                // A string, not a number: the field's empty state is "no
+                // expectation", and a `0` here is exactly the fabricated
+                // number `parse_expected_count` exists to refuse.
+                "expected": rule.expected_count.map(|n| n.to_string()).unwrap_or_default(),
+                "host": rule.host.clone().unwrap_or_default(),
+                // Only a Collapse rule has an aggregate to label or count.
+                // Hide renders no row at all, and Expect's row is the entity's
+                // own name.
+                "collapseOnly": rule.action == ContainerRuleAction::Collapse,
+                "hostOptions": rule_host_options(hosts, rule.host.as_deref()),
+            }))
+            .collect::<Vec<_>>(),
+        "help": "Collapse folds matching containers into one \u{201C}label ×N\u{201D} row on the Containers panel; Hide removes their rows entirely (they still count in the header rollup); Expect keeps a standing presence row for matching names — amber while briefly absent (recycling), red once absent past 5 minutes (missing). Expect globs track names actually observed at least once; only an exact name alarms without ever being seen. A Collapse rule's expected count renders ×matched/expected and warns amber when short. A rule only applies on its selected host, and a scoped Collapse rule shows a standing ×0 row there even with no matches. `*` matches any run of characters; everything else is literal and case-sensitive.",
+    })
+}
+
+fn hosts_tab(
+    settings: &Settings,
+    hosts: &[Host],
+    rules: &[ContainerGroupRule],
+    stored: &StoredSecrets,
+) -> Value {
     json!({
         "heading": "Remote Hosts",
         "empty": "No remote hosts yet. Add one below, then it appears in the cockpit.",
@@ -400,6 +617,10 @@ fn hosts_tab(settings: &Settings, hosts: &[Host], stored: &StoredSecrets) -> Val
             "buttonLabel": "Add Host",
             "help": "The agent serves metrics on the host's tailnet address. The token is stored in your OS credential store, never in the settings file.",
         },
+        // Same tab as Swift's, and for the same reason: the rules are scoped by
+        // host, so the picker that names one belongs beside the list that
+        // defines them.
+        "rules": rules_section(rules, hosts),
     })
 }
 
@@ -551,6 +772,7 @@ fn about_tab() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use store::ContainerRuleAction as Action;
 
     fn health(hostname: &str, version: &str, stale: Option<bool>) -> wire::Health {
         wire::Health {
@@ -744,10 +966,30 @@ mod tests {
         openclaw::SettingsFacts::default()
     }
 
+    /// [`view`] over the seeded container rules — what every test that is not
+    /// *about* the rules wants. The rules tests below call `view` directly with
+    /// a list of their own.
+    fn view_of(
+        settings: &Settings,
+        hosts: &[Host],
+        repos: &[TrackedRepo],
+        stored: &StoredSecrets,
+        openclaw: &openclaw::SettingsFacts,
+    ) -> Value {
+        view(
+            settings,
+            hosts,
+            repos,
+            &store::seeded_rules(),
+            stored,
+            openclaw,
+        )
+    }
+
     #[test]
     fn the_payload_carries_every_tab_the_window_shows() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let ids: Vec<&str> = vm["tabs"]
             .as_array()
             .expect("tabs")
@@ -777,7 +1019,7 @@ mod tests {
     #[test]
     fn the_general_tab_shows_the_stored_values_and_the_offered_choices() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let general = &vm["general"];
         assert_eq!(general["refreshInterval"]["value"], 300);
         assert_eq!(general["coreRowSpan"]["value"], 3);
@@ -797,7 +1039,7 @@ mod tests {
     #[test]
     fn the_hosts_tab_lists_every_host_enabled_or_not_with_its_endpoint() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let rows = vm["hosts"]["rows"].as_array().expect("rows");
         // Settings edits a *configuration*, so a disabled host must still be
         // listed -- the cockpit is what filters on `enabled`.
@@ -815,12 +1057,258 @@ mod tests {
         assert_eq!(vm["hosts"]["add"]["portDefault"], "7878");
     }
 
+    // MARK: the container group rules editor
+
+    /// A rule list covering all three actions, both host-scope shapes and both
+    /// sides of the expected-count field.
+    fn rules() -> Vec<ContainerGroupRule> {
+        let mut collapse =
+            ContainerGroupRule::new("api-*", "workflow jobs", Action::Collapse).on_host("ubu-3xdv");
+        collapse.expected_count = Some(4);
+        vec![
+            collapse,
+            ContainerGroupRule::new("ghcr.io/*", "", Action::Hide),
+            ContainerGroupRule::new("build-vm", "", Action::Expect).on_host(LOCAL_HOST_SCOPE),
+        ]
+    }
+
+    fn rules_of(vm: &Value) -> &Value {
+        &vm["hosts"]["rules"]
+    }
+
+    #[test]
+    fn the_rules_editor_shows_every_persisted_field_of_every_rule() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view(&settings, &hosts, &repos, &rules(), &stored, &facts());
+        let rows = rules_of(&vm)["rows"].as_array().expect("rule rows");
+        assert_eq!(rows.len(), 3);
+
+        // Rows are addressed by index, and the index is the position in the
+        // persisted list — order is the rule engine's contract (first match
+        // wins), so a row that reported the wrong one would edit the wrong rule.
+        assert_eq!(rows[0]["index"], 0);
+        assert_eq!(rows[0]["action"], "collapse");
+        assert_eq!(rows[0]["pattern"], "api-*");
+        assert_eq!(rows[0]["label"], "workflow jobs");
+        assert_eq!(rows[0]["host"], "ubu-3xdv");
+        assert_eq!(rows[0]["collapseOnly"], true);
+
+        assert_eq!(rows[1]["index"], 1);
+        assert_eq!(rows[1]["action"], "hide");
+        // "All hosts" is the empty string on the wire, not null: a `<select>`
+        // can only carry a string, and null would arrive as the literal "null".
+        assert_eq!(rows[1]["host"], "");
+        assert_eq!(rows[1]["collapseOnly"], false);
+
+        assert_eq!(rows[2]["action"], "expect");
+        assert_eq!(rows[2]["host"], LOCAL_HOST_SCOPE);
+        assert_eq!(rows[2]["collapseOnly"], false);
+
+        // The picker offers exactly the three actions the engine implements.
+        let actions: Vec<&str> = rules_of(&vm)["actions"]
+            .as_array()
+            .expect("actions")
+            .iter()
+            .map(|a| a["value"].as_str().expect("value"))
+            .collect();
+        assert_eq!(actions, vec!["collapse", "hide", "expect"]);
+        assert_eq!(rules_of(&vm)["actions"][0]["label"], "Collapse");
+        assert_eq!(rules_of(&vm)["actions"][2]["label"], "Expect");
+        assert_eq!(rules_of(&vm)["addLabel"], "Add Rule");
+        assert_eq!(rules_of(&vm)["patternPrompt"], "api-*");
+        assert_eq!(rules_of(&vm)["expectedPrompt"], "expected ×");
+    }
+
+    /// An expectation is a **string** in the payload, and its unset state is
+    /// empty — never `0`. A `0` here would render as an expectation the
+    /// operator never set, which is the fabricated number the whole
+    /// `Option<u32>` exists to refuse.
+    #[test]
+    fn an_unset_expected_count_is_empty_not_zero() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view(&settings, &hosts, &repos, &rules(), &stored, &facts());
+        let rows = rules_of(&vm)["rows"].as_array().expect("rule rows");
+        assert_eq!(rows[0]["expected"], "4");
+        assert_eq!(rows[1]["expected"], "");
+        assert_eq!(rows[2]["expected"], "");
+        for row in rows {
+            assert!(row["expected"].is_string(), "{row}");
+        }
+    }
+
+    /// A picker whose selection is absent from its options renders blank — so a
+    /// rule scoped to a host that has since been removed would read as
+    /// unscoped while still matching nothing on every host.
+    #[test]
+    fn the_host_picker_keeps_a_scope_whose_host_no_longer_exists() {
+        let (settings, hosts, repos, stored) = sample();
+        let orphan = vec![
+            ContainerGroupRule::new("legacy-*", "legacy", Action::Collapse).on_host("retired-box"),
+        ];
+        let vm = view(&settings, &hosts, &repos, &orphan, &stored, &facts());
+        let options: Vec<&str> = rules_of(&vm)["rows"][0]["hostOptions"]
+            .as_array()
+            .expect("host options")
+            .iter()
+            .map(|o| o["value"].as_str().expect("value"))
+            .collect();
+        // "All hosts", this machine, both stored hosts by name, then the orphan.
+        assert_eq!(
+            options,
+            vec!["", LOCAL_HOST_SCOPE, "mac-mini", "ubu-3xdv", "retired-box"]
+        );
+        assert_eq!(
+            rules_of(&vm)["rows"][0]["hostOptions"][0]["label"],
+            "All hosts"
+        );
+
+        // A scope that *does* exist is not duplicated into the list.
+        let scoped =
+            vec![ContainerGroupRule::new("api-*", "jobs", Action::Collapse).on_host("ubu-3xdv")];
+        let vm = view(&settings, &hosts, &repos, &scoped, &stored, &facts());
+        let options = rules_of(&vm)["rows"][0]["hostOptions"]
+            .as_array()
+            .expect("host options")
+            .clone();
+        assert_eq!(options.len(), 4);
+    }
+
+    #[test]
+    fn an_empty_rule_list_renders_the_editor_with_no_rows() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view(&settings, &hosts, &repos, &[], &stored, &facts());
+        assert!(rules_of(&vm)["rows"]
+            .as_array()
+            .expect("rule rows")
+            .is_empty());
+        // The chrome is still there: an emptied list is a configuration, and
+        // Add Rule is how it stops being one.
+        assert_eq!(rules_of(&vm)["addLabel"], "Add Rule");
+    }
+
+    // MARK: the rule mutations
+
+    #[test]
+    fn every_rule_field_id_round_trips() {
+        for field in RuleField::ALL {
+            assert_eq!(RuleField::parse(field.id()), Some(field));
+        }
+        assert_eq!(RuleField::parse(""), None);
+        assert_eq!(RuleField::parse("expectedCount"), None);
+    }
+
+    /// One field at a time, into a freshly-read list — the port of Swift's
+    /// per-`keyPath` bindings. Editing the label must leave the pattern,
+    /// action, scope and count exactly as they were on disk.
+    #[test]
+    fn an_edit_writes_one_field_and_leaves_the_rest_of_the_rule_alone() {
+        let mut list = rules();
+        let before = list[0].clone();
+        assert!(apply_rule_edit(&mut list, 0, RuleField::Label, "ci jobs"));
+        assert_eq!(list[0].label, "ci jobs");
+        assert_eq!(list[0].pattern, before.pattern);
+        assert_eq!(list[0].action, before.action);
+        assert_eq!(list[0].host, before.host);
+        assert_eq!(list[0].expected_count, before.expected_count);
+        // …and no other rule moved.
+        assert_eq!(list[1], rules()[1]);
+        assert_eq!(list[2], rules()[2]);
+    }
+
+    #[test]
+    fn each_field_writes_the_value_it_names() {
+        let mut list = rules();
+        assert!(apply_rule_edit(&mut list, 1, RuleField::Action, "expect"));
+        assert_eq!(list[1].action, Action::Expect);
+        assert!(apply_rule_edit(&mut list, 1, RuleField::Pattern, "vm-*"));
+        assert_eq!(list[1].pattern, "vm-*");
+        assert!(apply_rule_edit(&mut list, 1, RuleField::Host, "ubu-3xdv"));
+        assert_eq!(list[1].host.as_deref(), Some("ubu-3xdv"));
+        assert!(apply_rule_edit(&mut list, 1, RuleField::Expected, "7"));
+        assert_eq!(list[1].expected_count, Some(7));
+    }
+
+    /// "All hosts" is the empty string, and it must reach the store as `None`
+    /// — a rule scoped to the literal `""` would apply to no host at all.
+    #[test]
+    fn the_empty_host_scope_means_every_host() {
+        let mut list = rules();
+        assert!(apply_rule_edit(&mut list, 0, RuleField::Host, ""));
+        assert_eq!(list[0].host, None);
+        assert!(list[0].applies_to("ubu-3xdv"));
+        assert!(list[0].applies_to(LOCAL_HOST_SCOPE));
+    }
+
+    /// Swift's `Int(newValue) .flatMap { $0 > 0 ? $0 : nil }`, case for case:
+    /// anything that is not a positive whole number **clears** the expectation.
+    #[test]
+    fn a_blank_or_nonsensical_expected_count_clears_the_expectation() {
+        assert_eq!(parse_expected_count("4"), Some(4));
+        assert_eq!(parse_expected_count("  12  "), Some(12));
+        for raw in ["", "   ", "0", "-1", "two", "3.5", "99999999999999999999"] {
+            assert_eq!(parse_expected_count(raw), None, "raw {raw:?}");
+        }
+
+        let mut list = rules();
+        assert_eq!(list[0].expected_count, Some(4));
+        assert!(apply_rule_edit(&mut list, 0, RuleField::Expected, ""));
+        assert_eq!(list[0].expected_count, None, "cleared, never coerced to 0");
+    }
+
+    /// An index that no longer names a rule, or an action no picker can
+    /// produce, must change nothing — Swift's `guard let index … else
+    /// { return }`, and the reason an unknown action is rejected here where the
+    /// *file* decoder tolerates one.
+    #[test]
+    fn an_edit_that_addresses_nothing_leaves_the_list_untouched() {
+        let mut list = rules();
+        let before = list.clone();
+
+        assert!(!apply_rule_edit(&mut list, 3, RuleField::Pattern, "x"));
+        assert!(!apply_rule_edit(
+            &mut list,
+            usize::MAX,
+            RuleField::Label,
+            "x"
+        ));
+        assert!(!apply_rule_edit(
+            &mut list,
+            0,
+            RuleField::Action,
+            "quarantine"
+        ));
+        assert!(!apply_rule_edit(&mut list, 0, RuleField::Action, ""));
+        assert_eq!(list, before);
+
+        assert!(!apply_rule_edit(
+            &mut Vec::new(),
+            0,
+            RuleField::Pattern,
+            "x"
+        ));
+    }
+
+    /// **Add Rule** appends a blank Collapse rule, and its empty pattern is
+    /// load-bearing: it matches only the empty name, so a half-typed row cannot
+    /// start collapsing or hiding containers before the operator is done.
+    #[test]
+    fn a_new_rule_starts_blank_and_matches_nothing_real() {
+        let rule = new_rule();
+        assert_eq!(rule.action, Action::Collapse);
+        assert_eq!(rule.pattern, "");
+        assert_eq!(rule.label, "");
+        assert_eq!(rule.host, None);
+        assert_eq!(rule.expected_count, None);
+        assert!(!rule.matches("api-1"));
+        assert!(!rule.matches("anything"));
+    }
+
     #[test]
     fn the_portfolio_tab_lists_repos_with_their_watched_workflows() {
         let (settings, hosts, mut repos, stored) = sample();
         repos[0].watched_workflows = Some(vec!["release.yml".into()]);
         repos[1].enabled = false;
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let rows = vm["portfolio"]["rows"].as_array().expect("rows");
         assert_eq!(rows.len(), repos.len());
         assert_eq!(rows[0]["slug"], repos[0].slug);
@@ -832,7 +1320,7 @@ mod tests {
     #[test]
     fn a_stored_credential_is_a_badge_and_nothing_more() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["github"]["secret"]["stored"], true);
         assert_eq!(vm["github"]["secret"]["storedLabel"], "Token stored");
         assert_eq!(vm["usage"]["neon"]["secret"]["stored"], false);
@@ -852,7 +1340,7 @@ mod tests {
     #[test]
     fn the_payload_can_carry_no_credential_value_at_all() {
         let (settings, hosts, repos, stored) = sample();
-        let raw = view(&settings, &hosts, &repos, &stored, &facts()).to_string();
+        let raw = view_of(&settings, &hosts, &repos, &stored, &facts()).to_string();
         // Every credential-store account name, so a section that ever grew a
         // value field under its own key would be caught here too.
         for account in [
@@ -874,7 +1362,7 @@ mod tests {
         // could *hold* a value, this fails — which a substring search over the
         // rendered payload could not do, because it cannot know what the value
         // would have been.
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         for secret in [
             &vm["github"]["secret"],
             &vm["usage"]["neon"]["secret"],
@@ -913,7 +1401,7 @@ mod tests {
     fn the_pairing_block_shows_the_fingerprint_and_the_approve_command() {
         let (settings, hosts, repos, stored) = sample();
         let live = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
-        let vm = view(&settings, &hosts, &repos, &stored, &live);
+        let vm = view_of(&settings, &hosts, &repos, &stored, &live);
         let tab = &vm["openclaw"];
 
         assert_eq!(tab["deviceId"], live.device_id.expect("a device id"));
@@ -935,7 +1423,7 @@ mod tests {
     #[test]
     fn with_no_device_key_the_tab_says_so_instead_of_showing_a_blank_id() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         let tab = &vm["openclaw"];
 
         assert!(tab["deviceId"].is_null());
@@ -977,7 +1465,7 @@ mod tests {
     #[test]
     fn the_non_secret_provider_settings_are_shown_so_they_can_be_edited() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["usage"]["neon"]["orgId"], "org-abc");
         assert_eq!(vm["usage"]["sentry"]["orgSlug"], "sassy-dog");
         assert_eq!(vm["usage"]["sentry"]["quota"], 50_000);
@@ -987,7 +1475,7 @@ mod tests {
     #[test]
     fn the_about_tab_names_the_app_and_its_version() {
         let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &stored, &facts());
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["about"]["name"], "DevCanopy");
         assert_eq!(vm["about"]["version"], format!("Version {VERSION}"));
         assert_eq!(vm["about"]["links"].as_array().expect("links").len(), 3);

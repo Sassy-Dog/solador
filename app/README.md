@@ -78,6 +78,7 @@ await window.__TAURI__.core.invoke("cockpit", { width: gridWidth });
   "hostColumns": 2,        // viewmodel::cockpit::host_columns for `width`
   "hostCardMinWidth": 900, // …and the numbers it used, so the frontend can't
   "spacing": 16,           //    re-derive them and disagree
+  "hostTabs": null,        // or {"minHeight": 780, "tabs": [{"id", "label"}, …]}
   "panels": [ /* the panel table: id, title, minWidth */ ],
   "panelRows": [ /* the reflowed layout: which panels share a row, in order */ ],
   "empty": null,           // or {"message": …} when no REMOTE host is configured
@@ -89,6 +90,25 @@ The column count is decided in Rust, not by a CSS `repeat(auto-fit, minmax(900px
 1fr))`: that CSS would be a second implementation of
 `CockpitBreakpoints.hostColumns`, free to disagree with the tested one. The
 frontend passes the grid's measured width and applies the answer.
+
+`hostTabs` is the **overflow mode**, and it is the same argument one layer down.
+Below the side-by-side breakpoint the cards stack — every host stays visible,
+which is the point of an always-on cockpit — unless the operator picks *Show as
+tabs* under Settings → General, and then one card shows at a time behind a bar.
+Which of those happens is `viewmodel::cockpit::host_tabs`, and its three
+conditions are `HostsPanel.content`'s: `columns <= 1`, more than one host, and
+the preference set. A `columns <= 1 && hosts > 1` written in JS would be that
+rule restated where no Rust test can see it, so the payload carries `null` or a
+finished tab bar — one tab per card, in payload order (this machine leads the
+bar exactly as it leads the grid), labelled with the card's own host name and
+carrying the container's `minHeight`. That floor is `HostsPanel`'s
+`.frame(minHeight: 780)`: with one card on screen the grid has nothing else
+sizing it and would collapse to the height of the bar.
+
+The frontend **hides** the other cards rather than removing them. A card torn
+down on every tab switch would lose its chart nodes and therefore its sparkline
+history, which is the one thing the card is worth looking at for; hidden cards
+keep recording and are current the moment they are shown.
 
 `panelRows` is the same argument for the panels *below* the grid:
 `CockpitLayout::hosts_forward()` reflowed for that width by
@@ -155,9 +175,9 @@ Three sources feed it, all in [`src-tauri/src/containers/`](src-tauri/src/contai
 
 Seeded rules match Swift's (`sassydog-ghr-ubu-*` → "ghr runners" and `api-*` →
 "workflow jobs" on `ubu-3xdv`, `ghcr.io/*` hidden) and seed **only** when the
-store has never carried rules: a deliberately emptied list stays empty.
-**Editing the rules is not in this slice** — Swift keeps that editor in
-Settings → Hosts, and the engine ships before its UI.
+store has never carried rules: a deliberately emptied list stays empty. They are
+edited under [Settings → Hosts](#settings), beside the host list whose names
+scope them.
 
 ## The `repos` and `runners` commands
 
@@ -526,6 +546,7 @@ empty `permissions` list.
 | `settings_save_providers` | Neon org id, Sentry slug + quota, Azure budget (all four at once) |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it |
 | `settings_unhide_volume` | one mount, on a host or on the local list |
+| `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
 | `settings_test_host` | one `/v1/health` probe → the Swift result line |
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio |
 | `settings_save_openclaw` | the OpenClaw gateway URL |
@@ -544,11 +565,32 @@ a portfolio fetch on a credential it has no use for.
 | the `azure` credential | the Azure loop |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget | nothing — both are read at render time |
+| a container group rule | nothing — the rules are read at render time too, by `containers` |
+| the host-overflow mode | nothing — read at render time by `cockpit`, on its 1s tick |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
 
 Every mutation answers in one shape — `{status, settings}` — and the frontend
 re-renders from the `settings` it gets back rather than patching its own copy,
 so it can never show an edit that failed to save.
+
+**The rules editor writes one field per call, and that is the whole of its
+concurrency story.** Swift builds a `Binding` per `WritableKeyPath` that
+re-reads the persisted list on *every* access, precisely so editing a rule's
+label cannot clobber the pattern someone changed a moment earlier. The port is
+`settings_set_container_rule(index, field, value)`: the frontend sends the field
+that changed and nothing else, and Rust does the read-modify-write of the whole
+list under the store's lock. A whole-row command would have been a client-side
+snapshot of four fields, which is the bug that shape exists to avoid. Rows are
+addressed by **index** because the persisted model has no id and order *is* the
+engine's contract (first match wins); an index that no longer names a rule is a
+rejected edit — `Skipped — unknown rule.` — never a misdirected one.
+
+Two rules of the editor are Rust's, not the field's: the group label and the
+expected count exist **only for a Collapse rule** (`collapseOnly` in the
+payload — Hide renders no row and Expect's row is the entity's own name), and an
+expected count that is empty, zero, negative or not a number **clears** the
+expectation rather than becoming `0`. An expectation of zero is no expectation,
+and `×0/0` would be a figure nobody typed.
 
 **Secrets never travel back.** A credential goes frontend → `store::SecretKey` →
 OS credential store and stops there; what `settings_view` carries is one boolean
@@ -563,18 +605,19 @@ reload entirely, mirroring the Swift view's `applyHiddenMounts()` vs `reload()`.
 
 Two gaps, deliberate and worth knowing:
 
-- **The refresh interval is consumed; the other two General preferences are
+- **Two of the three General preferences are consumed; the core row span is
   not.** `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
   rollup's cadence, and changing it applies immediately (see below). Neither the
   host poll loop nor the provider reads are on it: the host loop stays at 1s
   because one history sample is one fixed time slice
   (`PX_PER_SAMPLE`), so that cadence is part of the charts' time axis rather
   than a preference, and Neon, Sentry and the Azure export publish on the order
-  of hours or days, so each keeps its own fixed cadence. The core row span and
-  host-overflow mode are still read by
-  `viewmodel`'s card and cockpit functions from their own constants; they
-  persist (same file, same keys, same laundering rules as Swift) and nothing
-  reads the stored value yet.
+  of hours or days, so each keeps its own fixed cadence. `host_overflow_mode` is
+  re-read by the `cockpit` command on every frame, so *Show as tabs* takes
+  effect on the next 1s tick. The **core row span** is still read by
+  `viewmodel`'s card functions from their own constant; it persists (same file,
+  same key, same laundering rules as Swift) and nothing reads the stored value
+  yet.
 - **About's version is hard-coded** to the crate version, not the CalVer the
   Swift app derives from git ([#15](https://github.com/Sassy-Dog/devcanopy/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
@@ -619,8 +662,10 @@ the wrong layer.
 cargo run -p devcanopy-app -- --dump sample.json                 # one live host
 cargo run -p devcanopy-app -- --dump-stale sample-stale.json     # …stale, same numbers
 cargo run -p devcanopy-app -- --dump-cockpit sample-cockpit.json # three hosts: live / stale / failed
-#   …plus `--width <pt>` (which column count to compute) and `--hosts <n>`
-#   (how many of the three to include; 0 is the unconfigured cockpit).
+#   …plus `--width <pt>` (which column count to compute), `--hosts <n>` (how
+#   many of the three to include; 0 is the unconfigured cockpit) and `--tabs`
+#   (the "Show as tabs" overflow mode, which only changes the payload at a
+#   width where the cards were going to stack anyway).
 cargo run -p devcanopy-app -- --dump-settings sample-settings.json # the Settings surface
 cargo run -p devcanopy-app -- --dump-containers sample-containers.json # the Containers panel
 #   …plus `--empty`, which dumps the no-runtimes state with a failed-tool footer.
@@ -643,7 +688,13 @@ cargo run -p devcanopy-app -- --dump-openclaw sample-openclaw.json   # the OpenC
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
 (one enabled host with a token and a hidden volume, one disabled host with
 neither; two credentials stored, two not) with hard-coded uuids, so it is
-byte-stable across regenerations and covers both sides of every badge.
+byte-stable across regenerations and covers both sides of every badge. Its
+**container group rules** are the seeded three plus the two renderings seeding
+alone never reaches — an Expect rule (whose Collapse-only fields must therefore
+be absent) and a scope naming a host that is not configured (the case the host
+picker grows an extra option for, and the one where it renders blank if it
+doesn't) — all asserted by
+`the_settings_fixture_covers_every_rule_rendering_the_editor_has`.
 `--dump-containers` is the same idea one panel over: a hand-made state at a
 **fixed** timestamp (a relative age like "recycling 40s" would otherwise drift
 on every dump and no test could assert one), covering a present container, a
@@ -741,7 +792,8 @@ half works on a machine whose screen you cannot see.
       the sentence `no container runtimes`. Allow 10s — that is the panel's cadence.
 - [ ] **Click Settings** → terminal prints
       `settings: first frontend request (N host(s), N repo(s))`, the Hosts tab lists
-      your seeded host, and **Done** returns to the cockpit.
+      your seeded host **and the three seeded container group rules below it**, and
+      **Done** returns to the cockpit.
 
 All eleven ticked ⇒ every registered command round-tripped through the ACL and the
 IPC transport. **A zero, a `false` or an empty string is a pass**: those are Rust's
@@ -755,6 +807,8 @@ and that immediacy is itself the check on the corresponding wake:
 |---|---|---|
 | `github_wake` / Repos / Runners | save a fine-grained PAT under Settings → GitHub | both panels fill within seconds; **Clear** drops them back just as fast. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
+| the rules editor | under Settings → Hosts, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
+| the tabs mode | set Settings → General to **Show as tabs**, **Apply**, then narrow the window below ~1816pt with two hosts configured | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `openclaw_wake` | put a gateway URL under Settings → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `DEVCANOPY_SEED_HOST` | the host card fills with live figures and a green dot |

@@ -48,6 +48,41 @@ pub enum ContainerRuleAction {
     Expect,
 }
 
+impl ContainerRuleAction {
+    /// Every action, in the order the Swift picker offers them.
+    pub const ALL: [ContainerRuleAction; 3] = [
+        ContainerRuleAction::Collapse,
+        ContainerRuleAction::Hide,
+        ContainerRuleAction::Expect,
+    ];
+
+    /// The persisted spelling — what [`Serialize`] writes and what an editor
+    /// sends back.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ContainerRuleAction::Collapse => "collapse",
+            ContainerRuleAction::Hide => "hide",
+            ContainerRuleAction::Expect => "expect",
+        }
+    }
+
+    /// Parses an action an *editor* sent, strictly.
+    ///
+    /// Deliberately not the [`Deserialize`] impl's tolerance: that one reads a
+    /// **file**, where an unknown string means "written by a newer build" and
+    /// degrading to `Collapse` saves the rest of the rule. This one reads a
+    /// **command**, where an unknown string means the caller sent something no
+    /// picker can produce — and silently rewriting that as `Collapse` would
+    /// persist an edit nobody made.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        ContainerRuleAction::ALL
+            .into_iter()
+            .find(|action| action.as_str() == raw)
+    }
+}
+
 /// Unknown action strings degrade to [`ContainerRuleAction::Collapse`] rather
 /// than failing the decode.
 ///
@@ -71,8 +106,9 @@ impl<'de> Deserialize<'de> for ContainerRuleAction {
 
 /// A user-editable rule over container/VM names.
 ///
-/// Editing them is a later slice (Swift keeps the editor in Settings → Hosts);
-/// what ships here is the engine and its seeds.
+/// Edited from Settings → Hosts, exactly as Swift's
+/// `ContainerGroupRulesSection` does; what lives here is the model, its glob
+/// matcher and the seeds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerGroupRule {
     /// Glob over the whole container name — see [`matches_glob`].
@@ -283,6 +319,22 @@ mod tests {
         assert_eq!(seeded[2].pattern, "ghcr.io/*");
         assert_eq!(seeded[2].action, ContainerRuleAction::Hide);
         assert_eq!(seeded[2].host, None);
+    }
+
+    /// The editor's parse is the strict counterpart of the file decoder's
+    /// tolerance below — and the two must disagree on exactly one input.
+    #[test]
+    fn an_action_round_trips_through_the_spelling_an_editor_sends() {
+        for action in ContainerRuleAction::ALL {
+            assert_eq!(ContainerRuleAction::parse(action.as_str()), Some(action));
+            assert_eq!(
+                serde_json::to_string(&action).expect("serialize"),
+                format!("\"{}\"", action.as_str())
+            );
+        }
+        for raw in ["", "quarantine", "Collapse", "COLLAPSE"] {
+            assert_eq!(ContainerRuleAction::parse(raw), None, "raw {raw:?}");
+        }
     }
 
     #[test]

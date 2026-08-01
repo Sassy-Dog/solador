@@ -330,6 +330,69 @@ function applyPanelRows(rows) {
   $("panelRows").replaceChildren(...built);
 }
 
+// Which host the tab bar has selected, by id. Module-level so it survives every
+// poll: the payload is rebuilt once a second, and a selection stored on the DOM
+// would be reset by the next render.
+let selectedHost = null;
+
+/**
+ * The host tab bar — the "Show as tabs" overflow mode.
+ *
+ * Applied, never decided: `hostTabs` is null unless
+ * `viewmodel::cockpit::host_tabs` says the cards collapse (below the
+ * side-by-side breakpoint, more than one host, and the preference set), and a
+ * JS `columns <= 1 && hosts > 1` here would be that rule restated where no Rust
+ * test can see it. The labels are the cards' own host names, from the same
+ * payload.
+ *
+ * Returns the id of the one card that stays visible, or null when every card
+ * does.
+ */
+function applyHostTabs(spec, grid) {
+  const bar = $("hostTabs");
+  if (!spec) {
+    // Back to the stacked/gridded case: every card visible, no floor.
+    bar.replaceChildren();
+    bar.hidden = true;
+    grid.style.minHeight = "";
+    return null;
+  }
+
+  const tabs = spec.tabs || [];
+  // A selection whose host has left the payload would hide every card. Fall
+  // back to the first tab, which is this machine — always present.
+  if (!tabs.some((t) => t.id === selectedHost)) {
+    selectedHost = tabs.length ? tabs[0].id : null;
+  }
+
+  bar.replaceChildren();
+  for (const t of tabs) {
+    // createElement + textContent, not innerHTML: a host name comes from user
+    // input and reaches the DOM as text, never as markup. Same rule as
+    // settings.js.
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn tab";
+    b.textContent = t.label;
+    b.dataset.host = t.id;
+    if (t.id === selectedHost) b.dataset.active = "true";
+    b.addEventListener("click", () => {
+      selectedHost = t.id;
+      // Repaint now rather than on the next poll: a tab that takes up to a
+      // second to switch reads as a dead button.
+      refreshCockpit();
+    });
+    bar.appendChild(b);
+  }
+  bar.hidden = tabs.length === 0;
+  // The container's floor is Rust's (`HOST_TABS_MIN_HEIGHT`, mirroring
+  // HostsPanel's `.frame(minHeight: 780)`): one card is on screen at a time, so
+  // without it the grid collapses to the height of the tab bar. CSSOM, not a
+  // `style=""` attribute — `style-src 'self'` blocks the attribute outright.
+  grid.style.minHeight = Number(spec.minHeight) + "px";
+  return selectedHost;
+}
+
 /**
  * The whole page, from one `cockpit` payload.
  *
@@ -372,6 +435,10 @@ function renderCockpit(p) {
     CARDS.delete(id);
   }
 
+  // Null unless the cards collapsed into tabs, in which case exactly one of
+  // them stays on the page.
+  const shown = applyHostTabs(p.hostTabs, grid);
+
   p.hosts.forEach((h, i) => {
     let card = CARDS.get(h.id);
     if (!card) {
@@ -381,6 +448,12 @@ function renderCockpit(p) {
     // Cheap and idempotent: a no-op while the order is stable, and a real
     // move the moment the payload reorders (a rename re-sorts the list).
     if (grid.children[i] !== card) grid.insertBefore(card, grid.children[i] || null);
+    // Hidden, not removed: a card torn down on every tab switch would lose its
+    // chart nodes and therefore its sparkline history, which is the one thing
+    // the cockpit is worth looking at for. `drawCard` still runs, so the
+    // off-screen cards keep recording and are current the moment they are
+    // shown -- and their charts repaint from the ResizeObserver.
+    card.hidden = shown !== null && h.id !== shown;
     drawCard(card, h);
   });
 }

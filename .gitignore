@@ -110,6 +110,7 @@ app/ui/sample-stale.json
 app/ui/sample-cockpit.json
 app/ui/sample-cockpit-stacked.json
 app/ui/sample-cockpit-narrow.json
+app/ui/sample-cockpit-tabs.json
 app/ui/sample-cockpit-empty.json
 app/ui/sample-settings.json
 app/ui/sample-containers.json

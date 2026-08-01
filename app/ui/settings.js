@@ -305,7 +305,92 @@ function hostsTab(t) {
   });
   add.append(actionRow(submit), help(t.add.help));
   boxes.push(add);
+  boxes.push(rulesGroup(t.rules));
   return boxes;
+}
+
+/**
+ * One container group rule.
+ *
+ * Every control writes ONE field, through `settings_set_container_rule`, and
+ * the surface then re-renders from the `{status, settings}` it gets back. That
+ * is the port of Swift's re-read-on-access bindings: this file never assembles
+ * a whole rule out of what its own inputs happen to hold, so editing the label
+ * cannot clobber a pattern that changed a moment earlier. The row is addressed
+ * by its index in the persisted list, which is also the order the rule engine
+ * matches in.
+ */
+function ruleRow(t, rule) {
+  const row = node("div", "rule-row");
+  row.dataset.rule = String(rule.index);
+
+  const set = (field, value) =>
+    mutate("settings_set_container_rule", { index: rule.index, field, value });
+
+  const action = select(t.actions, rule.action);
+  action.title = t.actionLabel;
+  action.addEventListener("change", () => set("action", action.value));
+
+  const pattern = textInput(rule.pattern);
+  pattern.placeholder = t.patternPrompt;
+  pattern.title = t.patternLabel;
+  pattern.autocapitalize = "off";
+  pattern.spellcheck = false;
+  // On change, not on every keystroke: each save re-renders the list, and a
+  // per-keystroke write would rebuild the field under the caret and eat the
+  // rest of the word. Same reason the watched-workflows field uses `change`.
+  pattern.addEventListener("change", () => set("pattern", pattern.value));
+
+  const controls = [action, pattern];
+
+  // Only a Collapse rule has an aggregate to name or count — and whether that
+  // is so is Rust's `collapseOnly`, not a comparison against a literal action
+  // string typed here.
+  if (rule.collapseOnly) {
+    const label = textInput(rule.label);
+    label.placeholder = t.labelPrompt;
+    label.title = t.labelLabel;
+    label.addEventListener("change", () => set("label", label.value));
+
+    const expected = textInput(rule.expected);
+    expected.placeholder = t.expectedPrompt;
+    expected.title = t.expectedLabel;
+    expected.className = "input rule-expected";
+    // Deliberately a text field, not `type="number"`: the empty state means
+    // "no expectation", and a number input in some browsers reports an
+    // unparseable entry as "" — which would silently clear an expectation the
+    // operator was mid-way through typing. Rust decides what the string means
+    // (`parse_expected_count`), including that 0 and nonsense clear it.
+    expected.addEventListener("change", () => set("expected", expected.value));
+
+    controls.push(node("span", "rule-arrow", t.arrow), label, expected);
+  }
+
+  const host = select(rule.hostOptions, rule.host);
+  host.title = t.hostLabel;
+  host.className = "input rule-host";
+  host.addEventListener("change", () => set("host", host.value));
+  controls.push(host, node("span", "grow"));
+
+  const remove = button(t.deleteLabel, "delete");
+  remove.addEventListener("click", () =>
+    mutate("settings_remove_container_rule", { index: rule.index })
+  );
+  controls.push(remove);
+
+  row.append(...controls);
+  return row;
+}
+
+/** The Container Group Rules editor, under the host list it scopes rules to. */
+function rulesGroup(t) {
+  const box = group(t.heading);
+  for (const rule of t.rows) box.appendChild(ruleRow(t, rule));
+
+  const add = button(t.addLabel, "add-rule");
+  add.addEventListener("click", () => mutate("settings_add_container_rule", {}));
+  box.append(actionRow(add), help(t.help));
+  return box;
 }
 
 function portfolioTab(t) {

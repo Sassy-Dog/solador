@@ -150,6 +150,98 @@ test("the Hosts tab lists every host with its endpoint and token badge", async (
   ]);
 });
 
+test("the rules editor renders every persisted field, and the Collapse-only ones only for Collapse", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "hosts").click();
+
+  const t = settings.hosts.rules;
+  const rows = page.locator(".rule-row");
+  await expect(rows).toHaveCount(t.rows.length);
+
+  for (const rule of t.rows) {
+    const row = page.locator(`.rule-row[data-rule="${rule.index}"]`);
+    await expect(row.locator("select").first()).toHaveValue(rule.action);
+    await expect(row.locator("input").first()).toHaveValue(rule.pattern);
+    // The host scope, including the one whose host no longer exists: a picker
+    // missing its own selection renders blank, which would read as unscoped.
+    await expect(row.locator(".rule-host")).toHaveValue(rule.host);
+    // A Hide or Expect rule has no aggregate to name or count, so those two
+    // fields are absent rather than empty — `collapseOnly` is Rust's call.
+    await expect(row.locator(".rule-expected")).toHaveCount(rule.collapseOnly ? 1 : 0);
+    if (rule.collapseOnly) {
+      await expect(row.locator(".rule-expected")).toHaveValue(rule.expected);
+    }
+  }
+
+  // The fixture covers both sides of every branch, or the loop above is only
+  // ever exercising one.
+  expect(t.rows.some((r) => r.collapseOnly)).toBe(true);
+  expect(t.rows.some((r) => !r.collapseOnly)).toBe(true);
+  expect(t.rows.some((r) => r.expected !== "")).toBe(true);
+  expect(t.rows.some((r) => r.host === "")).toBe(true);
+
+  // The action picker offers exactly what Rust offers.
+  await expect(page.locator(".rule-row").first().locator("select").first().locator("option"))
+    .toHaveText(t.actions.map((a) => a.label));
+});
+
+test("a rule adds, edits one field at a time, and deletes", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "hosts").click();
+
+  const t = settings.hosts.rules;
+  // A Collapse rule that *has* an expectation, so clearing it below is a real
+  // edit rather than a no-op on an already-empty field.
+  const collapse = t.rows.find((r) => r.collapseOnly && r.expected !== "");
+  expect(collapse, "the fixture must carry a collapse rule with a count").toBeTruthy();
+  const row = page.locator(`.rule-row[data-rule="${collapse.index}"]`);
+
+  // Each control writes ONE field. A whole-row write would send four values
+  // assembled from whatever this page last painted — the stale client copy the
+  // re-read-on-access binding exists to avoid.
+  await row.locator("input").first().fill("worker-*");
+  await row.locator("input").first().blur();
+  await row.locator(".rule-expected").fill("6");
+  await row.locator(".rule-expected").blur();
+  await row.locator(".rule-host").selectOption("");
+  await row.locator("select").first().selectOption("hide");
+
+  expect(await calls(page, "settings_set_container_rule")).toEqual([
+    { command: "settings_set_container_rule", args: { index: collapse.index, field: "pattern", value: "worker-*" } },
+    { command: "settings_set_container_rule", args: { index: collapse.index, field: "expected", value: "6" } },
+    { command: "settings_set_container_rule", args: { index: collapse.index, field: "host", value: "" } },
+    { command: "settings_set_container_rule", args: { index: collapse.index, field: "action", value: "hide" } },
+  ]);
+  await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
+
+  // Emptying the field must reach Rust as "" — that is how an expectation is
+  // cleared, and Rust is what decides "" means "no expectation" rather than 0.
+  // Cleared with real keystrokes, not `fill("")`: Playwright's empty fill
+  // assigns `.value` directly and the browser then fires no `change` on blur,
+  // so a passing test would prove nothing about the real interaction.
+  const expected = row.locator(".rule-expected");
+  await expected.click();
+  await expected.press("ControlOrMeta+a");
+  await expected.press("Backspace");
+  await expected.blur();
+  const edits = await calls(page, "settings_set_container_rule");
+  expect(edits[edits.length - 1].args).toEqual({
+    index: collapse.index,
+    field: "expected",
+    value: "",
+  });
+
+  await page.locator(".btn.add-rule").click();
+  expect(await calls(page, "settings_add_container_rule")).toEqual([
+    { command: "settings_add_container_rule", args: {} },
+  ]);
+
+  await row.locator(".btn.delete").click();
+  expect(await calls(page, "settings_remove_container_rule")).toEqual([
+    { command: "settings_remove_container_rule", args: { index: collapse.index } },
+  ]);
+});
+
 test("Test probes that one host and paints the line Rust produced", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "hosts").click();
