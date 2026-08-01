@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/config.sh"
 # Parse arguments
 LOG_MODE=""
 LOG_LEVEL=""
+TAURI=0
 BUILD_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -20,12 +21,66 @@ while [[ $# -gt 0 ]]; do
             LOG_LEVEL="$2"
             shift 2
             ;;
+        --tauri)
+            TAURI=1
+            shift
+            ;;
         *)
             BUILD_ARGS+=("$1")
             shift
             ;;
     esac
 done
+
+# --tauri: run the cross-platform Tauri cockpit from the root Rust workspace
+# instead of the SwiftUI app. Everything below this block is the SwiftUI path,
+# untouched. exec keeps the caller's environment (DEVCANOPY_SEED_HOST,
+# DEVCANOPY_STORE_DIR, ...) reaching the app.
+if [[ $TAURI -eq 1 ]]; then
+    ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+    TAURI_PACKAGE="devcanopy-app"
+
+    # --release composes with --tauri; anything else is the app's own argument
+    # (e.g. the --dump fixture modes documented in app/README.md).
+    CARGO_PROFILE="debug"
+    CARGO_FLAGS=()
+    APP_ARGS=()
+    for arg in ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}; do
+        case $arg in
+            --release)
+                CARGO_PROFILE="release"
+                CARGO_FLAGS+=("--release")
+                ;;
+            *)
+                APP_ARGS+=("$arg")
+                ;;
+        esac
+    done
+
+    log_info "Building $TAURI_PACKAGE ($CARGO_PROFILE)..."
+    cargo build --manifest-path "$ROOT_DIR/Cargo.toml" -p "$TAURI_PACKAGE" \
+        ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+
+    TAURI_BINARY="$ROOT_DIR/target/$CARGO_PROFILE/$TAURI_PACKAGE"
+
+    # cargo stamps a *fresh ad-hoc* signature on every relink, and a new signing
+    # identity invalidates the Keychain ACLs the app's stored credentials carry —
+    # so every rebuild re-prompts for every item (4+ prompts per run). Re-sign with
+    # the stable Apple Development identity (team 52YMXC3348, the same one
+    # project.yml gives the Swift Debug build) so the ACLs keep matching across
+    # rebuilds. macOS only, and silently skipped where no identity is installed
+    # (CI, other machines) — an unsigned run still works, it just re-prompts.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        CODESIGN_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+        if [[ "$CODESIGN_IDENTITIES" == *"Apple Development"* ]]; then
+            codesign --force --sign "Apple Development" "$TAURI_BINARY" >/dev/null 2>&1 ||
+                log_warning "Could not re-sign $TAURI_PACKAGE — the Keychain may re-prompt"
+        fi
+    fi
+
+    log_info "Running $TAURI_PACKAGE ($CARGO_PROFILE)..."
+    exec "$TAURI_BINARY" ${APP_ARGS[@]+"${APP_ARGS[@]}"}
+fi
 
 # Build first (pass through build arguments)
 "$SCRIPT_DIR/build.sh" "${BUILD_ARGS[@]}"
