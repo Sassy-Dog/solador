@@ -135,8 +135,12 @@ fn sampling_the_real_machine_produces_a_well_formed_snapshot() {
 }
 
 /// A real sample must survive the lowering with the wire contract's shape
-/// intact — including the GPU absence this crate reports on every platform
-/// today, which `is_present()` has to read as "no GPU", not as an idle one.
+/// intact — including the GPU, which since #205 this crate really does measure
+/// on macOS. Either answer is correct here and the machine decides which: a Mac
+/// with an `IOAccelerator` reports one, a macOS VM (CI's runners) and every
+/// other platform report none. What is never correct is the third answer —
+/// `Gpu::zeros()`, the pre-#183 fabrication that `is_present()` has to keep
+/// reading as "no GPU" rather than as an idle one.
 #[test]
 fn a_real_sample_lowers_onto_the_wire_contract() {
     if skip_requested() {
@@ -156,10 +160,30 @@ fn a_real_sample_lowers_onto_the_wire_contract() {
 
     assert_eq!(wired.timestamp, snapshot.timestamp);
     assert_eq!(wired.memory.total_gb, snapshot.memory.total_gb);
-    assert!(
-        !wired.gpu.is_present(),
-        "an unmeasured GPU must lower to an absent one"
+    assert_ne!(
+        wired.gpu,
+        wire::Gpu::zeros(),
+        "an unmeasured GPU must lower to an absent one, never to a row of zeros"
     );
+    if wired.gpu.is_present() {
+        // A GPU that reports a capacity has to have been read, not defaulted:
+        // every figure beside it must be a plausible measurement.
+        let total = wired.gpu.vram_total_gb.expect("is_present() implies one");
+        assert!(total.is_finite() && total > 0.0, "{total}");
+        if let Some(usage) = wired.gpu.usage {
+            assert!((0.0..=100.0).contains(&usage), "{usage}");
+        }
+        if let Some(used) = wired.gpu.vram_used_gb {
+            assert!(used.is_finite() && used >= 0.0, "{used}");
+        }
+    } else {
+        // The CI-VM arm: no accelerator matched, so no capacity is claimed.
+        assert!(
+            wired.gpu.vram_total_gb.is_none_or(|total| total == 0.0),
+            "{:?}",
+            wired.gpu
+        );
+    }
 
     // The contract is a JSON one, so a real sample has to survive a round trip
     // through it. Compared field-shape rather than field-for-field: serde_json

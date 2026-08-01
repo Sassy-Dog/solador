@@ -38,6 +38,7 @@
 //! anything.
 
 mod battery;
+mod gpu;
 mod process;
 mod rate;
 mod thermal;
@@ -79,8 +80,8 @@ pub struct LocalSnapshot {
     pub disk: wire::Disk,
     /// Network rates. `None` on the first sample, same as [`Self::disk`].
     pub network: wire::Network,
-    /// [`wire::Gpu::unknown`] on every platform today; see
-    /// [`LocalSampler::sample`].
+    /// Utilisation and VRAM on macOS, [`wire::Gpu::unknown`] elsewhere and on
+    /// any machine with no `IOAccelerator` to read; see [`LocalSampler::sample`].
     pub gpu: wire::Gpu,
     /// `None` on machines with no battery, which is also what
     /// `wire::Snapshot::battery` being an `Option` means.
@@ -229,12 +230,14 @@ impl LocalSampler {
 
     /// Takes one sample of the local machine.
     ///
-    /// GPU is unknown on every platform today: neither macOS nor Windows exposes
-    /// usage and VRAM through a portable, dependency-free read (macOS wants
-    /// IOKit's `IOAccelerator` registry, Windows wants DXGI or a vendor library
-    /// like NVML), and half a GPU reading is worse than an honest absence. The
-    /// wire type can say so — `Gpu::unknown()` is `is_present() == false` — so
-    /// the card renders "—" rather than a 0% GPU nobody looked at.
+    /// GPU is read from IOKit's `IOAccelerator` registry on macOS, the same
+    /// source `GPUMonitor.swift` reads (#205). Windows has no equally cheap
+    /// equivalent — DXGI reports adapter memory but not utilisation — and stays
+    /// a named non-goal, as does any Mac that matches no accelerator at all
+    /// (a VM, which is what CI's macOS runners are). Both report
+    /// `Gpu::unknown()`, whose `is_present() == false` renders "—" rather than
+    /// a 0% GPU nobody looked at. See [`gpu`] for what the port deliberately
+    /// leaves behind.
     pub fn sample(&mut self) -> LocalSnapshot {
         let now = Instant::now();
         let cpu_interval = now.saturating_duration_since(self.cpu_refreshed_at);
@@ -280,7 +283,10 @@ impl LocalSampler {
             },
             disk: self.disk_rates(now),
             network: self.network_rates(now),
-            gpu: wire::Gpu::unknown(),
+            // Physical memory is only ever used as the pool a *unified*-memory
+            // GPU's occupancy is measured against; a discrete adapter is
+            // measured against its own VRAM. See `gpu`'s module docs.
+            gpu: gpu::read(self.system.total_memory()),
             battery: battery::read(),
             volumes: self.collect_volumes(),
             processes: self.processes.clone(),
