@@ -242,6 +242,28 @@ pub fn host_columns(available: f64, host_count: usize, min_card_width: f64, spac
     fits.min(host_count)
 }
 
+/// Minimum height of the tabbed host container, in points.
+///
+/// `HostsPanel.tabbedHosts`'s `.frame(minHeight: 780)` in Swift, and it carries
+/// the same intent: only one card is on screen at a time, so the container has
+/// nothing to size itself against and would otherwise collapse to the height of
+/// its tab bar.
+pub const HOST_TABS_MIN_HEIGHT: f64 = 780.0;
+
+/// Whether the host cards collapse into a tab bar rather than stacking.
+///
+/// The three conditions are `HostsPanel.content`'s, in the same order and for
+/// the same reasons: **below the side-by-side breakpoint** (`columns <= 1`,
+/// which is [`host_columns`]'s answer and never re-derived here), **more than
+/// one host** (a tab bar over a single card is chrome around nothing), and the
+/// user having asked for it. Stacking stays the default, so an unset — or
+/// unreadable — preference keeps every host visible, which is the point of an
+/// always-on cockpit.
+#[must_use]
+pub fn host_tabs(columns: usize, host_count: usize, prefers_tabs: bool) -> bool {
+    prefers_tabs && columns <= 1 && host_count > 1
+}
+
 /// Splits items into rows of at most `columns`. `columns <= 1` gives one item
 /// per row — the stacked case.
 pub fn rows<T: Clone>(items: &[T], columns: usize) -> Vec<Vec<T>> {
@@ -432,6 +454,49 @@ mod tests {
     fn unknown_width_stacks_rather_than_assuming_wide() {
         assert_eq!(cols(0.0, 3), 1);
         assert_eq!(cols(f64::NAN, 3), 1);
+    }
+
+    // MARK: host_tabs
+
+    /// The whole point of the mode: below the breakpoint, tabs replace the
+    /// stack — and only there.
+    #[test]
+    fn tabs_replace_the_stack_only_below_the_breakpoint() {
+        assert!(host_tabs(1, 3, true), "one column, three hosts");
+        assert!(
+            !host_tabs(2, 3, true),
+            "two columns still fit side by side, so there is nothing to collapse"
+        );
+        assert!(!host_tabs(3, 3, true));
+    }
+
+    /// A tab bar over one card is chrome around nothing, and the local card
+    /// alone is the fresh-install cockpit.
+    #[test]
+    fn one_host_never_gets_a_tab_bar() {
+        assert!(!host_tabs(1, 1, true));
+        assert!(!host_tabs(1, 0, true));
+    }
+
+    /// Stacking is the default, and the fallback: an unset or unreadable
+    /// preference reads as `Stack` one layer down, and this must honour it.
+    #[test]
+    fn stacking_stays_the_default() {
+        for columns in [0, 1, 2, 3] {
+            for hosts in [0, 1, 2, 5] {
+                assert!(
+                    !host_tabs(columns, hosts, false),
+                    "{columns} columns, {hosts} hosts"
+                );
+            }
+        }
+    }
+
+    /// The tabbed container needs a floor, or it collapses to its tab bar:
+    /// one card is on screen at a time, so there is nothing else sizing it.
+    #[test]
+    fn the_tabbed_container_declares_a_positive_minimum_height() {
+        assert_eq!(HOST_TABS_MIN_HEIGHT, 780.0);
     }
 
     // MARK: rows

@@ -5,7 +5,10 @@ use agentclient::{AgentClient, AgentError};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use store::{CredentialStore, Host, KeyringStore, SecretKey, Store, StoreError, TrackedRepo};
+use store::{
+    ContainerGroupRule, CredentialStore, Host, HostOverflowMode, KeyringStore, SecretKey, Store,
+    StoreError, TrackedRepo,
+};
 use uuid::Uuid;
 use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending};
 use viewmodel::cockpit::{host_columns, panel_table, HOST_CARD_MIN_WIDTH, SPACING};
@@ -211,7 +214,12 @@ fn view_for(s: &HostState) -> Value {
 /// and colour is: `host_columns` is the tested breakpoint math (a card needs
 /// [`HOST_CARD_MIN_WIDTH`]), and a CSS `auto-fit` restating it is a second
 /// implementation free to disagree with the first.
-fn cockpit_view(local: Option<Value>, hosts: &[Arc<Mutex<HostState>>], available: f64) -> Value {
+fn cockpit_view(
+    local: Option<Value>,
+    hosts: &[Arc<Mutex<HostState>>],
+    available: f64,
+    overflow: HostOverflowMode,
+) -> Value {
     let remote: Vec<Value> = hosts
         .iter()
         .map(|host| view_for(&host.lock().expect("host state poisoned")))
@@ -220,7 +228,39 @@ fn cockpit_view(local: Option<Value>, hosts: &[Arc<Mutex<HostState>>], available
     // Local first, matching `HostsPanel.hosts` in Swift (`[local] + remoteHosts`).
     // This machine is the one you are looking at; it leads.
     let cards: Vec<Value> = local.into_iter().chain(remote).collect();
-    cockpit_payload(cards, remote_count, available)
+    cockpit_payload(cards, remote_count, available, overflow)
+}
+
+/// The name a tab wears, from an already-rendered card.
+///
+/// A card that never connected carries its host name under `error` rather than
+/// at the top level (`pending_card`), and a tab labelled from the wrong key
+/// would be blank for exactly the host you most need to find.
+fn card_host_name(card: &Value) -> &str {
+    card["hostName"]
+        .as_str()
+        .or_else(|| card["error"]["hostName"].as_str())
+        .unwrap_or_default()
+}
+
+/// The tab bar, when the cards collapse into one — otherwise `null`.
+///
+/// One tab per card, in payload order, so the local card leads the bar exactly
+/// as it leads the grid. The labels are the cards' own host names rather than
+/// anything re-derived here, and `minHeight` travels with them because the
+/// container's floor is `HostsPanel`'s decision, not a CSS guess.
+fn host_tab_bar(cards: &[Value], columns: usize, overflow: HostOverflowMode) -> Value {
+    let prefers_tabs = overflow == HostOverflowMode::Tabs;
+    if !viewmodel::cockpit::host_tabs(columns, cards.len(), prefers_tabs) {
+        return Value::Null;
+    }
+    json!({
+        "minHeight": viewmodel::cockpit::HOST_TABS_MIN_HEIGHT,
+        "tabs": cards
+            .iter()
+            .map(|card| json!({ "id": card["id"], "label": card_host_name(card) }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// The payload shape, over already-rendered cards. Split from
@@ -229,8 +269,14 @@ fn cockpit_view(local: Option<Value>, hosts: &[Arc<Mutex<HostState>>], available
 /// `remote_count` is deliberately separate from `cards.len()`: the local card is
 /// always there, so "is anything configured" is a question about *monitored*
 /// hosts and counting cards would answer it wrong forever.
-fn cockpit_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Value {
+fn cockpit_payload(
+    cards: Vec<Value>,
+    remote_count: usize,
+    available: f64,
+    overflow: HostOverflowMode,
+) -> Value {
     let columns = host_columns(available, cards.len(), HOST_CARD_MIN_WIDTH, SPACING);
+    let tabs = host_tab_bar(&cards, columns, overflow);
     // A cockpit with no monitored host says so in words made here, like every
     // other string the frontend paints -- the local card alone would read as a
     // finished setup rather than an untouched one.
@@ -244,6 +290,11 @@ fn cockpit_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Va
         "hostColumns": columns,
         "hostCardMinWidth": HOST_CARD_MIN_WIDTH,
         "spacing": SPACING,
+        // Null unless the cards actually collapse. A tab bar the frontend has
+        // to decide the visibility of would be `host_tabs` re-implemented in
+        // JS, free to disagree with the tested one -- the same argument
+        // `hostColumns` and `panelRows` are here for.
+        "hostTabs": tabs,
         "panels": panel_table(),
         "panelRows": panel_rows(available),
         "empty": empty,
@@ -857,6 +908,7 @@ fn settings_payload(app: &App) -> Value {
         store.settings(),
         store.hosts(),
         store.repos(),
+        store.container_rules(),
         &stored,
         &facts,
     )
@@ -931,7 +983,18 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         );
     });
     let local = state.local.lock().expect("local state poisoned").card();
-    cockpit_view(Some(local), &hosts, width)
+    // Re-read every frame rather than captured at startup, for the same reason
+    // the GitHub loop re-reads its token: that is what makes the General tab's
+    // picker apply without a relaunch. The store lock is taken after the poll
+    // set's is released, matching `poll_containers`'s sequence, and is held for
+    // one field read.
+    let overflow = state
+        .store
+        .lock()
+        .expect("store poisoned")
+        .settings()
+        .host_overflow_mode;
+    cockpit_view(Some(local), &hosts, width, overflow)
 }
 
 // MARK: the Usage + Azure Cost panels
@@ -1641,6 +1704,87 @@ fn settings_unhide_volume(
     settings_response(&state, status)
 }
 
+// MARK: the container group rules editor
+//
+// Three commands over one persisted list, and every one of them is a
+// read-modify-write of the *whole* list under the store's lock. That is the
+// port of Swift's re-read-on-access bindings: nothing here trusts a client-side
+// copy of the rules, so two edits in flight against the same row cannot clobber
+// each other's other fields.
+//
+// **None of them wakes a loop, on purpose.** The rules are read at *render*
+// time by the `containers` command (and by `poll_containers`, for presence), so
+// an edit is visible on the panel's very next 10s tick with no fetch involved --
+// exactly like the Sentry quota and the Azure budget. A wake here would spend a
+// full pass of `docker ps` invocations to change nothing.
+
+/// Reads the persisted rules, hands them to `edit`, and writes them back when
+/// it says it changed something.
+///
+/// One place where the read-modify-write happens, so a future fourth mutation
+/// cannot quietly acquire a stale-snapshot bug the other three don't have.
+fn mutate_rules(
+    app: &App,
+    ok: impl Into<String>,
+    edit: impl FnOnce(&mut Vec<ContainerGroupRule>) -> bool,
+) -> Option<String> {
+    let mut store = app.store.lock().expect("store poisoned");
+    let mut rules = store.container_rules().to_vec();
+    if !edit(&mut rules) {
+        return Some("Skipped — unknown rule.".to_owned());
+    }
+    store.set_container_rules(rules);
+    save_status(&store, ok)
+}
+
+#[tauri::command]
+fn settings_add_container_rule(state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = mutate_rules(&state, "Added rule.", |rules| {
+        rules.push(settings::new_rule());
+        true
+    });
+    settings_response(&state, status)
+}
+
+/// One field of one rule.
+///
+/// Deliberately *not* a whole-row write: the frontend sends the field that
+/// changed and nothing else, so the value in every other field of that row is
+/// whatever is on disk rather than whatever the last render happened to paint.
+/// Swift gets the same property from a `Binding` per `WritableKeyPath`.
+#[tauri::command]
+fn settings_set_container_rule(
+    index: usize,
+    field: String,
+    value: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Some(field) = settings::RuleField::parse(&field) else {
+        return settings_response(&state, Some("Skipped — unknown rule field.".into()));
+    };
+    let status = mutate_rules(&state, "Saved.", |rules| {
+        settings::apply_rule_edit(rules, index, field, &value)
+    });
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_remove_container_rule(index: usize, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = mutate_rules(&state, "Removed rule.", |rules| {
+        if index >= rules.len() {
+            return false;
+        }
+        rules.remove(index);
+        // An emptied list is respected as an emptied list, never re-seeded:
+        // `Store::set_container_rules` writes `Some(vec![])`, which the loader
+        // reads back as "the user cleared every rule" rather than "never
+        // configured". Deleting the last rule and relaunching must not bring
+        // the seeded three back.
+        true
+    });
+    settings_response(&state, status)
+}
+
 /// The Test button: one `/v1/health` probe, rendered as the Swift result line.
 #[tauri::command]
 async fn settings_test_host(
@@ -1868,7 +2012,12 @@ fn unreachable_message() -> String {
 /// exists to exercise one remote host's live/stale transition, and a second card
 /// on the page would only make every locator in that test ambiguous.
 fn dump_single(connection: &Connection) -> Value {
-    cockpit_payload(vec![dump_card("ubu-3xdv", connection)], 1, 1000.0)
+    cockpit_payload(
+        vec![dump_card("ubu-3xdv", connection)],
+        1,
+        1000.0,
+        HostOverflowMode::Stack,
+    )
 }
 
 /// This machine's card as a fixture — hand-made, at a fixed shape, so the file
@@ -1950,7 +2099,10 @@ fn dump_local_card() -> Value {
 /// a real state with its own rendering. The **local card always leads**, exactly
 /// as it does in the live payload, so `--hosts 0` is a fresh install (one local
 /// card plus the "add a host" line) rather than a blank page.
-fn dump_cockpit(available: f64, hosts: usize) -> Value {
+///
+/// `overflow` is the General tab's preference, so `--tabs` at a stacked width
+/// dumps the tab bar — the one host-grid rendering no other fixture reaches.
+fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Value {
     let cards = vec![
         dump_card("ubu-3xdv", &Connection::Live),
         dump_card(
@@ -1972,6 +2124,7 @@ fn dump_cockpit(available: f64, hosts: usize) -> Value {
         std::iter::once(dump_local_card()).chain(remote).collect(),
         remote_count,
         available,
+        overflow,
     )
 }
 
@@ -2032,9 +2185,33 @@ fn dump_settings() -> Value {
         &settings,
         &[live, spare],
         &store::seeded_repos(),
+        &dump_container_rules(),
         &stored,
         &facts,
     )
+}
+
+/// The rules the Settings fixture carries — the seeded three, plus the two
+/// renderings seeding alone never reaches.
+///
+/// The seeds give a scoped Collapse, a second Collapse, and an all-hosts Hide.
+/// What they do not give is an **Expect** row (whose Collapse-only fields must
+/// therefore be absent), a live **expected count** (the field's non-empty
+/// state), or a rule scoped to a host that no longer exists — the case
+/// `rule_host_options` grows an extra option for, and the one where a picker
+/// silently renders blank if it doesn't.
+fn dump_container_rules() -> Vec<ContainerGroupRule> {
+    let mut rules = store::seeded_rules();
+    rules[1].expected_count = Some(4);
+    rules.push(
+        ContainerGroupRule::new("build-vm", "", store::ContainerRuleAction::Expect)
+            .on_host(store::LOCAL_HOST_SCOPE),
+    );
+    rules.push(
+        ContainerGroupRule::new("legacy-*", "legacy jobs", store::ContainerRuleAction::Collapse)
+            .on_host("retired-box"),
+    );
+    rules
 }
 
 /// The OpenClaw panel as a fixture, one per rendering it has.
@@ -2145,11 +2322,20 @@ fn run_dump(args: &[String]) -> bool {
     if let Some(path) = dump_flag_path(args, "--dump-cockpit", "sample-cockpit.json") {
         // 3 * 900 + 2 * 16 — exactly the width three cards need side by side.
         let default_width = 3.0 * HOST_CARD_MIN_WIDTH + 2.0 * SPACING;
+        // `--tabs` is the General tab's `Show as tabs`, not a width: it only
+        // changes the payload where the cards were going to stack anyway, so
+        // it is dumped alongside `--width` rather than instead of it.
+        let overflow = if args.iter().any(|arg| arg == "--tabs") {
+            HostOverflowMode::Tabs
+        } else {
+            HostOverflowMode::Stack
+        };
         write_json(
             &path,
             &dump_cockpit(
                 value_flag(args, "--width", default_width),
                 value_flag(args, "--hosts", 3),
+                overflow,
             ),
         );
         return true;
@@ -2397,6 +2583,9 @@ fn main() {
             settings_set_host_enabled,
             settings_remove_host,
             settings_unhide_volume,
+            settings_add_container_rule,
+            settings_set_container_rule,
+            settings_remove_container_rule,
             settings_test_host,
             settings_add_repo,
             settings_remove_repo,
@@ -2418,6 +2607,26 @@ fn main() {
 mod tests {
     use super::*;
     use store::MemoryCredentialStore;
+
+    /// [`cockpit_view`] / [`cockpit_payload`] / [`dump_cockpit`] with the
+    /// **default** (stacking) overflow preference — what every test that is not
+    /// about the tab bar wants. The tab-bar tests call the real functions with
+    /// `HostOverflowMode::Tabs`.
+    fn stacked_view(
+        local: Option<Value>,
+        hosts: &[Arc<Mutex<HostState>>],
+        available: f64,
+    ) -> Value {
+        cockpit_view(local, hosts, available, HostOverflowMode::Stack)
+    }
+
+    fn stacked_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Value {
+        cockpit_payload(cards, remote_count, available, HostOverflowMode::Stack)
+    }
+
+    fn stacked_dump(available: f64, hosts: usize) -> Value {
+        dump_cockpit(available, hosts, HostOverflowMode::Stack)
+    }
 
     fn fixture() -> wire::Snapshot {
         const FIXTURE: &str = include_str!("../../../crates/wire/tests/fixtures/snapshot.json");
@@ -2803,7 +3012,7 @@ mod tests {
                 Some(Instant::now()),
             )),
         ];
-        let vm = cockpit_view(None, &hosts, 2000.0);
+        let vm = stacked_view(None, &hosts, 2000.0);
         let cards = vm["hosts"].as_array().expect("hosts array");
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0]["hostName"], "alpha");
@@ -2837,7 +3046,7 @@ mod tests {
                 None,
             )),
         ];
-        let vm = cockpit_view(None, &hosts, 3000.0);
+        let vm = stacked_view(None, &hosts, 3000.0);
         let cards = vm["hosts"].as_array().expect("hosts array");
 
         assert_eq!(cards[0]["connection"]["state"], "live");
@@ -2867,17 +3076,17 @@ mod tests {
             .collect();
 
         // 3 * 900 + 2 * 16 = 2732
-        assert_eq!(cockpit_view(None, &hosts, 2732.0)["hostColumns"], 3);
-        assert_eq!(cockpit_view(None, &hosts, 2731.0)["hostColumns"], 2);
-        assert_eq!(cockpit_view(None, &hosts, 1000.0)["hostColumns"], 1);
+        assert_eq!(stacked_view(None, &hosts, 2732.0)["hostColumns"], 3);
+        assert_eq!(stacked_view(None, &hosts, 2731.0)["hostColumns"], 2);
+        assert_eq!(stacked_view(None, &hosts, 1000.0)["hostColumns"], 1);
         // Unknown width stacks rather than assuming wide -- assuming wide is
         // what let a dead measurement masquerade as a deliberate layout.
-        assert_eq!(cockpit_view(None, &hosts, 0.0)["hostColumns"], 1);
+        assert_eq!(stacked_view(None, &hosts, 0.0)["hostColumns"], 1);
     }
 
     #[test]
     fn the_payload_carries_the_grid_constants_and_the_panel_table() {
-        let vm = cockpit_payload(vec![], 0, 1000.0);
+        let vm = stacked_payload(vec![], 0, 1000.0);
         assert_eq!(vm["hostCardMinWidth"], 900.0);
         assert_eq!(vm["spacing"], 16.0);
         let panels = vm["panels"].as_array().expect("panel table");
@@ -2907,7 +3116,7 @@ mod tests {
     #[test]
     fn the_payload_carries_the_reflowed_panel_rows() {
         // Wide enough for every authored pair.
-        let wide = row_ids(&cockpit_payload(vec![], 0, 3000.0));
+        let wide = row_ids(&stacked_payload(vec![], 0, 3000.0));
         assert_eq!(
             wide,
             vec![
@@ -2921,7 +3130,7 @@ mod tests {
         // The case the whole per-panel breakpoint model exists for: at 840pt the
         // two hungrier pairs break apart and Usage + Azure Cost (360 + 16 + 400
         // = 776) do not. A global sm/md/lg tier cannot express that.
-        let narrow = row_ids(&cockpit_payload(vec![], 0, 840.0));
+        let narrow = row_ids(&stacked_payload(vec![], 0, 840.0));
         assert_eq!(
             narrow.last().expect("a last row"),
             &["claudeUsage", "azureCost"]
@@ -2931,7 +3140,7 @@ mod tests {
         // Every panel still travels, exactly once, at any width — a row silently
         // dropped here is a panel the frontend can never render.
         for width in [0.0, 100.0, 840.0, 976.0, 3000.0] {
-            let mut flat: Vec<String> = row_ids(&cockpit_payload(vec![], 0, width))
+            let mut flat: Vec<String> = row_ids(&stacked_payload(vec![], 0, width))
                 .into_iter()
                 .flatten()
                 .collect();
@@ -2949,7 +3158,7 @@ mod tests {
     /// span travels too, so a future layout can use it without a payload change.
     #[test]
     fn every_panel_row_entry_carries_its_id_title_min_width_and_span() {
-        let vm = cockpit_payload(vec![], 0, 3000.0);
+        let vm = stacked_payload(vec![], 0, 3000.0);
         let first = &vm["panelRows"][0][0];
         assert_eq!(first["id"], "hosts");
         assert_eq!(first["title"], "Hosts");
@@ -2964,14 +3173,14 @@ mod tests {
     /// a sentence made here, like every other string the frontend paints.
     #[test]
     fn an_empty_cockpit_says_so_instead_of_rendering_nothing() {
-        let vm = cockpit_payload(vec![], 0, 1000.0);
+        let vm = stacked_payload(vec![], 0, 1000.0);
         assert!(vm["hosts"].as_array().expect("hosts array").is_empty());
         assert_eq!(
             vm["empty"]["message"],
             "No hosts configured. Add one in Settings."
         );
 
-        let populated = cockpit_payload(vec![view_for(&state_with(None, None, None))], 1, 1000.0);
+        let populated = stacked_payload(vec![view_for(&state_with(None, None, None))], 1, 1000.0);
         assert!(
             populated["empty"].is_null(),
             "a populated cockpit must not carry an empty-state message"
@@ -3240,7 +3449,7 @@ mod tests {
     /// local card must lead it, because that is where the live payload puts it.
     #[test]
     fn the_cockpit_dump_leads_with_the_local_card_then_three_remote_states() {
-        let vm = dump_cockpit(3.0 * HOST_CARD_MIN_WIDTH + 2.0 * SPACING, 3);
+        let vm = stacked_dump(3.0 * HOST_CARD_MIN_WIDTH + 2.0 * SPACING, 3);
         let cards = vm["hosts"].as_array().expect("hosts array");
         assert_eq!(cards.len(), 4, "one local card plus three remotes");
         // Four cards, three columns' worth of width: the count is the grid's,
@@ -3275,11 +3484,11 @@ mod tests {
         // The same payload at a narrow width is the stacked fixture -- same
         // cards, one column, so the frontend's grid can be tested both ways
         // against numbers Rust produced.
-        assert_eq!(dump_cockpit(1000.0, 3)["hostColumns"], 1);
+        assert_eq!(stacked_dump(1000.0, 3)["hostColumns"], 1);
 
         // …and no *remote* hosts at all is the unconfigured cockpit: the local
         // card still leads it, because this machine is always there.
-        let none = dump_cockpit(1000.0, 0);
+        let none = stacked_dump(1000.0, 0);
         let cards = none["hosts"].as_array().expect("hosts array");
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0]["id"], local::CARD_ID);
