@@ -100,16 +100,19 @@ pub(crate) const CAPACITY_KEYS: &[(&str, f64)] = &[
     ("@0,VRAM,memsize", 1.0),
 ];
 
-/// The first key in `keys` this map answers, ignoring values no measurement
-/// could produce.
+/// The first key in `keys` this map answers with a number a measurement could
+/// actually have produced.
 ///
 /// IOKit hands back whatever the driver published, so a `NaN` or a negative
 /// byte count is possible in principle; either would paint a nonsense card, and
-/// unknown is the honest reading of a nonsense answer.
+/// unknown is the honest reading of a nonsense answer. Such a value is skipped
+/// rather than allowed to end the search — a driver publishing a broken
+/// `Device Utilization %` should not also suppress the good
+/// `Renderer Utilization %` below it.
 fn first_number(map: &BTreeMap<String, f64>, keys: &[&str]) -> Option<f64> {
     keys.iter()
-        .find_map(|key| map.get(*key).copied())
-        .filter(|value| value.is_finite() && *value >= 0.0)
+        .filter_map(|key| map.get(*key).copied())
+        .find(|value| value.is_finite() && *value >= 0.0)
 }
 
 /// Maps one accelerator's properties onto the wire contract's GPU.
@@ -299,10 +302,13 @@ mod macos {
         // SAFETY: `service` is a live registry entry, `raw` is a valid
         // out-pointer, and a null allocator asks for the default one.
         let result = unsafe { IORegistryEntryCreateCFProperties(service, &mut raw, None, 0) };
-        let properties = NonNull::new(raw)?;
+        // Ordered so that a dictionary is only ever taken ownership of after
+        // the call is known to have succeeded: bailing out on the pointer first
+        // would drop a populated one on the floor unreleased.
         if result != KERN_SUCCESS {
             return None;
         }
+        let properties = NonNull::new(raw)?;
         // SAFETY: the `Create` in the name is CoreFoundation's create rule —
         // the dictionary comes back with a reference we now own, and
         // `CFRetained` releases it on drop.
@@ -530,6 +536,19 @@ mod tests {
         ]);
 
         assert_eq!(map_accelerators(&[nonsense], POOL), wire::Gpu::unknown());
+    }
+
+    /// …and nonsense in one spelling must not suppress a good reading in the
+    /// next one down. Ending the search on the broken key would blank a card
+    /// the machine could have filled.
+    #[test]
+    fn a_broken_key_is_skipped_rather_than_ending_the_ladder() {
+        let partly_broken = accelerator(&[
+            ("Device Utilization %", f64::NAN),
+            ("Renderer Utilization %", 68.0),
+        ]);
+
+        assert_eq!(map_accelerators(&[partly_broken], POOL).usage, Some(68.0));
     }
 
     /// One accelerator answers for the whole card. A second GPU's capacity
