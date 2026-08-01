@@ -372,6 +372,11 @@ async fn sampler_loop(state: MetricsState) {
 }
 
 /// A zero-valued snapshot used before the first sample lands.
+///
+/// The `Some(0.0)`s below are the contract's #191 shape carrying **exactly**
+/// today's bytes, not a new claim: `skip_serializing_if` only omits `None`, so
+/// each one still serialises as the literal `0.0` this agent has always sent.
+/// Replacing them with honest omissions is #183's job, agent-side.
 pub(crate) fn empty_snapshot() -> Snapshot {
     Snapshot {
         timestamp: now_rfc3339(),
@@ -379,21 +384,21 @@ pub(crate) fn empty_snapshot() -> Snapshot {
             total_usage: 0.0,
             core_usages: Vec::new(),
             model: String::new(),
-            thermal_state: 0,
+            thermal_state: Some(0),
         },
         memory: Memory {
             used_gb: 0.0,
             total_gb: 0.0,
             swap_used_gb: 0.0,
-            pressure: 0.0,
+            pressure: Some(0.0),
         },
         disk: Disk {
-            read_mbps: 0.0,
-            write_mbps: 0.0,
+            read_mbps: Some(0.0),
+            write_mbps: Some(0.0),
         },
         network: Network {
-            download_mbps: 0.0,
-            upload_mbps: 0.0,
+            download_mbps: Some(0.0),
+            upload_mbps: Some(0.0),
         },
         gpu: Gpu::zeros(),
         battery: None,
@@ -474,21 +479,25 @@ fn compute_snapshot(
             total_usage,
             core_usages,
             model,
-            thermal_state: 0,
+            // Still fabricated, and still emitted: `Some(0)` serialises as the
+            // same `"thermalState": 0` this agent has always sent. The contract
+            // gained the ability to say "unknown" in #191; teaching *this* side
+            // to use it — here and for `pressure` below — is #183.
+            thermal_state: Some(0),
         },
         memory: Memory {
             used_gb,
             total_gb,
             swap_used_gb,
-            pressure: 0.0,
+            pressure: Some(0.0),
         },
         disk: Disk {
-            read_mbps,
-            write_mbps,
+            read_mbps: Some(read_mbps),
+            write_mbps: Some(write_mbps),
         },
         network: Network {
-            download_mbps,
-            upload_mbps,
+            download_mbps: Some(download_mbps),
+            upload_mbps: Some(upload_mbps),
         },
         gpu: Gpu::zeros(),
         battery: None,
@@ -526,21 +535,21 @@ mod tests {
                 total_usage: 37.5,
                 core_usages: vec![40.0, 35.0, 50.0, 25.0],
                 model: "Apple M1 Max".to_string(),
-                thermal_state: 0,
+                thermal_state: Some(0),
             },
             memory: Memory {
                 used_gb: 12.3,
                 total_gb: 32.0,
                 swap_used_gb: 0.5,
-                pressure: 0.0,
+                pressure: Some(0.0),
             },
             disk: Disk {
-                read_mbps: 1.2,
-                write_mbps: 0.3,
+                read_mbps: Some(1.2),
+                write_mbps: Some(0.3),
             },
             network: Network {
-                download_mbps: 0.2,
-                upload_mbps: 0.1,
+                download_mbps: Some(0.2),
+                upload_mbps: Some(0.1),
             },
             gpu: Gpu::zeros(),
             battery: None,

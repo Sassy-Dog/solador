@@ -15,13 +15,18 @@
 //! measure is an `Option`, and `Some(0.0)` therefore means *measured zero* while
 //! `None` means *nobody measured it*.
 //!
-//! `wire::Snapshot` cannot carry that distinction. `wire::Network`, `wire::Disk`
-//! and `wire::Memory::pressure` are bare `f64`s and `wire::Cpu::thermal_state`
-//! is a bare `i64`, so [`LocalSnapshot::to_wire`] is lossy by construction and
-//! documented as such. The one field that *can* express absence is `wire::Gpu`,
-//! whose `is_present()` reads capacity — not usage — as the discriminator; an
-//! unknown GPU lowers to `Gpu::zeros()`, which the view-model already renders as
-//! "—".
+//! Since #191 the wire contract carries that same distinction, so
+//! [`LocalSnapshot::to_wire`] is very nearly a rename — the rates, memory
+//! pressure, the thermal state and the GPU all cross intact. `wire::Disk`,
+//! `wire::Network` and `wire::Gpu` are therefore held *directly* here rather
+//! than behind another `Option`: two encodings of "unknown" stacked on one field
+//! is how the two sides start disagreeing about which one means it.
+//!
+//! One loss survives: `wire::Cpu::total_usage` is still a bare `f64`, so an
+//! unmeasured CPU lowers to `0.0` (with an empty core list beside it). The card
+//! blanks that field from the `Option` here — see
+//! `app/src-tauri/src/local.rs::lower_unknowns`, which is now the only rule left
+//! in that module.
 //!
 //! # Cadence
 //!
@@ -68,12 +73,15 @@ pub struct LocalSnapshot {
     pub timestamp: String,
     pub cpu: LocalCpu,
     pub memory: LocalMemory,
-    /// Disk I/O rates. `None` on the first sample — see [`LocalSampler`].
-    pub disk: Option<wire::Disk>,
-    /// Network rates. `None` on the first sample — see [`LocalSampler`].
-    pub network: Option<wire::Network>,
-    /// `None` on every platform today; see [`LocalSampler::sample`].
-    pub gpu: Option<wire::Gpu>,
+    /// Disk I/O rates, each `None` until there are two cumulative readings to
+    /// diff — see [`LocalSampler`]. The wire type carries its own unknown since
+    /// #191, so there is no second `Option` wrapped around it.
+    pub disk: wire::Disk,
+    /// Network rates. `None` on the first sample, same as [`Self::disk`].
+    pub network: wire::Network,
+    /// [`wire::Gpu::unknown`] on every platform today; see
+    /// [`LocalSampler::sample`].
+    pub gpu: wire::Gpu,
     /// `None` on machines with no battery, which is also what
     /// `wire::Snapshot::battery` being an `Option` means.
     pub battery: Option<wire::Battery>,
@@ -126,15 +134,16 @@ pub struct LocalMemory {
 impl LocalSnapshot {
     /// Lowers this sample onto the agent's wire shape.
     ///
-    /// **Lossy, deliberately.** Every `None` above becomes the wire contract's
-    /// placeholder, and for the bare-`f64` fields that placeholder is `0.0` —
-    /// indistinguishable from a measured zero once it lands. `wire::Gpu` is the
-    /// exception that proves the rule: `Gpu::zeros()` is what `Gpu::is_present()`
-    /// reads as "this host has no GPU", so an unknown GPU survives the trip.
+    /// Since #191 the contract can say "unknown", so every `Option` above
+    /// crosses intact: an unmeasured rate, pressure, thermal state or GPU
+    /// arrives on the other side as `None` and renders "—", exactly as a remote
+    /// agent's omitted key does.
     ///
-    /// Use this where a `wire::Snapshot` is genuinely required — feeding a
-    /// view-model built for agent payloads, or a serialisation boundary. A
-    /// caller that can render "—" should read the `Option` fields directly.
+    /// **One field is still lossy:** `wire::Cpu::total_usage` is a bare `f64`,
+    /// so an unmeasured CPU lands as `0.0` with an empty `core_usages` beside
+    /// it. A caller that can render "—" must read [`LocalCpu::usage`] itself —
+    /// which is precisely what `app/src-tauri/src/local.rs::lower_unknowns`
+    /// does, and the only thing left in it.
     #[must_use]
     pub fn to_wire(&self) -> wire::Snapshot {
         wire::Snapshot {
@@ -148,23 +157,17 @@ impl LocalSnapshot {
                     .map(|usage| usage.per_core.clone())
                     .unwrap_or_default(),
                 model: self.cpu.model.clone(),
-                thermal_state: self.cpu.thermal_state.map_or(0, ThermalState::to_wire),
+                thermal_state: self.cpu.thermal_state.map(ThermalState::to_wire),
             },
             memory: wire::Memory {
                 used_gb: self.memory.used_gb,
                 total_gb: self.memory.total_gb,
                 swap_used_gb: self.memory.swap_used_gb,
-                pressure: self.memory.pressure.unwrap_or(0.0),
+                pressure: self.memory.pressure,
             },
-            disk: self.disk.clone().unwrap_or(wire::Disk {
-                read_mbps: 0.0,
-                write_mbps: 0.0,
-            }),
-            network: self.network.clone().unwrap_or(wire::Network {
-                download_mbps: 0.0,
-                upload_mbps: 0.0,
-            }),
-            gpu: self.gpu.clone().unwrap_or_else(wire::Gpu::zeros),
+            disk: self.disk.clone(),
+            network: self.network.clone(),
+            gpu: self.gpu.clone(),
             battery: self.battery.clone(),
             volumes: self.volumes.clone(),
             processes: self.processes.clone(),
@@ -226,12 +229,12 @@ impl LocalSampler {
 
     /// Takes one sample of the local machine.
     ///
-    /// GPU is `None` on every platform today: neither macOS nor Windows exposes
+    /// GPU is unknown on every platform today: neither macOS nor Windows exposes
     /// usage and VRAM through a portable, dependency-free read (macOS wants
     /// IOKit's `IOAccelerator` registry, Windows wants DXGI or a vendor library
     /// like NVML), and half a GPU reading is worse than an honest absence. The
-    /// wire type can say so — `Gpu::zeros()` is `is_present() == false` — so the
-    /// card renders "—" rather than a 0% GPU nobody looked at.
+    /// wire type can say so — `Gpu::unknown()` is `is_present() == false` — so
+    /// the card renders "—" rather than a 0% GPU nobody looked at.
     pub fn sample(&mut self) -> LocalSnapshot {
         let now = Instant::now();
         let cpu_interval = now.saturating_duration_since(self.cpu_refreshed_at);
@@ -277,7 +280,7 @@ impl LocalSampler {
             },
             disk: self.disk_rates(now),
             network: self.network_rates(now),
-            gpu: None,
+            gpu: wire::Gpu::unknown(),
             battery: battery::read(),
             volumes: self.collect_volumes(),
             processes: self.processes.clone(),
@@ -285,32 +288,38 @@ impl LocalSampler {
     }
 
     /// Network rates from the summed per-interface cumulative counters.
-    fn network_rates(&mut self, now: Instant) -> Option<wire::Network> {
+    ///
+    /// Both fields `None` until there is a baseline to diff against — the wire
+    /// type's own way of saying the rate is unknown, not a pair of zeros.
+    fn network_rates(&mut self, now: Instant) -> wire::Network {
         let mut counters = Counters::default();
         for (_name, data) in self.networks.iter() {
             counters.inbound = counters.inbound.saturating_add(data.total_received());
             counters.outbound = counters.outbound.saturating_add(data.total_transmitted());
         }
-        let rates = self.network_rate.update(counters, now)?;
-        Some(wire::Network {
-            download_mbps: rates.inbound_mib_s,
-            upload_mbps: rates.outbound_mib_s,
-        })
+        self.network_rate
+            .update(counters, now)
+            .map_or_else(wire::Network::default, |rates| wire::Network {
+                download_mbps: Some(rates.inbound_mib_s),
+                upload_mbps: Some(rates.outbound_mib_s),
+            })
     }
 
-    /// Disk I/O rates from the summed per-disk cumulative counters.
-    fn disk_rates(&mut self, now: Instant) -> Option<wire::Disk> {
+    /// Disk I/O rates from the summed per-disk cumulative counters. Unknown
+    /// before a baseline exists, same as [`Self::network_rates`].
+    fn disk_rates(&mut self, now: Instant) -> wire::Disk {
         let mut counters = Counters::default();
         for disk in self.disks.list() {
             let usage = disk.usage();
             counters.inbound = counters.inbound.saturating_add(usage.total_read_bytes);
             counters.outbound = counters.outbound.saturating_add(usage.total_written_bytes);
         }
-        let rates = self.disk_rate.update(counters, now)?;
-        Some(wire::Disk {
-            read_mbps: rates.inbound_mib_s,
-            write_mbps: rates.outbound_mib_s,
-        })
+        self.disk_rate
+            .update(counters, now)
+            .map_or_else(wire::Disk::default, |rates| wire::Disk {
+                read_mbps: Some(rates.inbound_mib_s),
+                write_mbps: Some(rates.outbound_mib_s),
+            })
     }
 
     fn collect_volumes(&self) -> Vec<wire::Volume> {
@@ -418,69 +427,74 @@ mod tests {
                 swap_used_gb: 0.0,
                 pressure: None,
             },
-            disk: None,
-            network: None,
-            gpu: None,
+            disk: wire::Disk::default(),
+            network: wire::Network::default(),
+            gpu: wire::Gpu::unknown(),
             battery: None,
             volumes: Vec::new(),
             processes: Vec::new(),
         }
     }
 
-    /// The acceptance criterion in one test: a first sample (rates unknown) and
-    /// an idle sample (rates measured at zero) lower to *identical* wire values,
-    /// so the wire type demonstrably cannot tell them apart — and
-    /// [`LocalSnapshot`] demonstrably can.
+    /// The acceptance criterion in one test, and the half of it #191 flipped: a
+    /// first sample (rates unknown) and an idle sample (rates measured at zero)
+    /// used to lower to *identical* wire values, because the contract had no
+    /// way to say "unknown". Now they stay distinct all the way across, so the
+    /// card can render "—" for one and "0.0 MB/s" for the other.
     #[test]
-    fn unknown_and_measured_zero_are_indistinguishable_on_the_wire_but_not_before_it() {
+    fn unknown_and_measured_zero_stay_distinct_across_the_lowering() {
         let unmeasured = unknown_everything();
         let mut idle = unknown_everything();
-        idle.network = Some(wire::Network {
-            download_mbps: 0.0,
-            upload_mbps: 0.0,
-        });
-        idle.disk = Some(wire::Disk {
-            read_mbps: 0.0,
-            write_mbps: 0.0,
-        });
+        idle.network = wire::Network {
+            download_mbps: Some(0.0),
+            upload_mbps: Some(0.0),
+        };
+        idle.disk = wire::Disk {
+            read_mbps: Some(0.0),
+            write_mbps: Some(0.0),
+        };
 
-        assert_eq!(unmeasured.to_wire(), idle.to_wire());
         assert_ne!(unmeasured, idle);
-        assert!(unmeasured.network.is_none());
-        assert!(idle.network.is_some());
+        assert_ne!(
+            unmeasured.to_wire(),
+            idle.to_wire(),
+            "the wire contract must keep the two apart, not flatten them"
+        );
+        assert_eq!(unmeasured.to_wire().network.download_mbps, None);
+        assert_eq!(idle.to_wire().network.download_mbps, Some(0.0));
     }
 
-    /// The one unknown the wire contract *can* carry: `is_present()` keys on
-    /// VRAM capacity, so an unmeasured GPU survives the lowering as an absent
-    /// one and the view-model renders "—".
+    /// `is_present()` keys on VRAM capacity, so an unmeasured GPU survives the
+    /// lowering as an absent one and the view-model renders "—".
     #[test]
     fn an_unknown_gpu_lowers_to_an_absent_one_not_an_idle_one() {
         let wired = unknown_everything().to_wire();
 
         assert!(!wired.gpu.is_present());
+        assert_eq!(wired.gpu, wire::Gpu::unknown());
     }
 
     #[test]
     fn a_present_but_idle_gpu_survives_the_lowering_as_present() {
         let mut snapshot = unknown_everything();
-        snapshot.gpu = Some(wire::Gpu {
-            usage: 0.0,
-            vram_used_gb: 1.0,
-            vram_total_gb: 24.0,
-        });
+        snapshot.gpu = wire::Gpu {
+            usage: Some(0.0),
+            vram_used_gb: Some(1.0),
+            vram_total_gb: Some(24.0),
+        };
 
         assert!(snapshot.to_wire().gpu.is_present());
     }
 
-    /// Lowering an unknown thermal state hands the wire contract its `0`, which
-    /// decodes as "Nominal". That is the loss `to_wire`'s doc comment warns
-    /// about, pinned here so nobody mistakes it for a measurement.
+    /// Before #191 an unknown thermal state lowered to the contract's `0`,
+    /// which decodes as "Nominal" — a state nobody read, rendered as a badge.
+    /// The contract can now say nothing at all, and does.
     #[test]
-    fn an_unknown_thermal_state_lowers_to_the_contracts_nominal() {
+    fn an_unknown_thermal_state_lowers_to_unknown_not_to_nominal() {
         let snapshot = unknown_everything();
 
         assert_eq!(snapshot.cpu.thermal_state, None);
-        assert_eq!(snapshot.to_wire().cpu.thermal_state, 0);
+        assert_eq!(snapshot.to_wire().cpu.thermal_state, None);
     }
 
     #[test]
@@ -488,15 +502,30 @@ mod tests {
         let mut snapshot = unknown_everything();
         snapshot.cpu.thermal_state = Some(ThermalState::Serious);
 
-        assert_eq!(snapshot.to_wire().cpu.thermal_state, 2);
+        assert_eq!(snapshot.to_wire().cpu.thermal_state, Some(2));
     }
 
+    /// Memory pressure crosses intact too, so the local card's green
+    /// `Pressure: 0%` — the whole reason `lower_unknowns` had a branch for it —
+    /// can no longer be produced by the lowering at all.
+    #[test]
+    fn unknown_memory_pressure_lowers_to_unknown_not_to_zero() {
+        assert_eq!(unknown_everything().to_wire().memory.pressure, None);
+
+        let mut measured = unknown_everything();
+        measured.memory.pressure = Some(0.0);
+        assert_eq!(measured.to_wire().memory.pressure, Some(0.0));
+    }
+
+    /// The one loss left in `to_wire`, pinned so it stays visible: `total_usage`
+    /// is a bare `f64` on the wire, so an unmeasured CPU lands as `0.0` and only
+    /// the card's own `lower_unknowns` can blank it.
     #[test]
     fn unknown_cpu_usage_lowers_to_an_empty_core_list_not_a_row_of_zeros() {
         let wired = unknown_everything().to_wire();
 
         assert!(wired.cpu.core_usages.is_empty());
-        assert_eq!(wired.cpu.total_usage, 0.0);
+        assert_eq!(wired.cpu.total_usage, 0.0, "the residual fabrication");
     }
 
     #[test]

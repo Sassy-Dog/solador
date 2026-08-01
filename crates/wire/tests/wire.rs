@@ -1,6 +1,19 @@
-use wire::{Container, Health, Snapshot};
+use wire::{Container, Gpu, Health, Snapshot};
 
+/// `GET /v1/snapshot` from an agent that predates #183: every unmeasurable
+/// field present and fabricated (`"pressure": 0.0`, `"thermalState": 0`, an
+/// all-zero `gpu`). Kept as the contract's backward-compatibility case — the
+/// payload still on the wire today.
 const FIXTURE: &str = include_str!("fixtures/snapshot.json");
+
+/// The same endpoint from a #183-era agent: everything Linux cannot measure is
+/// *omitted* rather than zeroed. Keys are copied from the `#[serde(rename)]`
+/// attributes on this crate's own types (which `agent/src/metrics.rs`
+/// re-exports) — `totalUsage`, `coreUsages`, `usedGB`, `downloadMBps`; do not
+/// invent names. `thermalState`, `pressure`, both `disk` rates and every `gpu`
+/// field are absent, and `/media/empty` is a volume with no capacity to divide
+/// by.
+const UNKNOWNS_FIXTURE: &str = include_str!("fixtures/snapshot-unknowns.json");
 
 /// `GET /v1/containers`, in the agent's exact wire format. Keys are copied from
 /// the `#[serde(rename)]` attributes on `agent/src/containers.rs::Container`
@@ -21,10 +34,134 @@ fn deserialises_the_agents_wire_format() {
     assert_eq!(s.cpu.core_usages.len(), 16);
     assert_eq!(s.cpu.total_usage, 34.2);
     assert_eq!(s.memory.total_gb, 62.7);
-    assert_eq!(s.disk.write_mbps, 88.1);
-    assert_eq!(s.network.download_mbps, 2.1);
+    assert_eq!(s.disk.write_mbps, Some(88.1));
+    assert_eq!(s.network.download_mbps, Some(2.1));
     assert_eq!(s.volumes.len(), 3);
     assert_eq!(s.processes[0].name, "cargo");
+}
+
+/// The headline of #191: a key the producer left out decodes to `None` — never
+/// a decode failure, and never a zero standing in for a measurement.
+#[test]
+fn omitted_unmeasurable_keys_decode_to_none_rather_than_failing() {
+    let s: Snapshot =
+        serde_json::from_str(UNKNOWNS_FIXTURE).expect("a payload with omitted keys must decode");
+
+    assert_eq!(s.cpu.thermal_state, None);
+    assert_eq!(s.memory.pressure, None);
+    assert_eq!(s.disk.read_mbps, None);
+    assert_eq!(s.disk.write_mbps, None);
+    assert_eq!(s.gpu.usage, None);
+    assert_eq!(s.gpu.vram_total_gb, None);
+    assert!(!s.gpu.is_present(), "an omitted GPU is an absent one");
+
+    // …and the keys that ARE there still land, so "omitted" is doing the work
+    // rather than the whole object failing over to a default.
+    assert_eq!(s.cpu.total_usage, 11.5);
+    assert_eq!(s.memory.total_gb, 16.0);
+    assert_eq!(s.network.download_mbps, Some(0.9));
+}
+
+/// The other half of the same contract: a *measured* zero survives as
+/// `Some(0.0)`. Unknown and idle must never collapse into one value here —
+/// this is the distinction every "—" versus "0" rendering downstream reads.
+#[test]
+fn a_measured_zero_is_some_zero_and_never_confused_with_an_omitted_key() {
+    let idle = r#"{
+        "timestamp": "2026-08-01T09:15:44Z",
+        "cpu": { "totalUsage": 0.0, "coreUsages": [], "model": "test", "thermalState": 0 },
+        "memory": { "usedGB": 0.0, "totalGB": 1.0, "swapUsedGB": 0.0, "pressure": 0.0 },
+        "disk": { "readMBps": 0.0, "writeMBps": 0.0 },
+        "network": { "downloadMBps": 0.0, "uploadMBps": 0.0 }
+    }"#;
+    let s: Snapshot = serde_json::from_str(idle).expect("an idle host must decode");
+
+    assert_eq!(s.memory.pressure, Some(0.0));
+    assert_eq!(s.cpu.thermal_state, Some(0));
+    assert_eq!(s.disk.read_mbps, Some(0.0));
+    assert_eq!(s.network.upload_mbps, Some(0.0));
+
+    let unknown: Snapshot = serde_json::from_str(UNKNOWNS_FIXTURE).unwrap();
+    assert_ne!(s.memory.pressure, unknown.memory.pressure);
+    assert_ne!(s.disk, unknown.disk);
+}
+
+/// The tolerance floor, one level up from the fields: an agent that measures no
+/// rates and has no adapter may drop the whole `disk`/`network`/`gpu` object
+/// rather than send one with every key missing. That must decode as unknown,
+/// not as a version-skew failure.
+#[test]
+fn an_omitted_disk_network_or_gpu_object_decodes_as_unknown() {
+    let json = r#"{
+        "timestamp": "2026-08-01T09:15:44Z",
+        "cpu": { "totalUsage": 3.0, "coreUsages": [3.0], "model": "test" },
+        "memory": { "usedGB": 1.0, "totalGB": 4.0, "swapUsedGB": 0.0 }
+    }"#;
+    let s: Snapshot = serde_json::from_str(json).expect("a minimal payload must decode");
+
+    assert_eq!(s.disk, wire::Disk::default());
+    assert_eq!(s.network, wire::Network::default());
+    assert_eq!(s.gpu, wire::Gpu::unknown());
+    assert!(!s.gpu.is_present());
+}
+
+/// The mirror of [`Volume::fstype`]'s rule, applied to every field #191 lifted:
+/// an unknown is OMITTED, never emitted as `"pressure": null`. A consumer that
+/// only tolerates a missing key (the Swift decoder's `Double?` does both, but
+/// a stricter one may not) must not start seeing nulls because this side
+/// dropped a `skip_serializing_if`.
+#[test]
+fn an_unknown_field_omits_its_key_rather_than_emitting_null() {
+    let s: Snapshot = serde_json::from_str(UNKNOWNS_FIXTURE).unwrap();
+    let json = serde_json::to_value(&s).unwrap();
+
+    for (object, key) in [
+        (&json["cpu"], "thermalState"),
+        (&json["memory"], "pressure"),
+        (&json["disk"], "readMBps"),
+        (&json["disk"], "writeMBps"),
+        (&json["gpu"], "usage"),
+        (&json["gpu"], "vramUsedGB"),
+        (&json["gpu"], "vramTotalGB"),
+    ] {
+        assert!(
+            !object.as_object().unwrap().contains_key(key),
+            "{key} must be omitted, got {object}"
+        );
+    }
+
+    // …and a measured one keeps its key under the agent's own name.
+    assert_eq!(json["network"]["downloadMBps"], 0.9);
+}
+
+/// The documented limit of this change, pinned so nobody mistakes the contract
+/// for a fix. `agent/src/metrics.rs` hardcodes `pressure: 0.0` and
+/// `thermal_state: 0` for figures Linux never measures; those literals decode
+/// here as measurements, because on the wire that is exactly what they are.
+/// Only #183 — agent-side — can stop them being sent.
+#[test]
+fn a_pre_183_agents_fabricated_zeros_still_decode_as_measurements() {
+    let pre_183 = r#"{
+        "timestamp": "2026-08-01T09:15:44Z",
+        "cpu": { "totalUsage": 7.0, "coreUsages": [7.0], "model": "linux", "thermalState": 0 },
+        "memory": { "usedGB": 4.0, "totalGB": 16.0, "swapUsedGB": 0.0, "pressure": 0.0 },
+        "disk": { "readMBps": 1.2, "writeMBps": 0.3 },
+        "network": { "downloadMBps": 0.2, "uploadMBps": 0.1 },
+        "gpu": { "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 0.0 }
+    }"#;
+    let s: Snapshot = serde_json::from_str(pre_183).expect("today's agent must keep decoding");
+
+    assert_eq!(
+        s.memory.pressure,
+        Some(0.0),
+        "a hardcoded 0.0 is indistinguishable from a measured one"
+    );
+    assert_eq!(s.cpu.thermal_state, Some(0), "fabricated, but not unknown");
+
+    // The one fabrication this side CAN see through, and only because absence
+    // was already encodable in it: zero VRAM capacity is not a GPU.
+    assert_eq!(s.gpu, Gpu::zeros());
+    assert!(!s.gpu.is_present());
 }
 
 #[test]
@@ -36,11 +173,14 @@ fn absent_battery_is_none_not_a_default() {
     );
 }
 
+/// A volume with no capacity has no answer, and `None` is that answer. The
+/// previous `0.0` both dodged the divide *and* claimed an empty volume — one
+/// of them was a guard, the other was a fabricated reading.
 #[test]
-fn percent_used_guards_against_a_zero_total() {
+fn percent_used_is_none_for_a_zero_capacity_volume_never_a_reassuring_zero() {
     let s: Snapshot = serde_json::from_str(FIXTURE).unwrap();
     let root = s.volumes.iter().find(|v| v.mount == "/").unwrap();
-    assert!((root.percent_used() - 44.978).abs() < 0.01);
+    assert!((root.percent_used().expect("a real volume") - 44.978).abs() < 0.01);
 
     let empty = wire::Volume {
         mount: "/x".into(),
@@ -48,7 +188,17 @@ fn percent_used_guards_against_a_zero_total() {
         total_gb: 0.0,
         fstype: None,
     };
-    assert_eq!(empty.percent_used(), 0.0, "must not divide by zero");
+    assert_eq!(empty.percent_used(), None, "must not divide by zero");
+
+    // …and a volume that really is empty still reads 0%, which is a
+    // measurement: capacity is the discriminator, exactly as it is for the GPU.
+    let unused = wire::Volume {
+        mount: "/y".into(),
+        used_gb: 0.0,
+        total_gb: 500.0,
+        fstype: None,
+    };
+    assert_eq!(unused.percent_used(), Some(0.0));
 }
 
 /// Round-trips only this crate's own `Snapshot` (deserialise -> serialise ->
@@ -63,10 +213,12 @@ fn percent_used_guards_against_a_zero_total() {
 /// `core_usages` and the volume count came back intact.
 #[test]
 fn round_tripping_through_json_preserves_the_snapshot() {
-    let s: Snapshot = serde_json::from_str(FIXTURE).unwrap();
-    let out = serde_json::to_string(&s).unwrap();
-    let again: Snapshot = serde_json::from_str(&out).expect("re-read own output");
-    assert_eq!(s, again, "every field must survive a round trip");
+    for (label, raw) in [("pre-#183", FIXTURE), ("omitted keys", UNKNOWNS_FIXTURE)] {
+        let s: Snapshot = serde_json::from_str(raw).unwrap();
+        let out = serde_json::to_string(&s).unwrap();
+        let again: Snapshot = serde_json::from_str(&out).expect("re-read own output");
+        assert_eq!(s, again, "{label}: every field must survive a round trip");
+    }
 }
 
 /// Volume without fstype key exercises #[serde(default)] on the omitted field.
@@ -181,19 +333,35 @@ fn a_volume_without_fstype_omits_the_key_rather_than_emitting_null() {
 /// produces the data and the app that decides between a number and an em dash.
 #[test]
 fn gpu_absence_is_one_definition_shared_by_producer_and_consumer() {
-    assert!(
-        !wire::Gpu::zeros().is_present(),
-        "an all-zero GPU is absent"
-    );
+    assert!(!Gpu::zeros().is_present(), "an all-zero GPU is absent");
+    assert!(!Gpu::unknown().is_present(), "so is an unmeasured one");
 
     // A real GPU sitting idle reports usage 0.0 and must still count as present
     // — it renders "0%", not an em dash. VRAM capacity is the discriminator.
-    let idle = wire::Gpu {
-        usage: 0.0,
-        vram_used_gb: 0.5,
-        vram_total_gb: 24.0,
+    let idle = Gpu {
+        usage: Some(0.0),
+        vram_used_gb: Some(0.5),
+        vram_total_gb: Some(24.0),
     };
     assert!(idle.is_present());
+}
+
+/// `unknown()` omits everything; `zeros()` sends three zeros. Both read as
+/// absent, which is what carries a mixed fleet through the #183 rollout — but
+/// they are NOT the same payload, and a producer that swaps one for the other
+/// is changing what it sends.
+#[test]
+fn an_unknown_gpu_serialises_to_nothing_while_the_old_zeros_still_serialise() {
+    let unknown = serde_json::to_value(Gpu::unknown()).unwrap();
+    assert!(
+        unknown.as_object().unwrap().is_empty(),
+        "an unmeasured GPU claims nothing, got {unknown}"
+    );
+
+    let zeros = serde_json::to_value(Gpu::zeros()).unwrap();
+    assert_eq!(zeros["usage"], 0.0);
+    assert_eq!(zeros["vramTotalGB"], 0.0);
+    assert_ne!(Gpu::unknown(), Gpu::zeros());
 }
 
 #[test]

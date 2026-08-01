@@ -2271,16 +2271,16 @@ fn dump_local_card() -> Value {
             // `localhost::LocalMemory::pressure`.
             pressure: None,
         },
-        disk: Some(wire::Disk {
-            read_mbps: 3.2,
-            write_mbps: 14.8,
-        }),
-        network: Some(wire::Network {
-            download_mbps: 1.4,
-            upload_mbps: 0.6,
-        }),
-        // No portable read on either platform; renders "—" via `Gpu::zeros()`.
-        gpu: None,
+        disk: wire::Disk {
+            read_mbps: Some(3.2),
+            write_mbps: Some(14.8),
+        },
+        network: wire::Network {
+            download_mbps: Some(1.4),
+            upload_mbps: Some(0.6),
+        },
+        // No portable read on either platform; renders "—" via `Gpu::unknown()`.
+        gpu: wire::Gpu::unknown(),
         battery: None,
         volumes: vec![wire::Volume {
             mount: "/".to_string(),

@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-08-01T09:15:44Z",
+  "cpu": {
+    "totalUsage": 11.5,
+    "coreUsages": [9.0, 14.0, 8.5, 14.5],
+    "model": "Intel(R) Core(TM) i7-8559U CPU @ 2.70GHz"
+  },
+  "memory": { "usedGB": 5.5, "totalGB": 16.0, "swapUsedGB": 0.0 },
+  "disk": {},
+  "network": { "downloadMBps": 0.9, "uploadMBps": 0.1 },
+  "gpu": {},
+  "volumes": [
+    { "mount": "/", "usedGB": 61.0, "totalGB": 234.0, "fstype": "ext4" },
+    { "mount": "/media/empty", "usedGB": 0.0, "totalGB": 0.0 }
+  ],
+  "processes": [
+    { "pid": 812, "name": "devcanopy-agent", "cpuPercent": 0.4, "memoryMB": 9.0 }
+  ]
+}

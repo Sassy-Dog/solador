@@ -2,6 +2,20 @@
 //!
 //! Every string and every colour is decided here so the shell only paints.
 //! That is what keeps the frontend small and the logic testable.
+//!
+//! # Unknown renders as an em dash — for every card
+//!
+//! `wire::Snapshot` carries an `Option` wherever a producer may have been
+//! unable to measure something (see the `wire` crate's module docs), and
+//! [`host_card`] is the **one** place those are lowered: `Some` formats,
+//! `None` becomes [`UNKNOWN`] in the muted colour, and nothing that was never
+//! measured reaches a chart. Remote cards and the local one go through it
+//! alike — a second lowering beside it is how the two would start disagreeing
+//! about what "we don't know" looks like.
+//!
+//! The rule is driven by the `Option`, never by testing a lowered number for
+//! zero: `0.0` is a legitimate reading (an idle disk, a cool CPU) and hiding it
+//! is the mirror-image bug.
 
 use crate::color::{self, ThermalState};
 use crate::format::{fmt, fmt_axis, fmt_rate, memory_label, relative_age};
@@ -22,6 +36,20 @@ use serde_json::{json, Value};
 /// `AgentError::user_message` makes one level down.
 pub const SAMPLER_STALLED_MESSAGE: &str =
     "Agent is up but its sampler has stalled; these numbers are frozen";
+
+/// What a card shows for a value nobody measured.
+///
+/// One character, one meaning, everywhere on every card — the shell reads it
+/// back rather than spelling its own, so "we didn't measure it" cannot come to
+/// look like two different things depending on which module blanked the field.
+pub const UNKNOWN: &str = "—";
+
+/// One `Option<f64>` as the card renders it: the formatter's output, or the em
+/// dash. The entire unknown-lowering rule, in one place, so no field can quietly
+/// pick a different fallback.
+fn or_unknown(value: Option<f64>, format: impl FnOnce(f64) -> String) -> String {
+    value.map_or_else(|| UNKNOWN.to_string(), format)
+}
 
 /// Connection health for a host that has at least one sample. `host_card`
 /// doesn't poll — the shell decides which case applies — but the colour for
@@ -134,6 +162,16 @@ impl HostHistories {
         Self::default()
     }
 
+    /// Folds one sample into every series.
+    ///
+    /// **Only measurements enter a chart.** A field the producer reported as
+    /// `None` is skipped rather than pushed as `0.0`: a plotted point is a claim
+    /// that somebody read that number at that moment, and a floor of fabricated
+    /// zeros under an em dash would have the card saying two opposite things at
+    /// once. Skipping costs one pixel of a 1s series.
+    ///
+    /// Series therefore advance independently, which they already did — the
+    /// per-core buffers reset whenever the core count changes.
     pub fn record(&mut self, s: &wire::Snapshot) {
         self.cpu.push(s.cpu.total_usage);
         let mem_pct = if s.memory.total_gb > 0.0 {
@@ -142,11 +180,17 @@ impl HostHistories {
             0.0
         };
         self.mem.push(mem_pct);
-        self.gpu.push(s.gpu.usage);
-        self.disk_read.push(s.disk.read_mbps);
-        self.disk_write.push(s.disk.write_mbps);
-        self.net_down.push(s.network.download_mbps);
-        self.net_up.push(s.network.upload_mbps);
+        for (series, value) in [
+            (&mut self.gpu, s.gpu.usage),
+            (&mut self.disk_read, s.disk.read_mbps),
+            (&mut self.disk_write, s.disk.write_mbps),
+            (&mut self.net_down, s.network.download_mbps),
+            (&mut self.net_up, s.network.upload_mbps),
+        ] {
+            if let Some(v) = value {
+                series.push(v);
+            }
+        }
 
         if self.cores.len() != s.cpu.core_usages.len() {
             self.cores = (0..s.cpu.core_usages.len())
@@ -172,7 +216,14 @@ pub fn host_card(
     h: &HostHistories,
     connection: &Connection,
 ) -> Value {
-    let (badge, badge_col) = color::thermal_badge(ThermalState::from_wire(s.cpu.thermal_state));
+    // An unread thermal state renders no badge at all — the same quiet the
+    // "Normal" badge produces, but reached deliberately rather than by the
+    // encoding coincidence that `0` happens to mean Nominal. The badge must
+    // never claim a state nobody measured.
+    let (badge, badge_col) = match s.cpu.thermal_state {
+        Some(state) => color::thermal_badge(ThermalState::from_wire(state)),
+        None => ("", color::MUTED),
+    };
 
     let cores: Vec<Value> = s
         .cpu
@@ -191,16 +242,30 @@ pub fn host_card(
         .collect();
 
     let mut vols: Vec<&wire::Volume> = s.volumes.iter().collect();
-    vols.sort_by(|a, b| b.percent_used().partial_cmp(&a.percent_used()).unwrap());
+    // Fullest first, and a volume with no capacity to divide by sorts last:
+    // `None` is not "0% full", it is "we can't say", and a card that led with
+    // the unknowns would bury the one that is actually about to fill up.
+    vols.sort_by(|a, b| {
+        b.percent_used()
+            .partial_cmp(&a.percent_used())
+            .expect("percent_used is never NaN")
+    });
     let volumes: Vec<Value> = vols
         .iter()
         .map(|v| {
             let pct = v.percent_used();
             json!({
                 "mount": v.mount,
-                "detail": format!("{} / {} GB · {}%", fmt(v.used_gb), fmt(v.total_gb), pct.round() as i64),
-                "tint": color::hex(color::volume_color(pct)),
-                "fraction": pct.clamp(0.0, 100.0) / 100.0,
+                "detail": format!(
+                    "{} / {} GB · {}",
+                    fmt(v.used_gb),
+                    fmt(v.total_gb),
+                    or_unknown(pct, |p| format!("{}%", p.round() as i64)),
+                ),
+                "tint": color::hex(pct.map_or(color::MUTED, color::volume_color)),
+                // A bar length, not a reading: an unmeasurable volume draws an
+                // empty muted track, and the "—" beside it is what says why.
+                "fraction": pct.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0,
             })
         })
         .collect();
@@ -227,26 +292,31 @@ pub fn host_card(
 
     let (gpu_value, gpu_color, vram) = if has_gpu(s) {
         (
-            format!("{}%", s.gpu.usage.round() as i64),
+            or_unknown(s.gpu.usage, |u| format!("{}%", u.round() as i64)),
             color::hex(color::GPU),
             format!(
                 "VRAM: {} / {} GB",
-                fmt(s.gpu.vram_used_gb),
-                fmt(s.gpu.vram_total_gb)
+                or_unknown(s.gpu.vram_used_gb, fmt),
+                or_unknown(s.gpu.vram_total_gb, fmt)
             ),
         )
     } else {
         (
-            "—".to_string(),
+            UNKNOWN.to_string(),
             color::hex(color::MUTED),
-            "VRAM: —".to_string(),
+            format!("VRAM: {UNKNOWN}"),
         )
     };
-    // …and no series either. `HostHistories::record` pushes `gpu.usage` on every
-    // sample whether or not a GPU exists, so an absent one accumulates a buffer
-    // of zeros — which the frontend would draw as a flat 0% line *underneath*
-    // the em dash above. A chart is a claim about measurements; there are none
-    // to plot here, and an empty series draws the grid and nothing else.
+    // …and no series either. A pre-#183 agent reports an absent GPU as a literal
+    // `usage: 0.0` on every sample — a measured zero as far as the contract can
+    // tell — so the buffer really does fill, and the frontend would draw a flat
+    // 0% line *underneath* the em dash above. A chart is a claim about
+    // measurements; there are none to plot here, and an empty series draws the
+    // grid and nothing else.
+    //
+    // The rates need no equivalent: `HostHistories::record` never pushes an
+    // unmeasured one, so those buffers hold only real readings and stay
+    // plottable even on the sample where the latest is unknown.
     let gpu_history: &[f64] = if has_gpu(s) { h.gpu.values() } else { &[] };
 
     let mut card = json!({
@@ -275,20 +345,25 @@ pub fn host_card(
         "memValue": format!("{} / {} GB", fmt(s.memory.used_gb), s.memory.total_gb as i64),
         "memHistory": h.mem.values(),
         "swapText": format!("Swap: {} GB", fmt(s.memory.swap_used_gb)),
-        "pressureText": format!("Pressure: {}%", s.memory.pressure.round() as i64),
-        "pressureColor": color::hex(color::pressure_color(s.memory.pressure)),
+        "pressureText": format!(
+            "Pressure: {}",
+            or_unknown(s.memory.pressure, |p| format!("{}%", p.round() as i64)),
+        ),
+        "pressureColor": color::hex(
+            s.memory.pressure.map_or(color::MUTED, color::pressure_color),
+        ),
         "gpuValue": gpu_value,
         "gpuValueColor": gpu_color,
         "gpuHistory": gpu_history,
         "vramText": vram,
-        "diskRead": fmt_rate(s.disk.read_mbps),
-        "diskWrite": fmt_rate(s.disk.write_mbps),
+        "diskRead": or_unknown(s.disk.read_mbps, fmt_rate),
+        "diskWrite": or_unknown(s.disk.write_mbps, fmt_rate),
         "diskAxis": fmt_axis(disk_max),
         "diskMax": disk_max,
         "diskReadHistory": h.disk_read.values(),
         "diskWriteHistory": h.disk_write.values(),
-        "netDown": fmt_rate(s.network.download_mbps),
-        "netUp": fmt_rate(s.network.upload_mbps),
+        "netDown": or_unknown(s.network.download_mbps, fmt_rate),
+        "netUp": or_unknown(s.network.upload_mbps, fmt_rate),
         "netAxis": fmt_axis(net_max),
         "netMax": net_max,
         "netDownHistory": h.net_down.values(),
@@ -312,15 +387,35 @@ pub fn host_card(
 mod tests {
     use super::*;
 
+    /// A pre-#183 agent's payload: every unmeasurable field present and
+    /// fabricated. What the fleet still sends today.
     fn fixture() -> wire::Snapshot {
         serde_json::from_str(include_str!("../../wire/tests/fixtures/snapshot.json")).unwrap()
+    }
+
+    /// A #183-era agent's payload: everything it cannot measure is omitted, so
+    /// every lifted field arrives as `None`. The fixture is the *contract's*,
+    /// not a copy — a card test that hand-wrote the JSON could not notice the
+    /// wire crate renaming a key.
+    fn unknowns_fixture() -> wire::Snapshot {
+        serde_json::from_str(include_str!(
+            "../../wire/tests/fixtures/snapshot-unknowns.json"
+        ))
+        .unwrap()
+    }
+
+    fn gpu(usage: f64, used: f64, total: f64) -> wire::Gpu {
+        wire::Gpu {
+            usage: Some(usage),
+            vram_used_gb: Some(used),
+            vram_total_gb: Some(total),
+        }
     }
 
     #[test]
     fn a_host_with_no_gpu_renders_an_em_dash_never_zero() {
         let mut s = fixture();
-        s.gpu.vram_total_gb = 0.0;
-        s.gpu.usage = 0.0;
+        s.gpu = wire::Gpu::zeros();
         let h = HostHistories::new();
         let vm = host_card("ubu-3xdv", &s, &h, &Connection::Live);
         assert_eq!(vm["gpuValue"], "—");
@@ -328,15 +423,14 @@ mod tests {
     }
 
     /// The em dash above and a flat 0% line under it would say opposite things.
-    /// `HostHistories::record` pushes `gpu.usage` on every sample regardless, so
-    /// an absent GPU really does accumulate a full buffer of zeros — the series
-    /// has to be dropped at the same place the value is, or the card renders a
-    /// measurement nobody took.
+    /// A pre-#183 agent reports an absent GPU as a literal `usage: 0.0`, which
+    /// the contract cannot tell from a measurement, so the buffer really does
+    /// fill — the series has to be dropped at the same place the value is, or
+    /// the card renders a measurement nobody took.
     #[test]
     fn an_absent_gpu_plots_nothing_rather_than_a_flat_line_of_zeros() {
         let mut s = fixture();
-        s.gpu.vram_total_gb = 0.0;
-        s.gpu.usage = 0.0;
+        s.gpu = wire::Gpu::zeros();
         let mut h = HostHistories::new();
         for _ in 0..10 {
             h.record(&s);
@@ -356,9 +450,7 @@ mod tests {
     #[test]
     fn a_present_gpu_plots_its_series_even_when_idle() {
         let mut s = fixture();
-        s.gpu.usage = 0.0;
-        s.gpu.vram_used_gb = 0.5;
-        s.gpu.vram_total_gb = 24.0;
+        s.gpu = gpu(0.0, 0.5, 24.0);
         let mut h = HostHistories::new();
         for _ in 0..10 {
             h.record(&s);
@@ -377,9 +469,7 @@ mod tests {
     #[test]
     fn a_gpu_that_is_present_but_idle_renders_zero_percent_not_an_em_dash() {
         let mut s = fixture();
-        s.gpu.usage = 0.0;
-        s.gpu.vram_used_gb = 0.5;
-        s.gpu.vram_total_gb = 24.0;
+        s.gpu = gpu(0.0, 0.5, 24.0);
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuValue"], "0%");
         assert_eq!(vm["gpuValueColor"], color::hex(color::GPU));
@@ -389,12 +479,129 @@ mod tests {
     #[test]
     fn a_host_with_a_gpu_renders_the_percentage() {
         let mut s = fixture();
-        s.gpu.usage = 41.0;
-        s.gpu.vram_used_gb = 3.5;
-        s.gpu.vram_total_gb = 24.0;
+        s.gpu = gpu(41.0, 3.5, 24.0);
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuValue"], "41%");
         assert_eq!(vm["vramText"], "VRAM: 3.5 / 24.0 GB");
+    }
+
+    /// A GPU whose capacity is readable but whose utilisation is not: present,
+    /// so the card is not blanked wholesale, yet the one field nobody read
+    /// still says so. Blanking per-field is the difference between "no GPU" and
+    /// "a GPU we can't see the load on".
+    #[test]
+    fn a_present_gpu_with_an_unreadable_usage_blanks_only_that_field() {
+        let mut s = fixture();
+        s.gpu = wire::Gpu {
+            usage: None,
+            vram_used_gb: Some(3.5),
+            vram_total_gb: Some(24.0),
+        };
+        let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
+        assert_eq!(vm["gpuValue"], UNKNOWN);
+        assert_eq!(vm["vramText"], "VRAM: 3.5 / 24.0 GB");
+    }
+
+    // MARK: the shared unknown-lowering (#191)
+
+    /// The acceptance criterion for a REMOTE card, and the whole point of the
+    /// issue: an agent that omits what it cannot measure gets em dashes, not
+    /// the fabricated zeros the old contract forced. This is the same path the
+    /// local card goes through — `app/src-tauri/src/local.rs` no longer owns a
+    /// copy of these rules.
+    #[test]
+    fn a_remote_card_renders_every_omitted_field_as_an_em_dash() {
+        let s = unknowns_fixture();
+        let vm = host_card("nuc", &s, &HostHistories::new(), &Connection::Live);
+
+        let muted = color::hex(color::MUTED);
+        assert_eq!(vm["pressureText"], "Pressure: —");
+        assert_eq!(vm["pressureColor"], muted);
+        assert_eq!(vm["thermalText"], "");
+        assert_eq!(vm["thermalColor"], muted);
+        assert_eq!(vm["diskRead"], UNKNOWN);
+        assert_eq!(vm["diskWrite"], UNKNOWN);
+        assert_eq!(vm["gpuValue"], UNKNOWN);
+        assert_eq!(vm["vramText"], "VRAM: —");
+
+        // …while everything the agent DID measure renders as a number, so the
+        // blanking is per-field rather than a whole card giving up.
+        assert_eq!(vm["cpuValue"], "12%");
+        assert_eq!(vm["netDown"], "0.9 MB/s");
+        assert_eq!(vm["netUp"], "0.1 MB/s");
+    }
+
+    /// The mirror-image bug, guarded on the same fields: a host that is genuinely
+    /// idle reports zeros and must SEE zeros. Nothing in the lowering may key on
+    /// the value — only on whether the producer answered at all.
+    #[test]
+    fn a_measured_zero_renders_as_zero_on_a_remote_card_not_an_em_dash() {
+        let mut s = unknowns_fixture();
+        s.cpu.thermal_state = Some(0);
+        s.memory.pressure = Some(0.0);
+        s.disk = wire::Disk {
+            read_mbps: Some(0.0),
+            write_mbps: Some(0.0),
+        };
+        s.gpu = gpu(0.0, 0.0, 24.0);
+
+        let vm = host_card("nuc", &s, &HostHistories::new(), &Connection::Live);
+        assert_eq!(vm["pressureText"], "Pressure: 0%");
+        assert_eq!(vm["pressureColor"], color::hex(color::GREEN));
+        assert_eq!(vm["thermalText"], "Normal");
+        assert_eq!(vm["diskRead"], "0.0 MB/s");
+        assert_eq!(vm["gpuValue"], "0%");
+    }
+
+    /// An unmeasured rate must not enter a chart — the same rule the local
+    /// card's poll loop has enforced since #176, now enforced for every card by
+    /// `HostHistories::record` itself. A buffer of fabricated zeros under an
+    /// em dash is the defect; here the buffer simply stays empty.
+    #[test]
+    fn an_unmeasured_rate_is_shown_as_unknown_and_never_plotted() {
+        let s = unknowns_fixture();
+        let mut h = HostHistories::new();
+        for _ in 0..10 {
+            h.record(&s);
+        }
+
+        assert!(h.disk_read.values().is_empty(), "no disk rate was measured");
+        assert!(h.disk_write.values().is_empty());
+        assert_eq!(h.net_down.values().len(), 10, "…but the network one was");
+
+        let vm = host_card("nuc", &s, &h, &Connection::Live);
+        assert_eq!(vm["diskRead"], UNKNOWN);
+        assert!(vm["diskReadHistory"]
+            .as_array()
+            .expect("diskReadHistory")
+            .is_empty());
+        assert_eq!(vm["netDownHistory"].as_array().unwrap().len(), 10);
+    }
+
+    /// A volume with no capacity cannot be a percentage, and the old `0.0` made
+    /// it a comfortable green bar instead. It renders "—" in the muted tint and
+    /// sorts below every volume that does have a reading.
+    #[test]
+    fn a_volume_with_no_capacity_renders_unknown_and_sorts_last() {
+        let vm = host_card(
+            "nuc",
+            &unknowns_fixture(),
+            &HostHistories::new(),
+            &Connection::Live,
+        );
+        let volumes = vm["volumes"].as_array().unwrap();
+
+        assert_eq!(volumes[0]["mount"], "/");
+        assert_eq!(volumes[0]["detail"], "61.0 / 234 GB · 26%");
+
+        let unmeasurable = &volumes[1];
+        assert_eq!(unmeasurable["mount"], "/media/empty");
+        assert_eq!(unmeasurable["detail"], "0.0 / 0.0 GB · —");
+        assert_eq!(unmeasurable["tint"], color::hex(color::MUTED));
+        assert_eq!(
+            unmeasurable["fraction"], 0.0,
+            "an empty track, not a full one"
+        );
     }
 
     #[test]
@@ -490,7 +697,7 @@ mod tests {
         let mut s = fixture();
         // The fixture's host has no GPU, so its usage is 0.0 -- the one value
         // that would collide with an unrecorded series.
-        s.gpu.usage = 55.0;
+        s.gpu.usage = Some(55.0);
 
         let mut h = HostHistories::new();
         h.record(&s);

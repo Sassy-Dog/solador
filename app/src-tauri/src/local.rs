@@ -5,30 +5,25 @@
 //! [`localhost::LocalSampler`]; this module is the shell around it: the poll
 //! loop's state, the display name, and the honest-unknown rendering.
 //!
-//! # Why this is not just `host_card(&snapshot.to_wire(), …)`
+//! # Why this is very nearly just `host_card(&snapshot.to_wire(), …)`
 //!
-//! It very nearly is, and that is deliberate — the local card must be the *same*
-//! card a remote host gets, or the two drift. But
-//! [`localhost::LocalSnapshot::to_wire`] is lossy **by construction**: the wire
-//! contract has bare `f64`s where the local sampler has `Option`s, so an
-//! unmeasured memory pressure lands as `0.0` and paints a permanently green
-//! "Pressure: 0%".
+//! Because it must be: the local card has to be the *same* card a remote host
+//! gets, or the two drift. Since #191 the wire contract can say "unknown", so
+//! [`localhost::LocalSnapshot::to_wire`] carries the sampler's `Option`s across
+//! intact and `viewmodel::card` blanks them — memory pressure, the thermal
+//! state, the disk and network rates and the GPU all render "—" through the one
+//! shared path, for a local card and an agent's alike.
 //!
-//! So the card is built from the wire lowering — every chart, volume, core and
-//! process exactly as a remote host's — and then each field whose *source* was
-//! `None` is replaced with the muted em dash. The replacement is driven by
-//! matching on the `Option` itself ([`lower_unknowns`]), never by testing the
-//! lowered number for zero: `0.0` is a legitimate reading (an idle disk, a cool
-//! CPU) and treating it as absent is the mirror-image bug.
-//!
-//! The one unknown the wire contract *can* carry is the GPU — `Gpu::zeros()`
-//! reads as `is_present() == false`, which `viewmodel::card` already renders as
-//! "—" — so it needs nothing here.
+//! **One residue is left here.** `wire::Cpu::total_usage` is still a bare
+//! `f64`, so an unmeasured CPU lowers to `0.0`; [`lower_unknowns`] blanks that
+//! single field, driven by matching on the `Option` itself rather than by
+//! testing the lowered number for zero — `0.0` is a legitimate reading (an idle
+//! disk, a cool CPU) and treating it as absent is the mirror-image bug.
 
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending};
+use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending, UNKNOWN};
 use viewmodel::color;
 
 /// The card's `id` in the cockpit payload.
@@ -46,11 +41,6 @@ pub const CARD_ID: &str = "local";
 /// the Containers panel already labels this machine's section with, and two
 /// copies of one name are two things that can drift apart.
 pub const FALLBACK_NAME: &str = store::LOCAL_HOST_SCOPE;
-
-/// The em dash every unmeasured field renders. Same character and same muted
-/// colour `viewmodel::card` uses for an absent GPU, so "we didn't measure it"
-/// looks identical wherever it appears on the card.
-const UNKNOWN: &str = "—";
 
 /// This machine's display name: the platform host name with macOS's cosmetic
 /// `.local` suffix removed.
@@ -96,18 +86,19 @@ impl LocalHostState {
 
     /// Folds an already-taken sample into the state.
     ///
-    /// **A partially-measured sample is shown but not plotted.** The very first
-    /// sample has no previous counters to diff against, so its disk and network
-    /// rates are unknown; pushing the wire lowering's `0.0` into the history
-    /// would draw a spike from a floor nobody measured. Skipping the point costs
-    /// one pixel of a 1s series and keeps every plotted value real.
+    /// **An unmeasured value is shown but not plotted.** The rates take care of
+    /// themselves — `HostHistories::record` skips any `None` field since #191,
+    /// so a first sample's unknown disk rate simply does not enter that series.
+    /// CPU usage is the exception, because it is the one field the wire lowering
+    /// still flattens to `0.0`: pushing that would draw a dip to a floor nobody
+    /// measured, so a sample with no CPU reading is not plotted at all.
     ///
     /// Separate from [`sample`](Self::sample) so the rule above is reachable
     /// from a test: a real sampler cannot be made to report unknown rates on
     /// demand, and a test that re-implemented this guard inline would pass
     /// against a version that had dropped it.
     pub fn record(&mut self, snapshot: localhost::LocalSnapshot) {
-        if snapshot.cpu.usage.is_some() && snapshot.disk.is_some() && snapshot.network.is_some() {
+        if snapshot.cpu.usage.is_some() {
             self.histories.record(&snapshot.to_wire());
         }
         self.latest = Some(snapshot);
@@ -157,42 +148,23 @@ impl Default for LocalHostState {
     }
 }
 
-/// Replaces every field the sampler declined to measure with the muted em dash.
+/// Blanks the one unknown the wire lowering still cannot carry.
 ///
-/// Exhaustive over [`localhost::LocalSnapshot`]'s `Option`s, and driven by them
-/// — a field is blanked because its *source* was `None`, never because its
-/// lowered value happened to be `0.0`. The distinction is the whole point: an
-/// idle disk really does read 0 MB/s, and a card that hid it would be lying in
-/// the other direction.
+/// Everything else — memory pressure, the thermal state, both rate pairs, the
+/// GPU — reaches `viewmodel::card` as a `None` and is blanked there, by the same
+/// code that blanks a remote agent's omitted keys. This function is what is left
+/// after #191, and it should shrink to nothing the day `wire::Cpu::total_usage`
+/// can say "unknown" too.
+///
+/// Driven by the `Option`, never by testing the lowered number for zero: an idle
+/// CPU really does read 0%, and a card that hid it would be lying in the other
+/// direction.
 fn lower_unknowns(card: &mut Value, snapshot: &localhost::LocalSnapshot) {
-    let muted = color::hex(color::MUTED);
-
     if snapshot.cpu.usage.is_none() {
         // `to_wire` already drops the per-core list to empty, so the core grid
         // simply has no cells — there is no row of fabricated 0% to blank.
         card["cpuValue"] = json!(UNKNOWN);
-        card["cpuValueColor"] = json!(muted);
-    }
-    if snapshot.cpu.thermal_state.is_none() {
-        // The wire contract's `0` decodes as "Nominal", which `thermal_badge`
-        // renders as no badge at all. That is the right *look* for an unknown
-        // thermal state (a quiet card), but the badge must not be able to claim
-        // a state nobody read, so it is cleared explicitly rather than left to
-        // an encoding coincidence.
-        card["thermalText"] = json!("");
-        card["thermalColor"] = json!(muted);
-    }
-    if snapshot.memory.pressure.is_none() {
-        card["pressureText"] = json!(format!("Pressure: {UNKNOWN}"));
-        card["pressureColor"] = json!(muted);
-    }
-    if snapshot.disk.is_none() {
-        card["diskRead"] = json!(UNKNOWN);
-        card["diskWrite"] = json!(UNKNOWN);
-    }
-    if snapshot.network.is_none() {
-        card["netDown"] = json!(UNKNOWN);
-        card["netUp"] = json!(UNKNOWN);
+        card["cpuValueColor"] = json!(color::hex(color::MUTED));
     }
 }
 
@@ -241,15 +213,15 @@ mod tests {
                 swap_used_gb: 0.5,
                 pressure: Some(41.0),
             },
-            disk: Some(wire::Disk {
-                read_mbps: 12.4,
-                write_mbps: 88.1,
-            }),
-            network: Some(wire::Network {
-                download_mbps: 2.1,
-                upload_mbps: 0.4,
-            }),
-            gpu: None,
+            disk: wire::Disk {
+                read_mbps: Some(12.4),
+                write_mbps: Some(88.1),
+            },
+            network: wire::Network {
+                download_mbps: Some(2.1),
+                upload_mbps: Some(0.4),
+            },
+            gpu: wire::Gpu::unknown(),
             battery: None,
             volumes: Vec::new(),
             processes: Vec::new(),
@@ -289,14 +261,19 @@ mod tests {
     /// unknown, no thermal source, no pressure) renders em dashes, and the
     /// *identical* sample with those fields measured at exactly zero renders
     /// zeros. Nothing on this card can turn one into the other.
+    ///
+    /// Most of what it asserts is now decided in `viewmodel::card` rather than
+    /// here — which is the point of #191, and why it is still asserted through
+    /// the real local card: the local rendering is what must not regress,
+    /// wherever the rule happens to live.
     #[test]
     fn unmeasured_fields_render_an_em_dash_and_measured_zeros_render_zero() {
         let mut unmeasured = snapshot();
         unmeasured.cpu.usage = None;
         unmeasured.cpu.thermal_state = None;
         unmeasured.memory.pressure = None;
-        unmeasured.disk = None;
-        unmeasured.network = None;
+        unmeasured.disk = wire::Disk::default();
+        unmeasured.network = wire::Network::default();
 
         let mut idle = snapshot();
         idle.cpu.usage = Some(localhost::CpuUsage {
@@ -304,14 +281,14 @@ mod tests {
             per_core: vec![0.0, 0.0],
         });
         idle.memory.pressure = Some(0.0);
-        idle.disk = Some(wire::Disk {
-            read_mbps: 0.0,
-            write_mbps: 0.0,
-        });
-        idle.network = Some(wire::Network {
-            download_mbps: 0.0,
-            upload_mbps: 0.0,
-        });
+        idle.disk = wire::Disk {
+            read_mbps: Some(0.0),
+            write_mbps: Some(0.0),
+        };
+        idle.network = wire::Network {
+            download_mbps: Some(0.0),
+            upload_mbps: Some(0.0),
+        };
 
         let blank = card_for(unmeasured);
         assert_eq!(blank["cpuValue"], UNKNOWN);
@@ -416,8 +393,8 @@ mod tests {
         };
 
         let mut first = snapshot();
-        first.disk = None;
-        first.network = None;
+        first.disk = wire::Disk::default();
+        first.network = wire::Network::default();
         state.record(first);
         assert!(
             state.histories.disk_read.values().is_empty(),
@@ -427,9 +404,35 @@ mod tests {
         // for the rest, rather than waiting for a fully-measured sample.
         assert_eq!(state.card()["diskRead"], UNKNOWN);
         assert_eq!(state.card()["cpuValue"], "38%");
+        // …and the CPU it *did* measure is plotted, rather than the whole sample
+        // being dropped because one unrelated rate was unknown.
+        assert_eq!(state.histories.cpu.values(), &[37.5]);
 
         state.record(snapshot());
         assert_eq!(state.histories.disk_read.values(), &[12.4]);
         assert_eq!(state.card()["diskRead"], "12.4 MB/s");
+    }
+
+    /// The other half of that guard, and the one the rates no longer need: a
+    /// sample with no CPU reading is shown but not plotted, because
+    /// `total_usage` is the field the wire lowering still flattens to `0.0`.
+    #[test]
+    fn a_sample_with_no_cpu_reading_is_shown_but_never_plotted_as_zero() {
+        let mut state = LocalHostState {
+            name: "mac-studio".to_owned(),
+            sampler: localhost::LocalSampler::new(),
+            histories: HostHistories::new(),
+            latest: None,
+        };
+
+        let mut blind = snapshot();
+        blind.cpu.usage = None;
+        state.record(blind);
+
+        assert!(
+            state.histories.cpu.values().is_empty(),
+            "a fabricated 0% must not enter the CPU series"
+        );
+        assert_eq!(state.card()["cpuValue"], UNKNOWN);
     }
 }
