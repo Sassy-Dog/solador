@@ -102,6 +102,26 @@ fn battery_deserialises_from_shared_contract_fixture() {
 
 /// Guards against the committed fixture drifting from what the agent sends.
 /// Skipped when the live capture is absent so CI stays hermetic.
+///
+/// # Capturing the live fixture
+///
+/// The capture is deliberately gitignored (`.gitignore`: `crates/wire/tests/
+/// fixtures/snapshot-live.json`) — do **not** commit it. Capture it locally
+/// before merging a change to the wire types, then re-run this test:
+///
+/// ```bash
+/// curl -fsS -H "Authorization: Bearer $DEVCANOPY_AGENT_TOKEN" \
+///   http://<agent-host>:7878/v1/snapshot \
+///   > crates/wire/tests/fixtures/snapshot-live.json
+/// cargo test -p devcanopy-wire --locked
+/// ```
+///
+/// Write straight to the path below: a capture that lands anywhere else makes
+/// this test silently return instead of failing (#144). `<agent-host>` is the
+/// Tailscale address of any host running `agent/`.
+///
+/// If this then fails, the committed `snapshot.json` is wrong — fix the types
+/// or the fixture, not the test.
 #[test]
 fn live_capture_deserialises_when_present() {
     let path = concat!(
