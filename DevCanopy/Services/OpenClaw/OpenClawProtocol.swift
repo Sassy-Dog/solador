@@ -10,6 +10,14 @@ enum OpenClawProtocol {
     static let clientMode = "ui"
     static let role = "operator"
     static let scopes = ["operator.read", "operator.approvals", "operator.admin"]
+    /// Both bounds of the supported WS protocol range. The gateway requires a
+    /// UI-mode operator client to cover v4 (`maxProtocol >= 4 && minProtocol <= 4`
+    /// in its connect gate — v3 tolerance exists only for probe/node modes), and
+    /// rejects v3-only clients with `PROTOCOL_MISMATCH`. Observed live against
+    /// OpenClaw 2026.7.1-2 (issue #186); this client's v3 predates that gate and
+    /// had never reached a live gateway. The signed device-auth payload is a
+    /// separate version and stays at v2 — the gateway verifies v3-then-v2.
+    static let protocolVersion = 4
     /// The fixed id used for the connect request, matching the gateway reference
     /// client; the gateway echoes it on the `res`.
     static let connectID = "connect-1"
@@ -69,8 +77,8 @@ enum OpenClawProtocol {
         ))
 
         var params: [String: Any] = [
-            "minProtocol": 3,
-            "maxProtocol": 3,
+            "minProtocol": protocolVersion,
+            "maxProtocol": protocolVersion,
             "client": [
                 "id": clientID,
                 "displayName": "DevCanopy",
