@@ -59,8 +59,16 @@ fn sampling_the_real_machine_produces_a_well_formed_snapshot() {
 
     // The first sample has no previous cumulative reading to diff against, so
     // its rates must be unknown rather than a plausible-looking zero.
-    assert_eq!(first.network, None, "the first sample cannot know a rate");
-    assert_eq!(first.disk, None, "the first sample cannot know a rate");
+    assert_eq!(
+        first.network,
+        wire::Network::default(),
+        "the first sample cannot know a rate"
+    );
+    assert_eq!(
+        first.disk,
+        wire::Disk::default(),
+        "the first sample cannot know a rate"
+    );
 
     for volume in &first.volumes {
         assert!(volume.total_gb > 0.0, "{} has no capacity", volume.mount);
@@ -76,14 +84,13 @@ fn sampling_the_real_machine_produces_a_well_formed_snapshot() {
 
     // With a baseline in hand the rates become measurable. What they measured is
     // this machine's business; that they are finite and non-negative is not.
-    let network = second.network.expect("a second sample can rate the delta");
-    let disk = second.disk.expect("a second sample can rate the delta");
     for (label, rate) in [
-        ("download", network.download_mbps),
-        ("upload", network.upload_mbps),
-        ("read", disk.read_mbps),
-        ("write", disk.write_mbps),
+        ("download", second.network.download_mbps),
+        ("upload", second.network.upload_mbps),
+        ("read", second.disk.read_mbps),
+        ("write", second.disk.write_mbps),
     ] {
+        let rate = rate.unwrap_or_else(|| panic!("a second sample can rate {label}"));
         assert!(rate.is_finite() && rate >= 0.0, "{label} rate was {rate}");
     }
 
