@@ -42,3 +42,20 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "std",
   "NSProcessInfo",
 ] }
+# The IOKit registry walk behind `src/gpu.rs` — the same `IOAccelerator`
+# properties `GPUMonitor.swift` reads. Chosen over `io-kit-sys`/`core-foundation`
+# because both crates are already in this workspace's lock via tauri (so the
+# port adds no new package to the tree at all), they are the same objc2 family
+# as the `objc2-foundation` above, and `CFRetained` gets the reference counting
+# right by construction rather than by hand. Only the features `gpu.rs` names
+# are enabled: matching dictionaries, string keys, numeric values.
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "CFDictionary",
+  "CFString",
+  "CFNumber",
+] }
+objc2-io-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "libc",
+] }
