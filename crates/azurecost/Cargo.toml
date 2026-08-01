@@ -1,0 +1,26 @@
+[package]
+# Prefixed like `devcanopy-wire`/`devcanopy-github` to stay clear of the generic
+# `azurecost` name on crates.io. The lib below keeps the short import name.
+name = "devcanopy-azurecost"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "azurecost"
+
+[dependencies]
+# Same HTTP stack (and TLS backend) as crates/agentclient and crates/github, so
+# the workspace resolves one reqwest. No `json` feature: the blob API answers in
+# XML and the export itself is CSV, so nothing here decodes JSON.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# UTC calendar arithmetic: the export's month-range folder names, days-in-month
+# for the projection, and the prior-month rollback. Same pin crates/github uses;
+# `clock` stays off because nothing here reads the wall clock (see lib.rs).
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+serde = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
