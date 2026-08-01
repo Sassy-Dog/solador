@@ -1,0 +1,44 @@
+[package]
+# Prefixed like `devcanopy-wire`/`devcanopy-store` to stay clear of the
+# `localhost` name on crates.io. The lib below keeps the short import name.
+name = "devcanopy-localhost"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "localhost"
+
+[dependencies]
+devcanopy-wire = { path = "../wire" }
+# Same major as `agent/Cargo.toml` so the two samplers share semantics and the
+# repo only ever learns one sysinfo API. Default features off: this crate needs
+# CPU/memory/processes (`system`), mounted filesystems (`disk`) and interface
+# counters (`network`) — not components (temperatures) or users.
+sysinfo = { version = "0.39", default-features = false, features = [
+  "system",
+  "disk",
+  "network",
+] }
+# The RFC3339 `timestamp` the wire contract carries, formatted exactly as
+# `agent/src/metrics.rs::now_rfc3339` does. Already in the workspace tree.
+time = { version = "0.3", default-features = false, features = [
+  "std",
+  "formatting",
+] }
+# Cross-platform battery readout (macOS/Windows/Linux). The maintained fork of
+# the unmaintained `battery` crate.
+starship-battery = "0.11"
+
+[dev-dependencies]
+# The smoke test round-trips a real sample through the wire contract's JSON.
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# `NSProcessInfo.thermalState` — the same source the Swift collector reads
+# (`HostMetricsCollector.mapThermalState`). Already in the workspace tree via
+# tauri, so this costs no extra build.
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSProcessInfo",
+] }
