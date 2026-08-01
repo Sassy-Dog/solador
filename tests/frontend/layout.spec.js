@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 test.beforeEach(async ({ page }) => {
   // Served under the app's real CSP (csp_server.py) rather than no policy at
@@ -122,6 +123,32 @@ test("charts widen their time window instead of stretching", async ({ page }) =>
   expect(wide.n).toBeGreaterThan(narrow.n * 2.5);
   // ...at unchanged on-screen density, which is what "not stretched" means
   expect(Math.abs(wide.px - narrow.px)).toBeLessThan(0.5);
+});
+
+test("a filling history hugs the right edge at fixed density, never stretching", async ({ page }) => {
+  // Swift parity (Sparkline.swift:54-59): the newest sample is pinned at the
+  // right edge and points step left by a FIXED step, so a history that is
+  // still filling occupies only the right side of the chart. Stretching the
+  // few present points across the full width — then switching to sliding at
+  // capacity — is the compact-then-slide artifact this guards against.
+  const vm = JSON.parse(readFileSync("../../app/ui/sample.json", "utf8"));
+  vm.hosts[0].cpuHistory = vm.hosts[0].cpuHistory.slice(0, 6);
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+  const got = await page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+    const el = document.querySelector(".cpuChart");
+    const pts = el.querySelector("svg polyline").getAttribute("points").trim().split(" ");
+    return { w: el.clientWidth, xs: pts.map((p) => parseFloat(p.split(",")[0])) };
+  });
+  expect(got.xs.length).toBe(6);
+  // Newest sample at the right edge...
+  expect(Math.abs(got.xs[got.xs.length - 1] - got.w)).toBeLessThan(1.5);
+  // ...and the sparse history hugs the right side instead of spanning the
+  // chart (6 samples at ~4px density on a wide chart sit within the last few
+  // percent of the width; the stretch bug puts the first point at x=0).
+  expect(got.xs[0]).toBeGreaterThan(got.w * 0.9);
 });
 
 test("a host with no discrete GPU renders an em dash, never zero", async ({ page }) => {
