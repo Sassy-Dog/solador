@@ -676,8 +676,11 @@ name = "devcanopy-app"
 version = "0.1.0"
 dependencies = [
  "agentclient",
+ "chrono",
+ "devcanopy-github",
  "devcanopy-store",
  "devcanopy-wire",
+ "dirs",
  "serde_json",
  "tauri",
  "tauri-build",

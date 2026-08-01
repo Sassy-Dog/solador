@@ -25,7 +25,6 @@ use store::{
 };
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
-use viewmodel::format::relative_age;
 
 use group::{DisplayRow, Partition};
 use parse::{LocalRuntime, MergeOutcome};
@@ -40,16 +39,9 @@ pub const STALE_AFTER_SECS: u64 = 30;
 /// list changes on human timescales, and `docker ps` is a process spawn.
 pub const POLL_INTERVAL_SECS: u64 = 10;
 
-/// Seconds since the UNIX epoch.
-///
-/// Wall clock, not `Instant`, because these values are compared against
-/// presence records that outlive the process. A clock behind the epoch yields
-/// `0` rather than panicking.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
+/// Seconds since the UNIX epoch — [`crate::panel::now_unix`], re-exported here
+/// because this panel's callers already reach for it under this name.
+pub use crate::panel::now_unix;
 
 /// Everything the panel renders from, and the memory that survives one bad
 /// poll.
@@ -325,31 +317,14 @@ fn trailing_label(state: &ContainersState, missing: usize) -> String {
 
 /// The panel's refresh-health line, or `Null` when it is healthy and fresh.
 ///
-/// Ladder from `PanelStatusFooter.swift`: an error wins over staleness and
-/// carries how long ago the last good reading was; otherwise a reading older
-/// than [`STALE_AFTER_SECS`] says so. A healthy panel renders nothing at all,
-/// keeping the cockpit glanceable.
+/// The ladder itself is [`crate::panel::status_footer`], shared with the
+/// GitHub Runners panel; all this adds is *this* panel's staleness window.
 ///
 /// Local-only, matching Swift: the Swift panel footer watches
 /// `LocalContainerService`, and a remote host's reachability is the Hosts
 /// panel's story to tell, told there with its own error card.
 fn footer(last_updated: Option<u64>, error: Option<&str>, now: u64) -> Value {
-    let text = match (error, last_updated) {
-        (Some(error), Some(updated)) => Some(format!(
-            "⚠ {error} · last ok {}",
-            relative_age(now.saturating_sub(updated))
-        )),
-        (Some(error), None) => Some(format!("⚠ {error}")),
-        (None, Some(updated)) if now.saturating_sub(updated) > STALE_AFTER_SECS => Some(format!(
-            "⚠ stale · updated {}",
-            relative_age(now.saturating_sub(updated))
-        )),
-        (None, _) => None,
-    };
-    match text {
-        Some(text) => json!({ "text": text, "color": color::hex(color::AMBER) }),
-        None => Value::Null,
-    }
+    crate::panel::status_footer(last_updated, error, now, STALE_AFTER_SECS)
 }
 
 /// A populated state, for the offline fixtures the Playwright suite renders

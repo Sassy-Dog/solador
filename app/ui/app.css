@@ -128,6 +128,50 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    a description, and carries the weight the Swift panel gives it. */
 .cont-row[data-kind="absent"] .cont-status { font-weight:700; }
 
+/* ---- Repos + GitHub Runners --------------------------------------------
+   Both panels are lists of dot-plus-name rows, so they share the row rule.
+   Nothing here sets a colour that carries meaning: every dot, every count and
+   every status word arrives from Rust with its own colour, applied via CSSOM
+   in github.js. The one thing this file DOES own is the monospace numerals --
+   the fixed column widths Rust hands down only align if the digits do. */
+.gh-row { display:flex; align-items:center; gap:8px; min-width:0; }
+.gh-row .dot { width:6px; height:6px; flex:none; }
+/* Occupies the header's dot column so the labels line up with the cells. */
+.gh-dot-spacer { background:none; }
+.gh-message { font-size:11px; color:var(--muted); margin:0; }
+
+.gh-repo-name { font-size:11px; font-weight:700; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+/* Right-aligned and tabular: the panel's whole legibility is the columns
+   lining up, and proportional digits break that at every width. */
+.gh-cell { font-size:11px; text-align:right; flex:none;
+  font-variant-numeric:tabular-nums; }
+.gh-head .gh-repo-name, .gh-head .gh-cell { font-size:9px; font-weight:700;
+  color:var(--muted); }
+.gh-row .grow { min-width:8px; }
+.panel-health { font-size:10px; margin:4px 0 0; }
+
+/* A repo parked at a deployment-protection gate. The pulse is what separates
+   "a human must act" from "a machine is working" -- both are amber, and a
+   second amber would not have told them apart. */
+@keyframes gh-blink { from { opacity:1; } to { opacity:0.25; } }
+.dot.blink { animation:gh-blink 0.7s ease-in-out infinite alternate; }
+@media (prefers-reduced-motion: reduce) { .dot.blink { animation:none; } }
+
+.gh-stats { display:flex; gap:16px; }
+.gh-stat { display:flex; flex-direction:column; gap:1px; flex:1; min-width:0; }
+.gh-stat .lbl { font-size:8px; }
+.gh-stat-value { font-size:15px; font-weight:700;
+  font-variant-numeric:tabular-nums; }
+.gh-chips { display:flex; gap:8px; flex-wrap:wrap; }
+.gh-chip { font-size:9px; color:var(--muted); padding:3px 7px;
+  border:1px solid var(--line); border-radius:999px; white-space:nowrap; }
+.gh-runner-name { font-size:11px; font-weight:700; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.gh-runner-os { font-size:8px; color:var(--muted); flex:none; }
+.gh-runner-status { font-size:9px; font-weight:700; white-space:nowrap;
+  flex:none; min-width:48px; text-align:right; }
+
 /* ---- Settings ----------------------------------------------------------
    An in-app view, so it shares the cockpit's palette and type scale rather
    than opening a differently-styled window. Every control below is created by

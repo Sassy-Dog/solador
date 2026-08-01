@@ -32,6 +32,7 @@ use uuid::Uuid;
 pub mod containers;
 pub mod hosts;
 pub mod repos;
+pub mod runners;
 pub mod secrets;
 pub mod settings;
 
@@ -41,6 +42,7 @@ pub use containers::{
 };
 pub use hosts::{Host, DEFAULT_AGENT_PORT};
 pub use repos::{seeded_repos, TrackedRepo};
+pub use runners::RunnerRosterRecord;
 pub use secrets::{CredentialStore, KeyringStore, MemoryCredentialStore, SecretError, SecretKey};
 pub use settings::{HostOverflowMode, Settings};
 
@@ -142,6 +144,18 @@ pub struct StoreData {
     /// across saves — a map that reorders itself makes every save a diff.
     #[serde(default)]
     pub container_presence: BTreeMap<String, ContainerPresenceRecord>,
+    /// Auto-learned self-hosted runner names, so the Runners panel can say
+    /// "mac-s2 *should* be here" about a runner that de-registered between
+    /// jobs. GitHub's registered list only ever reports what exists right now;
+    /// this is the memory that makes an absence visible.
+    ///
+    /// A plain `Vec` (not a map keyed by name) because `github::roster` owns
+    /// the de-duplication and the by-name ordering, and it hands back exactly
+    /// this list. An empty list is a perfectly good roster — unlike
+    /// [`StoreData::container_rules`] there is nothing to seed, so there is no
+    /// "never configured" case to keep apart from it.
+    #[serde(default)]
+    pub runner_roster: Vec<RunnerRosterRecord>,
 }
 
 impl Default for StoreData {
@@ -157,6 +171,7 @@ impl Default for StoreData {
             repos: Vec::new(),
             container_rules: None,
             container_presence: BTreeMap::new(),
+            runner_roster: Vec::new(),
         }
     }
 }
@@ -400,6 +415,25 @@ impl Store {
     ) -> bool {
         let changed = records != self.data.container_presence;
         self.data.container_presence = records;
+        changed
+    }
+
+    /// The remembered self-hosted runner names.
+    #[must_use]
+    pub fn runner_roster(&self) -> &[RunnerRosterRecord] {
+        &self.data.runner_roster
+    }
+
+    /// Replaces the roster, reporting whether anything actually changed.
+    ///
+    /// The bool is what keeps a save off the disk on every poll: the roster is
+    /// rewritten on each successful fetch, and `last_seen` only moves for names
+    /// that were actually registered — so a steady org produces an identical
+    /// list poll after poll. Call [`Store::save`] to persist when it returns
+    /// `true`.
+    pub fn set_runner_roster(&mut self, roster: Vec<RunnerRosterRecord>) -> bool {
+        let changed = roster != self.data.runner_roster;
+        self.data.runner_roster = roster;
         changed
     }
 }
@@ -1002,6 +1036,59 @@ mod tests {
         let reopened = Store::open_in(dir.path()).expect("reopen");
         assert_eq!(reopened.container_rules(), [rule]);
         assert_eq!(reopened.container_presence(), &presence);
+    }
+
+    #[test]
+    fn the_runner_roster_round_trips_through_the_file() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path()).expect("open");
+        assert!(
+            store.runner_roster().is_empty(),
+            "a fresh store remembers no runners"
+        );
+
+        let roster = vec![
+            RunnerRosterRecord {
+                name: "mac-s1".into(),
+                os: "macOS".into(),
+                last_seen: 1_700_000_000,
+            },
+            RunnerRosterRecord {
+                name: "ubu-1".into(),
+                os: "linux".into(),
+                last_seen: 1_700_000_060,
+            },
+        ];
+        assert!(store.set_runner_roster(roster.clone()));
+        assert!(
+            !store.set_runner_roster(roster.clone()),
+            "an unchanged roster must report no change, so a steady org does \
+             not rewrite the file on every poll"
+        );
+        store.save().expect("save");
+
+        let reopened = Store::open_in(dir.path()).expect("reopen");
+        assert_eq!(reopened.runner_roster(), roster);
+    }
+
+    /// The field is new, so every existing store file on disk is missing it —
+    /// which must open as an empty roster, not a failed parse.
+    #[test]
+    fn a_store_file_without_a_runner_roster_still_opens() {
+        let dir = temp_dir();
+        Store::open_in(dir.path()).expect("first open");
+        let path = dir.path().join(STORE_FILE_NAME);
+        let mut data: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        data.as_object_mut()
+            .expect("object")
+            .remove("runner_roster")
+            .expect("the field was written");
+        fs::write(&path, data.to_string()).expect("write");
+
+        let reopened = Store::open_in(dir.path()).expect("an older file must still open");
+        assert!(reopened.runner_roster().is_empty());
+        assert_eq!(reopened.repos().len(), repos::SEED_SLUGS.len());
     }
 
     #[test]
