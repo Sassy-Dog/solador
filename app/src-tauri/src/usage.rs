@@ -26,7 +26,7 @@
 //! its own footer because each can fail on its own.
 
 use serde_json::{json, Value};
-use usage::{NeonUsageSummary, SentryUsageSummary, UsageTotals};
+use usage::{NeonInvoiceSummary, NeonUsageSummary, SentryUsageSummary, UsageTotals};
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 
@@ -121,6 +121,28 @@ pub fn events(count: Option<u64>) -> Option<String> {
     count.map(tokens)
 }
 
+/// The Neon rate preferences, read at render time (the Sentry-quota pattern):
+/// editing a rate repaints without waiting out the hourly cadence.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NeonRates {
+    pub usd_per_cu_hour: f64,
+    pub usd_per_gib_month: f64,
+}
+
+/// The last-invoice figure. `$` only for USD — a euro invoice wearing a
+/// dollar sign would be a wrong number with correct digits.
+#[must_use]
+pub fn invoice_amount(summary: Option<&NeonInvoiceSummary>) -> Option<String> {
+    match summary? {
+        NeonInvoiceSummary::NoInvoices => None,
+        NeonInvoiceSummary::Latest { total, currency } => Some(if currency == "USD" {
+            format!("${total:.2}")
+        } else {
+            format!("{total:.2} {currency}")
+        }),
+    }
+}
+
 // MARK: - State
 
 /// One provider's published state: what it last read, when, and why it last
@@ -203,6 +225,7 @@ pub struct UsageState {
     /// [`LOADING_MESSAGE`] from [`NO_DATA_MESSAGE`].
     claude_loading: bool,
     neon: ProviderState<NeonUsageSummary>,
+    neon_invoice: ProviderState<NeonInvoiceSummary>,
     sentry: ProviderState<SentryUsageSummary>,
 }
 
@@ -227,6 +250,10 @@ impl UsageState {
 
     pub fn neon_mut(&mut self) -> &mut ProviderState<NeonUsageSummary> {
         &mut self.neon
+    }
+
+    pub fn neon_invoice_mut(&mut self) -> &mut ProviderState<NeonInvoiceSummary> {
+        &mut self.neon_invoice
     }
 
     pub fn sentry_mut(&mut self) -> &mut ProviderState<SentryUsageSummary> {
@@ -280,24 +307,48 @@ fn window_row(label: &str, totals: &UsageTotals) -> Value {
     })
 }
 
-/// The Neon section: month-to-date compute and branch storage.
-fn neon_section(state: &ProviderState<NeonUsageSummary>, now: u64) -> Value {
+/// The Neon section: month-to-date compute, storage, estimated charges, and
+/// the last finalized invoice.
+fn neon_section(
+    state: &ProviderState<NeonUsageSummary>,
+    invoice: &ProviderState<NeonInvoiceSummary>,
+    rates: NeonRates,
+    now: u64,
+) -> Value {
     let summary = state.summary;
+    let mut rows = vec![
+        provider_row(
+            "NEON COMPUTE (MTD)",
+            cu_hours(summary.and_then(|s| s.compute_unit_hours())),
+        ),
+        provider_row(
+            "NEON STORAGE",
+            gibibytes(summary.and_then(|s| s.storage_gib())),
+        ),
+    ];
+    // Absent, not "—", when unpriced or unmeasured: rates unset is setup, and
+    // an estimate over unknown usage would be a fabricated number.
+    if let Some(estimate) = summary
+        .and_then(|s| usage::neon::estimate_usd(s, rates.usd_per_cu_hour, rates.usd_per_gib_month))
+    {
+        rows.push(provider_row(
+            "NEON EST. CHARGES (MTD)",
+            Some(format!("≈ ${estimate:.2}")),
+        ));
+    }
+    rows.push(provider_row(
+        "NEON LAST INVOICE",
+        invoice_amount(invoice.summary.as_ref()),
+    ));
+
     json!({
         "id": "neon",
-        "rows": [
-            provider_row(
-                "NEON COMPUTE (MTD)",
-                cu_hours(summary.and_then(|s| s.compute_unit_hours())),
-            ),
-            provider_row(
-                "NEON STORAGE",
-                gibibytes(summary.and_then(|s| s.storage_gib())),
-            ),
-        ],
+        "rows": rows,
+        // Consumption's error owns the footer — it is the section's primary
+        // content; the invoice's reason shows only when consumption is healthy.
         "footer": status_footer(
             state.last_updated,
-            state.last_error.as_deref(),
+            state.last_error.as_deref().or(invoice.last_error.as_deref()),
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
@@ -337,12 +388,13 @@ fn sentry_section(state: &ProviderState<SentryUsageSummary>, quota: u64, now: u6
 
 /// The whole panel payload.
 ///
-/// `quota` is the store's `sentry_monthly_event_quota` — read at render time
-/// rather than captured by the poller, because changing it must repaint the bar
-/// without waiting out an hourly cadence for a number no API call is involved
-/// in.
+/// `quota` is the store's `sentry_monthly_event_quota` and `rates` its
+/// `neon_usd_per_cu_hour` / `neon_usd_per_gib_month` — both read at render time
+/// rather than captured by the poller, because changing either must repaint the
+/// panel without waiting out an hourly cadence for a number no API call is
+/// involved in.
 #[must_use]
-pub fn view(state: &UsageState, quota: u64, now: u64) -> Value {
+pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value {
     let kind = PanelKind::ClaudeUsage;
 
     // Three states, in Swift's own order: no summary at all (loading, or a log
@@ -397,7 +449,7 @@ pub fn view(state: &UsageState, quota: u64, now: u64) -> Value {
 
     let mut providers: Vec<Value> = Vec::new();
     if state.neon.configured {
-        providers.push(neon_section(&state.neon, now));
+        providers.push(neon_section(&state.neon, &state.neon_invoice, rates, now));
     }
     if state.sentry.configured {
         providers.push(sentry_section(&state.sentry, quota, now));
@@ -425,7 +477,8 @@ pub fn view(state: &UsageState, quota: u64, now: u64) -> Value {
 /// Which rendering `--dump-usage` should produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fixture {
-    /// Everything measured: Claude content, Neon figures, Sentry count + bar.
+    /// Everything measured: Claude content, Neon figures + last invoice,
+    /// Sentry count + bar.
     Measured,
     /// Both providers configured and answering, neither measuring anything —
     /// the em-dash path, with the quota set and the bar therefore suppressed.
@@ -458,6 +511,14 @@ pub fn fixture_state(kind: Fixture, at: u64) -> UsageState {
                 at,
                 None,
             );
+            state.neon_invoice.succeeded(
+                NeonInvoiceSummary::Latest {
+                    total: 15.91,
+                    currency: "USD".into(),
+                },
+                at,
+                None,
+            );
             state.sentry.succeeded(
                 SentryUsageSummary::Measured {
                     accepted_error_events: 9_400,
@@ -474,6 +535,9 @@ pub fn fixture_state(kind: Fixture, at: u64) -> UsageState {
                 at,
                 Some(usage::neon::NO_CONSUMPTION_MESSAGE.to_owned()),
             );
+            state
+                .neon_invoice
+                .succeeded(NeonInvoiceSummary::NoInvoices, at, None);
             state.sentry.succeeded(
                 SentryUsageSummary::Unmeasured,
                 at,
@@ -527,6 +591,13 @@ mod tests {
 
     const NOW: u64 = 1_700_000_000;
     const QUOTA: u64 = 10_000;
+    /// The rates the measured-fixture tests price against, so the estimate
+    /// row (and the dumped `Fixture::Measured` payload) actually exercises
+    /// the arithmetic rather than staying permanently absent.
+    const RATES: NeonRates = NeonRates {
+        usd_per_cu_hour: 0.106,
+        usd_per_gib_month: 0.35,
+    };
 
     fn measured() -> UsageState {
         fixture_state(Fixture::Measured, NOW)
@@ -569,11 +640,23 @@ mod tests {
         assert_eq!(events(None), None);
     }
 
+    /// Non-USD invoices name their currency instead of wearing a $.
+    #[test]
+    fn a_non_usd_invoice_names_its_currency() {
+        assert_eq!(
+            invoice_amount(Some(&NeonInvoiceSummary::Latest {
+                total: 12.5,
+                currency: "EUR".into(),
+            })),
+            Some("12.50 EUR".into())
+        );
+    }
+
     // MARK: Claude states
 
     #[test]
     fn before_the_first_walk_the_panel_says_it_is_reading() {
-        let payload = view(&UsageState::new(), 0, NOW);
+        let payload = view(&UsageState::new(), 0, NeonRates::default(), NOW);
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
         assert_eq!(payload["trailing"], "");
         assert!(payload["windows"].as_array().unwrap().is_empty());
@@ -584,7 +667,12 @@ mod tests {
     /// from an empty week, which *is* a measurement.
     #[test]
     fn a_missing_log_root_says_no_usage_data_and_names_itself_in_the_footer() {
-        let payload = view(&fixture_state(Fixture::Empty, NOW), 0, NOW);
+        let payload = view(
+            &fixture_state(Fixture::Empty, NOW),
+            0,
+            NeonRates::default(),
+            NOW,
+        );
         assert_eq!(payload["message"]["text"], NO_DATA_MESSAGE);
         assert_eq!(
             payload["footer"]["text"],
@@ -596,7 +684,7 @@ mod tests {
     fn a_measured_but_empty_week_says_so_rather_than_rendering_zero_rows() {
         let mut state = UsageState::new();
         state.apply_claude(Some(UsageSummary::default()), NOW, None);
-        let payload = view(&state, 0, NOW);
+        let payload = view(&state, 0, NeonRates::default(), NOW);
         assert_eq!(payload["message"]["text"], EMPTY_MESSAGE);
         assert!(payload["windows"].as_array().unwrap().is_empty());
         // The trailing label still reports today's measured zero: the walk
@@ -606,7 +694,7 @@ mod tests {
 
     #[test]
     fn content_renders_both_windows_and_at_most_four_projects() {
-        let payload = view(&measured(), 0, NOW);
+        let payload = view(&measured(), 0, RATES, NOW);
         assert!(payload["message"].is_null());
 
         let windows = payload["windows"].as_array().unwrap();
@@ -631,7 +719,7 @@ mod tests {
     /// at all — not a null one, which would read as a feature half-wired.
     #[test]
     fn window_rows_carry_no_progress_bar() {
-        let payload = view(&measured(), 0, NOW);
+        let payload = view(&measured(), 0, RATES, NOW);
         for row in payload["windows"].as_array().unwrap() {
             assert!(row.get("bar").is_none(), "got {row}");
         }
@@ -643,7 +731,7 @@ mod tests {
         summary.projects_last_7d.clear();
         let mut state = UsageState::new();
         state.apply_claude(Some(summary), NOW, None);
-        assert!(view(&state, 0, NOW)["projects"].is_null());
+        assert!(view(&state, 0, NeonRates::default(), NOW)["projects"].is_null());
     }
 
     // MARK: provider sections
@@ -652,13 +740,18 @@ mod tests {
     /// no divider. The panel is pixel-identical to its Claude-only self.
     #[test]
     fn an_unconfigured_provider_renders_no_section() {
-        let payload = view(&fixture_state(Fixture::Empty, NOW), QUOTA, NOW);
+        let payload = view(
+            &fixture_state(Fixture::Empty, NOW),
+            QUOTA,
+            NeonRates::default(),
+            NOW,
+        );
         assert!(payload["providers"].as_array().unwrap().is_empty());
     }
 
     #[test]
     fn a_measured_provider_renders_its_figures_in_ink() {
-        let payload = view(&measured(), QUOTA, NOW);
+        let payload = view(&measured(), QUOTA, RATES, NOW);
         let neon = section(&payload, "neon").expect("neon section");
         assert_eq!(neon["rows"][0]["label"], "NEON COMPUTE (MTD)");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h");
@@ -675,7 +768,12 @@ mod tests {
     /// measured nothing renders an em dash, never a 0.
     #[test]
     fn an_unmeasured_provider_renders_an_em_dash_and_says_why() {
-        let payload = view(&fixture_state(Fixture::Unmeasured, NOW), QUOTA, NOW);
+        let payload = view(
+            &fixture_state(Fixture::Unmeasured, NOW),
+            QUOTA,
+            NeonRates::default(),
+            NOW,
+        );
 
         let neon = section(&payload, "neon").expect("neon section");
         for row in neon["rows"].as_array().unwrap() {
@@ -691,23 +789,109 @@ mod tests {
         assert_eq!(sentry["rows"][0]["value"], "—");
     }
 
+    // MARK: Neon estimate + invoice rows
+
+    /// The estimate row appears only when rates are set AND usage is measured.
+    #[test]
+    fn the_estimate_row_needs_rates_and_a_measurement() {
+        let payload = view(&measured(), QUOTA, RATES, NOW);
+        let neon = section(&payload, "neon").expect("neon section");
+        let rows = neon["rows"].as_array().unwrap();
+        let est = rows
+            .iter()
+            .find(|r| r["label"] == "NEON EST. CHARGES (MTD)")
+            .expect("estimate row");
+        // Measured fixture: 12.4 CU-h × 0.106 + 3.25 GiB × 0.35 = 2.4519
+        assert_eq!(est["value"], "≈ $2.45");
+
+        let unpriced = view(&measured(), QUOTA, NeonRates::default(), NOW);
+        let neon = section(&unpriced, "neon").expect("neon section");
+        assert!(
+            neon["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["label"] != "NEON EST. CHARGES (MTD)"),
+            "no rates ⇒ the row is absent, not —"
+        );
+    }
+
+    /// The invoice row: real dollars when known, — before the first read or
+    /// for an org with no invoices yet.
+    #[test]
+    fn the_invoice_row_shows_the_latest_total_or_a_dash() {
+        let mut state = measured();
+        state.neon_invoice_mut().succeeded(
+            NeonInvoiceSummary::Latest {
+                total: 15.91,
+                currency: "USD".into(),
+            },
+            NOW,
+            None,
+        );
+        let payload = view(&state, QUOTA, NeonRates::default(), NOW);
+        let neon = section(&payload, "neon").expect("neon section");
+        let row = neon["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["label"] == "NEON LAST INVOICE")
+            .expect("invoice row");
+        assert_eq!(row["value"], "$15.91");
+
+        let mut fresh = measured();
+        fresh
+            .neon_invoice_mut()
+            .succeeded(NeonInvoiceSummary::NoInvoices, NOW, None);
+        let payload = view(&fresh, QUOTA, NeonRates::default(), NOW);
+        let neon = section(&payload, "neon").expect("neon section");
+        let row = neon["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["label"] == "NEON LAST INVOICE")
+            .expect("invoice row");
+        assert_eq!(row["value"], "—");
+    }
+
+    /// Consumption's error owns the footer; the invoice's shows only when
+    /// consumption is healthy.
+    #[test]
+    fn the_consumption_error_outranks_the_invoice_error_in_the_footer() {
+        let mut state = measured();
+        state
+            .neon_invoice_mut()
+            .failed("invoices: Neon API request failed (HTTP 404)".to_owned());
+        state
+            .neon_mut()
+            .failed("Neon API request failed (HTTP 500)".to_owned());
+        let payload = view(&state, QUOTA, NeonRates::default(), NOW);
+        let footer = &section(&payload, "neon").expect("neon")["footer"]["text"];
+        assert!(footer.as_str().unwrap().contains("HTTP 500"));
+    }
+
     // MARK: the quota bar
 
     #[test]
     fn the_quota_bar_needs_both_a_quota_and_a_known_count() {
         // Quota set, count known -> a bar.
-        let with_bar = view(&measured(), QUOTA, NOW);
+        let with_bar = view(&measured(), QUOTA, RATES, NOW);
         let bar = &section(&with_bar, "sentry").expect("sentry")["bar"];
         assert_eq!(bar["fraction"], 0.94);
         assert_eq!(bar["color"], color::hex(color::AMBER), "9400/10000 is 94%");
 
         // No quota -> no bar, however well measured the count is.
-        let no_quota = view(&measured(), 0, NOW);
+        let no_quota = view(&measured(), 0, RATES, NOW);
         assert!(section(&no_quota, "sentry").expect("sentry")["bar"].is_null());
 
         // Quota set, count unknown -> no bar. A bar at a defaulted 0 would
         // read "comfortably under quota" when the truth is "we don't know".
-        let unknown = view(&fixture_state(Fixture::Unmeasured, NOW), QUOTA, NOW);
+        let unknown = view(
+            &fixture_state(Fixture::Unmeasured, NOW),
+            QUOTA,
+            NeonRates::default(),
+            NOW,
+        );
         assert!(section(&unknown, "sentry").expect("sentry")["bar"].is_null());
     }
 
@@ -722,7 +906,7 @@ mod tests {
             NOW,
             None,
         );
-        let payload = view(&state, QUOTA, NOW);
+        let payload = view(&state, QUOTA, RATES, NOW);
         let bar = &section(&payload, "sentry").expect("sentry")["bar"];
         assert_eq!(bar["fraction"], 1.0);
         assert_eq!(bar["color"], color::hex(color::RED));
@@ -740,7 +924,7 @@ mod tests {
             NOW,
             None,
         );
-        let payload = view(&state, QUOTA, NOW);
+        let payload = view(&state, QUOTA, RATES, NOW);
         let sentry = section(&payload, "sentry").expect("sentry");
         assert_eq!(sentry["rows"][0]["value"], "0");
         assert_eq!(sentry["bar"]["fraction"], 0.0);
@@ -751,7 +935,7 @@ mod tests {
     #[test]
     fn each_section_carries_its_own_footer_on_its_own_window() {
         // 10 minutes: stale for Claude (150s), fine for the hourly providers.
-        let payload = view(&measured(), QUOTA, NOW + 600);
+        let payload = view(&measured(), QUOTA, RATES, NOW + 600);
         assert_eq!(payload["footer"]["text"], "⚠ stale · updated 10m ago");
         assert!(section(&payload, "neon").expect("neon")["footer"].is_null());
         assert!(section(&payload, "sentry").expect("sentry")["footer"].is_null());
@@ -763,7 +947,7 @@ mod tests {
         state
             .neon
             .failed("Neon API request failed (HTTP 500)".to_owned());
-        let payload = view(&state, QUOTA, NOW + 300);
+        let payload = view(&state, QUOTA, RATES, NOW + 300);
         let neon = section(&payload, "neon").expect("neon");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
         assert_eq!(
@@ -779,11 +963,11 @@ mod tests {
     fn unconfiguring_a_provider_drops_its_retained_figure() {
         let mut state = measured();
         state.neon.unconfigure();
-        let payload = view(&state, QUOTA, NOW);
+        let payload = view(&state, QUOTA, RATES, NOW);
         assert!(section(&payload, "neon").is_none());
 
         state.neon.configured = true;
-        let payload = view(&state, QUOTA, NOW);
+        let payload = view(&state, QUOTA, RATES, NOW);
         assert_eq!(
             section(&payload, "neon").expect("neon")["rows"][0]["value"],
             "—"
@@ -800,7 +984,7 @@ mod tests {
             .neon_mut()
             .unreadable("couldn't read the credential store".to_owned());
 
-        let payload = view(&state, QUOTA, NOW + 120);
+        let payload = view(&state, QUOTA, RATES, NOW + 120);
         let neon = section(&payload, "neon").expect("the section stays");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
         assert_eq!(
@@ -816,7 +1000,7 @@ mod tests {
         state
             .sentry_mut()
             .unreadable("couldn't read the credential store".to_owned());
-        assert!(view(&state, QUOTA, NOW)["providers"]
+        assert!(view(&state, QUOTA, NeonRates::default(), NOW)["providers"]
             .as_array()
             .expect("providers")
             .is_empty());
@@ -829,7 +1013,7 @@ mod tests {
     /// covering nothing. Asserted here, where a Rust test can see it.
     #[test]
     fn the_fixtures_cover_every_rendering_the_panel_has() {
-        let measured = view(&fixture_state(Fixture::Measured, NOW), QUOTA, NOW);
+        let measured = view(&fixture_state(Fixture::Measured, NOW), QUOTA, RATES, NOW);
         assert!(measured["message"].is_null(), "content, not a state line");
         assert_eq!(measured["windows"].as_array().unwrap().len(), 2);
         assert!(!measured["projects"]["rows"].as_array().unwrap().is_empty());
@@ -838,8 +1022,30 @@ mod tests {
             !section(&measured, "sentry").expect("sentry")["bar"].is_null(),
             "the quota bar is only exercised by this fixture"
         );
+        let neon_rows = section(&measured, "neon").expect("neon")["rows"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(
+            neon_rows
+                .iter()
+                .any(|r| r["label"] == "NEON EST. CHARGES (MTD)"),
+            "priced rates must produce an estimate row in the fixture"
+        );
+        assert_eq!(
+            neon_rows
+                .iter()
+                .find(|r| r["label"] == "NEON LAST INVOICE")
+                .expect("invoice row")["value"],
+            "$15.91"
+        );
 
-        let unmeasured = view(&fixture_state(Fixture::Unmeasured, NOW), QUOTA, NOW);
+        let unmeasured = view(
+            &fixture_state(Fixture::Unmeasured, NOW),
+            QUOTA,
+            NeonRates::default(),
+            NOW,
+        );
         assert_eq!(unmeasured["providers"].as_array().unwrap().len(), 2);
         assert!(
             section(&unmeasured, "sentry").expect("sentry")["bar"].is_null(),
@@ -850,8 +1056,21 @@ mod tests {
             assert!(!s["footer"].is_null(), "{id} explains why it is blank");
             assert_eq!(s["rows"][0]["value"], "—");
         }
+        assert!(
+            section(&unmeasured, "neon").expect("neon")["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["label"] != "NEON EST. CHARGES (MTD)"),
+            "unpriced/unmeasured fixture must not show an estimate row"
+        );
 
-        let empty = view(&fixture_state(Fixture::Empty, NOW), QUOTA, NOW);
+        let empty = view(
+            &fixture_state(Fixture::Empty, NOW),
+            QUOTA,
+            NeonRates::default(),
+            NOW,
+        );
         assert_eq!(empty["message"]["text"], NO_DATA_MESSAGE);
         assert!(empty["providers"].as_array().unwrap().is_empty());
         assert_eq!(empty["trailing"], "");
