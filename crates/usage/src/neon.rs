@@ -209,18 +209,32 @@ impl NeonUsageError {
 // MARK: - Window + folding
 
 /// The month-to-date window: first instant of the UTC calendar month containing
-/// `now`, through `now`.
+/// `now`, through the first instant of the following month.
 ///
 /// UTC because Neon bills and buckets in UTC — using local time would slide the
 /// boundary by the timezone offset and bill part of one month into another.
+///
+/// `to` is the month's *exclusive end*, never `now`: under `granularity=monthly`
+/// the endpoint floors both bounds to the bucket boundary, so a mid-month `to`
+/// comes back equal to `from` and the whole read fails with an HTTP 400
+/// ("'from' must be before 'to'") — on every day of the month. A `to` in the
+/// future is fine; the returned timeframe still only covers what was consumed.
 #[must_use]
 pub fn month_to_date_window(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
-    let start = NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
-        .map(|day| DateTime::from_naive_utc_and_offset(day.and_time(NaiveTime::MIN), Utc))
-        // Unreachable: every valid date's month has a first day. Mirrors the
-        // Swift's own `?? now` fallback.
-        .unwrap_or(now);
-    (start, now)
+    let first_of = |year: i32, month: u32| {
+        NaiveDate::from_ymd_opt(year, month, 1)
+            .map(|day| DateTime::from_naive_utc_and_offset(day.and_time(NaiveTime::MIN), Utc))
+    };
+    // Unreachable fallbacks: every valid date's month has a first day, as does
+    // the month after it. Mirrors the Swift's own `?? now`.
+    let start = first_of(now.year(), now.month()).unwrap_or(now);
+    let end = if now.month() == 12 {
+        first_of(now.year() + 1, 1)
+    } else {
+        first_of(now.year(), now.month() + 1)
+    }
+    .unwrap_or(now);
+    (start, end)
 }
 
 /// RFC 3339 in UTC, e.g. `2026-07-01T00:00:00Z` — the format the consumption
@@ -589,11 +603,14 @@ mod tests {
     // MARK: - Window + RFC 3339
 
     /// Twin of `testMonthToDateWindowStartsAtTheFirstInstantOfTheUTCMonth`.
+    /// `to` is the month's exclusive end, not `now`: under monthly granularity
+    /// Neon floors both bounds to the bucket boundary, so a mid-month `to`
+    /// becomes equal to `from` and the API answers 400.
     #[test]
     fn the_window_starts_at_the_first_instant_of_the_utc_month() {
         let (from, to) = month_to_date_window(utc(2026, 7, 31, 18, 45));
         assert_eq!(rfc3339(from), "2026-07-01T00:00:00Z");
-        assert_eq!(rfc3339(to), "2026-07-31T18:45:00Z");
+        assert_eq!(rfc3339(to), "2026-08-01T00:00:00Z");
     }
 
     /// Twin of `testMonthToDateWindowUsesUTCNotLocalTime`: 00:30 UTC on the 1st
@@ -605,11 +622,13 @@ mod tests {
         assert_eq!(rfc3339(from), "2026-01-01T00:00:00Z");
     }
 
+    /// December's exclusive end is the next *year's* January — the rollover a
+    /// naive `month + 1` would turn into an invalid month 13.
     #[test]
     fn the_window_handles_a_december_start() {
         let (from, to) = month_to_date_window(utc(2026, 12, 25, 6, 0));
         assert_eq!(rfc3339(from), "2026-12-01T00:00:00Z");
-        assert_eq!(rfc3339(to), "2026-12-25T06:00:00Z");
+        assert_eq!(rfc3339(to), "2027-01-01T00:00:00Z");
     }
 
     // MARK: - Errors
@@ -688,7 +707,7 @@ mod tests {
             .and(path(CONSUMPTION_HISTORY_PATH))
             .and(header("authorization", "Bearer neon_api_key_value"))
             .and(query_param("from", "2026-07-01T00:00:00Z"))
-            .and(query_param("to", "2026-07-20T09:15:00Z"))
+            .and(query_param("to", "2026-08-01T00:00:00Z"))
             .and(query_param("granularity", "monthly"))
             .and(query_param("org_id", "org-abc"))
             .and(query_param("metrics", metric::REQUESTED))

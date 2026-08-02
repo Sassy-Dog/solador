@@ -59,7 +59,11 @@ function field(id, labelText, input) {
 function textInput(value, type = "text") {
   const input = node("input", "input");
   input.type = type;
-  input.value = value === undefined || value === null ? "" : String(value);
+  const initial = value === undefined || value === null ? "" : String(value);
+  input.value = initial;
+  // Also the default, so `value !== defaultValue` means "typed and not yet
+  // applied" — the one distinction `unappliedEdits` runs on.
+  input.defaultValue = initial;
   return input;
 }
 
@@ -111,14 +115,48 @@ const int = (raw) => Math.max(0, Math.round(Number(raw) || 0));
 
 // MARK: talking to Rust
 
+/** Typed-but-unapplied edits, as `[id, value]` pairs.
+ *
+ *  Every Apply-gated field would otherwise be silently wiped by ANY other
+ *  mutation's re-render — the classic being an org ID typed and then lost to
+ *  the adjacent credential's Save, while the status line says "Saved.".
+ *  Passwords are excluded on principle: a credential is cleared the moment it
+ *  is handed to Rust, and nothing may carry one across a render. */
+function unappliedEdits() {
+  const edits = [];
+  for (const el of document.querySelectorAll("#settings input[id]")) {
+    if (el.type === "password" || el.type === "checkbox") continue;
+    if (el.value !== el.defaultValue) edits.push([el.id, el.value]);
+  }
+  return edits;
+}
+
+/** Puts unapplied edits back into the freshly rendered fields. The `input`
+ *  event re-runs listeners that derive state from the value (e.g. an Add
+ *  button's disabled-ness) — but never `change`, which is what mutations hang
+ *  off, and a restore must not save anything. */
+function restoreEdits(edits) {
+  for (const [id, value] of edits) {
+    const el = document.getElementById(id);
+    if (!el || el.type === "password") continue;
+    el.value = value;
+    el.dispatchEvent(new Event("input"));
+  }
+}
+
 /** Applies a mutation's `{status, settings}` answer. The frontend never
  *  patches its own copy -- it re-renders from what was actually persisted, so
- *  it cannot show an edit that failed to save. */
+ *  it cannot show an edit that failed to save. Edits not yet handed to Rust
+ *  are the one exception: they ride across the render (`unappliedEdits`),
+ *  because losing them is not truth, it is data loss -- a submitted field is
+ *  cleared by its own handler and so never rides. */
 async function apply(result) {
   if (!result) return;
+  const edits = unappliedEdits();
   S.view = result.settings;
   S.status = result.status || "";
   render();
+  restoreEdits(edits);
 }
 
 async function mutate(command, args) {
@@ -299,8 +337,12 @@ function hostsTab(t) {
     };
     // Dropped before the round-trip, not after: the token has no reason to
     // outlive the call, and a rejected save must not leave it sitting in the
-    // DOM.
+    // DOM. The other three reset so the form comes back empty rather than
+    // riding the re-render as unapplied edits.
     token.value = "";
+    name.value = "";
+    address.value = "";
+    port.value = t.add.portDefault;
     mutate("settings_add_host", args);
   });
   add.append(actionRow(submit), help(t.add.help));
@@ -434,7 +476,13 @@ function portfolioTab(t) {
   };
   slug.addEventListener("input", syncAdd);
   syncAdd();
-  const submitSlug = () => mutate("settings_add_repo", { slug: slug.value });
+  const submitSlug = () => {
+    const value = slug.value;
+    // Reset at submit, like the Add Host form: a submitted field must not
+    // ride the re-render as an unapplied edit.
+    slug.value = "";
+    mutate("settings_add_repo", { slug: value });
+  };
   submit.addEventListener("click", submitSlug);
   slug.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !submit.disabled) submitSlug();

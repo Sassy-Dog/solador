@@ -135,10 +135,19 @@ final class NeonUsageMappingTests: XCTestCase {
     // MARK: - Window + RFC 3339
 
     func testMonthToDateWindowStartsAtTheFirstInstantOfTheUTCMonth() {
+        // `to` is the month's exclusive end, not `now`: under monthly granularity
+        // Neon floors both bounds to the bucket boundary, so a mid-month `to`
+        // becomes equal to `from` and the API answers 400.
         let now = utc(2026, 7, 31, 18, 45)
         let window = NeonUsageMapping.monthToDateWindow(now: now)
         XCTAssertEqual(NeonUsageMapping.rfc3339(window.from), "2026-07-01T00:00:00Z")
-        XCTAssertEqual(NeonUsageMapping.rfc3339(window.to), "2026-07-31T18:45:00Z")
+        XCTAssertEqual(NeonUsageMapping.rfc3339(window.to), "2026-08-01T00:00:00Z")
+    }
+
+    func testMonthToDateWindowRollsDecemberIntoTheNextYear() {
+        let window = NeonUsageMapping.monthToDateWindow(now: utc(2026, 12, 25, 6, 0))
+        XCTAssertEqual(NeonUsageMapping.rfc3339(window.from), "2026-12-01T00:00:00Z")
+        XCTAssertEqual(NeonUsageMapping.rfc3339(window.to), "2027-01-01T00:00:00Z")
     }
 
     func testMonthToDateWindowUsesUTCNotLocalTime() {
@@ -203,7 +212,7 @@ final class NeonUsageMappingTests: XCTestCase {
         let call = try XCTUnwrap(recorded)
         XCTAssertEqual(call.orgID, "org-abc")
         XCTAssertEqual(NeonUsageMapping.rfc3339(call.from), "2026-07-01T00:00:00Z")
-        XCTAssertEqual(NeonUsageMapping.rfc3339(call.to), "2026-07-20T09:15:00Z")
+        XCTAssertEqual(NeonUsageMapping.rfc3339(call.to), "2026-08-01T00:00:00Z")
     }
 
     @MainActor
