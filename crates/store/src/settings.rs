@@ -90,6 +90,14 @@ pub struct Settings {
     pub azure_monthly_budget_usd: f64,
     /// Neon organization id (non-secret; the API key is a credential).
     pub neon_org_id: String,
+    /// Neon compute rate in USD per CU-hour (non-secret; `0` = unset, which
+    /// hides the estimated-charges row). Entered by the operator from their
+    /// plan's published pricing — the app ships no price table on purpose.
+    #[serde(default)]
+    pub neon_usd_per_cu_hour: f64,
+    /// Neon storage rate in USD per GiB-month. Same rules as the compute rate.
+    #[serde(default)]
+    pub neon_usd_per_gib_month: f64,
     /// Sentry organization slug (non-secret; the token is a credential).
     pub sentry_org_slug: String,
     /// Monthly accepted-error quota. `0` means "no quota set".
@@ -118,6 +126,8 @@ impl Default for Settings {
             host_overflow_mode: HostOverflowMode::default(),
             azure_monthly_budget_usd: 0.0,
             neon_org_id: String::new(),
+            neon_usd_per_cu_hour: 0.0,
+            neon_usd_per_gib_month: 0.0,
             sentry_org_slug: String::new(),
             sentry_monthly_event_quota: 0,
             openclaw_gateway_url: String::new(),
@@ -187,6 +197,8 @@ mod tests {
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 125.5,
             neon_org_id: "org-abc".into(),
+            neon_usd_per_cu_hour: 0.175,
+            neon_usd_per_gib_month: 0.5,
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 50_000,
             openclaw_gateway_url: "https://gateway.example".into(),
@@ -262,5 +274,21 @@ mod tests {
             let s: Settings = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(s.core_row_span, want, "raw {raw}");
         }
+    }
+
+    #[test]
+    fn neon_rates_default_to_unset() {
+        let s = Settings::default();
+        assert_eq!(s.neon_usd_per_cu_hour, 0.0);
+        assert_eq!(s.neon_usd_per_gib_month, 0.0);
+    }
+
+    /// A store written before the rates existed must still deserialize.
+    #[test]
+    fn neon_rates_tolerate_a_store_written_before_they_existed() {
+        let s: Settings =
+            serde_json::from_str(r#"{"neon_org_id":"org-abc"}"#).expect("deserialize");
+        assert_eq!(s.neon_usd_per_cu_hour, 0.0);
+        assert_eq!(s.neon_usd_per_gib_month, 0.0);
     }
 }
