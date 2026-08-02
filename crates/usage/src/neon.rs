@@ -161,6 +161,57 @@ pub struct NeonConsumptionMetric {
     pub value: f64,
 }
 
+
+// MARK: - Invoices
+
+/// `GET /api/v2/organizations/{org_id}/billing/invoices` — **undocumented**:
+/// absent from Neon's public OpenAPI spec but served to org API keys (verified
+/// live 2026-08-02). Treated as best-effort everywhere: a failure or the
+/// endpoint vanishing degrades the panel to estimate-only, never breaks it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct NeonInvoicesResponse {
+    #[serde(default)]
+    pub invoices: Vec<NeonInvoice>,
+}
+
+/// One finalized monthly invoice. Only the fields the panel reads; decode
+/// tolerates the rest (`pdf_url`, `hosted_invoice_url`, …).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct NeonInvoice {
+    pub total: f64,
+    pub currency: String,
+    /// RFC 3339 string, compared lexically — valid for UTC timestamps of one
+    /// vendor, and avoids failing an invoice over an unparseable date.
+    #[serde(default)]
+    pub issued_at: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// The panel's invoice reading. Two variants for the same reason
+/// [`NeonUsageSummary`] has two: "no invoices yet" is a measurement that must
+/// stay distinguishable from "we could not ask".
+#[derive(Debug, Clone, PartialEq)]
+pub enum NeonInvoiceSummary {
+    NoInvoices,
+    Latest { total: f64, currency: String },
+}
+
+/// Newest invoice by `issued_at` — never array order.
+#[must_use]
+pub fn summarize_invoices(response: &NeonInvoicesResponse) -> NeonInvoiceSummary {
+    response
+        .invoices
+        .iter()
+        .max_by(|a, b| a.issued_at.cmp(&b.issued_at))
+        .map_or(NeonInvoiceSummary::NoInvoices, |invoice| {
+            NeonInvoiceSummary::Latest {
+                total: invoice.total,
+                currency: invoice.currency.clone(),
+            }
+        })
+}
+
 // MARK: - Errors
 
 /// Failures from reading Neon consumption. [`NeonUsageError::is_auth_failure`]
@@ -685,6 +736,52 @@ mod tests {
             NeonUsageError::InvalidUrl.user_message(),
             "Invalid Neon API URL — check the org ID in Settings"
         );
+    }
+
+
+    // MARK: - Invoices
+
+    const FOUR_INVOICES: &str = r#"
+    {
+      "invoices": [
+        { "invoice_number": "A-3", "status": "paid", "issued_at": "2026-07-01T00:10:00Z",
+          "due_date": "2026-08-01T00:00:00Z", "total": 15.91, "currency": "USD" },
+        { "invoice_number": "A-1", "status": "paid", "issued_at": "2026-05-01T00:10:00Z",
+          "due_date": "2026-06-01T00:00:00Z", "total": 21.52, "currency": "USD" },
+        { "invoice_number": "A-2", "status": "paid", "issued_at": "2026-06-01T00:10:00Z",
+          "due_date": "2026-07-01T00:00:00Z", "total": 22.41, "currency": "USD" }
+      ]
+    }"#;
+
+    /// Newest by `issued_at`, never by array order — the API's ordering is
+    /// not part of any contract we read.
+    #[test]
+    fn the_latest_invoice_is_picked_by_issued_at_not_array_order() {
+        let response: NeonInvoicesResponse =
+            serde_json::from_str(FOUR_INVOICES).expect("decode");
+        assert_eq!(
+            summarize_invoices(&response),
+            NeonInvoiceSummary::Latest { total: 15.91, currency: "USD".into() }
+        );
+    }
+
+    /// A young org has no invoices; that is a measurement, not a failure.
+    #[test]
+    fn an_empty_invoice_list_is_no_invoices() {
+        let response: NeonInvoicesResponse =
+            serde_json::from_str(r#"{"invoices":[]}"#).expect("decode");
+        assert_eq!(summarize_invoices(&response), NeonInvoiceSummary::NoInvoices);
+    }
+
+    /// Unknown keys (pdf_url, hosted_invoice_url, …) must not break decode.
+    #[test]
+    fn invoice_decode_tolerates_extra_keys() {
+        let response: NeonInvoicesResponse = serde_json::from_str(
+            r#"{"invoices":[{"status":"paid","issued_at":"2026-07-01T00:10:00Z",
+                "total":1.0,"currency":"USD","pdf_url":"https://x","extra":1}]}"#,
+        )
+        .expect("decode");
+        assert_eq!(response.invoices.len(), 1);
     }
 
     // MARK: - Client
