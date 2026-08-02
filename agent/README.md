@@ -48,8 +48,19 @@ Notes:
     `ProcessInfo.ThermalState`; Linux exposes thermal zones in millidegrees, and
     collapsing those into the ladder needs per-machine trip points this agent
     doesn't know.
-  - `gpu` is **always `{}`** — `sysinfo` reports no GPU, so there is nothing to
-    measure.
+  - `gpu` is **measured on hosts with an NVIDIA card** (agent ≥ 0.4.0), from
+    `nvidia-smi` — `sysinfo` reports no GPU on any platform. `usage` is the
+    utilisation percentage; `vramUsedGB` / `vramTotalGB` are its MiB figures in
+    the same 1024-base "GB" as every other size here (a 12288 MiB card reads
+    `12.0`). A multi-GPU host reports its **first** card, since the contract
+    carries one `gpu`.
+    Still `{}` wherever nothing was measured: no `nvidia-smi` on `PATH` (every
+    host without an NVIDIA driver, including macOS), a failed or hung
+    invocation, or output the agent doesn't recognise. AMD and Intel GPUs are
+    not read yet, so they are part of that set.
+    The probe runs on its own task every 5s with a 2s hard timeout — never on
+    the 1s sample path, so a wedged `nvidia-smi` costs a stale GPU reading and
+    not a stalled snapshot.
   - `battery` stays JSON `null` (not omitted) — the one optional the contract
     deliberately keeps emitting.
   - Before the first sample lands, `disk`, `network`, `gpu` are all `{}` and

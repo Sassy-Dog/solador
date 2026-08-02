@@ -4,6 +4,7 @@
 //! guarded by a bearer token. DevCanopy (a macOS app) polls it over Tailscale.
 
 mod containers;
+mod gpu;
 mod metrics;
 mod server;
 
