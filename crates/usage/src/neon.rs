@@ -342,6 +342,27 @@ pub fn summarize(response: &NeonConsumptionResponse) -> NeonUsageSummary {
     }
 }
 
+/// Estimated month-to-date charges: consumption × the operator's rates.
+///
+/// This reproduces the console's own "Charges to date" arithmetic (verified
+/// against it 2026-08-02: 5.19 CU-h × $0.106 = $0.55). The rates come from
+/// Settings, never a shipped price table — the app must not invent a price.
+/// `None` when both rates are unset (≤ 0) or the summary is unmeasured;
+/// negative rates count as unset.
+#[must_use]
+pub fn estimate_usd(
+    summary: NeonUsageSummary,
+    usd_per_cu_hour: f64,
+    usd_per_gib_month: f64,
+) -> Option<f64> {
+    if usd_per_cu_hour <= 0.0 && usd_per_gib_month <= 0.0 {
+        return None;
+    }
+    let compute = summary.compute_unit_hours()?;
+    let storage = summary.storage_gib()?;
+    Some(compute * usd_per_cu_hour.max(0.0) + storage * usd_per_gib_month.max(0.0))
+}
+
 // MARK: - Client
 
 /// The one Neon REST read the Usage panel needs.
@@ -1050,5 +1071,42 @@ mod tests {
             .await;
         let err = client(&server.uri()).invoices("org-abc").await.unwrap_err();
         assert_eq!(err, NeonUsageError::Http { status: 404 });
+    }
+
+    // MARK: - estimate_usd
+
+    /// Rates unset is setup, not measurement: no estimate, not $0.00.
+    #[test]
+    fn no_rates_means_no_estimate() {
+        let s = summarize(&serde_json::from_str(TWO_PROJECTS).expect("decode"));
+        assert_eq!(estimate_usd(s, 0.0, 0.0), None);
+        assert_eq!(estimate_usd(s, -1.0, 0.0), None);
+    }
+
+    /// An unmeasured summary has no figures to price; an estimate over it
+    /// would be a fabricated number wearing a dollar sign.
+    #[test]
+    fn an_unmeasured_summary_has_no_estimate() {
+        assert_eq!(
+            estimate_usd(NeonUsageSummary::Unmeasured, 0.106, 0.35),
+            None
+        );
+    }
+
+    /// One rate is enough — the other contributes zero, not None.
+    #[test]
+    fn a_single_rate_prices_only_its_metric() {
+        let s = summarize(&serde_json::from_str(TWO_PROJECTS).expect("decode"));
+        let compute = s.compute_unit_hours().expect("measured");
+        assert_eq!(estimate_usd(s, 2.0, 0.0), Some(compute * 2.0));
+    }
+
+    #[test]
+    fn both_rates_sum_compute_and_storage() {
+        let s = summarize(&serde_json::from_str(TWO_PROJECTS).expect("decode"));
+        let expected = s.compute_unit_hours().expect("measured") * 0.106
+            + s.storage_gib().expect("measured") * 0.35;
+        let estimate = estimate_usd(s, 0.106, 0.35).expect("estimate");
+        assert!((estimate - expected).abs() < 1e-12);
     }
 }
