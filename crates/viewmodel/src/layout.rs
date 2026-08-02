@@ -44,6 +44,23 @@ pub fn core_block_height(row_span: usize) -> f64 {
     row_span.max(1) as f64 * CORE_ROW_UNIT
 }
 
+/// The tightest core cell the SwiftUI cockpit ever renders: 36 cores at its
+/// fixed 9 columns is 4 rows in the 2-row-span block, `core_cell_height(220,
+/// 4, 8)` = 49. Below this the label + padding consume the whole cell and the
+/// sparkline's flexed remainder hits 0 — the chart vanishes while the
+/// percentages keep rendering, which reads as working when it isn't.
+pub const CORE_CELL_MIN_H: f64 = 49.0;
+
+/// Height of the cores block on one ladder rung. Swift can hold its block
+/// fixed because its column count never drops below `core_columns`; the
+/// ladder's narrow rungs produce row counts Swift can't (6, 9, 12 ... rows),
+/// where dividing the fixed block erases the plots. So: the fixed block while
+/// cells stay at or above the squeeze floor, growing only past it.
+pub fn core_rung_height(row_span: usize, rows: usize) -> f64 {
+    let rows = rows.max(1) as f64;
+    core_block_height(row_span).max(rows * CORE_CELL_MIN_H + (rows - 1.0) * CORE_GAP)
+}
+
 pub fn core_cell_height(block_height: f64, rows: usize, gap: f64) -> f64 {
     let rows = rows.max(1);
     (block_height - gap * (rows - 1) as f64) / rows as f64
@@ -209,6 +226,35 @@ mod tests {
         assert_eq!(core_cell_height(h, 1, CORE_GAP), 220.0);
         assert_eq!(core_cell_height(h, 2, CORE_GAP), 106.0);
         assert_eq!(core_cell_height(h, 4, CORE_GAP), 49.0);
+    }
+
+    #[test]
+    fn rung_height_holds_the_block_through_the_swift_squeeze() {
+        // 1..=4 rows fit the 2-row block by squeezing, exactly as Swift does
+        // (4 rows is its 36-core case): the block must not move.
+        for rows in 1..=4 {
+            assert_eq!(core_rung_height(2, rows), 220.0, "rows {rows}");
+        }
+    }
+
+    #[test]
+    fn rung_height_grows_past_the_squeeze_floor_instead_of_erasing_plots() {
+        // Deeper rungs keep every cell at the floor: rows*49 + (rows-1)*8.
+        assert_eq!(core_rung_height(2, 6), 334.0); // 36 cores @ 6 cols
+        assert_eq!(core_rung_height(2, 8), 448.0); // 16 cores @ 2 cols
+        assert_eq!(core_rung_height(2, 16), 904.0); // 16 cores @ 1 col
+        for rows in 5..=64 {
+            let cell = core_cell_height(core_rung_height(2, rows), rows, CORE_GAP);
+            assert!(
+                (cell - CORE_CELL_MIN_H).abs() < 1e-9,
+                "rows {rows}: cell {cell}"
+            );
+        }
+    }
+
+    #[test]
+    fn rung_height_survives_zero_rows() {
+        assert_eq!(core_rung_height(2, 0), 220.0);
     }
 
     #[test]

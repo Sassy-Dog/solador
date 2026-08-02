@@ -21,8 +21,8 @@ use crate::color::{self, ThermalState};
 use crate::format::{fmt, fmt_axis, fmt_rate, memory_label, relative_age};
 use crate::history::History;
 use crate::layout::{
-    core_block_height, core_column_ladder, CORE_GAP, CORE_MIN_CELL, CORE_ROW_SPAN_DEFAULT,
-    HISTORY_CAPACITY, PX_PER_SAMPLE,
+    core_block_height, core_column_ladder, core_rung_height, core_visual_rows, CORE_GAP,
+    CORE_MIN_CELL, CORE_ROW_SPAN_DEFAULT, HISTORY_CAPACITY, PX_PER_SAMPLE,
 };
 use serde_json::{json, Value};
 
@@ -333,7 +333,15 @@ pub fn host_card(
         "pxPerSample": PX_PER_SAMPLE,
         "coreBlockHeight": core_block_height(CORE_ROW_SPAN_DEFAULT),
         "coreLadder": core_column_ladder(s.cpu.core_usages.len(), CORE_MIN_CELL, CORE_GAP)
-            .into_iter().map(|(w, c)| json!({"minWidth": w, "cols": c})).collect::<Vec<_>>(),
+            .into_iter().map(|(w, c)| json!({
+                "minWidth": w, "cols": c,
+                // Per-rung block height: fixed while cells clear the Swift
+                // squeeze floor, grown past it so plots never flex to 0.
+                "height": core_rung_height(
+                    CORE_ROW_SPAN_DEFAULT,
+                    core_visual_rows(s.cpu.core_usages.len(), c),
+                ),
+            })).collect::<Vec<_>>(),
         "hostName": host_name,
         "cpuModel": s.cpu.model,
         "cpuValue": format!("{}%", s.cpu.total_usage.round() as i64),
@@ -663,6 +671,11 @@ mod tests {
         assert_eq!(rungs.len(), 5);
         assert_eq!(rungs[3]["cols"], 8);
         assert_eq!(rungs[3]["minWidth"], 888.0);
+        // 8 cols -> 2 rows: fixed block. 2 cols -> 8 rows and 1 col -> 16
+        // rows: past the squeeze floor, the rung grows so plots keep room.
+        assert_eq!(rungs[3]["height"], 220.0);
+        assert_eq!(rungs[1]["height"], 448.0);
+        assert_eq!(rungs[0]["height"], 904.0);
     }
 
     #[test]

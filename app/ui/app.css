@@ -73,10 +73,14 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    ITS width, not the viewport's — what CockpitBreakpoints.reflow() does by hand. */
 .cores-wrap {
   container-type: inline-size; container-name: cores;
-  /* fixed block from core_block_height(); cells divide it, it never grows */
-  height: var(--core-block-h, 220px);
+  /* Height lives on .cores, not here: container queries can't style their
+     own container, and the ladder rules (installCoreLadders) must be able
+     to grow the block past the squeeze floor. */
 }
-.cores { display:grid; height:100%; grid-auto-rows:1fr;
+.cores { display:grid; grid-auto-rows:1fr;
+  /* base: fixed block from core_block_height(); rung rules override with
+     core_rung_height() so deep rows grow instead of erasing the plots */
+  height: var(--core-block-h, 220px);
   grid-template-columns: repeat(1, 1fr); gap:8px; }
 .core { background:var(--panelAlt); border-radius:8px; padding:8px; display:flex;
   flex-direction:column; gap:4px; min-width:0; min-height:0; overflow:hidden; }
