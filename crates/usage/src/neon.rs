@@ -177,6 +177,11 @@ pub struct NeonInvoicesResponse {
 /// tolerates the rest (`pdf_url`, `hosted_invoice_url`, …).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct NeonInvoice {
+    /// The endpoint serializes money as a decimal string (`"15.91"`, verified
+    /// live 2026-08-02) — the usual dodge around binary-float money. A plain
+    /// JSON number is accepted too, so a quiet server-side type fix cannot
+    /// break the panel a second time.
+    #[serde(deserialize_with = "de_money")]
     pub total: f64,
     pub currency: String,
     /// RFC 3339 string, compared lexically — valid for UTC timestamps of one
@@ -185,6 +190,25 @@ pub struct NeonInvoice {
     pub issued_at: String,
     #[serde(default)]
     pub status: String,
+}
+
+/// Money off the invoice wire: a decimal string today, tolerated as a plain
+/// number should Neon ever change the serialization. Anything else is a
+/// decode error — never a silent zero.
+fn de_money<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Money {
+        Number(f64),
+        Text(String),
+    }
+    match Money::deserialize(deserializer)? {
+        Money::Number(n) => Ok(n),
+        Money::Text(s) => s.trim().parse().map_err(serde::de::Error::custom),
+    }
 }
 
 /// The panel's invoice reading. Two variants for the same reason
@@ -796,15 +820,19 @@ mod tests {
 
     // MARK: - Invoices
 
+    /// Totals are quoted on purpose: the real endpoint serializes money as
+    /// decimal strings (`"total": "15.91"`, verified live 2026-08-02), and a
+    /// fixture with JSON numbers let a `total: f64` wire type pass every test
+    /// while failing against production.
     const FOUR_INVOICES: &str = r#"
     {
       "invoices": [
         { "invoice_number": "A-3", "status": "paid", "issued_at": "2026-07-01T00:10:00Z",
-          "due_date": "2026-08-01T00:00:00Z", "total": 15.91, "currency": "USD" },
+          "due_date": "2026-08-01T00:00:00Z", "total": "15.91", "currency": "USD" },
         { "invoice_number": "A-1", "status": "paid", "issued_at": "2026-05-01T00:10:00Z",
-          "due_date": "2026-06-01T00:00:00Z", "total": 21.52, "currency": "USD" },
+          "due_date": "2026-06-01T00:00:00Z", "total": "21.52", "currency": "USD" },
         { "invoice_number": "A-2", "status": "paid", "issued_at": "2026-06-01T00:10:00Z",
-          "due_date": "2026-07-01T00:00:00Z", "total": 22.41, "currency": "USD" }
+          "due_date": "2026-07-01T00:00:00Z", "total": "22.41", "currency": "USD" }
       ]
     }"#;
 
@@ -834,14 +862,28 @@ mod tests {
     }
 
     /// Unknown keys (pdf_url, hosted_invoice_url, …) must not break decode.
+    /// The plain-number `total` here is deliberate: the wire sends strings
+    /// today, but a number must keep decoding if Neon ever changes its mind.
     #[test]
-    fn invoice_decode_tolerates_extra_keys() {
+    fn invoice_decode_tolerates_extra_keys_and_a_numeric_total() {
         let response: NeonInvoicesResponse = serde_json::from_str(
             r#"{"invoices":[{"status":"paid","issued_at":"2026-07-01T00:10:00Z",
                 "total":1.0,"currency":"USD","pdf_url":"https://x","extra":1}]}"#,
         )
         .expect("decode");
         assert_eq!(response.invoices.len(), 1);
+        assert_eq!(response.invoices[0].total, 1.0);
+    }
+
+    /// A total that parses as neither number nor decimal string is a decode
+    /// failure — the client maps it to `DecodingFailed`, never a silent 0.
+    #[test]
+    fn an_unparseable_total_is_a_decode_error() {
+        let result: Result<NeonInvoicesResponse, _> = serde_json::from_str(
+            r#"{"invoices":[{"status":"paid","issued_at":"2026-07-01T00:10:00Z",
+                "total":"fifteen","currency":"USD"}]}"#,
+        );
+        assert!(result.is_err());
     }
 
     // MARK: - Client
