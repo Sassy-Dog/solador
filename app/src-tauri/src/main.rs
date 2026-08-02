@@ -1276,14 +1276,16 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
             .usage
             .lock()
             .expect("usage state poisoned")
-            .neon_mut()
-            .unconfigure(),
-        Credential::Unreadable => app
-            .usage
-            .lock()
-            .expect("usage state poisoned")
-            .neon_mut()
-            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
+            .neon_unconfigure(),
+        Credential::Unreadable => {
+            let mut state = app.usage.lock().expect("usage state poisoned");
+            state
+                .neon_mut()
+                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
+            state
+                .neon_invoice_mut()
+                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
+        }
         Credential::Present(key) => {
             // `NeonClient::new` returns `None` only for a blank key, which
             // `Credential::Present` has already excluded.
@@ -1291,19 +1293,33 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
                 return;
             };
             let result = client.month_to_date(&neon_org, github::now_utc()).await;
+            {
+                let mut state = app.usage.lock().expect("usage state poisoned");
+                match result {
+                    // A successful call that measured nothing keeps the `—` and
+                    // explains itself: an empty org, the wrong org id, or a plan
+                    // without consumption history.
+                    Ok(summary) => state.neon_mut().succeeded(
+                        summary,
+                        now,
+                        summary
+                            .is_unmeasured()
+                            .then(|| usage::NEON_NO_CONSUMPTION_MESSAGE.to_owned()),
+                    ),
+                    Err(e) => state.neon_mut().failed(e.user_message()),
+                }
+            }
+
+            // Best-effort: the endpoint is undocumented, so every failure is
+            // degradation (footer + retained figure), never breakage — and it
+            // must not disturb the consumption rows' state.
+            let invoice_result = client.invoices(&neon_org).await;
             let mut state = app.usage.lock().expect("usage state poisoned");
-            match result {
-                // A successful call that measured nothing keeps the `—` and
-                // explains itself: an empty org, the wrong org id, or a plan
-                // without consumption history.
-                Ok(summary) => state.neon_mut().succeeded(
-                    summary,
-                    now,
-                    summary
-                        .is_unmeasured()
-                        .then(|| usage::NEON_NO_CONSUMPTION_MESSAGE.to_owned()),
-                ),
-                Err(e) => state.neon_mut().failed(e.user_message()),
+            match invoice_result {
+                Ok(summary) => state.neon_invoice_mut().succeeded(summary, now, None),
+                Err(e) => state
+                    .neon_invoice_mut()
+                    .failed(format!("invoices: {}", e.user_message())),
             }
         }
     }
@@ -1502,15 +1518,22 @@ static FIRST_USAGE_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn usage(state: tauri::State<'_, Arc<App>>) -> Value {
-    // Read at render time, not captured by the poller: changing the quota must
-    // repaint the bar now, and no API call is involved in it.
-    let quota = {
+    // Read at render time, not captured by the poller: changing the quota or
+    // the rates must repaint now, and no API call is involved in either.
+    let (quota, rates) = {
         let store = state.store.lock().expect("store poisoned");
-        store.settings().sentry_monthly_event_quota
+        let settings = store.settings();
+        (
+            settings.sentry_monthly_event_quota,
+            usage::NeonRates {
+                usd_per_cu_hour: settings.neon_usd_per_cu_hour,
+                usd_per_gib_month: settings.neon_usd_per_gib_month,
+            },
+        )
     };
     let payload = {
         let panel = state.usage.lock().expect("usage state poisoned");
-        usage::view(&panel, quota, panel::now_unix())
+        usage::view(&panel, quota, rates, panel::now_unix())
     };
     FIRST_USAGE_REQUEST.call_once(|| {
         let providers = payload["providers"].as_array().map_or(0, Vec::len);
@@ -1773,6 +1796,8 @@ fn settings_save_providers(
     sentry_org_slug: String,
     sentry_monthly_event_quota: u64,
     azure_monthly_budget_usd: f64,
+    neon_usd_per_cu_hour: f64,
+    neon_usd_per_gib_month: f64,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
     let status = {
@@ -1781,13 +1806,12 @@ fn settings_save_providers(
         current.neon_org_id = neon_org_id.trim().to_owned();
         current.sentry_org_slug = sentry_org_slug.trim().to_owned();
         current.sentry_monthly_event_quota = sentry_monthly_event_quota;
-        // A non-finite budget would make the whole store unserialisable
+        // A non-finite value would make the whole store unserialisable
         // (`StoreError::Serialize`), taking every other preference with it.
-        current.azure_monthly_budget_usd = if azure_monthly_budget_usd.is_finite() {
-            azure_monthly_budget_usd.max(0.0)
-        } else {
-            0.0
-        };
+        let launder = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        current.azure_monthly_budget_usd = launder(azure_monthly_budget_usd);
+        current.neon_usd_per_cu_hour = launder(neon_usd_per_cu_hour);
+        current.neon_usd_per_gib_month = launder(neon_usd_per_gib_month);
         save_status(&store, "Saved.")
     };
     // The Neon org id and the Sentry slug are *what those reads ask for*, so an
@@ -2359,7 +2383,15 @@ fn dump_usage(kind: usage::Fixture) -> Value {
     const NOW: u64 = 1_700_000_000;
     // A quota the fixture's own count lands at 94% of, so the amber step is
     // exercised rather than a flat green bar.
-    usage::view(&usage::fixture_state(kind, NOW), 10_000, NOW)
+    usage::view(
+        &usage::fixture_state(kind, NOW),
+        10_000,
+        usage::NeonRates {
+            usd_per_cu_hour: 0.106,
+            usd_per_gib_month: 0.35,
+        },
+        NOW,
+    )
 }
 
 fn dump_azure(kind: azure::Fixture) -> Value {
