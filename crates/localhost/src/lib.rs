@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 
 use sysinfo::{Disks, Networks, ProcessesToUpdate, System, MINIMUM_CPU_UPDATE_INTERVAL};
 
+use process::ProcEntry;
 use rate::{Counters, RateTracker};
 use volume::{MountEntry, MountPolicy};
 
@@ -352,6 +353,11 @@ impl LocalSampler {
     /// refreshed, and the very first interval — construction to first sample —
     /// can be arbitrarily short. Later enumerations are
     /// [`PROCESS_SAMPLE_INTERVAL`] apart, so the gate only ever bites once.
+    ///
+    /// What comes back is a *task* table on Linux, not a process table, so the
+    /// rows are handed to [`process::top_union`] as-is and it is that function —
+    /// with [`process::refresh_kind`] above it — that decides which of them are
+    /// processes (#211).
     fn refresh_processes_if_due(&mut self, now: Instant, deltas_are_meaningful: bool) {
         let due = self
             .processes_refreshed_at
@@ -360,12 +366,16 @@ impl LocalSampler {
             return;
         }
 
-        self.system.refresh_processes(ProcessesToUpdate::All, true);
-        let all: Vec<wire::Process> = self
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            process::refresh_kind(),
+        );
+        let all: Vec<ProcEntry> = self
             .system
             .processes()
             .iter()
-            .map(|(pid, process)| wire::Process {
+            .map(|(pid, process)| ProcEntry {
                 pid: i64::from(pid.as_u32()),
                 // Prefer the executable's file name ("node", "chrome"):
                 // sysinfo's `name()` is the thread/comm name for many
@@ -375,6 +385,7 @@ impl LocalSampler {
                     .and_then(|path| path.file_name())
                     .map(|name| name.to_string_lossy().to_string())
                     .unwrap_or_else(|| process.name().to_string_lossy().to_string()),
+                thread_kind: process.thread_kind(),
                 cpu_percent: f64::from(process.cpu_usage()),
                 memory_mb: process.memory() as f64 / BYTES_PER_MIB,
             })
