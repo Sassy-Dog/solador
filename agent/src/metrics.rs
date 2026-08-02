@@ -43,7 +43,9 @@ pub use wire::{Battery, Cpu, Disk, Gpu, Memory, Network, Process, Snapshot, Volu
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
+use sysinfo::{
+    Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System, ThreadKind, UpdateKind,
+};
 use tokio::sync::RwLock;
 
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -184,13 +186,26 @@ fn build_volumes(entries: Vec<DiskEntry>, skip: &std::collections::HashSet<Strin
     volumes
 }
 
-/// Reduce all processes to the union of the top-`limit` by CPU and by memory
-/// (deduped by pid), sorted by CPU descending.
-fn top_processes(sys: &System, limit: usize) -> Vec<Process> {
-    let all: Vec<Process> = sys
-        .processes()
+/// A row of the OS process table as plain data, so the "is this a process?"
+/// rule below is testable (sysinfo's `Process`, like its `Disk`, cannot be
+/// constructed outside that crate).
+struct ProcEntry {
+    pid: i64,
+    name: String,
+    /// What sysinfo makes of this row: `None` for a real process (a userland
+    /// thread-group leader), `Some(Userland)` for one of that leader's sibling
+    /// threads, `Some(Kernel)` for a kernel thread. Always `None` off Linux,
+    /// where the table has no thread rows to classify.
+    thread_kind: Option<ThreadKind>,
+    cpu_percent: f64,
+    memory_mb: f64,
+}
+
+/// Read the refreshed process table into [`ProcEntry`] rows.
+fn process_entries(sys: &System) -> Vec<ProcEntry> {
+    sys.processes()
         .iter()
-        .map(|(pid, p)| Process {
+        .map(|(pid, p)| ProcEntry {
             pid: pid.as_u32() as i64,
             // Prefer the executable's file name (e.g. "node", "chrome"); sysinfo's
             // name() is the Linux comm/thread name ("MainThread") for many procs.
@@ -199,8 +214,60 @@ fn top_processes(sys: &System, limit: usize) -> Vec<Process> {
                 .and_then(|e| e.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| p.name().to_string_lossy().to_string()),
+            thread_kind: p.thread_kind(),
             cpu_percent: p.cpu_usage() as f64,
             memory_mb: p.memory() as f64 / BYTES_PER_MIB,
+        })
+        .collect()
+}
+
+/// Whether a process-table row is a **process** — the only thing `processes[]`
+/// is allowed to describe (#211).
+///
+/// On Linux the table sysinfo hands back is really a *task* table, and both
+/// kinds of non-process task were reaching the wire:
+///
+/// - **Sibling threads.** Every thread of a multi-threaded process is its own
+///   task with its own TID, and each one carries its whole process's RSS
+///   (threads share one address space). One SQL Server engine therefore painted
+///   five identical 1.9 GB rows in TOP RAM and several partial rows in TOP CPU
+///   — fabricated processes, and pid-dedupe cannot collapse them because the
+///   TIDs genuinely differ.
+/// - **Kernel threads.** `txg_sync` and friends are kernel tasks, not programs
+///   anyone can point at; they arrive as top-level `/proc` entries no matter how
+///   the table is enumerated, so a "leaders only" rule alone would keep them.
+///
+/// `thread_kind()` answers both: it is `Some` for exactly those two cases and
+/// `None` for a userland thread-group leader, so a single test is the whole
+/// policy.
+fn is_process(entry: &ProcEntry) -> bool {
+    entry.thread_kind.is_none()
+}
+
+/// Reduce the process table to the union of the top-`limit` by CPU and by
+/// memory (deduped by pid), sorted by CPU descending.
+///
+/// Thread and kernel-thread rows are dropped first — see [`is_process`].
+///
+/// **The surviving row's CPU is already the whole process's.** sysinfo derives
+/// per-process CPU from the `utime`/`stime` it reads out of that entry's own
+/// `stat` file, and for a leader that file is `/proc/<pid>/stat`, whose times
+/// the kernel reports thread-group-wide (`do_task_stat` with `whole`, i.e.
+/// `thread_group_cputime_adjusted`) — per-thread times live in the separate
+/// `/proc/<pid>/task/<tid>/stat`. So dropping the sibling rows loses no CPU
+/// time and summing them back in would double-count it: the engine that showed
+/// 201% + 90% + 26% across three thread rows shows one row at the full figure.
+/// Memory is the same story from the other side — the leader's RSS is the
+/// process's RSS, which is why it appeared N times to begin with.
+fn top_processes(entries: Vec<ProcEntry>, limit: usize) -> Vec<Process> {
+    let all: Vec<Process> = entries
+        .into_iter()
+        .filter(is_process)
+        .map(|e| Process {
+            pid: e.pid,
+            name: e.name,
+            cpu_percent: e.cpu_percent,
+            memory_mb: e.memory_mb,
         })
         .collect();
 
@@ -231,6 +298,27 @@ fn top_processes(sys: &System, limit: usize) -> Vec<Process> {
     }
     out.sort_by(cmp_desc(|p| p.cpu_percent));
     out
+}
+
+/// What the sampler asks sysinfo to refresh: exactly what `refresh_processes`
+/// asks for, **minus the tasks**.
+///
+/// `refresh_processes` is documented as `…with_tasks()`, which on Linux walks
+/// `/proc/<pid>/task/` for every process and files each thread it finds as
+/// another process. Those rows are the fabricated `processes[]` entries of #211
+/// — [`is_process`] rejects them, but not asking for them is cheaper (sysinfo
+/// calls the task walk "quite expensive", and this agent watches hosts running
+/// things like SQL Server with hundreds of threads) and means the reduction
+/// never sees a row it has to reject.
+///
+/// [`is_process`] still runs, and still matters: kernel threads are top-level
+/// `/proc` entries that arrive with or without this flag.
+fn process_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing()
+        .with_memory()
+        .with_cpu()
+        .with_disk_usage()
+        .with_exe(UpdateKind::OnlyIfNotSet)
 }
 
 // ---------------------------------------------------------------------------
@@ -424,8 +512,8 @@ async fn sampler_loop(state: MetricsState) {
         disks.refresh(true);
 
         if tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
-            sys.refresh_processes(ProcessesToUpdate::All, true);
-            cached_processes = top_processes(&sys, PROCESS_TOP_LIMIT);
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
+            cached_processes = top_processes(process_entries(&sys), PROCESS_TOP_LIMIT);
         }
 
         let snap = compute_snapshot(
@@ -931,6 +1019,166 @@ mod tests {
         })
         .unwrap();
         assert!(!v.as_object().unwrap().contains_key("fstype"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Process table (#211).
+    // -----------------------------------------------------------------------
+
+    fn proc_entry(
+        pid: i64,
+        name: &str,
+        thread_kind: Option<ThreadKind>,
+        cpu_percent: f64,
+        memory_mb: f64,
+    ) -> ProcEntry {
+        ProcEntry {
+            pid,
+            name: name.to_string(),
+            thread_kind,
+            cpu_percent,
+            memory_mb,
+        }
+    }
+
+    /// The ubu-3xdv process table, as sysinfo hands it over on Linux: ONE SQL
+    /// Server engine (pid 8723) whose sibling threads are each their own row
+    /// carrying the whole process's 1.9 GB RSS and a slice of its CPU, the
+    /// watchdog process beside it (pid 5371), and a ZFS kernel thread.
+    fn sqlservr_table() -> Vec<ProcEntry> {
+        vec![
+            // The engine: a thread-group leader, so its CPU is already the
+            // group's total and its RSS the group's RSS.
+            proc_entry(8723, "sqlservr", None, 341.0, 1900.0),
+            // Its threads. Distinct TIDs, so pid-dedupe never touched them.
+            proc_entry(8724, "sqlservr", Some(ThreadKind::Userland), 201.0, 1900.0),
+            proc_entry(8725, "sqlservr", Some(ThreadKind::Userland), 90.0, 1900.0),
+            proc_entry(8726, "sqlservr", Some(ThreadKind::Userland), 26.0, 1900.0),
+            proc_entry(8727, "sqlservr", Some(ThreadKind::Userland), 24.0, 1900.0),
+            // The watchdog: a second, genuinely separate process.
+            proc_entry(5371, "sqlservr", None, 0.1, 3.6),
+            // A ZFS kernel thread — not a program, never a `processes[]` row.
+            // Busy enough to place third by CPU, which is exactly how it came
+            // to be painted into TOP CPU on the real host.
+            proc_entry(412, "txg_sync", Some(ThreadKind::Kernel), 95.0, 0.0),
+        ]
+    }
+
+    /// THE #211 BUG: a multi-threaded process is ONE row, not one per thread.
+    /// TOP RAM showed five 1.9 GB `sqlservr` rows for a single engine because
+    /// every thread reports its process's RSS, and pid-dedupe cannot see it —
+    /// the TIDs are genuinely different pids.
+    #[test]
+    fn a_multi_threaded_process_yields_exactly_one_row() {
+        let out = top_processes(sqlservr_table(), PROCESS_TOP_LIMIT);
+
+        let engine: Vec<&Process> = out.iter().filter(|p| p.pid == 8723).collect();
+        assert_eq!(engine.len(), 1, "the engine must appear once, got {out:?}");
+
+        let threads: Vec<i64> = out
+            .iter()
+            .map(|p| p.pid)
+            .filter(|pid| (8724..=8727).contains(pid))
+            .collect();
+        assert!(
+            threads.is_empty(),
+            "thread TIDs must not reach the wire, got {threads:?}"
+        );
+
+        // The one row that is not the engine is the watchdog — a real second
+        // process, which the filter must NOT swallow along with the threads.
+        let mut pids: Vec<i64> = out.iter().map(|p| p.pid).collect();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![5371, 8723]);
+    }
+
+    /// The surviving row carries the process-level figures: the CPU sysinfo
+    /// already aggregated across the thread group (never the sum of the thread
+    /// rows on top of it — that would double-count), and the RSS exactly once
+    /// rather than once per thread.
+    #[test]
+    fn the_surviving_row_carries_process_level_cpu_and_a_single_rss() {
+        let out = top_processes(sqlservr_table(), PROCESS_TOP_LIMIT);
+
+        let engine = out
+            .iter()
+            .find(|p| p.pid == 8723)
+            .expect("the engine survives");
+        assert!(
+            (engine.cpu_percent - 341.0).abs() < 1e-9,
+            "CPU must be the leader's group-wide figure, got {}",
+            engine.cpu_percent
+        );
+
+        let rss_rows = out.iter().filter(|p| p.memory_mb == 1900.0).count();
+        assert_eq!(rss_rows, 1, "1.9 GB is one process's RSS, counted once");
+    }
+
+    /// Kernel threads (`txg_sync` and the rest of the `[bracketed]` crowd) are
+    /// tasks, not programs. They arrive as top-level `/proc` entries whatever
+    /// the refresh asks for, so the filter — not the enumeration — is what
+    /// keeps them off the wire.
+    ///
+    /// The kernel thread here out-ranks every process on BOTH axes, so it is
+    /// the first row an unfiltered reduction would emit: the assertion cannot
+    /// pass by the kernel thread quietly missing the cut.
+    #[test]
+    fn kernel_threads_never_reach_the_process_list() {
+        let table = vec![
+            proc_entry(412, "txg_sync", Some(ThreadKind::Kernel), 300.0, 4096.0),
+            proc_entry(8723, "sqlservr", None, 12.0, 1900.0),
+        ];
+        let out = top_processes(table, PROCESS_TOP_LIMIT);
+
+        assert!(
+            !out.iter().any(|p| p.name == "txg_sync" || p.pid == 412),
+            "a kernel thread is not a process, got {out:?}"
+        );
+        // …and the real process below it still comes through.
+        assert_eq!(out.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![8723]);
+    }
+
+    /// Filtering happens BEFORE the top-N cut, so threads cannot crowd real
+    /// processes out of the list: five thread rows ahead of it must not cost
+    /// the quiet 8 GB process its place.
+    #[test]
+    fn threads_do_not_consume_top_n_slots() {
+        let mut table = vec![proc_entry(999, "postgres", None, 0.2, 8192.0)];
+        for tid in 8724..8734 {
+            table.push(proc_entry(
+                tid,
+                "sqlservr",
+                Some(ThreadKind::Userland),
+                200.0,
+                1900.0,
+            ));
+        }
+        table.push(proc_entry(8723, "sqlservr", None, 341.0, 1900.0));
+
+        let out = top_processes(table, PROCESS_TOP_LIMIT);
+        let mut pids: Vec<i64> = out.iter().map(|p| p.pid).collect();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![999, 8723]);
+    }
+
+    /// Off Linux every row reads `thread_kind() == None` — the table has no
+    /// thread rows to classify — so the filter is a no-op and the union
+    /// behaviour this reduction has always had is unchanged: top-`limit` by
+    /// CPU **unioned with** top-`limit` by memory, deduped, CPU-sorted.
+    #[test]
+    fn the_union_of_top_cpu_and_top_memory_survives_the_filter() {
+        let table = vec![
+            proc_entry(1, "spinner", None, 99.0, 1.0),
+            proc_entry(2, "idle-hog", None, 0.1, 8192.0),
+            proc_entry(3, "middling", None, 50.0, 2.0),
+        ];
+        let out = top_processes(table, 1);
+        let pids: Vec<i64> = out.iter().map(|p| p.pid).collect();
+        assert_eq!(
+            pids,
+            vec![1, 2],
+            "top-1 by CPU plus top-1 by memory, CPU-sorted"
+        );
     }
 
     fn entry(mount: &str, total: u64, available: u64, fstype: &str) -> DiskEntry {

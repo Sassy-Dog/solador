@@ -65,6 +65,19 @@ Notes:
   `fstype` is lowercased and omitted (not `null`) when unknown. Transient, remote,
   and pseudo filesystems are filtered out at the source (see `DEVCANOPY_AGENT_SKIP_FSTYPES`),
   and bind mounts of the same filesystem collapse to the shortest mount path.
+- `processes` is the union of the top 5 by CPU and the top 5 by memory, so it runs
+  5–10 entries long. Every entry is a **process** (agent ≥ 0.3.1): on Linux
+  `sysinfo` hands back a *task* table, and both threads and kernel threads are
+  filtered out of it here.
+  - `cpuPercent` is the whole process's — the kernel already reports
+    thread-group-wide times in `/proc/<pid>/stat`, so nothing is summed on top —
+    and `memoryMB` is its RSS, listed once.
+  - Agents **before 0.3.1** listed each thread as its own process, so one
+    multi-threaded program (a SQL Server engine, say) appeared as several rows
+    repeating its full RSS and splitting its CPU, and kernel threads like
+    `txg_sync` appeared at all (#211). Only redeploying the agent fixes that;
+    the rows are indistinguishable from real processes by the time they are on
+    the wire.
 
 ### `/v1/containers` shape
 
