@@ -13,7 +13,7 @@ name = "devcanopy-agent"
 # keys are omitted instead. `/v1/health`'s `version` is how you tell a
 # redeployed agent from one still sending the old zeros (or, now, the old
 # fabricated thread rows).
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Per-host metrics agent polled by DevCanopy over Tailscale"
 license = "MIT"

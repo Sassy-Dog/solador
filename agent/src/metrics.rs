@@ -314,11 +314,16 @@ fn top_processes(entries: Vec<ProcEntry>, limit: usize) -> Vec<Process> {
 /// [`is_process`] still runs, and still matters: kernel threads are top-level
 /// `/proc` entries that arrive with or without this flag.
 fn process_refresh_kind() -> ProcessRefreshKind {
+    // `nothing()` is documented as everything-off EXCEPT `tasks`, which sysinfo
+    // hard-codes to `true` in its `Default` — so the walk this function's doc
+    // promises to skip stays on unless disabled by name (caught by
+    // crates/localhost's port, PR #214).
     ProcessRefreshKind::nothing()
         .with_memory()
         .with_cpu()
         .with_disk_usage()
         .with_exe(UpdateKind::OnlyIfNotSet)
+        .without_tasks()
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,6 +1067,20 @@ mod tests {
             // to be painted into TOP CPU on the real host.
             proc_entry(412, "txg_sync", Some(ThreadKind::Kernel), 95.0, 0.0),
         ]
+    }
+
+    /// `ProcessRefreshKind::nothing()` leaves `tasks` ON — sysinfo's `Default`
+    /// hard-codes it `true`, so the "expensive walk skipped" promise in
+    /// [`process_refresh_kind`]'s docs was a no-op until `.without_tasks()`
+    /// was named explicitly (found by crates/localhost's port, PR #214).
+    #[test]
+    fn the_refresh_never_asks_for_tasks() {
+        let kind = process_refresh_kind();
+
+        assert!(!kind.tasks(), "task rows are what #211 is made of");
+        assert!(kind.cpu());
+        assert!(kind.memory());
+        assert_eq!(kind.exe(), UpdateKind::OnlyIfNotSet);
     }
 
     /// THE #211 BUG: a multi-threaded process is ONE row, not one per thread.
