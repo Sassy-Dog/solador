@@ -443,6 +443,42 @@ impl NeonClient {
         let response = self.consumption_history(org_id, from, to).await?;
         Ok(summarize(&response))
     }
+
+    /// The org's finalized invoices, folded to the newest.
+    ///
+    /// Undocumented endpoint (see [`NeonInvoicesResponse`]); callers must treat
+    /// every failure as degradation, not breakage.
+    pub async fn invoices(&self, org_id: &str) -> Result<NeonInvoiceSummary, NeonUsageError> {
+        let org_id = org_id.trim();
+        if org_id.is_empty() {
+            return Err(NeonUsageError::MissingOrgId);
+        }
+
+        let resp = self
+            .http
+            .get(format!(
+                "{}/api/v2/organizations/{org_id}/billing/invoices",
+                self.base_url
+            ))
+            .bearer_auth(&self.api_key)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(NeonUsageError::Http { status });
+        }
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
+        let response: NeonInvoicesResponse = serde_json::from_str(&body)
+            .map_err(|e| NeonUsageError::DecodingFailed(e.to_string()))?;
+        Ok(summarize_invoices(&response))
+    }
 }
 
 #[cfg(test)]
@@ -969,5 +1005,50 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("Bearer neon_api_key_value")
         );
+    }
+
+    /// The matchers ARE the assertion, as in
+    /// `requests_the_month_to_date_window_for_the_configured_org`.
+    #[tokio::test]
+    async fn invoices_hits_the_org_billing_path_with_the_bearer_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/organizations/org-abc/billing/invoices"))
+            .and(header("authorization", "Bearer neon_api_key_value"))
+            .respond_with(json(FOUR_INVOICES))
+            .mount(&server)
+            .await;
+
+        let summary = client(&server.uri())
+            .invoices("org-abc")
+            .await
+            .expect("should decode");
+        assert_eq!(
+            summary,
+            NeonInvoiceSummary::Latest {
+                total: 15.91,
+                currency: "USD".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blank_org_id_skips_the_invoice_request_too() {
+        let server = MockServer::start().await;
+        let err = client(&server.uri()).invoices("  ").await.unwrap_err();
+        assert_eq!(err, NeonUsageError::MissingOrgId);
+    }
+
+    /// The endpoint is undocumented; a 404 (vanished, or older plans) must map
+    /// to the same typed Http error every other failure does.
+    #[tokio::test]
+    async fn a_missing_invoices_endpoint_is_an_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let err = client(&server.uri()).invoices("org-abc").await.unwrap_err();
+        assert_eq!(err, NeonUsageError::Http { status: 404 });
     }
 }
