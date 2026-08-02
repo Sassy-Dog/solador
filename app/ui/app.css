@@ -96,11 +96,16 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .sw-net { background:var(--net); }
 .sw-netup { background:var(--netup); }
 .lg b { color:var(--ink); font-weight:700; min-width:62px; text-align:right; }
-.vols { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:6px 16px; }
-.vol { display:flex; flex-direction:column; gap:3px; height:28px; }
-.vol .top { display:flex; font-size:10px; }
-.vol .top .mount { font-weight:700; }
-.vol .top .detail { margin-left:auto; font-size:9px; }
+/* Volume tiles get the cores' panelAlt treatment: without the tile edge,
+   one column's detail text ran straight into the next column's mount path
+   at dense widths. The tile padding doubles the effective text-to-text
+   buffer the column gap alone provided. */
+.vols { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:8px 16px; }
+.vol { display:flex; flex-direction:column; gap:4px; background:var(--panelAlt);
+  border-radius:8px; padding:8px; min-width:0; }
+.vol .top { display:flex; gap:8px; font-size:10px; }
+.vol .top .mount { font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vol .top .detail { margin-left:auto; font-size:9px; white-space:nowrap; }
 .vol .bar { height:4px; border-radius:2px; background:var(--panelAlt); overflow:hidden; }
 .vol .bar > span { display:block; height:100%; border-radius:2px; }
 .lbl { font-size:10px; font-weight:700; color:var(--muted); }
