@@ -124,6 +124,12 @@ test("a measured provider shows its figures and an unmeasured one shows an em da
   );
   expect(measured.providers[0].rows[0].value).not.toBe("—");
 
+  // The two cost rows ride the same generic row pipeline; their presence in
+  // the fixture is the Rust dump's promise, their rendering is this suite's.
+  const labels = measured.providers[0].rows.map((r) => r.label);
+  expect(labels).toContain("NEON EST. CHARGES (MTD)");
+  expect(labels).toContain("NEON LAST INVOICE");
+
   const unmeasured = await gotoWithUsage(page, baseURL, "sample-usage-unmeasured.json");
   await expect(section(page, "neon").locator(".pv-row .val").first()).toHaveText("—");
   await expect(section(page, "neon").locator(".pv-row .val").first()).toHaveCSS(

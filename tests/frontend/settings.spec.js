@@ -387,6 +387,8 @@ test("Usage and Azure write every provider preference together", async ({ page, 
 
   await page.locator("#neon-org-id").fill("org-abc");
   await page.locator("#sentry-quota").fill("100000");
+  await page.locator("#neon-usd-cu-hour").fill("0.106");
+  await page.locator("#neon-usd-gib-month").fill("0.35");
   await page.locator(".btn.apply").click();
 
   // The Azure budget travels with them, unchanged: `settings_save_providers`
@@ -400,6 +402,8 @@ test("Usage and Azure write every provider preference together", async ({ page, 
         sentryOrgSlug: settings.usage.sentry.orgSlug,
         sentryMonthlyEventQuota: 100000,
         azureMonthlyBudgetUsd: settings.azure.budget.value,
+        neonUsdPerCuHour: 0.106,
+        neonUsdPerGibMonth: 0.35,
       },
     },
   ]);

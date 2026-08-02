@@ -505,6 +505,8 @@ function azureTab(t) {
       sentryOrgSlug: S.view.usage.sentry.orgSlug,
       sentryMonthlyEventQuota: int(S.view.usage.sentry.quota),
       azureMonthlyBudgetUsd: Number(budget.value) || 0,
+      neonUsdPerCuHour: Number(S.view.usage.neon.usdPerCuHour) || 0,
+      neonUsdPerGibMonth: Number(S.view.usage.neon.usdPerGibMonth) || 0,
     })
   );
   box.appendChild(actionRow(apply));
@@ -518,6 +520,15 @@ function usageTab(t) {
   const neon = group(t.neon.heading);
   const orgId = textInput(t.neon.orgId);
   neon.appendChild(field("neon-org-id", t.neon.orgIdLabel, orgId));
+  const cuRate = numberInput(t.neon.usdPerCuHour, 0);
+  cuRate.step = "any"; // rates are fractional; the default step=1 would flag 0.106 invalid
+  const gibRate = numberInput(t.neon.usdPerGibMonth, 0);
+  gibRate.step = "any";
+  neon.append(
+    field("neon-usd-cu-hour", t.neon.usdPerCuHourLabel, cuRate),
+    field("neon-usd-gib-month", t.neon.usdPerGibMonthLabel, gibRate),
+    help(t.neon.ratesHelp)
+  );
   secretControls(neon, t.neon.secret);
 
   const sentry = group(t.sentry.heading);
@@ -537,6 +548,8 @@ function usageTab(t) {
       sentryOrgSlug: orgSlug.value,
       sentryMonthlyEventQuota: int(quota.value),
       azureMonthlyBudgetUsd: Number(S.view.azure.budget.value) || 0,
+      neonUsdPerCuHour: Number(cuRate.value) || 0,
+      neonUsdPerGibMonth: Number(gibRate.value) || 0,
     })
   );
 
