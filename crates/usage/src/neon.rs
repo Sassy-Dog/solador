@@ -161,6 +161,56 @@ pub struct NeonConsumptionMetric {
     pub value: f64,
 }
 
+// MARK: - Invoices
+
+/// `GET /api/v2/organizations/{org_id}/billing/invoices` — **undocumented**:
+/// absent from Neon's public OpenAPI spec but served to org API keys (verified
+/// live 2026-08-02). Treated as best-effort everywhere: a failure or the
+/// endpoint vanishing degrades the panel to estimate-only, never breaks it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct NeonInvoicesResponse {
+    #[serde(default)]
+    pub invoices: Vec<NeonInvoice>,
+}
+
+/// One finalized monthly invoice. Only the fields the panel reads; decode
+/// tolerates the rest (`pdf_url`, `hosted_invoice_url`, …).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct NeonInvoice {
+    pub total: f64,
+    pub currency: String,
+    /// RFC 3339 string, compared lexically — valid for UTC timestamps of one
+    /// vendor, and avoids failing an invoice over an unparseable date.
+    #[serde(default)]
+    pub issued_at: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// The panel's invoice reading. Two variants for the same reason
+/// [`NeonUsageSummary`] has two: "no invoices yet" is a measurement that must
+/// stay distinguishable from "we could not ask".
+#[derive(Debug, Clone, PartialEq)]
+pub enum NeonInvoiceSummary {
+    NoInvoices,
+    Latest { total: f64, currency: String },
+}
+
+/// Newest invoice by `issued_at` — never array order.
+#[must_use]
+pub fn summarize_invoices(response: &NeonInvoicesResponse) -> NeonInvoiceSummary {
+    response
+        .invoices
+        .iter()
+        .max_by(|a, b| a.issued_at.cmp(&b.issued_at))
+        .map_or(NeonInvoiceSummary::NoInvoices, |invoice| {
+            NeonInvoiceSummary::Latest {
+                total: invoice.total,
+                currency: invoice.currency.clone(),
+            }
+        })
+}
+
 // MARK: - Errors
 
 /// Failures from reading Neon consumption. [`NeonUsageError::is_auth_failure`]
@@ -292,6 +342,27 @@ pub fn summarize(response: &NeonConsumptionResponse) -> NeonUsageSummary {
     }
 }
 
+/// Estimated month-to-date charges: consumption × the operator's rates.
+///
+/// This reproduces the console's own "Charges to date" arithmetic (verified
+/// against it 2026-08-02: 5.19 CU-h × $0.106 = $0.55). The rates come from
+/// Settings, never a shipped price table — the app must not invent a price.
+/// `None` when both rates are unset (≤ 0) or the summary is unmeasured;
+/// negative rates count as unset.
+#[must_use]
+pub fn estimate_usd(
+    summary: NeonUsageSummary,
+    usd_per_cu_hour: f64,
+    usd_per_gib_month: f64,
+) -> Option<f64> {
+    if usd_per_cu_hour <= 0.0 && usd_per_gib_month <= 0.0 {
+        return None;
+    }
+    let compute = summary.compute_unit_hours()?;
+    let storage = summary.storage_gib()?;
+    Some(compute * usd_per_cu_hour.max(0.0) + storage * usd_per_gib_month.max(0.0))
+}
+
 // MARK: - Client
 
 /// The one Neon REST read the Usage panel needs.
@@ -392,6 +463,42 @@ impl NeonClient {
         let (from, to) = month_to_date_window(now);
         let response = self.consumption_history(org_id, from, to).await?;
         Ok(summarize(&response))
+    }
+
+    /// The org's finalized invoices, folded to the newest.
+    ///
+    /// Undocumented endpoint (see [`NeonInvoicesResponse`]); callers must treat
+    /// every failure as degradation, not breakage.
+    pub async fn invoices(&self, org_id: &str) -> Result<NeonInvoiceSummary, NeonUsageError> {
+        let org_id = org_id.trim();
+        if org_id.is_empty() {
+            return Err(NeonUsageError::MissingOrgId);
+        }
+
+        let resp = self
+            .http
+            .get(format!(
+                "{}/api/v2/organizations/{org_id}/billing/invoices",
+                self.base_url
+            ))
+            .bearer_auth(&self.api_key)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(NeonUsageError::Http { status });
+        }
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
+        let response: NeonInvoicesResponse = serde_json::from_str(&body)
+            .map_err(|e| NeonUsageError::DecodingFailed(e.to_string()))?;
+        Ok(summarize_invoices(&response))
     }
 }
 
@@ -687,6 +794,56 @@ mod tests {
         );
     }
 
+    // MARK: - Invoices
+
+    const FOUR_INVOICES: &str = r#"
+    {
+      "invoices": [
+        { "invoice_number": "A-3", "status": "paid", "issued_at": "2026-07-01T00:10:00Z",
+          "due_date": "2026-08-01T00:00:00Z", "total": 15.91, "currency": "USD" },
+        { "invoice_number": "A-1", "status": "paid", "issued_at": "2026-05-01T00:10:00Z",
+          "due_date": "2026-06-01T00:00:00Z", "total": 21.52, "currency": "USD" },
+        { "invoice_number": "A-2", "status": "paid", "issued_at": "2026-06-01T00:10:00Z",
+          "due_date": "2026-07-01T00:00:00Z", "total": 22.41, "currency": "USD" }
+      ]
+    }"#;
+
+    /// Newest by `issued_at`, never by array order — the API's ordering is
+    /// not part of any contract we read.
+    #[test]
+    fn the_latest_invoice_is_picked_by_issued_at_not_array_order() {
+        let response: NeonInvoicesResponse = serde_json::from_str(FOUR_INVOICES).expect("decode");
+        assert_eq!(
+            summarize_invoices(&response),
+            NeonInvoiceSummary::Latest {
+                total: 15.91,
+                currency: "USD".into()
+            }
+        );
+    }
+
+    /// A young org has no invoices; that is a measurement, not a failure.
+    #[test]
+    fn an_empty_invoice_list_is_no_invoices() {
+        let response: NeonInvoicesResponse =
+            serde_json::from_str(r#"{"invoices":[]}"#).expect("decode");
+        assert_eq!(
+            summarize_invoices(&response),
+            NeonInvoiceSummary::NoInvoices
+        );
+    }
+
+    /// Unknown keys (pdf_url, hosted_invoice_url, …) must not break decode.
+    #[test]
+    fn invoice_decode_tolerates_extra_keys() {
+        let response: NeonInvoicesResponse = serde_json::from_str(
+            r#"{"invoices":[{"status":"paid","issued_at":"2026-07-01T00:10:00Z",
+                "total":1.0,"currency":"USD","pdf_url":"https://x","extra":1}]}"#,
+        )
+        .expect("decode");
+        assert_eq!(response.invoices.len(), 1);
+    }
+
     // MARK: - Client
 
     fn json(body: &str) -> ResponseTemplate {
@@ -869,5 +1026,87 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("Bearer neon_api_key_value")
         );
+    }
+
+    /// The matchers ARE the assertion, as in
+    /// `requests_the_month_to_date_window_for_the_configured_org`.
+    #[tokio::test]
+    async fn invoices_hits_the_org_billing_path_with_the_bearer_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/organizations/org-abc/billing/invoices"))
+            .and(header("authorization", "Bearer neon_api_key_value"))
+            .respond_with(json(FOUR_INVOICES))
+            .mount(&server)
+            .await;
+
+        let summary = client(&server.uri())
+            .invoices("org-abc")
+            .await
+            .expect("should decode");
+        assert_eq!(
+            summary,
+            NeonInvoiceSummary::Latest {
+                total: 15.91,
+                currency: "USD".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blank_org_id_skips_the_invoice_request_too() {
+        let server = MockServer::start().await;
+        let err = client(&server.uri()).invoices("  ").await.unwrap_err();
+        assert_eq!(err, NeonUsageError::MissingOrgId);
+    }
+
+    /// The endpoint is undocumented; a 404 (vanished, or older plans) must map
+    /// to the same typed Http error every other failure does.
+    #[tokio::test]
+    async fn a_missing_invoices_endpoint_is_an_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let err = client(&server.uri()).invoices("org-abc").await.unwrap_err();
+        assert_eq!(err, NeonUsageError::Http { status: 404 });
+    }
+
+    // MARK: - estimate_usd
+
+    /// Rates unset is setup, not measurement: no estimate, not $0.00.
+    #[test]
+    fn no_rates_means_no_estimate() {
+        let s = summarize(&serde_json::from_str(TWO_PROJECTS).expect("decode"));
+        assert_eq!(estimate_usd(s, 0.0, 0.0), None);
+        assert_eq!(estimate_usd(s, -1.0, 0.0), None);
+    }
+
+    /// An unmeasured summary has no figures to price; an estimate over it
+    /// would be a fabricated number wearing a dollar sign.
+    #[test]
+    fn an_unmeasured_summary_has_no_estimate() {
+        assert_eq!(
+            estimate_usd(NeonUsageSummary::Unmeasured, 0.106, 0.35),
+            None
+        );
+    }
+
+    /// One rate is enough — the other contributes zero, not None.
+    #[test]
+    fn a_single_rate_prices_only_its_metric() {
+        let s = summarize(&serde_json::from_str(TWO_PROJECTS).expect("decode"));
+        let compute = s.compute_unit_hours().expect("measured");
+        assert_eq!(estimate_usd(s, 2.0, 0.0), Some(compute * 2.0));
+    }
+
+    #[test]
+    fn both_rates_sum_compute_and_storage() {
+        let s = summarize(&serde_json::from_str(TWO_PROJECTS).expect("decode"));
+        let expected = s.compute_unit_hours().expect("measured") * 0.106
+            + s.storage_gib().expect("measured") * 0.35;
+        let estimate = estimate_usd(s, 0.106, 0.35).expect("estimate");
+        assert!((estimate - expected).abs() < 1e-12);
     }
 }

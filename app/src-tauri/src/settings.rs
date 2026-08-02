@@ -653,6 +653,11 @@ fn usage_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
             "heading": "Neon",
             "orgIdLabel": "Organization ID",
             "orgId": settings.neon_org_id,
+            "usdPerCuHourLabel": "$ per CU-hour",
+            "usdPerCuHour": settings.neon_usd_per_cu_hour,
+            "usdPerGibMonthLabel": "$ per GiB-month storage",
+            "usdPerGibMonth": settings.neon_usd_per_gib_month,
+            "ratesHelp": "Your plan's usage-based rates from the Neon console's Billing page. Both 0 hides the estimated-charges row; the app ships no price table, so the estimate can never silently rot when Neon reprices.",
             "secret": secret_section(
                 SecretField::Neon,
                 "Organization API key",
@@ -939,6 +944,8 @@ mod tests {
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 50_000,
             azure_monthly_budget_usd: 250.0,
+            neon_usd_per_cu_hour: 0.106,
+            neon_usd_per_gib_month: 0.35,
             ..Settings::default()
         };
         settings.local_hidden_volume_mounts = vec!["/Volumes/Backup".into()];
@@ -1467,6 +1474,13 @@ mod tests {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["usage"]["neon"]["orgId"], "org-abc");
+        assert_eq!(vm["usage"]["neon"]["usdPerCuHour"], 0.106);
+        assert_eq!(vm["usage"]["neon"]["usdPerGibMonth"], 0.35);
+        assert_eq!(vm["usage"]["neon"]["usdPerCuHourLabel"], "$ per CU-hour");
+        assert_eq!(
+            vm["usage"]["neon"]["usdPerGibMonthLabel"],
+            "$ per GiB-month storage"
+        );
         assert_eq!(vm["usage"]["sentry"]["orgSlug"], "sassy-dog");
         assert_eq!(vm["usage"]["sentry"]["quota"], 50_000);
         assert_eq!(vm["azure"]["budget"]["value"], 250.0);

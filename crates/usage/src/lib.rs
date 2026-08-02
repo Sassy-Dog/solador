@@ -29,5 +29,5 @@ pub mod neon;
 pub mod sentry;
 
 pub use claude::{summarize_logs, UsageSummary, UsageTotals};
-pub use neon::{NeonClient, NeonUsageError, NeonUsageSummary};
+pub use neon::{estimate_usd, NeonClient, NeonInvoiceSummary, NeonUsageError, NeonUsageSummary};
 pub use sentry::{SentryClient, SentryUsageError, SentryUsageSummary};

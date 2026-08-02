@@ -582,6 +582,8 @@ mod tests {
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 250.0,
             neon_org_id: "org-123".into(),
+            neon_usd_per_cu_hour: 0.175,
+            neon_usd_per_gib_month: 0.5,
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 100_000,
             openclaw_gateway_url: "https://gateway.example".into(),

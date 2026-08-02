@@ -496,8 +496,8 @@ function azureTab(t) {
   const budget = numberInput(t.budget.value, 0);
   box.append(field("azure-budget", t.budget.label, budget), help(t.budget.help));
   const apply = button(t.budget.saveLabel, "apply");
-  // `settings_save_providers` writes all four non-secret provider preferences
-  // at once, so the ones this tab doesn't show are sent back as they came --
+  // `settings_save_providers` writes every non-secret provider preference in
+  // one go, so the ones this tab doesn't show are sent back as they came --
   // a partial write would silently blank the Usage tab's fields.
   apply.addEventListener("click", () =>
     mutate("settings_save_providers", {
@@ -505,6 +505,8 @@ function azureTab(t) {
       sentryOrgSlug: S.view.usage.sentry.orgSlug,
       sentryMonthlyEventQuota: int(S.view.usage.sentry.quota),
       azureMonthlyBudgetUsd: Number(budget.value) || 0,
+      neonUsdPerCuHour: Number(S.view.usage.neon.usdPerCuHour) || 0,
+      neonUsdPerGibMonth: Number(S.view.usage.neon.usdPerGibMonth) || 0,
     })
   );
   box.appendChild(actionRow(apply));
@@ -518,6 +520,15 @@ function usageTab(t) {
   const neon = group(t.neon.heading);
   const orgId = textInput(t.neon.orgId);
   neon.appendChild(field("neon-org-id", t.neon.orgIdLabel, orgId));
+  const cuRate = numberInput(t.neon.usdPerCuHour, 0);
+  cuRate.step = "any"; // rates are fractional; the default step=1 would flag 0.106 invalid
+  const gibRate = numberInput(t.neon.usdPerGibMonth, 0);
+  gibRate.step = "any";
+  neon.append(
+    field("neon-usd-cu-hour", t.neon.usdPerCuHourLabel, cuRate),
+    field("neon-usd-gib-month", t.neon.usdPerGibMonthLabel, gibRate),
+    help(t.neon.ratesHelp)
+  );
   secretControls(neon, t.neon.secret);
 
   const sentry = group(t.sentry.heading);
@@ -537,6 +548,8 @@ function usageTab(t) {
       sentryOrgSlug: orgSlug.value,
       sentryMonthlyEventQuota: int(quota.value),
       azureMonthlyBudgetUsd: Number(S.view.azure.budget.value) || 0,
+      neonUsdPerCuHour: Number(cuRate.value) || 0,
+      neonUsdPerGibMonth: Number(gibRate.value) || 0,
     })
   );
 

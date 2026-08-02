@@ -653,7 +653,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
 | `settings_save_general` | refresh interval, core-row span, host-overflow mode |
-| `settings_save_providers` | Neon org id, Sentry slug + quota, Azure budget (all four at once) |
+| `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it |
 | `settings_unhide_volume` | one mount, on a host or on the local list |
 | `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
