@@ -161,7 +161,6 @@ pub struct NeonConsumptionMetric {
     pub value: f64,
 }
 
-
 // MARK: - Invoices
 
 /// `GET /api/v2/organizations/{org_id}/billing/invoices` — **undocumented**:
@@ -738,7 +737,6 @@ mod tests {
         );
     }
 
-
     // MARK: - Invoices
 
     const FOUR_INVOICES: &str = r#"
@@ -757,11 +755,13 @@ mod tests {
     /// not part of any contract we read.
     #[test]
     fn the_latest_invoice_is_picked_by_issued_at_not_array_order() {
-        let response: NeonInvoicesResponse =
-            serde_json::from_str(FOUR_INVOICES).expect("decode");
+        let response: NeonInvoicesResponse = serde_json::from_str(FOUR_INVOICES).expect("decode");
         assert_eq!(
             summarize_invoices(&response),
-            NeonInvoiceSummary::Latest { total: 15.91, currency: "USD".into() }
+            NeonInvoiceSummary::Latest {
+                total: 15.91,
+                currency: "USD".into()
+            }
         );
     }
 
@@ -770,7 +770,10 @@ mod tests {
     fn an_empty_invoice_list_is_no_invoices() {
         let response: NeonInvoicesResponse =
             serde_json::from_str(r#"{"invoices":[]}"#).expect("decode");
-        assert_eq!(summarize_invoices(&response), NeonInvoiceSummary::NoInvoices);
+        assert_eq!(
+            summarize_invoices(&response),
+            NeonInvoiceSummary::NoInvoices
+        );
     }
 
     /// Unknown keys (pdf_url, hosted_invoice_url, …) must not break decode.
