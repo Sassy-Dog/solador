@@ -70,7 +70,7 @@ test("core grid uses only column counts that leave a full last row", async ({ pa
   }
 });
 
-test("cores block holds a fixed height at every width", async ({ page }) => {
+test("cores block keeps the 2-row height until cells hit the squeeze floor, then grows", async ({ page }) => {
   await gotoApp(page);
   const expectedPx = `${(await firstHost(page)).coreBlockHeight}px`;
   // app.css's fallback is `var(--core-block-h, 220px)`: if render() silently
@@ -83,8 +83,12 @@ test("cores block holds a fixed height at every width", async ({ page }) => {
   );
   expect(actualProp, "--core-block-h custom property").toBe(expectedPx);
 
-  const expectedHeight = parseFloat(expectedPx);
-  for (const width of [1900, 900, 500, 300, 150]) {
+  // 16 cores: rungs of 16/8/4 columns give 1/2/4 rows, which fit the fixed
+  // 220px block at or above the Swift squeeze floor (49px cells — the
+  // 4-row case of core_cell_height). The 2- and 1-column rungs would need
+  // 8 and 16 rows, where 220px leaves the plots literally 0px — there the
+  // block grows to rows*49 + (rows-1)*8 instead of erasing the charts.
+  for (const [width, expected] of [[1900, 220], [900, 220], [500, 220], [300, 448], [150, 904]]) {
     const h = await page.evaluate((w) => {
       const wrap = document.querySelector(".cores-wrap");
       wrap.style.width = w + "px";
@@ -93,9 +97,50 @@ test("cores block holds a fixed height at every width", async ({ page }) => {
       wrap.style.width = "";
       return px;
     }, width);
-    // core_block_height(CORE_ROW_SPAN_DEFAULT) = 2 * 110
-    expect(h, `block height at ${width}px`).toBe(expectedHeight);
+    expect(h, `block height at ${width}px`).toBe(expected);
   }
+});
+
+test("a many-core host keeps its core sparklines visible at narrow rungs", async ({ page }) => {
+  // 36 cores at a ~990px container sit on the 6-column rung -> 6 rows. The
+  // fixed 220px block gave each tile ~30px, which padding and the label
+  // consumed whole: the plot flexed to 0 and the charts silently vanished
+  // (the bug this guards). Past the squeeze floor the block must grow so
+  // every tile keeps at least the tightest cell Swift itself renders
+  // (49px: HostMetricsPanel's 36-core, 9-column, 4-row case).
+  const vm = JSON.parse(readFileSync("../../app/ui/sample.json", "utf8"));
+  const host = vm.hosts[0];
+  const base = host.cores;
+  host.cores = Array.from({ length: 36 }, (_, i) => ({
+    ...base[i % base.length], label: `Core ${i}`,
+  }));
+  host.coreLadder = [1, 2, 3, 4, 6, 9, 12, 18, 36].map((cols) => {
+    const rows = Math.ceil(36 / cols);
+    return {
+      minWidth: cols * 104 + (cols - 1) * 8,
+      cols,
+      height: Math.max(220, rows * 49 + (rows - 1) * 8),
+    };
+  });
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+  const got = await page.evaluate(async () => {
+    const wrap = document.querySelector(".cores-wrap");
+    wrap.style.width = "990px";
+    void wrap.offsetWidth;
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+    const cols = getComputedStyle(document.querySelector(".cores"))
+      .gridTemplateColumns.split(" ").length;
+    const plots = [...document.querySelectorAll(".core .plot")]
+      .map((p) => p.getBoundingClientRect().height);
+    wrap.style.width = "";
+    return { n: plots.length, cols, minPlot: Math.min(...plots) };
+  });
+  expect(got.n).toBe(36);
+  expect(got.cols).toBe(6);
+  // A chart needs real room: the 49px squeeze-floor cell leaves ~17px of plot.
+  expect(got.minPlot).toBeGreaterThan(12);
 });
 
 test("charts widen their time window instead of stretching", async ({ page }) => {
@@ -123,6 +168,45 @@ test("charts widen their time window instead of stretching", async ({ page }) =>
   expect(wide.n).toBeGreaterThan(narrow.n * 2.5);
   // ...at unchanged on-screen density, which is what "not stretched" means
   expect(Math.abs(wide.px - narrow.px)).toBeLessThan(0.5);
+});
+
+test("sparklines carry the Swift gradient fade under the line", async ({ page }) => {
+  // Swift parity (Sparkline.swift:27-30): the area under the line fades from
+  // 0.28 of the series colour at the top to transparent at the bottom, over
+  // the FULL chart height. userSpaceOnUse is the load-bearing detail:
+  // SwiftUI's LinearGradient spans the view frame, so an idle-flat line must
+  // not compress the fade into its own bounding box and paint a solid band.
+  await gotoApp(page);
+  const got = await page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+    const read = (sel) => {
+      const svg = document.querySelector(sel + " svg");
+      const lines = [...svg.querySelectorAll("polyline")];
+      return [...svg.querySelectorAll("polygon")].map((pg, i) => {
+        const gid = (pg.getAttribute("fill").match(/^url\(#(.+)\)$/) || [])[1];
+        const grad = svg.querySelector(`linearGradient[id="${gid}"]`);
+        return {
+          inSameSvg: !!grad,
+          units: grad && grad.getAttribute("gradientUnits"),
+          y2: grad && grad.getAttribute("y2"),
+          stops: grad && [...grad.querySelectorAll("stop")].map((s) => s.getAttribute("stop-opacity")),
+          sharesLine: pg.getAttribute("points").includes(lines[i].getAttribute("points")),
+        };
+      });
+    };
+    return { cpu: read(".cpuChart"), net: read(".netChart") };
+  });
+  expect(got.cpu.length).toBe(1);
+  expect(got.net.length).toBe(2); // one fade per series, down and up
+  for (const g of [...got.cpu, ...got.net]) {
+    expect(g.inSameSvg).toBe(true);
+    expect(g.units).toBe("userSpaceOnUse");
+    expect(g.y2).toBe("100");
+    expect(g.stops).toEqual(["0.28", "0"]);
+    // The fill is the stroke's own point run closed down to the baseline
+    expect(g.sharesLine).toBe(true);
+  }
 });
 
 test("a filling history hugs the right edge at fixed density, never stretching", async ({ page }) => {

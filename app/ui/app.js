@@ -41,6 +41,11 @@ let refreshCockpit = async () => {};
 
 const CHARTS = new Map();
 
+// Per-paint unique gradient ids: `url(#id)` resolves document-wide, so every
+// svg must reference only its own defs or a repaint of one chart could orphan
+// another's fill.
+let gradSeq = 0;
+
 // A `style-src 'self'` CSP (no 'unsafe-inline') blocks `<style>` elements
 // outright, even an empty one created before its content is set — Tauri's
 // nonce injection only stamps <style> tags already present in the built
@@ -58,6 +63,7 @@ function paint(el) {
   const { series, lo, hi, grid, pxPerSample, retained } = spec;
   const visible = Math.min(retained, Math.max(2, Math.floor(w / pxPerSample)));
   const parts = [];
+  const defs = [];
   if (grid) {
     for (const fr of [0, 0.5, 1]) {
       const y = (fr * 100).toFixed(2);
@@ -81,11 +87,20 @@ function paint(el) {
       const x = w - (win.length - 1 - i) * step;
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     }).join(" ");
+    // Swift parity (Sparkline.swift): a 0.28 -> 0 fade of the series colour
+    // under the line. userSpaceOnUse over the full 0..100 viewBox height,
+    // because SwiftUI's LinearGradient spans the whole chart frame — the
+    // default objectBoundingBox would compress the fade into a flat line's
+    // own few-pixel extent and paint it as a solid band.
+    const gid = `spark-fade-${gradSeq++}`;
+    defs.push(`<linearGradient id="${gid}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="100"><stop offset="0" stop-color="${esc(sr.color)}" stop-opacity="0.28"/><stop offset="1" stop-color="${esc(sr.color)}" stop-opacity="0"/></linearGradient>`);
+    const x0 = (w - (win.length - 1) * step).toFixed(2);
+    parts.push(`<polygon points="${x0},100 ${pts} ${w},100" fill="url(#${gid})"/>`);
     parts.push(`<polyline points="${pts}" fill="none" stroke="${esc(sr.color)}" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
   }
   // x in real pixels, y normalised: a wider chart shows MORE TIME, not a
   // stretched line. A symmetric viewBox is what causes stretching.
-  el.innerHTML = `<svg viewBox="0 0 ${w} 100" preserveAspectRatio="none" width="${w}" height="${h}" role="img" aria-label="metric history, ${visible} samples">${parts.join("")}</svg>`;
+  el.innerHTML = `<svg viewBox="0 0 ${w} 100" preserveAspectRatio="none" width="${w}" height="${h}" role="img" aria-label="metric history, ${visible} samples"><defs>${defs.join("")}</defs>${parts.join("")}</svg>`;
 }
 
 const chartObserver = new ResizeObserver((es) => { for (const e of es) paint(e.target); });
@@ -125,7 +140,12 @@ function installCoreLadders(hosts) {
     // string->CSS sink with no `esc()` between it and the source: coerce to
     // integers rather than trust the shape of the JSON.
     for (const r of h.coreLadder) {
-      rules.push(`@container cores (min-width: ${Number(r.minWidth) | 0}px){.cores[data-n="${n | 0}"]{grid-template-columns:repeat(${Number(r.cols) | 0},1fr)}}`);
+      // Guarded, not coerced: Number(undefined)|0 is 0, and a rung from a
+      // stale payload without `height` must fall back to the --core-block-h
+      // base, not collapse the grid to 0px.
+      const rungH = Number(r.height);
+      const height = Number.isFinite(rungH) && rungH > 0 ? `;height:${rungH | 0}px` : "";
+      rules.push(`@container cores (min-width: ${Number(r.minWidth) | 0}px){.cores[data-n="${n | 0}"]{grid-template-columns:repeat(${Number(r.cols) | 0},1fr)${height}}}`);
     }
   }
   coreLadderSheet.replaceSync(rules.join("\n"));
