@@ -405,6 +405,29 @@ test("Usage and Azure write every provider preference together", async ({ page, 
   ]);
 });
 
+test("a typed org ID survives saving that provider's key", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await tab(page, "usage").click();
+
+  // The natural fill-in order: type the org ID, paste the key, and press the
+  // Save sitting right under the key — before the tab-level Apply. The secret
+  // save re-renders the tab from persisted state, and the unapplied org ID
+  // must survive that render or it is silently lost while the "Saved." status
+  // says otherwise.
+  await page.locator("#neon-org-id").fill("org-fond-sea-12345678");
+  await page.locator("#secret-neon").fill("napi_smoke");
+  await page.locator('.group[data-secret="neon"] .btn.save').click();
+  expect(await calls(page, "settings_save_secret")).toEqual([
+    { command: "settings_save_secret", args: { key: "neon", value: "napi_smoke" } },
+  ]);
+  await expect(page.locator("#neon-org-id")).toHaveValue("org-fond-sea-12345678");
+
+  // And the surviving value is what Apply hands to Rust.
+  await page.locator(".btn.apply").click();
+  const saved = await calls(page, "settings_save_providers");
+  expect(saved.at(-1).args.neonOrgId).toBe("org-fond-sea-12345678");
+});
+
 test("About names the app, its version and its links", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "about").click();
