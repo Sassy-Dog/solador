@@ -131,13 +131,21 @@ enum NeonUsageMapping {
     static let bytesPerGiB = 1024.0 * 1024.0 * 1024.0
 
     /// The month-to-date window: first instant of the UTC calendar month containing
-    /// `now`, through `now`. UTC because Neon bills and buckets in UTC — using local
-    /// time would slide the boundary by the timezone offset.
+    /// `now`, through the first instant of the following month. UTC because Neon
+    /// bills and buckets in UTC — using local time would slide the boundary by the
+    /// timezone offset.
+    ///
+    /// `to` is the month's *exclusive end*, never `now`: under monthly granularity
+    /// the endpoint floors both bounds to the bucket boundary, so a mid-month `to`
+    /// comes back equal to `from` and the whole read fails with an HTTP 400 — on
+    /// every day of the month. A future `to` is fine; the returned timeframe still
+    /// only covers what was consumed.
     static func monthToDateWindow(now: Date) -> (from: Date, to: Date) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let start = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
-        return (from: start, to: now)
+        let end = calendar.date(byAdding: .month, value: 1, to: start) ?? now
+        return (from: start, to: end)
     }
 
     /// RFC 3339 in UTC, e.g. `2026-07-01T00:00:00Z` — the format the consumption
