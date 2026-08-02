@@ -392,8 +392,8 @@ test("Usage and Azure write every provider preference together", async ({ page, 
   await page.locator(".btn.apply").click();
 
   // The Azure budget travels with them, unchanged: `settings_save_providers`
-  // writes all four, so sending only this tab's fields would blank the one it
-  // doesn't show.
+  // writes every non-secret provider preference in one go, so sending only
+  // this tab's fields would blank the ones it doesn't show.
   expect(await calls(page, "settings_save_providers")).toEqual([
     {
       command: "settings_save_providers",

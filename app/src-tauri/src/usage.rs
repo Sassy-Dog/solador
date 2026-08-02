@@ -357,6 +357,10 @@ fn neon_section(
         "rows": rows,
         // Consumption's error owns the footer — it is the section's primary
         // content; the invoice's reason shows only when consumption is healthy.
+        // The "last ok" age below is always consumption's `last_updated`, even
+        // when the displayed error text is the invoice's: one footer per
+        // section, and consumption is the age that matters here since the
+        // invoice is a slow-moving monthly figure anyway.
         "footer": status_footer(
             state.last_updated,
             state.last_error.as_deref().or(invoice.last_error.as_deref()),
@@ -878,7 +882,26 @@ mod tests {
             .failed("Neon API request failed (HTTP 500)".to_owned());
         let payload = view(&state, QUOTA, NeonRates::default(), NOW);
         let footer = &section(&payload, "neon").expect("neon")["footer"]["text"];
-        assert!(footer.as_str().unwrap().contains("HTTP 500"));
+        let text = footer.as_str().unwrap();
+        assert!(text.contains("HTTP 500"));
+        assert!(
+            !text.contains("404"),
+            "the invoice's error text must be absent when consumption's error wins: {text}"
+        );
+    }
+
+    /// When consumption is healthy but the invoice read failed, the invoice's
+    /// error is the only one available and must still reach the footer —
+    /// the `.or(invoice.last_error.as_deref())` fallback in `neon_section`.
+    #[test]
+    fn the_invoice_error_reaches_the_footer_when_consumption_is_healthy() {
+        let mut state = measured();
+        state
+            .neon_invoice_mut()
+            .failed("invoices: Neon API request failed (HTTP 404)".to_owned());
+        let payload = view(&state, QUOTA, NeonRates::default(), NOW);
+        let footer = &section(&payload, "neon").expect("neon")["footer"]["text"];
+        assert!(footer.as_str().unwrap().contains("invoices:"));
     }
 
     // MARK: the quota bar

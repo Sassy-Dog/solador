@@ -496,8 +496,8 @@ function azureTab(t) {
   const budget = numberInput(t.budget.value, 0);
   box.append(field("azure-budget", t.budget.label, budget), help(t.budget.help));
   const apply = button(t.budget.saveLabel, "apply");
-  // `settings_save_providers` writes all four non-secret provider preferences
-  // at once, so the ones this tab doesn't show are sent back as they came --
+  // `settings_save_providers` writes every non-secret provider preference in
+  // one go, so the ones this tab doesn't show are sent back as they came --
   // a partial write would silently blank the Usage tab's fields.
   apply.addEventListener("click", () =>
     mutate("settings_save_providers", {
