@@ -7,13 +7,16 @@
 
 [package]
 name = "devcanopy-agent"
+# 0.4.0: `gpu` is measured on hosts with an NVIDIA card, via `nvidia-smi`
+# (#217). A minor, not a patch: this agent produces a wire field it has never
+# produced before. Still omitted everywhere nothing is measured.
 # 0.3.1: `processes[]` lists processes only — Linux threads and kernel threads
 # are no longer reported as processes of their own (#211).
 # 0.3.0: `/v1/snapshot` stops emitting figures it never measured (#183) — the
 # keys are omitted instead. `/v1/health`'s `version` is how you tell a
 # redeployed agent from one still sending the old zeros (or, now, the old
 # fabricated thread rows).
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 description = "Per-host metrics agent polled by DevCanopy over Tailscale"
 license = "MIT"

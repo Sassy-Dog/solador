@@ -24,8 +24,13 @@
 //!   millidegrees, and collapsing those into the ladder needs per-machine trip
 //!   points nothing here knows — a different fabrication, not a fix for this
 //!   one.
-//! - `gpu` — **always omitted** ([`Gpu::unknown`]): `sysinfo` reports no GPU at
-//!   all, so there is nothing to measure. Serialises as `{}`.
+//! - `gpu` — **measured on hosts with an NVIDIA card** (#217), out of
+//!   `nvidia-smi` rather than `sysinfo`, which reports no GPU on any platform.
+//!   See [`crate::gpu`] for the probe and why it never runs on this module's 1s
+//!   path. Omitted ([`Gpu::unknown`], serialising as `{}`) everywhere that
+//!   probe measures nothing: no NVIDIA driver, a failed or hung invocation, or
+//!   output it does not recognise. AMD and Intel are not read yet, so they are
+//!   part of that "omitted" set.
 //! - `disk` / `network` rates — **measured** from the sampler's byte deltas,
 //!   so they are present (and often a legitimate `0.0`) in every real sample.
 //!   Absent only from [`empty_snapshot`], which predates the first delta.
@@ -48,8 +53,10 @@ use sysinfo::{
 };
 use tokio::sync::RwLock;
 
-const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
+// `pub(crate)` so the GPU probe converts its MiB figures through the same pair
+// — the contract's `…GB` is 1024-base everywhere or it is inconsistent.
+pub(crate) const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+pub(crate) const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
 /// Refresh interval for the background sampler. Disk/network rates are computed
 /// as (delta bytes over this interval) / (interval seconds).
@@ -460,19 +467,25 @@ pub fn now_rfc3339() -> String {
 /// produces a fresh sample, [`MetricsState::is_stale`] reports `true`, so a
 /// crashed sampler surfaces as `degraded` on `/v1/health` rather than serving
 /// frozen numbers behind a green health check.
+///
+/// The GPU probe is spawned here rather than inside the loop, so a restart
+/// after a panic reattaches to the running probe instead of starting a second
+/// one.
 pub fn spawn_sampler() -> MetricsState {
     let state = MetricsState {
         inner: Arc::new(RwLock::new(empty_snapshot())),
         last_sample: Arc::new(Mutex::new(Instant::now())),
     };
     let handle = state.clone();
+    let gpu_state = crate::gpu::spawn_probe();
 
     tokio::spawn(async move {
         loop {
             let task = handle.clone();
+            let gpu = gpu_state.clone();
             // Isolate the loop so a panic inside it doesn't take down the agent;
             // a `JoinHandle` carries the panic back here as an `Err`.
-            let join = tokio::spawn(async move { sampler_loop(task).await });
+            let join = tokio::spawn(async move { sampler_loop(task, gpu).await });
             match join.await {
                 Ok(()) => {
                     // The loop is infinite; a clean return is unexpected.
@@ -491,7 +504,12 @@ pub fn spawn_sampler() -> MetricsState {
 }
 
 /// The sampler's inner loop: prime once, then sample forever.
-async fn sampler_loop(state: MetricsState) {
+///
+/// `gpu_state` is read, never driven: the probe behind it runs on its own task
+/// and cadence ([`crate::gpu`]), so this loop's contact with a subprocess is a
+/// mutex lock. A wedged `nvidia-smi` costs a stale GPU reading, not a stalled
+/// snapshot.
+async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
     let mut sys = System::new_all();
     let mut networks = Networks::new_with_refreshed_list();
     let mut disks = Disks::new_with_refreshed_list();
@@ -528,7 +546,10 @@ async fn sampler_loop(state: MetricsState) {
             SAMPLE_INTERVAL.as_secs_f64(),
             cached_processes.clone(),
             &skip,
-            read_memory_pressure(),
+            ProbedReadings {
+                pressure: read_memory_pressure(),
+                gpu: gpu_state.latest(),
+            },
         );
         *state.inner.write().await = snap;
         state.mark_sampled();
@@ -571,14 +592,30 @@ pub(crate) fn empty_snapshot() -> Snapshot {
     }
 }
 
+/// The readings that do not come from `sysinfo` — the two things this agent
+/// measures itself, each of which may measure nothing at all.
+///
+/// Grouped rather than passed as loose arguments so [`compute_snapshot`] keeps
+/// a readable signature as the list grows; every one of these stays an
+/// argument, never a read inside the builder, so the builder remains pure.
+struct ProbedReadings {
+    /// Memory PSI, from [`read_memory_pressure`]. `None` off Linux.
+    pressure: Option<f64>,
+    /// The GPU probe's most recent reading ([`crate::gpu::GpuState::latest`]).
+    /// [`Gpu::unknown`] wherever it measured nothing.
+    gpu: Gpu,
+}
+
 /// Build a [`Snapshot`] from refreshed sysinfo state.
 ///
 /// `interval_secs` is the elapsed time over which the network/disk byte deltas
 /// were accumulated, used to convert byte deltas into bytes/sec.
 ///
-/// `pressure` is passed in rather than read here so this stays a pure function
-/// of its inputs: the sampler owns the procfs read ([`read_memory_pressure`]),
-/// and a test can hand this both a measured value and a `None`.
+/// `probed` carries the readings that do not come from `sysinfo`, passed in
+/// rather than read here so this stays a pure function of its inputs: the
+/// sampler owns the procfs read ([`read_memory_pressure`]) and the cached GPU
+/// reading ([`crate::gpu::GpuState::latest`]), and a test can hand this both a
+/// measured value and an unmeasured one.
 fn compute_snapshot(
     sys: &System,
     networks: &Networks,
@@ -586,8 +623,9 @@ fn compute_snapshot(
     interval_secs: f64,
     processes: Vec<Process>,
     skip_fstypes: &std::collections::HashSet<String>,
-    pressure: Option<f64>,
+    probed: ProbedReadings,
 ) -> Snapshot {
+    let ProbedReadings { pressure, gpu } = probed;
     let interval = if interval_secs > 0.0 {
         interval_secs
     } else {
@@ -667,8 +705,9 @@ fn compute_snapshot(
             download_mbps: Some(download_mbps),
             upload_mbps: Some(upload_mbps),
         },
-        // Nothing here samples a GPU, so this claims nothing about one.
-        gpu: Gpu::unknown(),
+        // Whatever the GPU probe last measured — `Gpu::unknown()` on every
+        // host where it measured nothing, which claims nothing about one.
+        gpu,
         battery: None,
         volumes,
         processes,
@@ -760,6 +799,10 @@ mod tests {
     /// state: the numbers are uninteresting (and deterministic), the *keys* are
     /// the point.
     fn sampled_snapshot(pressure: Option<f64>) -> Snapshot {
+        sampled_snapshot_with(pressure, Gpu::unknown())
+    }
+
+    fn sampled_snapshot_with(pressure: Option<f64>, gpu: Gpu) -> Snapshot {
         compute_snapshot(
             &System::new(),
             &Networks::new(),
@@ -767,7 +810,7 @@ mod tests {
             1.0,
             Vec::new(),
             &skip_fstypes(None),
-            pressure,
+            ProbedReadings { pressure, gpu },
         )
     }
 
@@ -788,7 +831,27 @@ mod tests {
         assert_eq!(
             v["gpu"],
             json!({}),
-            "nothing samples a GPU, so every GPU key must be absent"
+            "a host whose GPU probe measured nothing must omit every GPU key"
+        );
+    }
+
+    /// The other half of #217: where the probe DID measure a card, the snapshot
+    /// carries its reading through to the wire under the contract's keys —
+    /// including the idle `0`s an RTX 3060 genuinely reports, which are now
+    /// numbers because something read them.
+    #[test]
+    fn sampled_snapshot_carries_a_measured_gpu_onto_the_wire() {
+        let measured = Gpu {
+            usage: Some(0.0),
+            vram_used_gb: Some(0.0),
+            vram_total_gb: Some(12.0),
+        };
+        let v = serde_json::to_value(sampled_snapshot_with(Some(4.5), measured)).unwrap();
+
+        assert_eq!(
+            v["gpu"],
+            json!({ "usage": 0.0, "vramUsedGB": 0.0, "vramTotalGB": 12.0 }),
+            "a measured GPU must reach the wire under the contract's keys"
         );
     }
 
