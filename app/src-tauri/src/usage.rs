@@ -256,6 +256,17 @@ impl UsageState {
         &mut self.neon_invoice
     }
 
+    /// Clears consumption *and* invoice state together. A vanished credential
+    /// must take the invoice figure with it, not just the consumption one — an
+    /// untouched `neon_invoice` would keep rendering last month's dollar total
+    /// as current the moment the key is saved again, with no read behind it.
+    /// One call for the pair means the shell cannot unconfigure one half and
+    /// forget the other.
+    pub fn neon_unconfigure(&mut self) {
+        self.neon.unconfigure();
+        self.neon_invoice.unconfigure();
+    }
+
     pub fn sentry_mut(&mut self) -> &mut ProviderState<SentryUsageSummary> {
         &mut self.sentry
     }
@@ -958,19 +969,29 @@ mod tests {
 
     /// Clearing a credential must take the figures with it, or the next time
     /// the key is saved the section reappears showing an hour-old number as if
-    /// it had just been read.
+    /// it had just been read. That includes the invoice: a stale dollar figure
+    /// must not outlive the credential that read it, so the drop goes through
+    /// `neon_unconfigure()`, not a bare `state.neon.unconfigure()`.
     #[test]
     fn unconfiguring_a_provider_drops_its_retained_figure() {
         let mut state = measured();
-        state.neon.unconfigure();
+        state.neon_unconfigure();
         let payload = view(&state, QUOTA, RATES, NOW);
         assert!(section(&payload, "neon").is_none());
 
         state.neon.configured = true;
         let payload = view(&state, QUOTA, RATES, NOW);
+        let neon = section(&payload, "neon").expect("neon");
+        assert_eq!(neon["rows"][0]["value"], "—");
         assert_eq!(
-            section(&payload, "neon").expect("neon")["rows"][0]["value"],
-            "—"
+            neon["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["label"] == "NEON LAST INVOICE")
+                .expect("invoice row")["value"],
+            "—",
+            "the invoice figure must not outlive the credential that read it"
         );
     }
 
