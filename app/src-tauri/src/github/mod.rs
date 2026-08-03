@@ -144,6 +144,12 @@ pub struct GitHubState {
     /// advanced by a success, so a failing GitHub ages the footer instead of
     /// freezing it at a reassuring "just now".
     runners_last_updated: Option<u64>,
+    /// Set when the credential store would not answer, cleared by every read
+    /// that does. A third state on purpose: `!authenticated` asserts there is
+    /// no token and `runners_error` blames GitHub, and this is neither — we do
+    /// not know whether a token is configured, so both panels must say exactly
+    /// that instead of picking one of the two claims they cannot support.
+    credential_error: Option<String>,
 }
 
 impl GitHubState {
@@ -166,6 +172,21 @@ impl GitHubState {
         self.runners.clear();
         self.absent.clear();
         self.runners_error = None;
+        self.credential_error = None;
+    }
+
+    /// The credential store refused to answer, so we do not know whether a
+    /// token is configured.
+    ///
+    /// Deliberately **not** [`apply_unauthenticated`](Self::apply_unauthenticated):
+    /// that one paints "connect a GitHub token in Settings" — a statement about
+    /// how the app is configured — and clears every fetched row on the way.
+    /// Making that statement because a keychain was locked wipes two panels and
+    /// sends the operator to paste a token they already pasted. Nothing fetched
+    /// is touched here; only the reason is recorded, and both views lead with
+    /// it.
+    pub fn apply_credential_unreadable(&mut self, message: impl Into<String>) {
+        self.credential_error = Some(message.into());
     }
 
     /// Records one completed Repos pass. Wholesale, never merged: the row set
@@ -173,6 +194,7 @@ impl GitHubState {
     /// row on the next pass rather than linger as a stale one.
     pub fn apply_repos(&mut self, health: Vec<RepoWorkflowHealth>) {
         self.authenticated = true;
+        self.credential_error = None;
         self.health = Some(health);
     }
 
@@ -184,6 +206,7 @@ impl GitHubState {
     /// Records one **successful** org-runners fetch.
     pub fn apply_runners(&mut self, update: &roster::RosterUpdate, now: u64) {
         self.authenticated = true;
+        self.credential_error = None;
         self.summary = Some(update.summary);
         self.runners.clone_from(&update.runners);
         self.absent.clone_from(&update.absent);
@@ -199,6 +222,7 @@ impl GitHubState {
     /// let a permanently failing fetch look freshly updated forever.
     pub fn apply_runners_error(&mut self, message: impl Into<String>) {
         self.authenticated = true;
+        self.credential_error = None;
         self.runners_error = Some(message.into());
     }
 }
@@ -289,7 +313,12 @@ fn open_label(slug: &str) -> String {
 /// the longest run froze at whatever it was when the poll landed.
 #[must_use]
 pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
-    let message = if state.authenticated {
+    // The credential-store failure outranks both of the others: it is the only
+    // one of the three that is true when it is set, since "connect a token" and
+    // "loading…" are each a claim about a credential this pass never saw.
+    let message = if let Some(reason) = state.credential_error.as_deref() {
+        Some(reason)
+    } else if state.authenticated {
         if state.health.is_none() {
             Some(REPOS_LOADING_MESSAGE)
         } else {
@@ -532,7 +561,11 @@ const RUNNER_STATUS_W: f64 = 74.0;
 /// unreachable.
 #[must_use]
 pub fn runners_view(state: &GitHubState, now: u64) -> Value {
-    if !state.authenticated {
+    // `credential_error` holds this branch back: the zero-credential payload
+    // asserts there is no token *and* blanks the rows, and neither survives
+    // "we could not ask". Everything the last good fetch left — stats, chips,
+    // rows, footer — is rendered below with the reason on top of it.
+    if !state.authenticated && state.credential_error.is_none() {
         return json!({
             "id": PanelKind::GhRunners.id(),
             "title": PanelKind::GhRunners.title(),
@@ -548,8 +581,12 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
 
     // "loading runners…" only while nothing has been heard AND nothing has
     // failed. Once there is an error the footer carries it, and a "loading"
-    // line beside a failure would be a second, contradictory story.
-    let message = if state.summary.is_none() && state.runners_error.is_none() {
+    // line beside a failure would be a second, contradictory story. An
+    // unreadable credential store is the same argument one layer up: a pass
+    // that never got a token is not fetching, so it cannot be loading.
+    let message = if let Some(reason) = state.credential_error.as_deref() {
+        Some(reason)
+    } else if state.summary.is_none() && state.runners_error.is_none() {
         Some(RUNNERS_LOADING_MESSAGE)
     } else {
         None
@@ -982,6 +1019,39 @@ mod tests {
             repos_view(&state, now())["message"]["text"],
             UNAUTHENTICATED_MESSAGE
         );
+    }
+
+    /// …and the case that is *not* that one: a credential store that would not
+    /// answer is not a cleared token, so the panel must not print the line that
+    /// tells the operator to go and configure what they already configured.
+    #[test]
+    fn an_unreadable_credential_store_names_the_store_instead_of_asking_for_a_token() {
+        let mut state = ready(vec![health_of("o/r", &[], RepoCounts::default())]);
+        state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
+        let view = repos_view(&state, now());
+        assert_eq!(
+            view["message"]["text"],
+            crate::CREDENTIAL_UNREADABLE_MESSAGE
+        );
+        assert_ne!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+    }
+
+    /// The retention half: nothing fetched is dropped, so the moment a pass
+    /// reads the credential again the table is the one that was already there.
+    /// After `apply_unauthenticated` the same sequence would render "loading…"
+    /// over an empty panel instead.
+    #[test]
+    fn an_unreadable_credential_store_keeps_the_repo_table() {
+        let mut state = ready(vec![health_of("o/r", &[], RepoCounts::default())]);
+        state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
+        // The next pass reads the token fine; only its runners fetch fails.
+        state.apply_runners_error(RUNNERS_ERROR_MESSAGE);
+        let view = repos_view(&state, now());
+        assert!(
+            view["message"].is_null(),
+            "a readable store must not leave the reason behind"
+        );
+        assert_eq!(row_names(&view), vec!["r".to_owned()]);
     }
 
     // MARK: - Repos: the row's tap target
@@ -1791,6 +1861,78 @@ mod tests {
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
         assert!(rows(&view).is_empty());
         assert!(view["stats"].as_array().expect("stats").is_empty());
+    }
+
+    /// An unreadable credential store keeps every row the last good fetch left
+    /// — this panel's failure policy for a bad *fetch*, applied one layer up to
+    /// a read that never happened — and says why on top of them.
+    #[test]
+    fn an_unreadable_credential_store_keeps_the_runner_rows_and_names_the_cause() {
+        let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
+        let before = runners_view(&state, now_unix());
+
+        state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
+        let after = runners_view(&state, now_unix());
+
+        assert_eq!(
+            after["message"]["text"],
+            crate::CREDENTIAL_UNREADABLE_MESSAGE
+        );
+        assert_eq!(
+            after["rows"], before["rows"],
+            "a locked keychain ages nothing"
+        );
+        assert_eq!(after["stats"], before["stats"]);
+        assert_eq!(after["trailing"], before["trailing"]);
+    }
+
+    /// The worst moment for the old collapse: a launch into a locked keychain,
+    /// where there is nothing retained to soften it. Neither panel has heard
+    /// anything, so neither may assert there is no token — the only honest line
+    /// is the one that names the store.
+    #[test]
+    fn an_unreadable_credential_store_at_launch_never_asks_for_a_token() {
+        let mut state = GitHubState::new();
+        state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
+
+        let repos = repos_view(&state, now());
+        let runners = runners_view(&state, now_unix());
+        for view in [&repos, &runners] {
+            assert_eq!(
+                view["message"]["text"],
+                crate::CREDENTIAL_UNREADABLE_MESSAGE
+            );
+            assert_ne!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+            assert!(rows(view).is_empty(), "nothing was ever fetched");
+        }
+        assert!(
+            runners["footer"].is_null(),
+            "no successful fetch to be stale"
+        );
+    }
+
+    /// Nothing sticks: the reason is the last read's, never a previous one's.
+    #[test]
+    fn a_credential_the_store_hands_over_clears_the_reason() {
+        let mut state = GitHubState::new();
+        state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
+        let update = roster::apply_fetch(
+            &[],
+            &[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)],
+            now(),
+            github::presence::DEFAULT_GRACE_SECS,
+        );
+        state.apply_runners(&update, now_unix());
+        assert!(runners_view(&state, now_unix())["message"].is_null());
+
+        // …and the same for the branch that clears it by dropping back to the
+        // zero-credential state.
+        state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
+        state.apply_unauthenticated();
+        assert_eq!(
+            runners_view(&state, now_unix())["message"]["text"],
+            UNAUTHENTICATED_MESSAGE
+        );
     }
 
     // MARK: - Roster persistence bridge

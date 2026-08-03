@@ -114,9 +114,13 @@ struct PolledHost {
     /// loop can reach the same agent — one client (and therefore one
     /// connection pool and one token read) per host, not one per feature.
     client: Arc<AgentClient>,
-    /// A host with no token never reaches the network; its container section
-    /// is simply not polled, exactly as its snapshot is not.
-    token_configured: bool,
+    /// Whether this host's poll tasks hold a token to authenticate with.
+    /// `false` covers both blocked cases — nothing stored, and a credential
+    /// store that would not answer — because neither yields a token, and a host
+    /// with no token never reaches the network: its container section is simply
+    /// not polled, exactly as its snapshot is not. *Why* it has none is the
+    /// card's business ([`HostToken`]), not the poll set's.
+    token_available: bool,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -495,7 +499,7 @@ async fn poll_health(app: &Arc<App>) {
             // A host with no token never reaches the network for a snapshot;
             // probing its health would be one guaranteed 401 per tick, and the
             // card already names the real cause.
-            .filter(|polled| polled.token_configured)
+            .filter(|polled| polled.token_available)
             .map(|polled| (Arc::clone(&polled.state), Arc::clone(&polled.client)))
             .collect()
     };
@@ -528,15 +532,31 @@ async fn health_loop(app: Arc<App>) {
     }
 }
 
-/// A host with no token configured. Not debounced like a failed poll: an
-/// empty token never leaves this process to flap, so there is no momentary
-/// drop to absorb, and the operator should see the cause on the first tick.
-fn record_missing_token(s: &mut HostState) {
+/// The card's line when nothing is stored for this host.
+///
+/// Distinct from a *wrong* token, which the agent itself rejects with a 401
+/// (`AgentError::AuthFailed`). Reusing that message would send the operator to
+/// check the wrong layer.
+const MISSING_HOST_TOKEN_MESSAGE: &str =
+    "No agent token configured for this host. Add one in Settings.";
+
+/// The card's line when the credential store would not hand the token over.
+///
+/// The same failure [`CREDENTIAL_UNREADABLE_MESSAGE`] names for the panels,
+/// worded for a host card: it lands in the error slot beside "Couldn't reach
+/// the agent.", which is a sentence, and it must not be confused with the
+/// missing-token line above — that one asserts a fact about this host's
+/// configuration, and a locked keychain is evidence of nothing of the sort.
+const HOST_TOKEN_UNREADABLE_MESSAGE: &str =
+    "Couldn't read the credential store for this host's token.";
+
+/// A host whose token could not be obtained — either because there is none, or
+/// because the store would not say. Not debounced like a failed poll: neither
+/// cause leaves this process to flap, so there is no momentary drop to absorb,
+/// and the operator should see the cause on the first tick.
+fn record_token_unavailable(s: &mut HostState, message: &str) {
     s.consecutive_failures = FAILURE_THRESHOLD;
-    // Distinct from a *wrong* token, which the agent itself rejects with a
-    // 401 (`AgentError::AuthFailed`). Reusing that message would send the
-    // operator to check the wrong layer.
-    s.error = Some("No agent token configured for this host. Add one in Settings.".to_string());
+    s.error = Some(message.to_string());
 }
 
 /// One host's poll loop: tick, poll, record. Lifted out of the spawn site so
@@ -545,7 +565,11 @@ fn record_missing_token(s: &mut HostState) {
 ///
 /// No lock is ever held across the `await`, which is what lets a slow poll on
 /// one host leave every other host — and the `cockpit` command — untouched.
-async fn poll_loop(state: Arc<Mutex<HostState>>, client: Arc<AgentClient>, token_configured: bool) {
+async fn poll_loop(
+    state: Arc<Mutex<HostState>>,
+    client: Arc<AgentClient>,
+    blocked: Option<&'static str>,
+) {
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     // `interval`'s default (`Burst`) fires every missed tick back-to-back the
     // moment a slow poll releases the executor -- and the client timeout (5s,
@@ -558,8 +582,11 @@ async fn poll_loop(state: Arc<Mutex<HostState>>, client: Arc<AgentClient>, token
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        if !token_configured {
-            record_missing_token(&mut state.lock().expect("host state poisoned"));
+        // No token, no request: an empty `Authorization` header buys one
+        // guaranteed 401 per tick, and the card would report it as a rejected
+        // token — the agent's layer, not this one.
+        if let Some(message) = blocked {
+            record_token_unavailable(&mut state.lock().expect("host state poisoned"), message);
             continue;
         }
         let result = client.snapshot().await;
@@ -612,15 +639,11 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
         sample_age_seconds: None,
     }));
 
-    let token = app
-        .credentials
-        .secret(SecretKey::HostToken(key.id))
-        .unwrap_or_else(|e| {
-            eprintln!("could not read the token for host {name}: {e}");
-            None
-        })
-        .unwrap_or_default();
-    let token_configured = !token.is_empty();
+    let (token, blocked) = match host_token(&*app.credentials, key.id) {
+        HostToken::Ready(token) => (token, None),
+        HostToken::Blocked(message) => (String::new(), Some(message)),
+    };
+    let token_available = blocked.is_none();
     // Immutable, so it is shared rather than guarded: the snapshot loop and
     // the containers loop both poll this host through this one client.
     let client = Arc::new(AgentClient::new(key.base_url.clone(), token));
@@ -629,13 +652,33 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
     let task_client = Arc::clone(&client);
     let task = app
         .runtime
-        .spawn(async move { poll_loop(task_state, task_client, token_configured).await });
+        .spawn(async move { poll_loop(task_state, task_client, blocked).await });
     PolledHost {
         key,
         state,
         client,
-        token_configured,
+        token_available,
         task,
+    }
+}
+
+/// One host's bearer token, or the line its card carries in place of polling.
+///
+/// The smallest shape the poll loop needs — it either has a token or it has a
+/// sentence — and the smallest that still keeps the two blocked cases apart,
+/// which is the whole point: "you never configured this host" and "the keychain
+/// would not answer" send the operator to different places, and only one of
+/// them is something this process actually learned.
+enum HostToken {
+    Ready(String),
+    Blocked(&'static str),
+}
+
+fn host_token<C: CredentialStore + ?Sized>(credentials: &C, id: Uuid) -> HostToken {
+    match read_credential(credentials, SecretKey::HostToken(id)) {
+        Credential::Present(token) => HostToken::Ready(token),
+        Credential::Absent => HostToken::Blocked(MISSING_HOST_TOKEN_MESSAGE),
+        Credential::Unreadable => HostToken::Blocked(HOST_TOKEN_UNREADABLE_MESSAGE),
     }
 }
 
@@ -731,7 +774,7 @@ async fn poll_containers(app: &Arc<App>) {
                 .name
                 .clone();
             configured.insert(name.clone());
-            if polled.token_configured {
+            if polled.token_available {
                 targets.push((name, Arc::clone(&polled.client)));
             }
         }
@@ -860,6 +903,28 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
 // This is the shell's **first consumer of `refresh_interval_secs`** — until
 // now that preference persisted and nothing read it.
 
+/// Applies one GitHub credential read to the panel state, returning the token
+/// the pass should go on to poll with. `None` ends the pass.
+///
+/// A function of its own, over `&mut GitHubState`, because the whole of this
+/// decision is which of three states two panels enter — and every one of them
+/// is testable here without a token, a keychain or a network.
+fn github_token(credential: Credential, state: &mut GitHubState) -> Option<String> {
+    match credential {
+        Credential::Present(token) => Some(token),
+        // The only branch that may claim nobody configured this: we asked, and
+        // the store said there is nothing stored.
+        Credential::Absent => {
+            state.apply_unauthenticated();
+            None
+        }
+        Credential::Unreadable => {
+            state.apply_credential_unreadable(CREDENTIAL_UNREADABLE_MESSAGE);
+            None
+        }
+    }
+}
+
 /// One pass over every GitHub source: each enabled repo's health, this
 /// machine's git checkouts, and the org's self-hosted runners.
 ///
@@ -868,21 +933,12 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
 async fn poll_github(app: &Arc<App>) {
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
-    let token = app
-        .credentials
-        .secret(SecretKey::GitHubAccessToken)
-        .unwrap_or_else(|e| {
-            eprintln!("could not read the GitHub token: {e}");
-            None
-        })
-        .unwrap_or_default();
-    if token.is_empty() {
-        app.github
-            .lock()
-            .expect("github state poisoned")
-            .apply_unauthenticated();
-        return;
-    }
+    let credential = read_credential(&*app.credentials, SecretKey::GitHubAccessToken);
+    let token = {
+        let mut state = app.github.lock().expect("github state poisoned");
+        github_token(credential, &mut state)
+    };
+    let Some(token) = token else { return };
 
     let repos: Vec<(String, Option<Vec<String>>)> = {
         let store = app.store.lock().expect("store poisoned");
@@ -1257,8 +1313,8 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
     let (neon_key, sentry_token) = (
-        read_credential(app, SecretKey::NeonApiKey),
-        read_credential(app, SecretKey::SentryUsageToken),
+        read_credential(&*app.credentials, SecretKey::NeonApiKey),
+        read_credential(&*app.credentials, SecretKey::SentryUsageToken),
     );
     let (neon_org, sentry_slug) = {
         let store = app.store.lock().expect("store poisoned");
@@ -1430,8 +1486,12 @@ enum Credential {
 const CREDENTIAL_UNREADABLE_MESSAGE: &str = "couldn't read the credential store";
 
 /// Reads one credential, keeping "there is none" apart from "we could not ask".
-fn read_credential(app: &App, key: SecretKey) -> Credential {
-    match app.credentials.secret(key) {
+///
+/// Generic over the store rather than taking `&App` so every caller's three
+/// branches can be pinned against `MemoryCredentialStore` and a failing double,
+/// with no keychain and no Tauri app in the test.
+fn read_credential<C: CredentialStore + ?Sized>(credentials: &C, key: SecretKey) -> Credential {
+    match credentials.secret(key) {
         Ok(Some(value)) if !value.trim().is_empty() => Credential::Present(value),
         Ok(_) => Credential::Absent,
         Err(e) => {
@@ -1457,7 +1517,7 @@ fn wake_usage(app: &App, providers: bool) {
 /// straight into the fetcher, whose `Debug` redacts it and whose errors are
 /// stripped of their URL before they become strings.
 async fn poll_azure(app: &Arc<App>) {
-    let sas = match read_credential(app, SecretKey::AzureCostSasUrl) {
+    let sas = match read_credential(&*app.credentials, SecretKey::AzureCostSasUrl) {
         Credential::Present(sas) => sas,
         Credential::Absent => {
             app.azure
@@ -1591,7 +1651,7 @@ fn openclaw_config(app: &App) -> (String, Option<String>) {
         let store = app.store.lock().expect("store poisoned");
         store.settings().openclaw_gateway_url.trim().to_owned()
     };
-    let token = match read_credential(app, SecretKey::OpenClawBearerToken) {
+    let token = match read_credential(&*app.credentials, SecretKey::OpenClawBearerToken) {
         Credential::Present(token) => Some(token),
         Credential::Absent | Credential::Unreadable => None,
     };
@@ -2944,7 +3004,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store::MemoryCredentialStore;
+    use store::{MemoryCredentialStore, SecretError};
 
     /// [`cockpit_view`] / [`cockpit_payload`] / [`dump_cockpit`] with the
     /// **default** (stacking) overflow preference — what every test that is not
@@ -3533,13 +3593,31 @@ mod tests {
     #[test]
     fn a_missing_token_reports_immediately_and_names_the_right_layer() {
         let mut s = state_with(None, None, None);
-        record_missing_token(&mut s);
+        record_token_unavailable(&mut s, MISSING_HOST_TOKEN_MESSAGE);
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "failed");
         assert_eq!(
             vm["error"]["message"],
             "No agent token configured for this host. Add one in Settings."
         );
+    }
+
+    /// The card the bug produced: a credential store that would not answer used
+    /// to render as a host nobody had configured, sending the operator to add a
+    /// token that is already there. Same immediacy, different layer named.
+    #[test]
+    fn an_unreadable_token_reports_the_store_and_never_claims_the_host_is_unconfigured() {
+        let mut s = state_with(None, None, None);
+        record_token_unavailable(&mut s, HOST_TOKEN_UNREADABLE_MESSAGE);
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "failed");
+        let message = vm["error"]["message"].as_str().expect("a message");
+        assert_eq!(message, HOST_TOKEN_UNREADABLE_MESSAGE);
+        assert!(
+            message.contains("credential store"),
+            "the operator has to be told which layer to look at: {message:?}"
+        );
+        assert_ne!(message, MISSING_HOST_TOKEN_MESSAGE);
     }
 
     // MARK: the cockpit payload
@@ -3999,6 +4077,189 @@ mod tests {
         let reopened = Store::open_in(dir.path()).expect("reopen");
         assert_eq!(reopened.hosts().len(), 1);
         assert_eq!(reopened.hosts()[0].name, "ubu-3xdv");
+    }
+
+    // MARK: what a credential read learned, and what each answer is allowed to
+    // claim
+    //
+    // Three answers, and the middle one is the whole point: a store that would
+    // not answer used to be collapsed into "there is nothing stored", which is
+    // the one thing this process cannot know when the read failed.
+
+    /// A credential store that fails every read — a keychain that will not
+    /// unlock, or the consolidated item (#223) refusing to parse.
+    /// `CorruptBlob` because it needs no `keyring::Error` to construct and is
+    /// value-free by design: it carries an account name and nothing else.
+    struct UnreadableCredentialStore;
+
+    impl UnreadableCredentialStore {
+        fn refusal() -> SecretError {
+            SecretError::CorruptBlob {
+                account: "devcanopy-secrets".to_owned(),
+            }
+        }
+    }
+
+    impl CredentialStore for UnreadableCredentialStore {
+        fn secret(&self, _key: SecretKey) -> Result<Option<String>, SecretError> {
+            Err(Self::refusal())
+        }
+
+        fn set_secret(&self, _key: SecretKey, _value: &str) -> Result<(), SecretError> {
+            unreachable!("no path under test writes a credential")
+        }
+
+        fn delete_secret(&self, _key: SecretKey) -> Result<(), SecretError> {
+            unreachable!("no path under test deletes a credential")
+        }
+
+        fn secret_bytes(&self, _key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
+            Err(Self::refusal())
+        }
+
+        fn set_secret_bytes(&self, _key: SecretKey, _value: &[u8]) -> Result<(), SecretError> {
+            unreachable!("no path under test writes a credential")
+        }
+    }
+
+    fn store_holding(key: SecretKey, value: &str) -> MemoryCredentialStore {
+        let credentials = MemoryCredentialStore::new();
+        credentials.set_secret(key, value).expect("write");
+        credentials
+    }
+
+    #[test]
+    fn a_credential_read_keeps_there_is_none_apart_from_we_could_not_ask() {
+        assert!(matches!(
+            read_credential(&MemoryCredentialStore::new(), SecretKey::GitHubAccessToken),
+            Credential::Absent
+        ));
+        assert!(matches!(
+            read_credential(
+                &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
+                SecretKey::GitHubAccessToken,
+            ),
+            Credential::Present(token) if token == "ghp_stored"
+        ));
+        // A stored blank is the zero-setup state too — a token of spaces
+        // authenticates nothing, and every consumer would have to re-check.
+        assert!(matches!(
+            read_credential(
+                &store_holding(SecretKey::GitHubAccessToken, "   "),
+                SecretKey::GitHubAccessToken,
+            ),
+            Credential::Absent
+        ));
+        assert!(matches!(
+            read_credential(&UnreadableCredentialStore, SecretKey::GitHubAccessToken),
+            Credential::Unreadable
+        ));
+    }
+
+    // MARK: the GitHub token's three branches
+
+    /// The Repos and GitHub Runners payloads a pass would leave on screen.
+    fn github_views(state: &GitHubState) -> (Value, Value) {
+        (
+            github::repos_view(state, github::now_utc()),
+            github::runners_view(state, panel::now_unix()),
+        )
+    }
+
+    fn populated_github_state() -> GitHubState {
+        github::fixture_state(github::now_utc())
+    }
+
+    #[test]
+    fn a_github_token_the_store_hands_over_polls_on_with_the_panels_untouched() {
+        let mut state = populated_github_state();
+        let (repos_before, runners_before) = github_views(&state);
+
+        let token = github_token(
+            read_credential(
+                &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
+                SecretKey::GitHubAccessToken,
+            ),
+            &mut state,
+        );
+
+        assert_eq!(token.as_deref(), Some("ghp_stored"));
+        let (repos_after, runners_after) = github_views(&state);
+        assert_eq!(repos_after, repos_before, "a good read changes nothing");
+        assert_eq!(runners_after, runners_before);
+    }
+
+    #[test]
+    fn no_stored_github_token_clears_the_panels_and_asks_for_one() {
+        let mut state = populated_github_state();
+        let token = github_token(
+            read_credential(&MemoryCredentialStore::new(), SecretKey::GitHubAccessToken),
+            &mut state,
+        );
+
+        assert!(token.is_none(), "there is nothing to poll with");
+        let (repos, runners) = github_views(&state);
+        assert_eq!(repos["message"]["text"], github::UNAUTHENTICATED_MESSAGE);
+        assert_eq!(runners["message"]["text"], github::UNAUTHENTICATED_MESSAGE);
+        assert!(runners["rows"].as_array().expect("rows").is_empty());
+    }
+
+    /// The bug, from the shell's side: the same collapse used to run
+    /// `apply_unauthenticated` here, so one locked keychain wiped both panels
+    /// and told the operator to connect a token that was already connected.
+    #[test]
+    fn an_unreadable_github_credential_keeps_the_panels_and_names_the_store() {
+        let mut state = populated_github_state();
+        let (_, runners_before) = github_views(&state);
+
+        let token = github_token(
+            read_credential(&UnreadableCredentialStore, SecretKey::GitHubAccessToken),
+            &mut state,
+        );
+
+        assert!(token.is_none(), "there is nothing to poll with");
+        let (repos, runners) = github_views(&state);
+        assert_eq!(repos["message"]["text"], CREDENTIAL_UNREADABLE_MESSAGE);
+        assert_eq!(runners["message"]["text"], CREDENTIAL_UNREADABLE_MESSAGE);
+        assert_ne!(repos["message"]["text"], github::UNAUTHENTICATED_MESSAGE);
+        assert_eq!(
+            runners["rows"], runners_before["rows"],
+            "a read that never happened is not news about the runners"
+        );
+        assert_eq!(runners["stats"], runners_before["stats"]);
+    }
+
+    // MARK: a host's token, same three branches
+
+    #[test]
+    fn a_host_token_the_store_hands_over_is_what_the_loop_polls_with() {
+        let id = Uuid::from_u128(7);
+        let credentials = store_holding(SecretKey::HostToken(id), "agent-token");
+        assert!(matches!(
+            host_token(&credentials, id),
+            HostToken::Ready(token) if token == "agent-token"
+        ));
+    }
+
+    #[test]
+    fn a_host_with_no_stored_token_is_told_to_configure_one() {
+        let id = Uuid::from_u128(7);
+        let HostToken::Blocked(message) = host_token(&MemoryCredentialStore::new(), id) else {
+            panic!("an empty store must not yield a token");
+        };
+        assert_eq!(message, MISSING_HOST_TOKEN_MESSAGE);
+    }
+
+    /// The host half of the bug: an unreadable store used to produce a card
+    /// asserting nobody had configured this host.
+    #[test]
+    fn a_host_token_the_store_will_not_read_blames_the_store_not_the_operator() {
+        let id = Uuid::from_u128(7);
+        let HostToken::Blocked(message) = host_token(&UnreadableCredentialStore, id) else {
+            panic!("a failed read must not yield a token");
+        };
+        assert_eq!(message, HOST_TOKEN_UNREADABLE_MESSAGE);
+        assert_ne!(message, MISSING_HOST_TOKEN_MESSAGE);
     }
 
     // MARK: applying a settings edit to the live poll set
