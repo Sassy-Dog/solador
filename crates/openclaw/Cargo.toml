@@ -30,7 +30,7 @@ ed25519-dalek = "3"
 # SHA-256 behind the device id. 0.10 is the version already in the lock (via
 # tauri); dalek's own RustCrypto 0.11 tree arrives regardless, because
 # tungstenite's sha1 pulls digest 0.11.
-sha2 = "0.10"
+sha2 = "0.11"
 # Lowercase-hex device id and base64url-no-pad public keys/signatures. Both
 # already in the lock (hex via tauri's tree, base64 via reqwest's).
 hex = "0.4"
