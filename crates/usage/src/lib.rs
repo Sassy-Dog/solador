@@ -28,6 +28,10 @@ pub mod claude;
 pub mod neon;
 pub mod sentry;
 
+/// Shared internals: the one percent-encoding rule both provider clients use
+/// when a caller-supplied org identifier lands in a URL path segment.
+mod urlpath;
+
 pub use claude::{summarize_logs, UsageSummary, UsageTotals};
 pub use neon::{estimate_usd, NeonClient, NeonInvoiceSummary, NeonUsageError, NeonUsageSummary};
 pub use sentry::{SentryClient, SentryUsageError, SentryUsageSummary};

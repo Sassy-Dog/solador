@@ -8,9 +8,11 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::utf8_percent_encode;
 use serde::Deserialize;
 use std::collections::HashMap;
+
+use crate::urlpath::PATH_SEGMENT;
 
 pub const DEFAULT_BASE_URL: &str = "https://sentry.io";
 
@@ -219,18 +221,6 @@ pub fn summarize(response: &SentryStatsResponse) -> SentryUsageSummary {
 
 // MARK: - Client
 
-/// Percent-encode everything outside RFC 3986's unreserved set.
-///
-/// Deliberately stricter than the Swift's `.urlPathAllowed`, which *permits*
-/// `/` and so leaves the retargeting it warns about possible: a slug of
-/// `a/../b` would walk out of the organizations path. Encoding the separator is
-/// the only way the segment stays one segment.
-const SLUG_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~');
-
 /// The one Sentry REST read the Usage panel needs.
 pub struct SentryClient {
     base_url: String,
@@ -287,7 +277,7 @@ impl SentryClient {
         if org_slug.is_empty() {
             return Err(SentryUsageError::MissingOrgSlug);
         }
-        let slug = utf8_percent_encode(org_slug, SLUG_SEGMENT);
+        let slug = utf8_percent_encode(org_slug, PATH_SEGMENT);
 
         let resp = self
             .http
