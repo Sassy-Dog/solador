@@ -146,6 +146,21 @@ pub trait CredentialStore {
     /// # Errors
     /// Returns [`SecretError::Backend`] when the store rejects the write.
     fn set_secret_bytes(&self, key: SecretKey, value: &[u8]) -> Result<(), SecretError>;
+
+    /// Copies legacy per-item secrets into the consolidated blob, once.
+    ///
+    /// Returns how many values were copied. The blob is written even when
+    /// empty — that is what marks migration done and stops re-runs. Legacy
+    /// items are never modified or deleted: they keep the Swift app alive
+    /// through the transition and are the rebuild source if the blob is ever
+    /// corrupted. Callers MUST run this before the first `set_secret` (an
+    /// early write would create the blob and shadow unmigrated legacy values).
+    ///
+    /// # Errors
+    /// Returns [`SecretError::Backend`] when the store itself fails.
+    fn migrate_legacy(&self, _keys: &[SecretKey]) -> Result<usize, SecretError> {
+        Ok(0)
+    }
 }
 
 /// Parse the blob's JSON map. Value-free on failure by construction.
@@ -319,6 +334,26 @@ impl CredentialStore for KeyringStore {
         self.entry(&account)?
             .set_secret(value)
             .map_err(|source| SecretError::Backend { account, source })
+    }
+
+    fn migrate_legacy(&self, keys: &[SecretKey]) -> Result<usize, SecretError> {
+        let _guard = self.blob_lock.lock().expect("blob lock poisoned");
+        if self.read_blob()?.is_some() {
+            return Ok(0);
+        }
+        let mut map = std::collections::BTreeMap::new();
+        for key in keys {
+            // The device key never joins the blob: raw bytes, cross-app account.
+            if matches!(key, SecretKey::OpenClawDeviceKey) {
+                continue;
+            }
+            if let Some(value) = self.legacy_secret(*key)? {
+                map.insert(key.account(), value);
+            }
+        }
+        let copied = map.len();
+        self.write_blob(&map)?;
+        Ok(copied)
     }
 }
 
@@ -622,5 +657,18 @@ mod tests {
         map.insert("github_access_token".to_owned(), "ghp_y".to_owned());
         let text = serialize_blob(&map);
         assert_eq!(parse_blob(&text).expect("parse"), map);
+    }
+
+    /// The default implementation is a no-op — MemoryCredentialStore and any
+    /// future double migrate nothing.
+    #[test]
+    fn migration_defaults_to_a_no_op() {
+        let store = MemoryCredentialStore::new();
+        assert_eq!(
+            store
+                .migrate_legacy(&[SecretKey::NeonApiKey])
+                .expect("no-op"),
+            0
+        );
     }
 }
