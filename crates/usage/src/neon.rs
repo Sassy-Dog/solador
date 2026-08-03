@@ -11,7 +11,10 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, SecondsFormat, Utc};
+use percent_encoding::utf8_percent_encode;
 use serde::Deserialize;
+
+use crate::urlpath::PATH_SEGMENT;
 
 pub const DEFAULT_BASE_URL: &str = "https://console.neon.tech";
 /// Path of the org-wide consumption history read, appended to the base URL.
@@ -498,6 +501,10 @@ impl NeonClient {
         if org_id.is_empty() {
             return Err(NeonUsageError::MissingOrgId);
         }
+        // The one request in this crate that puts the org id in a *path* rather
+        // than a query parameter, where `reqwest` would encode it. See
+        // `crate::urlpath`.
+        let org_id = utf8_percent_encode(org_id, PATH_SEGMENT);
 
         let resp = self
             .http
@@ -1092,6 +1099,42 @@ mod tests {
                 total: 15.91,
                 currency: "USD".into()
             }
+        );
+    }
+
+    /// Twin of `a_slug_containing_a_separator_cannot_retarget_the_request` in
+    /// the Sentry suite. The org id is a free-text Settings field landing in a
+    /// path segment, so a separator inside it must be encoded or the request
+    /// retargets: `evil/../../users` would otherwise walk out of
+    /// `/api/v2/organizations/`.
+    #[tokio::test]
+    async fn an_org_id_containing_a_separator_cannot_retarget_the_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/v2/organizations/evil%2F..%2F..%2Fusers/billing/invoices",
+            ))
+            .respond_with(json(FOUR_INVOICES))
+            .mount(&server)
+            .await;
+
+        let summary = client(&server.uri())
+            .invoices("evil/../../users")
+            .await
+            .expect("the org id stays one segment");
+        assert_eq!(
+            summary,
+            NeonInvoiceSummary::Latest {
+                total: 15.91,
+                currency: "USD".into()
+            }
+        );
+
+        let requests = server.received_requests().await.expect("recorded requests");
+        assert_eq!(
+            requests.first().map(|r| r.url.path()),
+            Some("/api/v2/organizations/evil%2F..%2F..%2Fusers/billing/invoices"),
+            "the separator must survive as an escape, not as a path boundary"
         );
     }
 

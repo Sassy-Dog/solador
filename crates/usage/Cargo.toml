@@ -22,7 +22,8 @@ chrono = { version = "0.4", default-features = false, features = ["std", "serde"
 # Home directory for the default Claude log root (`~/.claude/projects` on macOS,
 # `%USERPROFILE%\.claude\projects` on Windows). Already a workspace dependency.
 dirs = { workspace = true }
-# Percent-encodes the Sentry org slug before it lands in a path segment.
+# Percent-encodes the Sentry org slug and the Neon org id before either lands in
+# a path segment (see `src/urlpath.rs`).
 # Already in the lock via reqwest's `url` tree — a new edge, not a new package.
 percent-encoding = "2"
 thiserror = "2"
