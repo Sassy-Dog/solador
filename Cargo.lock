@@ -897,7 +897,7 @@ dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
  "futures-util",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "hex",
  "http",
  "serde",
