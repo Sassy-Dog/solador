@@ -81,14 +81,20 @@ impl PanelKind {
     /// fitting, so a lean pair stays side-by-side at a width that forces a
     /// hungrier pair to stack.
     ///
-    /// Each figure is the panel's widest fixed content plus its 28pt of card
-    /// padding — e.g. Repos sums seven fixed numeric columns (312pt), their
-    /// gaps, the status dot and a legible repo name. Widen a panel's content,
-    /// widen this number.
+    /// Each figure is the panel's widest fixed content plus its card padding —
+    /// e.g. Repos sums seven fixed numeric columns (214pt), their gaps, the
+    /// status dot and a 96pt name reservation. Widen a panel's content, widen
+    /// this number.
+    ///
+    /// It is also the width **one content column** needs, which is what
+    /// [`panel_columns`] reads it as. Repos was 560 while its columns carried
+    /// half again the width their labels needed; sizing them to their text
+    /// took it to 440, which is what lets it hold two columns on a display
+    /// where it previously could not.
     pub fn min_width(self) -> f64 {
         match self {
             PanelKind::Hosts => HOST_CARD_MIN_WIDTH,
-            PanelKind::GhWorkflows => 560.0,
+            PanelKind::GhWorkflows => 440.0,
             PanelKind::OpenclawAgents => 440.0,
             PanelKind::GhRunners => 400.0,
             PanelKind::Containers => 400.0,
@@ -242,6 +248,60 @@ pub fn host_columns(available: f64, host_count: usize, min_card_width: f64, spac
     fits.min(host_count)
 }
 
+/// The width one panel gets in a row of `count`.
+///
+/// `CockpitView.panelWidth(inRowOf:of:)`, and the reason it exists is the rule
+/// in CLAUDE.md: *panels never measure themselves*. One measurement at the
+/// cockpit root becomes every panel's width by arithmetic, so a panel can
+/// decide its own content layout without a second, disagreeing, measurement of
+/// its own.
+///
+/// An unknown or nonsensical `available` yields `0.0` rather than a negative —
+/// the same "degrade to the layout that cannot be unreadable" rule
+/// [`host_columns`] follows, and [`panel_columns`] reads `0.0` as one column.
+#[must_use]
+pub fn panel_width(count: usize, available: f64, spacing: f64) -> f64 {
+    if count <= 1 {
+        return available.max(0.0);
+    }
+    if available.is_nan() {
+        return 0.0;
+    }
+    let gaps = spacing * (count - 1) as f64;
+    ((available - gaps) / count as f64).max(0.0)
+}
+
+/// The most content columns a panel of `width` can hold, capped at
+/// [`PANEL_MAX_COLUMNS`].
+///
+/// Same `auto-fit` arithmetic as [`host_columns`], over the panel's own
+/// [`PanelKind::min_width`]: the width at which this panel's content still
+/// reads well is exactly the width one *column* of it needs. That keeps the
+/// breakpoint in one place — widen a panel's columns and `min_width` moves,
+/// and this follows automatically.
+///
+/// Slightly conservative on purpose: `min_width` includes the panel's own
+/// chrome, which a second column does not repeat. Over-reserving errs toward
+/// one legible column instead of two cramped ones, and it avoids restating
+/// `.panel`'s padding here where it could drift from the CSS.
+#[must_use]
+pub fn panel_columns(kind: PanelKind, width: f64, spacing: f64) -> usize {
+    if width.is_nan() || width <= 0.0 {
+        return 1;
+    }
+    let slot = kind.min_width() + spacing;
+    if slot <= 0.0 {
+        return 1;
+    }
+    let fits = ((width + spacing) / slot).floor();
+    let fits = if fits >= 1.0 { fits as usize } else { 1 };
+    fits.min(PANEL_MAX_COLUMNS)
+}
+
+/// Two. A third column of a short list costs more in scanning than the gutter
+/// it reclaims, and every panel this applies to is a list.
+pub const PANEL_MAX_COLUMNS: usize = 2;
+
 /// Minimum height of the tabbed host container, in points.
 ///
 /// `HostsPanel.tabbedHosts`'s `.frame(minHeight: 780)` in Swift, and it carries
@@ -344,7 +404,7 @@ mod tests {
             reflowed(840.0),
             vec![
                 vec![PanelKind::Hosts],
-                vec![PanelKind::GhWorkflows], // 560 + 16 + 400 = 976 > 840
+                vec![PanelKind::GhWorkflows], // 440 + 16 + 400 = 856 > 840
                 vec![PanelKind::GhRunners],
                 vec![PanelKind::Containers], // 400 + 16 + 440 = 856 > 840
                 vec![PanelKind::OpenclawAgents],
@@ -353,18 +413,18 @@ mod tests {
         );
     }
 
-    /// Boundary: Repos + Runners need exactly 976pt.
+    /// Boundary: Repos + Runners need exactly 856pt.
     #[test]
     fn row_splits_once_below_its_exact_requirement() {
         assert_eq!(
-            reflowed(976.0)[1],
+            reflowed(856.0)[1],
             vec![PanelKind::GhWorkflows, PanelKind::GhRunners],
-            "976pt is enough"
+            "856pt is enough"
         );
         assert_eq!(
-            reflowed(975.0)[1],
+            reflowed(855.0)[1],
             vec![PanelKind::GhWorkflows],
-            "975pt is not"
+            "855pt is not"
         );
     }
 
@@ -454,6 +514,103 @@ mod tests {
     fn unknown_width_stacks_rather_than_assuming_wide() {
         assert_eq!(cols(0.0, 3), 1);
         assert_eq!(cols(f64::NAN, 3), 1);
+    }
+
+    // MARK: panel_width
+
+    /// A panel alone in its row gets the whole width — there are no gaps to
+    /// subtract, and this is the case every full-width row takes.
+    #[test]
+    fn a_lone_panel_gets_the_whole_row() {
+        assert_eq!(panel_width(1, 1890.0, SPACING), 1890.0);
+        assert_eq!(panel_width(0, 1890.0, SPACING), 1890.0);
+    }
+
+    /// The arithmetic Swift's `panelWidth(inRowOf:of:)` does: the gaps come out
+    /// first, then the remainder splits evenly.
+    #[test]
+    fn a_shared_row_splits_the_width_after_the_gaps() {
+        // (1890 - 16) / 2 = 937 -- the width the shipped cockpit actually gives
+        // a two-panel row on a 1890pt display.
+        assert_eq!(panel_width(2, 1890.0, SPACING), 937.0);
+        // (2732 - 2 * 16) / 3 = 900
+        assert_eq!(panel_width(3, 2732.0, SPACING), 900.0);
+    }
+
+    /// A width that cannot be trusted degrades to zero rather than to a
+    /// negative — `panel_columns` reads zero as "one column", so a dead
+    /// measurement produces the layout that is never unreadable.
+    #[test]
+    fn an_unusable_width_never_goes_negative() {
+        assert_eq!(panel_width(2, 0.0, SPACING), 0.0);
+        assert_eq!(panel_width(4, 10.0, SPACING), 0.0);
+        assert_eq!(panel_width(2, f64::NAN, SPACING), 0.0);
+    }
+
+    // MARK: panel_columns
+
+    /// Each panel splits at twice its own `min_width` plus the gap — the
+    /// breakpoint lives in exactly one place, so widening a panel's content
+    /// moves both numbers together.
+    #[test]
+    fn a_panel_splits_at_twice_its_own_minimum() {
+        // Runners and Containers: 2 * 400 + 16 = 816
+        assert_eq!(panel_columns(PanelKind::GhRunners, 815.0, SPACING), 1);
+        assert_eq!(panel_columns(PanelKind::GhRunners, 816.0, SPACING), 2);
+        assert_eq!(panel_columns(PanelKind::Containers, 815.0, SPACING), 1);
+        assert_eq!(panel_columns(PanelKind::Containers, 816.0, SPACING), 2);
+        // Repos carries 214pt of fixed numeric columns plus a 96pt name, so
+        // its minimum is 440 and it pairs at 2 * 440 + 16 = 896.
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 895.0, SPACING), 1);
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 896.0, SPACING), 2);
+    }
+
+    /// The shipped case, pinned: a 1890pt cockpit gives a two-panel row 937pt,
+    /// and every list panel holds two columns there.
+    ///
+    /// Repos only just does — 896 of the 937 — and it did not at all until its
+    /// numeric columns were sized to their labels rather than half again that.
+    /// If a column widens and this drops back to 1, the panel has outgrown the
+    /// display it was tuned for.
+    #[test]
+    fn the_shipped_two_panel_row_splits_every_list_panel() {
+        let width = panel_width(2, 1890.0, SPACING);
+        for kind in [
+            PanelKind::GhRunners,
+            PanelKind::Containers,
+            PanelKind::GhWorkflows,
+        ] {
+            assert_eq!(
+                panel_columns(kind, width, SPACING),
+                2,
+                "{kind:?} at {width}"
+            );
+        }
+    }
+
+    /// Capped at two: a third column of a short list costs more scanning than
+    /// the gutter it wins back.
+    #[test]
+    fn columns_are_capped_at_two_however_wide_the_panel() {
+        assert_eq!(panel_columns(PanelKind::GhRunners, 5000.0, SPACING), 2);
+        assert_eq!(
+            panel_columns(PanelKind::ClaudeUsage, f64::INFINITY, SPACING),
+            2
+        );
+    }
+
+    /// Same rule as `host_columns`: an unmeasured panel gets one column rather
+    /// than an assumed-wide two.
+    #[test]
+    fn an_unmeasured_panel_gets_one_column() {
+        for kind in PanelKind::ALL {
+            assert_eq!(panel_columns(kind, 0.0, SPACING), 1, "{kind:?} at 0");
+            assert_eq!(panel_columns(kind, f64::NAN, SPACING), 1, "{kind:?} at NaN");
+            assert!(
+                panel_columns(kind, 1200.0, SPACING) >= 1,
+                "{kind:?} must always have at least one column"
+            );
+        }
     }
 
     // MARK: host_tabs
@@ -579,7 +736,7 @@ mod tests {
         // purpose, so a table built from ids alone would be wrong.
         assert_eq!(entries[3]["id"], "ghWorkflows");
         assert_eq!(entries[3]["title"], "Repos");
-        assert_eq!(entries[3]["minWidth"], 560.0);
+        assert_eq!(entries[3]["minWidth"], 440.0);
     }
 
     #[test]

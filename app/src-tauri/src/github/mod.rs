@@ -89,22 +89,49 @@ pub const RUNNERS_ERROR_MESSAGE: &str =
 /// default 60s refresh interval, so one missed poll is not yet a warning.
 pub const RUNNERS_STALE_AFTER_SECS: u64 = 150;
 
-// Fixed column widths, verbatim from `GHWorkflowsPanel`. The cockpit's
-// monospace font is what makes them align; they sum to 312pt, which is the
-// figure `PanelKind::GhWorkflows.min_width` is built on — widen one and that
-// breakpoint has to move with it.
-const ISSUES_W: f64 = 52.0;
-const PRS_W: f64 = 34.0;
-const LOCAL_W: f64 = 44.0;
-const REMOTE_W: f64 = 52.0;
-const WT_W: f64 = 34.0;
-const JOBS_W: f64 = 40.0;
-const LONGEST_W: f64 = 56.0;
+// Fixed column widths. Each is the wider of the two things it must hold — its
+// 9pt header label and its 11pt value — plus a little margin, and nothing
+// more: the Swift panel's originals were half again this size, which spread
+// the numbers so far apart that a row read as scattered digits rather than one
+// record, and cost Repos the second column it now fits in.
+//
+// They sum to 214pt, the figure `PanelKind::GhWorkflows.min_width` is built
+// on — widen one and that breakpoint has to move with it.
+const ISSUES_W: f64 = 36.0; // "ISSUES" 32.4
+const PRS_W: f64 = 24.0; // 3-digit value 19.8
+const LOCAL_W: f64 = 30.0; // "LOCAL" 27.0
+const REMOTE_W: f64 = 36.0; // "REMOTE" 32.4
+const WT_W: f64 = 20.0; // 3-digit value 19.8
+const JOBS_W: f64 = 26.0; // "JOBS" 21.6
+const LONGEST_W: f64 = 42.0; // "LONGEST" 37.8
 
-/// The header row. `REPO` has no width — it takes whatever the fixed columns
-/// leave, and is the only left-aligned one.
+/// The cockpit's monospace advance at the repo rows' 11pt, in points — the
+/// same 0.6em rule [`MONO_9_CHAR_W`] rests on, one size up.
+#[cfg(test)]
+const MONO_11_CHAR_W: f64 = 6.6;
+
+/// The longest repo short-name the column holds without ellipsis, in
+/// characters. `tailoredtip` is 11 today; 14 leaves headroom without leaving a
+/// visible void between the name and the numbers, and anything longer
+/// ellipsizes rather than pushing a column (`.gh-repo-name` sets
+/// `text-overflow`).
+#[cfg(test)]
+const REPO_NAME_CHARS: usize = 14;
+
+/// **Fixed, not a minimum**, for the reason every other column here is
+/// (#206): a name column that grows to its own text drags all seven numeric
+/// columns right on exactly the row whose name is longest.
+///
+/// It is also what stops the numeric block being flung to the panel's far
+/// edge. Before this, `REPO` took every point the fixed columns left over, so
+/// on a wide panel a row read as two clusters with a void between them; now
+/// the row is one unit and the slack goes to the panel's trailing edge —
+/// which is where a second column lands when one fits.
+const REPO_NAME_W: f64 = 96.0;
+
+/// The header row. `REPO` is the only left-aligned column.
 const COLUMNS: [(&str, Option<f64>); 8] = [
-    ("REPO", None),
+    ("REPO", Some(REPO_NAME_W)),
     ("ISSUES", Some(ISSUES_W)),
     ("PRS", Some(PRS_W)),
     ("REMOTE", Some(REMOTE_W)),
@@ -1537,17 +1564,83 @@ mod tests {
             labels,
             vec!["REPO", "ISSUES", "PRS", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
         );
-        assert!(columns[0]["width"].is_null(), "REPO takes what's left");
+        // REPO is a reservation like every other column: a name column that
+        // grew to its own text would drag all seven numeric columns right on
+        // the one row whose name is longest (#206).
+        assert_eq!(columns[0]["width"], REPO_NAME_W);
 
-        // The fixed widths sum to the figure `PanelKind::GhWorkflows.min_width`
-        // is built on — widen a column without moving that breakpoint and the
-        // panel silently outgrows the width it claims to need.
-        let fixed: f64 = columns.iter().filter_map(|c| c["width"].as_f64()).sum();
+        // The seven numeric widths sum to the figure
+        // `PanelKind::GhWorkflows.min_width` is built on — widen a column
+        // without moving that breakpoint and the panel silently outgrows the
+        // width it claims to need.
+        let numeric: f64 = columns
+            .iter()
+            .skip(1)
+            .filter_map(|c| c["width"].as_f64())
+            .sum();
         assert!(
-            (fixed - 312.0).abs() < f64::EPSILON,
-            "fixed columns sum to {fixed}"
+            (numeric - 214.0).abs() < f64::EPSILON,
+            "numeric columns sum to {numeric}"
         );
-        assert!(PanelKind::GhWorkflows.min_width() >= fixed);
+        // …and the whole fixed block, name included, still fits inside it.
+        assert!(PanelKind::GhWorkflows.min_width() >= numeric + REPO_NAME_W);
+    }
+
+    /// Every numeric column fits its own header — the widest fixed text it
+    /// holds — and no more than it needs. The upper bound is the half of this
+    /// that keeps the row compact: a column padded well past its label is what
+    /// spread the numbers apart and cost Repos its second column.
+    #[test]
+    fn every_numeric_column_fits_its_header_without_padding_it() {
+        for (label, width) in COLUMNS.iter().skip(1) {
+            let width = width.expect("numeric columns carry a width");
+            let header = label.len() as f64 * MONO_9_CHAR_W;
+            assert!(
+                width >= header,
+                "{label} is {header}pt of header in a {width}pt column"
+            );
+            assert!(
+                width <= header + 12.0,
+                "{label} reserves {width}pt for {header}pt of header"
+            );
+        }
+    }
+
+    /// The values have to fit too, and they are set at a larger size than the
+    /// headers — a three-digit count and the longest elapsed label.
+    #[test]
+    fn every_numeric_column_fits_the_widest_value_it_can_show() {
+        let widest = |chars: usize| chars as f64 * MONO_11_CHAR_W;
+        for (label, width) in COLUMNS.iter().skip(1) {
+            let width = width.expect("numeric columns carry a width");
+            // "999" everywhere, except LONGEST which holds an elapsed label.
+            let value = if *label == "LONGEST" {
+                widest(4) // "125m"
+            } else {
+                widest(3)
+            };
+            assert!(
+                width >= value,
+                "{label} holds {value}pt of value in a {width}pt column"
+            );
+        }
+    }
+
+    /// The reservation is sized from the text it has to hold, like the runner
+    /// status column — not picked to make a layout look right today.
+    #[test]
+    fn the_repo_name_column_fits_the_names_it_reserves_for() {
+        let needed = REPO_NAME_CHARS as f64 * MONO_11_CHAR_W;
+        assert!(
+            REPO_NAME_W >= needed,
+            "{REPO_NAME_W}pt reserved for {REPO_NAME_CHARS} chars needing {needed}pt"
+        );
+        // The names actually on the board today are far inside it, so nothing
+        // ellipsizes in practice.
+        for name in ["devcanopy", "tailoredtip", "sassydog-web", "what2wear"] {
+            let width = name.len() as f64 * MONO_11_CHAR_W;
+            assert!(width <= REPO_NAME_W, "{name} needs {width}pt");
+        }
     }
 
     /// Every row carries one cell per fixed column, in the header's order — the

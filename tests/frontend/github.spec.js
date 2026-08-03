@@ -78,8 +78,14 @@ test("the Repos panel paints Rust's title, trailing label and column header", as
 
   // The header labels AND their widths are Rust's — a column re-typed here
   // could drift from the cells beside it without any Rust test noticing.
-  const header = page.locator("#reposBody .gh-head");
+  // `.first()`: a wide panel renders one header per column, identical by
+  // construction — asserting the first proves the contract.
+  const header = page.locator("#reposBody .gh-head").first();
   await expect(header.locator(".gh-repo-name")).toHaveText(repos.columns[0].label);
+  await expect(header.locator(".gh-repo-name")).toHaveCSS(
+    "width",
+    `${repos.columns[0].width}px`
+  );
   const labels = await header.locator(".gh-cell").allTextContents();
   expect(labels).toEqual(repos.columns.slice(1).map((c) => c.label));
   for (const [index, column] of repos.columns.slice(1).entries()) {
@@ -322,8 +328,13 @@ test("the OS column holds one position across every runner state", async ({ page
   await gotoWithFixtures(page, baseURL, { runners });
   // The narrowest the cockpit ever hands this panel: `PanelKind::GhRunners`'s
   // own 400pt min_width. Aligned there, aligned at every width above it.
+  //
+  // 400pt is also below the 816 a second column needs, which is what makes the
+  // assertion below legitimate: one shared x across ALL rows only holds while
+  // they share one column.
   await page.locator("#runnersPanel").evaluate((el) => {
     el.style.width = "400px";
+    el.style.setProperty("--panel-cols", "1");
   });
 
   const rows = runnerRows(page);
@@ -421,4 +432,88 @@ test("repo and runner names reach the DOM as text, never as markup", async ({ pa
   await expect(runnerRows(page).first().locator(".gh-runner-name")).toHaveText(hostile);
   await expect(page.locator("img")).toHaveCount(0);
   expect(await page.evaluate(() => window.__PWNED__)).toBeUndefined();
+});
+
+// MARK: - two-column content
+
+test("a wide panel splits Repos into two tables and the runner list into two columns", async ({ page, baseURL }) => {
+  // sample-cockpit.json is dumped at 2732pt, so its two-panel rows are 1358pt
+  // each — past both breakpoints (Repos needs 1136, Runners 816).
+  const { repos, runners } = await gotoWithFixtures(page, baseURL);
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const cols = (id) =>
+    cockpit.panelRows.flat().find((p) => p.id === id).columns;
+  expect(cols("ghWorkflows"), "fixture must be wide enough for 2").toBe(2);
+  expect(cols("ghRunners")).toBe(2);
+
+  // Rust's number reaches the DOM as the custom property the CSS reads.
+  await expect(page.locator("#reposPanel")).toHaveAttribute("data-cols", "2");
+  await expect(page.locator("#runnersPanel")).toHaveAttribute("data-cols", "2");
+
+  // Repos: two tables, each with its own header, and every repo rendered once.
+  await expect(page.locator("#reposBody .gh-col")).toHaveCount(2);
+  await expect(page.locator("#reposBody .gh-head")).toHaveCount(2);
+  await expect(repoRows(page)).toHaveCount(repos.rows.length);
+  // Column-major: the first column holds the first half, in payload order.
+  const firstColumn = await page
+    .locator("#reposBody .gh-col")
+    .first()
+    .locator(".gh-row:not(.gh-head) .gh-repo-name")
+    .allTextContents();
+  expect(firstColumn).toEqual(
+    repos.rows.slice(0, Math.ceil(repos.rows.length / 2)).map((r) => r.name)
+  );
+
+  // Runners: one list, two CSS columns — balancing keeps the reading order.
+  await expect(runnerRows(page)).toHaveCount(runners.rows.length);
+  expect(
+    await page.locator("#runnersBody .gh-list").evaluate((el) =>
+      getComputedStyle(el).columnCount
+    )
+  ).toBe("2");
+});
+
+test("a narrow panel keeps every list in one column", async ({ page, baseURL }) => {
+  // Same panels, same rows — only the width Rust computed them for differs.
+  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
+  expect(narrow.panelRows.flat().find((p) => p.id === "ghRunners").columns).toBe(1);
+  const repos = await fixture(baseURL, "sample-repos.json");
+  const runners = await fixture(baseURL, "sample-runners.json");
+  await stubIpc(page, { cockpit: narrow, repos, runners });
+  await page.goto("/index.html");
+
+  await expect(page.locator("#reposPanel")).toHaveAttribute("data-cols", "1");
+  await expect(page.locator("#reposBody .gh-col")).toHaveCount(1);
+  await expect(page.locator("#reposBody .gh-head")).toHaveCount(1);
+  await expect(repoRows(page)).toHaveCount(repos.rows.length);
+  expect(
+    await page.locator("#runnersBody .gh-list").evaluate((el) =>
+      getComputedStyle(el).columnCount
+    )
+  ).toBe("1");
+});
+
+test("the repo name column is a reservation, so the numeric block never moves", async ({ page, baseURL }) => {
+  // #206's rule, now applied to REPO as well: a name that grew to its own text
+  // would drag all seven numeric columns right on exactly the longest row.
+  const { repos } = await gotoWithFixtures(page, baseURL);
+  const reserved = repos.columns[0].width;
+  expect(reserved, "REPO carries a width, not null").toBeGreaterThan(0);
+  await expect(repoRows(page).first().locator(".gh-repo-name")).toHaveCSS(
+    "width",
+    `${reserved}px`
+  );
+  // Every row's ISSUES cell starts at the same x within its column — header
+  // included, which is the alignment the panel exists for. (`.gh-cell` is a
+  // class on a span, so `:first-of-type` would never match it; take the first
+  // cell per row instead.)
+  const xs = await page
+    .locator("#reposBody .gh-col")
+    .first()
+    .locator(".gh-row")
+    .evaluateAll((rows) =>
+      rows.map((row) => Math.round(row.querySelector(".gh-cell").getBoundingClientRect().x))
+    );
+  expect(xs.length, "one ISSUES cell per row").toBeGreaterThan(1);
+  expect(new Set(xs).size, `ISSUES column x positions ${xs}`).toBe(1);
 });

@@ -337,6 +337,30 @@ fn host_tab_bar(cards: &[Value], columns: usize, overflow: HostOverflowMode) -> 
     })
 }
 
+/// Most volumes any card reports — the number of volume slots every card
+/// reserves, so the Volumes block (and the `TOP CPU`/`TOP RAM` row beneath it)
+/// line up across cards sharing a grid row.
+///
+/// Slots rather than a pixel height on purpose: cards in a row are all
+/// `minmax(0, 1fr)`, so an equal *tile count* at an equal width yields the same
+/// column count, the same row count, and therefore the same height — matched by
+/// construction, with no constant to drift out of step with the CSS.
+///
+/// `0` when the cards are not side by side. A single column stacks them, and
+/// [`viewmodel::cockpit::host_tabs`] can only fire at `columns <= 1`, so this
+/// one test covers the tabs case too; reserving in either would pad a short
+/// card with dead space for an alignment nobody can see.
+fn volume_slots(cards: &[Value], columns: usize) -> usize {
+    if columns < 2 {
+        return 0;
+    }
+    cards
+        .iter()
+        .map(|card| card["volumes"].as_array().map_or(0, Vec::len))
+        .max()
+        .unwrap_or(0)
+}
+
 /// The payload shape, over already-rendered cards. Split from
 /// [`cockpit_view`] so the tests can drive it without locks.
 ///
@@ -369,6 +393,10 @@ fn cockpit_payload(
         // JS, free to disagree with the tested one -- the same argument
         // `hostColumns` and `panelRows` are here for.
         "hostTabs": tabs,
+        // How many volume tiles each card reserves. Cross-card, so it belongs
+        // here beside `hostColumns` rather than inside a card that can only see
+        // itself.
+        "volumeSlots": volume_slots(&cards, columns),
         "panels": panel_table(),
         "panelRows": panel_rows(available),
         "empty": empty,
@@ -402,6 +430,9 @@ fn panel_rows(available: f64) -> Value {
         viewmodel::cockpit::reflow(&layout.rows, available, SPACING)
             .into_iter()
             .map(|row| {
+                // Every panel in a row is the same width, so this is computed
+                // once per row rather than once per panel.
+                let width = viewmodel::cockpit::panel_width(row.len(), available, SPACING);
                 Value::Array(
                     row.into_iter()
                         .map(|placement| {
@@ -410,6 +441,18 @@ fn panel_rows(available: f64) -> Value {
                                 "title": placement.kind.title(),
                                 "minWidth": placement.kind.min_width(),
                                 "span": placement.span.as_str(),
+                                // The width this panel actually gets, and the
+                                // content columns that fit in it. Both travel
+                                // for the reason `hostColumns` does: the answer
+                                // plus the input it was derived from, so the
+                                // frontend applies a decision it cannot
+                                // re-derive differently.
+                                "width": width,
+                                "columns": viewmodel::cockpit::panel_columns(
+                                    placement.kind,
+                                    width,
+                                    SPACING,
+                                ),
                             })
                         })
                         .collect(),
@@ -3710,6 +3753,59 @@ mod tests {
         assert_eq!(stacked_view(None, &hosts, 0.0)["hostColumns"], 1);
     }
 
+    // MARK: reserved volume slots
+
+    /// N cards carrying only volume counts — enough of a card for
+    /// [`volume_slots`], which reads nothing else.
+    fn volume_cards(counts: &[usize]) -> Vec<Value> {
+        counts
+            .iter()
+            .map(|n| json!({ "volumes": vec![json!({ "mount": "/" }); *n] }))
+            .collect()
+    }
+
+    /// Side by side, every card reserves the busiest card's volume count — the
+    /// whole point: a 1-volume card and an 8-volume card render the same number
+    /// of tiles, so the sections below the block start at the same height.
+    #[test]
+    fn side_by_side_cards_reserve_the_busiest_cards_volume_count() {
+        let cards = volume_cards(&[1, 8, 3]);
+        // 3 * 900 + 2 * 16 = 2732, wide enough for all three abreast.
+        let payload = stacked_payload(cards, 2, 2732.0);
+        assert_eq!(payload["hostColumns"], 3);
+        assert_eq!(payload["volumeSlots"], 8);
+    }
+
+    /// Stacked, nothing is reserved: cards in one column never share a row, so
+    /// padding a short card would be dead space for an alignment nobody sees.
+    #[test]
+    fn a_stacked_column_reserves_no_volume_slots() {
+        let payload = stacked_payload(volume_cards(&[1, 8, 3]), 2, 1000.0);
+        assert_eq!(payload["hostColumns"], 1);
+        assert_eq!(payload["volumeSlots"], 0);
+    }
+
+    /// Tabs show one card at a time, and `host_tabs` can only fire at
+    /// `columns <= 1` — so the column test covers this case too, and this pins
+    /// that it really does rather than leaving it to the reader.
+    #[test]
+    fn tabbed_cards_reserve_no_volume_slots() {
+        let payload = cockpit_payload(volume_cards(&[1, 8, 3]), 2, 1000.0, HostOverflowMode::Tabs);
+        assert!(!payload["hostTabs"].is_null(), "expected the tab bar");
+        assert_eq!(payload["volumeSlots"], 0);
+    }
+
+    /// A card whose volumes key is missing or empty counts as zero rather than
+    /// vanishing from the maximum — an unreachable host still has to line up
+    /// with its neighbours.
+    #[test]
+    fn cards_without_volumes_count_as_zero_and_still_take_the_reservation() {
+        let mut cards = volume_cards(&[0, 5]);
+        cards.push(json!({ "error": { "hostName": "nuc-spare" } }));
+        let payload = stacked_payload(cards, 2, 2732.0);
+        assert_eq!(payload["volumeSlots"], 5);
+    }
+
     // MARK: the tab-bar decision
 
     /// N host cards, named, in payload order — enough of a card for the tab
@@ -3876,6 +3972,37 @@ mod tests {
         assert_eq!(vm["panelRows"][3][0]["span"], "half");
         assert_eq!(vm["panelRows"][3][1]["id"], "azureCost");
         assert_eq!(vm["panelRows"][3][1]["title"], "Azure Cost");
+        // The width each panel actually gets, and the content columns that fit
+        // in it — a lone Hosts row takes the whole 3000.
+        assert_eq!(first["width"], 3000.0);
+        assert_eq!(first["columns"], 2);
+    }
+
+    /// The configuration actually shipped on a 1890pt display: two panels to a
+    /// row, 937pt each, and every list panel holds two columns there.
+    ///
+    /// Repos clears it by 41pt (896 of 937) and only because its numeric
+    /// columns are sized to their labels; the same panel with the Swift
+    /// originals needed 1136 and stayed single-column on this display.
+    #[test]
+    fn a_1890pt_cockpit_gives_every_list_panel_two_columns() {
+        let vm = stacked_payload(vec![], 0, 1890.0);
+        let mut seen = std::collections::BTreeMap::new();
+        for row in vm["panelRows"].as_array().expect("rows") {
+            for panel in row.as_array().expect("row") {
+                seen.insert(
+                    panel["id"].as_str().expect("id").to_owned(),
+                    (panel["width"].clone(), panel["columns"].clone()),
+                );
+            }
+        }
+        assert_eq!(seen["ghRunners"], (json!(937.0), json!(2)));
+        assert_eq!(seen["containers"], (json!(937.0), json!(2)));
+        assert_eq!(
+            seen["ghWorkflows"],
+            (json!(937.0), json!(2)),
+            "Repos pairs at 896pt; widening a column past that costs it the split"
+        );
     }
 
     /// No hosts is a configuration state, not a broken app — so it arrives as
