@@ -401,6 +401,21 @@ never configured stays silent — a hiccup must not conjure a section for someth
 nobody set up. This is a deliberate divergence from Swift, whose `KeychainHelper`
 collapses a read failure into `nil`.
 
+**Every credential read obeys that rule** — the GitHub token and the per-host
+agent tokens joined it in #224, having predated the helper. An unreadable store
+leaves the Repos and GitHub Runners panels holding everything the last pass
+fetched, with `couldn't read the credential store` in place of `connect a GitHub
+token in Settings`; `apply_unauthenticated()` — which clears both panels — now
+runs only when the store *answers* that nothing is stored. Runners keeps its
+rows under that line; Repos follows its own long-standing render contract, where
+a message replaces the table (as `loading…` does), and keeps the table in state
+so the next answered read repaints it rather than re-deriving it. A host card
+whose token could not be read says `Couldn't read the credential store for this
+host's token.` instead of asserting nobody configured one; either way no request
+is made, since an empty bearer token buys one 401 per tick and blames the agent
+for a failure on this side. That read still happens once per `spawn_host`, so a
+store that recovers is picked up on the next hosts reload, not the next tick.
+
 **One fabricated zero survives, and it is named rather than hidden.** Azure's
 `PRIOR MONTH` renders `$0.00` when the prior-month export is missing, because
 `azurecost::CostSummary::spend_prior_month` is a bare `f64` the crate documents
