@@ -2800,6 +2800,41 @@ fn main() {
     // saved by one app is invisible to the other; unifying the account scheme
     // is separate work.
     let credentials = KeyringStore::new();
+
+    // One-shot: copy legacy per-item secrets into the consolidated blob
+    // (secrets_v1) so steady state reads exactly one keychain item. Must run
+    // before anything can write a secret -- including the seed path just
+    // below, the one write that happens before `App` exists -- since an
+    // early write would create the blob and shadow unmigrated legacy values.
+    // Host ids come from the store as loaded, before seeding: a seeded host
+    // is new by construction (`seed_from_env` only adds one when its address
+    // isn't already tracked), so its id never had a legacy item to miss.
+    // Count only; never values.
+    //
+    // Skipped entirely under `DEVCANOPY_STORE_DIR`: that variable points
+    // `store.json` at a scratch directory, but the credential *service*
+    // stays the real one (see `open_store`) -- so a scratch/smoke run would
+    // migrate against whatever host list the scratch store happens to have
+    // (typically none), write the real `secrets_v1` blob from that host
+    // list, and permanently freeze migration (it no-ops once the blob
+    // exists), leaving every real host's token unreadable on the next real
+    // launch. `migrate_legacy`'s own "blob already exists" guard can't catch
+    // this: an empty or wrong host list still looks like "nothing to copy",
+    // not a scratch run.
+    if std::env::var_os("DEVCANOPY_STORE_DIR").is_none() {
+        let mut migrate_keys = SecretKey::static_migration_keys();
+        migrate_keys.extend(store.hosts().iter().map(|h| SecretKey::HostToken(h.id)));
+        match credentials.migrate_legacy(&migrate_keys) {
+            Ok(0) => {}
+            Ok(n) => {
+                eprintln!(
+                    "secrets: migrated {n} credential(s) into the consolidated keychain item"
+                );
+            }
+            Err(e) => eprintln!("secrets: migration failed (legacy items still readable): {e}"),
+        }
+    }
+
     let seed = std::env::var("DEVCANOPY_SEED_HOST").ok();
     if let Err(e) = seed_from_env(&mut store, &credentials, seed.as_deref()) {
         eprintln!("could not seed a host from DEVCANOPY_SEED_HOST: {e}");
