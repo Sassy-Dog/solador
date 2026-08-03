@@ -348,7 +348,14 @@ await window.__TAURI__.core.invoke("azure_cost");
   "windows": [{"label": "5H", "value": "820k", "valueColor": "#33d17a"}, …],
   "projects": {"label": "TOP PROJECTS (7D)", "rows": [{"name": …, "value": …, "dotColor": …}]},
   "providers": [
-    {"id": "neon", "rows": [{"label": "NEON COMPUTE (MTD)", "value": "—", "valueColor": …}], "footer": …},
+    {"id": "neon", "rows": [        // "—" (muted) for any figure that wasn't measured
+      {"label": "NEON COMPUTE (MTD)",     "value": "12.4 CU-h", "valueColor": …},
+      {"label": "NEON STORAGE",           "value": "3.2 GiB",   "valueColor": …},
+      {"label": "NEON EST. CHARGES (MTD)", "value": "≈ $2.45",  "valueColor": …},
+      //   ^ the row is *absent*, not "—", when no rate is set or usage is unmeasured
+      {"label": "NEON LAST INVOICE",      "value": "$15.91",    "valueColor": …}
+      //   ^ "—" when the org has no invoices yet, or none could be read
+    ], "footer": …},
     {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"}, "footer": …}
   ],
   "footer": null                         // Claude's own, staleAfter 150s
@@ -382,6 +389,28 @@ variant carries no figures at all, so `—` can never be typed into a `0` by
 mistake. The Sentry quota bar therefore needs **both** a configured quota and a
 known count: a bar drawn at a defaulted zero would read "comfortably under quota"
 when the truth is "nobody measured". A measured `0` does get its bar, empty.
+
+**The two Neon cost rows are priced by the operator, never by us.** `NEON EST.
+CHARGES (MTD)` is consumption × the rates entered under **Settings → Usage** —
+`$ per CU-hour` and `$ per GiB-month storage`, both plain non-secret preferences
+— multiplied by `usage::neon::estimate_usd`, which reproduces the Neon console's
+own "Charges to date" arithmetic. The app ships **no price table on purpose**: a
+hard-coded rate goes quietly wrong the day Neon reprices, and a wrong number
+with correct digits is worse than no number. Leave both rates at `0` and the row
+is *absent* — not `$0.00`, and not `—` — because an unset rate is setup, not a
+measurement; set one and it prices its half with the other counted as zero.
+
+`NEON LAST INVOICE` needs no rate: it is what Neon actually billed, read from
+`GET /api/v2/organizations/{org_id}/billing/invoices` — an endpoint **absent
+from Neon's public OpenAPI spec** but served to org API keys, so it is treated
+as **best-effort** everywhere. A failure leaves the last figure standing (or `—`
+if there never was one) and degrades the section to estimate-only; its reason
+reaches the footer only when consumption is healthy, since consumption is the
+section's primary content and there is one footer per section. An org with no
+invoices yet renders that same `—` rather than `$0.00`, which would assert a
+bill that does not exist. The amount wears a `$` only when the invoice's
+currency is USD — a euro total in dollar clothing is a wrong number with right
+digits again.
 
 **An unconfigured provider has no section at all** — no heading, no em dash, no
 layout shift; the panel is pixel-identical to its Claude-only self. The em dash
@@ -437,9 +466,9 @@ so it is never displayed.
 key, a Sentry token, an org id or a slug wakes the usage loop *and* forces its
 hourly half to run on that pass, so a newly-saved key fills its section in
 seconds rather than within the hour. A SAS URL wakes the Azure loop the same way.
-The Sentry quota and the Azure budget wake nothing on purpose — both are read at
-render time, so changing one repaints its bar on the next 10s frontend tick with
-no fetch involved.
+The Sentry quota, the Azure budget and the two Neon rates wake nothing on
+purpose — all four are read at render time, so changing one repaints the bar or
+row it feeds on the next 10s frontend tick with no fetch involved.
 
 ## The `openclaw` command
 
@@ -689,7 +718,7 @@ a portfolio fetch on a credential it has no use for.
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
 | the `azure` credential | the Azure loop |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
-| the Sentry quota, the Azure budget | nothing — both are read at render time |
+| the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule | nothing — the rules are read at render time too, by `containers` |
 | the host-overflow mode | nothing — read at render time by `cockpit`, on its 1s tick |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
