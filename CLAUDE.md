@@ -220,7 +220,11 @@ DevCanopy/
   a fixed CI-oriented scope set that excludes it). The non-secret org slug and
   monthly event quota are `@AppStorage` preferences, not Keychain items.
 - All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);
-  never persisted in SwiftData.
+  never persisted in SwiftData. The Tauri shell (`crates/store::secrets`) stores
+  its own credentials in the same Keychain service under different account names,
+  and — as of the single-keychain-item migration, macOS only — consolidates them
+  into one item, `secrets_v1`, rather than Swift's one-item-per-secret scheme; see
+  `app/README.md`'s "Consolidated credential item" section.
 
 ### Responsive layout (breakpoints)
 - `Views/Cockpit/CockpitBreakpoints.swift` holds the responsive math — pure values,

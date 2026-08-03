@@ -11,6 +11,12 @@
 //!   implementation is intentionally *not* exercised by unit tests: hitting the
 //!   login keychain from a test run prompts, and on CI it fails.
 //!
+//! `KeyringStore`'s own routing and migration logic — which credentials go
+//! through the consolidated blob, when a write must fall back to a legacy
+//! item — is factored behind [`ItemStore`] (get/set/delete one raw item by
+//! account, no knowledge of [`SecretKey`] or the blob) so *that* logic is
+//! unit-tested too, against a `HashMap`-backed fake, without touching the OS.
+//!
 //! Nothing here logs, formats, or `Debug`-prints a secret value. Errors carry
 //! the account name only.
 
@@ -79,6 +85,40 @@ impl SecretKey {
             SecretKey::OpenClawBearerToken => "openclaw_bearer_token".to_owned(),
             SecretKey::OpenClawDeviceKey => "openclaw_device_key".to_owned(),
         }
+    }
+
+    /// Every credential with a fixed identity that migration should always
+    /// consider, alongside whatever per-host [`SecretKey::HostToken`]s the
+    /// caller appends. Excludes `HostToken` (one per configured host — there
+    /// is no fixed set of ids to name here) and
+    /// [`SecretKey::OpenClawDeviceKey`] (never enters the blob;
+    /// [`CredentialStore::migrate_legacy`] skips it defensively too).
+    ///
+    /// `is_static`'s match has no wildcard arm, so adding a `SecretKey`
+    /// variant without deciding whether it belongs here is a compile error —
+    /// replacing a hand-maintained list at the call site that a new variant
+    /// could join without anyone noticing it was missing from migration.
+    #[must_use]
+    pub fn static_migration_keys() -> Vec<SecretKey> {
+        fn is_static(key: &SecretKey) -> bool {
+            match key {
+                SecretKey::GitHubAccessToken
+                | SecretKey::NeonApiKey
+                | SecretKey::SentryUsageToken
+                | SecretKey::AzureCostSasUrl
+                | SecretKey::OpenClawBearerToken => true,
+                SecretKey::HostToken(_) | SecretKey::OpenClawDeviceKey => false,
+            }
+        }
+        let keys = [
+            SecretKey::GitHubAccessToken,
+            SecretKey::NeonApiKey,
+            SecretKey::SentryUsageToken,
+            SecretKey::AzureCostSasUrl,
+            SecretKey::OpenClawBearerToken,
+        ];
+        debug_assert!(keys.iter().all(is_static));
+        Vec::from(keys)
     }
 }
 
@@ -153,8 +193,19 @@ pub trait CredentialStore {
     /// empty — that is what marks migration done and stops re-runs. Legacy
     /// items are never modified or deleted: they keep the Swift app alive
     /// through the transition and are the rebuild source if the blob is ever
-    /// corrupted. Callers MUST run this before the first `set_secret` (an
-    /// early write would create the blob and shadow unmigrated legacy values).
+    /// corrupted.
+    ///
+    /// Calling this before the first [`CredentialStore::set_secret`] is
+    /// **not** an invariant callers must uphold. It was, until the
+    /// whole-branch review found the ordering unsafe: a denied or failed
+    /// migration writes nothing, and a `set_secret` that ran before migration
+    /// used to create the blob holding only that one key — permanently
+    /// shadowing every legacy value migration never got to copy, since
+    /// migration no-ops once the blob exists. `set_secret` now falls through
+    /// to the legacy item whenever the blob is absent, so a failed migration
+    /// simply retries next launch instead of stranding anything. Calling this
+    /// early is still good practice — it is what makes the blob exist at
+    /// all — it is just no longer load-bearing for correctness.
     ///
     /// # Errors
     /// Returns [`SecretError::Backend`] when the store itself fails.
@@ -175,12 +226,160 @@ fn serialize_blob(map: &std::collections::BTreeMap<String, String>) -> String {
     serde_json::to_string(map).expect("a string map always serializes")
 }
 
+/// The three primitives [`KeyringStore`]'s routing and migration are built on:
+/// get/set/delete one *raw* item by account, with no knowledge of
+/// [`SecretKey`], the blob, or migration. A trait, not direct `keyring::Entry`
+/// calls, purely so the routing/migration logic below is unit-testable
+/// against a fake — this module's convention (see the module doc) is that no
+/// test exercises the real keychain.
+trait ItemStore {
+    fn get_item(&self, account: &str) -> Result<Option<String>, SecretError>;
+    fn set_item(&self, account: &str, value: &str) -> Result<(), SecretError>;
+    fn delete_item(&self, account: &str) -> Result<(), SecretError>;
+}
+
+/// Reads and parses the consolidated blob item via any [`ItemStore`].
+/// `Ok(None)` means the item does not exist yet (pre-migration, or a fresh
+/// install).
+fn read_blob<S: ItemStore>(
+    store: &S,
+) -> Result<Option<std::collections::BTreeMap<String, String>>, SecretError> {
+    match store.get_item(BLOB_ACCOUNT)? {
+        Some(text) => parse_blob(&text).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Writes the consolidated blob item wholesale via any [`ItemStore`].
+fn write_blob<S: ItemStore>(
+    store: &S,
+    map: &std::collections::BTreeMap<String, String>,
+) -> Result<(), SecretError> {
+    store.set_item(BLOB_ACCOUNT, &serialize_blob(map))
+}
+
+/// [`CredentialStore::secret`]'s routing, generic over [`ItemStore`] so it is
+/// testable without the OS. `consolidate` is a parameter rather than read
+/// internally (vs. calling [`KeyringStore::consolidate`] here) so tests can
+/// exercise both branches — consolidated and forced-legacy — deterministically
+/// on any platform's CI, rather than only whichever branch happens to be live
+/// on the machine actually running the test.
+fn route_secret<S: ItemStore>(
+    store: &S,
+    consolidate: bool,
+    key: SecretKey,
+) -> Result<Option<String>, SecretError> {
+    if matches!(key, SecretKey::OpenClawDeviceKey) || !consolidate {
+        return store.get_item(&key.account());
+    }
+    match read_blob(store)? {
+        Some(map) => Ok(map.get(&key.account()).cloned()),
+        // Not migrated yet: the legacy item is still the truth.
+        None => store.get_item(&key.account()),
+    }
+}
+
+/// [`CredentialStore::set_secret`]'s routing. See [`route_secret`].
+///
+/// The blob-absent arm falls through to the legacy item rather than creating
+/// the blob: an early write must not shadow legacy values migration has not
+/// copied yet (see [`CredentialStore::migrate_legacy`]'s docs for the failure
+/// this fixes).
+fn route_set_secret<S: ItemStore>(
+    store: &S,
+    blob_lock: &Mutex<()>,
+    consolidate: bool,
+    key: SecretKey,
+    value: &str,
+) -> Result<(), SecretError> {
+    if matches!(key, SecretKey::OpenClawDeviceKey) || !consolidate {
+        return store.set_item(&key.account(), value);
+    }
+    let _guard = blob_lock.lock().expect("blob lock poisoned");
+    match read_blob(store)? {
+        Some(mut map) => {
+            map.insert(key.account(), value.to_owned());
+            write_blob(store, &map)
+        }
+        // Not migrated yet: the legacy item is still the truth, and creating
+        // the blob here would shadow every legacy value migration has not
+        // copied yet.
+        None => store.set_item(&key.account(), value),
+    }
+}
+
+/// [`CredentialStore::delete_secret`]'s routing. See [`route_secret`].
+///
+/// The blob-present arm clears the legacy item too: leaving it would
+/// resurrect a cleared credential the next time the blob is rebuilt from
+/// legacy items.
+fn route_delete_secret<S: ItemStore>(
+    store: &S,
+    blob_lock: &Mutex<()>,
+    consolidate: bool,
+    key: SecretKey,
+) -> Result<(), SecretError> {
+    if matches!(key, SecretKey::OpenClawDeviceKey) || !consolidate {
+        return store.delete_item(&key.account());
+    }
+    let _guard = blob_lock.lock().expect("blob lock poisoned");
+    match read_blob(store)? {
+        Some(mut map) => {
+            map.remove(&key.account());
+            write_blob(store, &map)?;
+            store.delete_item(&key.account())
+        }
+        // Not migrated yet: clear the legacy item, or it resurfaces at
+        // migration time.
+        None => store.delete_item(&key.account()),
+    }
+}
+
+/// [`CredentialStore::migrate_legacy`]'s implementation. See [`route_secret`]
+/// for why `consolidate` is a parameter.
+fn route_migrate_legacy<S: ItemStore>(
+    store: &S,
+    blob_lock: &Mutex<()>,
+    consolidate: bool,
+    keys: &[SecretKey],
+) -> Result<usize, SecretError> {
+    if !consolidate {
+        return Ok(0);
+    }
+    let _guard = blob_lock.lock().expect("blob lock poisoned");
+    if read_blob(store)?.is_some() {
+        return Ok(0);
+    }
+    let mut map = std::collections::BTreeMap::new();
+    for key in keys {
+        // The device key never joins the blob: raw bytes, cross-app account.
+        if matches!(key, SecretKey::OpenClawDeviceKey) {
+            continue;
+        }
+        if let Some(value) = store.get_item(&key.account())? {
+            map.insert(key.account(), value);
+        }
+    }
+    let copied = map.len();
+    write_blob(store, &map)?;
+    Ok(copied)
+}
+
+/// Compile-time half of [`KeyringStore::consolidate`]: true only on macOS.
+/// Kept a literal `const` (rather than folded straight into that function) so
+/// it can be flipped by hand for a one-off cross-platform sanity check when a
+/// real non-macOS target is not available locally.
+const CONSOLIDATE: bool = cfg!(target_os = "macos");
+
 /// The real thing: `keyring` over the platform credential store.
 #[derive(Debug, Clone)]
 pub struct KeyringStore {
     service: String,
     /// Serializes blob read-modify-write. Per-item writes never raced each
-    /// other; a shared blob can (poll loop vs. settings commands).
+    /// other; a shared blob can (poll loop vs. settings commands). This is a
+    /// process-local lock, not a cross-process one: it serializes writes
+    /// within this process only, and two concurrent app instances can still
+    /// race a whole-map write and clobber each other.
     blob_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
@@ -212,62 +411,28 @@ impl KeyringStore {
         })
     }
 
-    /// Reads and parses the consolidated blob item. `Ok(None)` means the item
-    /// does not exist yet (pre-migration, or a fresh install).
-    fn read_blob(&self) -> Result<Option<std::collections::BTreeMap<String, String>>, SecretError> {
-        match self.entry(BLOB_ACCOUNT)?.get_password() {
-            Ok(text) => parse_blob(&text).map(Some),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(source) => Err(SecretError::Backend {
-                account: BLOB_ACCOUNT.to_owned(),
-                source,
-            }),
-        }
-    }
-
-    /// Writes the consolidated blob item wholesale.
-    fn write_blob(
-        &self,
-        map: &std::collections::BTreeMap<String, String>,
-    ) -> Result<(), SecretError> {
-        self.entry(BLOB_ACCOUNT)?
-            .set_password(&serialize_blob(map))
-            .map_err(|source| SecretError::Backend {
-                account: BLOB_ACCOUNT.to_owned(),
-                source,
-            })
-    }
-
-    /// The pre-consolidation per-item read: one keychain entry per
-    /// [`SecretKey::account`]. Still the only path for
-    /// [`SecretKey::OpenClawDeviceKey`], and the fallback for any other key
-    /// before it has been migrated into the blob.
-    fn legacy_secret(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
-        let account = key.account();
-        match self.entry(&account)?.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(source) => Err(SecretError::Backend { account, source }),
-        }
-    }
-
-    /// The pre-consolidation per-item write. See
-    /// [`KeyringStore::legacy_secret`].
-    fn legacy_set(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
-        let account = key.account();
-        self.entry(&account)?
-            .set_password(value)
-            .map_err(|source| SecretError::Backend { account, source })
-    }
-
-    /// The pre-consolidation per-item delete. See
-    /// [`KeyringStore::legacy_secret`].
-    fn legacy_delete(&self, key: SecretKey) -> Result<(), SecretError> {
-        let account = key.account();
-        match self.entry(&account)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(source) => Err(SecretError::Backend { account, source }),
-        }
+    /// Whether this process routes secrets through the consolidated
+    /// `secrets_v1` blob at all. `false` forces every routed method
+    /// ([`KeyringStore::secret`](CredentialStore::secret),
+    /// [`KeyringStore::set_secret`](CredentialStore::set_secret),
+    /// [`KeyringStore::delete_secret`](CredentialStore::delete_secret),
+    /// [`KeyringStore::migrate_legacy`](CredentialStore::migrate_legacy)) back
+    /// to per-item storage, exactly as this store behaved before
+    /// consolidation.
+    ///
+    /// Two independent things force `false`:
+    /// - **Any platform but macOS** ([`CONSOLIDATE`]). The per-item ACL
+    ///   prompt consolidation exists to fix is a macOS keychain behavior, and
+    ///   `keyring`'s Windows Credential Manager backend rejects a credential
+    ///   blob over 2560 bytes (`TooLong`) — a ceiling per-item storage never
+    ///   hits, but a shared blob crosses at roughly five hosts, after which
+    ///   *every* save and delete fails (the read-modify-write rewrites the
+    ///   whole map).
+    /// - **`DEVCANOPY_LEGACY_SECRETS=1`**, checked fresh on every call — the
+    ///   manual escape hatch: abandoning consolidation is one env var, not
+    ///   deleting the `secrets_v1` item before every launch.
+    fn consolidate() -> bool {
+        CONSOLIDATE && std::env::var_os("DEVCANOPY_LEGACY_SECRETS").is_none()
     }
 }
 
@@ -277,46 +442,54 @@ impl Default for KeyringStore {
     }
 }
 
+impl ItemStore for KeyringStore {
+    fn get_item(&self, account: &str) -> Result<Option<String>, SecretError> {
+        match self.entry(account)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(source) => Err(SecretError::Backend {
+                account: account.to_owned(),
+                source,
+            }),
+        }
+    }
+
+    fn set_item(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        self.entry(account)?
+            .set_password(value)
+            .map_err(|source| SecretError::Backend {
+                account: account.to_owned(),
+                source,
+            })
+    }
+
+    fn delete_item(&self, account: &str) -> Result<(), SecretError> {
+        match self.entry(account)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(source) => Err(SecretError::Backend {
+                account: account.to_owned(),
+                source,
+            }),
+        }
+    }
+}
+
 impl CredentialStore for KeyringStore {
     fn secret(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
-        if matches!(key, SecretKey::OpenClawDeviceKey) {
-            return self.legacy_secret(key);
-        }
-        match self.read_blob()? {
-            Some(map) => Ok(map.get(&key.account()).cloned()),
-            // Not migrated yet: the legacy item is still the truth.
-            None => self.legacy_secret(key),
-        }
+        route_secret(self, Self::consolidate(), key)
     }
 
     fn set_secret(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
-        if matches!(key, SecretKey::OpenClawDeviceKey) {
-            return self.legacy_set(key, value);
-        }
-        let _guard = self.blob_lock.lock().expect("blob lock poisoned");
-        let mut map = self.read_blob()?.unwrap_or_default();
-        map.insert(key.account(), value.to_owned());
-        self.write_blob(&map)
+        route_set_secret(self, &self.blob_lock, Self::consolidate(), key, value)
     }
 
     fn delete_secret(&self, key: SecretKey) -> Result<(), SecretError> {
-        if matches!(key, SecretKey::OpenClawDeviceKey) {
-            return self.legacy_delete(key);
-        }
-        let _guard = self.blob_lock.lock().expect("blob lock poisoned");
-        match self.read_blob()? {
-            Some(mut map) => {
-                map.remove(&key.account());
-                self.write_blob(&map)
-            }
-            // Not migrated yet: clear the legacy item, or it resurfaces at
-            // migration time.
-            None => self.legacy_delete(key),
-        }
+        route_delete_secret(self, &self.blob_lock, Self::consolidate(), key)
     }
 
-    /// Raw bytes stay per-item for every key: [`SecretKey::OpenClawDeviceKey`]
-    /// is their only consumer, and it never enters the blob (see
+    /// Raw bytes stay per-item for every key, on every platform, regardless
+    /// of [`KeyringStore::consolidate`]: [`SecretKey::OpenClawDeviceKey`] is
+    /// their only consumer, and it never enters the blob (see
     /// [`SecretKey::OpenClawDeviceKey`]'s docs).
     fn secret_bytes(&self, key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
         let account = key.account();
@@ -337,23 +510,7 @@ impl CredentialStore for KeyringStore {
     }
 
     fn migrate_legacy(&self, keys: &[SecretKey]) -> Result<usize, SecretError> {
-        let _guard = self.blob_lock.lock().expect("blob lock poisoned");
-        if self.read_blob()?.is_some() {
-            return Ok(0);
-        }
-        let mut map = std::collections::BTreeMap::new();
-        for key in keys {
-            // The device key never joins the blob: raw bytes, cross-app account.
-            if matches!(key, SecretKey::OpenClawDeviceKey) {
-                continue;
-            }
-            if let Some(value) = self.legacy_secret(*key)? {
-                map.insert(key.account(), value);
-            }
-        }
-        let copied = map.len();
-        self.write_blob(&map)?;
-        Ok(copied)
+        route_migrate_legacy(self, &self.blob_lock, Self::consolidate(), keys)
     }
 }
 
@@ -431,6 +588,8 @@ impl CredentialStore for MemoryCredentialStore {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -494,6 +653,24 @@ mod tests {
             total,
             "two credentials share one account name"
         );
+    }
+
+    #[test]
+    fn static_migration_keys_excludes_host_tokens_and_the_device_key() {
+        let keys = SecretKey::static_migration_keys();
+        let accounts: Vec<String> = keys.iter().map(SecretKey::account).collect();
+        assert_eq!(
+            accounts,
+            vec![
+                "github_access_token",
+                "neon_api_key",
+                "sentry_usage_token",
+                "azure_cost_sas_url",
+                "openclaw_bearer_token",
+            ]
+        );
+        assert!(!keys.iter().any(|k| matches!(k, SecretKey::HostToken(_))));
+        assert!(!keys.contains(&SecretKey::OpenClawDeviceKey));
     }
 
     #[test]
@@ -669,6 +846,431 @@ mod tests {
                 .migrate_legacy(&[SecretKey::NeonApiKey])
                 .expect("no-op"),
             0
+        );
+    }
+
+    /// A [`HashMap`]-backed [`ItemStore`], purely so `KeyringStore`'s routing
+    /// and migration are testable without touching the OS — this module's
+    /// convention (see the module doc) is that no test exercises the real
+    /// keychain.
+    #[derive(Default)]
+    struct FakeItemStore {
+        items: Mutex<HashMap<String, String>>,
+        /// Accounts whose reads fail, simulating e.g. a locked keychain — for
+        /// the migration-failure test.
+        poisoned: Mutex<HashSet<String>>,
+    }
+
+    impl FakeItemStore {
+        fn poison_reads(&self, account: &str) {
+            self.poisoned
+                .lock()
+                .expect("poison set poisoned")
+                .insert(account.to_owned());
+        }
+
+        fn unpoison(&self, account: &str) {
+            self.poisoned
+                .lock()
+                .expect("poison set poisoned")
+                .remove(account);
+        }
+    }
+
+    impl ItemStore for FakeItemStore {
+        fn get_item(&self, account: &str) -> Result<Option<String>, SecretError> {
+            if self
+                .poisoned
+                .lock()
+                .expect("poison set poisoned")
+                .contains(account)
+            {
+                return Err(SecretError::Backend {
+                    account: account.to_owned(),
+                    source: keyring::Error::NoStorageAccess(Box::new(std::io::Error::other(
+                        "simulated locked keychain",
+                    ))),
+                });
+            }
+            Ok(self
+                .items
+                .lock()
+                .expect("fake item store poisoned")
+                .get(account)
+                .cloned())
+        }
+
+        fn set_item(&self, account: &str, value: &str) -> Result<(), SecretError> {
+            self.items
+                .lock()
+                .expect("fake item store poisoned")
+                .insert(account.to_owned(), value.to_owned());
+            Ok(())
+        }
+
+        fn delete_item(&self, account: &str) -> Result<(), SecretError> {
+            self.items
+                .lock()
+                .expect("fake item store poisoned")
+                .remove(account);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn route_secret_with_no_blob_reads_the_legacy_item() {
+        let store = FakeItemStore::default();
+        store
+            .set_item("neon_api_key", "napi_legacy")
+            .expect("seed legacy");
+        assert_eq!(
+            route_secret(&store, true, SecretKey::NeonApiKey).expect("get"),
+            Some("napi_legacy".to_owned())
+        );
+    }
+
+    #[test]
+    fn route_secret_with_blob_present_reads_the_blob_not_the_legacy_item() {
+        let store = FakeItemStore::default();
+        // A stale legacy value that must NOT be what comes back.
+        store
+            .set_item("neon_api_key", "napi_stale")
+            .expect("seed legacy");
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("neon_api_key".to_owned(), "napi_fresh".to_owned());
+        write_blob(&store, &map).expect("seed blob");
+
+        assert_eq!(
+            route_secret(&store, true, SecretKey::NeonApiKey).expect("get"),
+            Some("napi_fresh".to_owned())
+        );
+    }
+
+    /// CRITICAL: `set_secret` must never create the blob when it is absent —
+    /// that would permanently shadow every unmigrated legacy value once a
+    /// later migration attempt gives up (migration no-ops once the blob
+    /// exists).
+    #[test]
+    fn set_secret_with_no_blob_writes_the_legacy_item_and_creates_no_blob() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        route_set_secret(&store, &blob_lock, true, SecretKey::NeonApiKey, "napi_x").expect("set");
+
+        assert_eq!(
+            store.get_item("neon_api_key").expect("legacy read"),
+            Some("napi_x".to_owned())
+        );
+        assert_eq!(
+            store.get_item(BLOB_ACCOUNT).expect("blob read"),
+            None,
+            "set_secret must not create the blob"
+        );
+    }
+
+    #[test]
+    fn set_secret_with_blob_present_updates_the_blob_not_the_legacy_item() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        write_blob(&store, &std::collections::BTreeMap::new()).expect("seed empty blob");
+
+        route_set_secret(&store, &blob_lock, true, SecretKey::NeonApiKey, "napi_x").expect("set");
+
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+        assert_eq!(
+            store.get_item("neon_api_key").expect("legacy read"),
+            None,
+            "a blob-routed write must not also touch the legacy item"
+        );
+    }
+
+    #[test]
+    fn delete_secret_with_no_blob_deletes_only_the_legacy_item() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store
+            .set_item("neon_api_key", "napi_x")
+            .expect("seed legacy");
+
+        route_delete_secret(&store, &blob_lock, true, SecretKey::NeonApiKey).expect("delete");
+
+        assert_eq!(store.get_item("neon_api_key").expect("get"), None);
+        assert_eq!(store.get_item(BLOB_ACCOUNT).expect("get"), None);
+    }
+
+    /// IMPORTANT: post-migration, deleting a secret must clear the legacy
+    /// item too, or it resurrects the "deleted" value the next time the blob
+    /// is rebuilt from legacy items.
+    #[test]
+    fn delete_secret_with_blob_present_clears_both_the_blob_and_the_legacy_item() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store
+            .set_item("neon_api_key", "napi_stale_legacy")
+            .expect("seed legacy");
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("neon_api_key".to_owned(), "napi_current".to_owned());
+        write_blob(&store, &map).expect("seed blob");
+
+        route_delete_secret(&store, &blob_lock, true, SecretKey::NeonApiKey).expect("delete");
+
+        let map = read_blob(&store)
+            .expect("read blob")
+            .expect("blob still present");
+        assert!(!map.contains_key("neon_api_key"));
+        assert_eq!(
+            store.get_item("neon_api_key").expect("legacy read"),
+            None,
+            "the legacy item must also be cleared, or a blob rebuild resurrects it"
+        );
+    }
+
+    #[test]
+    fn the_device_key_never_enters_the_blob() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        write_blob(&store, &std::collections::BTreeMap::new()).expect("seed empty blob");
+
+        route_set_secret(
+            &store,
+            &blob_lock,
+            true,
+            SecretKey::OpenClawDeviceKey,
+            "not-really-32-bytes",
+        )
+        .expect("set");
+
+        assert_eq!(
+            store.get_item("openclaw_device_key").expect("legacy read"),
+            Some("not-really-32-bytes".to_owned())
+        );
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert!(
+            !map.contains_key("openclaw_device_key"),
+            "the device key must never join the blob"
+        );
+
+        assert_eq!(
+            route_secret(&store, true, SecretKey::OpenClawDeviceKey).expect("get"),
+            Some("not-really-32-bytes".to_owned()),
+            "reads for the device key must ignore the blob too"
+        );
+
+        route_delete_secret(&store, &blob_lock, true, SecretKey::OpenClawDeviceKey)
+            .expect("delete");
+        assert_eq!(store.get_item("openclaw_device_key").expect("get"), None);
+    }
+
+    #[test]
+    fn consolidate_false_forces_legacy_routing_even_with_a_blob_present() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("neon_api_key".to_owned(), "napi_in_blob".to_owned());
+        write_blob(&store, &map).expect("seed blob");
+
+        route_set_secret(
+            &store,
+            &blob_lock,
+            false,
+            SecretKey::NeonApiKey,
+            "napi_legacy",
+        )
+        .expect("set");
+        assert_eq!(
+            store.get_item("neon_api_key").expect("legacy read"),
+            Some("napi_legacy".to_owned()),
+            "consolidate=false must write the legacy item"
+        );
+
+        assert_eq!(
+            route_secret(&store, false, SecretKey::NeonApiKey).expect("get"),
+            Some("napi_legacy".to_owned()),
+            "consolidate=false must read the legacy item, ignoring the blob"
+        );
+
+        route_delete_secret(&store, &blob_lock, false, SecretKey::NeonApiKey).expect("delete");
+        assert_eq!(store.get_item("neon_api_key").expect("get"), None);
+        // The blob is untouched throughout -- consolidate=false must not
+        // read or write it at all.
+        let blob = read_blob(&store).expect("read blob").expect("blob present");
+        assert_eq!(blob.get("neon_api_key"), Some(&"napi_in_blob".to_owned()));
+    }
+
+    #[test]
+    fn migrate_legacy_fresh_copies_legacy_values_and_writes_the_blob() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store.set_item("neon_api_key", "napi_x").expect("seed");
+        store
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+
+        let copied = route_migrate_legacy(
+            &store,
+            &blob_lock,
+            true,
+            &[SecretKey::NeonApiKey, SecretKey::GitHubAccessToken],
+        )
+        .expect("migrate");
+
+        assert_eq!(copied, 2);
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+        assert_eq!(map.get("github_access_token"), Some(&"ghp_x".to_owned()));
+    }
+
+    #[test]
+    fn migrate_legacy_re_run_is_a_no_op() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store.set_item("neon_api_key", "napi_x").expect("seed");
+        route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+            .expect("first migrate");
+
+        // Change the legacy item after migration -- a re-run must not touch
+        // the blob again, so this new value must never show up in it.
+        store
+            .set_item("neon_api_key", "napi_changed_after_migration")
+            .expect("mutate legacy");
+
+        let copied = route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+            .expect("second migrate");
+        assert_eq!(copied, 0);
+
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+    }
+
+    #[test]
+    fn migrate_legacy_with_nothing_to_copy_still_writes_an_empty_blob_and_marks_done() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+
+        let copied = route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+            .expect("migrate");
+        assert_eq!(copied, 0);
+
+        let map = read_blob(&store)
+            .expect("read blob")
+            .expect("blob must exist even when empty");
+        assert!(map.is_empty());
+
+        // A later write must see the blob as present and route into it, not
+        // fall back to legacy -- that is what "marks migration done" means.
+        route_set_secret(&store, &blob_lock, true, SecretKey::NeonApiKey, "napi_x").expect("set");
+        assert_eq!(
+            store.get_item("neon_api_key").expect("legacy read"),
+            None,
+            "once the blob exists (even empty), writes must route into it"
+        );
+    }
+
+    /// CRITICAL, end to end: a failed migration must write nothing, so a
+    /// later `set_secret` falls through to the legacy item (never creating
+    /// the blob itself -- see the other CRITICAL test above), and a
+    /// subsequent migration attempt -- standing in for the next launch --
+    /// still finds no blob and migrates everything, including what the
+    /// interim `set_secret` wrote.
+    #[test]
+    fn a_failed_migration_writes_nothing_and_a_later_relaunch_still_migrates_everything() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store.set_item("neon_api_key", "napi_x").expect("seed");
+        store
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+        store.poison_reads("github_access_token");
+
+        let err = route_migrate_legacy(
+            &store,
+            &blob_lock,
+            true,
+            &[SecretKey::NeonApiKey, SecretKey::GitHubAccessToken],
+        )
+        .expect_err("a poisoned legacy read must fail the whole migration");
+        assert!(matches!(err, SecretError::Backend { .. }));
+        assert_eq!(
+            store.get_item(BLOB_ACCOUNT).expect("blob read"),
+            None,
+            "a failed migration must write nothing"
+        );
+
+        // The interim save: with no blob, this must land on the legacy item.
+        route_set_secret(
+            &store,
+            &blob_lock,
+            true,
+            SecretKey::SentryUsageToken,
+            "sty_x",
+        )
+        .expect("set");
+        assert_eq!(
+            store.get_item(BLOB_ACCOUNT).expect("blob read"),
+            None,
+            "set_secret must still create no blob"
+        );
+
+        // "Relaunch": the keychain unlocks, and migration runs again.
+        store.unpoison("github_access_token");
+        let copied = route_migrate_legacy(
+            &store,
+            &blob_lock,
+            true,
+            &[
+                SecretKey::NeonApiKey,
+                SecretKey::GitHubAccessToken,
+                SecretKey::SentryUsageToken,
+            ],
+        )
+        .expect("retry migrate");
+        assert_eq!(
+            copied, 3,
+            "the retry must migrate everything, including the interim save"
+        );
+
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+        assert_eq!(map.get("github_access_token"), Some(&"ghp_x".to_owned()));
+        assert_eq!(map.get("sentry_usage_token"), Some(&"sty_x".to_owned()));
+    }
+
+    #[test]
+    fn migrate_legacy_skips_the_device_key_even_when_listed() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store
+            .set_item("openclaw_device_key", "raw-bytes-as-text")
+            .expect("seed");
+        store.set_item("neon_api_key", "napi_x").expect("seed");
+
+        let copied = route_migrate_legacy(
+            &store,
+            &blob_lock,
+            true,
+            &[SecretKey::OpenClawDeviceKey, SecretKey::NeonApiKey],
+        )
+        .expect("migrate");
+
+        assert_eq!(copied, 1, "the device key must not be counted as copied");
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert!(!map.contains_key("openclaw_device_key"));
+        assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+    }
+
+    #[test]
+    fn migrate_legacy_with_consolidate_false_is_a_no_op() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store.set_item("neon_api_key", "napi_x").expect("seed");
+
+        let copied = route_migrate_legacy(&store, &blob_lock, false, &[SecretKey::NeonApiKey])
+            .expect("migrate");
+        assert_eq!(copied, 0);
+        assert_eq!(
+            store.get_item(BLOB_ACCOUNT).expect("blob read"),
+            None,
+            "consolidate=false must never create the blob"
         );
     }
 }

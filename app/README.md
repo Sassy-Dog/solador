@@ -828,16 +828,61 @@ The store is the configuration, and the Settings view above is how you edit it.
 Two env vars remain for the headless/first-run cases a UI can't cover — a smoke
 run, a fresh checkout, a machine you are driving over SSH.
 
-| Env var                | Default                        | Meaning                                                                                     |
-|------------------------|--------------------------------|---------------------------------------------------------------------------------------------|
-| `DEVCANOPY_SEED_HOST`  | —                              | `"name\|address\|port\|token"`. Provisions that host **if no host with that address exists**; port defaults to 7878 and the token (when non-empty) goes to the OS credential store under the new host's id. Same parse and same no-op rule as Swift's `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()`, so it is safe to leave exported — relaunching never accumulates duplicates. |
-| `DEVCANOPY_STORE_DIR`  | platform config dir            | Where `store.json` lives. A scratch directory here keeps an experiment (or the smoke test below) out of the real store. |
+| Env var                     | Default                        | Meaning                                                                                     |
+|------------------------------|--------------------------------|---------------------------------------------------------------------------------------------|
+| `DEVCANOPY_SEED_HOST`       | —                              | `"name\|address\|port\|token"`. Provisions that host **if no host with that address exists**; port defaults to 7878 and the token (when non-empty) goes to the OS credential store under the new host's id. Same parse and same no-op rule as Swift's `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()`, so it is safe to leave exported — relaunching never accumulates duplicates. |
+| `DEVCANOPY_STORE_DIR`       | platform config dir            | Where `store.json` lives. A scratch directory here keeps `store.json` — and only `store.json` — out of the real one. **Not** the keychain: the credential *service* is always the real one, so credential migration is skipped whenever this is set (see "Consolidated credential item" below); a scratch run touches no keychain item at all beyond whatever per-item reads/writes the panels themselves make. |
+| `DEVCANOPY_LEGACY_SECRETS`  | unset                          | Set to `1` to skip credential migration and force per-item keychain routing, even on macOS — the rollback switch for consolidation. See "Consolidated credential item" below. |
 
-Tokens live in the OS credential store (service `com.sassydog.devcanopy`, account
-`host-<uuid>`), never in `store.json`. An empty token never leaves the process, so
-it gets its own message — *"No agent token configured for this host. Add one in
-Settings."* — rather than reusing the agent's 401 text and sending you to check
-the wrong layer.
+Tokens live in the OS credential store (service `com.sassydog.devcanopy`), never
+in `store.json`. Account `host-<uuid>` is the storage key either way, but what
+that means depends on platform and migration state: pre-migration, on any
+non-macOS target, or under `DEVCANOPY_LEGACY_SECRETS=1`, it names its own
+keychain item; on macOS once migrated, it is one key inside the consolidated
+`secrets_v1` item (see "Consolidated credential item" below). An empty token
+never leaves the process, so it gets its own message — *"No agent token
+configured for this host. Add one in Settings."* — rather than reusing the
+agent's 401 text and sending you to check the wrong layer.
+
+### Consolidated credential item
+
+On macOS, every text credential above — host tokens, the GitHub PAT, the Neon
+and Sentry usage keys, the Azure Cost SAS URL, the OpenClaw bearer token — lives
+in one keychain item: service `com.sassydog.devcanopy`, account `secrets_v1`,
+value a JSON map keyed by the same account strings each credential used to have
+its own item under. One item means one keychain ACL prompt covers every
+credential this app stores, rather than a fresh "Always Allow" per secret. The
+OpenClaw *device* identity key is the one exception — raw key material, not
+text, and an account the Swift app also writes to directly — so it keeps its
+own item regardless of platform.
+
+The first launch after this landed, and every launch since that finds no
+`secrets_v1` item, copies every legacy per-item secret into that blob once
+(`migrate_legacy`, called at startup before anything can write a secret) and
+never touches the legacy items again — they are left in place, intentionally
+stale, as the blob's rebuild source. New and edited secrets go only to the blob
+from then on, so a legacy item's value silently drifts from whatever the blob
+holds.
+
+**If the blob is ever damaged** (unparseable JSON — the affected panel keeps its
+last-good figures and shows a "couldn't read the credential store" footer
+rather than losing anything): delete the `secrets_v1` item in Keychain Access
+and relaunch. Migration rebuilds it from the legacy items, which means the
+rebuild restores *migration-time* values, not current ones — a credential
+rotated after migration (a re-issued PAT, a rotated SAS URL) reverts to its old
+value on rebuild, and needs re-saving in Settings afterward.
+
+**macOS only.** `keyring`'s Windows Credential Manager backend rejects a
+credential blob over 2560 bytes (`TooLong`); per-item storage never approached
+that limit, but a shared JSON blob crosses it at roughly five to six hosts,
+after which every save and delete would fail (the read-modify-write rewrites
+the whole map). The ACL-prompt problem consolidation exists to fix is
+macOS-specific too, so every other platform keeps the pre-consolidation
+one-item-per-secret scheme unchanged.
+
+**Escape hatch:** set `DEVCANOPY_LEGACY_SECRETS=1` to skip migration and force
+per-item routing even on macOS — abandoning consolidation is one env var, not
+deleting a keychain item before every launch.
 
 ### Offline fixtures
 
