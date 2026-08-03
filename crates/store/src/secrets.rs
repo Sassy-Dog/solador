@@ -23,6 +23,12 @@ use uuid::Uuid;
 /// (`KeychainHelper.serviceName`).
 pub const SERVICE: &str = "com.sassydog.devcanopy";
 
+/// The one keychain item all text secrets live in (a JSON map keyed by
+/// [`SecretKey::account`] strings). One item means one ACL, so one
+/// "Always Allow" covers every secret. The OpenClaw device key stays its own
+/// item: raw bytes, and an account name two apps agree on.
+pub const BLOB_ACCOUNT: &str = "secrets_v1";
+
 /// Every credential the app stores, and nothing else — a closed set, so a typo
 /// in an account string is a compile error instead of a silently missing token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -86,6 +92,13 @@ pub enum SecretError {
         #[source]
         source: keyring::Error,
     },
+
+    /// The consolidated item exists but its JSON would not parse. Deliberately
+    /// carries no detail: a serde message can quote stored values. Recovery:
+    /// delete the item named here in Keychain Access and relaunch — migration
+    /// rebuilds it from the kept legacy items.
+    #[error("the consolidated secret item '{account}' is unreadable — delete it in Keychain Access and relaunch to rebuild")]
+    CorruptBlob { account: String },
 }
 
 /// Get/set/delete over the platform credential store.
@@ -135,10 +148,25 @@ pub trait CredentialStore {
     fn set_secret_bytes(&self, key: SecretKey, value: &[u8]) -> Result<(), SecretError>;
 }
 
+/// Parse the blob's JSON map. Value-free on failure by construction.
+fn parse_blob(text: &str) -> Result<std::collections::BTreeMap<String, String>, SecretError> {
+    serde_json::from_str(text).map_err(|_| SecretError::CorruptBlob {
+        account: BLOB_ACCOUNT.to_owned(),
+    })
+}
+
+/// Serialize the blob's JSON map. `BTreeMap` keeps the output deterministic.
+fn serialize_blob(map: &std::collections::BTreeMap<String, String>) -> String {
+    serde_json::to_string(map).expect("a string map always serializes")
+}
+
 /// The real thing: `keyring` over the platform credential store.
 #[derive(Debug, Clone)]
 pub struct KeyringStore {
     service: String,
+    /// Serializes blob read-modify-write. Per-item writes never raced each
+    /// other; a shared blob can (poll loop vs. settings commands).
+    blob_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl KeyringStore {
@@ -147,6 +175,7 @@ impl KeyringStore {
     pub fn new() -> Self {
         KeyringStore {
             service: SERVICE.to_owned(),
+            blob_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         }
     }
 
@@ -157,6 +186,7 @@ impl KeyringStore {
     pub fn with_service(service: impl Into<String>) -> Self {
         KeyringStore {
             service: service.into(),
+            blob_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         }
     }
 
@@ -165,6 +195,64 @@ impl KeyringStore {
             account: account.to_owned(),
             source,
         })
+    }
+
+    /// Reads and parses the consolidated blob item. `Ok(None)` means the item
+    /// does not exist yet (pre-migration, or a fresh install).
+    fn read_blob(&self) -> Result<Option<std::collections::BTreeMap<String, String>>, SecretError> {
+        match self.entry(BLOB_ACCOUNT)?.get_password() {
+            Ok(text) => parse_blob(&text).map(Some),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(source) => Err(SecretError::Backend {
+                account: BLOB_ACCOUNT.to_owned(),
+                source,
+            }),
+        }
+    }
+
+    /// Writes the consolidated blob item wholesale.
+    fn write_blob(
+        &self,
+        map: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), SecretError> {
+        self.entry(BLOB_ACCOUNT)?
+            .set_password(&serialize_blob(map))
+            .map_err(|source| SecretError::Backend {
+                account: BLOB_ACCOUNT.to_owned(),
+                source,
+            })
+    }
+
+    /// The pre-consolidation per-item read: one keychain entry per
+    /// [`SecretKey::account`]. Still the only path for
+    /// [`SecretKey::OpenClawDeviceKey`], and the fallback for any other key
+    /// before it has been migrated into the blob.
+    fn legacy_secret(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
+        let account = key.account();
+        match self.entry(&account)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(source) => Err(SecretError::Backend { account, source }),
+        }
+    }
+
+    /// The pre-consolidation per-item write. See
+    /// [`KeyringStore::legacy_secret`].
+    fn legacy_set(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
+        let account = key.account();
+        self.entry(&account)?
+            .set_password(value)
+            .map_err(|source| SecretError::Backend { account, source })
+    }
+
+    /// The pre-consolidation per-item delete. See
+    /// [`KeyringStore::legacy_secret`].
+    fn legacy_delete(&self, key: SecretKey) -> Result<(), SecretError> {
+        let account = key.account();
+        match self.entry(&account)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(source) => Err(SecretError::Backend { account, source }),
+        }
     }
 }
 
@@ -176,29 +264,45 @@ impl Default for KeyringStore {
 
 impl CredentialStore for KeyringStore {
     fn secret(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
-        let account = key.account();
-        match self.entry(&account)?.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(source) => Err(SecretError::Backend { account, source }),
+        if matches!(key, SecretKey::OpenClawDeviceKey) {
+            return self.legacy_secret(key);
+        }
+        match self.read_blob()? {
+            Some(map) => Ok(map.get(&key.account()).cloned()),
+            // Not migrated yet: the legacy item is still the truth.
+            None => self.legacy_secret(key),
         }
     }
 
     fn set_secret(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
-        let account = key.account();
-        self.entry(&account)?
-            .set_password(value)
-            .map_err(|source| SecretError::Backend { account, source })
+        if matches!(key, SecretKey::OpenClawDeviceKey) {
+            return self.legacy_set(key, value);
+        }
+        let _guard = self.blob_lock.lock().expect("blob lock poisoned");
+        let mut map = self.read_blob()?.unwrap_or_default();
+        map.insert(key.account(), value.to_owned());
+        self.write_blob(&map)
     }
 
     fn delete_secret(&self, key: SecretKey) -> Result<(), SecretError> {
-        let account = key.account();
-        match self.entry(&account)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(source) => Err(SecretError::Backend { account, source }),
+        if matches!(key, SecretKey::OpenClawDeviceKey) {
+            return self.legacy_delete(key);
+        }
+        let _guard = self.blob_lock.lock().expect("blob lock poisoned");
+        match self.read_blob()? {
+            Some(mut map) => {
+                map.remove(&key.account());
+                self.write_blob(&map)
+            }
+            // Not migrated yet: clear the legacy item, or it resurfaces at
+            // migration time.
+            None => self.legacy_delete(key),
         }
     }
 
+    /// Raw bytes stay per-item for every key: [`SecretKey::OpenClawDeviceKey`]
+    /// is their only consumer, and it never enters the blob (see
+    /// [`SecretKey::OpenClawDeviceKey`]'s docs).
     fn secret_bytes(&self, key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
         let account = key.account();
         match self.entry(&account)?.get_secret() {
@@ -208,6 +312,8 @@ impl CredentialStore for KeyringStore {
         }
     }
 
+    /// Raw bytes stay per-item for every key. See
+    /// [`KeyringStore::secret_bytes`].
     fn set_secret_bytes(&self, key: SecretKey, value: &[u8]) -> Result<(), SecretError> {
         let account = key.account();
         self.entry(&account)?
@@ -475,5 +581,46 @@ mod tests {
             "Debug leaked a credential: {rendered}"
         );
         assert!(rendered.contains("github_access_token"));
+    }
+
+    /// The blob's account must never shadow a real per-secret account — the
+    /// legacy fallthrough would read the blob as a secret.
+    #[test]
+    fn the_blob_account_collides_with_no_secret_account() {
+        let mut accounts = vec![
+            SecretKey::GitHubAccessToken.account(),
+            SecretKey::NeonApiKey.account(),
+            SecretKey::SentryUsageToken.account(),
+            SecretKey::AzureCostSasUrl.account(),
+            SecretKey::OpenClawBearerToken.account(),
+            SecretKey::OpenClawDeviceKey.account(),
+            SecretKey::HostToken(uuid::Uuid::nil()).account(),
+        ];
+        accounts.retain(|a| a == BLOB_ACCOUNT);
+        assert!(accounts.is_empty());
+    }
+
+    /// Corrupt blob JSON is a typed, value-free error — never an empty map
+    /// (which would read as "no secrets stored") and never the serde message
+    /// (which can quote stored values).
+    #[test]
+    fn a_corrupt_blob_is_a_value_free_error() {
+        let err = parse_blob("{not json").unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains(BLOB_ACCOUNT));
+        assert!(
+            !text.contains("not json"),
+            "error must not echo blob content"
+        );
+    }
+
+    /// The blob round-trips deterministically (BTreeMap ordering).
+    #[test]
+    fn the_blob_map_round_trips() {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("neon_api_key".to_owned(), "napi_x".to_owned());
+        map.insert("github_access_token".to_owned(), "ghp_y".to_owned());
+        let text = serialize_blob(&map);
+        assert_eq!(parse_blob(&text).expect("parse"), map);
     }
 }
