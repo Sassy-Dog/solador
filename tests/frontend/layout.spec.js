@@ -532,6 +532,81 @@ test("the grid lays out exactly the columns the view-model asked for", async ({ 
   }
 });
 
+test("side-by-side cards reserve volume slots so the sections below them line up", async ({ page, baseURL }) => {
+  // The fixture's four cards report 1, 3, 3 and 0 volumes, so before the
+  // reservation the 1- and 0-volume cards ended their Volumes block two rows
+  // short and dragged TOP CPU / TOP RAM up with it.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  expect(vm.hostColumns, "fixture must be side by side").toBeGreaterThan(1);
+  expect(vm.volumeSlots, "Rust reserves the busiest card's count").toBe(
+    Math.max(...vm.hosts.map((h) => (h.volumes || []).length))
+  );
+
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  const measured = await page.locator(".cockpit .card").evaluateAll((cards) =>
+    cards.map((card) => {
+      const vols = card.querySelector(".volumes");
+      const label = [...card.querySelectorAll(".cols2 > section > .lbl")]
+        .find((e) => e.textContent.trim() === "TOP CPU");
+      return {
+        tiles: vols.querySelectorAll(".vol").length,
+        height: Math.round(vols.getBoundingClientRect().height),
+        // Distance from the top of the Volumes block to the TOP CPU heading,
+        // not the heading's absolute y — see the assertion below.
+        labelOffset: Math.round(
+          label.getBoundingClientRect().y - vols.getBoundingClientRect().y
+        ),
+      };
+    })
+  );
+
+  // A host that has never answered renders no data at all — `drawCard` returns
+  // before `render`, deliberately, so the card shows the cause instead of
+  // fabricated numbers. It has no Volumes block to align, and it contributes 0
+  // to the maximum rather than dragging it down.
+  const live = vm.hosts.map((h, i) => (h.error ? null : i)).filter((i) => i !== null);
+  expect(live.length, "fixture needs at least two live cards").toBeGreaterThan(1);
+
+  // Every live card renders the same number of tiles — the mechanism. Equal
+  // counts at equal card widths give the same auto-fit column count, hence the
+  // same number of rows.
+  expect(measured.map((m, i) => (vm.hosts[i].error ? 0 : m.tiles)))
+    .toEqual(vm.hosts.map((h) => (h.error ? 0 : vm.volumeSlots)));
+
+  // …and the result: equal block heights.
+  const heights = live.map((i) => measured[i].height);
+  expect(new Set(heights).size, `volume block heights ${heights}`).toBe(1);
+
+  // …so everything below the block sits at the same offset from it. Measured
+  // relative to the Volumes block, not as an absolute y: the cores block above
+  // is its own axis of variation — a card whose cores hit the squeeze floor
+  // (`core_rung_height`) is legitimately taller than one whose don't, and
+  // asserting absolute baselines here would make this test fail for a reason
+  // it does not own.
+  const offsets = live.map((i) => measured[i].labelOffset);
+  expect(new Set(offsets).size, `TOP CPU offsets below Volumes ${offsets}`).toBe(1);
+});
+
+test("a stacked column reserves nothing, so a short card keeps its own height", async ({ page, baseURL }) => {
+  // Alignment is meaningless once the cards stack, and reserving there would
+  // pad a 1-volume card with dead space under it. Rust says 0; the frontend
+  // must render no padding tiles at all.
+  const vm = await fixture(baseURL, "sample-cockpit-stacked.json");
+  expect(vm.hostColumns).toBe(1);
+  expect(vm.volumeSlots, "nothing reserved when cards never share a row").toBe(0);
+
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  await expect(page.locator(".cockpit .card .volumes .vol.pad")).toHaveCount(0);
+  const tiles = await page.locator(".cockpit .card .volumes").evaluateAll((els) =>
+    els.map((el) => el.querySelectorAll(".vol").length)
+  );
+  expect(tiles).toEqual(vm.hosts.map((h) => (h.volumes || []).length));
+});
+
 test("the tabs overflow mode shows one host at a time, and the bar switches between them", async ({ page, baseURL }) => {
   // The two fixtures hold the SAME four cards at the SAME width (1000pt, where
   // 900pt cards cannot pair) and differ only in the General tab's overflow

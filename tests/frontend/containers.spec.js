@@ -227,3 +227,43 @@ test("a failed load leaves no invented panel chrome on screen", async ({ page, b
   await expect(page.locator("#containersPanel")).toBeHidden();
   await expect(page.locator("#containersTitle")).toHaveText("");
 });
+
+test("host groups sit side by side once Rust says the panel is wide enough", async ({ page, baseURL }) => {
+  // Whole groups become the columns — THIS MACHINE fills one, a remote the
+  // next — so no group is ever split across a boundary.
+  const wide = await fixture(baseURL, "sample-cockpit.json");
+  const containers = await fixture(baseURL, "sample-containers.json");
+  expect(
+    wide.panelRows.flat().find((p) => p.id === "containers").columns,
+    "fixture must be wide enough for 2"
+  ).toBe(2);
+
+  await stubIpc(page, { cockpit: wide, containers });
+  await gotoApp(page);
+
+  await expect(page.locator("#containersPanel")).toHaveAttribute("data-cols", "2");
+  const tracks = await page.locator("#containersBody").evaluate((el) =>
+    getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length
+  );
+  expect(tracks, "two grid tracks").toBe(2);
+  // Every section still renders, whole: the split is CSS placing them, not JS
+  // re-chunking their rows.
+  await expect(page.locator("#containersBody .cont-section")).toHaveCount(
+    containers.sections.length
+  );
+});
+
+test("a narrow panel keeps the host groups stacked", async ({ page, baseURL }) => {
+  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
+  const containers = await fixture(baseURL, "sample-containers.json");
+  expect(narrow.panelRows.flat().find((p) => p.id === "containers").columns).toBe(1);
+
+  await stubIpc(page, { cockpit: narrow, containers });
+  await gotoApp(page);
+
+  await expect(page.locator("#containersPanel")).toHaveAttribute("data-cols", "1");
+  const tracks = await page.locator("#containersBody").evaluate((el) =>
+    getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length
+  );
+  expect(tracks).toBe(1);
+});

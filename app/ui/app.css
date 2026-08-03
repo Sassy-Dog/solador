@@ -112,6 +112,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .vol .top .detail { margin-left:auto; font-size:9px; white-space:nowrap; }
 .vol .bar { height:4px; border-radius:2px; background:var(--panelAlt); overflow:hidden; }
 .vol .bar > span { display:block; height:100%; border-radius:2px; }
+/* A slot reserved so this card's Volumes block matches its neighbours' height
+   (Rust's `volumeSlots`). `visibility:hidden`, never `display:none` -- the tile
+   still has to occupy its grid cell, and that occupancy IS the alignment. */
+.vol.pad { visibility:hidden; }
 .lbl { font-size:10px; font-weight:700; color:var(--muted); }
 .procs { display:flex; flex-direction:column; gap:6px; }
 .proc { display:flex; font-size:10px; }
@@ -129,6 +133,16 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .panel-trailing { font-size:10px; color:var(--muted); white-space:nowrap; }
 .panel-body { display:flex; flex-direction:column; gap:10px; min-width:0; }
 .panel-footer { font-size:9px; font-weight:700; margin:0; }
+/* Whole host groups sit side by side once Rust says the panel is wide enough
+   (`--panel-cols`, from `panel_columns`). A group is already the right grid
+   item, so this is the entire two-column implementation for this panel -- and
+   because it is pure CSS, a resize reflows it without waiting out the panel's
+   own 10s poll. `align-items:start` keeps a short group short instead of
+   stretching it to match a long neighbour. */
+#containersBody {
+  display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
+  gap:10px 24px; align-items:start;
+}
 .cont-section { display:flex; flex-direction:column; gap:3px; min-width:0; }
 .cont-empty { font-size:10px; color:var(--muted); margin:0; }
 .cont-row { display:flex; align-items:center; gap:7px; min-width:0; }
@@ -155,8 +169,13 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-dot-spacer { background:none; }
 .gh-message { font-size:11px; color:var(--muted); margin:0; }
 
+/* `flex:none` for the same reason `.gh-cell` has it: the width is Rust's
+   `REPO_NAME_W` reservation, and a shrinkable reservation is not one — left to
+   flex, the name is the only elastic thing in the row, so the seven fixed
+   cells squeeze it to zero in a column that is even slightly tight. Long names
+   ellipsize inside the reservation instead. */
 .gh-repo-name { font-size:11px; font-weight:700; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
+  overflow:hidden; text-overflow:ellipsis; flex:none; }
 /* Right-aligned and tabular: the panel's whole legibility is the columns
    lining up, and proportional digits break that at every width. */
 .gh-cell { font-size:11px; text-align:right; flex:none;
@@ -164,6 +183,14 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-head .gh-repo-name, .gh-head .gh-cell { font-size:9px; font-weight:700;
   color:var(--muted); }
 .gh-row .grow { min-width:8px; }
+/* One column of the Repos table: its own header, its own rows, its own
+   right-flush numeric block. Built in JS rather than by `column-count`,
+   because balancing cannot repeat a header per column. */
+#reposBody {
+  display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
+  gap:10px 24px; align-items:start;
+}
+.gh-col { display:flex; flex-direction:column; gap:10px; min-width:0; }
 .panel-health { font-size:10px; margin:4px 0 0; }
 
 /* A repo row opens its GitHub Actions page. The affordance is deliberately
@@ -196,6 +223,17 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-runner-name { font-size:11px; font-weight:700; white-space:nowrap;
   overflow:hidden; text-overflow:ellipsis; }
 .gh-runner-os { font-size:8px; color:var(--muted); flex:none; }
+/* The runner list splits into `--panel-cols` columns once Rust says the panel
+   is wide enough. CSS multi-column, not grid, because *balancing* is the
+   feature: it fills top-to-bottom then wraps, so the list keeps its reading
+   order down each column. A grid would need the row count, which is data the
+   stylesheet does not have. `break-inside` keeps a row whole across the
+   boundary. */
+/* 40px, not the 24 the other splits use: a runner row ends in a right-aligned
+   status, so its text finishes hard against the boundary and the next column
+   opens with a dot and a bold name. At 24 the two read as one crowded run. */
+.gh-list { column-count: var(--panel-cols, 1); column-gap:40px; }
+.gh-list > .gh-row { break-inside:avoid; }
 /* The width is Rust's `statusWidth`, applied via CSSOM, and there is no
    `min-width` fallback on purpose: a minimum is what let "recycling 1m" grow
    its own column and shove the OS chip left on that one row (#206). `overflow`

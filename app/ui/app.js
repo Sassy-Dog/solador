@@ -151,7 +151,10 @@ function installCoreLadders(hosts) {
   coreLadderSheet.replaceSync(rules.join("\n"));
 }
 
-function render(card, d) {
+/** `volumeSlots` is the payload's cross-card number, not this host's — a card
+ *  cannot see its neighbours, so the count of tiles it reserves has to arrive
+ *  from above. `0` (stacked, or tabs) means reserve nothing. */
+function render(card, d, volumeSlots) {
   const r = document.documentElement.style;
   for (const [k, v] of Object.entries(d.theme)) {
     r.setProperty("--" + (k === "netUp" ? "netup" : k), v);
@@ -231,10 +234,19 @@ function render(card, d) {
   // Same CSP constraint as the core cells above: fraction-driven width and
   // tint are set via CSSOM after creation, never as a `style=""` attribute.
   const volsEl = f(card, "volumes");
+  // Reserved slots keep this block the same height as its neighbours': the
+  // cards in a row are equal width, so an equal tile *count* gives them the
+  // same auto-fit column count and therefore the same number of rows. The
+  // padding tiles carry the real tile's markup — a non-breaking space in
+  // `.mount` so the line box exists — which is what makes the two measure
+  // identically without a height constant to keep in step with the CSS.
+  const pad = Math.max(0, (Number(volumeSlots) | 0) - d.volumes.length);
   volsEl.innerHTML = d.volumes.map((v) =>
     `<div class="vol"><div class="top"><span class="mount">${esc(v.mount)}</span><span class="detail"></span></div><div class="bar"><span></span></div></div>`
-  ).join("");
-  volsEl.querySelectorAll(".vol").forEach((el, i) => {
+  ).join("") + `<div class="vol pad" aria-hidden="true"><div class="top"><span class="mount">&nbsp;</span><span class="detail"></span></div><div class="bar"><span></span></div></div>`.repeat(pad);
+  // `:not(.pad)` is load-bearing: the reserved tiles have no entry in
+  // `d.volumes`, so a bare `.vol` walk would index past its end and throw.
+  volsEl.querySelectorAll(".vol:not(.pad)").forEach((el, i) => {
     const v = d.volumes[i];
     const detail = el.querySelector(".detail");
     detail.textContent = v.detail;
@@ -252,7 +264,7 @@ function render(card, d) {
 }
 
 /** One host's card: the connection badge, then either the error or the data. */
-function drawCard(card, d) {
+function drawCard(card, d, volumeSlots) {
   // The dot's colour and the "connecting"/"live"/"stale"/"failed" state
   // both come from Rust (`viewmodel::color`), never chosen here — same
   // discipline as every other colour in the card. `data-state` (not a
@@ -290,7 +302,7 @@ function drawCard(card, d) {
     stale.textContent = "";
     stale.style.color = "";
   }
-  render(card, d);
+  render(card, d, volumeSlots);
 }
 
 // Host id -> its card element. Cards are reused across polls so each card
@@ -332,6 +344,7 @@ let panelRowShape = "";
  */
 function applyPanelRows(rows) {
   if (!Array.isArray(rows) || !rows.length) return;
+  applyPanelColumns(rows);
   const shape = JSON.stringify(rows.map((row) => (row || []).map((p) => p && p.id)));
   if (shape === panelRowShape) return;
   panelRowShape = shape;
@@ -355,6 +368,35 @@ function applyPanelRows(rows) {
   }
   // Safe after the moves above: the old containers are empty by now.
   $("panelRows").replaceChildren(...built);
+}
+
+/**
+ * Hands each panel the content-column count Rust derived for its width.
+ *
+ * Deliberately OUTSIDE `applyPanelRows`'s shape memo: the memo skips the
+ * rebuild when the same panels still share the same rows, but a window resize
+ * changes their *width* without changing that shape — so a count applied
+ * inside it would freeze at whatever the last reflow happened to see.
+ *
+ * The count lands as a custom property, which is enough on its own for the
+ * panels whose split is pure CSS (Containers' section grid, Runners'
+ * multi-column list). A panel that has to rebuild its DOM to re-split (Repos,
+ * whose columns each carry their own header) also gets an event, so it
+ * re-renders now rather than at the far end of its own 10s poll.
+ */
+function applyPanelColumns(rows) {
+  for (const row of rows) {
+    for (const panel of row || []) {
+      const section = panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null;
+      if (!section) continue;
+      const cols = Math.max(1, Number(panel.columns) | 0);
+      if (Number(section.dataset.cols) === cols) continue;
+      section.dataset.cols = String(cols);
+      // CSSOM, never a `style=""` attribute -- `style-src 'self'`.
+      section.style.setProperty("--panel-cols", String(cols));
+      section.dispatchEvent(new CustomEvent("panelcolumns", { detail: { columns: cols } }));
+    }
+  }
 }
 
 // Which host the tab bar has selected, by id. Module-level so it survives every
@@ -481,7 +523,7 @@ function renderCockpit(p) {
     // off-screen cards keep recording and are current the moment they are
     // shown -- and their charts repaint from the ResizeObserver.
     card.hidden = shown !== null && h.id !== shown;
-    drawCard(card, h);
+    drawCard(card, h, p.volumeSlots);
   });
 }
 

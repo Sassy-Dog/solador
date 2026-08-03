@@ -79,13 +79,18 @@ function repoHeader(columns) {
   // has no equivalent of.
   el.appendChild(node("span", "dot gh-dot-spacer"));
   const [repo, ...fixed] = columns;
-  el.appendChild(node("span", "gh-repo-name", repo.label));
-  el.appendChild(node("span", "grow"));
+  const name = node("span", "gh-repo-name", repo.label);
+  reserveWidth(name, repo.width);
+  el.appendChild(name);
   for (const column of fixed) {
     const cell = node("span", "gh-cell", column.label);
     reserveWidth(cell, column.width);
     el.appendChild(cell);
   }
+  // Trailing, not between the name and the cells: the block reads as one unit
+  // at the row's start, and the slack collects at the panel's edge — which is
+  // where a second column goes when the panel is wide enough for one.
+  el.appendChild(node("span", "grow"));
   return el;
 }
 
@@ -112,15 +117,21 @@ function openRepo(url) {
   window.__TAURI__.core.invoke("plugin:opener|open_url", { url }).catch(() => {});
 }
 
-function repoRowNode(row) {
+function repoRowNode(row, nameWidth) {
   const el = node("div", "gh-row");
   const dot = node("span", "dot");
   dot.style.background = row.dotColor;
   // The pulse means "a human must approve this" — Rust decides which rows get
   // it, so a colour alone never has to carry two meanings.
   if (row.blinking) dot.classList.add("blink");
-  el.append(dot, node("span", "gh-repo-name", row.name), node("span", "grow"));
+  const name = node("span", "gh-repo-name", row.name);
+  // The same reservation the header uses. Without it the name is the only
+  // shrinkable thing in the row, so in a narrow column the seven fixed cells
+  // squeeze it to nothing.
+  reserveWidth(name, nameWidth);
+  el.append(dot, name);
   for (const cell of row.cells) el.appendChild(cellNode("gh-cell", cell));
+  el.appendChild(node("span", "grow"));
 
   // The Swift panel's `onTapGesture` + `NSWorkspace.open`. A `div` is not a
   // link, so the affordances a real one would carry are spelled out: a role
@@ -140,7 +151,21 @@ function repoRowNode(row) {
   return el;
 }
 
+/** The last payload rendered, so a column-count change can re-split without
+ *  waiting for the next poll. */
+let lastRepos = null;
+
+/** Column-major chunks: `[1..6]` over 2 columns reads 1,2,3 | 4,5,6 — down one
+ *  column and on to the next, the order the list is already sorted in. */
+function chunk(items, columns) {
+  const perColumn = Math.ceil(items.length / columns);
+  const out = [];
+  for (let i = 0; i < items.length; i += perColumn) out.push(items.slice(i, i + perColumn));
+  return out;
+}
+
 function renderRepos(payload) {
+  lastRepos = payload;
   $g("reposTitle").textContent = payload.title;
   $g("reposTrailing").textContent = payload.trailing || "";
 
@@ -148,8 +173,18 @@ function renderRepos(payload) {
   if (payload.message) {
     children.push(messageNode(payload.message));
   } else {
-    children.push(repoHeader(payload.columns));
-    for (const row of payload.rows || []) children.push(repoRowNode(row));
+    // Each column is a table in its own right — its own header, its own
+    // right-flush numeric block. Unlike the runner list this cannot be CSS
+    // multi-column: balancing has no way to repeat a header per column.
+    const cols = Math.max(1, Number($g("reposPanel").dataset.cols) | 0);
+    const rows = payload.rows || [];
+    const nameWidth = (payload.columns[0] || {}).width;
+    for (const group of chunk(rows, Math.min(cols, Math.max(1, rows.length)))) {
+      const column = node("div", "gh-col");
+      column.appendChild(repoHeader(payload.columns));
+      for (const row of group) column.appendChild(repoRowNode(row, nameWidth));
+      children.push(column);
+    }
   }
   $g("reposBody").replaceChildren(...children);
 
@@ -217,7 +252,11 @@ function renderRunners(payload) {
     for (const chip of payload.chips) chips.appendChild(node("span", "gh-chip", chip));
     children.push(chips);
   }
-  for (const row of payload.rows || []) children.push(runnerRowNode(row));
+  // The rows go in their own wrapper so the stats and chips above them stay
+  // full-width: `--panel-cols` splits the LIST, not the whole panel body.
+  const list = node("div", "gh-list");
+  for (const row of payload.rows || []) list.appendChild(runnerRowNode(row));
+  children.push(list);
   $g("runnersBody").replaceChildren(...children);
 
   // A healthy, fresh panel renders no footer at all — the cockpit stays
@@ -244,6 +283,13 @@ async function refresh() {
   if (repos) renderRepos(repos);
   if (runners) renderRunners(runners);
 }
+
+// Repos rebuilds its DOM to re-split, so it cannot ride the custom property
+// alone the way the runner list does — app.js fires this the moment Rust's
+// count changes, which is a window resize away and 10s sooner than the poll.
+$g("reposPanel").addEventListener("panelcolumns", () => {
+  if (lastRepos) renderRepos(lastRepos);
+});
 
 refresh();
 if (window.__TAURI__) {
