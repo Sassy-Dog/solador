@@ -13,7 +13,10 @@ glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **GitHub Runners** — self-hosted runner availability/activity
 - **Usage** — token rollups from local Claude Code usage logs (subscription; no USD),
   plus per-provider usage sections (Neon compute/storage MTD, Sentry accepted error
-  events over 30d)
+  events over 30d). The Neon cost rows added by #221 — `NEON EST. CHARGES (MTD)`,
+  priced from operator-entered rates rather than a shipped price table, and
+  `NEON LAST INVOICE`, off an undocumented endpoint and treated as best-effort —
+  are on the cross-platform cockpit only; this panel renders compute/storage alone.
 
 It has three parts:
 - **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit. This is the shipped app.
@@ -37,7 +40,10 @@ renders every panel the SwiftUI cockpit renders. It began as a walking skeleton
 - **Repos + GitHub Runners** — per-repo CI health and counts, local
   branch/worktree counts, the org's self-hosted runners with the absence roster
   (the store's `refresh_interval_secs`).
-- **Usage** — Claude token rollups (same interval); Neon + Sentry (hourly).
+- **Usage** — Claude token rollups (same interval); Neon + Sentry (hourly). Neon
+  renders compute/storage MTD, `NEON EST. CHARGES (MTD)` from operator-entered
+  rates, and a best-effort `NEON LAST INVOICE` off an undocumented endpoint —
+  that one failing degrades to `—` plus a footer, never the consumption rows.
 - **Azure Cost** — the daily cost export, on its own 4h cadence.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness footer.
