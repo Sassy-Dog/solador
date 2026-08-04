@@ -553,10 +553,12 @@ test("side-by-side cards reserve volume slots so the sections below them line up
       return {
         tiles: vols.querySelectorAll(".vol").length,
         height: Math.round(vols.getBoundingClientRect().height),
-        // Distance from the top of the Volumes block to the TOP CPU heading,
-        // not the heading's absolute y — see the assertion below.
-        labelOffset: Math.round(
-          label.getBoundingClientRect().y - vols.getBoundingClientRect().y
+        // The heading's y measured from the top of the CORES block — every
+        // section between the two now aligns across the row, so this spans
+        // the whole stack rather than just Volumes → TOP CPU.
+        labelY: Math.round(
+          label.getBoundingClientRect().y -
+            card.querySelector(".cores-wrap").getBoundingClientRect().y
         ),
       };
     })
@@ -579,14 +581,22 @@ test("side-by-side cards reserve volume slots so the sections below them line up
   const heights = live.map((i) => measured[i].height);
   expect(new Set(heights).size, `volume block heights ${heights}`).toBe(1);
 
-  // …so everything below the block sits at the same offset from it. Measured
-  // relative to the Volumes block, not as an absolute y: the cores block above
-  // is its own axis of variation — a card whose cores hit the squeeze floor
-  // (`core_rung_height`) is legitimately taller than one whose don't, and
-  // asserting absolute baselines here would make this test fail for a reason
-  // it does not own.
-  const offsets = live.map((i) => measured[i].labelOffset);
-  expect(new Set(offsets).size, `TOP CPU offsets below Volumes ${offsets}`).toBe(1);
+  // …so the whole stack from the cores block down shares one baseline. This
+  // used to be measured from the *Volumes* block, because the cores block
+  // above was its own axis of variation: a card whose cores hit the squeeze
+  // floor (`core_rung_height`) was legitimately taller than one whose don't.
+  // `aligned_core_ladders` closed that axis, so the span widens to cover
+  // Cores → Memory → Disk → Volumes → TOP CPU; cores drifting out of
+  // alignment now fails here too.
+  //
+  // It stops at the cores block rather than the card's top edge because the
+  // header genuinely varies: a host that has gone unreachable while still
+  // showing its last-known data carries a "Couldn't reach the agent" banner
+  // there, making its header 21px taller. That difference is the card doing
+  // its job — padding every healthy card to match would be alignment for its
+  // own sake.
+  const baselines = live.map((i) => measured[i].labelY);
+  expect(new Set(baselines).size, `TOP CPU baselines ${baselines}`).toBe(1);
 });
 
 test("a stacked column reserves nothing, so a short card keeps its own height", async ({ page, baseURL }) => {
@@ -773,4 +783,72 @@ test("a host that leaves the payload takes its chart bookkeeping with it", async
 
   expect(after).toBe(5 + one.hosts[0].cores.length);
   expect(after).toBeLessThan(before);
+});
+
+test("cards sharing a row share one core-block height", async ({ page, baseURL }) => {
+  // The skew this fixes: at a ~900pt card a 36-core host takes 6 rows (334px)
+  // where a 10-core host takes 2 (220px), and every section below the block —
+  // Memory, Disk, Volumes, the process lists — inherits the 114px difference.
+  // Rust's `aligned_core_ladders` gives each count its own columns but the
+  // busiest card's height; this asserts the frontend actually paints that.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  expect(vm.hostColumns, "fixture must be side by side").toBeGreaterThan(1);
+
+  // Two live hosts with genuinely different core counts, each carrying the
+  // ladder Rust emits for the {10, 36} set: own cols, shared height.
+  const [a, b] = vm.hosts.filter((h) => !h.error).slice(0, 2);
+  const reshape = (host, n) => {
+    const base = host.cores;
+    host.cores = Array.from({ length: n }, (_, i) => ({
+      ...base[i % base.length], label: `Core ${i}`,
+    }));
+    const divisors = (m) => [...Array(m).keys()].map((i) => i + 1).filter((d) => m % d === 0);
+    const rung = (count, cols) => Math.max(220, Math.ceil(count / cols) * 49 + (Math.ceil(count / cols) - 1) * 8);
+    // Union of both ladders' boundaries, height = max across both counts —
+    // the JS mirror of the Rust function, exactly as the 36-core test above
+    // mirrors `core_rung_height`.
+    const widths = [...new Set([10, 36].flatMap((m) => divisors(m).map((d) => d * 104 + (d - 1) * 8)))]
+      .sort((x, y) => x - y);
+    const colsAt = (count, w) =>
+      divisors(count).filter((d) => d * 104 + (d - 1) * 8 <= w).pop() || 1;
+    host.coreLadder = widths.map((w) => ({
+      minWidth: w,
+      cols: colsAt(n, w),
+      height: Math.max(...[10, 36].map((m) => rung(m, colsAt(m, w)))),
+    }));
+  };
+  reshape(a, 10);
+  reshape(b, 36);
+
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  const measured = await page.evaluate(async () => {
+    const wraps = [...document.querySelectorAll(".card:not([hidden]) .cores-wrap")];
+    // 899px: the band where a 36-core host is on its 6-column rung (334px)
+    // while a 10-core host would naturally sit at 220.
+    for (const w of wraps) w.style.width = "899px";
+    void wraps[0].offsetWidth;
+    await new Promise(requestAnimationFrame);
+    const out = wraps.map((w) => ({
+      height: Math.round(w.getBoundingClientRect().height),
+      cols: getComputedStyle(w.querySelector(".cores")).gridTemplateColumns.split(/\s+/).length,
+      cells: w.querySelectorAll(".core").length,
+    }));
+    for (const w of wraps) w.style.width = "";
+    return out;
+  });
+
+  const live = measured.filter((m) => m.cells > 0);
+  expect(live.length, "at least two live cards").toBeGreaterThan(1);
+  const [ten, thirtySix] = live;
+  expect(ten.cells).toBe(10);
+  expect(thirtySix.cells).toBe(36);
+  // Each keeps a column count its own core count divides evenly into —
+  // sharing the height must never orphan a last row.
+  expect(ten.cells % ten.cols, "10 cores divide evenly").toBe(0);
+  expect(thirtySix.cells % thirtySix.cols, "36 cores divide evenly").toBe(0);
+  // …and the blocks match, at the taller card's height.
+  expect(ten.height, `heights ${live.map((m) => m.height)}`).toBe(thirtySix.height);
+  expect(thirtySix.height).toBe(334);
 });

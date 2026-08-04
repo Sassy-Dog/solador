@@ -61,6 +61,103 @@ pub fn core_rung_height(row_span: usize, rows: usize) -> f64 {
     core_block_height(row_span).max(rows * CORE_CELL_MIN_H + (rows - 1.0) * CORE_GAP)
 }
 
+/// One rung of a core ladder: the container width it needs, the columns it
+/// asks for, and the height the block takes there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoreRung {
+    pub min_width: f64,
+    pub cols: usize,
+    pub height: f64,
+}
+
+/// Ladders for every core count on screen, with **one block height shared
+/// across all of them at every width**.
+///
+/// [`core_rung_height`] is a function of a card's own row count, so two cards
+/// of different core counts legitimately disagree: at a 900pt-class card a
+/// 36-core host takes 6 rows (334pt) where a 16-core host takes 4 (220pt), and
+/// every section below the block — Memory, Disk, Volumes, the process lists —
+/// inherits that 114pt of skew. Cards in a cockpit row are equal width, so the
+/// fix is to give each count *its own* columns (its grid must still divide
+/// evenly) but *everyone's* height: the max across the counts present.
+///
+/// Only the height is shared. Taking the widest card's column count too would
+/// hand a 36-core host a 16-core grid and orphan the last row, which is the
+/// thing [`core_column_ladder`] exists to prevent.
+///
+/// The result is never shorter than any card's own rung — it is a `max` over
+/// values that are themselves `max`es against [`CORE_CELL_MIN_H`] — so no card
+/// is ever squeezed below the floor that keeps its sparklines visible. The
+/// slack lands in the shorter card's cells, which `grid-auto-rows: 1fr` grows
+/// into taller tiles rather than leaving as a void.
+///
+/// One count in gives exactly [`core_column_ladder`]'s answer with
+/// [`core_rung_height`]'s heights — the single-card case is unchanged.
+#[must_use]
+pub fn aligned_core_ladders(
+    counts: &[usize],
+    row_span: usize,
+    min_cell: f64,
+    gap: f64,
+) -> Vec<(usize, Vec<CoreRung>)> {
+    let mut distinct: Vec<usize> = counts.iter().copied().filter(|c| *c > 0).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    if distinct.is_empty() {
+        return vec![];
+    }
+
+    let ladders: Vec<(usize, Vec<(f64, usize)>)> = distinct
+        .iter()
+        .map(|&n| (n, core_column_ladder(n, min_cell, gap)))
+        .collect();
+
+    // A card's layout only changes at one of ITS rung boundaries, but the
+    // shared height changes at any card's — so every ladder is evaluated at
+    // the union of them all.
+    let mut widths: Vec<f64> = ladders
+        .iter()
+        .flat_map(|(_, rungs)| rungs.iter().map(|(w, _)| *w))
+        .collect();
+    widths.sort_by(f64::total_cmp);
+    widths.dedup_by(|a, b| a == b);
+
+    ladders
+        .iter()
+        .map(|(n, rungs)| {
+            let at = |rungs: &[(f64, usize)], w: f64| {
+                // The widest rung this width affords; below the narrowest, the
+                // single-column rung is all there is.
+                rungs
+                    .iter()
+                    .filter(|(rw, _)| *rw <= w)
+                    .map(|(_, c)| *c)
+                    .next_back()
+                    .unwrap_or(1)
+            };
+            let out = widths
+                .iter()
+                .map(|&w| {
+                    let cols = at(rungs, w);
+                    let height = ladders
+                        .iter()
+                        .map(|(other, other_rungs)| {
+                            let other_cols = at(other_rungs, w);
+                            core_rung_height(row_span, core_visual_rows(*other, other_cols))
+                        })
+                        .fold(0.0_f64, f64::max);
+                    CoreRung {
+                        min_width: w,
+                        cols,
+                        height,
+                    }
+                })
+                .collect();
+            (*n, out)
+        })
+        .collect()
+}
+
 pub fn core_cell_height(block_height: f64, rows: usize, gap: f64) -> f64 {
     let rows = rows.max(1);
     (block_height - gap * (rows - 1) as f64) / rows as f64
@@ -412,5 +509,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    // MARK: the shared core-block height
+
+    /// Alone, a count gets exactly what it got before: `core_column_ladder`'s
+    /// rungs with `core_rung_height`'s heights. The whole feature has to be
+    /// invisible to a single-card cockpit.
+    #[test]
+    fn one_count_reproduces_the_unaligned_ladder() {
+        for n in [1_usize, 8, 10, 16, 36, 64] {
+            let aligned = aligned_core_ladders(&[n], 2, CORE_MIN_CELL, CORE_GAP);
+            assert_eq!(aligned.len(), 1, "n {n}");
+            let (got_n, rungs) = &aligned[0];
+            assert_eq!(*got_n, n);
+            let plain = core_column_ladder(n, CORE_MIN_CELL, CORE_GAP);
+            assert_eq!(rungs.len(), plain.len(), "n {n}");
+            for (rung, (w, c)) in rungs.iter().zip(plain.iter()) {
+                assert_eq!(rung.min_width, *w, "n {n}");
+                assert_eq!(rung.cols, *c, "n {n}");
+                assert_eq!(
+                    rung.height,
+                    core_rung_height(2, core_visual_rows(n, *c)),
+                    "n {n} cols {c}"
+                );
+            }
+        }
+    }
+
+    /// The case this exists for: Chris's cockpit, a 10-core Mac beside the
+    /// 36-core ubu-3xdv. At a 900pt-class card the Mac takes 2 rows (220) and
+    /// ubu takes 6 (334); aligned, both blocks are 334 while each keeps the
+    /// column count its own core count divides into.
+    #[test]
+    fn a_mac_beside_a_36_core_host_shares_the_taller_block() {
+        let aligned = aligned_core_ladders(&[10, 36], 2, CORE_MIN_CELL, CORE_GAP);
+        let at = |n: usize, width: f64| {
+            let (_, rungs) = aligned.iter().find(|(c, _)| *c == n).expect("count");
+            *rungs
+                .iter()
+                .rfind(|r| r.min_width <= width)
+                .expect("a rung at this width")
+        };
+        let mac = at(10, 899.0);
+        let ubu = at(36, 899.0);
+        assert_eq!(mac.cols, 5, "10 cores divide into 5, not into 6");
+        assert_eq!(ubu.cols, 6);
+        assert_eq!(ubu.height, 334.0, "6 rows of 36 cores clears the floor");
+        assert_eq!(mac.height, ubu.height, "the blocks must match");
+    }
+
+    /// Sharing a height never shortens anyone: the value is a max over values
+    /// that are themselves maxes against the squeeze floor, so no card can be
+    /// pushed below the height that keeps its sparklines visible (#219).
+    #[test]
+    fn the_shared_height_never_drops_a_card_below_its_own() {
+        let counts = [4_usize, 8, 10, 16, 36, 64];
+        let aligned = aligned_core_ladders(&counts, 2, CORE_MIN_CELL, CORE_GAP);
+        for (n, rungs) in &aligned {
+            for rung in rungs {
+                let own = core_rung_height(2, core_visual_rows(*n, rung.cols));
+                assert!(
+                    rung.height >= own,
+                    "n {n} at {}pt: shared {} < own {own}",
+                    rung.min_width,
+                    rung.height
+                );
+            }
+        }
+    }
+
+    /// Every count keeps a column count it divides evenly into — taking the
+    /// widest card's columns as well as its height would orphan a last row,
+    /// which is the thing the ladder exists to prevent.
+    #[test]
+    fn sharing_a_height_never_shares_a_column_count() {
+        let aligned = aligned_core_ladders(&[8, 36], 2, CORE_MIN_CELL, CORE_GAP);
+        for (n, rungs) in &aligned {
+            for rung in rungs {
+                assert_eq!(n % rung.cols, 0, "n {n} cols {}", rung.cols);
+            }
+        }
+    }
+
+    /// At any one width every count reports the same height — the property the
+    /// cockpit actually renders.
+    #[test]
+    fn all_counts_agree_on_the_height_at_every_width() {
+        let aligned = aligned_core_ladders(&[8, 16, 36], 2, CORE_MIN_CELL, CORE_GAP);
+        let widths: Vec<f64> = aligned[0].1.iter().map(|r| r.min_width).collect();
+        for w in widths {
+            let heights: Vec<f64> = aligned
+                .iter()
+                .map(|(_, rungs)| {
+                    rungs
+                        .iter()
+                        .rfind(|r| r.min_width <= w)
+                        .expect("rung")
+                        .height
+                })
+                .collect();
+            assert!(
+                heights.windows(2).all(|p| p[0] == p[1]),
+                "at {w}pt heights disagree: {heights:?}"
+            );
+        }
+    }
+
+    /// Degenerate inputs: no counts, and zero-core cards (an unreachable host
+    /// reports none) must not invent a ladder or panic.
+    #[test]
+    fn empty_and_zero_counts_yield_no_ladders() {
+        assert!(aligned_core_ladders(&[], 2, CORE_MIN_CELL, CORE_GAP).is_empty());
+        assert!(aligned_core_ladders(&[0, 0], 2, CORE_MIN_CELL, CORE_GAP).is_empty());
+        // A zero-core card alongside a real one drops out rather than
+        // dragging the set down.
+        let aligned = aligned_core_ladders(&[0, 8], 2, CORE_MIN_CELL, CORE_GAP);
+        assert_eq!(aligned.len(), 1);
+        assert_eq!(aligned[0].0, 8);
     }
 }
