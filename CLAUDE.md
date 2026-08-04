@@ -25,13 +25,19 @@ It has three parts:
 - **HostMetricsKit** (`Packages/HostMetricsKit/`) — local Swift package for
   local-machine metric collection (CPU/GPU/battery via IOKit), shared by the app.
 
-There is also an **experimental cross-platform cockpit** — a Rust workspace
-(`crates/*`) plus a Tauri v2 app (`app/`) proving out a macOS/Windows-portable
-stack. It is kept strictly separate from the shipped SwiftUI app above, which
-stays untouched, and it is *experimental in distribution, not in scope*: it
-renders every panel the SwiftUI cockpit renders. It began as a walking skeleton
-(one host card); epic #150 took it to panel parity across fourteen slices, and
-`app/README.md` is its reference doc.
+**The Tauri app is the one going forward.** A Rust workspace (`crates/*`) plus
+a Tauri v2 app (`app/`), macOS/Windows-portable, rendering every panel the
+SwiftUI cockpit renders. It began as a walking skeleton (one host card); epic
+#150 took it to panel parity across fourteen slices, and `app/README.md` is its
+reference doc.
+
+**The SwiftUI app is frozen.** It still exists, still builds locally
+(`./dev build`, `./dev xcode`), and its sources stay the reference for parity
+questions — but new features land Tauri-only, and as of 2026-08-04 it is
+**neither built, tested nor linted in CI**: `Swift app tests` and `Lint` were
+the only two jobs serving it, both sat on the org's two-runner macOS pool, and
+`./dev test`/`./dev lint` no longer touch Swift either. A Swift compile break
+can therefore reach `main` unnoticed; that is the accepted cost of freezing it.
 
 - **Hosts** — this machine's card plus one per configured agent, in a
   width-aware grid (1s poll).
@@ -65,22 +71,23 @@ plan/reviews that produced the original skeleton.
 ### Quick Commands
 - `./dev` - Build and run (debug mode)
 - `./dev run --release` - Run release build
-- `./dev test` - Run all tests: the Swift app, **plus** the root Rust workspace
-  (`cargo test --locked --workspace` — `crates/*`, `app/src-tauri`) and the
-  `tests/frontend` Playwright e2e suite
-- `./dev lint` - SwiftLint + SwiftFormat, **plus** `cargo fmt --check` + `cargo clippy`
-  for the root Rust workspace, mirrors CI (run before pushing)
-- `./dev format` - Auto-fix formatting: SwiftFormat, **plus** `cargo fmt` for the
-  root Rust workspace
+- `./dev test` - Run all tests: the root Rust workspace (`cargo test --locked
+  --workspace` — `crates/*`, `app/src-tauri`) and the `tests/frontend`
+  Playwright e2e suite. **Not the Swift app** — it is frozen (see above); open
+  `./dev xcode` to run its tests by hand.
+- `./dev lint` - `cargo fmt --check` + `cargo clippy` for the root Rust
+  workspace, mirrors CI (run before pushing)
+- `./dev format` - Auto-fix formatting: `cargo fmt` for the root Rust workspace
 - `./dev clean` - Clean build artifacts
 - `./dev xcode` - Open in Xcode
 - `./dev publish` - Publish a new release (CalVer minted from git — see `Docs/VERSIONING.md`)
 - `./prd` - Production build (alias for `./dev build --release`)
 
-> `./dev lint` is the local mirror of CI's Lint job. `./Scripts/install-hooks.sh`
-> (one-time) wires it to a pre-push hook so lint/baseline failures never reach CI.
-> When renaming `.swift` files, also re-point their entries in `lint-baseline.json`
-> (the baseline is path-keyed; a rename un-baselines its violations).
+> `./dev lint` is the local mirror of CI's Rust lint gates, which live inside the
+> `rust-workspace` and `agent-tests` jobs — there is no separate `Lint` job any
+> more. `./Scripts/install-hooks.sh` (one-time) wires it to a pre-push hook so
+> lint failures never reach CI. `lint-baseline.json` and `.swiftlint.yml` remain
+> in the tree for the frozen Swift app but nothing runs them.
 >
 > The root Rust workspace (`crates/*`, `app/src-tauri`) is distinct from `agent/`,
 > which has its own `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` and its own CI
@@ -123,9 +130,8 @@ DevCanopy/
 │                          # workspace/toolchain/CI job, not part of the
 │                          # root Cargo.toml below
 │
-│                          # Cross-platform cockpit (experimental
-│                          # distribution, full panel parity — see
-│                          # Project Overview):
+│                          # Cross-platform cockpit — the app going
+│                          # forward (see Project Overview):
 ├── Cargo.toml             # Root Rust workspace: crates/* + app/src-tauri
 ├── rust-toolchain.toml    # Pins the root workspace's toolchain (agent/'s convention)
 ├── crates/
