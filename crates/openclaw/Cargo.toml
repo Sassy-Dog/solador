@@ -37,7 +37,7 @@ hex = "0.4"
 base64 = "0.22"
 # 32 bytes of OS entropy for a fresh device seed. Already in the lock; `std`
 # is what makes its error type a `std::error::Error` we can chain from.
-getrandom = { version = "0.3", features = ["std"] }
+getrandom = { version = "0.4", features = ["std"] }
 # Gateway-URL validation plus the `Origin` derivation. Already in the lock.
 url = "2"
 # Handshake deadlines and the heartbeat/ping cadences. `time` only — the
