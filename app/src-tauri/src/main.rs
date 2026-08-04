@@ -293,6 +293,7 @@ fn cockpit_view(
     hosts: &[Arc<Mutex<HostState>>],
     available: f64,
     overflow: HostOverflowMode,
+    core_row_span: usize,
 ) -> Value {
     let remote: Vec<Value> = hosts
         .iter()
@@ -302,7 +303,7 @@ fn cockpit_view(
     // Local first, matching `HostsPanel.hosts` in Swift (`[local] + remoteHosts`).
     // This machine is the one you are looking at; it leads.
     let cards: Vec<Value> = local.into_iter().chain(remote).collect();
-    cockpit_payload(cards, remote_count, available, overflow)
+    cockpit_payload(cards, remote_count, available, overflow, core_row_span)
 }
 
 /// The name a tab wears, from an already-rendered card.
@@ -361,6 +362,51 @@ fn volume_slots(cards: &[Value], columns: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Rewrites every card's core ladder so the blocks line up across a row.
+///
+/// [`host_card`] sees one host, so the ladder it emits is that host's own
+/// answer — correct alone, and wrong beside a neighbour with a different core
+/// count: at a 900pt-class card a 36-core host takes 6 rows (334pt) where a
+/// 16-core host takes 4 (220pt), and every section below the block inherits the
+/// skew. `viewmodel::layout::aligned_core_ladders` gives each count its own
+/// columns but everyone's height, and this is the only place that can call it,
+/// because it is the only place that has seen every card.
+///
+/// Two things happen here, and only one of them is about neighbours:
+/// * **the row span** is applied always — it is the user's
+///   `coreRowSpan` preference, which `host_card` cannot read;
+/// * **the cross-card max** only when `columns >= 2`. A card alone in its row
+///   aligns with itself, exactly as `volume_slots` reserves nothing there.
+fn align_core_ladders(cards: &mut [Value], columns: usize, row_span: usize) {
+    use viewmodel::layout::{aligned_core_ladders, core_block_height, CORE_GAP, CORE_MIN_CELL};
+
+    let core_count = |card: &Value| card["cores"].as_array().map_or(0, Vec::len);
+    let all: Vec<usize> = cards.iter().map(core_count).collect();
+
+    for card in cards.iter_mut() {
+        let n = core_count(card);
+        // The base height the CSS falls back to when no rung matches — an
+        // error card, which never gets a `data-n` to key a rule off.
+        card["coreBlockHeight"] = json!(core_block_height(row_span));
+        if n == 0 {
+            continue;
+        }
+        let set: Vec<usize> = if columns >= 2 { all.clone() } else { vec![n] };
+        let Some((_, rungs)) = aligned_core_ladders(&set, row_span, CORE_MIN_CELL, CORE_GAP)
+            .into_iter()
+            .find(|(count, _)| *count == n)
+        else {
+            continue;
+        };
+        card["coreLadder"] = Value::Array(
+            rungs
+                .into_iter()
+                .map(|r| json!({ "minWidth": r.min_width, "cols": r.cols, "height": r.height }))
+                .collect(),
+        );
+    }
+}
+
 /// The payload shape, over already-rendered cards. Split from
 /// [`cockpit_view`] so the tests can drive it without locks.
 ///
@@ -372,9 +418,12 @@ fn cockpit_payload(
     remote_count: usize,
     available: f64,
     overflow: HostOverflowMode,
+    core_row_span: usize,
 ) -> Value {
+    let mut cards = cards;
     let columns = host_columns(available, cards.len(), HOST_CARD_MIN_WIDTH, SPACING);
     let tabs = host_tab_bar(&cards, columns, overflow);
+    align_core_ladders(&mut cards, columns, core_row_span);
     // A cockpit with no monitored host says so in words made here, like every
     // other string the frontend paints -- the local card alone would read as a
     // finished setup rather than an untouched one.
@@ -1311,13 +1360,14 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
     // picker apply without a relaunch. The store lock is taken after the poll
     // set's is released, matching `poll_containers`'s sequence, and is held for
     // one field read.
-    let overflow = state
-        .store
-        .lock()
-        .expect("store poisoned")
-        .settings()
-        .host_overflow_mode;
-    cockpit_view(Some(local), &hosts, width, overflow)
+    // Both preferences in one lock, for the reason the comment above gives:
+    // re-read every frame so a General-tab edit applies without a relaunch.
+    let (overflow, core_row_span) = {
+        let store = state.store.lock().expect("store poisoned");
+        let settings = store.settings();
+        (settings.host_overflow_mode, settings.core_row_span as usize)
+    };
+    cockpit_view(Some(local), &hosts, width, overflow, core_row_span)
 }
 
 // MARK: the Usage + Azure Cost panels
@@ -2368,6 +2418,7 @@ fn dump_single(connection: &Connection) -> Value {
         1,
         1000.0,
         HostOverflowMode::Stack,
+        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
     )
 }
 
@@ -2476,6 +2527,7 @@ fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Val
         remote_count,
         available,
         overflow,
+        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
     )
 }
 
@@ -3058,11 +3110,35 @@ mod tests {
         hosts: &[Arc<Mutex<HostState>>],
         available: f64,
     ) -> Value {
-        cockpit_view(local, hosts, available, HostOverflowMode::Stack)
+        cockpit_view(
+            local,
+            hosts,
+            available,
+            HostOverflowMode::Stack,
+            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        )
     }
 
     fn stacked_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Value {
-        cockpit_payload(cards, remote_count, available, HostOverflowMode::Stack)
+        cockpit_payload(
+            cards,
+            remote_count,
+            available,
+            HostOverflowMode::Stack,
+            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        )
+    }
+
+    /// The tabbed twin of [`stacked_payload`] — the core row span defaults
+    /// here too, so a test that is about tabs says nothing about core grids.
+    fn tabbed_payload(cards: Vec<Value>, remote_count: usize, available: f64) -> Value {
+        cockpit_payload(
+            cards,
+            remote_count,
+            available,
+            HostOverflowMode::Tabs,
+            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        )
     }
 
     fn stacked_dump(available: f64, hosts: usize) -> Value {
@@ -3790,7 +3866,7 @@ mod tests {
     /// that it really does rather than leaving it to the reader.
     #[test]
     fn tabbed_cards_reserve_no_volume_slots() {
-        let payload = cockpit_payload(volume_cards(&[1, 8, 3]), 2, 1000.0, HostOverflowMode::Tabs);
+        let payload = tabbed_payload(volume_cards(&[1, 8, 3]), 2, 1000.0);
         assert!(!payload["hostTabs"].is_null(), "expected the tab bar");
         assert_eq!(payload["volumeSlots"], 0);
     }
@@ -3804,6 +3880,110 @@ mod tests {
         cards.push(json!({ "error": { "hostName": "nuc-spare" } }));
         let payload = stacked_payload(cards, 2, 2732.0);
         assert_eq!(payload["volumeSlots"], 5);
+    }
+
+    // MARK: the shared core block
+
+    /// N cards carrying only core arrays and a ladder, which is all
+    /// [`align_core_ladders`] reads or rewrites.
+    fn core_cards(counts: &[usize]) -> Vec<Value> {
+        counts
+            .iter()
+            .map(|n| {
+                json!({
+                    "cores": vec![json!({"label": "Core 0"}); *n],
+                    "coreBlockHeight": 220.0,
+                    "coreLadder": [],
+                })
+            })
+            .collect()
+    }
+
+    /// The height each card's ladder reports at `width`. Cards with no ladder
+    /// — an unreachable host reports no cores — contribute no reading rather
+    /// than a fabricated one.
+    fn block_at(payload: &Value, width: f64) -> Vec<f64> {
+        payload["hosts"]
+            .as_array()
+            .expect("hosts")
+            .iter()
+            .filter_map(|card| {
+                card["coreLadder"]
+                    .as_array()?
+                    .iter()
+                    .rfind(|r| r["minWidth"].as_f64().expect("minWidth") <= width)
+                    .map(|r| r["height"].as_f64().expect("height"))
+            })
+            .collect()
+    }
+
+    /// The case this exists for: a 10-core Mac beside the 36-core ubu-3xdv.
+    /// Alone the Mac's block is 220 and ubu's is 334; sharing a row they are
+    /// both 334, so every section below the block starts at the same height.
+    #[test]
+    fn side_by_side_cards_share_the_busiest_cards_core_block() {
+        // 2 * 900 + 16 = 1816, the width two cards need to sit abreast.
+        let payload = stacked_payload(core_cards(&[10, 36]), 1, 1816.0);
+        assert_eq!(payload["hostColumns"], 2);
+        let heights = block_at(&payload, 899.0);
+        assert_eq!(heights, vec![334.0, 334.0], "both cards take ubu's block");
+    }
+
+    /// Stacked, each card keeps its own answer — there is no neighbour to line
+    /// up with, and padding a short card would be dead space.
+    #[test]
+    fn a_stacked_column_leaves_each_core_block_alone() {
+        let payload = stacked_payload(core_cards(&[10, 36]), 1, 1000.0);
+        assert_eq!(payload["hostColumns"], 1);
+        assert_eq!(block_at(&payload, 899.0), vec![220.0, 334.0]);
+    }
+
+    /// Tabs show one card at a time; same reasoning as stacked.
+    #[test]
+    fn tabbed_cards_leave_each_core_block_alone() {
+        let payload = tabbed_payload(core_cards(&[10, 36]), 1, 1000.0);
+        assert!(!payload["hostTabs"].is_null(), "expected the tab bar");
+        assert_eq!(block_at(&payload, 899.0), vec![220.0, 334.0]);
+    }
+
+    /// A card with no cores — an unreachable host — contributes nothing to the
+    /// maximum and keeps a ladder-free base height rather than breaking the
+    /// rewrite for its neighbours.
+    #[test]
+    fn a_coreless_card_neither_lifts_nor_breaks_the_shared_block() {
+        let mut cards = core_cards(&[10, 36]);
+        cards.push(json!({ "error": { "hostName": "nuc-spare" } }));
+        let payload = stacked_payload(cards, 2, 2732.0);
+        let hosts = payload["hosts"].as_array().expect("hosts");
+        assert_eq!(hosts[2]["coreBlockHeight"], 220.0);
+        assert!(hosts[2]["coreLadder"].is_null(), "no cores, no ladder");
+        assert_eq!(block_at(&payload, 899.0), vec![334.0, 334.0]);
+    }
+
+    /// `coreRowSpan` was persisted and editable in Settings but never reached
+    /// the card — `host_card` hardcoded the default. It arrives through the
+    /// same rewrite that carries the shared height.
+    #[test]
+    fn the_core_row_span_preference_reaches_the_block() {
+        let payload = cockpit_payload(
+            core_cards(&[8]),
+            0,
+            1000.0,
+            HostOverflowMode::Stack,
+            3, // three section-rows rather than the default two
+        );
+        let card = &payload["hosts"][0];
+        assert_eq!(card["coreBlockHeight"], 330.0, "3 * CORE_ROW_UNIT");
+        let tallest = card["coreLadder"]
+            .as_array()
+            .expect("ladder")
+            .iter()
+            .map(|r| r["height"].as_f64().expect("height"))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            tallest >= 330.0,
+            "the span raises the block, not just the base"
+        );
     }
 
     // MARK: the tab-bar decision
@@ -3824,7 +4004,7 @@ mod tests {
     fn the_tabs_preference_collapses_the_stacked_grid_into_a_tab_bar() {
         let cards = tab_cards(&["mac-studio", "ubu-3xdv", "nuc-spare"]);
 
-        let tabbed = cockpit_payload(cards.clone(), 2, 1000.0, HostOverflowMode::Tabs);
+        let tabbed = tabbed_payload(cards.clone(), 2, 1000.0);
         assert_eq!(tabbed["hostColumns"], 1, "1000pt cannot pair 900pt cards");
         let tabs = tabbed["hostTabs"]["tabs"].as_array().expect("tabs");
         // One per card, in payload order, so this machine leads the bar exactly
@@ -3854,12 +4034,12 @@ mod tests {
     fn the_tabs_preference_does_nothing_while_the_cards_still_fit() {
         let cards = tab_cards(&["mac-studio", "ubu-3xdv"]);
         // 2 * 900 + 16 = 1816: exactly enough for two cards.
-        let paired = cockpit_payload(cards.clone(), 1, 1816.0, HostOverflowMode::Tabs);
+        let paired = tabbed_payload(cards.clone(), 1, 1816.0);
         assert_eq!(paired["hostColumns"], 2);
         assert!(paired["hostTabs"].is_null());
 
         // One point narrower and they stack — which is where tabs take over.
-        let narrow = cockpit_payload(cards, 1, 1815.0, HostOverflowMode::Tabs);
+        let narrow = tabbed_payload(cards, 1, 1815.0);
         assert_eq!(narrow["hostColumns"], 1);
         assert!(!narrow["hostTabs"].is_null());
     }
@@ -3868,7 +4048,7 @@ mod tests {
     /// install is exactly that: the local card, alone.
     #[test]
     fn a_lone_host_gets_no_tab_bar_however_narrow_the_window() {
-        let vm = cockpit_payload(tab_cards(&["mac-studio"]), 0, 320.0, HostOverflowMode::Tabs);
+        let vm = tabbed_payload(tab_cards(&["mac-studio"]), 0, 320.0);
         assert_eq!(vm["hostColumns"], 1);
         assert!(vm["hostTabs"].is_null());
     }
@@ -3883,7 +4063,7 @@ mod tests {
         assert!(failed.get("hostName").is_none(), "the shape this guards");
 
         let cards = vec![json!({ "id": "local", "hostName": "mac-studio" }), failed];
-        let vm = cockpit_payload(cards, 1, 1000.0, HostOverflowMode::Tabs);
+        let vm = tabbed_payload(cards, 1, 1000.0);
         let tabs = vm["hostTabs"]["tabs"].as_array().expect("tabs");
         assert_eq!(tabs[1]["label"], "nuc-spare");
         assert_eq!(tabs[1]["id"], "nuc-spare");
