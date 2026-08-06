@@ -1044,12 +1044,34 @@ fn github_token(credential: Credential, state: &mut GitHubState) -> Option<Strin
     }
 }
 
+/// One read of GitHub's public statuspage, folded into the panel state.
+///
+/// A failure is recorded but does **not** drop the last good reading: GitHub's
+/// status does not change on the timescale of one dropped request, and a panel
+/// that flipped from "it's GitHub" back to a red "it's us" on a single timeout
+/// would be the exact misdirection this verdict exists to prevent.
+async fn poll_github_status(app: &Arc<App>) {
+    let result = github::status::StatusPageClient::new().summary().await;
+    let mut state = app.github.lock().expect("github state poisoned");
+    match result {
+        Ok(status) => state.apply_service_status(status),
+        Err(e) => state.apply_service_status_error(e.user_message()),
+    }
+}
+
 /// One pass over every GitHub source: each enabled repo's health, this
 /// machine's git checkouts, and the org's self-hosted runners.
 ///
 /// No lock is ever held across an `await`; each is taken, used and dropped, in
 /// sequence, exactly as [`poll_containers`] does.
 async fn poll_github(app: &Arc<App>) {
+    // GitHub's own availability first, and deliberately **before** the token
+    // gate below. The statuspage needs no credential, and "GitHub Actions is in
+    // a major outage" is most useful precisely when this panel is otherwise
+    // blank — an unauthenticated cockpit that returned early here would be the
+    // one that could not explain itself at all.
+    poll_github_status(app).await;
+
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
     let credential = read_credential(&*app.credentials, SecretKey::GitHubAccessToken);

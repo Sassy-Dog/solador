@@ -143,7 +143,8 @@ DevCanopy/
 │   ├── agentclient/       # HTTP client polling the same agent the Swift app polls
 │   ├── store/             # settings/hosts/repos/container-rules/runner-roster/
 │   │                      # cockpit-layout JSON + OS credential-store wrappers
-│   ├── github/            # GitHub REST client (workflows, runners)
+│   ├── github/            # GitHub REST client (workflows, runners) + the
+│   │                      #   statuspage read and the "is it us?" verdict
 │   ├── localhost/         # this machine's metrics (sysinfo); every field the
 │   │                      # platform can decline is an Option, never a 0
 │   ├── usage/             # Claude Code log rollups + Neon + Sentry usage

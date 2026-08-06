@@ -1,0 +1,74 @@
+{
+  "page": {
+    "id": "kctbh9vrtdwd",
+    "name": "GitHub",
+    "updated_at": "2026-08-06T17:02:43.465Z"
+  },
+  "status": {
+    "indicator": "none",
+    "description": "All Systems Operational"
+  },
+  "components": [
+    {
+      "id": "8l4ygp009s5s",
+      "name": "Git Operations",
+      "status": "operational"
+    },
+    {
+      "id": "4230lsnqdsld",
+      "name": "Webhooks",
+      "status": "operational"
+    },
+    {
+      "id": "0l2p9nhqnxpd",
+      "name": "Visit www.githubstatus.com for more information",
+      "status": "operational"
+    },
+    {
+      "id": "brv1bkgrwx7q",
+      "name": "API Requests",
+      "status": "operational"
+    },
+    {
+      "id": "kr09ddfgbfsf",
+      "name": "Issues",
+      "status": "operational"
+    },
+    {
+      "id": "hhtssxt0f5v2",
+      "name": "Pull Requests",
+      "status": "operational"
+    },
+    {
+      "id": "br0l2tvcx85d",
+      "name": "Actions",
+      "status": "operational"
+    },
+    {
+      "id": "st3j38cctv9l",
+      "name": "Packages",
+      "status": "operational"
+    },
+    {
+      "id": "vg70hn9s2tyj",
+      "name": "Pages",
+      "status": "operational"
+    },
+    {
+      "id": "pjmpxvq2cmr2",
+      "name": "Copilot",
+      "status": "operational"
+    },
+    {
+      "id": "h2ftsgbw7kmk",
+      "name": "Codespaces",
+      "status": "operational"
+    },
+    {
+      "id": "cnnb39dkkk82",
+      "name": "Copilot AI Model Providers",
+      "status": "operational"
+    }
+  ],
+  "incidents": []
+}

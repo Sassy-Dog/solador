@@ -571,6 +571,97 @@ test("with no token the Runners panel is one sentence, no stats and no warning",
   await expect(page.locator("#runnersTrailing")).toHaveText("");
 });
 
+// MARK: - GitHub availability (the conjunction chip)
+
+/** The chip as Rust builds it, for a fabricated matrix row. */
+const chip = (label, color, detail = "why") => ({ label, color, detail });
+
+/** Both panels' payloads carrying the same verdict. */
+async function gotoWithVerdict(page, baseURL, availability) {
+  const repos = { ...(await fixture(baseURL, "sample-repos.json")), availability };
+  const runners = { ...(await fixture(baseURL, "sample-runners.json")), availability };
+  return gotoWithFixtures(page, baseURL, { repos, runners });
+}
+
+test("both panels paint the verdict beside their own title", async ({ page, baseURL }) => {
+  // One shared element would be orphaned when reflow splits the two panels
+  // onto separate rows, which is why the verdict travels on both payloads.
+  const { repos } = await gotoWithVerdict(page, baseURL, chip("GH ok", "#1c6b41"));
+  for (const [chipId, titleId] of [
+    ["#reposAvailability", "#reposTitle"],
+    ["#runnersAvailability", "#runnersTitle"],
+  ]) {
+    await expect(page.locator(chipId)).toHaveText(repos.availability.label);
+    await expect(page.locator(chipId)).toHaveCSS("color", rgb(repos.availability.color));
+    const [c, t] = await Promise.all([
+      page.locator(chipId).boundingBox(),
+      page.locator(titleId).boundingBox(),
+    ]);
+    expect(c.x, `${chipId} sits beside ${titleId}`).toBeGreaterThan(t.x);
+  }
+});
+
+test("the four matrix rows each paint Rust's label and colour", async ({ page, baseURL }) => {
+  // Ratios of the verdict, not of the wording: every string and colour here is
+  // Rust's, and this asserts only that the frontend applies what it is given.
+  for (const [label, color] of [
+    ["GH ok", "#1c6b41"], // operational + fleet online
+    ["GH degraded", "#e09a26"], // degraded + fleet online
+    ["GH outage", "#e09a26"], // degraded + fleet dark -> it's GitHub
+    ["fleet down", "#e05a4f"], // operational + fleet dark -> it's us
+  ]) {
+    await gotoWithVerdict(page, baseURL, chip(label, color));
+    await expect(page.locator("#runnersAvailability")).toHaveText(label);
+    await expect(page.locator("#runnersAvailability")).toHaveCSS("color", rgb(color));
+  }
+});
+
+test("an unreachable status page reads as unknown and keeps the fleet rows", async ({ page, baseURL }) => {
+  const good = await fixture(baseURL, "sample-runners.json");
+  await gotoWithVerdict(page, baseURL, chip("GH ?", "#5a6b60", "Couldn't read GitHub's status page."));
+  await expect(page.locator("#runnersAvailability")).toHaveText("GH ?");
+  await expect(page.locator("#runnersAvailability")).toHaveCSS("color", rgb("#5a6b60"));
+  // Never green, and never at the cost of the reading it annotates.
+  await expect(page.locator("#runnersAvailability")).not.toHaveCSS("color", rgb("#1c6b41"));
+  await expect(runnerRows(page)).toHaveCount(good.rows.length);
+});
+
+test("the incident detail is reachable on hover, as text and never as markup", async ({ page, baseURL }) => {
+  // Statuspage incident bodies carry raw HTML (`<br />`), and this is the one
+  // string on the panel sourced from someone else's CMS.
+  const detail = 'GitHub Actions: major outage. Incident: <img src=x onerror="alert(1)"> (critical).';
+  await gotoWithVerdict(page, baseURL, chip("GH outage", "#e09a26", detail));
+  await expect(page.locator("#runnersAvailability")).toHaveAttribute("title", detail);
+  expect(await page.locator("#runnersAvailability").evaluate((el) => el.querySelector("img"))).toBeNull();
+});
+
+test("a payload with no verdict hides the chip rather than emptying it", async ({ page, baseURL }) => {
+  await gotoWithVerdict(page, baseURL, null);
+  await expect(page.locator("#runnersAvailability")).toBeHidden();
+  await expect(page.locator("#reposAvailability")).toBeHidden();
+});
+
+/**
+ * The chip shares the header with a title that must survive and a staleness
+ * warning that is the designated give. It is short and fixed, so it takes
+ * `flex:none` — a verdict ellipsised to "GH…" would answer nothing — and it
+ * must not cost the card any height.
+ */
+test("the verdict costs no height and does not truncate", async ({ page, baseURL }) => {
+  await gotoWithVerdict(page, baseURL, null);
+  const bare = await page.locator("#runnersPanel").boundingBox();
+
+  await gotoWithVerdict(page, baseURL, chip("fleet down", "#e05a4f"));
+  const withChip = page.locator("#runnersAvailability");
+  await expect(withChip).toBeVisible();
+  expect((await page.locator("#runnersPanel").boundingBox()).height).toBeCloseTo(bare.height, 1);
+  expect(
+    await withChip.evaluate((el) => el.scrollWidth <= Math.ceil(el.getBoundingClientRect().width)),
+    "the verdict is never the element that ellipsises"
+  ).toBe(true);
+  await expect(page.locator("#runnersTitle")).toHaveText("GitHub Runners");
+});
+
 // MARK: - Injection
 
 test("repo and runner names reach the DOM as text, never as markup", async ({ page, baseURL }) => {

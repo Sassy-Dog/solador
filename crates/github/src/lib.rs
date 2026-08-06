@@ -9,6 +9,8 @@
 //!   auto-learned roster that remembers ephemeral runners between
 //!   registrations, and the absence state machine they share.
 //! - [`link`] — the `Link`-header page arithmetic the counts are built on.
+//! - [`status`] — GitHub's own availability, read from the unauthenticated
+//!   statuspage and folded with the fleet into one "is it us?" verdict.
 //!
 //! Two rules run through the whole crate:
 //!
@@ -32,12 +34,14 @@ pub mod link;
 pub mod presence;
 pub mod roster;
 pub mod runners;
+pub mod status;
 pub mod workflows;
 
 pub use client::{GitHubClient, GitHubError};
 pub use presence::PresenceState;
 pub use roster::{GhRunnerAbsence, GhRunnerDisplayRow, RosterUpdate, RunnerRosterEntry};
 pub use runners::{GhRunner, RunnerOs, RunnerState, RunnerSummary};
+pub use status::{Conjunction, ServiceStatus, StatusError, StatusPageClient, Verdict};
 pub use workflows::{
     RepoCounts, RepoWorkflowHealth, RunConclusion, RunRef, RunStatus, WorkflowRun,
 };

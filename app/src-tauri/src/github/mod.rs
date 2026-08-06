@@ -43,6 +43,9 @@ use viewmodel::color;
 
 use git::LocalRepoCounts;
 
+/// Re-exported for `main.rs`, where the bare name `github` resolves to *this*
+/// module rather than the crate it wraps.
+pub use github::status;
 /// Re-exported so `main.rs` — where the module name `github` shadows the crate
 /// name — reaches the client through this module rather than through a
 /// `::github::` escape hatch that reads like a typo.
@@ -184,6 +187,17 @@ pub struct GitHubState {
     /// not know whether a token is configured, so both panels must say exactly
     /// that instead of picking one of the two claims they cannot support.
     credential_error: Option<String>,
+    /// GitHub's own published availability, from the unauthenticated
+    /// statuspage. `None` until the first read lands, or after one fails —
+    /// [`github::status::conjunction`] turns that into an explicit *unknown*
+    /// verdict rather than a green one, because a status page we could not
+    /// reach says nothing about whether Actions is up.
+    ///
+    /// Deliberately **not** cleared by a failing read: a page that answered a
+    /// minute ago is better evidence than nothing, and the panel keeps showing
+    /// it. `status_error` records why the refresh did not happen.
+    service_status: Option<github::status::ServiceStatus>,
+    status_error: Option<String>,
 }
 
 impl GitHubState {
@@ -272,6 +286,58 @@ impl GitHubState {
         self.token = Configured::Present;
         self.credential_error = None;
     }
+
+    /// Records one successful statuspage read.
+    pub fn apply_service_status(&mut self, status: github::status::ServiceStatus) {
+        self.service_status = Some(status);
+        self.status_error = None;
+    }
+
+    /// Records a failed statuspage read, **keeping the last good reading**.
+    ///
+    /// A page that answered a minute ago is better evidence than nothing, and
+    /// GitHub's status does not change on the timescale of one dropped
+    /// request. Dropping it here would flip a panel mid-incident from "it's
+    /// GitHub" back to a red "it's us" on a single timeout — the precise
+    /// misdirection this whole verdict exists to prevent.
+    pub fn apply_service_status_error(&mut self, message: impl Into<String>) {
+        self.status_error = Some(message.into());
+    }
+
+    /// The conjunction both panels paint: GitHub's published Actions status
+    /// folded with our fleet's per-OS state.
+    #[must_use]
+    fn conjunction(&self) -> github::status::Conjunction {
+        github::status::conjunction(self.service_status.as_ref(), self.summary.as_ref())
+    }
+}
+
+/// The chip payload: the verdict's short label, its colour, and the sentence
+/// behind it for the `title`.
+///
+/// Colour is decided here, like every other colour the frontend paints. Green
+/// is the dim one: this chip sits on two panel headers permanently, and the
+/// resting state of an always-on cockpit should not shout.
+fn availability_chip(state: &GitHubState) -> Value {
+    use github::status::Verdict;
+    let c = state.conjunction();
+    let color = match c.verdict {
+        Verdict::AllGood => color::GREEN_DIM,
+        Verdict::GitHubDegraded | Verdict::ItsGitHub => color::AMBER,
+        Verdict::ItsUs => color::RED,
+        Verdict::Unknown => color::MUTED,
+    };
+    // The reason a failed refresh is not itself the verdict: the last good
+    // reading still stands, and this only explains why it is not newer.
+    let detail = match state.status_error.as_deref() {
+        Some(error) if state.service_status.is_some() => format!("{} ({error})", c.detail),
+        _ => c.detail,
+    };
+    json!({
+        "label": c.label,
+        "color": color::hex(color),
+        "detail": detail,
+    })
 }
 
 // MARK: - Repos
@@ -396,6 +462,10 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         // still filling in, and inferring that from the message text would make
         // it parse a string it is otherwise careful never to interpret.
         "loading": repos_loading(state),
+        // On both panels, not one shared element: `reflow` splits Repos and
+        // Runners onto separate rows below ~896pt, so a single chip would be
+        // orphaned from one of them at exactly the widths this cockpit runs at.
+        "availability": availability_chip(state),
         "columns": columns(),
         "rows": sorted
             .iter()
@@ -637,6 +707,10 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
             "trailing": Value::Null,
             "message": { "text": UNAUTHENTICATED_MESSAGE },
             "loading": false,
+            // Still rendered with no token: "GitHub is on fire" is most useful
+            // precisely when this panel is otherwise blank, and the statuspage
+            // needs no credential to say so.
+            "availability": availability_chip(state),
             "stats": [],
             "chips": [],
             "rows": [],
@@ -666,6 +740,7 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         // Same predicate as the ladder above, published for the frontend's
         // refresh cadence rather than inferred from the message text.
         "loading": message.is_some_and(|text| text == RUNNERS_LOADING_MESSAGE),
+        "availability": availability_chip(state),
         "stats": state.summary.map(summary_stats).unwrap_or_default(),
         "chips": state.summary.map(os_chips).unwrap_or_default(),
         // Registered and remembered-absent rows, merged into one display order
@@ -986,6 +1061,14 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         github::presence::DEFAULT_GRACE_SECS,
     );
     state.apply_runners(&update, u64::try_from(now.timestamp()).unwrap_or(0));
+    // The resting availability verdict. Seeded so the dumped fixture shows the
+    // chip a healthy cockpit actually renders — without it every fixture would
+    // carry the muted "GH ?" of a statuspage nobody read, and the Playwright
+    // suite would be asserting the one state that is least representative.
+    state.apply_service_status(github::status::ServiceStatus {
+        actions: Some(github::status::ComponentStatus::Operational),
+        incident: None,
+    });
     state
 }
 
@@ -2302,5 +2385,130 @@ mod tests {
             runners["stats"][2],
             json!({ "label": "OFFLINE", "value": "1", "color": color::hex(color::AMBER) })
         );
+    }
+
+    // MARK: - GitHub availability (the conjunction chip)
+
+    fn service_status(actions: github::status::ComponentStatus) -> github::status::ServiceStatus {
+        github::status::ServiceStatus {
+            actions: Some(actions),
+            incident: None,
+        }
+    }
+
+    /// A fleet in the 2026-08-06 shape: both macs up, every Linux runner dark.
+    fn linux_dark() -> GitHubState {
+        with_runners(
+            &[
+                runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle),
+                runner("ubu-1", RunnerOs::Linux, RunnerState::Offline),
+            ],
+            &[],
+        )
+    }
+
+    /// Both panels carry the chip — `reflow` splits them onto separate rows on
+    /// a narrow cockpit, so one shared element would be orphaned from one of
+    /// them at exactly the widths this is used at.
+    #[test]
+    fn both_panels_carry_the_availability_chip() {
+        let state = linux_dark();
+        for view in [repos_view(&state, now()), runners_view(&state, now_unix())] {
+            assert!(
+                view["availability"]["label"].is_string(),
+                "every payload carries a verdict"
+            );
+        }
+    }
+
+    /// The row that earns the feature: GitHub says Actions is fine, our Linux
+    /// runners are dark anyway. Red, and it names the platform.
+    #[test]
+    fn operational_github_with_a_dark_platform_is_red_and_blames_us() {
+        let mut state = linux_dark();
+        state.apply_service_status(service_status(github::status::ComponentStatus::Operational));
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], "fleet down");
+        assert_eq!(chip["color"], color::hex(color::RED));
+        assert!(
+            chip["detail"].as_str().expect("detail").contains("Linux"),
+            "{chip}"
+        );
+    }
+
+    /// The 2026-08-06 reading: same dark fleet, but GitHub is admitting to it.
+    /// Amber, not red — nobody needs to SSH anywhere.
+    #[test]
+    fn degraded_github_with_a_dark_platform_is_amber_and_blames_github() {
+        let mut state = linux_dark();
+        state.apply_service_status(github::status::ServiceStatus {
+            actions: Some(github::status::ComponentStatus::MajorOutage),
+            incident: Some(github::status::Incident {
+                name: "Incident with Actions".to_owned(),
+                impact: "critical".to_owned(),
+            }),
+        });
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], "GH outage");
+        assert_eq!(chip["color"], color::hex(color::AMBER));
+        let detail = chip["detail"].as_str().expect("detail");
+        assert!(detail.contains("expected"), "{detail}");
+        assert!(detail.contains("Incident with Actions"), "{detail}");
+    }
+
+    /// Green is the dim one: this sits on two headers permanently, and the
+    /// resting state of an always-on cockpit should not shout.
+    #[test]
+    fn a_healthy_fleet_under_a_healthy_github_is_dim_green() {
+        let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
+        state.apply_service_status(service_status(github::status::ComponentStatus::Operational));
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], "GH ok");
+        assert_eq!(chip["color"], color::hex(color::GREEN_DIM));
+    }
+
+    /// Unreachable is not operational. Before the first read — and after a
+    /// failed one — the chip is muted and says so, never green.
+    #[test]
+    fn an_unread_status_page_is_muted_and_never_green() {
+        let state = linux_dark();
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], "GH ?");
+        assert_eq!(chip["color"], color::hex(color::MUTED));
+        assert_ne!(chip["color"], color::hex(color::GREEN_DIM));
+    }
+
+    /// A failed refresh keeps the last good reading rather than falling back to
+    /// unknown — GitHub's status does not change on the timescale of one
+    /// dropped request, and flipping "it's GitHub" back to a red "it's us" on a
+    /// single timeout is the misdirection this verdict exists to prevent.
+    #[test]
+    fn a_failed_refresh_keeps_the_last_good_verdict_and_notes_why() {
+        let mut state = linux_dark();
+        state.apply_service_status(service_status(github::status::ComponentStatus::MajorOutage));
+        state.apply_service_status_error("couldn't reach GitHub's status page");
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], "GH outage", "the verdict survives");
+        assert!(
+            chip["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("couldn't reach"),
+            "…and explains why it is not newer: {chip}"
+        );
+    }
+
+    /// The chip renders with no token at all. "GitHub is on fire" is most
+    /// useful precisely when the panel is otherwise blank, and the statuspage
+    /// needs no credential to say it.
+    #[test]
+    fn the_chip_renders_on_an_unauthenticated_panel() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        state.apply_service_status(service_status(github::status::ComponentStatus::MajorOutage));
+        let view = runners_view(&state, now_unix());
+        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+        assert_eq!(view["availability"]["label"], "GH degraded");
+        assert_eq!(view["availability"]["color"], color::hex(color::AMBER));
     }
 }

@@ -176,6 +176,20 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    rule exists to stop. */
 .panel-stale { font-size:9px; font-weight:700; white-space:nowrap; min-width:0;
   overflow:hidden; text-overflow:ellipsis; flex-shrink:100; }
+/* GitHub's availability folded with our fleet -- the "is it us?" verdict, on
+   both the Repos and Runners headers. `flex:none` because it is short, fixed
+   and the whole point: the staleness message beside it is already the
+   designated give, and a verdict that ellipsised to "GH…" would answer
+   nothing. Its colour is Rust's (`availability_chip`), applied via CSSOM.
+
+   Text, not a bordered pill like `.gh-chip`. A border and vertical padding
+   make the element taller than the title's line box, and `.panel-hdr` is
+   `align-items:baseline`, so the header grows -- which grows the card, which
+   `.panel-row`'s stretch then spends on every other card in the row. That is
+   the exact regression moving the staleness warning up here was meant to end,
+   and the height assertion in `github.spec.js` catches it. */
+.panel-chip { font-size:9px; font-weight:700; white-space:nowrap; flex:none;
+  letter-spacing:0.02em; }
 .panel-hdr .panel-title { white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; }
 /* Whole host groups sit side by side once Rust says the panel is wide enough

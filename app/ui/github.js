@@ -173,9 +173,27 @@ function chunk(items, columns) {
   return out;
 }
 
+/**
+ * Paints the GitHub-availability verdict beside a panel's title.
+ *
+ * Every string and the colour are Rust's (`availability_chip`) — this file does
+ * not know what "GH outage" means and must not learn. `textContent`, never
+ * `innerHTML`: the detail can quote a Statuspage incident body, and those carry
+ * raw markup.
+ */
+function renderAvailability(id, chip) {
+  const el = $g(id);
+  el.textContent = chip ? chip.label : "";
+  el.title = chip ? chip.detail : "";
+  // CSSOM, never a `style=""` attribute -- `style-src 'self'` blocks it.
+  el.style.color = chip ? chip.color : "";
+  el.hidden = !chip;
+}
+
 function renderRepos(payload) {
   lastRepos = payload;
   $g("reposTitle").textContent = payload.title;
+  renderAvailability("reposAvailability", payload.availability);
   $g("reposTrailing").textContent = payload.trailing || "";
 
   const children = [];
@@ -247,6 +265,7 @@ function runnerRowNode(row) {
 
 function renderRunners(payload) {
   $g("runnersTitle").textContent = payload.title;
+  renderAvailability("runnersAvailability", payload.availability);
   $g("runnersTrailing").textContent = payload.trailing || "";
 
   const children = [];

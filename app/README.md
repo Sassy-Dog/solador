@@ -259,6 +259,7 @@ await window.__TAURI__.core.invoke("runners");
   "trailing": "1 needs approval · 1 running · 1 failed · 1 unreadable",
   "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
   "loading": false,                      // true while the panel is still filling in
+  "availability": {"label": "GH ok", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
   "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
   "rows": [{
     "repo": "Sassy-Dog/velovate", "name": "velovate",
@@ -308,6 +309,34 @@ git invocation that fails yields `None`, i.e. `"—"`. Swift's `localBranchCount
 returns `0` there; that is a fabricated number and this deliberately does not
 copy it. The scan root is a parameter, so the tests drive real temporary
 repositories rather than a mock.
+
+**The availability verdict answers "is it us?", which a status chip cannot.**
+Both panels carry an `availability` chip beside their title, and it is a
+*conjunction*: GitHub's published `Actions` status folded with our fleet's
+per-OS state (`crates/github/src/status.rs`). Only one of the four combinations
+is a page — GitHub operational while a platform is dark, rendered red — and the
+rest are the reassurance that used to cost an SSH and three commands. The
+motivating incident (2026-08-06) had every Linux runner cycling through
+`Registration <uuid> was not found` while both macs stayed up, which is
+indistinguishable at a glance from a real fleet deregistration; GitHub's own
+page read `Actions: major_outage` throughout.
+
+Three rules it inherits from the crate it lives in. **Unreachable is not
+operational** — a statuspage fetch that fails yields an explicit muted
+*unknown*, never green, and never suppresses the fleet reading it annotates.
+**A failed refresh keeps the last good reading**, because GitHub's status does
+not change on the timescale of one dropped request and flipping "it's GitHub"
+back to a red "it's us" on a single timeout is the exact misdirection this
+exists to prevent. And **an absent platform is not a dark one**: the verdict
+gates on `*_total > 0`, or an org with no Windows runners would show a
+permanent red forever.
+
+Two details worth keeping: the Actions component is matched by **id**
+(`br0l2tvcx85d`), because `components[]` carries a non-component entry called
+*"Visit www.githubstatus.com for more information"* and display names are
+Atlassian's to re-word; and the read is issued **before** `poll_github`'s token
+gate, since "GitHub is on fire" is most useful precisely when the panel is
+otherwise blank.
 
 **The runner roster is the memory that makes an absence visible.** The org's
 ephemeral runners de-register between jobs, so GitHub's registered list can
