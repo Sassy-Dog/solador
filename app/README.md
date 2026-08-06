@@ -259,7 +259,7 @@ await window.__TAURI__.core.invoke("runners");
   "trailing": "1 needs approval · 1 running · 1 failed · 1 unreadable",
   "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
   "loading": false,                      // true while the panel is still filling in
-  "availability": {"label": "GH ok", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
+  "availability": {"label": "GitHub OK", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
   "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
   "rows": [{
     "repo": "Sassy-Dog/velovate", "name": "velovate",
@@ -313,9 +313,23 @@ repositories rather than a mock.
 **The availability verdict answers "is it us?", which a status chip cannot.**
 Both panels carry an `availability` chip beside their title, and it is a
 *conjunction*: GitHub's published `Actions` status folded with our fleet's
-per-OS state (`crates/github/src/status.rs`). Only one of the four combinations
-is a page — GitHub operational while a platform is dark, rendered red — and the
-rest are the reassurance that used to cost an SSH and three commands. The
+per-OS state (`crates/github/src/status.rs`).
+
+| Actions | fleet | chip | colour |
+|---|---|---|---|
+| `operational` | dark | **Fleet Down** | red — ours to investigate |
+| `major_outage` | any | **Major Outage** | red — runs are failing |
+| `degraded_performance` / `partial_outage` | any | **Services Degraded** | amber — GitHub is slow |
+| `operational` | online | **GitHub OK** | dim green |
+| unreadable | any | **Status Unknown** | muted |
+
+When GitHub admits to a problem it takes the headline, at *its* severity; the
+fleet half becomes the sentence behind it ("Linux being offline is expected
+while this lasts"). The fleet only takes the headline in the case GitHub is not
+explaining — an operational Actions with a platform dark anyway, which is the
+one row that is a page rather than reassurance. Red is shared between
+**Major Outage** and **Fleet Down** deliberately: both mean *something is badly
+wrong right now*, and the label is what says whose problem it is. The
 motivating incident (2026-08-06) had every Linux runner cycling through
 `Registration <uuid> was not found` while both macs stayed up, which is
 indistinguishable at a glance from a real fleet deregistration; GitHub's own

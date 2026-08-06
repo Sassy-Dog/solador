@@ -586,7 +586,7 @@ async function gotoWithVerdict(page, baseURL, availability) {
 test("both panels paint the verdict beside their own title", async ({ page, baseURL }) => {
   // One shared element would be orphaned when reflow splits the two panels
   // onto separate rows, which is why the verdict travels on both payloads.
-  const { repos } = await gotoWithVerdict(page, baseURL, chip("GH ok", "#1c6b41"));
+  const { repos } = await gotoWithVerdict(page, baseURL, chip("GitHub OK", "#1c6b41"));
   for (const [chipId, titleId] of [
     ["#reposAvailability", "#reposTitle"],
     ["#runnersAvailability", "#runnersTitle"],
@@ -601,14 +601,16 @@ test("both panels paint the verdict beside their own title", async ({ page, base
   }
 });
 
-test("the four matrix rows each paint Rust's label and colour", async ({ page, baseURL }) => {
-  // Ratios of the verdict, not of the wording: every string and colour here is
-  // Rust's, and this asserts only that the frontend applies what it is given.
+test("every verdict paints Rust's label and colour", async ({ page, baseURL }) => {
+  // Every string and colour here is Rust's; this asserts only that the frontend
+  // applies what it is given. Amber is "GitHub is slow", red is "runs are
+  // failing" or "it's ours" — the label is what tells those two apart.
   for (const [label, color] of [
-    ["GH ok", "#1c6b41"], // operational + fleet online
-    ["GH degraded", "#e09a26"], // degraded + fleet online
-    ["GH outage", "#e09a26"], // degraded + fleet dark -> it's GitHub
-    ["fleet down", "#e05a4f"], // operational + fleet dark -> it's us
+    ["GitHub OK", "#1c6b41"], // operational + fleet online
+    ["Services Degraded", "#e09a26"], // degraded_performance / partial_outage
+    ["Major Outage", "#e05a4f"], // major_outage — red, not amber
+    ["Fleet Down", "#e05a4f"], // operational + fleet dark -> it's us
+    ["Status Unknown", "#5a6b60"], // statuspage unreadable
   ]) {
     await gotoWithVerdict(page, baseURL, chip(label, color));
     await expect(page.locator("#runnersAvailability")).toHaveText(label);
@@ -618,8 +620,8 @@ test("the four matrix rows each paint Rust's label and colour", async ({ page, b
 
 test("an unreachable status page reads as unknown and keeps the fleet rows", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-runners.json");
-  await gotoWithVerdict(page, baseURL, chip("GH ?", "#5a6b60", "Couldn't read GitHub's status page."));
-  await expect(page.locator("#runnersAvailability")).toHaveText("GH ?");
+  await gotoWithVerdict(page, baseURL, chip("Status Unknown", "#5a6b60", "Couldn't read GitHub's status page."));
+  await expect(page.locator("#runnersAvailability")).toHaveText("Status Unknown");
   await expect(page.locator("#runnersAvailability")).toHaveCSS("color", rgb("#5a6b60"));
   // Never green, and never at the cost of the reading it annotates.
   await expect(page.locator("#runnersAvailability")).not.toHaveCSS("color", rgb("#1c6b41"));
@@ -630,7 +632,7 @@ test("the incident detail is reachable on hover, as text and never as markup", a
   // Statuspage incident bodies carry raw HTML (`<br />`), and this is the one
   // string on the panel sourced from someone else's CMS.
   const detail = 'GitHub Actions: major outage. Incident: <img src=x onerror="alert(1)"> (critical).';
-  await gotoWithVerdict(page, baseURL, chip("GH outage", "#e09a26", detail));
+  await gotoWithVerdict(page, baseURL, chip("Major Outage", "#e05a4f", detail));
   await expect(page.locator("#runnersAvailability")).toHaveAttribute("title", detail);
   expect(await page.locator("#runnersAvailability").evaluate((el) => el.querySelector("img"))).toBeNull();
 });
@@ -651,7 +653,7 @@ test("the verdict costs no height and does not truncate", async ({ page, baseURL
   await gotoWithVerdict(page, baseURL, null);
   const bare = await page.locator("#runnersPanel").boundingBox();
 
-  await gotoWithVerdict(page, baseURL, chip("fleet down", "#e05a4f"));
+  await gotoWithVerdict(page, baseURL, chip("Fleet Down", "#e05a4f"));
   const withChip = page.locator("#runnersAvailability");
   await expect(withChip).toBeVisible();
   expect((await page.locator("#runnersPanel").boundingBox()).height).toBeCloseTo(bare.height, 1);

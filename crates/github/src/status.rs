@@ -8,12 +8,19 @@
 //! cost an SSH and three commands to obtain.
 //!
 //! ```text
-//! Actions        fleet     verdict
-//! operational    offline   it's us       — investigate the fleet
-//! degraded/out   offline   it's GitHub   — expected, self-heals
-//! degraded/out   online    GitHub degraded
-//! operational    online    all good
+//! Actions          fleet     chip                 colour
+//! operational      dark      Fleet Down           red     — investigate us
+//! major_outage     any       Major Outage         red     — runs are failing
+//! degraded/partial any       Services Degraded    amber   — GitHub is slow
+//! operational      online    GitHub OK            green
+//! (unreadable)     any       Status Unknown       muted
 //! ```
+//!
+//! When GitHub admits to a problem it takes the headline, at *its* severity —
+//! how bad GitHub says it is comes first, and whether that explains our dark
+//! runners is the sentence behind it. The fleet only takes the headline in the
+//! case GitHub is not explaining: an operational Actions with a platform dark
+//! anyway, which is the one row that is a page rather than reassurance.
 //!
 //! The transport is GitHub's Atlassian Statuspage: unauthenticated, CDN-backed,
 //! and a different host from the REST API — so it stays up when the API does
@@ -159,14 +166,21 @@ pub fn offline_platforms(summary: &RunnerSummary) -> Vec<Platform> {
 }
 
 /// The conjunction: what to tell an operator looking at the panel.
+///
+/// When GitHub admits to a problem, the verdict takes **GitHub's severity** —
+/// `Degraded` or `MajorOutage` — rather than folding both into one amber
+/// "something is up". Whether one of our platforms is also dark then shapes the
+/// *detail*, not the headline: during an outage the first thing worth knowing
+/// is how bad GitHub says it is, and the second is whether that explains what
+/// we are seeing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// GitHub is fine and so are we.
     AllGood,
-    /// GitHub is degraded; our runners are up regardless.
-    GitHubDegraded,
-    /// GitHub is degraded **and** a platform is dark — expected, self-heals.
-    ItsGitHub,
+    /// `degraded_performance` or `partial_outage`. Amber.
+    Degraded,
+    /// `major_outage`. Red — GitHub is not merely slow.
+    MajorOutage,
     /// GitHub says it is operational and a platform is dark anyway. The one
     /// row that is a page rather than reassurance.
     ItsUs,
@@ -180,11 +194,44 @@ pub enum Verdict {
 pub struct Conjunction {
     pub verdict: Verdict,
     /// Header-sized. The header already holds a title, a staleness warning and
-    /// a count, so this stays a few characters and the detail goes in `detail`.
+    /// a count, so this stays short and the detail goes in `detail`.
     pub label: String,
     /// The full explanation, for the chip's `title` — including the platforms
     /// involved and the incident name when there is one.
     pub detail: String,
+}
+
+/// The chip's words, in one place because they are the panel's whole vocabulary.
+///
+/// Title Case throughout: the two an operator most needs to recognise at a
+/// glance are Statuspage's own severities, and a chip that mixed
+/// "Major Outage" with "gh ok" would read as two different controls.
+pub const ALL_GOOD_LABEL: &str = "GitHub OK";
+pub const DEGRADED_LABEL: &str = "Services Degraded";
+pub const MAJOR_OUTAGE_LABEL: &str = "Major Outage";
+pub const ITS_US_LABEL: &str = "Fleet Down";
+pub const UNKNOWN_LABEL: &str = "Status Unknown";
+
+/// Statuspage's four states collapsed onto the two an operator acts on.
+///
+/// `degraded_performance` and `partial_outage` are both "GitHub is having a
+/// bad time and jobs may be slow"; `major_outage` is "workflow runs are
+/// failing", which is a different afternoon. They are coloured apart for the
+/// same reason.
+#[must_use]
+fn severity_verdict(actions: ComponentStatus) -> Verdict {
+    match actions {
+        ComponentStatus::MajorOutage => Verdict::MajorOutage,
+        _ => Verdict::Degraded,
+    }
+}
+
+#[must_use]
+fn severity_label(actions: ComponentStatus) -> &'static str {
+    match severity_verdict(actions) {
+        Verdict::MajorOutage => MAJOR_OUTAGE_LABEL,
+        _ => DEGRADED_LABEL,
+    }
 }
 
 /// Fold GitHub's status and our fleet into one verdict.
@@ -201,7 +248,7 @@ pub fn conjunction(status: Option<&ServiceStatus>, summary: Option<&RunnerSummar
     let Some(status) = status else {
         return Conjunction {
             verdict: Verdict::Unknown,
-            label: "GH ?".to_owned(),
+            label: UNKNOWN_LABEL.to_owned(),
             detail: match dark {
                 Some(dark) => format!(
                     "Couldn't read GitHub's status page, so we can't say whether {dark} being \
@@ -217,7 +264,7 @@ pub fn conjunction(status: Option<&ServiceStatus>, summary: Option<&RunnerSummar
     let Some(actions) = status.actions else {
         return Conjunction {
             verdict: Verdict::Unknown,
-            label: "GH ?".to_owned(),
+            label: UNKNOWN_LABEL.to_owned(),
             detail: "GitHub's status page did not report an Actions status.".to_owned(),
         };
     };
@@ -228,18 +275,23 @@ pub fn conjunction(status: Option<&ServiceStatus>, summary: Option<&RunnerSummar
         .map(|i| format!(" Incident: {} ({}).", i.name, i.impact))
         .unwrap_or_default();
 
+    // When GitHub admits to a problem the headline is *its* severity; whether
+    // one of our platforms is also dark shapes the sentence behind it. The one
+    // case where the fleet takes the headline is the one GitHub is not
+    // explaining — an operational Actions with a platform dark anyway.
+    let severity = severity_verdict(actions);
     match (actions.is_degraded(), dark) {
         (false, Some(dark)) => Conjunction {
             verdict: Verdict::ItsUs,
-            label: "fleet down".to_owned(),
+            label: ITS_US_LABEL.to_owned(),
             detail: format!(
                 "GitHub Actions is operational, so {dark} being offline is ours to \
                  investigate.{incident}"
             ),
         },
         (true, Some(dark)) => Conjunction {
-            verdict: Verdict::ItsGitHub,
-            label: "GH outage".to_owned(),
+            verdict: severity,
+            label: severity_label(actions).to_owned(),
             detail: format!(
                 "GitHub Actions: {}. {dark} being offline is expected while this lasts, and \
                  self-heals.{incident}",
@@ -247,8 +299,8 @@ pub fn conjunction(status: Option<&ServiceStatus>, summary: Option<&RunnerSummar
             ),
         },
         (true, None) => Conjunction {
-            verdict: Verdict::GitHubDegraded,
-            label: "GH degraded".to_owned(),
+            verdict: severity,
+            label: severity_label(actions).to_owned(),
             detail: format!(
                 "GitHub Actions: {}. Our runners are online regardless.{incident}",
                 actions.label()
@@ -256,7 +308,7 @@ pub fn conjunction(status: Option<&ServiceStatus>, summary: Option<&RunnerSummar
         },
         (false, None) => Conjunction {
             verdict: Verdict::AllGood,
-            label: "GH ok".to_owned(),
+            label: ALL_GOOD_LABEL.to_owned(),
             detail: "GitHub Actions is operational and every registered platform has runners \
                      online."
                 .to_owned(),
@@ -586,7 +638,7 @@ mod tests {
             Some(&fleet((2, 2), (0, 10), (0, 0))),
         );
         assert_eq!(c.verdict, Verdict::ItsUs);
-        assert_eq!(c.label, "fleet down");
+        assert_eq!(c.label, ITS_US_LABEL);
         assert!(
             c.detail.contains("Linux"),
             "names the dark platform: {}",
@@ -596,9 +648,10 @@ mod tests {
     }
 
     /// The 2026-08-06 reading. Same dark fleet, but GitHub is admitting to it,
-    /// so nobody needs to SSH anywhere.
+    /// so nobody needs to SSH anywhere — and the headline is GitHub's severity,
+    /// not the fleet, because how bad GitHub says it is comes first.
     #[test]
-    fn degraded_github_plus_a_dark_platform_is_githubs_problem() {
+    fn a_major_outage_takes_the_headline_even_when_a_platform_is_dark() {
         let c = conjunction(
             Some(&status(
                 ComponentStatus::MajorOutage,
@@ -606,22 +659,38 @@ mod tests {
             )),
             Some(&fleet((2, 2), (0, 10), (0, 0))),
         );
-        assert_eq!(c.verdict, Verdict::ItsGitHub);
-        assert_eq!(c.label, "GH outage");
+        assert_eq!(c.verdict, Verdict::MajorOutage);
+        assert_eq!(c.label, MAJOR_OUTAGE_LABEL);
+        // …and the fleet half is still the sentence behind it.
         assert!(c.detail.contains("major outage"));
+        assert!(c.detail.contains("Linux"), "{}", c.detail);
         assert!(c.detail.contains("expected"));
         assert!(c.detail.contains("Incident with Actions"), "{}", c.detail);
     }
 
+    /// Statuspage's two middle states are both "GitHub is having a bad time";
+    /// only `major_outage` means runs are failing outright.
     #[test]
-    fn degraded_github_with_a_healthy_fleet_says_so() {
-        let c = conjunction(
-            Some(&status(ComponentStatus::PartialOutage, None)),
+    fn degraded_and_partial_outage_share_a_label_but_major_outage_does_not() {
+        for actions in [
+            ComponentStatus::DegradedPerformance,
+            ComponentStatus::PartialOutage,
+        ] {
+            let c = conjunction(
+                Some(&status(actions, None)),
+                Some(&fleet((2, 2), (10, 10), (0, 0))),
+            );
+            assert_eq!(c.verdict, Verdict::Degraded, "{actions:?}");
+            assert_eq!(c.label, DEGRADED_LABEL, "{actions:?}");
+            assert!(c.detail.contains("online regardless"));
+        }
+
+        let major = conjunction(
+            Some(&status(ComponentStatus::MajorOutage, None)),
             Some(&fleet((2, 2), (10, 10), (0, 0))),
         );
-        assert_eq!(c.verdict, Verdict::GitHubDegraded);
-        assert_eq!(c.label, "GH degraded");
-        assert!(c.detail.contains("online regardless"));
+        assert_eq!(major.verdict, Verdict::MajorOutage);
+        assert_eq!(major.label, MAJOR_OUTAGE_LABEL);
     }
 
     #[test]
@@ -631,7 +700,7 @@ mod tests {
             Some(&fleet((2, 2), (10, 10), (0, 0))),
         );
         assert_eq!(c.verdict, Verdict::AllGood);
-        assert_eq!(c.label, "GH ok");
+        assert_eq!(c.label, ALL_GOOD_LABEL);
     }
 
     /// Unreachable is not operational. The fleet half survives, because
@@ -642,7 +711,7 @@ mod tests {
         let c = conjunction(None, Some(&fleet((2, 2), (0, 10), (0, 0))));
         assert_eq!(c.verdict, Verdict::Unknown);
         assert_ne!(c.verdict, Verdict::AllGood);
-        assert_eq!(c.label, "GH ?");
+        assert_eq!(c.label, UNKNOWN_LABEL);
         assert!(c.detail.contains("Linux"), "{}", c.detail);
         assert!(c.detail.contains("can't say"), "{}", c.detail);
     }

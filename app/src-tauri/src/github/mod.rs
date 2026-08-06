@@ -323,8 +323,13 @@ fn availability_chip(state: &GitHubState) -> Value {
     let c = state.conjunction();
     let color = match c.verdict {
         Verdict::AllGood => color::GREEN_DIM,
-        Verdict::GitHubDegraded | Verdict::ItsGitHub => color::AMBER,
-        Verdict::ItsUs => color::RED,
+        // Amber is "GitHub is slow"; red is "workflow runs are failing". They
+        // are different afternoons and they read differently at a glance.
+        Verdict::Degraded => color::AMBER,
+        // Red is shared with `ItsUs` on purpose — both mean *something is badly
+        // wrong right now*. The label is what says whose problem it is, which
+        // is the entire point of the conjunction.
+        Verdict::MajorOutage | Verdict::ItsUs => color::RED,
         Verdict::Unknown => color::MUTED,
     };
     // The reason a failed refresh is not itself the verdict: the last good
@@ -2428,7 +2433,7 @@ mod tests {
         let mut state = linux_dark();
         state.apply_service_status(service_status(github::status::ComponentStatus::Operational));
         let chip = &runners_view(&state, now_unix())["availability"];
-        assert_eq!(chip["label"], "fleet down");
+        assert_eq!(chip["label"], github::status::ITS_US_LABEL);
         assert_eq!(chip["color"], color::hex(color::RED));
         assert!(
             chip["detail"].as_str().expect("detail").contains("Linux"),
@@ -2439,7 +2444,7 @@ mod tests {
     /// The 2026-08-06 reading: same dark fleet, but GitHub is admitting to it.
     /// Amber, not red — nobody needs to SSH anywhere.
     #[test]
-    fn degraded_github_with_a_dark_platform_is_amber_and_blames_github() {
+    fn a_major_outage_is_red_and_says_so_even_with_a_dark_platform() {
         let mut state = linux_dark();
         state.apply_service_status(github::status::ServiceStatus {
             actions: Some(github::status::ComponentStatus::MajorOutage),
@@ -2449,11 +2454,30 @@ mod tests {
             }),
         });
         let chip = &runners_view(&state, now_unix())["availability"];
-        assert_eq!(chip["label"], "GH outage");
-        assert_eq!(chip["color"], color::hex(color::AMBER));
+        assert_eq!(chip["label"], github::status::MAJOR_OUTAGE_LABEL);
+        assert_eq!(chip["color"], color::hex(color::RED));
+        // Red is shared with `Fleet Down`; the label is what says whose problem
+        // it is, and the detail is what says the dark runners are expected.
         let detail = chip["detail"].as_str().expect("detail");
         assert!(detail.contains("expected"), "{detail}");
+        assert!(detail.contains("Linux"), "{detail}");
         assert!(detail.contains("Incident with Actions"), "{detail}");
+    }
+
+    /// Amber is reserved for "GitHub is slow" — the two middle Statuspage
+    /// states — so it reads apart from a major outage at a glance.
+    #[test]
+    fn a_degraded_github_is_amber_and_named_as_degraded() {
+        for actions in [
+            github::status::ComponentStatus::DegradedPerformance,
+            github::status::ComponentStatus::PartialOutage,
+        ] {
+            let mut state = linux_dark();
+            state.apply_service_status(service_status(actions));
+            let chip = &runners_view(&state, now_unix())["availability"];
+            assert_eq!(chip["label"], github::status::DEGRADED_LABEL, "{actions:?}");
+            assert_eq!(chip["color"], color::hex(color::AMBER), "{actions:?}");
+        }
     }
 
     /// Green is the dim one: this sits on two headers permanently, and the
@@ -2463,7 +2487,7 @@ mod tests {
         let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
         state.apply_service_status(service_status(github::status::ComponentStatus::Operational));
         let chip = &runners_view(&state, now_unix())["availability"];
-        assert_eq!(chip["label"], "GH ok");
+        assert_eq!(chip["label"], github::status::ALL_GOOD_LABEL);
         assert_eq!(chip["color"], color::hex(color::GREEN_DIM));
     }
 
@@ -2473,7 +2497,7 @@ mod tests {
     fn an_unread_status_page_is_muted_and_never_green() {
         let state = linux_dark();
         let chip = &runners_view(&state, now_unix())["availability"];
-        assert_eq!(chip["label"], "GH ?");
+        assert_eq!(chip["label"], github::status::UNKNOWN_LABEL);
         assert_eq!(chip["color"], color::hex(color::MUTED));
         assert_ne!(chip["color"], color::hex(color::GREEN_DIM));
     }
@@ -2488,7 +2512,11 @@ mod tests {
         state.apply_service_status(service_status(github::status::ComponentStatus::MajorOutage));
         state.apply_service_status_error("couldn't reach GitHub's status page");
         let chip = &runners_view(&state, now_unix())["availability"];
-        assert_eq!(chip["label"], "GH outage", "the verdict survives");
+        assert_eq!(
+            chip["label"],
+            github::status::MAJOR_OUTAGE_LABEL,
+            "the verdict survives"
+        );
         assert!(
             chip["detail"]
                 .as_str()
@@ -2508,7 +2536,10 @@ mod tests {
         state.apply_service_status(service_status(github::status::ComponentStatus::MajorOutage));
         let view = runners_view(&state, now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
-        assert_eq!(view["availability"]["label"], "GH degraded");
-        assert_eq!(view["availability"]["color"], color::hex(color::AMBER));
+        assert_eq!(
+            view["availability"]["label"],
+            github::status::MAJOR_OUTAGE_LABEL
+        );
+        assert_eq!(view["availability"]["color"], color::hex(color::RED));
     }
 }
