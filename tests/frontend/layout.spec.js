@@ -51,10 +51,14 @@ const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).jso
 const firstHost = async (page) =>
   page.evaluate(async () => (await (await fetch("sample.json")).json()).hosts[0]);
 
-test("core grid uses only column counts that leave a full last row", async ({ page }) => {
+test("core grid uses only column counts core_columns would accept", async ({ page }) => {
   await gotoApp(page);
-  // 16 cores -> divisors 1,2,4,8,16. Any other count would orphan the last row.
-  for (const [width, expected] of [[1900, 16], [900, 8], [500, 4], [300, 2], [150, 1]]) {
+  // 16 cores -> 1, 2, 4, 8. The 16-column rung used to be here too, and a
+  // 1900px card took it: one row of sixteen cells stretched over the whole
+  // block. A full last row was only half the rule -- the rung must also stay
+  // under the 10-column cap and leave at least 2 rows, so 8 x 2 is as wide as
+  // this grid goes no matter how much room it is given.
+  for (const [width, expected] of [[1900, 8], [900, 8], [500, 4], [300, 2], [150, 1]]) {
     const got = await page.evaluate((w) => {
       const wrap = document.querySelector(".cores-wrap");
       const grid = document.querySelector(".cores");
@@ -83,7 +87,7 @@ test("cores block keeps the 2-row height until cells hit the squeeze floor, then
   );
   expect(actualProp, "--core-block-h custom property").toBe(expectedPx);
 
-  // 16 cores: rungs of 16/8/4 columns give 1/2/4 rows, which fit the fixed
+  // 16 cores: rungs of 8/4 columns give 2/4 rows, which fit the fixed
   // 220px block at or above the Swift squeeze floor (49px cells — the
   // 4-row case of core_cell_height). The 2- and 1-column rungs would need
   // 8 and 16 rows, where 220px leaves the plots literally 0px — there the
@@ -429,11 +433,75 @@ test("this machine leads the grid and admits what it could not measure", async (
   await expect(local.locator(".diskRead")).toHaveText(vm.hosts[0].diskRead);
 });
 
+/**
+ * Vertical overlap between two boxes, in px. Two things "share a line" when
+ * they overlap by most of the shorter one's height — same-line is not
+ * same-top: an 18px CPU model centred beside a 26px percentage has neither the
+ * same top nor the same bottom.
+ */
+const sharesLine = (a, b) =>
+  Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) >= Math.min(a.height, b.height) * 0.8;
+
+test("a card's header names the host and its CPU on one line, ellipsizing the model", async ({ page, baseURL }) => {
+  // The header used to be two rows: the name (with its dot) above the CPU
+  // model / thermal badge / percentage. They are one row now, which is worth
+  // ~30px of every card. The model is the only member allowed to give ground,
+  // so a workstation-length model string must ellipsize instead of shoving the
+  // percentage past the card's edge.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  vm.hosts[0].cpuModel = "Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz".padEnd(120, " Turbo");
+  expect(vm.hosts[0].cpuModel.length).toBeGreaterThanOrEqual(120);
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  const card = page.locator(".cockpit .card").first();
+  const box = async (sel) => await card.locator(sel).boundingBox();
+  const [name, model, badge, pct, header, cardBox] = await Promise.all([
+    box(".hostName"), box(".cpuModel"), box(".thermal"), box(".cpuValue"),
+    box(".hdr"), card.boundingBox(),
+  ]);
+
+  // One row, and everything that matters is on it.
+  expect(sharesLine(name, model), "the CPU model shares the host name's line").toBe(true);
+  expect(sharesLine(name, badge), "the thermal badge shares it too").toBe(true);
+  expect(sharesLine(name, pct), "so does the percentage").toBe(true);
+  expect(header.height).toBeLessThan(name.height + pct.height);
+
+  // The percentage is pushed right, still inside the card, and still readable.
+  expect(pct.x).toBeGreaterThan(model.x + model.width);
+  expect(pct.x + pct.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+  await expect(card.locator(".cpuValue")).toHaveText(vm.hosts[0].cpuValue);
+
+  // …because the model clipped rather than the row growing to fit it.
+  const clipped = await card
+    .locator(".cpuModel")
+    .evaluate((el) => el.scrollWidth > el.clientWidth && getComputedStyle(el).textOverflow === "ellipsis");
+  expect(clipped, "a 120-character CPU model must ellipsize").toBe(true);
+  // The name never does: it is how you tell the cards apart.
+  const nameClipped = await card.locator(".hostName").evaluate((el) => el.scrollWidth > el.clientWidth);
+  expect(nameClipped).toBe(false);
+
+  // The stale message shares this row too, and `sample-cockpit.json` carries a
+  // host that has one. It is the last thing to give — the model beside it goes
+  // to nothing first — but neither of them may cost the percentage its place
+  // on the card.
+  const overflowing = await page.locator(".cockpit .card").evaluateAll((cards) =>
+    cards
+      .filter((c) => c.querySelector(".cpuValue").getBoundingClientRect().right >
+        c.getBoundingClientRect().right)
+      .map((c) => c.querySelector(".hostName").textContent)
+  );
+  expect(overflowing, "no card's reading may be pushed past its own edge").toEqual([]);
+  const staleCard = page.locator(".cockpit .card").filter({ hasText: "Couldn't reach the agent" }).first();
+  await expect(staleCard.locator(".staleMsg")).toContainText("Couldn't reach the agent");
+  await expect(staleCard.locator(".cpuValue")).not.toHaveText("");
+});
+
 test("the panel rows below the grid are the ones Rust reflowed", async ({ page, baseURL }) => {
-  // The pairing is `viewmodel::cockpit::reflow`'s, applied here and not decided
-  // here — a CSS `auto-fit` would be a second implementation of every panel's
-  // `min_width`. The fixture is dumped wide enough for every authored pair, so
-  // Usage and Azure Cost share the last row.
+  // The rows AND the track widths are `viewmodel::cockpit`'s — `reflow` decides
+  // who shares a row, each placement's `PanelSpan` weight decides how much of it
+  // they get — applied here and not decided here. A CSS `auto-fit` would be a
+  // second implementation of every panel's own `min_width`.
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);
   await gotoApp(page);
@@ -459,11 +527,58 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
   );
   expect(tracks).toEqual(expected.map((row) => row.length));
 
-  // Usage and Azure Cost are the pair the whole per-panel breakpoint model
-  // exists for: they stay side by side at widths where the hungrier pairs split.
-  const last = expected[expected.length - 1];
-  expect(last).toEqual(["claudeUsage", "azureCost"]);
-  await expect(rows.last().locator("section")).toHaveCount(2);
+  // The row the span system exists for: Containers takes half, OpenClaw and
+  // Usage a quarter each, painted as `2fr 1fr 1fr`. Ratios, not pixels — the
+  // fixture's widths are the 2732pt it was dumped for, not this viewport's.
+  const quarter = expected.findIndex(
+    (row) => row.join() === "containers,openclawAgents,claudeUsage"
+  );
+  expect(quarter, "the wide fixture must carry the authored quarter row").toBeGreaterThan(-1);
+  const widths = await rows
+    .nth(quarter)
+    .evaluate((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).map(parseFloat));
+  expect(widths[1]).toBeCloseTo(widths[2], 1);
+  expect(widths[0]).toBeCloseTo(widths[1] * 2, 0);
+
+  // …and Azure Cost has a whole row, which is what buys its two-column body.
+  expect(expected[expected.length - 1]).toEqual(["azureCost"]);
+  await expect(rows.last().locator("section")).toHaveCount(1);
+});
+
+test("every card sharing a row is the same height", async ({ page, baseURL }) => {
+  // The ragged edge this replaces: cards were `align-items:start`, so a short
+  // panel beside a long one left a gap the row read as damage. Content stays
+  // top-aligned inside the stretched card — the extra height is trailing space,
+  // not stretched rows — so this asserts the CARD heights match AND that at
+  // least one card is genuinely taller than its own content. Without the second
+  // half, a fixture whose panels happened to be equally tall would pass with
+  // `align-items:start` back in place.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubCockpit(page, [vm]);
+  await gotoApp(page);
+
+  const rows = page.locator("#panelRows .panel-row");
+  const shared = await rows.evaluateAll((els) =>
+    els
+      .map((el) =>
+        [...el.querySelectorAll(":scope > section")].map((section) => {
+          const box = section.getBoundingClientRect();
+          const content = section.lastElementChild.getBoundingClientRect().bottom;
+          const padding = parseFloat(getComputedStyle(section).paddingBottom);
+          return { height: box.height, slack: box.bottom - content - padding };
+        })
+      )
+      .filter((cards) => cards.length > 1)
+  );
+  expect(shared.length, "the fixture must have at least one shared row").toBeGreaterThan(0);
+  for (const cards of shared) {
+    const heights = cards.map((c) => c.height);
+    for (const height of heights) {
+      expect(Math.abs(height - heights[0]), `heights ${heights.join("/")}`).toBeLessThan(1);
+    }
+  }
+  const slack = Math.max(...shared.flat().map((c) => c.slack));
+  expect(slack, "a shorter card is stretched to its row, not merely equal").toBeGreaterThan(24);
 });
 
 test("a reflow re-parents every panel without losing one", async ({ page, baseURL }) => {
@@ -472,7 +587,8 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
   // the moves — and the panels are destroyed with their old containers, which
   // no single-render test can see because the memo skips the rebuild entirely
   // when the shape is unchanged. So this drives a real shape change: a wide
-  // payload with every authored pair, then a 700pt one where every row splits.
+  // payload with every authored row, then a 700pt one where the halves and the
+  // quarter row both break up.
   const wide = await fixture(baseURL, "sample-cockpit.json");
   const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
   expect(
@@ -491,22 +607,27 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
     "usagePanel",
     "azurePanel",
   ];
+  // Both shapes are the payload's, not this test's: the sectionless `hosts` row
+  // is the grid above, so it contributes no rendered row.
+  const shapeOf = (vm) =>
+    vm.panelRows
+      .map((row) => row.filter((p) => p.id !== "hosts").length)
+      .filter((count) => count);
   const rows = page.locator("#panelRows .panel-row");
-  // Wide: three rendered rows (the `hosts` row is the grid above). Narrow: one
-  // per section.
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(shapeOf(wide).length);
 
   // The app's own 1s poll delivers the narrow payload; wait for the reflow.
-  await expect(rows).toHaveCount(sections.length, { timeout: 5000 });
+  await expect(rows).toHaveCount(shapeOf(narrow).length, { timeout: 5000 });
   for (const id of sections) {
     await expect(page.locator(`#${id}`), `${id} survived the reflow`).toHaveCount(1);
     await expect(page.locator(`#panelRows .panel-row > #${id}`)).toHaveCount(1);
   }
-  // …and each is alone in its row now, one track apiece.
+  // …and every section is accounted for by the rows Rust asked for.
   const tracks = await rows.evaluateAll((els) =>
     els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
   );
-  expect(tracks).toEqual(sections.map(() => 1));
+  expect(tracks).toEqual(shapeOf(narrow));
+  expect(tracks.reduce((a, b) => a + b, 0)).toBe(sections.length);
 });
 
 test("the grid lays out exactly the columns the view-model asked for", async ({ page, baseURL }) => {
@@ -659,6 +780,44 @@ test("the tabs overflow mode shows one host at a time, and the bar switches betw
   const shown = cards.filter({ visible: true });
   await expect(shown).toHaveCount(1);
   await expect(shown.locator(".hostName")).toHaveText(second.label);
+});
+
+test("the host tab bar rides the Hosts title line instead of costing a row", async ({ page, baseURL }) => {
+  // The tabs mode only ever appears below the side-by-side breakpoint — the
+  // narrowest, shortest windows — so a switcher on a row of its own spent
+  // vertical space exactly where there is none. It now sits inside `.topbar`
+  // between the title and the Settings button, and the topbar must not have
+  // grown taller to hold it.
+  const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
+  await stubCockpit(page, [tabbed]);
+  await gotoApp(page);
+
+  const topbar = page.locator("#cockpitView > .topbar");
+  const bar = page.locator("#hostTabs");
+  await expect(bar).toBeVisible();
+
+  const [tb, barBox, title, button, firstTab] = await Promise.all([
+    topbar.boundingBox(),
+    bar.boundingBox(),
+    page.locator("#hostsTitle").boundingBox(),
+    page.locator("#settingsToggle").boundingBox(),
+    bar.locator(".tab").first().boundingBox(),
+  ]);
+
+  // Same visual line as the title, and inside the topbar's box.
+  expect(sharesLine(title, firstTab), "the tabs sit on the Hosts title's line").toBe(true);
+  expect(barBox.y).toBeGreaterThanOrEqual(tb.y);
+  expect(barBox.y + barBox.height).toBeLessThanOrEqual(tb.y + tb.height + 0.5);
+  // Between the title and the button, in that order.
+  expect(barBox.x).toBeGreaterThanOrEqual(title.x + title.width);
+  expect(barBox.x + barBox.width).toBeLessThanOrEqual(button.x);
+  // …and the row is still exactly as tall as its tallest fixed member.
+  expect(tb.height).toBeCloseTo(button.height, 1);
+
+  // The strip scrolls rather than wrapping: wrapping would put the overflow
+  // tabs back on a second line, which is the line this move reclaimed.
+  const wrap = await bar.evaluate((el) => getComputedStyle(el).flexWrap);
+  expect(wrap).toBe("nowrap");
 });
 
 test("stack keeps every host on screen, and leaves no tab bar behind", async ({ page, baseURL }) => {

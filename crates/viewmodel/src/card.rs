@@ -22,7 +22,7 @@ use crate::format::{fmt, fmt_axis, fmt_rate, memory_label, relative_age};
 use crate::history::History;
 use crate::layout::{
     core_block_height, core_column_ladder, core_rung_height, core_visual_rows, CORE_GAP,
-    CORE_MIN_CELL, CORE_ROW_SPAN_DEFAULT, HISTORY_CAPACITY, PX_PER_SAMPLE,
+    CORE_MAX_COLUMNS, CORE_MIN_CELL, CORE_ROW_SPAN_DEFAULT, HISTORY_CAPACITY, PX_PER_SAMPLE,
 };
 use serde_json::{json, Value};
 
@@ -332,7 +332,9 @@ pub fn host_card(
         "capacity": HISTORY_CAPACITY,
         "pxPerSample": PX_PER_SAMPLE,
         "coreBlockHeight": core_block_height(CORE_ROW_SPAN_DEFAULT),
-        "coreLadder": core_column_ladder(s.cpu.core_usages.len(), CORE_MIN_CELL, CORE_GAP)
+        "coreLadder": core_column_ladder(
+            s.cpu.core_usages.len(), CORE_MIN_CELL, CORE_GAP, CORE_MAX_COLUMNS,
+        )
             .into_iter().map(|(w, c)| json!({
                 "minWidth": w, "cols": c,
                 // Per-rung block height: fixed while cells clear the Swift
@@ -668,7 +670,9 @@ mod tests {
         );
         assert_eq!(vm["coreBlockHeight"], 220.0);
         let rungs = vm["coreLadder"].as_array().unwrap();
-        assert_eq!(rungs.len(), 5);
+        // Four rungs, not five: 16 cores at 16 columns is the one-row grid
+        // `core_columns` would never pick, so the ladder no longer offers it.
+        assert_eq!(rungs.len(), 4);
         assert_eq!(rungs[3]["cols"], 8);
         assert_eq!(rungs[3]["minWidth"], 888.0);
         // 8 cols -> 2 rows: fixed block. 2 cols -> 8 rows and 1 col -> 16

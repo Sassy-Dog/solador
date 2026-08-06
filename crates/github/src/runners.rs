@@ -35,6 +35,8 @@ pub enum RunnerOs {
     MacOs,
     #[serde(rename = "linux")]
     Linux,
+    #[serde(rename = "windows")]
+    Windows,
     #[serde(rename = "other")]
     Other,
 }
@@ -45,6 +47,7 @@ impl RunnerOs {
         match self {
             RunnerOs::MacOs => "macOS",
             RunnerOs::Linux => "Linux",
+            RunnerOs::Windows => "Windows",
             RunnerOs::Other => "Other",
         }
     }
@@ -53,14 +56,16 @@ impl RunnerOs {
     /// the `Serialize`/`Deserialize` impls above write.
     ///
     /// Deliberately not [`RunnerOs::label`]: that is display text (`"Linux"`,
-    /// `"Other"`) and this is a storage format (`"linux"`, `"other"`). They
-    /// differ for two of the three cases, and a roster written with the display
-    /// spelling would read back as `Other` on every entry.
+    /// `"Windows"`, `"Other"`) and this is a storage format (`"linux"`,
+    /// `"windows"`, `"other"`). They differ for three of the four cases, and a
+    /// roster written with the display spelling would read back as `Other` on
+    /// every entry.
     #[must_use]
     pub const fn as_raw(self) -> &'static str {
         match self {
             RunnerOs::MacOs => "macOS",
             RunnerOs::Linux => "linux",
+            RunnerOs::Windows => "windows",
             RunnerOs::Other => "other",
         }
     }
@@ -73,17 +78,20 @@ impl RunnerOs {
         match raw {
             "macOS" => RunnerOs::MacOs,
             "linux" => RunnerOs::Linux,
+            "windows" => RunnerOs::Windows,
             _ => RunnerOs::Other,
         }
     }
 
-    /// Panel display order: macOS first, then Linux, then everything else.
+    /// Panel display order: macOS, then Linux, then Windows, then everything
+    /// else.
     #[must_use]
     pub fn rank(self) -> u8 {
         match self {
             RunnerOs::MacOs => 0,
             RunnerOs::Linux => 1,
-            RunnerOs::Other => 2,
+            RunnerOs::Windows => 2,
+            RunnerOs::Other => 3,
         }
     }
 }
@@ -125,6 +133,14 @@ pub struct RunnerSummary {
     pub macos_total: usize,
     pub linux_online: usize,
     pub linux_total: usize,
+    pub windows_online: usize,
+    pub windows_total: usize,
+    /// Everything that is not one of the three tracked platforms. Counted so
+    /// the panel can say a runner exists on something it does not name,
+    /// instead of leaving it out of the per-platform row while still counting
+    /// it in the total.
+    pub other_online: usize,
+    pub other_total: usize,
 }
 
 /// DTOs to renderable runners.
@@ -159,6 +175,8 @@ fn os_of(dto: &RunnerDto) -> RunnerOs {
         RunnerOs::MacOs
     } else if os.contains("linux") {
         RunnerOs::Linux
+    } else if os.contains("win") {
+        RunnerOs::Windows
     } else {
         RunnerOs::Other
     }
@@ -176,6 +194,10 @@ pub fn summarize(runners: &[GhRunner]) -> RunnerSummary {
         macos_total: count(|r| r.os == RunnerOs::MacOs),
         linux_online: count(|r| r.os == RunnerOs::Linux && r.state != RunnerState::Offline),
         linux_total: count(|r| r.os == RunnerOs::Linux),
+        windows_online: count(|r| r.os == RunnerOs::Windows && r.state != RunnerState::Offline),
+        windows_total: count(|r| r.os == RunnerOs::Windows),
+        other_online: count(|r| r.os == RunnerOs::Other && r.state != RunnerState::Offline),
+        other_total: count(|r| r.os == RunnerOs::Other),
     }
 }
 
@@ -216,10 +238,13 @@ mod tests {
             dto("a", "macOS", "online", false),
             dto("b", "Linux", "online", false),
             dto("c", "Windows", "online", false),
+            dto("d", "FreeBSD", "online", false),
         ]);
         assert_eq!(runners[0].os, RunnerOs::MacOs);
         assert_eq!(runners[1].os, RunnerOs::Linux);
-        assert_eq!(runners[2].os, RunnerOs::Other);
+        assert_eq!(runners[2].os, RunnerOs::Windows);
+        // Only the three tracked platforms are named; the rest is `Other`.
+        assert_eq!(runners[3].os, RunnerOs::Other);
     }
 
     /// A runner GitHub reports as offline while its `busy` flag is still set is
@@ -237,15 +262,22 @@ mod tests {
             dto("m2", "macOS", "online", false),
             dto("l1", "Linux", "online", false),
             dto("l2", "Linux", "offline", false),
+            dto("w1", "Windows", "online", false),
+            dto("w2", "Windows", "offline", false),
+            dto("x1", "FreeBSD", "online", false),
         ]));
-        assert_eq!(summary.total, 4);
-        assert_eq!(summary.online, 3);
+        assert_eq!(summary.total, 7);
+        assert_eq!(summary.online, 5);
         assert_eq!(summary.busy, 1);
-        assert_eq!(summary.idle, 2);
+        assert_eq!(summary.idle, 4);
         assert_eq!(summary.macos_online, 2);
         assert_eq!(summary.macos_total, 2);
         assert_eq!(summary.linux_online, 1);
         assert_eq!(summary.linux_total, 2);
+        assert_eq!(summary.windows_online, 1);
+        assert_eq!(summary.windows_total, 2);
+        assert_eq!(summary.other_online, 1);
+        assert_eq!(summary.other_total, 1);
     }
 
     /// The DTOs decode GitHub's real org-runners payload — `total_count`,
@@ -295,6 +327,10 @@ mod tests {
             "\"linux\""
         );
         assert_eq!(
+            serde_json::to_string(&RunnerOs::Windows).expect("encode"),
+            "\"windows\""
+        );
+        assert_eq!(
             serde_json::to_string(&RunnerOs::Other).expect("encode"),
             "\"other\""
         );
@@ -305,7 +341,12 @@ mod tests {
     /// other fails here instead of silently splitting the stored format in two.
     #[test]
     fn as_raw_matches_the_serialised_spelling() {
-        for os in [RunnerOs::MacOs, RunnerOs::Linux, RunnerOs::Other] {
+        for os in [
+            RunnerOs::MacOs,
+            RunnerOs::Linux,
+            RunnerOs::Windows,
+            RunnerOs::Other,
+        ] {
             let encoded = serde_json::to_string(&os).expect("encode");
             assert_eq!(encoded, format!("\"{}\"", os.as_raw()), "{os:?}");
         }
@@ -313,13 +354,23 @@ mod tests {
 
     #[test]
     fn from_raw_round_trips_and_tolerates_the_unknown() {
-        for os in [RunnerOs::MacOs, RunnerOs::Linux, RunnerOs::Other] {
+        for os in [
+            RunnerOs::MacOs,
+            RunnerOs::Linux,
+            RunnerOs::Windows,
+            RunnerOs::Other,
+        ] {
             assert_eq!(RunnerOs::from_raw(os.as_raw()), os);
         }
         // An entry a newer build wrote must not cost us the whole roster.
         assert_eq!(RunnerOs::from_raw("freebsd"), RunnerOs::Other);
         // The display spelling is NOT the stored one, and must not sneak in as
-        // a second accepted value.
+        // a second accepted value. `Windows` is the trap case: its label and
+        // its raw value differ only in the first letter, so a roster written
+        // with the display text would read back as `Other` and quietly lose
+        // every Windows runner.
         assert_eq!(RunnerOs::from_raw("Linux"), RunnerOs::Other);
+        assert_eq!(RunnerOs::from_raw("Windows"), RunnerOs::Other);
+        assert_eq!(RunnerOs::from_raw("windows"), RunnerOs::Windows);
     }
 }

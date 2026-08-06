@@ -28,6 +28,9 @@ const S = {
   status: "",
   /** Host id -> its last Test result line. Survives a re-render. */
   tests: new Map(),
+  /** Which Layout breakpoint the editor is showing, by its `minWidth`. `null`
+   *  means "the first one" — see `selectedBand`. */
+  band: null,
 };
 
 const $s = (id) => document.getElementById(id);
@@ -225,19 +228,179 @@ function generalTab(g) {
   const span = numberInput(g.coreRowSpan.value, g.coreRowSpan.min, g.coreRowSpan.max);
   box.append(field("general-core-rows", g.coreRowSpan.label, span), help(g.coreRowSpan.help));
 
-  const overflow = select(g.hostOverflow.options, g.hostOverflow.value);
-  box.append(field("general-overflow", g.hostOverflow.label, overflow), help(g.hostOverflow.help));
-
+  // No host-overflow picker here: it is per breakpoint now (the Layout tab),
+  // because one global switch could not say "tabs in a narrow column, side by
+  // side when wide".
   const apply = button(g.saveLabel, "apply");
   apply.addEventListener("click", () =>
     mutate("settings_save_general", {
       refreshIntervalSecs: int(interval.value),
       coreRowSpan: int(span.value),
-      hostOverflowMode: overflow.value,
     })
   );
   box.appendChild(actionRow(apply));
   return [box];
+}
+
+/** One panel's row in the Layout editor: its title, a width picker, and the
+ *  two buttons that walk it along the order.
+ *
+ *  Every control saves immediately, like the Portfolio tab's checkbox — there
+ *  is no Apply here. The re-render then comes from what Rust persisted, so the
+ *  list can never show an order that failed to save, and `canMoveUp` /
+ *  `canMoveDown` are Rust's answers rather than an index comparison here.
+ *
+ *  Every mutation names the breakpoint it edits by `minWidth`, never by index:
+ *  adding one re-sorts the list, and an index would then address the wrong
+ *  band. */
+function layoutRow(t, band, panel) {
+  const row = node("div", "layout-row");
+  row.dataset.panel = panel.id;
+  row.append(node("span", "layout-name", panel.title), node("span", "grow"));
+
+  const span = select(t.spanOptions, panel.span);
+  span.addEventListener("change", () =>
+    mutate("settings_set_panel_span", {
+      minWidth: band.minWidth,
+      panel: panel.id,
+      span: span.value,
+    })
+  );
+  row.appendChild(field(`layout-span-${panel.id}`, t.spanLabel, span));
+
+  for (const [label, direction, enabled] of [
+    [t.upLabel, "up", panel.canMoveUp],
+    [t.downLabel, "down", panel.canMoveDown],
+  ]) {
+    const move = button(label, "move");
+    move.dataset.direction = direction;
+    move.disabled = !enabled;
+    move.addEventListener("click", () =>
+      mutate("settings_move_panel", { minWidth: band.minWidth, panel: panel.id, direction })
+    );
+    row.appendChild(move);
+  }
+  return row;
+}
+
+/** The rows this order packs into, drawn at their real proportions.
+ *
+ *  The packing is Rust's (`CockpitLayout::from_order`) and arrives as rows of
+ *  cells carrying the `fr` weight each panel gets — the same number the cockpit
+ *  paints. Re-deriving "what will this look like" from the spans here would be
+ *  a second implementation of the packer, free to promise an arrangement the
+ *  cockpit then does not render. */
+function layoutPreview(preview) {
+  const box = group(preview.label);
+  for (const row of preview.rows) {
+    const line = node("div", "layout-preview-row");
+    // CSSOM, never a `style=""` attribute -- `style-src 'self'`. Same setter
+    // and the same `fr` numbers app.js uses on a real panel row.
+    line.style.gridTemplateColumns = row
+      .map((cell) => `minmax(0, ${Math.max(1, Number(cell.weight) | 0)}fr)`)
+      .join(" ");
+    for (const cell of row) {
+      const tile = node("div", "layout-tile");
+      tile.append(node("span", "layout-tile-name", cell.title));
+      tile.append(node("span", "layout-tile-span", cell.spanLabel));
+      line.appendChild(tile);
+    }
+    box.appendChild(line);
+  }
+  return box;
+}
+
+/** The band the editor is showing.
+ *
+ *  Held here rather than in the payload because it is a *view* state: which
+ *  arrangement you are editing is not something the cockpit renders or the
+ *  store remembers. A selection that no longer exists (its band was removed,
+ *  or Reset collapsed them all) falls back to the first — never to nothing. */
+function selectedBand(t) {
+  return t.breakpoints.find((b) => b.minWidth === S.band) || t.breakpoints[0];
+}
+
+/** The breakpoint switcher: one button per band, plus the width form that adds
+ *  another. Same `.tab` control the Settings tab bar uses, so the two read as
+ *  the same kind of choice. */
+function breakpointBar(t, current) {
+  const box = group(null);
+  const bar = node("div", "tabs");
+  for (const band of t.breakpoints) {
+    const b = button(band.label, "tab");
+    b.dataset.band = String(band.minWidth);
+    if (band.minWidth === current.minWidth) b.dataset.active = "true";
+    b.addEventListener("click", () => {
+      S.band = band.minWidth;
+      render();
+    });
+    bar.appendChild(b);
+  }
+  box.appendChild(bar);
+
+  const width = numberInput("", 0);
+  const add = button(t.add.buttonLabel, "add");
+  const submit = () => {
+    const value = int(width.value);
+    // Reset at submit, like the Add Host form: a submitted field must not ride
+    // the re-render as an unapplied edit.
+    width.value = "";
+    // Select what is about to be created, so the new band is what the editor
+    // shows when Rust answers.
+    S.band = value;
+    mutate("settings_add_breakpoint", { minWidth: value });
+  };
+  add.addEventListener("click", submit);
+  width.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
+  box.append(field("layout-add-width", t.add.widthLabel, width), actionRow(add), help(t.add.help));
+  return box;
+}
+
+function layoutTab(t) {
+  const current = selectedBand(t);
+  const list = group(t.heading);
+  list.appendChild(help(t.help));
+
+  const overflow = select(t.overflowOptions, current.hostOverflow);
+  overflow.addEventListener("change", () =>
+    mutate("settings_set_breakpoint_overflow", {
+      minWidth: current.minWidth,
+      hostOverflowMode: overflow.value,
+    })
+  );
+  list.append(field("layout-overflow", t.overflowLabel, overflow), help(t.overflowHelp));
+
+  for (const panel of current.rows) list.appendChild(layoutRow(t, current, panel));
+
+  const remove = button(t.removeLabel, "delete");
+  // The last band standing cannot go — Rust's `canRemove`, not a length
+  // compared here.
+  remove.disabled = !current.canRemove;
+  remove.addEventListener("click", () => {
+    S.band = null;
+    mutate("settings_remove_breakpoint", { minWidth: current.minWidth });
+  });
+
+  const reset = group(null);
+  const button_ = button(t.resetLabel, "delete");
+  // A store that has never carried a layout has nothing to reset. Whether that
+  // is the case is Rust's `isDefault`, not "do these rows look default to me".
+  button_.disabled = t.isDefault;
+  button_.addEventListener("click", () => {
+    S.band = null;
+    mutate("settings_reset_layout", {});
+  });
+  reset.append(actionRow(button_), help(t.resetHelp));
+
+  return [
+    breakpointBar(t, current),
+    list,
+    layoutPreview(current.preview),
+    actionRow(remove),
+    reset,
+  ];
 }
 
 /** One "hidden volume" line: the mount, and the button that unhides it. */
@@ -652,6 +815,7 @@ function renderBody() {
   const body = $s("settingsBody");
   const build = {
     general: generalTab,
+    layout: layoutTab,
     github: (t) => [secretGroup(t.heading, t.secret)],
     portfolio: portfolioTab,
     hosts: hostsTab,

@@ -19,7 +19,10 @@ html, body {
 body { padding:var(--cockpit-gap, 16px); }
 /* The Hosts panel's own heading. Text comes from Rust's panel table. */
 .panel-title { font-size:13px; font-weight:700; margin:0; }
-.topbar { display:flex; align-items:center; gap:8px;
+/* Title, host tab bar and the Settings button on one line. Every member is
+   fixed-size except the tab strip, so the strip is what has to give when a
+   user configures more hosts than the width holds. */
+.topbar { display:flex; align-items:center; gap:8px; flex-wrap:nowrap;
   margin:0 0 var(--cockpit-gap, 16px); }
 /* Empty only when there is nothing to say — `hidden` is set from app.js, and
    an unstyled `[hidden]` is already display:none, so no rule is needed here. */
@@ -34,31 +37,56 @@ body { padding:var(--cockpit-gap, 16px); }
 .cockpit { display:grid; gap:var(--cockpit-gap, 16px);
   grid-template-columns: repeat(1, minmax(0, 1fr)); align-items:start; }
 /* The host tab bar. It shares `.tabs`/`.tab[data-active]` with Settings, so
-   the two read as the same control; only the spacing below is its own. Whether
-   it is on screen at all is `hostTabs` in the payload — never a CSS rule and
-   never a JS breakpoint (see app.js's `applyHostTabs`), and the grid's
-   `min-height` is Rust's number for the same reason. */
-.host-tabs { margin:0 0 var(--cockpit-gap, 16px); }
+   the two read as the same control. Whether it is on screen at all is
+   `hostTabs` in the payload — never a CSS rule and never a JS breakpoint (see
+   app.js's `applyHostTabs`), and the grid's `min-height` is Rust's number for
+   the same reason.
+
+   It scrolls sideways rather than wrapping (`.tabs` wraps by default, which is
+   right in the Settings sheet where the bar owns its row). Wrapping here would
+   put the overflow tabs on a second line — which is the line moving the bar
+   onto the title row just reclaimed, and it would reappear precisely in the
+   narrow window the tabs mode exists to serve. Scrolling keeps the topbar the
+   height of its tallest fixed member, the Settings button, no matter how many
+   hosts there are. */
+.topbar .host-tabs { flex:0 1 auto; min-width:0; flex-wrap:nowrap;
+  overflow-x:auto; scrollbar-width:none; }
+.topbar .host-tabs::-webkit-scrollbar { display:none; }
+.topbar .host-tabs .tab { flex:none; }
 .card { padding:18px; background:var(--panel); border:1px solid var(--line);
   border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
-.hdr { display:flex; align-items:center; gap:8px; }
+/* The card's header row and the section headers below it are the same shape: a
+   marker, a label that gives ground first, then a value pinned right. The host
+   header used to be a row of its own above the CPU section header; the two are
+   one line now, so they are one rule. */
+.hdr, .sec-hdr { display:flex; align-items:center; gap:8px; min-width:0; }
 /* Default is neutral, not green: this colour is a *fact* about the poll
    loop (live / connecting / stale / failed), not a decoration, and app.js
    always overwrites it via CSSOM once a `connection` badge exists. Baking
    "green" in here is what let the dot look connected before anything had
    actually connected. */
 .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
-.host { font-size:14px; font-weight:700; }
-.stale { font-size:10px; font-weight:700; }
+/* Never truncated and never wrapped: the host name is how you tell one card
+   from the next. */
+.host { font-size:14px; font-weight:700; white-space:nowrap; }
+/* The stale message shares the header row now rather than owning one, so a
+   narrow card can run out of room for it. It yields last: this is news, the
+   CPU model beside it is a constant, and the lopsided `flex-shrink` below
+   spends the model's width entirely before this loses a character. */
+.stale { font-size:10px; font-weight:700; white-space:nowrap; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; }
 .grow { flex:1; } .muted { color:var(--muted); }
 /* SF Symbols have no web equivalent; a filled square stands in until an icon
    font is bundled (tracked separately). */
 .glyph { width:7px; height:7px; border-radius:1px; background:var(--green);
   display:inline-block; flex:none; }
-.sec-hdr { display:flex; align-items:center; gap:8px; min-width:0; }
-.sec-hdr .title { font-size:13px; font-weight:700; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
-.big { font-size:18px; font-weight:700; white-space:nowrap; }
+.hdr .title, .sec-hdr .title { font-size:13px; font-weight:700;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* In the card header the model is the designated give — see `.stale`. */
+.hdr .title { flex-shrink:100; }
+/* `flex:none` so a long CPU model or stale message beside it cannot squeeze
+   the percentage — the reading is the one number the card exists for. */
+.big { font-size:18px; font-weight:700; white-space:nowrap; flex:none; }
 .badge { font-size:10px; font-weight:700; padding:2px 7px; border-radius:8px;
   white-space:nowrap; flex:none; }
 hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
@@ -212,12 +240,24 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .dot.blink { animation:gh-blink 0.7s ease-in-out infinite alternate; }
 @media (prefers-reduced-motion: reduce) { .dot.blink { animation:none; } }
 
-.gh-stats { display:flex; gap:16px; }
-.gh-stat { display:flex; flex-direction:column; gap:1px; flex:1; min-width:0; }
+/* The Runners header: stats reading left, platform chips flush right, one
+   line. They used to stack, which spent a whole line of a glanceable panel on
+   a single short row of pills. `flex-end` sits the pills on the baseline of
+   the big stat numbers rather than floating them against the tiny labels.
+   `wrap` is the narrow-card escape hatch: at `--panel-cols: 1` the chips drop
+   under the stats instead of squeezing them, which only works because
+   `.gh-stat` below refuses to shrink past its own text. */
+.gh-header { display:flex; align-items:flex-end; gap:6px 12px; flex-wrap:wrap; }
+.gh-stats { display:flex; gap:16px; flex:1 1 auto; }
+/* No `min-width:0`: a stat that can shrink to nothing gives `.gh-header` a
+   min-content width of nothing, and the chips then never wrap — they just
+   crush the labels instead. */
+.gh-stat { display:flex; flex-direction:column; gap:1px; flex:1; }
 .gh-stat .lbl { font-size:8px; }
 .gh-stat-value { font-size:15px; font-weight:700;
   font-variant-numeric:tabular-nums; }
-.gh-chips { display:flex; gap:8px; flex-wrap:wrap; }
+.gh-chips { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;
+  margin-left:auto; }
 .gh-chip { font-size:9px; color:var(--muted); padding:3px 7px;
   border:1px solid var(--line); border-radius:999px; white-space:nowrap; }
 .gh-runner-name { font-size:11px; font-weight:700; white-space:nowrap;
@@ -244,14 +284,24 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   flex:none; text-align:right; overflow:hidden; }
 
 /* ---- Panel rows ---------------------------------------------------------
-   Which panels share a row is `viewmodel::cockpit::reflow`'s answer, applied
-   by app.js — NOT a CSS `repeat(auto-fit, minmax(…))`, which would be a second
-   implementation of every panel's own `min_width` and free to disagree with
-   the tested one. The track count is assigned via CSSOM per row; this rule
-   only supplies the fallback and the gap. `minmax(0,1fr)` so a long resource
-   name can never push its column past its share. */
+   Which panels share a row is `viewmodel::cockpit::reflow`'s answer and how
+   wide each one sits is its `PanelSpan`'s weight — both applied by app.js, NOT
+   a CSS `repeat(auto-fit, minmax(…))`, which would be a second implementation
+   of every panel's own `min_width` and free to disagree with the tested one.
+   The tracks are assigned via CSSOM per row (`2fr 1fr 1fr` for a half beside
+   two quarters); this rule only supplies the fallback and the gap.
+   `minmax(0,1fr)` so a long resource name can never push its column past its
+   share.
+
+   `align-items:stretch` (the grid default, spelled out because this rule used
+   to say `start`): every card in a row is as tall as the tallest, so a row
+   reads as one band instead of a ragged edge. Cards are flex columns whose
+   content stays top-aligned, so the extra height is trailing space inside the
+   card, never stretched rows. Panels that must NOT stretch their own content to
+   match a neighbour keep their inner `align-items:start` (see #containersBody,
+   #reposBody, #azureBody). */
 .panel-rows { display:flex; flex-direction:column; }
-.panel-row { display:grid; gap:var(--cockpit-gap, 16px); align-items:start;
+.panel-row { display:grid; gap:var(--cockpit-gap, 16px); align-items:stretch;
   grid-template-columns: repeat(1, minmax(0, 1fr)); }
 
 /* ---- The shared progress bar -------------------------------------------
@@ -286,6 +336,38 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   white-space:nowrap; font-variant-numeric:tabular-nums; }
 .pv-footer { font-size:9px; font-weight:700; margin:0; }
 
+/* Usage is authored a quarter, but reflow leaves it alone on a full-width row
+   at every width below the four-across one — so at `--panel-cols: 2` (from
+   `panel_columns`, the same source as Containers' and Runners' splits) the
+   provider sections move BESIDE Claude's rollups instead of running one airy
+   column across the whole card: two grid items, the Claude block and the
+   providers. Pure CSS, so a resize re-splits it without waiting out the panel's
+   own 10s poll, and the DOM is identical at either count. `align-items:start`
+   keeps the shorter side short. */
+#usageBody {
+  display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
+  gap:10px 24px; align-items:start;
+}
+.usage-main { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.usage-providers { display:flex; flex-direction:column; gap:10px; min-width:0; }
+/* A message names a state of the whole panel, so it spans the split. */
+#usageBody > .pv-message { grid-column: 1 / -1; }
+/* Every provider section opens with a rule separating it from the block ABOVE
+   it. Side by side, the first one sits at the top of the right-hand column with
+   nothing above it to separate — the gutter does that job. Keyed on the count
+   `applyPanelColumns` already publishes rather than dropped from the DOM, so
+   which count applies stays a CSS question. The projects section keeps its own
+   rule at either count: that one separates the windows from the projects,
+   inside `.usage-main`. */
+#usagePanel[data-cols="2"] .usage-providers > .pv-section:first-child > .pv-divider {
+  display:none;
+}
+/* No configured providers, one grid item — it takes both tracks rather than
+   sitting in the first with an empty one beside it, which is what keeps the
+   Claude-only panel pixel-identical to itself. `:last-child`, not
+   `:only-child`: a message may precede it. */
+#usageBody > .usage-main:last-child { grid-column: 1 / -1; }
+
 .az-headline { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
 .az-headline .value { font-size:22px; font-weight:700;
   font-variant-numeric:tabular-nums; }
@@ -293,6 +375,27 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 /* The two top-N lists sit side by side and share the row evenly. */
 .az-columns { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap:16px; }
+/* Azure Cost is a full-width card, so at `--panel-cols: 2` (from
+   `panel_columns`, same source as Containers' and Runners' splits) the
+   breakdowns move BESIDE the costs instead of under them: two grid items, the
+   cost stack and the top-N lists. Pure CSS, so a resize re-splits it without
+   waiting out the panel's own 10s poll, and the DOM is identical either way.
+   `align-items:start` keeps the shorter side short. */
+#azureBody {
+  display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
+  gap:10px 24px; align-items:start;
+}
+.az-main { display:flex; flex-direction:column; gap:10px; min-width:0; }
+/* The same hole on this panel: a payload with a headline but no breakdowns
+   leaves one grid item, which takes both tracks instead of half the card. */
+#azureBody > .az-main:last-child { grid-column: 1 / -1; }
+/* A message names a state of the whole panel, so it spans the split. */
+#azureBody > .pv-message { grid-column: 1 / -1; }
+/* The rule between the costs and the breakdowns: it separates them when they
+   are stacked, and there is nothing for it to separate once they sit side by
+   side — the gutter does that job. */
+#azureBody > .pv-divider { grid-column: 1 / -1; }
+#azurePanel[data-cols="2"] #azureBody > .pv-divider { display:none; }
 
 /* ---- OpenClaw ----------------------------------------------------------
    Per-agent rows, a cron line, a wrapping row of channel dots, and the pairing
@@ -308,10 +411,19 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .oc-row { display:flex; align-items:center; gap:7px; min-width:0; }
 .oc-row .dot { width:6px; height:6px; flex:none; }
 .oc-emoji { font-size:11px; flex:none; }
+/* An agent is a name line plus the model ref beneath it. The indent is the dot
+   column — 6px dot + the row's 7px gap — so the ref hangs under the name rather
+   than under the status light, and an agent with no emoji still lines up.
+
+   Both strings keep their ellipsis: stacking buys each of them the whole card
+   width, which is enough at every width this panel is authored for, but a card
+   narrower than its `min_width` (a lone panel reflow refused to split) must
+   still degrade rather than overflow. */
+.oc-agent { display:flex; flex-direction:column; gap:1px; min-width:0; }
 .oc-name { font-size:11px; font-weight:700; white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; }
 .oc-detail { font-size:9px; white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis; }
+  text-overflow:ellipsis; padding-left:13px; }
 .oc-badge { font-size:9px; font-weight:700; flex:none; }
 .oc-summary { font-size:11px; white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; }
@@ -370,6 +482,29 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .result { font-size:10px; color:var(--muted); }
 .hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }
 .hidden-row .mount { font-size:10px; font-weight:700; }
+/* The Layout editor: one row per panel — name, width picker, and the two move
+   buttons — laid out on one line rather than the stacked shape `.host-row` and
+   `.repo-row` use, because a row here carries three short controls and no
+   sub-form. The `.field` label sits above its select, so the row aligns on the
+   BOTTOM edge and the buttons line up with the picker rather than its label. */
+.layout-row { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap;
+  padding:6px 0; border-top:1px solid var(--line); }
+.layout-row:first-of-type { border-top:0; }
+.layout-name { font-size:13px; font-weight:700; }
+.layout-row .input { max-width:160px; }
+/* The preview: the rows this order packs into, at the proportions the cockpit
+   will paint. The tracks are Rust's `fr` weights, applied via CSSOM per row —
+   the same numbers, and the same setter, app.js uses on a real panel row, so
+   what this shows cannot drift from what the cockpit renders. */
+.layout-preview-row { display:grid; gap:6px;
+  grid-template-columns: repeat(1, minmax(0, 1fr)); }
+.layout-tile { display:flex; align-items:baseline; gap:6px; min-width:0;
+  padding:6px 8px; background:var(--panelAlt); border:1px solid var(--line);
+  border-radius:6px; }
+.layout-tile-name { font-size:11px; font-weight:700; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.layout-tile-span { font-size:9px; color:var(--muted); margin-left:auto;
+  white-space:nowrap; }
 /* One container group rule, laid out like the Swift editor's HStack: action,
    pattern, then the Collapse-only label + expected count, the host scope and
    the delete. WHICH of those exist is `collapseOnly` in the payload, never a

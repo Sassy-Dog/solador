@@ -94,25 +94,203 @@ test("General shows the stored values and applies them in one command", async ({
 
   await expect(page.locator("#general-interval")).toHaveValue(String(g.refreshInterval.value));
   await expect(page.locator("#general-core-rows")).toHaveValue(String(g.coreRowSpan.value));
-  await expect(page.locator("#general-overflow")).toHaveValue(g.hostOverflow.value);
   // The picker offers exactly what Rust offers -- an option invented here
   // would be a cadence the store launders straight back to the default.
   await expect(page.locator("#general-interval option")).toHaveText(
     g.refreshInterval.options.map((o) => o.label)
   );
+  // The host-overflow picker left this tab: it is per breakpoint now.
+  await expect(page.locator("#general-overflow")).toHaveCount(0);
 
   await page.locator("#general-interval").selectOption("300");
   await page.locator("#general-core-rows").fill("4");
-  await page.locator("#general-overflow").selectOption("tabs");
   await page.locator(".btn.apply").click();
 
   expect(await calls(page, "settings_save_general")).toEqual([
     {
       command: "settings_save_general",
-      args: { refreshIntervalSecs: 300, coreRowSpan: 4, hostOverflowMode: "tabs" },
+      args: { refreshIntervalSecs: 300, coreRowSpan: 4 },
     },
   ]);
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
+});
+
+/** The Layout tab, showing the band the editor has selected. */
+async function openLayout(page, baseURL) {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "layout").click();
+  // The dumped fixture carries two bands on purpose — a narrow one that tabs
+  // its host cards and a wide one that does not — so the switcher, the
+  // per-band overflow and the removable band are all reachable here.
+  expect(settings.layout.breakpoints.length).toBeGreaterThan(1);
+  return settings.layout;
+}
+
+test("Layout lists every panel in the stored order, with Rust's move bounds", async ({ page, baseURL }) => {
+  const t = await openLayout(page, baseURL);
+  const band = t.breakpoints[0];
+
+  const rows = page.locator(".layout-row");
+  await expect(rows).toHaveCount(band.rows.length);
+  await expect(rows.locator(".layout-name")).toHaveText(band.rows.map((r) => r.title));
+  for (const [i, panel] of band.rows.entries()) {
+    const row = rows.nth(i);
+    await expect(row).toHaveAttribute("data-panel", panel.id);
+    await expect(row.locator("select")).toHaveValue(panel.span);
+    // Whether a move can do anything is Rust's answer, not an index compared
+    // here — the ends of the list are where a second implementation shows up.
+    expect(await row.locator('.btn[data-direction="up"]').isDisabled()).toBe(!panel.canMoveUp);
+    expect(await row.locator('.btn[data-direction="down"]').isDisabled()).toBe(!panel.canMoveDown);
+  }
+  // The picker offers exactly the widths Rust offers.
+  await expect(rows.first().locator("select option")).toHaveText(
+    t.spanOptions.map((o) => o.label)
+  );
+  // …and the band's own overflow mode, which is the whole feature.
+  await expect(page.locator("#layout-overflow")).toHaveValue(band.hostOverflow);
+});
+
+test("the breakpoint switcher shows one band at a time and edits address it", async ({ page, baseURL }) => {
+  const t = await openLayout(page, baseURL);
+  const [narrow, wide] = t.breakpoints;
+
+  // One button per band, labelled by Rust, with the first selected.
+  const bar = page.locator(".tabs .tab[data-band]");
+  await expect(bar).toHaveText(t.breakpoints.map((b) => b.label));
+  await expect(bar.first()).toHaveAttribute("data-active", "true");
+  await expect(page.locator("#layout-overflow")).toHaveValue(narrow.hostOverflow);
+
+  // Switching bands is a local view change — no command, and the rows and
+  // overflow are the other band's.
+  await bar.nth(1).click();
+  await expect(bar.nth(1)).toHaveAttribute("data-active", "true");
+  await expect(page.locator("#layout-overflow")).toHaveValue(wide.hostOverflow);
+  expect(wide.hostOverflow).not.toBe(narrow.hostOverflow);
+  await expect(page.locator(".layout-row").first()).toHaveAttribute(
+    "data-panel",
+    wide.rows[0].id
+  );
+  expect(await calls(page, "settings_move_panel")).toEqual([]);
+
+  // …and every edit now names THAT band by its width, never by index.
+  await page.locator(`#layout-span-${wide.rows[1].id}`).selectOption("quarter");
+  expect(await calls(page, "settings_set_panel_span")).toEqual([
+    {
+      command: "settings_set_panel_span",
+      args: { minWidth: wide.minWidth, panel: wide.rows[1].id, span: "quarter" },
+    },
+  ]);
+});
+
+test("moving a panel and changing its width each save one command", async ({ page, baseURL }) => {
+  const t = await openLayout(page, baseURL);
+  const band = t.breakpoints[0];
+  const second = band.rows[1];
+
+  await page.locator(`.layout-row[data-panel="${second.id}"] .btn[data-direction="up"]`).click();
+  expect(await calls(page, "settings_move_panel")).toEqual([
+    {
+      command: "settings_move_panel",
+      args: { minWidth: band.minWidth, panel: second.id, direction: "up" },
+    },
+  ]);
+
+  await page.locator(`#layout-span-${second.id}`).selectOption("quarter");
+  expect(await calls(page, "settings_set_panel_span")).toEqual([
+    {
+      command: "settings_set_panel_span",
+      args: { minWidth: band.minWidth, panel: second.id, span: "quarter" },
+    },
+  ]);
+  // No Apply button in this tab: each control persists on its own, and the
+  // status line is the proof it reached Rust.
+  await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
+});
+
+test("the host-overflow mode is saved per breakpoint", async ({ page, baseURL }) => {
+  const t = await openLayout(page, baseURL);
+  const band = t.breakpoints[0];
+  const other = t.overflowOptions.find((o) => o.value !== band.hostOverflow);
+
+  await page.locator("#layout-overflow").selectOption(other.value);
+  expect(await calls(page, "settings_set_breakpoint_overflow")).toEqual([
+    {
+      command: "settings_set_breakpoint_overflow",
+      args: { minWidth: band.minWidth, hostOverflowMode: other.value },
+    },
+  ]);
+});
+
+test("a breakpoint can be added by width and removed unless it is the last", async ({ page, baseURL }) => {
+  const t = await openLayout(page, baseURL);
+
+  await page.locator("#layout-add-width").fill("2400");
+  await page.locator(".btn.add").click();
+  expect(await calls(page, "settings_add_breakpoint")).toEqual([
+    { command: "settings_add_breakpoint", args: { minWidth: 2400 } },
+  ]);
+
+  const remove = page.locator(".btn.delete", { hasText: t.removeLabel });
+  await remove.click();
+  expect(await calls(page, "settings_remove_breakpoint")).toEqual([
+    { command: "settings_remove_breakpoint", args: { minWidth: t.breakpoints[0].minWidth } },
+  ]);
+
+  // With one band left there is nothing to remove, and `canRemove` is Rust's
+  // answer rather than a length compared here.
+  const only = JSON.parse(JSON.stringify(t));
+  only.breakpoints = [{ ...t.breakpoints[0], canRemove: false }];
+  const settings = await fixture(baseURL, "sample-settings.json");
+  settings.layout = only;
+  await stubIpc(page, await fixture(baseURL, "sample-cockpit.json"), settings);
+  await page.goto("/index.html");
+  await page.locator("#settingsToggle").click();
+  await tab(page, "layout").click();
+  await expect(page.locator(".btn.delete", { hasText: t.removeLabel })).toBeDisabled();
+});
+
+test("the Layout preview draws Rust's rows at Rust's proportions", async ({ page, baseURL }) => {
+  const t = await openLayout(page, baseURL);
+  const preview = t.breakpoints[0].preview;
+
+  const lines = page.locator(".layout-preview-row");
+  await expect(lines).toHaveCount(preview.rows.length);
+  for (const [i, row] of preview.rows.entries()) {
+    const line = lines.nth(i);
+    await expect(line.locator(".layout-tile-name")).toHaveText(row.map((c) => c.title));
+    // The tracks are the `fr` weights the cockpit paints, so a half-width
+    // panel's tile is twice a quarter's — the preview cannot promise an
+    // arrangement the cockpit would not render.
+    const widths = await line.evaluate((el) =>
+      getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).map(parseFloat)
+    );
+    const total = row.reduce((sum, cell) => sum + cell.weight, 0);
+    for (const [j, cell] of row.entries()) {
+      const share = widths[j] / widths.reduce((a, b) => a + b, 0);
+      expect(share).toBeCloseTo(cell.weight / total, 1);
+    }
+  }
+});
+
+test("Reset is offered on a customised layout and disabled on the default", async ({ page, baseURL }) => {
+  const t = await openLayout(page, baseURL);
+  // The dumped fixture carries a customised layout, so the button is live.
+  expect(t.isDefault).toBe(false);
+  const reset = page.locator(".btn.delete", { hasText: t.resetLabel });
+  await reset.click();
+  expect(await calls(page, "settings_reset_layout")).toEqual([
+    { command: "settings_reset_layout", args: {} },
+  ]);
+
+  // …and a store that never carried one has nothing to reset. `isDefault` is
+  // Rust's, so this drives the other branch through the payload.
+  const settings = await fixture(baseURL, "sample-settings.json");
+  settings.layout.isDefault = true;
+  await stubIpc(page, await fixture(baseURL, "sample-cockpit.json"), settings);
+  await page.goto("/index.html");
+  await page.locator("#settingsToggle").click();
+  await tab(page, "layout").click();
+  await expect(page.locator(".btn.delete", { hasText: t.resetLabel })).toBeDisabled();
 });
 
 test("the Hosts tab lists every host with its endpoint and token badge", async ({ page, baseURL }) => {

@@ -75,9 +75,30 @@ test("the panel paints Rust's title, trailing label and agent rows", async ({ pa
 
   const agents = vm.runtimes[0].agents;
   await expect(section(page, "agents").locator(".oc-hdr")).toHaveText(agents.header);
-  const rows = section(page, "agents").locator(".oc-row");
+  const rows = section(page, "agents").locator(".oc-agent");
   await expect(rows).toHaveCount(agents.rows.length);
   await expect(rows.locator(".oc-name")).toHaveText(agents.rows.map((r) => r.name));
+
+  // The model ref sits on its own line UNDER the name rather than beside it, so
+  // neither has to give up characters on a quarter-width card. It starts on the
+  // next line, and its TEXT is indented past the status light (the indent is
+  // padding, so the box itself still starts at the card's left edge).
+  const withDetail = agents.rows.findIndex((r) => r.detail);
+  expect(withDetail, "the fixture must carry a model ref").toBeGreaterThan(-1);
+  const agent = rows.nth(withDetail);
+  const name = await agent.locator(".oc-name").boundingBox();
+  const detail = await agent.locator(".oc-detail").boundingBox();
+  await expect(agent.locator(".oc-detail")).toHaveText(agents.rows[withDetail].detail);
+  expect(detail.y).toBeGreaterThanOrEqual(name.y + name.height - 1);
+
+  const dot = await agent.locator(".dot").boundingBox();
+  const textStart =
+    detail.x +
+    (await agent
+      .locator(".oc-detail")
+      .evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft)));
+  expect(textStart).toBeGreaterThan(dot.x + dot.width);
+  expect(textStart).toBeLessThanOrEqual(name.x + 1);
 
   // The panel is confirmed to be the `openclaw` command's output.
   const calls = await page.evaluate(() => window.__CALLS__.map((c) => c.command));
@@ -166,7 +187,7 @@ test("a session that reported no counters shows em dashes, not zeros", async ({ 
   // indistinguishable from the runtime having no session at all — which is a
   // different fact, and the one the idle fixture renders.
   await expect(line).toHaveCount(1);
-  await expect(section(page, "agents").locator(".oc-row")).toHaveCount(
+  await expect(section(page, "agents").locator(".oc-agent")).toHaveCount(
     vm.runtimes[0].agents.rows.length
   );
   const idle = await gotoWith(page, baseURL, "sample-openclaw-idle.json");

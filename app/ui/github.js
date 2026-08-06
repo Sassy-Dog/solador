@@ -242,17 +242,25 @@ function renderRunners(payload) {
 
   const children = [];
   if (payload.message) children.push(messageNode(payload.message));
-  if ((payload.stats || []).length) {
-    const stats = node("div", "gh-stats");
-    for (const stat of payload.stats) stats.appendChild(statNode(stat));
-    children.push(stats);
+  // Stats and chips share one row, so they share one wrapper — the line they
+  // sit on is `.gh-header`'s, not two siblings' worth of block flow.
+  const stats = payload.stats || [];
+  const chips = payload.chips || [];
+  if (stats.length || chips.length) {
+    const header = node("div", "gh-header");
+    if (stats.length) {
+      const statsRow = node("div", "gh-stats");
+      for (const stat of stats) statsRow.appendChild(statNode(stat));
+      header.appendChild(statsRow);
+    }
+    if (chips.length) {
+      const chipsRow = node("div", "gh-chips");
+      for (const chip of chips) chipsRow.appendChild(node("span", "gh-chip", chip));
+      header.appendChild(chipsRow);
+    }
+    children.push(header);
   }
-  if ((payload.chips || []).length) {
-    const chips = node("div", "gh-chips");
-    for (const chip of payload.chips) chips.appendChild(node("span", "gh-chip", chip));
-    children.push(chips);
-  }
-  // The rows go in their own wrapper so the stats and chips above them stay
+  // The rows go in their own wrapper so the header above them stays
   // full-width: `--panel-cols` splits the LIST, not the whole panel body.
   const list = node("div", "gh-list");
   for (const row of payload.rows || []) list.appendChild(runnerRowNode(row));

@@ -339,31 +339,43 @@ let panelRowShape = "";
  * the measured width (`panelRows` in the payload) — applied here, never decided
  * here. A CSS `repeat(auto-fit, minmax(…))` over these panels would be a second
  * implementation of every panel's own `min_width`, and it would get the case
- * that matters wrong: Usage + Azure Cost stay paired at a width where Repos +
+ * that matters wrong: OpenClaw + Usage stay paired at a width where Repos +
  * Runners must split, which no single global breakpoint can express.
+ *
+ * The tracks are each panel's `weight` (its span, in quarters) as an `fr`, so a
+ * half beside two quarters is `2fr 1fr 1fr`. The weights are Rust's for the same
+ * reason the rows are: `panel_widths` derived every `width` and `columns` in the
+ * payload from these exact numbers, and a fraction re-typed in CSS would be free
+ * to disagree with the width the panel was told it has.
  */
 function applyPanelRows(rows) {
   if (!Array.isArray(rows) || !rows.length) return;
   applyPanelColumns(rows);
-  const shape = JSON.stringify(rows.map((row) => (row || []).map((p) => p && p.id)));
+  const shape = JSON.stringify(
+    rows.map((row) => (row || []).map((p) => p && [p.id, p.weight]))
+  );
   if (shape === panelRowShape) return;
   panelRowShape = shape;
 
   const built = [];
   for (const row of rows) {
-    const sections = (row || [])
-      .map((panel) => (panel && PANEL_SECTIONS[panel.id]) || null)
-      .map((domId) => (domId ? $(domId) : null))
-      .filter(Boolean);
-    if (!sections.length) continue;
+    // Panels and their tracks are paired off before either is used: a row that
+    // mixes sectioned panels with sectionless ones (`hosts`) must not hand the
+    // survivors a neighbour's weight.
+    const placed = (row || [])
+      .map((panel) => [panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null, panel])
+      .filter(([section]) => section);
+    if (!placed.length) continue;
     const container = document.createElement("div");
     container.className = "panel-row";
     // CSSOM, not a `style=""` attribute: a `style-src 'self'` CSP blocks the
     // attribute outright. Same setter the host grid's column count uses.
-    container.style.gridTemplateColumns = `repeat(${sections.length}, minmax(0, 1fr))`;
+    container.style.gridTemplateColumns = placed
+      .map(([, panel]) => `minmax(0, ${Math.max(1, Number(panel.weight) | 0)}fr)`)
+      .join(" ");
     // `append` MOVES the existing sections, so each panel keeps whatever its
     // own script last painted into it — nothing is rebuilt, only re-parented.
-    container.append(...sections);
+    container.append(...placed.map(([section]) => section));
     built.push(container);
   }
   // Safe after the moves above: the old containers are empty by now.
@@ -456,8 +468,9 @@ function applyHostTabs(spec, grid) {
   bar.hidden = tabs.length === 0;
   // The container's floor is Rust's (`HOST_TABS_MIN_HEIGHT`, mirroring
   // HostsPanel's `.frame(minHeight: 780)`): one card is on screen at a time, so
-  // without it the grid collapses to the height of the tab bar. CSSOM, not a
-  // `style=""` attribute — `style-src 'self'` blocks the attribute outright.
+  // without it the grid is only ever as tall as whichever host you picked, and
+  // every panel below jumps when you pick another. CSSOM, not a `style=""`
+  // attribute — `style-src 'self'` blocks the attribute outright.
   grid.style.minHeight = Number(spec.minHeight) + "px";
   return selectedHost;
 }

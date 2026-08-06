@@ -113,8 +113,15 @@ function renderUsage(payload) {
     message.style.color = payload.message.color;
     children.push(message);
   }
+  // Claude's own rollups are one block so the provider sections can sit BESIDE
+  // them on a full-width card: `#usageBody` is a grid of `--panel-cols` tracks,
+  // and each of these two wrappers is one grid item. Same DOM at one column,
+  // where they simply stack — which count applies is CSS's, from Rust's
+  // `panel_columns`, never decided here.
+  const main = node("div", "usage-main");
+
   // Not `window` — that name is the global object inside this loop body.
-  for (const row of payload.windows || []) children.push(valueRow(row, "window"));
+  for (const row of payload.windows || []) main.appendChild(valueRow(row, "window"));
 
   if (payload.projects) {
     const section = node("div", "pv-section");
@@ -122,13 +129,19 @@ function renderUsage(payload) {
     section.appendChild(node("hr", "pv-divider"));
     section.appendChild(node("div", "lbl", payload.projects.label));
     for (const item of payload.projects.rows || []) section.appendChild(itemRow(item));
-    children.push(section);
+    main.appendChild(section);
   }
+
+  if (main.childElementCount) children.push(main);
 
   // An unconfigured provider contributes no element at all, so the panel is
   // pixel-identical to its Claude-only self. That is a Rust decision too: the
-  // section is simply absent from `providers`.
-  for (const provider of payload.providers || []) children.push(providerNode(provider));
+  // section is simply absent from `providers`. The wrapper follows the same
+  // rule: no providers, no second grid item, and `.usage-main` takes the whole
+  // body rather than leaving an empty track beside itself.
+  const providers = node("div", "usage-providers");
+  for (const provider of payload.providers || []) providers.appendChild(providerNode(provider));
+  if (providers.childElementCount) children.push(providers);
 
   $u("usageBody").replaceChildren(...children);
 

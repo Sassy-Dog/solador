@@ -65,8 +65,21 @@ function sectionHeader(section) {
   return textNode("div", "oc-hdr", { text: section.header, color: section.headerColor });
 }
 
-/** One agent: dot, optional emoji, name, model, and the `running` badge. */
+/** One agent: a name line (dot, optional emoji, name, `running` badge) with the
+ *  model ref on its own line beneath it.
+ *
+ *  Two lines rather than one because the alternative was truncation: at a
+ *  quarter-width card the name and the model ref competed for ~300pt and both
+ *  lost characters. Underneath, each gets the full width of the card, and the
+ *  panel's `min_width` is set by the name line alone — which is what lets
+ *  OpenClaw sit in a quarter beside a three-quarter Containers.
+ *
+ *  The extra line is free where this panel actually lives: it shares a row with
+ *  Containers and is the shorter card, so `align-items:stretch` was padding
+ *  that space out anyway. If OpenClaw ever becomes the tallest panel in its
+ *  row, this is the first thing to revisit. */
 function agentNode(agent) {
+  const box = node("div", "oc-agent");
   const row = node("div", "oc-row");
   row.append(dotNode(agent.dot));
   // Absent, not empty: an agent without an emoji must not reserve the gap one
@@ -77,19 +90,20 @@ function agentNode(agent) {
   name.style.color = agent.nameColor;
   row.appendChild(name);
 
-  if (agent.detail) {
-    const detail = node("span", "oc-detail", agent.detail);
-    detail.style.color = agent.detailColor;
-    row.appendChild(detail);
-  }
-
   row.appendChild(node("span", "grow"));
   if (agent.trailing) {
     const trailing = node("span", "oc-badge", agent.trailing);
     trailing.style.color = agent.trailingColor;
     row.appendChild(trailing);
   }
-  return row;
+  box.appendChild(row);
+
+  if (agent.detail) {
+    const detail = node("div", "oc-detail", agent.detail);
+    detail.style.color = agent.detailColor;
+    box.appendChild(detail);
+  }
+  return box;
 }
 
 function cronNode(cron) {
