@@ -266,6 +266,9 @@ test("the Runners panel paints Rust's stats, chips and trailing label", async ({
   await expect(page.locator("#runnersTrailing")).toHaveText(runners.trailing);
   expect(runners.trailing, "the fixture must exercise the missing count").toContain("missing");
 
+  // The rollup lives in the trailing above, so no stat repeats it — OFFLINE is
+  // the count `3/4` cannot be read off at a glance.
+  expect(runners.stats.map((s) => s.label)).toEqual(["BUSY", "IDLE", "OFFLINE"]);
   const stats = page.locator(".gh-stat");
   await expect(stats).toHaveCount(runners.stats.length);
   for (const [index, stat] of runners.stats.entries()) {
@@ -274,8 +277,47 @@ test("the Runners panel paints Rust's stats, chips and trailing label", async ({
     await expect(stats.nth(index).locator(".gh-stat-value")).toHaveCSS("color", rgb(stat.color));
   }
 
-  const chips = await page.locator(".gh-chip").allTextContents();
-  expect(chips).toEqual(runners.chips);
+  // Every chip is a string Rust built, in Rust's order — nothing the renderer
+  // composed from an OS name and a pair of counts of its own. `Windows 0/0` is
+  // the load-bearing entry: this org has no Windows runner, so a chip the
+  // frontend only drew when non-zero would fail here.
+  expect(runners.chips, "the fixture must exercise an empty tracked platform")
+    .toContain("Windows 0/0");
+  await expect(page.locator(".gh-chip")).toHaveText(runners.chips);
+});
+
+/**
+ * The stats and the chips used to be two stacked rows, which cost a glanceable
+ * panel a whole line for one short row of pills. Asserted with bounding boxes
+ * and derived from the panel's own geometry rather than pixel constants: the
+ * Runners panel's rendered width moves with the layout, and only "same line"
+ * and "flush right" are the contract.
+ */
+test("the Runners header keeps the stats and the chips on one line", async ({ page, baseURL }) => {
+  await gotoWithFixtures(page, baseURL);
+  await expect(page.locator("#runnersPanel")).toHaveAttribute("data-cols", "2");
+
+  const header = page.locator("#runnersBody .gh-header");
+  await expect(header).toHaveCount(1);
+  const stats = await header.locator(".gh-stats").boundingBox();
+  const chips = await header.locator(".gh-chips").boundingBox();
+
+  // Shared line: the chips' whole vertical extent falls inside the stats'.
+  const overlap =
+    Math.min(stats.y + stats.height, chips.y + chips.height) - Math.max(stats.y, chips.y);
+  expect(
+    Math.round(overlap),
+    `stats ${JSON.stringify(stats)} vs chips ${JSON.stringify(chips)}`
+  ).toBe(Math.round(chips.height));
+
+  // Right-flush against the panel body, and clear of the stats beside them.
+  const body = await page.locator("#runnersBody").boundingBox();
+  expect(Math.round(chips.x + chips.width)).toBe(Math.round(body.x + body.width));
+  expect(chips.x).toBeGreaterThan(stats.x);
+
+  // And the header really is one line, not a tall box holding two.
+  const box = await header.boundingBox();
+  expect(Math.round(box.height)).toBe(Math.round(stats.height));
 });
 
 test("registered and absent runner rows carry Rust's state words and colours", async ({ page, baseURL }) => {

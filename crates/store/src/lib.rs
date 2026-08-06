@@ -31,6 +31,7 @@ use uuid::Uuid;
 
 pub mod containers;
 pub mod hosts;
+pub mod layout;
 pub mod repos;
 pub mod runners;
 pub mod secrets;
@@ -41,6 +42,7 @@ pub use containers::{
     ContainerPresenceRecord, ContainerRuleAction, DEFAULT_GRACE_SECS, LOCAL_HOST_SCOPE,
 };
 pub use hosts::{Host, DEFAULT_AGENT_PORT};
+pub use layout::{LayoutProfile, LayoutSlot};
 pub use repos::{seeded_repos, TrackedRepo};
 pub use runners::RunnerRosterRecord;
 pub use secrets::{CredentialStore, KeyringStore, MemoryCredentialStore, SecretError, SecretKey};
@@ -156,6 +158,20 @@ pub struct StoreData {
     /// "never configured" case to keep apart from it.
     #[serde(default)]
     pub runner_roster: Vec<RunnerRosterRecord>,
+    /// The user's cockpit arrangement: one [`LayoutProfile`] per width band,
+    /// each an ordered list of panel/span slots plus its host-overflow mode.
+    ///
+    /// `None` is "never configured" and yields the shipped default layout —
+    /// same distinction [`StoreData::container_rules`] draws, and for the same
+    /// reason. Unlike the rules there is no *deliberately empty* case to
+    /// preserve: a cockpit with no panels is not something an editor can ask
+    /// for, so the app fills a short list back out to every panel rather than
+    /// rendering a blank page.
+    ///
+    /// A file predating breakpoints held a bare slot array; it loads as one
+    /// profile at width 0 (see [`layout::lenient_layout`]).
+    #[serde(default, deserialize_with = "layout::lenient_layout")]
+    pub layout: Option<Vec<LayoutProfile>>,
 }
 
 impl Default for StoreData {
@@ -172,6 +188,7 @@ impl Default for StoreData {
             container_rules: None,
             container_presence: BTreeMap::new(),
             runner_roster: Vec::new(),
+            layout: None,
         }
     }
 }
@@ -402,6 +419,31 @@ impl Store {
         self.data.container_rules = Some(rules);
     }
 
+    /// The user's cockpit arrangement — one profile per width band — or `None`
+    /// when this store has never carried one, in which case the caller renders
+    /// the shipped default.
+    ///
+    /// No fallback is baked in here, unlike [`Store::container_rules`]: the
+    /// default arrangement is `viewmodel::cockpit`'s, and this crate does not
+    /// depend on it. Handing back `None` is what keeps the vocabulary in one
+    /// place instead of seeding panel ids from two.
+    #[must_use]
+    pub fn layout(&self) -> Option<&[LayoutProfile]> {
+        self.data.layout.as_deref()
+    }
+
+    /// Replaces every profile. Call [`Store::save`] to persist.
+    pub fn set_layout(&mut self, profiles: Vec<LayoutProfile>) {
+        self.data.layout = Some(profiles);
+    }
+
+    /// Forgets the arrangement, so the next read is the shipped default again.
+    /// This is *Reset to default*, and it is distinct from storing an empty
+    /// list: a stored empty list would be a layout with no panels in it.
+    pub fn clear_layout(&mut self) {
+        self.data.layout = None;
+    }
+
     /// Presence memory for expected containers, keyed `"<host>|<name>"`.
     #[must_use]
     pub fn container_presence(&self) -> &BTreeMap<String, ContainerPresenceRecord> {
@@ -533,6 +575,81 @@ mod tests {
         assert_eq!(store.settings(), &Settings::default());
         assert!(store.path().exists(), "first open must create the file");
         assert_eq!(entries(dir.path()), vec![STORE_FILE_NAME.to_owned()]);
+    }
+
+    /// Every profile survives a save/open cycle, and **Reset to default**
+    /// clears the key rather than writing today's default into it — the
+    /// distinction that decides whether a future change to the shipped
+    /// arrangement reaches this user.
+    #[test]
+    fn the_layout_round_trips_and_reset_clears_it() {
+        let dir = temp_dir();
+        let profiles = vec![
+            LayoutProfile::new(
+                0.0,
+                "tabs",
+                vec![
+                    LayoutSlot::new("hosts", "full"),
+                    LayoutSlot::new("azureCost", "full"),
+                ],
+            ),
+            LayoutProfile::new(
+                1400.0,
+                "stack",
+                vec![
+                    LayoutSlot::new("azureCost", "half"),
+                    LayoutSlot::new("hosts", "half"),
+                ],
+            ),
+        ];
+
+        let mut store = Store::open_in(dir.path()).expect("open");
+        assert_eq!(store.layout(), None, "a fresh store carries no layout");
+        store.set_layout(profiles.clone());
+        store.save().expect("save");
+
+        let mut reopened = Store::open_in(dir.path()).expect("reopen");
+        assert_eq!(reopened.layout(), Some(profiles.as_slice()));
+
+        reopened.clear_layout();
+        reopened.save().expect("save");
+        assert_eq!(
+            Store::open_in(dir.path()).expect("reopen").layout(),
+            None,
+            "reset must forget the arrangement, not pin the current default"
+        );
+    }
+
+    /// A store written before breakpoints existed still opens, and its one
+    /// arrangement becomes the profile that covers every width. Written as raw
+    /// JSON on purpose: this crate can no longer *produce* the old shape, and a
+    /// migration tested only against a value the current code emits is a
+    /// migration tested against nothing.
+    #[test]
+    fn a_store_from_before_breakpoints_loads_as_one_profile() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":1,"layout":[{"panel":"hosts","span":"full"},
+                                      {"panel":"containers","span":"half"}]}"#,
+        )
+        .expect("write legacy store");
+
+        let store = Store::open_in(dir.path()).expect("open");
+        let profiles = store.layout().expect("a migrated layout");
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].min_width, 0.0, "it applied at every width");
+        assert_eq!(
+            profiles[0].host_overflow, "",
+            "the overflow mode lived in General back then; only the app can read it"
+        );
+        assert_eq!(
+            profiles[0].slots,
+            vec![
+                LayoutSlot::new("hosts", "full"),
+                LayoutSlot::new("containers", "half")
+            ]
+        );
     }
 
     #[test]

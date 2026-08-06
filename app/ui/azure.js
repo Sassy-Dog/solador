@@ -93,6 +93,13 @@ function renderAzure(payload) {
     children.push(message);
   }
 
+  // The costs are one block so the breakdowns can sit BESIDE them on a
+  // full-width card: `#azureBody` is a grid of `--panel-cols` tracks, and each
+  // of these two wrappers is one grid item. Same DOM at one column, where they
+  // simply stack — which column count applies is CSS's, from Rust's
+  // `panel_columns`, never decided here.
+  const main = node("div", "az-main");
+
   if (payload.headline) {
     const headline = node("div", "az-headline");
     const value = node("span", "value", payload.headline.value);
@@ -102,10 +109,10 @@ function renderAzure(payload) {
     // assume — the whole point of the rollover-gap caption.
     caption.style.color = payload.headline.captionColor;
     headline.append(value, caption);
-    children.push(headline);
+    main.appendChild(headline);
   }
 
-  for (const stat of payload.stats || []) children.push(statNode(stat));
+  for (const stat of payload.stats || []) main.appendChild(statNode(stat));
 
   if (payload.budget) {
     const budget = node("div", "pv-section");
@@ -118,8 +125,10 @@ function renderAzure(payload) {
     budget.appendChild(header);
     const bar = barNode(payload.budget.bar);
     if (bar) budget.appendChild(bar);
-    children.push(budget);
+    main.appendChild(budget);
   }
+
+  if (main.childElementCount) children.push(main);
 
   const columns = payload.breakdowns || [];
   if (columns.length) {

@@ -12,6 +12,20 @@
   <div id="cockpitView">
     <div class="topbar">
       <h1 class="panel-title" id="hostsTitle"></h1>
+      <!-- The host tab bar, for the "Show as tabs" overflow mode. It rides the
+           title line rather than sitting on its own row below it: the overflow
+           mode exists because the window is too narrow to place cards side by
+           side, and spending a whole row on the switcher is the last thing a
+           short window can afford.
+
+           Hidden unless the cockpit payload carries a `hostTabs` block:
+           WHETHER the cards collapse is `viewmodel::cockpit::host_tabs`'s
+           decision (below the side-by-side breakpoint, more than one host, and
+           the user having asked for it), and re-deriving any of that here would
+           be a second implementation of it. Its buttons are built by app.js
+           from that block -- there is no static label here, for the same reason
+           the Settings tabs have none. -->
+      <nav class="tabs host-tabs" id="hostTabs" hidden></nav>
       <span class="grow"></span>
       <!-- Hidden until the cockpit payload supplies its label: a button that
            renders before Rust has named it would be a string this file
@@ -19,15 +33,6 @@
       <button class="btn" id="settingsToggle" type="button" hidden></button>
     </div>
     <p class="empty" id="emptyMsg"></p>
-    <!-- The host tab bar, for the "Show as tabs" overflow mode. Hidden unless
-         the cockpit payload carries a `hostTabs` block: WHETHER the cards
-         collapse is `viewmodel::cockpit::host_tabs`'s decision (below the
-         side-by-side breakpoint, more than one host, and the user having asked
-         for it), and re-deriving any of that here would be a second
-         implementation of it. Its buttons are built by app.js from that
-         block -- there is no static label here, for the same reason the
-         Settings tabs have none. -->
-    <nav class="tabs host-tabs" id="hostTabs" hidden></nav>
     <div class="cockpit" id="cockpit"></div>
 
     <!-- The panel block below the host grid. Which panels share a row, and in
@@ -152,13 +157,17 @@
        `getElementById` return whichever card happened to render first. -->
   <template id="cardTpl">
     <div class="card">
+      <!-- One header row, not two: the host's identity and its CPU reading used
+           to stack, and the second line bought nothing a single line could not
+           say. The glyph stays as the CPU section's marker, matching Memory /
+           Graphics / Disk / Network / Volumes below. `.cpuModel` is the only
+           member allowed to give ground (see `.title` in app.css) -- an
+           `Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz` must ellipsize rather
+           than shove the percentage off the card. -->
       <header class="hdr"><span class="dot connDot"></span><span class="host hostName"></span>
-        <span class="grow"></span><span class="stale staleMsg"></span></header>
-      <div class="sec-hdr">
         <i class="glyph"></i><span class="title cpuModel"></span>
         <span class="badge thermal"></span><span class="grow"></span>
-        <span class="big cpuValue"></span>
-      </div>
+        <span class="stale staleMsg"></span><span class="big cpuValue"></span></header>
       <div class="chart">
         <div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
         <div class="plot cpuChart" data-h="110"></div>

@@ -660,45 +660,59 @@ fn runners_trailing(state: &GitHubState) -> Option<String> {
     })
 }
 
-/// ONLINE / BUSY / IDLE. BUSY is the only one that changes colour: zero busy
-/// runners is a resting org, not a warning, so it dims rather than glowing
-/// amber at all times.
+/// BUSY / IDLE / OFFLINE. No ONLINE stat: the panel's trailing already carries
+/// `online/total` in the top right, where every other card puts its rollup, so
+/// a fourth copy of it here spent a whole stat slot restating the header.
+/// OFFLINE is what that slot now holds — the one count the trailing does *not*
+/// give you, since `total - online` is arithmetic nobody should do at a glance.
+///
+/// BUSY and OFFLINE both dim at zero and glow amber above it: no busy runners
+/// is a resting org and no offline runners is a healthy one, and a stat that
+/// glows permanently is a stat the eye stops reading.
 fn summary_stats(summary: RunnerSummary) -> Vec<Value> {
     let stat = |label: &str, value: String, tint: u32| json!({ "label": label, "value": value, "color": color::hex(tint) });
+    let alert = |count: usize| {
+        if count > 0 {
+            color::AMBER
+        } else {
+            color::MUTED
+        }
+    };
+    // Derived rather than counted: `online` is already "not offline", so the
+    // remainder is exactly the offline set and cannot disagree with the
+    // trailing built from the same two numbers.
+    let offline = summary.total.saturating_sub(summary.online);
     vec![
-        stat(
-            "ONLINE",
-            format!("{}/{}", summary.online, summary.total),
-            color::GREEN,
-        ),
-        stat(
-            "BUSY",
-            summary.busy.to_string(),
-            if summary.busy > 0 {
-                color::AMBER
-            } else {
-                color::MUTED
-            },
-        ),
+        stat("BUSY", summary.busy.to_string(), alert(summary.busy)),
         stat("IDLE", summary.idle.to_string(), color::GREEN),
+        stat("OFFLINE", offline.to_string(), alert(offline)),
     ]
 }
 
-/// `"macOS 2/2"` / `"Linux 1/2"` — and only for a platform the org actually
-/// has. A `Linux 0/0` chip is a row of furniture describing nothing.
+/// `"macOS 2/2"` / `"Linux 1/2"` / `"Windows 0/0"` — the three tracked
+/// platforms, always, even at zero.
+///
+/// This used to hide a platform the org had none of, on the argument that
+/// `Linux 0/0` describes nothing. That is wrong for a platform you are in the
+/// middle of standing up: the chip is the tracked *slot*, and an empty one says
+/// "still nothing here", which is precisely the thing being watched. A chip
+/// that only exists once it is non-zero cannot report the zero you are waiting
+/// to see change.
+///
+/// `Other` keeps the old conditional. It is the untracked remainder rather than
+/// a slot anyone is filling, so an `Other 0/0` really would be furniture — but
+/// a non-zero one has to appear, or a runner on something we do not name would
+/// count toward the total with no chip accounting for it.
 fn os_chips(summary: RunnerSummary) -> Vec<Value> {
-    let mut chips = Vec::new();
-    if summary.macos_total > 0 {
-        chips.push(json!(format!(
-            "macOS {}/{}",
-            summary.macos_online, summary.macos_total
-        )));
-    }
-    if summary.linux_total > 0 {
-        chips.push(json!(format!(
-            "Linux {}/{}",
-            summary.linux_online, summary.linux_total
-        )));
+    let chip =
+        |label: &str, online: usize, total: usize| json!(format!("{label} {online}/{total}"));
+    let mut chips = vec![
+        chip("macOS", summary.macos_online, summary.macos_total),
+        chip("Linux", summary.linux_online, summary.linux_total),
+        chip("Windows", summary.windows_online, summary.windows_total),
+    ];
+    if summary.other_total > 0 {
+        chips.push(chip("Other", summary.other_online, summary.other_total));
     }
     chips
 }
@@ -1022,7 +1036,9 @@ mod tests {
         assert!(view["trailing"].is_null(), "no counts without credentials");
         assert!(view["health"].is_null());
         assert!(rows(&view).is_empty());
-        assert_eq!(view["title"], "Repos");
+        // The title is `PanelKind::GhWorkflows.title()`; the id stays the one
+        // every payload and DOM section has always used.
+        assert_eq!(view["title"], "GitHub Repos");
         assert_eq!(view["id"], "ghWorkflows");
     }
 
@@ -1729,25 +1745,58 @@ mod tests {
         );
         let view = runners_view(&state, now_unix());
         assert_eq!(view["trailing"], "3/4");
+        // No ONLINE stat — the trailing above already says 3/4. OFFLINE is the
+        // count it does not give you: 4 registered, 3 online.
         assert_eq!(
             view["stats"],
             json!([
-                { "label": "ONLINE", "value": "3/4", "color": color::hex(color::GREEN) },
                 { "label": "BUSY", "value": "1", "color": color::hex(color::AMBER) },
                 { "label": "IDLE", "value": "2", "color": color::hex(color::GREEN) },
+                { "label": "OFFLINE", "value": "1", "color": color::hex(color::AMBER) },
             ])
         );
-        assert_eq!(view["chips"], json!(["macOS 2/2", "Linux 1/2"]));
+        assert_eq!(
+            view["chips"],
+            json!(["macOS 2/2", "Linux 1/2", "Windows 0/0"])
+        );
     }
 
-    /// Zero busy runners is a resting org, not a warning.
+    /// An org running on something we do not name still has to be accounted
+    /// for: it counts toward the total, so it gets a chip rather than
+    /// disappearing between the tracked three and the rollup.
     #[test]
-    fn a_resting_org_dims_the_busy_stat() {
+    fn an_untracked_platform_appears_only_once_it_has_a_runner() {
+        let state = with_runners(
+            &[
+                runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle),
+                runner("bsd-1", RunnerOs::Other, RunnerState::Offline),
+            ],
+            &[],
+        );
+        assert_eq!(
+            runners_view(&state, now_unix())["chips"],
+            json!(["macOS 1/1", "Linux 0/0", "Windows 0/0", "Other 0/1"])
+        );
+    }
+
+    /// Zero busy and zero offline runners is a resting, healthy org — neither
+    /// stat is a warning at rest.
+    #[test]
+    fn a_resting_org_dims_the_busy_and_offline_stats() {
         let state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
         let view = runners_view(&state, now_unix());
-        assert_eq!(view["stats"][1]["color"], color::hex(color::MUTED));
-        // Only the platform the org actually has gets a chip.
-        assert_eq!(view["chips"], json!(["macOS 1/1"]));
+        assert_eq!(view["stats"][0]["label"], "BUSY");
+        assert_eq!(view["stats"][0]["color"], color::hex(color::MUTED));
+        assert_eq!(view["stats"][2]["label"], "OFFLINE");
+        assert_eq!(view["stats"][2]["value"], "0");
+        assert_eq!(view["stats"][2]["color"], color::hex(color::MUTED));
+        // Every tracked platform holds its slot, including the two this org has
+        // nothing on — an empty slot is what someone standing a runner up is
+        // watching.
+        assert_eq!(
+            view["chips"],
+            json!(["macOS 1/1", "Linux 0/0", "Windows 0/0"])
+        );
     }
 
     #[test]
@@ -2143,6 +2192,18 @@ mod tests {
         assert!(kinds.contains(&"registered"));
         assert!(kinds.contains(&"absent"));
         assert_eq!(runners["trailing"], "3/4 · 1 missing");
-        assert_eq!(runners["chips"], json!(["macOS 2/2", "Linux 1/2"]));
+        assert_eq!(
+            runners["chips"],
+            json!(["macOS 2/2", "Linux 1/2", "Windows 0/0"]),
+            "the Windows slot is empty on purpose — the fixture has to prove a \
+             tracked platform still gets its chip at zero"
+        );
+        // `ubu-spare` is the offline runner, so the dumped fixture exercises a
+        // non-zero OFFLINE stat. A fixture that only ever showed 0 could not
+        // tell the amber rule from the muted one.
+        assert_eq!(
+            runners["stats"][2],
+            json!({ "label": "OFFLINE", "value": "1", "color": color::hex(color::AMBER) })
+        );
     }
 }

@@ -8,7 +8,7 @@ DevCanopy is a native macOS cockpit that watches development infrastructure at a
 glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **Hosts** — live CPU/memory/disk/network/GPU/battery from a per-host agent over Tailscale
 - **Containers** — podman/docker/tart containers and VMs on those hosts
-- **Repos** — one fixed row per watched repo: running-workflow count + longest-running
+- **GitHub Repos** — one fixed row per watched repo: running-workflow count + longest-running
   elapsed, plus local/remote branch and worktree counts (folds in the former Git Worktrees panel)
 - **GitHub Runners** — self-hosted runner availability/activity
 - **Usage** — token rollups from local Claude Code usage logs (subscription; no USD),
@@ -43,7 +43,7 @@ can therefore reach `main` unnoticed; that is the accepted cost of freezing it.
   width-aware grid (1s poll).
 - **Containers/VMs** — local docker/podman/tart plus every host's agent, with
   grouping rules and presence memory (10s).
-- **Repos + GitHub Runners** — per-repo CI health and counts, local
+- **GitHub Repos + GitHub Runners** — per-repo CI health and counts, local
   branch/worktree counts, the org's self-hosted runners with the absence roster
   (the store's `refresh_interval_secs`).
 - **Usage** — Claude token rollups (same interval); Neon + Sentry (hourly). Neon
@@ -55,9 +55,11 @@ can therefore reach `main` unnoticed; that is the accepted cost of freezing it.
   cadence at all**, which is why it is the one panel with no staleness footer.
 
 Those panels are arranged into rows `viewmodel::cockpit` reflows for the measured
-width, and an in-app Settings surface over `crates/store` (hosts CRUD, portfolio,
-credentials, container group rules, general prefs) applies changes without a
-restart. The frontend is
+width — one full-width Hosts row, GitHub Repos + GitHub Runners as halves,
+Containers beside OpenClaw and Usage as quarters, then a full-width Azure Cost —
+and every card in a row is the same height. An in-app Settings surface over
+`crates/store` (hosts CRUD, portfolio, credentials, container group rules,
+cockpit layout, general prefs) applies changes without a restart. The frontend is
 plain HTML/CSS/JS with no bundler (`app/ui/`) and has its own Playwright e2e suite
 (`tests/frontend/`). The Tauri IPC boundary itself is **not** automatically
 tested — `app/README.md` carries a five-minute manual smoke checklist that is the
@@ -139,8 +141,8 @@ DevCanopy/
 │   │                      # (package `devcanopy-wire`, imported as `wire`)
 │   ├── viewmodel/         # host_card(): every string/colour the frontend paints
 │   ├── agentclient/       # HTTP client polling the same agent the Swift app polls
-│   ├── store/             # settings/hosts/repos/container-rules/runner-roster
-│   │                      # JSON + OS credential-store wrappers
+│   ├── store/             # settings/hosts/repos/container-rules/runner-roster/
+│   │                      # cockpit-layout JSON + OS credential-store wrappers
 │   ├── github/            # GitHub REST client (workflows, runners)
 │   ├── localhost/         # this machine's metrics (sysinfo); every field the
 │   │                      # platform can decline is an Option, never a 0
@@ -239,12 +241,48 @@ DevCanopy/
   `app/README.md`'s "Consolidated credential item" section.
 
 ### Responsive layout (breakpoints)
-- `Views/Cockpit/CockpitBreakpoints.swift` holds the responsive math — pure values,
-  no SwiftUI, unit-tested like `CoreGridLayout`/`VolumeGridLayout`.
+- `crates/viewmodel/src/cockpit.rs` holds the responsive math for the Tauri app
+  (the app going forward); `Views/Cockpit/CockpitBreakpoints.swift` is the frozen
+  Swift original it was ported from. Pure values, no UI, unit-tested like
+  `CoreGridLayout`/`VolumeGridLayout`.
 - The model is CSS `repeat(auto-fit, minmax(<min>, 1fr))`, **not** global `sm/md/lg`
-  tiers: every panel declares its own `CockpitPanelKind.minWidth`, and `reflow()`
-  splits a row only when *its* panels stop fitting. So Claude Usage + Azure Cost stay
-  side-by-side at a width where the host cards must stack.
+  tiers: every panel declares its own `PanelKind::min_width`, and `reflow()`
+  splits a row only when *its* panels stop fitting. So OpenClaw + Usage stay
+  side-by-side at a width where the host cards — and Repos + Runners — must stack.
+- **Spans, not even splits** (Tauri only): each placement carries a `PanelSpan` —
+  `Full` / `ThreeQuarters` / `Half` / `Quarter`, weights 4/3/2/1 — and
+  `panel_widths()` gives each panel its share of the row after the gaps. The
+  frontend paints those weights as `fr` tracks. A panel is held to its
+  `min_width` against the width its span gives it, never against the row's sum
+  of minimums (that let a hungry panel borrow width it then never got).
+- **Every rendered row is exactly four quarters.** When reflow cuts a row short
+  its remaining panels are *widened* to fill it (`fill_row`), so a track is
+  always one of the four named widths — a row left at three quarters would
+  stretch to thirds, a width no picker offers and no user can name. The fill is
+  the distribution closest to the authored proportions by least squared error
+  (Half + Quarter becomes ThreeQuarters + Quarter; Quarter + Quarter becomes
+  Half + Half, not a lopsided pair), and every candidate is checked against
+  `min_width` at its *final* width — filling shrinks the panels that don't grow.
+  A row with no legible filling is refused, and that refusal is what reflow
+  reads as "this panel does not fit here", so the fit test and the widths it
+  tests are one piece of arithmetic rather than two that can disagree.
+- **The arrangement is the user's, per width band** (Tauri only): Settings →
+  **Layout** edits a list of *breakpoints*, each an ordered list of
+  `{panel, span}` slots plus its own host-overflow mode, persisted as
+  `store.json`'s `layout`. `cockpit` picks the widest band the measured width
+  clears (`settings::breakpoint_for`) on every frame, so a third-of-a-4K column
+  can tab its host cards while the same cockpit maximised lays them out side by
+  side. Rows are *packed* from each band's list (`CockpitLayout::from_order`,
+  four quarters to a row) rather than authored.
+  `settings::normalized_order` drops unknown or duplicate slots and appends
+  missing panels from `DEFAULT_ORDER`, so a stored layout always renders every
+  panel exactly once — including one added by a later build. `layout: null`
+  means "never configured" and is what **Reset to default** restores; `reflow`
+  still splits a packed row on a narrow window.
+- Cards sharing a row are the same height (`.panel-row { align-items:stretch }`);
+  content stays top-aligned, so the extra height is trailing space inside the
+  shorter card. Panels whose body splits at `--panel-cols` (Containers, Runners,
+  Repos, Azure Cost, Usage) use that width rather than stretching one column.
 - Panels never measure themselves. One `GeometryReader` at the `CockpitView` root is
   the only measurement; each panel's width is *derived* from the reflowed row and
   handed down as `\.cockpitPanelWidth` (`CockpitPanelWidth.swift`).
@@ -252,11 +290,19 @@ DevCanopy/
   preferences do not reach `onPreferenceChange` in this SwiftUI version, and the
   reader silently stays at 0.
 - Host cards need ≥ 900pt each (`CockpitBreakpoints.hostCardMinWidth`); below that
-  they stack, or collapse to tabs if the user picks that in General settings
-  (`hostOverflowMode`).
+  they stack, or collapse to tabs when the applicable layout breakpoint says so
+  (`Breakpoint::host_overflow`; Swift's global `hostOverflowMode` survives in the
+  store only as the seed a pre-breakpoint layout is migrated from).
 - Unknown width (0) means "not in a cockpit", and every fallback picks the layout that
   can't be unreadable — `hostColumns` stacks rather than assuming wide. Assuming wide
   is what let a dead measurement pass for a deliberate layout.
+- The per-core CPU grid picks its columns from `core_column_ladder`, and that
+  ladder obeys the same two invariants `core_columns` documents: divide the core
+  count evenly, stay at or below `CORE_MAX_COLUMNS`, and leave **at least two
+  rows**. Until the one-row fix it offered every divisor, including the count
+  itself, which rendered a 10-core M1 Max as one row of ten stretched cells
+  while `core_columns` was answering 5 × 2 and passing all of its own tests. The
+  ladder is what the shell renders, so the two must agree.
 
 ### UI Design
 - Dark mode optimized; glanceable grid of cockpit panels.

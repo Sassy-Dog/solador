@@ -3,8 +3,8 @@
 An experimental cross-platform shell proving out a macOS/Windows-portable stack: a
 [Tauri v2](https://v2.tauri.app) app that renders the **whole cockpit** the SwiftUI
 app renders — the local card plus one card per configured DevCanopy
-[agent](../agent/README.md), then the **Containers/VMs**, **Repos**, **GitHub
-Runners**, **Usage** (Claude + Neon + Sentry), **Azure Cost** and **OpenClaw**
+[agent](../agent/README.md), then the **Containers/VMs**, **GitHub Repos**,
+**GitHub Runners**, **Usage** (Claude + Neon + Sentry), **Azure Cost** and **OpenClaw**
 panels — reflowed into rows for the measured width, and configured from an in-app
 **Settings** surface backed by the OS credential store.
 
@@ -81,7 +81,8 @@ await window.__TAURI__.core.invoke("cockpit", { width: gridWidth });
   "spacing": 16,           //    re-derive them and disagree
   "hostTabs": null,        // or {"minHeight": 780, "tabs": [{"id", "label"}, …]}
   "panels": [ /* the panel table: id, title, minWidth */ ],
-  "panelRows": [ /* the reflowed layout: which panels share a row, in order */ ],
+  "panelRows": [ /* the reflowed layout: who shares a row, in order, and the
+                    span/weight/width/columns each one gets */ ],
   "empty": null,           // or {"message": …} when no REMOTE host is configured
   "settingsLabel": "Settings"  // the button that opens the Settings view
 }
@@ -116,11 +117,42 @@ keep recording and are current the moment they are shown.
 `viewmodel::cockpit::reflow`. It is not a global `sm`/`md`/`lg` tier and it is
 not a CSS `auto-fit` — **every panel declares its own `min_width`**, and a row
 splits only when *its* panels stop fitting. The case that model exists for is
-visible in the shipped layout: Usage + Azure Cost (360 + 16 + 400 = 776pt) stay
-side by side at a width where Repos + Runners (976pt) must break apart. Rows
-naming a panel this frontend has no section for — `hosts`, which is the grid
-above — still travel; app.js skips them rather than Rust silently omitting a row
-it did produce.
+visible at the 880pt window floor: Containers + OpenClaw still share a row at
+412pt each where Repos + Runners (896pt) must break apart. Rows naming a panel
+this frontend has no section for — `hosts`, which is the grid above — still
+travel; app.js skips them rather than Rust silently omitting a row it did
+produce.
+
+Each entry also carries a **span**: `full`, `threeQuarters`, `half` or
+`quarter`, plus the `weight` (4, 3, 2, 1) the frontend paints as that panel's
+`fr` track. So the shipped third row is `2fr 1fr 1fr` — Containers beside
+OpenClaw and Usage — and Azure Cost owns a full row, which is what affords its
+two-column body (the top-resource breakdowns sit beside the costs rather than
+under them). A panel is held to its `min_width` against **the width its span
+gives it**, not against the row's sum of minimums: the sum let a hungry panel
+borrow width from a lean neighbour that it then never got, since the track it
+renders in is its span's share. `panel_widths` is the one place that arithmetic
+lives, and `width` in the payload is its answer — the same number `columns` was
+derived from.
+
+**A rendered row always adds up to four quarters**, so `span` is always one of
+those four words. Reflow can cut a row short — evict Usage from the quarter row
+and Containers + OpenClaw are left holding three quarters between them — and
+`fr` tracks would then stretch that pair to two thirds and one third: a width
+nobody authored, no picker offers, and a reader can only take for a bug. So
+`fill_row` widens the survivors first, by the distribution closest to their
+authored proportions (Half + Quarter → **ThreeQuarters + Quarter**; Quarter +
+Quarter → Half + Half, not a lopsided pair), and every candidate is checked
+against `min_width` at its *final* width, because filling shrinks whoever does
+not grow. A row with no legible filling is refused — which is exactly how reflow
+learns the panel does not fit there. The `span` a panel travels with is
+therefore the one it is **rendered** at, which can be wider than the one the
+user authored; the Settings editor reads the authored width from the store, not
+from this payload.
+
+Every card in a rendered row is **the same height** (`align-items:stretch`).
+Content stays top-aligned, so a short panel beside a long one carries trailing
+space inside its card rather than leaving a ragged edge in the row.
 
 `empty` keys on the count of *monitored* hosts, not on the number of cards: the
 local card is always there, so counting cards would answer "is anything
@@ -195,7 +227,7 @@ await window.__TAURI__.core.invoke("runners");
 ```jsonc
 // repos
 {
-  "id": "ghWorkflows", "title": "Repos",
+  "id": "ghWorkflows", "title": "GitHub Repos",
   "trailing": "1 needs approval · 1 running · 1 failed · 1 unreadable",
   "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
   "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
@@ -232,7 +264,7 @@ cursor-pagination guard in `crates/github` exists to protect.
 
 The **column widths are Rust's**, in points, for the same reason the host
 grid's column count is: seven fixed numeric columns summing to 312pt is what
-`PanelKind::GhWorkflows.min_width` (560pt) is built on, and a width re-typed in
+`PanelKind::GhWorkflows.min_width` (440pt) is built on, and a width re-typed in
 CSS is a second implementation free to disagree with the breakpoint.
 
 **LOCAL and WT come from this machine**, not from GitHub:
@@ -324,7 +356,7 @@ runner**. That is a right-click context menu over a `roster::forget` that
 after 24h regardless.
 
 Both panels now sit in whichever row `panelRows` puts them — side by side at
-≥976pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).
+≥896pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).
 
 Two counts are deliberately not the same number: the rollup counts *every*
 container the runtimes reported, including the ones rules hid or collapsed (so
@@ -474,6 +506,18 @@ row it feeds on the next 10s frontend tick with no fetch involved.
 
 The **OpenClaw** panel: a glanceable rollup of an OpenClaw agent farm — per-agent
 status, cron health, channel connectivity and token usage.
+
+**An agent is two lines, not one:** the name (with its status dot, emoji and
+`running` badge) and the model ref beneath it, indented to the dot column. On
+one line the two competed for the width of a quarter-width card and *both* lost
+characters; stacked, each gets the whole card. That is what took this panel's
+`min_width` from 340 to **240** — measured by shrinking the dumped fixture until
+something that must not truncate does, which is now the cron summary rather than
+an agent row — and 240 is what lets OpenClaw sit in a quarter beside a
+three-quarter Containers on a ~1256pt cockpit. The extra line is free where this
+panel lives: it shares a row with Containers and is the shorter card, so
+`align-items:stretch` was padding that space out anyway. If OpenClaw ever
+becomes the tallest panel in its row, revisit it.
 
 ```js
 await window.__TAURI__.core.invoke("openclaw");
@@ -678,10 +722,11 @@ still show a stalled agent as live.
 
 ## Settings
 
-The **Settings** button opens an in-app view over the cockpit: General, GitHub,
-Portfolio, Hosts, Azure Cost, Usage, OpenClaw and About — the Swift window's
-tabs. Every label, help string and result line it paints comes from
-`src/settings.rs`, exactly as the cards' do from `crates/viewmodel`.
+The **Settings** button opens an in-app view over the cockpit: General, Layout,
+GitHub, Portfolio, Hosts, Azure Cost, Usage, OpenClaw and About — the Swift
+window's tabs plus **Layout**, which has no Swift counterpart. Every label, help
+string and result line it paints comes from `src/settings.rs`, exactly as the
+cards' do from `crates/viewmodel`.
 
 **In-app view, not a second window.** A second window means the frontend calls
 `WebviewWindow`, which means granting the webview
@@ -696,7 +741,9 @@ capability](#the-one-granted-capability) for the single entry that does.
 | Command | What it does |
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
-| `settings_save_general` | refresh interval, core-row span, host-overflow mode |
+| `settings_save_general` | refresh interval, core-row span |
+| `settings_move_panel` / `settings_set_panel_span` / `settings_set_breakpoint_overflow` | the [cockpit layout](#the-layout-tab), inside one breakpoint named by `minWidth`: one panel a place along the order, one panel's width, or that band's host-overflow mode |
+| `settings_add_breakpoint` / `settings_remove_breakpoint` / `settings_reset_layout` | add a width band (seeded from the one it splits), drop one (never the last), or forget the arrangement entirely |
 | `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it |
 | `settings_unhide_volume` | one mount, on a host or on the local list |
@@ -720,12 +767,86 @@ a portfolio fetch on a credential it has no use for.
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule | nothing — the rules are read at render time too, by `containers` |
-| the host-overflow mode | nothing — read at render time by `cockpit`, on its 1s tick |
+| the [layout](#the-layout-tab) — a move, a width, an overflow mode, a breakpoint added or removed, a reset | nothing: `cockpit` re-reads the bands and picks one by the measured width on every frame, so the change is on screen a second later (or the moment Settings closes, which repaints immediately) |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
 
 Every mutation answers in one shape — `{status, settings}` — and the frontend
 re-renders from the `settings` it gets back rather than patching its own copy,
 so it can never show an edit that failed to save.
+
+### The Layout tab
+
+Where each panel sits, how wide it is, and **at which window widths**. The
+arrangement persists as `store.json`'s `layout`: a list of **breakpoints**, each
+one an ordered list of `{panel, span}` slots plus its own `hostOverflow`.
+
+```jsonc
+"layout": [
+  { "min_width": 0,    "host_overflow": "tabs",  "slots": [ /* … */ ] },
+  { "min_width": 1816, "host_overflow": "stack", "slots": [ /* … */ ] }
+]
+```
+
+`cockpit` picks the widest band the measured width clears
+(`settings::breakpoint_for`) on **every frame**, so a cockpit parked in a third
+of a 4K display can tab its host cards while the same window maximised lays them
+side by side. Below every authored band the narrowest one still applies — there
+is always something to render. The mode is per band and not global for exactly
+that reason; `Settings.host_overflow_mode` survives in the store as the *seed* a
+pre-breakpoint layout is migrated from, and the General tab no longer offers it.
+
+Inside a band the arrangement is an **ordered list of slots**, not rows — rows
+are packed from it (`CockpitLayout::from_order`, four quarters to a row), so
+moving a panel is one operation wherever it sits and no editor has to ask where a
+row breaks. `reflow` still runs on top at render time, so a window too narrow for
+a band's rows splits them exactly as it always did: a breakpoint is the widest
+arrangement for its band, not a promise about every size inside it.
+
+Three rules make a stored layout always renderable, and all three live in
+`settings::normalized_order` — applied on the way in *and* on the way out, like
+`normalized_general`:
+
+- a slot naming a panel or span this build does not know is **dropped** (a file
+  from a newer build must not move someone's cockpit around by proxy);
+- a panel named twice keeps its **first** slot;
+- a panel named nowhere is **appended** with its default span.
+
+So every band always holds every panel exactly once. That is what makes a *new*
+panel appear for an existing user — in its default place — instead of vanishing
+because their saved layout predates it. `settings::breakpoints` does the same for
+the bands themselves: widths below zero clamp to 0, two bands claiming one width
+keep the first, and an empty list becomes the shipped default, so
+`breakpoint_for` can never come up empty.
+
+**Migration is a shape, not a version bump.** Before breakpoints, `layout` was a
+bare slot array. `store::layout::lenient_layout` still accepts that and reads it
+as one band at width 0 with an *empty* `host_overflow` — which
+`settings::breakpoints` then fills from the General preference that used to own
+the decision. Upgrading changes nothing on screen, and the first Layout edit
+writes the migrated shape back. The discriminator between the two shapes is
+`slots` being required on a profile and `panel` on a slot: without those, every
+field is optional and each shape would parse as a degenerate version of the
+other.
+
+`layout: null` (never configured) and a stored layout that happens to match the
+default are deliberately distinct: only the absent one follows a future change to
+`CockpitLayout::DEFAULT_ORDER`, which is what **Reset to default** stores — it
+*clears* the key rather than writing today's default into it. **Remove
+breakpoint** refuses to take the last band, because a cockpit with no arrangement
+is not a state the editor may produce; **Add breakpoint** seeds the new band from
+whatever already applied at that width, so adding one changes nothing until it is
+edited.
+
+Every edit names its band by `minWidth` rather than by index — adding a band
+re-sorts the list, and an index would then address the wrong one. Which band the
+editor is *showing* is frontend state (`S.band`), never persisted: the whole band
+list travels in the payload so switching is not a round trip.
+
+The tab's preview is Rust's packing, delivered as rows of cells carrying the `fr`
+weight each panel gets — the same numbers `panelRows` carries. A frontend
+deriving "what will this look like" from the spans would be a second
+implementation of the packer, free to promise an arrangement the cockpit then
+does not render.
 
 **The rules editor writes one field per call, and that is the whole of its
 concurrency story.** Swift builds a `Binding` per `WritableKeyPath` that
@@ -759,19 +880,19 @@ reload entirely, mirroring the Swift view's `applyHiddenMounts()` vs `reload()`.
 
 Two gaps, deliberate and worth knowing:
 
-- **Two of the three General preferences are consumed; the core row span is
-  not.** `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
+- **One of the two General preferences is consumed; the core row span is not.**
+  `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
   rollup's cadence, and changing it applies immediately (see below). Neither the
   host poll loop nor the provider reads are on it: the host loop stays at 1s
   because one history sample is one fixed time slice
   (`PX_PER_SAMPLE`), so that cadence is part of the charts' time axis rather
   than a preference, and Neon, Sentry and the Azure export publish on the order
-  of hours or days, so each keeps its own fixed cadence. `host_overflow_mode` is
-  re-read by the `cockpit` command on every frame, so *Show as tabs* takes
-  effect on the next 1s tick. The **core row span** is still read by
-  `viewmodel`'s card functions from their own constant; it persists (same file,
-  same key, same laundering rules as Swift) and nothing reads the stored value
-  yet.
+  of hours or days, so each keeps its own fixed cadence. The **core row span**
+  is still read by `viewmodel`'s card functions from their own constant; it
+  persists (same file, same key, same laundering rules as Swift) and nothing
+  reads the stored value yet. `host_overflow_mode` left this tab for the
+  [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
+  stored field remains only as that migration's seed.
 - **About's version is hard-coded** to the crate version, not the CalVer the
   Swift app derives from git ([#15](https://github.com/Sassy-Dog/devcanopy/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
@@ -1096,7 +1217,9 @@ and that immediacy is itself the check on the corresponding wake:
 | the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Portfolio | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | the rules editor | under Settings → Hosts, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
-| the tabs mode | set Settings → General to **Show as tabs**, **Apply**, then narrow the window below ~1816pt with two hosts configured | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind |
+| the tabs mode, per breakpoint | with two hosts configured, set Settings → **Layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
+| `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
+| `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `openclaw_wake` | put a gateway URL under Settings → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `DEVCANOPY_SEED_HOST` | the host card fills with live figures and a green dot |

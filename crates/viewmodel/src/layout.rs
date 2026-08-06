@@ -2,8 +2,9 @@
 //!
 //! Ports `coreColumns` and the `coreRowSpan * coreRowUnit` block arithmetic
 //! from `HostMetricsPanel.swift`, and generalises the first: instead of one
-//! column count for all widths, a ladder of every count that divides the core
-//! count evenly, so the last row is never an orphan at any width.
+//! column count for all widths, a ladder of every count `coreColumns` would
+//! accept, so a wider container buys more columns without ever buying a
+//! layout `coreColumns` itself would refuse.
 
 /// Height of one cockpit "section row" (`HostMetricsPanel.coreRowUnit`).
 pub const CORE_ROW_UNIT: f64 = 110.0;
@@ -21,14 +22,44 @@ pub const HISTORY_CAPACITY: usize = 600;
 /// On-screen width of one sample, held constant at every chart width.
 pub const PX_PER_SAMPLE: f64 = 4.0;
 
-/// Every column count that divides `count` evenly, with the container width
-/// each needs. Ascending by width.
-pub fn core_column_ladder(count: usize, min_cell: f64, gap: f64) -> Vec<(f64, usize)> {
+/// Every column count this grid may legibly use, with the container width each
+/// needs. Ascending by width.
+///
+/// A rung is usable on exactly the terms [`core_columns`] documents: it divides
+/// `count` evenly, it stays at or below `max_columns`, and it leaves >= 2 rows.
+/// The two must agree because the ladder is what the shell actually renders --
+/// `core_columns` only answers for a fixed width, so a rung it would never pick
+/// is a layout no test of `core_columns` can reach. That gap is how a 10-core
+/// Mac came to be painted as a single row of ten stretched cells on a wide
+/// card while `core_columns` kept insisting the answer was 5 x 2.
+///
+/// Filtering alone would strand the primes: 11 has no proper divisor, so the
+/// ladder would keep only its 1-column rung and render an 11-core M3 Pro as
+/// eleven rows of one -- a worse grid than the one this fixes. So the top rung
+/// is always [`core_columns`]'s answer, unioned in: it already knows the
+/// least-waste, >= 2 rows, ties-toward-fewer-rows fallback, and restating that
+/// here would be a second copy to drift.
+///
+/// `count == 1` keeps its lone 1-column rung -- one row is all there is, and
+/// the >= 2 rows rule has nothing to say about it. `count == 0` has no ladder.
+pub fn core_column_ladder(
+    count: usize,
+    min_cell: f64,
+    gap: f64,
+    max_columns: usize,
+) -> Vec<(f64, usize)> {
     if count == 0 {
         return vec![];
     }
-    let mut l: Vec<(f64, usize)> = (1..=count)
-        .filter(|d| count.is_multiple_of(*d))
+    let mut cols: Vec<usize> = (1..count)
+        .filter(|d| count.is_multiple_of(*d) && *d <= max_columns)
+        .collect();
+    cols.push(core_columns(count, max_columns));
+    cols.sort_unstable();
+    cols.dedup();
+
+    let mut l: Vec<(f64, usize)> = cols
+        .into_iter()
         .map(|d| (d as f64 * min_cell + (d.saturating_sub(1)) as f64 * gap, d))
         .collect();
     // `total_cmp`, not `partial_cmp(..).unwrap()`: the latter panics the
@@ -78,8 +109,9 @@ pub struct CoreRung {
 /// 36-core host takes 6 rows (334pt) where a 16-core host takes 4 (220pt), and
 /// every section below the block — Memory, Disk, Volumes, the process lists —
 /// inherits that 114pt of skew. Cards in a cockpit row are equal width, so the
-/// fix is to give each count *its own* columns (its grid must still divide
-/// evenly) but *everyone's* height: the max across the counts present.
+/// fix is to give each count *its own* columns (its grid must still be one
+/// [`core_column_ladder`] would offer) but *everyone's* height: the max across
+/// the counts present.
 ///
 /// Only the height is shared. Taking the widest card's column count too would
 /// hand a 36-core host a 16-core grid and orphan the last row, which is the
@@ -99,6 +131,7 @@ pub fn aligned_core_ladders(
     row_span: usize,
     min_cell: f64,
     gap: f64,
+    max_columns: usize,
 ) -> Vec<(usize, Vec<CoreRung>)> {
     let mut distinct: Vec<usize> = counts.iter().copied().filter(|c| *c > 0).collect();
     distinct.sort_unstable();
@@ -109,7 +142,7 @@ pub fn aligned_core_ladders(
 
     let ladders: Vec<(usize, Vec<(f64, usize)>)> = distinct
         .iter()
-        .map(|&n| (n, core_column_ladder(n, min_cell, gap)))
+        .map(|&n| (n, core_column_ladder(n, min_cell, gap, max_columns)))
         .collect();
 
     // A card's layout only changes at one of ITS rung boundaries, but the
@@ -278,22 +311,88 @@ pub fn visible_samples(width_px: f64, px_per_sample: f64, retained: usize) -> us
 mod tests {
     use super::*;
 
+    fn ladder(count: usize) -> Vec<(f64, usize)> {
+        core_column_ladder(count, CORE_MIN_CELL, CORE_GAP, CORE_MAX_COLUMNS)
+    }
+
+    fn widest_rung(count: usize) -> usize {
+        ladder(count).last().map_or(0, |(_, c)| *c)
+    }
+
+    /// This used to assert only "every rung divides evenly", which every
+    /// divisor satisfies -- including `count` itself. That let the shell offer
+    /// a 1-row grid of stretched cells on a wide card (a 10-core M1 Max as one
+    /// row of ten) while `core_columns` was answering 5 x 2 and passing all its
+    /// own tests. A full last row was never the whole rule: the rung must also
+    /// fit under the cap and leave >= 2 rows, exactly as `core_columns` says.
     #[test]
-    fn ladder_only_yields_column_counts_that_leave_a_full_last_row() {
+    fn ladder_only_yields_column_counts_core_columns_would_accept() {
         for count in [4usize, 8, 10, 12, 16, 20, 24, 32, 64] {
-            for (_, cols) in core_column_ladder(count, CORE_MIN_CELL, CORE_GAP) {
+            for (_, cols) in ladder(count) {
                 assert_eq!(count % cols, 0, "count {count} cols {cols}");
+                assert!(cols <= CORE_MAX_COLUMNS, "count {count} cols {cols}");
+                assert!(
+                    core_visual_rows(count, cols) >= 2,
+                    "count {count} cols {cols} is a single row"
+                );
             }
         }
     }
 
+    /// The widest rung is the grid a maximally wide card renders, so it has to
+    /// be the answer `core_columns` would give -- including for the primes,
+    /// where the even-divisor filter leaves nothing but the 1-column rung.
+    #[test]
+    fn the_widest_rung_is_the_grid_core_columns_would_choose() {
+        for (count, want) in [
+            (8usize, 4usize),
+            (10, 5),
+            (12, 6),
+            (16, 8),
+            (36, 9),
+            (11, 6),
+            (7, 4),
+            (4, 2),
+            (2, 1),
+            (1, 1),
+        ] {
+            assert_eq!(widest_rung(count), want, "count {count}");
+            assert_eq!(
+                widest_rung(count),
+                core_columns(count, CORE_MAX_COLUMNS),
+                "count {count} drifted from core_columns"
+            );
+        }
+    }
+
+    /// No width can buy a card a grid over the cap or a single stretched row.
+    /// One core is the sole exception: it has one row and no second to reach.
+    #[test]
+    fn no_rung_exceeds_the_cap_or_collapses_to_one_row() {
+        for count in 1..=64usize {
+            let rungs = ladder(count);
+            assert!(!rungs.is_empty(), "count {count} has no ladder");
+            for (_, cols) in rungs {
+                assert!(
+                    cols <= CORE_MAX_COLUMNS,
+                    "count {count} cols {cols} exceeds the cap"
+                );
+                if count > 1 {
+                    assert!(
+                        core_visual_rows(count, cols) >= 2,
+                        "count {count} cols {cols} is a single row"
+                    );
+                }
+            }
+        }
+        assert_eq!(ladder(1), vec![(CORE_MIN_CELL, 1)], "one core, one rung");
+    }
+
     #[test]
     fn ladder_for_16_cores_matches_the_documented_rungs() {
-        let l = core_column_ladder(16, 104.0, 8.0);
-        assert_eq!(
-            l,
-            vec![(104.0, 1), (216.0, 2), (440.0, 4), (888.0, 8), (1784.0, 16)]
-        );
+        // 16 (one row) is gone; 8 x 2 is as wide as this grid legibly goes.
+        let l = core_column_ladder(16, 104.0, 8.0, CORE_MAX_COLUMNS);
+        assert_eq!(l, vec![(104.0, 1), (216.0, 2), (440.0, 4), (888.0, 8)]);
     }
 
     #[test]
@@ -301,7 +400,7 @@ mod tests {
         let h = core_block_height(CORE_ROW_SPAN_DEFAULT);
         assert_eq!(h, 220.0);
         for count in [4usize, 8, 16, 32, 64] {
-            let cols = core_column_ladder(count, CORE_MIN_CELL, CORE_GAP)
+            let cols = ladder(count)
                 .into_iter()
                 .filter(|(w, _)| *w <= 940.0)
                 .map(|(_, c)| c)
@@ -374,19 +473,19 @@ mod tests {
 
     /// A NaN width used to abort the whole render: `sort_by` reached
     /// `partial_cmp(..).unwrap()` on it and panicked. `total_cmp` is a total
-    /// order, so the ladder still comes back -- every divisor present, in
-    /// insertion order, because a stable sort leaves equal keys alone.
+    /// order, so the ladder still comes back -- every usable rung present, in
+    /// ascending column order, because a stable sort leaves equal keys alone.
     #[test]
     fn a_nan_cell_width_sorts_instead_of_panicking() {
-        let l = core_column_ladder(16, f64::NAN, CORE_GAP);
+        let l = core_column_ladder(16, f64::NAN, CORE_GAP, CORE_MAX_COLUMNS);
         let cols: Vec<usize> = l.iter().map(|(_, c)| *c).collect();
-        assert_eq!(cols, vec![1, 2, 4, 8, 16]);
+        assert_eq!(cols, vec![1, 2, 4, 8]);
         assert!(l.iter().all(|(w, _)| w.is_nan()));
     }
 
     #[test]
     fn zero_cores_does_not_panic() {
-        assert!(core_column_ladder(0, CORE_MIN_CELL, CORE_GAP).is_empty());
+        assert!(core_column_ladder(0, CORE_MIN_CELL, CORE_GAP, CORE_MAX_COLUMNS).is_empty());
         assert_eq!(core_visual_rows(0, 0), 1);
     }
 
@@ -513,17 +612,21 @@ mod tests {
 
     // MARK: the shared core-block height
 
+    fn aligned(counts: &[usize]) -> Vec<(usize, Vec<CoreRung>)> {
+        aligned_core_ladders(counts, 2, CORE_MIN_CELL, CORE_GAP, CORE_MAX_COLUMNS)
+    }
+
     /// Alone, a count gets exactly what it got before: `core_column_ladder`'s
     /// rungs with `core_rung_height`'s heights. The whole feature has to be
     /// invisible to a single-card cockpit.
     #[test]
     fn one_count_reproduces_the_unaligned_ladder() {
         for n in [1_usize, 8, 10, 16, 36, 64] {
-            let aligned = aligned_core_ladders(&[n], 2, CORE_MIN_CELL, CORE_GAP);
+            let aligned = aligned(&[n]);
             assert_eq!(aligned.len(), 1, "n {n}");
             let (got_n, rungs) = &aligned[0];
             assert_eq!(*got_n, n);
-            let plain = core_column_ladder(n, CORE_MIN_CELL, CORE_GAP);
+            let plain = ladder(n);
             assert_eq!(rungs.len(), plain.len(), "n {n}");
             for (rung, (w, c)) in rungs.iter().zip(plain.iter()) {
                 assert_eq!(rung.min_width, *w, "n {n}");
@@ -543,7 +646,7 @@ mod tests {
     /// column count its own core count divides into.
     #[test]
     fn a_mac_beside_a_36_core_host_shares_the_taller_block() {
-        let aligned = aligned_core_ladders(&[10, 36], 2, CORE_MIN_CELL, CORE_GAP);
+        let aligned = aligned(&[10, 36]);
         let at = |n: usize, width: f64| {
             let (_, rungs) = aligned.iter().find(|(c, _)| *c == n).expect("count");
             *rungs
@@ -565,7 +668,7 @@ mod tests {
     #[test]
     fn the_shared_height_never_drops_a_card_below_its_own() {
         let counts = [4_usize, 8, 10, 16, 36, 64];
-        let aligned = aligned_core_ladders(&counts, 2, CORE_MIN_CELL, CORE_GAP);
+        let aligned = aligned(&counts);
         for (n, rungs) in &aligned {
             for rung in rungs {
                 let own = core_rung_height(2, core_visual_rows(*n, rung.cols));
@@ -584,7 +687,7 @@ mod tests {
     /// which is the thing the ladder exists to prevent.
     #[test]
     fn sharing_a_height_never_shares_a_column_count() {
-        let aligned = aligned_core_ladders(&[8, 36], 2, CORE_MIN_CELL, CORE_GAP);
+        let aligned = aligned(&[8, 36]);
         for (n, rungs) in &aligned {
             for rung in rungs {
                 assert_eq!(n % rung.cols, 0, "n {n} cols {}", rung.cols);
@@ -596,7 +699,7 @@ mod tests {
     /// cockpit actually renders.
     #[test]
     fn all_counts_agree_on_the_height_at_every_width() {
-        let aligned = aligned_core_ladders(&[8, 16, 36], 2, CORE_MIN_CELL, CORE_GAP);
+        let aligned = aligned(&[8, 16, 36]);
         let widths: Vec<f64> = aligned[0].1.iter().map(|r| r.min_width).collect();
         for w in widths {
             let heights: Vec<f64> = aligned
@@ -620,11 +723,11 @@ mod tests {
     /// reports none) must not invent a ladder or panic.
     #[test]
     fn empty_and_zero_counts_yield_no_ladders() {
-        assert!(aligned_core_ladders(&[], 2, CORE_MIN_CELL, CORE_GAP).is_empty());
-        assert!(aligned_core_ladders(&[0, 0], 2, CORE_MIN_CELL, CORE_GAP).is_empty());
+        assert!(aligned(&[]).is_empty());
+        assert!(aligned(&[0, 0]).is_empty());
         // A zero-core card alongside a real one drops out rather than
         // dragging the set down.
-        let aligned = aligned_core_ladders(&[0, 8], 2, CORE_MIN_CELL, CORE_GAP);
+        let aligned = aligned(&[0, 8]);
         assert_eq!(aligned.len(), 1);
         assert_eq!(aligned[0].0, 8);
     }

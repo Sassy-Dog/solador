@@ -170,3 +170,83 @@ test("an unconfigured provider contributes no section at all", async ({ page, ba
   await expect(page.locator("#usageTrailing")).toHaveText("");
   await expect(page.locator("#usageFooter")).toHaveText(usage.footer.text);
 });
+
+/**
+ * The two-column case, built by editing the payload rather than by picking a
+ * dumped window size.
+ *
+ * No dumped cockpit gives Usage two content columns: it is authored a quarter,
+ * so even at 2732pt it pairs with OpenClaw and lands at 675 — one column. The 2
+ * arrives at >= 696pt (`PanelKind::ClaudeUsage::min_width` is 340) and that
+ * derivation is pinned by the Rust tests; the payload is the contract, and what
+ * this suite owns is the frontend honouring the count it is handed.
+ */
+async function gotoWithColumns(page, baseURL, columns, mutate) {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  for (const panel of cockpit.panelRows.flat()) {
+    if (panel.id === "claudeUsage") panel.columns = columns;
+  }
+  const usage = await fixture(baseURL, "sample-usage.json");
+  if (mutate) mutate(usage);
+  await stubIpc(page, { cockpit, usage });
+  await page.goto("/index.html");
+  return usage;
+}
+
+test("on a full-width card the providers sit beside the rollups, not under them", async ({ page, baseURL }) => {
+  const usage = await gotoWithColumns(page, baseURL, 2);
+  expect(usage.providers.length, "both wrappers need content").toBe(2);
+  await expect(page.locator("#usagePanel")).toHaveAttribute("data-cols", "2");
+
+  const box = async (selector) => await page.locator(selector).boundingBox();
+  const claude = await box("#usageBody .usage-main");
+  const providers = await box("#usageBody .usage-providers");
+  expect(providers.x, "the providers start to the right of the rollups").toBeGreaterThan(
+    claude.x + claude.width - 1
+  );
+  expect(
+    Math.abs(providers.y - claude.y),
+    "and on the same line, not below"
+  ).toBeLessThan(2);
+
+  // A provider's leading rule separates it from the block ABOVE it. The first
+  // one now opens the right-hand column, where there is nothing above it.
+  await expect(section(page, usage.providers[0].id).locator(".pv-divider")).toBeHidden();
+  await expect(section(page, usage.providers[1].id).locator(".pv-divider")).toBeVisible();
+  // The projects rule lives inside `.usage-main` and still has the windows to
+  // separate itself from, so it survives the split.
+  await expect(
+    page.locator('#usageBody .pv-section[data-section="projects"] .pv-divider')
+  ).toBeVisible();
+});
+
+test("a narrow card stacks the providers under the rollups, dividers and all", async ({ page, baseURL }) => {
+  // Same panel, same DOM — only the column count Rust derived differs.
+  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
+  expect(narrow.panelRows.flat().find((p) => p.id === "claudeUsage").columns).toBe(1);
+  const usage = await fixture(baseURL, "sample-usage.json");
+  await stubIpc(page, { cockpit: narrow, usage });
+  await page.goto("/index.html");
+
+  const claude = await page.locator("#usageBody .usage-main").boundingBox();
+  const providers = await page.locator("#usageBody .usage-providers").boundingBox();
+  expect(providers.y).toBeGreaterThan(claude.y + claude.height - 1);
+  for (const provider of usage.providers) {
+    await expect(section(page, provider.id).locator(".pv-divider")).toBeVisible();
+  }
+});
+
+test("with no providers the Claude block takes the whole two-column body", async ({ page, baseURL }) => {
+  // The panel with nothing configured but Claude has to stay pixel-identical to
+  // its Claude-only self at either count — half a card of rollups with an empty
+  // track beside them is not that.
+  await gotoWithColumns(page, baseURL, 2, (usage) => delete usage.providers);
+  await expect(page.locator("#usageBody .usage-providers")).toHaveCount(0);
+
+  const body = await page.locator("#usageBody").boundingBox();
+  const claude = await page.locator("#usageBody .usage-main").boundingBox();
+  expect(
+    Math.abs(claude.width - body.width),
+    "the rollups span both tracks, not one"
+  ).toBeLessThan(1);
+});

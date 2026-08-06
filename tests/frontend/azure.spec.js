@@ -65,7 +65,7 @@ test("the panel paints Rust's headline, caption, trailing label and stat rows", 
   // a `toLocaleString` here would render the bill in the webview's locale.
   expect(azure.headline.value).toMatch(/^\$[\d,]+\.\d{2}$/);
 
-  const stats = page.locator("#azureBody > .pv-row");
+  const stats = page.locator("#azureBody .az-main > .pv-row");
   await expect(stats).toHaveCount(azure.stats.length);
   await expect(stats.locator(".lbl")).toHaveText(azure.stats.map((s) => s.label));
   await expect(stats.locator(".val")).toHaveText(azure.stats.map((s) => s.value));
@@ -126,6 +126,45 @@ test("both breakdown columns render, capped at five rows each", async ({ page, b
   await expect(columns.first().locator(".pv-item .name")).toHaveText(
     azure.breakdowns[0].rows.map((r) => r.name)
   );
+});
+
+test("on a full-width card the breakdowns sit beside the costs, not under them", async ({ page, baseURL }) => {
+  // Azure Cost is authored full width so `panel_columns` can afford it two
+  // content columns; the split itself is CSS over `--panel-cols`, so this is
+  // about the frontend applying Rust's count rather than deciding one. The
+  // fixture is dumped at 2732pt, where a full-width row is 2732.
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const azurePanel = cockpit.panelRows.flat().find((p) => p.id === "azureCost");
+  expect(azurePanel.span, "the layout must author it full width").toBe("full");
+  expect(azurePanel.columns, "wide enough for the two-column body").toBe(2);
+
+  await gotoWithAzure(page, baseURL);
+  const box = async (selector) => await page.locator(selector).boundingBox();
+  const costs = await box("#azureBody .az-main");
+  const breakdowns = await box("#azureBody .az-columns");
+  expect(breakdowns.x, "the breakdowns start to the right of the costs").toBeGreaterThan(
+    costs.x + costs.width - 1
+  );
+  expect(
+    Math.abs(breakdowns.y - costs.y),
+    "and on the same line, not below"
+  ).toBeLessThan(2);
+  // The rule that separated them when stacked has nothing left to separate.
+  await expect(page.locator("#azureBody > .pv-divider")).toBeHidden();
+});
+
+test("a narrow card stacks the breakdowns under the costs, divider and all", async ({ page, baseURL }) => {
+  // Same panel, same DOM — only the column count Rust derived differs.
+  const narrow = await fixture(baseURL, "sample-cockpit-narrow.json");
+  expect(narrow.panelRows.flat().find((p) => p.id === "azureCost").columns).toBe(1);
+  const azure = await fixture(baseURL, "sample-azure.json");
+  await stubIpc(page, { cockpit: narrow, azure });
+  await page.goto("/index.html");
+
+  const costs = await page.locator("#azureBody .az-main").boundingBox();
+  const breakdowns = await page.locator("#azureBody .az-columns").boundingBox();
+  expect(breakdowns.y).toBeGreaterThan(costs.y + costs.height - 1);
+  await expect(page.locator("#azureBody > .pv-divider")).toBeVisible();
 });
 
 test("a missing SAS URL reads as setup and a failed read reads as a failure", async ({ page, baseURL }) => {
