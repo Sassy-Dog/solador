@@ -258,17 +258,21 @@ test("the Layout preview draws Rust's rows at Rust's proportions", async ({ page
   for (const [i, row] of preview.rows.entries()) {
     const line = lines.nth(i);
     await expect(line.locator(".layout-tile-name")).toHaveText(row.map((c) => c.title));
-    // The tracks are the `fr` weights the cockpit paints, so a half-width
-    // panel's tile is twice a quarter's — the preview cannot promise an
-    // arrangement the cockpit would not render.
-    const widths = await line.evaluate((el) =>
-      getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).map(parseFloat)
+    // Placed on the same four-quarter grid the cockpit is — each tile spans its
+    // weight in quarters, starting where the tiles before it left off — so the
+    // preview cannot promise an arrangement the cockpit would not render.
+    const placed = await line.evaluate((el) =>
+      [...el.children].map((c) => {
+        const s = getComputedStyle(c);
+        return [s.gridColumnStart.trim(), s.gridColumnEnd.trim()];
+      })
     );
-    const total = row.reduce((sum, cell) => sum + cell.weight, 0);
+    let start = 1;
     for (const [j, cell] of row.entries()) {
-      const share = widths[j] / widths.reduce((a, b) => a + b, 0);
-      expect(share).toBeCloseTo(cell.weight / total, 1);
+      expect(placed[j], `tile ${j} of row ${i}`).toEqual([`${start}`, `span ${cell.weight}`]);
+      start += cell.weight;
     }
+    expect(start, "a row never claims more than four quarters").toBeLessThanOrEqual(5);
   }
 });
 

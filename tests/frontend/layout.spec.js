@@ -47,6 +47,40 @@ async function stubCockpit(page, payloads) {
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
+/**
+ * Stubs the cockpit *and* every panel command, so the cards carry their real
+ * contents rather than empty chrome.
+ *
+ * `stubCockpit` answers every command with the cockpit payload, which the panel
+ * scripts happily render as a panel with nothing in it — fine when the question
+ * is which row a section lands in, useless when it is how tall the section is
+ * or where its edge falls. Panels of identical empty height agree about
+ * everything.
+ */
+async function stubPanels(page, baseURL, cockpit) {
+  const named = ["containers", "repos", "runners", "usage", "azure", "openclaw"];
+  const files = {
+    containers: "sample-containers.json",
+    repos: "sample-repos.json",
+    runners: "sample-runners.json",
+    usage: "sample-usage.json",
+    azure: "sample-azure.json",
+    openclaw: "sample-openclaw.json",
+  };
+  const payloads = { cockpit };
+  for (const name of named) payloads[name] = await fixture(baseURL, files[name]);
+  await page.addInitScript((vms) => {
+    window.__TAURI__ = {
+      core: {
+        // `azure_cost` is the command; `azure` is the fixture. Anything else
+        // (`settings_*`) answers null, exactly as `stubCockpit` does.
+        invoke: async (command) =>
+          vms[command === "azure_cost" ? "azure" : command] ?? null,
+      },
+    };
+  }, payloads);
+}
+
 /** The one live host `--dump` writes, as the offline fallback serves it. */
 const firstHost = async (page) =>
   page.evaluate(async () => (await (await fetch("sample.json")).json()).hosts[0]);
@@ -522,27 +556,63 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
 
   const rows = page.locator("#panelRows .panel-row");
   await expect(rows).toHaveCount(expected.length);
+  // Four quarter tracks on every row, whatever it holds — the grid is the same
+  // one everywhere, and a panel claims its share with `grid-column`.
   const tracks = await rows.evaluateAll((els) =>
     els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
   );
-  expect(tracks).toEqual(expected.map((row) => row.length));
+  expect(tracks).toEqual(expected.map(() => 4));
 
   // The row the span system exists for: Containers takes half, OpenClaw and
-  // Usage a quarter each, painted as `2fr 1fr 1fr`. Ratios, not pixels — the
-  // fixture's widths are the 2732pt it was dumped for, not this viewport's.
+  // Usage a quarter each.
   const quarter = expected.findIndex(
     (row) => row.join() === "containers,openclawAgents,claudeUsage"
   );
   expect(quarter, "the wide fixture must carry the authored quarter row").toBeGreaterThan(-1);
-  const widths = await rows
+  const spans = await rows
     .nth(quarter)
-    .evaluate((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).map(parseFloat));
-  expect(widths[1]).toBeCloseTo(widths[2], 1);
-  expect(widths[0]).toBeCloseTo(widths[1] * 2, 0);
+    .evaluate((el) =>
+      [...el.children].map((c) => getComputedStyle(c).gridColumnStart.trim())
+    );
+  expect(spans).toEqual(["1", "3", "4"]);
 
   // …and Azure Cost has a whole row, which is what buys its two-column body.
   expect(expected[expected.length - 1]).toEqual(["azureCost"]);
   await expect(rows.last().locator("section")).toHaveCount(1);
+});
+
+/**
+ * The bug the four-quarter grid was introduced for. Each row used to size its
+ * own tracks with the weights it happened to contain — `2fr 1fr 1fr` beside
+ * `2fr 2fr` — and `fr` divides what is left after *that row's* gutters. So a
+ * Half beside two Quarters came out half a gutter narrower than a Half beside
+ * one Half, and the vertical edge between Repos and Runners missed the edge
+ * between Containers and OpenClaw directly below it by 8pt on the shipped
+ * cockpit. Both are `half`; they must land on the same gridline.
+ */
+test("a half is the same width in every row", async ({ page, baseURL }) => {
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  // Both cards have to be on screen to be measured, and `stubCockpit` leaves
+  // Repos hidden — it never answers the `repos` command with a repos payload.
+  await stubPanels(page, baseURL, vm);
+  await gotoApp(page);
+  await expect(page.locator("#reposPanel")).toBeVisible();
+  await expect(page.locator("#containersPanel")).toBeVisible();
+
+  const spanOf = (id) =>
+    vm.panelRows.flat().find((p) => p.id === id)?.span;
+  expect(spanOf("ghWorkflows"), "the fixture must carry two halves in different rows").toBe("half");
+  expect(spanOf("containers")).toBe("half");
+
+  const [repos, containers] = await Promise.all([
+    page.locator("#reposPanel").boundingBox(),
+    page.locator("#containersPanel").boundingBox(),
+  ]);
+  expect(containers.width).toBeCloseTo(repos.width, 1);
+  expect(
+    containers.x + containers.width,
+    "the edge under Repos and the edge under Containers are one line"
+  ).toBeCloseTo(repos.x + repos.width, 1);
 });
 
 test("every card sharing a row is the same height", async ({ page, baseURL }) => {
@@ -554,8 +624,14 @@ test("every card sharing a row is the same height", async ({ page, baseURL }) =>
   // half, a fixture whose panels happened to be equally tall would pass with
   // `align-items:start` back in place.
   const vm = await fixture(baseURL, "sample-cockpit.json");
-  await stubCockpit(page, [vm]);
+  // Real panel contents, not the empty chrome `stubCockpit` produces: cards of
+  // identical empty height pass a height-equality test without proving
+  // anything, and there is no trailing space in one for the slack check below
+  // to find.
+  await stubPanels(page, baseURL, vm);
   await gotoApp(page);
+  await expect(page.locator("#reposPanel")).toBeVisible();
+  await expect(page.locator("#openclawPanel .oc-agent").first()).toBeVisible();
 
   const rows = page.locator("#panelRows .panel-row");
   const shared = await rows.evaluateAll((els) =>
@@ -622,12 +698,14 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
     await expect(page.locator(`#${id}`), `${id} survived the reflow`).toHaveCount(1);
     await expect(page.locator(`#panelRows .panel-row > #${id}`)).toHaveCount(1);
   }
-  // …and every section is accounted for by the rows Rust asked for.
-  const tracks = await rows.evaluateAll((els) =>
-    els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
+  // …and every section is accounted for by the rows Rust asked for. Counted as
+  // sections rather than as tracks: every row is the same four quarter tracks,
+  // so a track count says nothing about how many panels landed in it.
+  const perRow = await rows.evaluateAll((els) =>
+    els.map((el) => el.querySelectorAll(":scope > section").length)
   );
-  expect(tracks).toEqual(shapeOf(narrow));
-  expect(tracks.reduce((a, b) => a + b, 0)).toBe(sections.length);
+  expect(perRow).toEqual(shapeOf(narrow));
+  expect(perRow.reduce((a, b) => a + b, 0)).toBe(sections.length);
 });
 
 test("the grid lays out exactly the columns the view-model asked for", async ({ page, baseURL }) => {

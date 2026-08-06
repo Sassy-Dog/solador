@@ -199,6 +199,22 @@ DevCanopy/
   and `ProcessDiskIOSampler` return `nil` for a reading the kernel declined, and
   log the failure on the *transition* rather than once per 1 Hz poll. Capacity
   figures (`memory.totalGB`) come from infallible sources and stay non-Optional.
+- **Configuration is unknown-first as well** (Tauri only): `panel::Configured`
+  is `Unknown` / `Absent` / `Present`, defaulting to `Unknown`, and `Present` is
+  recorded **when the credential is read, before the request**. Every panel used
+  to store this as a `bool` a completed fetch set, so the first frame — before
+  any pass had looked — was indistinguishable from "there is no credential":
+  Repos and Runners opened on `connect a GitHub token in Settings`, Azure on
+  `Add an Azure Cost SAS URL in Settings`, Containers on `no containers
+  detected`, on a machine where all of it was fine. Only `Absent` may paint a
+  setup instruction; `Unknown` renders the panel's loading line. A defaulted
+  *state* is as much a fabrication as a defaulted number.
+- **`status_footer`'s `last_updated` is the last success, not the last attempt.**
+  It renders `last ok {age}`, which is a promise only the caller can keep.
+  Containers and Usage passed "when we last looked", so a Docker daemon that had
+  never once answered reported `⚠ couldn't read docker · last ok 0s ago` — on
+  every poll, forever. A panel needing both clocks keeps them as separate fields
+  (`local_last_updated` vs `local_last_success`).
 
 ### Git worktrees & branches
 - `Services/GitMonitor/` parses git/worktree state without modifying files
@@ -251,10 +267,22 @@ DevCanopy/
   side-by-side at a width where the host cards — and Repos + Runners — must stack.
 - **Spans, not even splits** (Tauri only): each placement carries a `PanelSpan` —
   `Full` / `ThreeQuarters` / `Half` / `Quarter`, weights 4/3/2/1 — and
-  `panel_widths()` gives each panel its share of the row after the gaps. The
-  frontend paints those weights as `fr` tracks. A panel is held to its
-  `min_width` against the width its span gives it, never against the row's sum
-  of minimums (that let a hungry panel borrow width it then never got).
+  `panel_widths()` gives each panel its share of **one four-quarter grid**: a
+  quarter track is `(width − 3·gap) / 4`, and a span of `k` gets `k` tracks plus
+  the `k−1` gutters it swallows. The frontend paints the identical construction,
+  `repeat(4, minmax(0,1fr))` plus `grid-column: <start> / span k`, so the two
+  cannot drift. A panel is held to its `min_width` against the width its span
+  gives it, never against the row's sum of minimums (that let a hungry panel
+  borrow width it then never got).
+- **The grid is the same on every row, so a span means one thing.** The
+  denominator is a fixed four, *not* the weight of the panels in this row —
+  which looks equivalent, since `fill_row` widens every rendered row to four
+  quarters anyway, and is not: dividing `width − (n−1)·gap` by the row's own
+  weight makes the subtracted gutter total depend on how many panels happen to
+  share the row. A Half came out half a gutter narrower beside two Quarters than
+  beside one Half, and the vertical edge under Repos|Runners missed the edge
+  under Containers|OpenClaw by 8pt. Same span, same width, same gridline,
+  wherever it lands.
 - **Every rendered row is exactly four quarters.** When reflow cuts a row short
   its remaining panels are *widened* to fill it (`fill_row`), so a track is
   always one of the four named widths — a row left at three quarters would

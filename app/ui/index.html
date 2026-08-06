@@ -51,11 +51,11 @@
     <section class="panel" id="containersPanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="containersTitle"></h2>
+        <span class="panel-stale" id="containersStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="containersTrailing"></span>
       </header>
       <div class="panel-body" id="containersBody"></div>
-      <p class="panel-footer" id="containersFooter" hidden></p>
     </section>
 
     <!-- Repos. One fixed row per tracked repo, so the card never resizes as CI
@@ -81,11 +81,11 @@
     <section class="panel" id="runnersPanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="runnersTitle"></h2>
+        <span class="panel-stale" id="runnersStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="runnersTrailing"></span>
       </header>
       <div class="panel-body" id="runnersBody"></div>
-      <p class="panel-footer" id="runnersFooter" hidden></p>
     </section>
 
     <!-- Usage. Claude Code token rollups, plus a Neon and a Sentry section
@@ -96,11 +96,11 @@
     <section class="panel" id="usagePanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="usageTitle"></h2>
+        <span class="panel-stale" id="usageStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="usageTrailing"></span>
       </header>
       <div class="panel-body" id="usageBody"></div>
-      <p class="panel-footer" id="usageFooter" hidden></p>
     </section>
 
     <!-- Azure Cost. Month-to-date spend, a prior-month reference, a projection
@@ -111,11 +111,11 @@
     <section class="panel" id="azurePanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="azureTitle"></h2>
+        <span class="panel-stale" id="azureStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="azureTrailing"></span>
       </header>
       <div class="panel-body" id="azureBody"></div>
-      <p class="panel-footer" id="azureFooter" hidden></p>
     </section>
 
     <!-- OpenClaw. An agent farm's per-agent status, cron health, channel

@@ -157,10 +157,27 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .panel { margin-top:var(--cockpit-gap, 16px); padding:18px; background:var(--panel);
   border:1px solid var(--line); border-radius:12px; display:flex;
   flex-direction:column; gap:10px; min-width:0; }
-.panel-hdr { display:flex; align-items:baseline; gap:8px; }
+.panel-hdr { display:flex; align-items:baseline; gap:8px; min-width:0; }
 .panel-trailing { font-size:10px; color:var(--muted); white-space:nowrap; }
 .panel-body { display:flex; flex-direction:column; gap:10px; min-width:0; }
-.panel-footer { font-size:9px; font-weight:700; margin:0; }
+/* The staleness/error warning shares the header row rather than owning a line
+   under the body, where it used to live. A line below the content makes the
+   card taller the moment a panel degrades, and `.panel-row` stretches every
+   other card in the row to match -- so a token losing a scope moved half the
+   cockpit. The header is always there, so this costs no height at all.
+
+   The lopsided `flex-shrink` runs the OPPOSITE way to the host card's, where
+   `.stale` is protected and `.hdr .title` (a CPU model) is the designated give.
+   Here the title is the panel's name -- the thing that says which card you are
+   looking at -- and the warning is the variable-length text, so the warning
+   yields ~100x faster and the title keeps its characters. Copying the card's
+   rule verbatim ate "GitHub Runners" down to nothing at half width. Both
+   ellipsise rather than wrap: a second header line would be the growth this
+   rule exists to stop. */
+.panel-stale { font-size:9px; font-weight:700; white-space:nowrap; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; flex-shrink:100; }
+.panel-hdr .panel-title { white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
 /* Whole host groups sit side by side once Rust says the panel is wide enough
    (`--panel-cols`, from `panel_columns`). A group is already the right grid
    item, so this is the entire two-column implementation for this panel -- and
@@ -288,8 +305,13 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    wide each one sits is its `PanelSpan`'s weight — both applied by app.js, NOT
    a CSS `repeat(auto-fit, minmax(…))`, which would be a second implementation
    of every panel's own `min_width` and free to disagree with the tested one.
-   The tracks are assigned via CSSOM per row (`2fr 1fr 1fr` for a half beside
-   two quarters); this rule only supplies the fallback and the gap.
+   Every row is the same four quarter tracks and a panel claims its span's worth
+   with `grid-column`, assigned via CSSOM by app.js. Four here rather than a
+   per-row track list (`2fr 1fr 1fr` for a half beside two quarters) because
+   `fr` divides what is left after *that row's* gutters: the same Half came out
+   `(W-g)/2` beside one Half and `(W-2g)/2` beside two Quarters, so the edge
+   between Repos and Runners missed the edge between Containers and OpenClaw
+   below it by half a gutter. One grid, one set of gridlines, on every row.
    `minmax(0,1fr)` so a long resource name can never push its column past its
    share.
 
@@ -302,7 +324,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    #reposBody, #azureBody). */
 .panel-rows { display:flex; flex-direction:column; }
 .panel-row { display:grid; gap:var(--cockpit-gap, 16px); align-items:stretch;
-  grid-template-columns: repeat(1, minmax(0, 1fr)); }
+  grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
 /* ---- The shared progress bar -------------------------------------------
    `CockpitProgressBar`. The width and the fill colour both arrive from Rust
@@ -493,11 +515,15 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .layout-name { font-size:13px; font-weight:700; }
 .layout-row .input { max-width:160px; }
 /* The preview: the rows this order packs into, at the proportions the cockpit
-   will paint. The tracks are Rust's `fr` weights, applied via CSSOM per row —
-   the same numbers, and the same setter, app.js uses on a real panel row, so
-   what this shows cannot drift from what the cockpit renders. */
+   will paint. Four quarter tracks and a `grid-column` span per tile — the same
+   grid, and the same setter, `.panel-row` uses, so what this shows cannot drift
+   from what the cockpit renders. A per-row track list would drift, and by
+   exactly the amount the cockpit's used to: `fr` divides what is left after
+   that row's own gutters, so it draws a half beside two quarters narrower than
+   a half beside one half. A row the order leaves short of four quarters shows
+   the unassigned track as a gap rather than stretching its tiles over it. */
 .layout-preview-row { display:grid; gap:6px;
-  grid-template-columns: repeat(1, minmax(0, 1fr)); }
+  grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .layout-tile { display:flex; align-items:baseline; gap:6px; min-width:0;
   padding:6px 8px; background:var(--panelAlt); border:1px solid var(--line);
   border-radius:6px; }

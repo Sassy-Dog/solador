@@ -30,7 +30,7 @@ use usage::{NeonInvoiceSummary, NeonUsageSummary, SentryUsageSummary, UsageTotal
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 
-use crate::panel::{progress_bar, status_footer};
+use crate::panel::{progress_bar, status_footer, Configured};
 
 // Re-exported so `main.rs` — where this module's name shadows the data crate's
 // — reaches the layer beneath through here rather than through a `::usage::`
@@ -155,7 +155,7 @@ pub fn invoice_amount(summary: Option<&NeonInvoiceSummary>) -> Option<String> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderState<S> {
     /// Whether the credential is present. `false` hides the section entirely.
-    pub configured: bool,
+    pub configured: Configured,
     pub summary: Option<S>,
     pub last_updated: Option<u64>,
     pub last_error: Option<String>,
@@ -164,7 +164,7 @@ pub struct ProviderState<S> {
 impl<S> Default for ProviderState<S> {
     fn default() -> Self {
         ProviderState {
-            configured: false,
+            configured: Configured::Unknown,
             summary: None,
             last_updated: None,
             last_error: None,
@@ -177,17 +177,24 @@ impl<S> ProviderState<S> {
     /// never sit behind a hidden section waiting to reappear when the key comes
     /// back.
     pub fn unconfigure(&mut self) {
-        self.configured = false;
+        self.configured = Configured::Absent;
         self.summary = None;
         self.last_updated = None;
         self.last_error = None;
+    }
+
+    /// A pass read this provider's key. Called before the request goes out, so
+    /// the section can say it is loading rather than waiting on the round trip
+    /// to learn it exists at all.
+    pub fn begin(&mut self) {
+        self.configured = Configured::Present;
     }
 
     /// A successful read. `error` carries the "answered, but measured nothing"
     /// explanation, which is a successful read with an empty result — not a
     /// failure.
     pub fn succeeded(&mut self, summary: S, at: u64, error: Option<String>) {
-        self.configured = true;
+        self.configured = Configured::Present;
         self.summary = Some(summary);
         self.last_updated = Some(at);
         self.last_error = error;
@@ -195,9 +202,20 @@ impl<S> ProviderState<S> {
 
     /// A failed read: the reason is published, everything else is left exactly
     /// where it was.
+    ///
+    /// This still marks the provider configured, because only a pass holding a
+    /// key gets far enough to fail — but [`begin`](Self::begin) should already
+    /// have done so. Learning it here is what used to make a provider's very
+    /// first appearance be a row of em dashes under an error.
     pub fn failed(&mut self, error: String) {
-        self.configured = true;
+        self.configured = Configured::Present;
         self.last_error = Some(error);
+    }
+
+    /// Whether this provider is still waiting on the answer to its first read.
+    #[must_use]
+    pub fn is_loading(&self) -> bool {
+        self.configured.is_present() && self.summary.is_none() && self.last_error.is_none()
     }
 
     /// The credential store would not answer, so we do not know whether this
@@ -209,7 +227,7 @@ impl<S> ProviderState<S> {
     /// that was never configured still stays silent — a hiccup must not conjure
     /// a section for a provider nobody set up.
     pub fn unreadable(&mut self, error: String) {
-        if self.configured {
+        if self.configured.is_present() {
             self.last_error = Some(error);
         }
     }
@@ -220,6 +238,14 @@ impl<S> ProviderState<S> {
 pub struct UsageState {
     claude: Option<UsageSummary>,
     claude_updated: Option<u64>,
+    /// When the log walk last completed **without** an error.
+    ///
+    /// Separate from `claude_updated` because [`status_footer`] renders its
+    /// argument as `last ok {age}`. A machine with no `~/.claude/projects` gets
+    /// that error on every pass, and feeding it the attempt clock produced
+    /// `⚠ no ~/.claude/projects · last ok 0s ago` — permanently, and about a
+    /// reading that never happened.
+    claude_succeeded: Option<u64>,
     claude_error: Option<String>,
     /// True from startup until the first walk finishes — what separates
     /// [`LOADING_MESSAGE`] from [`NO_DATA_MESSAGE`].
@@ -244,6 +270,9 @@ impl UsageState {
     pub fn apply_claude(&mut self, summary: Option<UsageSummary>, at: u64, error: Option<String>) {
         self.claude = summary;
         self.claude_updated = Some(at);
+        if error.is_none() {
+            self.claude_succeeded = Some(at);
+        }
         self.claude_error = error;
         self.claude_loading = false;
     }
@@ -462,11 +491,16 @@ pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value
         format!("{} today", tokens(summary.today.total_tokens()))
     });
 
+    // `is_present`, not `!is_absent`: a provider nobody has looked for yet
+    // contributes no markup, exactly as an unconfigured one does. The section
+    // appears once a pass has read its key — which is `begin()`, before the
+    // request, so its first frame is a loading line rather than the row of em
+    // dashes a failure-first appearance used to produce.
     let mut providers: Vec<Value> = Vec::new();
-    if state.neon.configured {
+    if state.neon.configured.is_present() {
         providers.push(neon_section(&state.neon, &state.neon_invoice, rates, now));
     }
-    if state.sentry.configured {
+    if state.sentry.configured.is_present() {
         providers.push(sentry_section(&state.sentry, quota, now));
     }
 
@@ -478,12 +512,16 @@ pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value
         "windows": windows,
         "projects": projects,
         "footer": status_footer(
-            state.claude_updated,
+            state.claude_succeeded,
             state.claude_error.as_deref(),
             now,
             CLAUDE_STALE_AFTER_SECS,
         ),
         "providers": providers,
+        // Any half of the panel still waiting on its first answer keeps the
+        // frontend on its fast refresh. Published rather than inferred from the
+        // message text, which this boundary never asks the frontend to read.
+        "loading": state.claude_loading || state.neon.is_loading() || state.sentry.is_loading(),
     })
 }
 
@@ -673,9 +711,40 @@ mod tests {
     fn before_the_first_walk_the_panel_says_it_is_reading() {
         let payload = view(&UsageState::new(), 0, NeonRates::default(), NOW);
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
+        assert_eq!(payload["loading"], true);
         assert_eq!(payload["trailing"], "");
         assert!(payload["windows"].as_array().unwrap().is_empty());
         assert!(payload["projects"].is_null());
+        assert!(payload["footer"].is_null(), "nothing to be stale yet");
+    }
+
+    /// A provider whose key nobody has read yet contributes no section — the
+    /// same silence as one that is genuinely unconfigured, and deliberately so:
+    /// materialising a section here would put a row of em dashes on screen for
+    /// a provider we cannot yet say exists.
+    #[test]
+    fn a_provider_contributes_nothing_until_a_pass_has_read_its_key() {
+        let payload = view(&UsageState::new(), 0, NeonRates::default(), NOW);
+        assert!(payload["providers"]
+            .as_array()
+            .expect("providers")
+            .is_empty());
+    }
+
+    /// …and once a pass holds the key the section appears *loading*, not as the
+    /// row of em dashes under an error it used to be. `failed()` flipping the
+    /// provider configured is what made a first failure its debut.
+    #[test]
+    fn a_provider_section_appears_as_loading_before_its_first_read_settles() {
+        let mut state = UsageState::new();
+        state.neon_mut().begin();
+        let payload = view(&state, 0, NeonRates::default(), NOW);
+        assert!(
+            section(&payload, "neon").is_some(),
+            "the section is present"
+        );
+        assert_eq!(payload["loading"], true);
+        assert!(state.neon.is_loading());
     }
 
     /// The log root could not even be located, so nothing was read. Distinct
@@ -689,9 +758,12 @@ mod tests {
             NOW,
         );
         assert_eq!(payload["message"]["text"], NO_DATA_MESSAGE);
+        // No `· last ok 0s ago`. There is no log root, so no walk has ever
+        // succeeded, and the suffix used to be a reassurance about a reading
+        // that never happened — restated on every pass, forever.
         assert_eq!(
             payload["footer"]["text"],
-            format!("⚠ {NO_LOG_ROOT_MESSAGE} · last ok 0s ago")
+            format!("⚠ {NO_LOG_ROOT_MESSAGE}")
         );
     }
 
@@ -1002,7 +1074,7 @@ mod tests {
         let payload = view(&state, QUOTA, RATES, NOW);
         assert!(section(&payload, "neon").is_none());
 
-        state.neon.configured = true;
+        state.neon.begin();
         let payload = view(&state, QUOTA, RATES, NOW);
         let neon = section(&payload, "neon").expect("neon");
         assert_eq!(neon["rows"][0]["value"], "—");

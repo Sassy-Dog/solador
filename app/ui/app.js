@@ -342,11 +342,25 @@ let panelRowShape = "";
  * that matters wrong: OpenClaw + Usage stay paired at a width where Repos +
  * Runners must split, which no single global breakpoint can express.
  *
- * The tracks are each panel's `weight` (its span, in quarters) as an `fr`, so a
- * half beside two quarters is `2fr 1fr 1fr`. The weights are Rust's for the same
- * reason the rows are: `panel_widths` derived every `width` and `columns` in the
- * payload from these exact numbers, and a fraction re-typed in CSS would be free
- * to disagree with the width the panel was told it has.
+ * Every row is the same four quarter tracks (`.panel-row` in the stylesheet),
+ * and a panel claims its `weight` of them with `grid-column`. The weights are
+ * Rust's for the same reason the rows are: `panel_widths` derived every `width`
+ * and `columns` in the payload from this exact grid, so a track re-derived here
+ * would be free to disagree with the width the panel was told it has.
+ *
+ * The track list used to be per-row — `2fr 1fr 1fr` for a half beside two
+ * quarters — which looks equivalent and is not. `fr` splits what is left after
+ * the row's *own* gutters, so a two-panel row gave its halves `(W-g)/2` and a
+ * three-panel row gave its half `(W-2g)/2`. Same span, 8pt apart on the shipped
+ * cockpit, and the edge between Repos and Runners missed the edge between
+ * Containers and OpenClaw directly below it.
+ *
+ * The start line is explicit rather than left to auto-placement. A panel with no
+ * section here (`hosts`, rendered in the grid above) or one still `hidden` on a
+ * cold start is skipped by auto-placement entirely, and its neighbours would
+ * slide up into tracks Rust never gave them — painting them at a width that
+ * contradicts the `columns` their contents were laid out for. A gap is the
+ * honest rendering of a slot this container is not filling.
  */
 function applyPanelRows(rows) {
   if (!Array.isArray(rows) || !rows.length) return;
@@ -359,20 +373,25 @@ function applyPanelRows(rows) {
 
   const built = [];
   for (const row of rows) {
-    // Panels and their tracks are paired off before either is used: a row that
-    // mixes sectioned panels with sectionless ones (`hosts`) must not hand the
-    // survivors a neighbour's weight.
-    const placed = (row || [])
-      .map((panel) => [panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null, panel])
-      .filter(([section]) => section);
+    // Sections and their tracks are paired off before either is used, and the
+    // start line advances across the whole row — including the panels this
+    // container has no section for, whose quarters are still spoken for.
+    const placed = [];
+    let start = 1;
+    for (const panel of row || []) {
+      const weight = Math.min(4, Math.max(1, Number(panel && panel.weight) | 0));
+      const section = panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null;
+      if (section) placed.push([section, `${start} / span ${weight}`]);
+      start += weight;
+    }
     if (!placed.length) continue;
     const container = document.createElement("div");
     container.className = "panel-row";
-    // CSSOM, not a `style=""` attribute: a `style-src 'self'` CSP blocks the
-    // attribute outright. Same setter the host grid's column count uses.
-    container.style.gridTemplateColumns = placed
-      .map(([, panel]) => `minmax(0, ${Math.max(1, Number(panel.weight) | 0)}fr)`)
-      .join(" ");
+    for (const [section, column] of placed) {
+      // CSSOM, not a `style=""` attribute: a `style-src 'self'` CSP blocks the
+      // attribute outright. Same setter the host grid's column count uses.
+      section.style.gridColumn = column;
+    }
     // `append` MOVES the existing sections, so each panel keeps whatever its
     // own script last painted into it — nothing is rebuilt, only re-parented.
     container.append(...placed.map(([section]) => section));

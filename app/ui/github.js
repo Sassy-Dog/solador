@@ -32,6 +32,15 @@
  *  build; not asking makes a running job look frozen. */
 const REFRESH_MS = 10000;
 
+/** How often to ask while a panel is still filling in.
+ *
+ *  Rust answers from whatever its poll loop has so far, and its first pass lands
+ *  seconds after launch — so on the settled cadence a correct "loading…" still
+ *  sat on the cockpit for up to ten seconds after the data was already there.
+ *  The panels say when they are waiting (`payload.loading`), and this backs off
+ *  the moment they stop. Costs a handful of extra no-op calls, at startup only. */
+const LOADING_REFRESH_MS = 1000;
+
 const $g = (id) => document.getElementById(id);
 
 function node(tag, cls, text) {
@@ -267,12 +276,17 @@ function renderRunners(payload) {
   children.push(list);
   $g("runnersBody").replaceChildren(...children);
 
-  // A healthy, fresh panel renders no footer at all — the cockpit stays
-  // glanceable, and a warning line means something when it appears.
-  const footer = $g("runnersFooter");
-  footer.textContent = payload.footer ? payload.footer.text : "";
-  footer.style.color = payload.footer ? payload.footer.color : "";
-  footer.hidden = !payload.footer;
+  // A healthy, fresh panel renders no warning at all — the cockpit stays
+  // glanceable, and a warning means something when it appears. It sits in the
+  // header rather than under the body because a line below the content makes
+  // the card taller, and `.panel-row` stretches its neighbours to match: the
+  // panel that degraded would move the panel that did not. Ellipsised in a
+  // narrow panel, so `title` keeps the whole message reachable.
+  const stale = $g("runnersStale");
+  stale.textContent = payload.footer ? payload.footer.text : "";
+  stale.title = payload.footer ? payload.footer.text : "";
+  stale.style.color = payload.footer ? payload.footer.color : "";
+  stale.hidden = !payload.footer;
 
   $g("runnersPanel").hidden = false;
 }
@@ -290,6 +304,23 @@ async function refresh() {
   // the DOM here would undo that.
   if (repos) renderRepos(repos);
   if (runners) renderRunners(runners);
+  // A poll that threw is not "loading" — it is a failure, and retrying it every
+  // second would be a busy loop against whatever just broke.
+  return Boolean((repos && repos.loading) || (runners && runners.loading));
+}
+
+let refreshTimer = null;
+
+/** Re-arms the poll at the cadence the last payload asked for. */
+function scheduleRefresh(loading) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(tick, loading ? LOADING_REFRESH_MS : REFRESH_MS);
+}
+
+async function tick() {
+  // While Settings is up the cockpit is off-screen, so skip the work — but
+  // still re-arm, or closing Settings would find a dead timer.
+  scheduleRefresh(settingsOpen ? false : await refresh());
 }
 
 // Repos rebuilds its DOM to re-split, so it cannot ride the custom property
@@ -299,10 +330,9 @@ $g("reposPanel").addEventListener("panelcolumns", () => {
   if (lastRepos) renderRepos(lastRepos);
 });
 
-refresh();
-if (window.__TAURI__) {
-  setInterval(() => { if (!settingsOpen) refresh(); }, REFRESH_MS);
-}
+refresh().then((loading) => {
+  if (window.__TAURI__) scheduleRefresh(loading);
+});
 
 // Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`:
 // read-only, and no production behaviour depends on it.

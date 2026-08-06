@@ -286,21 +286,27 @@ function layoutRow(t, band, panel) {
 /** The rows this order packs into, drawn at their real proportions.
  *
  *  The packing is Rust's (`CockpitLayout::from_order`) and arrives as rows of
- *  cells carrying the `fr` weight each panel gets — the same number the cockpit
- *  paints. Re-deriving "what will this look like" from the spans here would be
- *  a second implementation of the packer, free to promise an arrangement the
- *  cockpit then does not render. */
+ *  cells carrying the `weight` — the quarters — each panel gets. Re-deriving
+ *  "what will this look like" from the spans here would be a second
+ *  implementation of the packer, free to promise an arrangement the cockpit
+ *  then does not render.
+ *
+ *  Placed on the same four-quarter grid `applyPanelRows` uses, for the same
+ *  reason: a per-row track list sized by that row's own weights draws a half
+ *  beside two quarters narrower than a half beside one half, so the preview
+ *  would promise proportions the cockpit does not paint. */
 function layoutPreview(preview) {
   const box = group(preview.label);
   for (const row of preview.rows) {
     const line = node("div", "layout-preview-row");
-    // CSSOM, never a `style=""` attribute -- `style-src 'self'`. Same setter
-    // and the same `fr` numbers app.js uses on a real panel row.
-    line.style.gridTemplateColumns = row
-      .map((cell) => `minmax(0, ${Math.max(1, Number(cell.weight) | 0)}fr)`)
-      .join(" ");
+    let start = 1;
     for (const cell of row) {
+      const weight = Math.min(4, Math.max(1, Number(cell.weight) | 0));
       const tile = node("div", "layout-tile");
+      // CSSOM, never a `style=""` attribute -- `style-src 'self'`. Same setter
+      // and the same spans app.js puts on a real panel.
+      tile.style.gridColumn = `${start} / span ${weight}`;
+      start += weight;
       tile.append(node("span", "layout-tile-name", cell.title));
       tile.append(node("span", "layout-tile-span", cell.spanLabel));
       line.appendChild(tile);

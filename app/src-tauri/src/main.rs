@@ -1022,7 +1022,15 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
 /// is testable here without a token, a keychain or a network.
 fn github_token(credential: Credential, state: &mut GitHubState) -> Option<String> {
     match credential {
-        Credential::Present(token) => Some(token),
+        // Recorded here, before a single request goes out. This arm used to
+        // return the token and write nothing, so the panels went on claiming
+        // there was no credential for the whole of the pass that was holding
+        // one — several seconds of "connect a GitHub token in Settings" on
+        // every launch, at a machine where the token was fine.
+        Credential::Present(token) => {
+            state.apply_token_present();
+            Some(token)
+        }
         // The only branch that may claim nobody configured this: we asked, and
         // the store said there is nothing stored.
         Credential::Absent => {
@@ -1472,6 +1480,14 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
             let Some(client) = usage::NeonClient::new(&key) else {
                 return;
             };
+            // Before the request, not after it: the section is what tells the
+            // operator this provider exists, and learning that from a *failure*
+            // made its first ever appearance a row of em dashes under an error.
+            {
+                let mut state = app.usage.lock().expect("usage state poisoned");
+                state.neon_mut().begin();
+                state.neon_invoice_mut().begin();
+            }
             let result = client.month_to_date(&neon_org, github::now_utc()).await;
             {
                 let mut state = app.usage.lock().expect("usage state poisoned");
@@ -1521,6 +1537,12 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
             let Some(client) = usage::SentryClient::new(&token) else {
                 return;
             };
+            // Before the request — see the Neon arm above.
+            app.usage
+                .lock()
+                .expect("usage state poisoned")
+                .sentry_mut()
+                .begin();
             let result = client.accepted_errors(&sentry_slug).await;
             let mut state = app.usage.lock().expect("usage state poisoned");
             match result {
@@ -1686,12 +1708,33 @@ async fn poll_azure(app: &Arc<App>) {
     }
 }
 
-/// The Azure Cost panel's poll loop, on the reader's own fixed 4h cadence.
+/// How soon the Azure poll retries while it has never once succeeded.
+///
+/// The export's own rhythm is [`azurecost::POLL_INTERVAL`] — 4h — which is right
+/// for a file that is published daily and wrong for a first read that failed
+/// because the network was not up yet at login. `azure_wake` only fires when the
+/// SAS is re-saved, so that first failure used to sit on the cockpit, red, until
+/// the next four-hourly cycle. A minute is short enough to look self-healing and
+/// long enough that a genuinely broken SAS is not hammered.
+const AZURE_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The Azure Cost panel's poll loop, on the reader's own fixed 4h cadence once
+/// it has something to show, and a short retry until then.
 async fn azure_loop(app: Arc<App>) {
     loop {
         poll_azure(&app).await;
+        let settled = app
+            .azure
+            .lock()
+            .expect("azure state poisoned")
+            .has_succeeded();
+        let wait = if settled {
+            azurecost::POLL_INTERVAL
+        } else {
+            AZURE_FIRST_READ_RETRY
+        };
         tokio::select! {
-            () = tokio::time::sleep(azurecost::POLL_INTERVAL) => {}
+            () = tokio::time::sleep(wait) => {}
             () = app.azure_wake.notified() => {}
         }
     }
@@ -2881,7 +2924,13 @@ fn dump_github(empty: bool, runners: bool) -> Value {
     // as "now", so a fixture and a unit test can be read side by side.
     let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
     let state = if empty {
-        github::GitHubState::new()
+        // `apply_unauthenticated`, not a fresh `new()`: a fresh state is the
+        // *loading* one now, and dumping that under a name the suite reads as
+        // "the no-credential rendering" would quietly re-point every assertion
+        // at the wrong copy.
+        let mut state = github::GitHubState::new();
+        state.apply_unauthenticated();
+        state
     } else {
         github::fixture_state(now)
     };
@@ -4415,9 +4464,9 @@ mod tests {
         assert_eq!(first["columns"], 2);
     }
 
-    /// The configuration actually shipped on a 1890pt display: the halves at
-    /// 937pt, the quarter row at 929/464.5/464.5, Azure Cost across the whole
-    /// 1890 — and the content columns each of those affords.
+    /// The configuration actually shipped on a 1890pt display: every half at
+    /// 937pt whichever row it is in, the quarters at 460.5, Azure Cost across
+    /// the whole 1890 — and the content columns each of those affords.
     ///
     /// Repos clears its split by 41pt (896 of 937) and only because its numeric
     /// columns are sized to their labels; the same panel with the Swift
@@ -4440,14 +4489,18 @@ mod tests {
             (json!(937.0), json!(2)),
             "Repos pairs at 896pt; widening a column past that costs it the split"
         );
-        assert_eq!(seen["containers"], (json!(929.0), json!(2)));
+        assert_eq!(
+            seen["containers"],
+            (json!(937.0), json!(2)),
+            "the same half as the row above it — one grid, one gridline"
+        );
         assert_eq!(
             seen["azureCost"],
             (json!(1890.0), json!(2)),
             "full width, so the breakdowns sit beside the costs"
         );
-        assert_eq!(seen["openclawAgents"], (json!(464.5), json!(1)));
-        assert_eq!(seen["claudeUsage"], (json!(464.5), json!(1)));
+        assert_eq!(seen["openclawAgents"], (json!(460.5), json!(1)));
+        assert_eq!(seen["claudeUsage"], (json!(460.5), json!(1)));
     }
 
     /// The Layout tab's whole point, at the payload: the rows are the *stored*
@@ -4484,9 +4537,12 @@ mod tests {
         );
         let first = &vm["panelRows"][0];
         assert_eq!(first[0]["span"], "quarter");
-        assert_eq!(first[0]["width"], 742.0, "(3000 - 32) / 4");
+        assert_eq!(first[0]["width"], 738.0, "(3000 - 3 * 16) / 4");
         assert_eq!(first[2]["id"], "hosts");
-        assert_eq!(first[2]["width"], 1484.0, "a half of the same row");
+        assert_eq!(
+            first[2]["width"], 1492.0,
+            "two of those tracks plus the gutter a half spans"
+        );
     }
 
     /// No hosts is a configuration state, not a broken app — so it arrives as

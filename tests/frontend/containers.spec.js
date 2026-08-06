@@ -114,13 +114,13 @@ test("present, absent and aggregate rows carry Rust's strings and colours", asyn
   await expect(lastRemoteRow.locator(".cont-status")).toHaveText(aggregate.status);
 });
 
-test("a healthy panel shows no footer", async ({ page, baseURL }) => {
+test("a healthy panel shows no warning", async ({ page, baseURL }) => {
   await gotoApp(page);
   expect((await fixture(baseURL, "sample-containers.json")).footer).toBeNull();
-  await expect(page.locator("#containersFooter")).toBeHidden();
+  await expect(page.locator("#containersStale")).toBeHidden();
 });
 
-test("the empty state is one sentence plus the footer, not an empty grid", async ({ page, baseURL }) => {
+test("the empty state is one sentence plus the warning, not an empty grid", async ({ page, baseURL }) => {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const containers = await fixture(baseURL, "sample-containers-empty.json");
   await stubIpc(page, { cockpit, containers });
@@ -130,10 +130,10 @@ test("the empty state is one sentence plus the footer, not an empty grid", async
   await expect(page.locator(".cont-section")).toHaveCount(0);
   // A failed runtime names itself, and says how long ago the last good
   // reading was, rather than letting stale data pass as current.
-  const footer = page.locator("#containersFooter");
-  await expect(footer).toBeVisible();
-  await expect(footer).toHaveText(containers.footer.text);
-  await expect(footer).toHaveCSS("color", rgb(containers.footer.color));
+  const stale = page.locator("#containersStale");
+  await expect(stale).toBeVisible();
+  await expect(stale).toHaveText(containers.footer.text);
+  await expect(stale).toHaveCSS("color", rgb(containers.footer.color));
 
   const commands = await page.evaluate(() => window.__CALLS__.map((c) => c.command));
   expect(commands).toContain("containers");

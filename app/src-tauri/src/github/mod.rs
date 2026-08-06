@@ -36,6 +36,8 @@ use github::workflows::RunRef;
 use github::{GhRunnerAbsence, GhRunnerDisplayRow, PresenceState, RepoWorkflowHealth};
 use serde_json::{json, Value};
 use store::RunnerRosterRecord;
+
+use crate::panel::Configured;
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 
@@ -154,7 +156,12 @@ pub struct GitHubState {
     /// GitHub accepted it" — a rejected token is a per-fetch failure, and the
     /// Repos panel reports that as an unreadable repo rather than as a missing
     /// credential.
-    authenticated: bool,
+    ///
+    /// Three states rather than a `bool`: this used to default to `false` and
+    /// only become `true` once a fetch *completed*, so for the whole of the
+    /// first pass — the credential read plus every request after it — both
+    /// panels claimed there was no token. See [`Configured`].
+    token: Configured,
     /// Per-repo health from the last completed pass, one entry per **enabled**
     /// tracked repo (unreachable ones included). `None` until the first pass
     /// finishes, which is what "loading…" means.
@@ -193,7 +200,7 @@ impl GitHubState {
     /// *roster* is untouched — it lives in the store, so expectations resume
     /// intact when a token comes back rather than re-learning from scratch.
     pub fn apply_unauthenticated(&mut self) {
-        self.authenticated = false;
+        self.token = Configured::Absent;
         self.health = None;
         self.summary = None;
         self.runners.clear();
@@ -220,7 +227,7 @@ impl GitHubState {
     /// is the enabled-repo list, so a repo removed in Settings must lose its
     /// row on the next pass rather than linger as a stale one.
     pub fn apply_repos(&mut self, health: Vec<RepoWorkflowHealth>) {
-        self.authenticated = true;
+        self.token = Configured::Present;
         self.credential_error = None;
         self.health = Some(health);
     }
@@ -232,7 +239,7 @@ impl GitHubState {
 
     /// Records one **successful** org-runners fetch.
     pub fn apply_runners(&mut self, update: &roster::RosterUpdate, now: u64) {
-        self.authenticated = true;
+        self.token = Configured::Present;
         self.credential_error = None;
         self.summary = Some(update.summary);
         self.runners.clone_from(&update.runners);
@@ -248,9 +255,22 @@ impl GitHubState {
     /// blank a panel that still holds real data, and advancing the clock would
     /// let a permanently failing fetch look freshly updated forever.
     pub fn apply_runners_error(&mut self, message: impl Into<String>) {
-        self.authenticated = true;
+        self.token = Configured::Present;
         self.credential_error = None;
         self.runners_error = Some(message.into());
+    }
+
+    /// A pass read a non-empty token from the credential store.
+    ///
+    /// Called the moment the credential is in hand, **before** the first
+    /// request — which is the whole point. Every other setter here runs after a
+    /// fetch completes, so without this one a panel spends the entire first pass
+    /// unable to say whether a token exists, and says the thing that sends the
+    /// operator to Settings. Nothing fetched is touched: this is a statement
+    /// about the credential store, not about GitHub.
+    pub fn apply_token_present(&mut self) {
+        self.token = Configured::Present;
+        self.credential_error = None;
     }
 }
 
@@ -345,14 +365,14 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
     // "loading…" are each a claim about a credential this pass never saw.
     let message = if let Some(reason) = state.credential_error.as_deref() {
         Some(reason)
-    } else if state.authenticated {
-        if state.health.is_none() {
-            Some(REPOS_LOADING_MESSAGE)
-        } else {
-            None
-        }
-    } else {
+    } else if state.token.is_absent() {
+        // Only a pass that looked and found nothing may say this. `Unknown`
+        // falls through to "loading…" below, which is what the first frame is.
         Some(UNAUTHENTICATED_MESSAGE)
+    } else if state.health.is_none() {
+        Some(REPOS_LOADING_MESSAGE)
+    } else {
+        None
     };
 
     // Nothing is rendered beside a message: the Swift panel branches before
@@ -372,6 +392,10 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         "title": PanelKind::GhWorkflows.title(),
         "trailing": message.map_or_else(|| json!(trailing_label(health)), |_| Value::Null),
         "message": message.map_or(Value::Null, |text| json!({ "text": text })),
+        // Published, not re-derived: the frontend polls faster while a panel is
+        // still filling in, and inferring that from the message text would make
+        // it parse a string it is otherwise careful never to interpret.
+        "loading": repos_loading(state),
         "columns": columns(),
         "rows": sorted
             .iter()
@@ -379,6 +403,15 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
             .collect::<Vec<_>>(),
         "health": if message.is_none() { health_line(health) } else { Value::Null },
     })
+}
+
+/// Whether the Repos panel is still waiting on the answer to its first pass.
+///
+/// The same predicate the message ladder uses, so the flag cannot disagree with
+/// the line the panel is painting. An unreadable credential store is *not*
+/// loading — that pass finished, with an answer we did not like.
+fn repos_loading(state: &GitHubState) -> bool {
+    state.credential_error.is_none() && !state.token.is_absent() && state.health.is_none()
 }
 
 fn columns() -> Vec<Value> {
@@ -592,12 +625,18 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // asserts there is no token *and* blanks the rows, and neither survives
     // "we could not ask". Everything the last good fetch left — stats, chips,
     // rows, footer — is rendered below with the reason on top of it.
-    if !state.authenticated && state.credential_error.is_none() {
+    //
+    // `is_absent`, not `!is_present`: before the first pass reads the credential
+    // store this panel knows nothing about the token, and the zero-credential
+    // payload is an assertion it has no basis for. That state falls through to
+    // "loading runners…" below instead.
+    if state.token.is_absent() && state.credential_error.is_none() {
         return json!({
             "id": PanelKind::GhRunners.id(),
             "title": PanelKind::GhRunners.title(),
             "trailing": Value::Null,
             "message": { "text": UNAUTHENTICATED_MESSAGE },
+            "loading": false,
             "stats": [],
             "chips": [],
             "rows": [],
@@ -624,6 +663,9 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         "title": PanelKind::GhRunners.title(),
         "trailing": runners_trailing(state).map_or(Value::Null, Value::String),
         "message": message.map_or(Value::Null, |text| json!({ "text": text })),
+        // Same predicate as the ladder above, published for the frontend's
+        // refresh cadence rather than inferred from the message text.
+        "loading": message.is_some_and(|text| text == RUNNERS_LOADING_MESSAGE),
         "stats": state.summary.map(summary_stats).unwrap_or_default(),
         "chips": state.summary.map(os_chips).unwrap_or_default(),
         // Registered and remembered-absent rows, merged into one display order
@@ -1029,11 +1071,22 @@ mod tests {
 
     // MARK: - Repos: states
 
+    /// The first frame, before any pass has read the credential store.
+    ///
+    /// This used to assert [`UNAUTHENTICATED_MESSAGE`] — the panel told an
+    /// operator with a perfectly good token to go and connect one, on every
+    /// launch, because `authenticated: bool` defaulted to `false` and only a
+    /// *completed fetch* set it. A fresh state knows nothing about the token,
+    /// and "loading…" is the only line it can support.
     #[test]
-    fn the_repos_panel_asks_for_a_token_before_it_has_one() {
+    fn the_repos_panel_says_loading_before_it_has_looked_for_a_token() {
         let view = repos_view(&GitHubState::new(), now());
-        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
-        assert!(view["trailing"].is_null(), "no counts without credentials");
+        assert_eq!(view["message"]["text"], REPOS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
+        assert!(
+            view["trailing"].is_null(),
+            "no counts before the first pass"
+        );
         assert!(view["health"].is_null());
         assert!(rows(&view).is_empty());
         // The title is `PanelKind::GhWorkflows.title()`; the id stays the one
@@ -1042,13 +1095,41 @@ mod tests {
         assert_eq!(view["id"], "ghWorkflows");
     }
 
+    /// …and the setup instruction still appears for the state that earned it:
+    /// a pass that read the store and found nothing.
+    #[test]
+    fn the_repos_panel_asks_for_a_token_once_a_pass_finds_none() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        let view = repos_view(&state, now());
+        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+        assert_eq!(view["loading"], false, "we looked; this is not loading");
+        assert!(view["trailing"].is_null(), "no counts without credentials");
+        assert!(rows(&view).is_empty());
+    }
+
     #[test]
     fn the_repos_panel_says_loading_between_the_token_and_the_first_fetch() {
         let mut state = GitHubState::new();
         state.apply_runners_error("boom"); // authenticates without repo health
         let view = repos_view(&state, now());
         assert_eq!(view["message"]["text"], REPOS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
         assert!(rows(&view).is_empty());
+    }
+
+    /// The window the `Credential::Present` arm closes: a token is in hand and
+    /// the fetch is still running. Reading the credential is what proves there
+    /// is one — waiting for the fetch to finish is what used to make this frame
+    /// indistinguishable from having no token at all.
+    #[test]
+    fn a_token_in_hand_reads_as_loading_for_the_whole_of_the_fetch() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        for view in [repos_view(&state, now()), runners_view(&state, now_unix())] {
+            assert_ne!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+            assert_eq!(view["loading"], true);
+        }
     }
 
     /// Clearing the token must not leave the last-known table on screen
@@ -1709,18 +1790,33 @@ mod tests {
         state
     }
 
+    /// See `the_repos_panel_says_loading_before_it_has_looked_for_a_token` —
+    /// the same first frame, and the same line this used to get wrong.
     #[test]
-    fn the_runners_panel_asks_for_a_token_before_it_has_one() {
+    fn the_runners_panel_says_loading_before_it_has_looked_for_a_token() {
         let view = runners_view(&GitHubState::new(), now_unix());
+        assert_eq!(view["message"]["text"], RUNNERS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
+        assert!(view["trailing"].is_null());
+        assert!(view["footer"].is_null(), "nothing to be stale yet");
+        assert!(rows(&view).is_empty());
+        assert_eq!(view["title"], "GitHub Runners");
+        assert_eq!(view["id"], "ghRunners");
+    }
+
+    #[test]
+    fn the_runners_panel_asks_for_a_token_once_a_pass_finds_none() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        let view = runners_view(&state, now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+        assert_eq!(view["loading"], false, "we looked; this is not loading");
         assert!(view["trailing"].is_null());
         assert!(
             view["footer"].is_null(),
             "nothing to be stale without a token"
         );
         assert!(rows(&view).is_empty());
-        assert_eq!(view["title"], "GitHub Runners");
-        assert_eq!(view["id"], "ghRunners");
     }
 
     #[test]
@@ -1729,6 +1825,7 @@ mod tests {
         state.apply_repos(Vec::new()); // authenticates without a runners fetch
         let view = runners_view(&state, now_unix());
         assert_eq!(view["message"]["text"], RUNNERS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
         assert!(view["footer"].is_null());
     }
 
