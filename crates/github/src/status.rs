@@ -107,6 +107,28 @@ pub fn offline_platforms(summary: &RunnerSummary) -> Vec<Platform> {
     offline
 }
 
+/// Our fleet's half of the conjunction, carrying its own credibility.
+///
+/// Not a bare `Option<&RunnerSummary>`, because "we have never fetched the
+/// runners" and "the runners we fetched are too old to speak for" reach the
+/// same conclusion and a caller holding a retained summary would otherwise pass
+/// it in regardless. On 2026-08-07 a laptop woke from a night's sleep and the
+/// chip read a red **Fleet Down** off pre-sleep data while every runner was in
+/// fact online — the summary was real, it was simply hours old, and nothing in
+/// this signature could tell.
+///
+/// [`Unknown`](Self::Unknown) makes [`Verdict::ItsUs`] unreachable. That is the
+/// point: blaming our own fleet is the one verdict that sends someone to go and
+/// look at something, and it may only be reached from a reading we can vouch
+/// for.
+#[derive(Debug, Clone, Copy)]
+pub enum Fleet<'a> {
+    /// No successful runners fetch yet, or the last one is older than the
+    /// Runners panel's own staleness window.
+    Unknown,
+    Known(&'a RunnerSummary),
+}
+
 /// The conjunction: what to tell an operator looking at the panel.
 ///
 /// When GitHub admits to a problem, the verdict takes **GitHub's severity** —
@@ -183,9 +205,15 @@ fn severity_label(actions: ComponentStatus) -> &'static str {
 /// suppressing a real outage because we could not reach a status page would be
 /// the worst of both.
 #[must_use]
-pub fn conjunction(status: Option<&ServiceStatus>, summary: Option<&RunnerSummary>) -> Conjunction {
-    let offline = summary.map(offline_platforms).unwrap_or_default();
-    let dark = platform_list(&offline);
+pub fn conjunction(status: Option<&ServiceStatus>, fleet: Fleet<'_>) -> Conjunction {
+    // An unknown fleet reports nothing dark — not because everything is up, but
+    // because we cannot say. The `fleet_known` flag below is what keeps that
+    // silence from being read as good news.
+    let dark = match fleet {
+        Fleet::Known(summary) => platform_list(&offline_platforms(summary)),
+        Fleet::Unknown => None,
+    };
+    let fleet_known = matches!(fleet, Fleet::Known(_));
 
     let Some(status) = status else {
         return Conjunction {
@@ -244,15 +272,30 @@ pub fn conjunction(status: Option<&ServiceStatus>, summary: Option<&RunnerSummar
             verdict: severity,
             label: severity_label(actions).to_owned(),
             detail: format!(
-                "GitHub Actions: {}. Our runners are online regardless.{incident}",
-                actions.label()
+                "GitHub Actions: {}.{}{incident}",
+                actions.label(),
+                if fleet_known {
+                    " Our runners are online regardless."
+                } else {
+                    ""
+                }
             ),
         },
-        (false, None) => Conjunction {
+        // GitHub is fine. Whether *we* are is a second claim, and it needs a
+        // runner list recent enough to make it — otherwise the chip says only
+        // what it knows, which is that GitHub is up.
+        (false, None) if fleet_known => Conjunction {
             verdict: Verdict::AllGood,
             label: ALL_GOOD_LABEL.to_owned(),
             detail: "GitHub Actions is operational and every registered platform has runners \
                      online."
+                .to_owned(),
+        },
+        (false, None) => Conjunction {
+            verdict: Verdict::AllGood,
+            label: ALL_GOOD_LABEL.to_owned(),
+            detail: "GitHub Actions is operational. The runner list is older than its refresh \
+                     window, so this says nothing about our own fleet."
                 .to_owned(),
         },
     }
@@ -342,7 +385,7 @@ mod tests {
     fn operational_github_plus_a_dark_platform_is_our_problem() {
         let c = conjunction(
             Some(&status(ComponentStatus::Operational, None)),
-            Some(&fleet((2, 2), (0, 10), (0, 0))),
+            Fleet::Known(&fleet((2, 2), (0, 10), (0, 0))),
         );
         assert_eq!(c.verdict, Verdict::ItsUs);
         assert_eq!(c.label, ITS_US_LABEL);
@@ -364,7 +407,7 @@ mod tests {
                 ComponentStatus::MajorOutage,
                 Some("Incident with Actions"),
             )),
-            Some(&fleet((2, 2), (0, 10), (0, 0))),
+            Fleet::Known(&fleet((2, 2), (0, 10), (0, 0))),
         );
         assert_eq!(c.verdict, Verdict::MajorOutage);
         assert_eq!(c.label, MAJOR_OUTAGE_LABEL);
@@ -385,7 +428,7 @@ mod tests {
         ] {
             let c = conjunction(
                 Some(&status(actions, None)),
-                Some(&fleet((2, 2), (10, 10), (0, 0))),
+                Fleet::Known(&fleet((2, 2), (10, 10), (0, 0))),
             );
             assert_eq!(c.verdict, Verdict::Degraded, "{actions:?}");
             assert_eq!(c.label, DEGRADED_LABEL, "{actions:?}");
@@ -394,7 +437,7 @@ mod tests {
 
         let major = conjunction(
             Some(&status(ComponentStatus::MajorOutage, None)),
-            Some(&fleet((2, 2), (10, 10), (0, 0))),
+            Fleet::Known(&fleet((2, 2), (10, 10), (0, 0))),
         );
         assert_eq!(major.verdict, Verdict::MajorOutage);
         assert_eq!(major.label, MAJOR_OUTAGE_LABEL);
@@ -404,7 +447,7 @@ mod tests {
     fn operational_github_with_a_healthy_fleet_is_all_good() {
         let c = conjunction(
             Some(&status(ComponentStatus::Operational, None)),
-            Some(&fleet((2, 2), (10, 10), (0, 0))),
+            Fleet::Known(&fleet((2, 2), (10, 10), (0, 0))),
         );
         assert_eq!(c.verdict, Verdict::AllGood);
         assert_eq!(c.label, ALL_GOOD_LABEL);
@@ -415,7 +458,7 @@ mod tests {
     /// worst of both.
     #[test]
     fn an_unreadable_status_page_is_unknown_and_still_reports_the_fleet() {
-        let c = conjunction(None, Some(&fleet((2, 2), (0, 10), (0, 0))));
+        let c = conjunction(None, Fleet::Known(&fleet((2, 2), (0, 10), (0, 0))));
         assert_eq!(c.verdict, Verdict::Unknown);
         assert_ne!(c.verdict, Verdict::AllGood);
         assert_eq!(c.label, UNKNOWN_LABEL);
@@ -427,16 +470,66 @@ mod tests {
     /// inventing a fleet claim to go with it.
     #[test]
     fn an_unreadable_status_page_with_a_healthy_fleet_claims_nothing() {
-        let c = conjunction(None, Some(&fleet((2, 2), (10, 10), (0, 0))));
+        let c = conjunction(None, Fleet::Known(&fleet((2, 2), (10, 10), (0, 0))));
         assert_eq!(c.verdict, Verdict::Unknown);
         assert_eq!(c.detail, "Couldn't read GitHub's status page.");
+    }
+
+    /// The 2026-08-07 defect, pinned. A laptop woke from a night's sleep and
+    /// the chip read a red "Fleet Down" off pre-sleep data while every runner
+    /// was in fact online. The summary was real; it was hours old, and nothing
+    /// in `conjunction`'s signature could tell.
+    ///
+    /// One summary, two credibilities, two verdicts — which is the whole reason
+    /// [`Fleet`] exists rather than an `Option`.
+    #[test]
+    fn the_same_dark_fleet_is_only_our_problem_when_the_reading_is_fresh() {
+        let dark = fleet((2, 2), (0, 10), (0, 0));
+        let github_fine = status(ComponentStatus::Operational, None);
+
+        let fresh = conjunction(Some(&github_fine), Fleet::Known(&dark));
+        assert_eq!(fresh.verdict, Verdict::ItsUs, "a reading we can vouch for");
+
+        let stale = conjunction(Some(&github_fine), Fleet::Unknown);
+        assert_ne!(
+            stale.verdict,
+            Verdict::ItsUs,
+            "the same runners, too old to blame anyone for"
+        );
+        assert_eq!(stale.verdict, Verdict::AllGood);
+        assert!(
+            stale.detail.contains("says nothing about our own fleet"),
+            "…and it must not quietly claim the fleet is healthy either: {}",
+            stale.detail
+        );
+        assert!(!stale.detail.contains("online."), "{}", stale.detail);
+    }
+
+    /// GitHub's half is fresh even when ours is not, so its severity still
+    /// leads — a stale runner list must not cost us the outage warning.
+    #[test]
+    fn a_stale_fleet_still_reports_githubs_own_severity() {
+        let c = conjunction(
+            Some(&status(ComponentStatus::MajorOutage, None)),
+            Fleet::Unknown,
+        );
+        assert_eq!(c.verdict, Verdict::MajorOutage);
+        assert_eq!(c.label, MAJOR_OUTAGE_LABEL);
+        assert!(
+            !c.detail.contains("runners are online"),
+            "it may not vouch for a fleet it cannot see: {}",
+            c.detail
+        );
     }
 
     /// Before the first runners fetch there is no fleet half either. The
     /// verdict must not read that as "every platform is online".
     #[test]
     fn no_runner_summary_yet_never_reads_as_a_healthy_fleet() {
-        let c = conjunction(Some(&status(ComponentStatus::Operational, None)), None);
+        let c = conjunction(
+            Some(&status(ComponentStatus::Operational, None)),
+            Fleet::Unknown,
+        );
         assert_eq!(c.verdict, Verdict::AllGood);
         assert!(
             !c.detail.contains("offline"),

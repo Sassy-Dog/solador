@@ -23,6 +23,7 @@ mod github;
 mod local;
 mod openclaw;
 mod panel;
+mod resume;
 mod services;
 mod settings;
 mod usage;
@@ -743,6 +744,52 @@ async fn poll_loop(
         let result = client.snapshot().await;
         let at = Instant::now();
         record_poll(&mut state.lock().expect("host state poisoned"), result, at);
+    }
+}
+
+/// Notices the machine waking from sleep and refreshes everything at once.
+///
+/// The five `tokio::time::interval` loops need no help: hosts and the local
+/// card tick at 1s, containers and health at 10s, and none of them is reachable
+/// from here anyway — `poll_loop` is spawned without an `Arc<App>`. What this
+/// exists for is the four *slow* loops, which would otherwise show the previous
+/// night's data for up to a full interval after the lid opens.
+///
+/// **This deliberately breaks the rule the wake channels were built for.**
+/// `app/README.md` records that every mutation wakes exactly the loop its data
+/// feeds and no other, because a wake spends a whole poll pass. A resume is not
+/// an edit to one source: it is every source at once becoming untrustworthy, so
+/// it is the one caller entitled to fire all four.
+async fn resume_loop(app: Arc<App>) {
+    let mut tick = tokio::time::interval(resume::TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick completes immediately, so take the baseline from it rather
+    // than from before the loop — otherwise the app's own startup work would
+    // read as a gap on the very first comparison.
+    tick.tick().await;
+    let mut last = resume::Sample::now();
+
+    loop {
+        tick.tick().await;
+        let now = resume::Sample::now();
+        if !now.resumed_since(last) {
+            last = now;
+            continue;
+        }
+        last = now;
+
+        eprintln!("resume detected: refreshing every source");
+        // The host watch is re-seeded *before* the wakes, so a reconnect that
+        // fails on its first attempt cannot slip a banner through in between.
+        app.host_reachability
+            .lock()
+            .expect("host watch poisoned")
+            .reset();
+
+        wake_github(&app);
+        wake_usage(&app, true);
+        app.azure_wake.notify_one();
+        wake_openclaw(&app);
     }
 }
 
@@ -3575,6 +3622,7 @@ fn main() {
     // Settings joins it on the next tick.
     rt.spawn(health_loop(Arc::clone(&app)));
     rt.spawn(hosts_watch_loop(Arc::clone(&app)));
+    rt.spawn(resume_loop(Arc::clone(&app)));
     // The GitHub panels run on the store's refresh interval and read the
     // portfolio and the token on every pass, so an edit in Settings joins them
     // on the next pass — which `wake_github` makes immediate.

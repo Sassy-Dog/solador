@@ -472,6 +472,18 @@ impl HostWatch {
         Self::default()
     }
 
+    /// Forget every host's baseline, so the next pass seeds instead of firing.
+    ///
+    /// Called when the machine resumes from sleep. The tailnet takes a few
+    /// seconds to come back, so the first polls after a lid-open fail — and
+    /// with the debounce at two ticks that would banner "unreachable" and then
+    /// "back online" for every host, every single time. Re-seeding reuses the
+    /// rule this watch already has for a host it has never seen, which is
+    /// exactly what a host on the far side of a suspend is.
+    pub fn reset(&mut self) {
+        self.seen.clear();
+    }
+
     /// Diff one poll pass against the last.
     ///
     /// Hosts absent from `readings` are **forgotten**, not reported: a host
@@ -932,6 +944,29 @@ mod tests {
         );
         assert_eq!(notices.len(), 1, "one host's trouble is not the other's");
         assert_eq!(notices[0].title, "ubu-3xdv · unreachable");
+    }
+
+    /// Opening the lid must not banner. The tailnet takes a few seconds to
+    /// come back, so the first polls after a resume fail — and without the
+    /// re-seed that is an "unreachable" followed by a "back online" for every
+    /// host, every time.
+    #[test]
+    fn a_reset_makes_the_next_reading_seed_rather_than_fire() {
+        let mut watch = HostWatch::new();
+        watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+
+        watch.reset();
+        assert!(
+            watch
+                .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true)
+                .is_empty(),
+            "the first reading after a resume is a seed, not a transition"
+        );
+        // …and the watch is live again straight afterwards, so a host that
+        // really did die during the nap is still reported once it settles.
+        let notices = watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].title, "ubu-3xdv · back online");
     }
 
     #[test]

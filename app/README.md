@@ -345,6 +345,25 @@ exists to prevent. And **an absent platform is not a dark one**: the verdict
 gates on `*_total > 0`, or an org with no Windows runners would show a
 permanent red forever.
 
+**And a fleet reading can only convict itself while it is fresh.** The verdict
+does not take a `RunnerSummary`; it takes a `Fleet`, which is either `Known(&…)`
+or `Unknown`, and `Unknown` makes **Fleet Down** unreachable by construction.
+The app hands over `Known` only when `runners_last_updated` — which advances on
+a successful fetch, never on an attempt — is within **`RUNNERS_STALE_AFTER_SECS`
+(150s)**, the same window the Runners panel's own footer uses to call its list
+stale. That coupling is the point: the moment the panel admits its roster is out
+of date, the chip stops blaming the fleet for it, and two readings of one fact
+cannot disagree on screen. A stale fleet still reports GitHub's *own* severity —
+staleness silences the fleet half, not the vendor half — and the `AllGood` detail
+drops its "every registered platform has runners online" claim, because that is a
+statement an unverifiable roster cannot support.
+
+Without that gate, an overnight suspend was enough: the laptop opened on
+2026-08-07 to a red **Fleet Down** computed from the previous evening's roster
+while all twelve runners were in fact online, which is the alarm this chip exists
+to make trustworthy. The other half of that fix is the [resume
+watchdog](#waking-up-with-the-machine).
+
 Two details worth keeping: the Actions component is matched by **id**
 (`br0l2tvcx85d`), because `components[]` carries a non-component entry called
 *"Visit www.githubstatus.com for more information"* and display names are
@@ -919,6 +938,36 @@ a portfolio fetch on a credential it has no use for.
 | a container group rule | nothing — the rules are read at render time too, by `containers` |
 | the [layout](#the-layout-tab) — a move, a width, an overflow mode, a breakpoint added or removed, a reset | nothing: `cockpit` re-reads the bands and picks one by the measured width on every frame, so the change is on screen a second later (or the moment Settings closes, which repaints immediately) |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
+
+#### Waking up with the machine
+
+**A resume is the one caller allowed to wake all four at once**, and it is not a
+mutation. Closing a laptop suspends every poll task, so the four slow loops —
+GitHub, usage (1h), Azure (4h), OpenClaw — otherwise resume on their own
+schedule and the cockpit paints last night's data for up to a full interval
+after the lid opens. The rule above holds for *edits* because an edit changes
+one source; a resume is every source at once becoming untrustworthy, so
+`resume_loop` ([`src/resume.rs`](src-tauri/src/resume.rs)) fires the lot.
+
+It notices by watching two clocks rather than by asking the OS: it samples
+`Instant` and `SystemTime` every **2s**, and calls it a resume when the wall
+clock has run ≥ 20s further than the monotonic one. That is chosen over
+`NSWorkspace.didWakeNotification` for being correct whichever way macOS's
+monotonic clock behaves — if it excludes sleep the gap appears and the loops are
+nudged; if it includes sleep their own deadlines have already passed and tokio
+fires them unaided, the clocks agree, and this stays quiet. It also needs no
+platform code, so Windows gets it for free. A wall clock corrected forward by
+NTP reads as a resume too; the cost of that is one extra poll of each source,
+which is the harmless direction to be wrong in.
+
+The 1s and 10s loops need nothing — they self-heal within a tick, and
+`poll_loop` is spawned without an `Arc<App>` to be woken through anyway. But the
+host **watch** is re-seeded first (`HostWatch::reset`): the tailnet takes a few
+seconds to come back, so without it every lid-open would banner an
+"unreachable" and then a "back online" for every host. `StatusWatch` is
+deliberately *not* reset — a vendor that changed state overnight is a transition
+worth hearing about, and one that broke and recovered while we slept compares
+equal and stays quiet on its own.
 
 Every mutation answers in one shape — `{status, settings}` — and the frontend
 re-renders from the `settings` it gets back rather than patching its own copy,

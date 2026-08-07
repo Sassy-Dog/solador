@@ -303,9 +303,24 @@ impl GitHubState {
 
     /// The conjunction both panels paint: GitHub's published Actions status
     /// folded with our fleet's per-OS state.
+    ///
+    /// The fleet half is offered **only while the runner list is fresh enough
+    /// to speak for**, against the same [`RUNNERS_STALE_AFTER_SECS`] window the
+    /// Runners panel's own footer uses. That coupling is the point: the moment
+    /// the panel admits its list is stale, the chip stops blaming the fleet, so
+    /// two readings of one fact cannot disagree.
+    ///
+    /// Without it a laptop waking from a night's sleep painted a red
+    /// "Fleet Down" off pre-sleep data while every runner was online.
     #[must_use]
-    fn conjunction(&self) -> github::status::Conjunction {
-        github::status::conjunction(self.service_status.as_ref(), self.summary.as_ref())
+    fn conjunction(&self, now: u64) -> github::status::Conjunction {
+        let fleet = match (self.summary.as_ref(), self.runners_last_updated) {
+            (Some(summary), Some(at)) if now.saturating_sub(at) <= RUNNERS_STALE_AFTER_SECS => {
+                github::status::Fleet::Known(summary)
+            }
+            _ => github::status::Fleet::Unknown,
+        };
+        github::status::conjunction(self.service_status.as_ref(), fleet)
     }
 }
 
@@ -315,9 +330,9 @@ impl GitHubState {
 /// Colour is decided here, like every other colour the frontend paints. Green
 /// is the dim one: this chip sits on two panel headers permanently, and the
 /// resting state of an always-on cockpit should not shout.
-fn availability_chip(state: &GitHubState) -> Value {
+fn availability_chip(state: &GitHubState, now: u64) -> Value {
     use github::status::Verdict;
-    let c = state.conjunction();
+    let c = state.conjunction(now);
     let color = match c.verdict {
         Verdict::AllGood => color::GREEN_DIM,
         // Amber is "GitHub is slow"; red is "workflow runs are failing". They
@@ -467,7 +482,9 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         // On both panels, not one shared element: `reflow` splits Repos and
         // Runners onto separate rows below ~896pt, so a single chip would be
         // orphaned from one of them at exactly the widths this cockpit runs at.
-        "availability": availability_chip(state),
+        // `now` is a `DateTime` here and unix seconds in `runners_view`;
+        // the chip wants the same clock both panels' footers use.
+        "availability": availability_chip(state, u64::try_from(now.timestamp()).unwrap_or(0)),
         "columns": columns(),
         "rows": sorted
             .iter()
@@ -712,7 +729,7 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
             // Still rendered with no token: "GitHub is on fire" is most useful
             // precisely when this panel is otherwise blank, and the statuspage
             // needs no credential to say so.
-            "availability": availability_chip(state),
+            "availability": availability_chip(state, now),
             "stats": [],
             "chips": [],
             "rows": [],
@@ -742,7 +759,7 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         // Same predicate as the ladder above, published for the frontend's
         // refresh cadence rather than inferred from the message text.
         "loading": message.is_some_and(|text| text == RUNNERS_LOADING_MESSAGE),
-        "availability": availability_chip(state),
+        "availability": availability_chip(state, now),
         "stats": state.summary.map(summary_stats).unwrap_or_default(),
         "chips": state.summary.map(os_chips).unwrap_or_default(),
         // Registered and remembered-absent rows, merged into one display order
@@ -2459,6 +2476,43 @@ mod tests {
         assert!(detail.contains("expected"), "{detail}");
         assert!(detail.contains("Linux"), "{detail}");
         assert!(detail.contains("Incident with Actions"), "{detail}");
+    }
+
+    /// The 2026-08-07 screenshot, pinned at the panel. A laptop woke from a
+    /// night's sleep, the runner list was hours old, and the chip painted a red
+    /// "Fleet Down" while all twelve runners were online.
+    ///
+    /// The freshness window is the Runners footer's own, so the two agree by
+    /// construction: one second inside it the chip still blames the fleet, one
+    /// second outside it stops.
+    #[test]
+    fn a_runner_list_older_than_its_stale_window_stops_blaming_the_fleet() {
+        let mut state = linux_dark();
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
+
+        let fresh = &runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS)["availability"];
+        assert_eq!(
+            fresh["label"],
+            github::status::ITS_US_LABEL,
+            "at the edge of the window the reading still counts"
+        );
+        assert_eq!(fresh["color"], color::hex(color::RED));
+
+        let stale =
+            &runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["availability"];
+        assert_ne!(
+            stale["label"],
+            github::status::ITS_US_LABEL,
+            "one second past it, the fleet half can no longer be vouched for"
+        );
+        assert_ne!(stale["color"], color::hex(color::RED));
+        assert!(
+            stale["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("says nothing about our own fleet"),
+            "…and it must not claim the fleet is healthy either: {stale}"
+        );
     }
 
     /// Amber is reserved for "GitHub is slow" — the two middle Statuspage
