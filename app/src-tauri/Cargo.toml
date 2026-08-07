@@ -18,6 +18,9 @@ devcanopy-store = { path = "../../crates/store" }
 # The Repos / GitHub Runners panels' data layer: the REST client plus the pure
 # workflow-health, runner and roster mappings. This crate is the view side.
 devcanopy-github = { path = "../../crates/github" }
+# Third-party availability: the shared status vocabulary and the three
+# transports the five watched vendors publish through.
+devcanopy-servicestatus = { path = "../../crates/servicestatus" }
 # This machine's own metrics, for the local host card that leads the grid. The
 # Swift app collects them through HostMetricsKit; this is the portable twin.
 devcanopy-localhost = { path = "../../crates/localhost" }

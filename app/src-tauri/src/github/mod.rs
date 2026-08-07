@@ -196,7 +196,7 @@ pub struct GitHubState {
     /// Deliberately **not** cleared by a failing read: a page that answered a
     /// minute ago is better evidence than nothing, and the panel keeps showing
     /// it. `status_error` records why the refresh did not happen.
-    service_status: Option<github::status::ServiceStatus>,
+    service_status: Option<servicestatus::ServiceStatus>,
     status_error: Option<String>,
 }
 
@@ -288,7 +288,7 @@ impl GitHubState {
     }
 
     /// Records one successful statuspage read.
-    pub fn apply_service_status(&mut self, status: github::status::ServiceStatus) {
+    pub fn apply_service_status(&mut self, status: servicestatus::ServiceStatus) {
         self.service_status = Some(status);
         self.status_error = None;
     }
@@ -1070,8 +1070,8 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     // chip a healthy cockpit actually renders — without it every fixture would
     // carry the muted "GH ?" of a statuspage nobody read, and the Playwright
     // suite would be asserting the one state that is least representative.
-    state.apply_service_status(github::status::ServiceStatus {
-        actions: Some(github::status::ComponentStatus::Operational),
+    state.apply_service_status(servicestatus::ServiceStatus {
+        component: Some(servicestatus::ComponentStatus::Operational),
         incident: None,
     });
     state
@@ -2394,9 +2394,9 @@ mod tests {
 
     // MARK: - GitHub availability (the conjunction chip)
 
-    fn service_status(actions: github::status::ComponentStatus) -> github::status::ServiceStatus {
-        github::status::ServiceStatus {
-            actions: Some(actions),
+    fn service_status(actions: servicestatus::ComponentStatus) -> servicestatus::ServiceStatus {
+        servicestatus::ServiceStatus {
+            component: Some(actions),
             incident: None,
         }
     }
@@ -2431,7 +2431,7 @@ mod tests {
     #[test]
     fn operational_github_with_a_dark_platform_is_red_and_blames_us() {
         let mut state = linux_dark();
-        state.apply_service_status(service_status(github::status::ComponentStatus::Operational));
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
         let chip = &runners_view(&state, now_unix())["availability"];
         assert_eq!(chip["label"], github::status::ITS_US_LABEL);
         assert_eq!(chip["color"], color::hex(color::RED));
@@ -2446,9 +2446,9 @@ mod tests {
     #[test]
     fn a_major_outage_is_red_and_says_so_even_with_a_dark_platform() {
         let mut state = linux_dark();
-        state.apply_service_status(github::status::ServiceStatus {
-            actions: Some(github::status::ComponentStatus::MajorOutage),
-            incident: Some(github::status::Incident {
+        state.apply_service_status(servicestatus::ServiceStatus {
+            component: Some(servicestatus::ComponentStatus::MajorOutage),
+            incident: Some(servicestatus::Incident {
                 name: "Incident with Actions".to_owned(),
                 impact: "critical".to_owned(),
             }),
@@ -2469,8 +2469,8 @@ mod tests {
     #[test]
     fn a_degraded_github_is_amber_and_named_as_degraded() {
         for actions in [
-            github::status::ComponentStatus::DegradedPerformance,
-            github::status::ComponentStatus::PartialOutage,
+            servicestatus::ComponentStatus::DegradedPerformance,
+            servicestatus::ComponentStatus::PartialOutage,
         ] {
             let mut state = linux_dark();
             state.apply_service_status(service_status(actions));
@@ -2485,7 +2485,7 @@ mod tests {
     #[test]
     fn a_healthy_fleet_under_a_healthy_github_is_dim_green() {
         let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
-        state.apply_service_status(service_status(github::status::ComponentStatus::Operational));
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
         let chip = &runners_view(&state, now_unix())["availability"];
         assert_eq!(chip["label"], github::status::ALL_GOOD_LABEL);
         assert_eq!(chip["color"], color::hex(color::GREEN_DIM));
@@ -2509,7 +2509,7 @@ mod tests {
     #[test]
     fn a_failed_refresh_keeps_the_last_good_verdict_and_notes_why() {
         let mut state = linux_dark();
-        state.apply_service_status(service_status(github::status::ComponentStatus::MajorOutage));
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::MajorOutage));
         state.apply_service_status_error("couldn't reach GitHub's status page");
         let chip = &runners_view(&state, now_unix())["availability"];
         assert_eq!(
@@ -2533,7 +2533,7 @@ mod tests {
     fn the_chip_renders_on_an_unauthenticated_panel() {
         let mut state = GitHubState::new();
         state.apply_unauthenticated();
-        state.apply_service_status(service_status(github::status::ComponentStatus::MajorOutage));
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::MajorOutage));
         let view = runners_view(&state, now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
         assert_eq!(

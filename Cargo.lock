@@ -840,6 +840,7 @@ dependencies = [
  "devcanopy-github",
  "devcanopy-localhost",
  "devcanopy-openclaw",
+ "devcanopy-servicestatus",
  "devcanopy-store",
  "devcanopy-usage",
  "devcanopy-wire",
@@ -873,6 +874,7 @@ name = "devcanopy-github"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "devcanopy-servicestatus",
  "futures-util",
  "reqwest 0.12.28",
  "serde",
@@ -913,6 +915,17 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "url",
+]
+
+[[package]]
+name = "devcanopy-servicestatus"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

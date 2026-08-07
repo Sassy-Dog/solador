@@ -41,7 +41,7 @@ pub use client::{GitHubClient, GitHubError};
 pub use presence::PresenceState;
 pub use roster::{GhRunnerAbsence, GhRunnerDisplayRow, RosterUpdate, RunnerRosterEntry};
 pub use runners::{GhRunner, RunnerOs, RunnerState, RunnerSummary};
-pub use status::{Conjunction, ServiceStatus, StatusError, StatusPageClient, Verdict};
+pub use status::{Conjunction, Verdict};
 pub use workflows::{
     RepoCounts, RepoWorkflowHealth, RunConclusion, RunRef, RunStatus, WorkflowRun,
 };

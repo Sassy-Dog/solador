@@ -36,7 +36,7 @@
 //! endpoint rather than one call per repo, so the honest reading is available
 //! and worth taking.
 
-use github::status::ComponentStatus;
+use servicestatus::ComponentStatus;
 use std::collections::BTreeMap;
 
 /// A service whose availability the cockpit watches.
@@ -386,26 +386,31 @@ mod tests {
     /// values, so a change to the payload shape fails here too.
     #[test]
     fn a_decoded_payload_drives_the_watch_end_to_end() {
+        const ACTIONS: &str = github::status::ACTIONS_COMPONENT_ID;
         let page = |actions: &str, incidents: &str| {
             format!(
                 r#"{{"components":[{{"id":"{}","name":"Actions","status":"{actions}"}}],
                     "incidents":[{incidents}]}}"#,
-                github::status::ACTIONS_COMPONENT_ID
+                ACTIONS
             )
         };
-        let outage = github::status::parse_summary(&page(
-            "major_outage",
-            r#"{"name":"Incident with Actions","impact":"critical"}"#,
-        ))
+        let outage = servicestatus::statuspage::parse_summary(
+            &page(
+                "major_outage",
+                r#"{"name":"Incident with Actions","impact":"critical"}"#,
+            ),
+            ACTIONS,
+        )
         .expect("decodes");
-        let healthy = github::status::parse_summary(&page("operational", "")).expect("decodes");
+        let healthy = servicestatus::statuspage::parse_summary(&page("operational", ""), ACTIONS)
+            .expect("decodes");
 
         // A nested `fn`, not a closure: the returned `Reading` borrows from its
         // argument, and only elision on a real signature expresses that.
-        fn as_reading(s: &github::status::ServiceStatus) -> Reading<'_> {
+        fn as_reading(s: &servicestatus::ServiceStatus) -> Reading<'_> {
             Reading {
                 service: ServiceId::GitHub,
-                status: s.actions,
+                status: s.component,
                 incident: s.incident.as_ref().map(|i| i.name.as_str()),
             }
         }

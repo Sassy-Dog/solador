@@ -1150,7 +1150,7 @@ fn github_token(credential: Credential, state: &mut GitHubState) -> Option<Strin
 /// that flipped from "it's GitHub" back to a red "it's us" on a single timeout
 /// would be the exact misdirection this verdict exists to prevent.
 async fn poll_github_status(app: &Arc<App>) {
-    let result = github::status::StatusPageClient::new().summary().await;
+    let result = github::status::client().status().await;
 
     // Re-read like the token, so switching the preference off applies on the
     // next pass rather than on the next launch.
@@ -1169,7 +1169,7 @@ async fn poll_github_status(app: &Arc<App>) {
         let reading = match &result {
             Ok(status) => services::Reading {
                 service: services::ServiceId::GitHub,
-                status: status.actions,
+                status: status.component,
                 incident: status.incident.as_ref().map(|i| i.name.as_str()),
             },
             Err(_) => services::Reading {
