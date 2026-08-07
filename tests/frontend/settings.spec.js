@@ -571,6 +571,8 @@ test("Usage and Azure write every provider preference together", async ({ page, 
   await page.locator("#sentry-quota").fill("100000");
   await page.locator("#neon-usd-cu-hour").fill("0.106");
   await page.locator("#neon-usd-gib-month").fill("0.35");
+  await expect(page.locator("#vercel-team-id")).toHaveValue(settings.usage.vercel.teamId);
+  await page.locator("#vercel-team-id").fill("team_abc");
   await page.locator(".btn.apply").click();
 
   // The Azure budget travels with them, unchanged: `settings_save_providers`
@@ -580,15 +582,32 @@ test("Usage and Azure write every provider preference together", async ({ page, 
     {
       command: "settings_save_providers",
       args: {
-        neonOrgId: "org-abc",
-        sentryOrgSlug: settings.usage.sentry.orgSlug,
-        sentryMonthlyEventQuota: 100000,
-        azureMonthlyBudgetUsd: settings.azure.budget.value,
-        neonUsdPerCuHour: 0.106,
-        neonUsdPerGibMonth: 0.35,
+        prefs: {
+          neonOrgId: "org-abc",
+          sentryOrgSlug: settings.usage.sentry.orgSlug,
+          sentryMonthlyEventQuota: 100000,
+          azureMonthlyBudgetUsd: settings.azure.budget.value,
+          neonUsdPerCuHour: 0.106,
+          neonUsdPerGibMonth: 0.35,
+          vercelTeamId: "team_abc",
+        },
       },
     },
   ]);
+});
+
+/// The mirror image, and the edit most likely to be missed: the Azure tab
+/// re-sends every Usage preference, so a save from *there* must carry the
+/// Vercel team id too or applying a budget silently blanks it.
+test("the Azure tab passes the Vercel team id through untouched", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "azure").click();
+  await page.locator("#azure-budget").fill("250");
+  await page.locator(".btn.apply").click();
+
+  const [save] = await calls(page, "settings_save_providers");
+  expect(save.args.prefs.vercelTeamId).toBe(settings.usage.vercel.teamId);
+  expect(save.args.prefs.azureMonthlyBudgetUsd).toBe(250);
 });
 
 test("a typed org ID survives saving that provider's key", async ({ page, baseURL }) => {
@@ -611,7 +630,7 @@ test("a typed org ID survives saving that provider's key", async ({ page, baseUR
   // And the surviving value is what Apply hands to Rust.
   await page.locator(".btn.apply").click();
   const saved = await calls(page, "settings_save_providers");
-  expect(saved.at(-1).args.neonOrgId).toBe("org-fond-sea-12345678");
+  expect(saved.at(-1).args.prefs.neonOrgId).toBe("org-fond-sea-12345678");
 });
 
 test("About names the app, its version and its links", async ({ page, baseURL }) => {

@@ -46,7 +46,9 @@ can therefore reach `main` unnoticed; that is the accepted cost of freezing it.
 - **GitHub Repos + GitHub Runners** — per-repo CI health and counts, local
   branch/worktree counts, the org's self-hosted runners with the absence roster
   (the store's `refresh_interval_secs`).
-- **Usage** — Claude token rollups (same interval); Neon + Sentry (hourly). Neon
+- **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel (hourly).
+  Vercel reads the FOCUS billing export: month-to-date spend and what falls
+  beyond the plan. Neon
   renders compute/storage MTD, `NEON EST. CHARGES (MTD)` from operator-entered
   rates, and a best-effort `NEON LAST INVOICE` off an undocumented endpoint —
   that one failing degrades to `—` plus a footer, never the consumption rows.

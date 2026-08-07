@@ -26,7 +26,9 @@
 //! its own footer because each can fail on its own.
 
 use serde_json::{json, Value};
-use usage::{NeonInvoiceSummary, NeonUsageSummary, SentryUsageSummary, UsageTotals};
+use usage::{
+    NeonInvoiceSummary, NeonUsageSummary, SentryUsageSummary, UsageTotals, VercelUsageSummary,
+};
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 
@@ -39,7 +41,8 @@ use crate::panel::{progress_bar, status_footer, Configured};
 pub use usage::claude::default_projects_dir;
 pub use usage::neon::NO_CONSUMPTION_MESSAGE as NEON_NO_CONSUMPTION_MESSAGE;
 pub use usage::sentry::NO_STATS_MESSAGE as SENTRY_NO_STATS_MESSAGE;
-pub use usage::{summarize_logs, NeonClient, SentryClient, UsageSummary};
+pub use usage::vercel::NO_SPEND_MESSAGE as VERCEL_NO_SPEND_MESSAGE;
+pub use usage::{summarize_logs, NeonClient, SentryClient, UsageSummary, VercelClient};
 
 /// Claude's `PanelStatusFooter(..., staleAfter: 150)` — 2.5× the default 60s
 /// refresh interval, so one missed pass is not yet a warning.
@@ -253,6 +256,7 @@ pub struct UsageState {
     neon: ProviderState<NeonUsageSummary>,
     neon_invoice: ProviderState<NeonInvoiceSummary>,
     sentry: ProviderState<SentryUsageSummary>,
+    vercel: ProviderState<VercelUsageSummary>,
 }
 
 impl UsageState {
@@ -298,6 +302,10 @@ impl UsageState {
 
     pub fn sentry_mut(&mut self) -> &mut ProviderState<SentryUsageSummary> {
         &mut self.sentry
+    }
+
+    pub fn vercel_mut(&mut self) -> &mut ProviderState<VercelUsageSummary> {
+        &mut self.vercel
     }
 }
 
@@ -430,6 +438,59 @@ fn sentry_section(state: &ProviderState<SentryUsageSummary>, quota: u64, now: u6
     })
 }
 
+/// USD to the cent. Sub-cent figures render `$0.00`, which is honest: at
+/// month-to-date scale the rows that matter are dollars, and a `$0.0004`
+/// would be precision nobody can act on dressed as significance.
+#[must_use]
+pub fn usd(amount: Option<f64>) -> Option<String> {
+    amount.map(|a| format!("${a:.2}"))
+}
+
+/// The Vercel section: what the month costs, what it costs *beyond the plan*,
+/// and where the money goes.
+///
+/// Two totals rather than one because they answer different questions.
+/// `EffectiveCost` amortizes the subscription and is what Vercel costs to run;
+/// `BilledCost` is what an invoice would add on top, and on a plan with
+/// included allowance it is usually near zero. Headlining the second would
+/// report two cents for an account spending real money.
+fn vercel_section(state: &ProviderState<VercelUsageSummary>, now: u64) -> Value {
+    let summary = state.summary.as_ref();
+    let mut rows = vec![
+        provider_row(
+            "VERCEL SPEND (MTD)".to_owned(),
+            usd(summary.and_then(VercelUsageSummary::effective_usd)),
+        ),
+        provider_row(
+            "VERCEL BEYOND PLAN".to_owned(),
+            usd(summary.and_then(VercelUsageSummary::billed_usd)),
+        ),
+    ];
+    // The costliest services, named. The plan itself leads this list — it
+    // arrives as a `Usage` row called "Pro" — which is the truth about where
+    // the money goes even though it is not a lever.
+    for svc in summary
+        .map(VercelUsageSummary::top_services)
+        .unwrap_or_default()
+    {
+        rows.push(provider_row(
+            svc.name.to_uppercase(),
+            usd(Some(svc.effective_usd)),
+        ));
+    }
+    json!({
+        "id": "vercel",
+        "rows": rows,
+        "bar": Value::Null,
+        "footer": status_footer(
+            state.last_updated,
+            state.last_error.as_deref(),
+            now,
+            PROVIDER_STALE_AFTER_SECS,
+        ),
+    })
+}
+
 /// The whole panel payload.
 ///
 /// `quota` is the store's `sentry_monthly_event_quota` and `rates` its
@@ -503,6 +564,9 @@ pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value
     if state.sentry.configured.is_present() {
         providers.push(sentry_section(&state.sentry, quota, now));
     }
+    if state.vercel.configured.is_present() {
+        providers.push(vercel_section(&state.vercel, now));
+    }
 
     json!({
         "id": kind.id(),
@@ -521,7 +585,10 @@ pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value
         // Any half of the panel still waiting on its first answer keeps the
         // frontend on its fast refresh. Published rather than inferred from the
         // message text, which this boundary never asks the frontend to read.
-        "loading": state.claude_loading || state.neon.is_loading() || state.sentry.is_loading(),
+        "loading": state.claude_loading
+            || state.neon.is_loading()
+            || state.sentry.is_loading()
+            || state.vercel.is_loading(),
     })
 }
 

@@ -102,6 +102,11 @@ pub struct Settings {
     pub sentry_org_slug: String,
     /// Monthly accepted-error quota. `0` means "no quota set".
     pub sentry_monthly_event_quota: u64,
+    /// Vercel team id (non-secret; the API token is a credential). Blank for a
+    /// personal account, which is why the client omits the parameter rather
+    /// than sending it empty — Vercel answers 400 to `teamId=`.
+    #[serde(default)]
+    pub vercel_team_id: String,
     /// OpenClaw gateway URL (non-secret; the bearer token is a credential).
     pub openclaw_gateway_url: String,
     /// Fire an OS notification once when a tracked run transitions into the
@@ -139,6 +144,7 @@ impl Default for Settings {
             neon_usd_per_gib_month: 0.0,
             sentry_org_slug: String::new(),
             sentry_monthly_event_quota: 0,
+            vercel_team_id: String::new(),
             openclaw_gateway_url: String::new(),
             notify_on_approval_needed: true,
             notify_on_service_change: true,
@@ -222,6 +228,7 @@ mod tests {
             neon_usd_per_gib_month: 0.5,
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 50_000,
+            vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             notify_on_approval_needed: false,
             notify_on_service_change: false,

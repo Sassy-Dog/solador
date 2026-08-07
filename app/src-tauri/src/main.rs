@@ -1470,6 +1470,7 @@ fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSe
         github: present(SecretKey::GitHubAccessToken),
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
+        vercel: present(SecretKey::VercelApiToken),
         azure: present(SecretKey::AzureCostSasUrl),
         openclaw: present(SecretKey::OpenClawBearerToken),
         hosts: hosts
@@ -1629,15 +1630,17 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
 
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
-    let (neon_key, sentry_token) = (
+    let (neon_key, sentry_token, vercel_token) = (
         read_credential(&*app.credentials, SecretKey::NeonApiKey),
         read_credential(&*app.credentials, SecretKey::SentryUsageToken),
+        read_credential(&*app.credentials, SecretKey::VercelApiToken),
     );
-    let (neon_org, sentry_slug) = {
+    let (neon_org, sentry_slug, vercel_team) = {
         let store = app.store.lock().expect("store poisoned");
         (
             store.settings().neon_org_id.clone(),
             store.settings().sentry_org_slug.clone(),
+            store.settings().vercel_team_id.clone(),
         )
     };
 
@@ -1739,6 +1742,50 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
                         .then(|| usage::SENTRY_NO_STATS_MESSAGE.to_owned()),
                 ),
                 Err(e) => state.sentry_mut().failed(e.user_message()),
+            }
+        }
+    }
+
+    // Vercel. Same shape as Sentry above — one endpoint, one summary — and the
+    // same lock discipline: taken around `begin()`, dropped across the await,
+    // retaken to record the answer.
+    match vercel_token {
+        Credential::Absent => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .vercel_mut()
+            .unconfigure(),
+        Credential::Unreadable => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .vercel_mut()
+            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
+        Credential::Present(token) => {
+            // A blank team id is legitimate — a personal account has no team,
+            // and the client omits the parameter rather than sending it empty.
+            let Some(client) = usage::VercelClient::new(&token, &vercel_team) else {
+                return;
+            };
+            // Before the request — see the Neon arm above.
+            app.usage
+                .lock()
+                .expect("usage state poisoned")
+                .vercel_mut()
+                .begin();
+            let result = client.month_to_date(github::now_utc()).await;
+            let mut state = app.usage.lock().expect("usage state poisoned");
+            match result {
+                Ok(summary) => {
+                    let empty = summary.is_unmeasured();
+                    state.vercel_mut().succeeded(
+                        summary,
+                        now,
+                        empty.then(|| usage::VERCEL_NO_SPEND_MESSAGE.to_owned()),
+                    );
+                }
+                Err(e) => state.vercel_mut().failed(e.user_message()),
             }
         }
     }
@@ -2363,28 +2410,40 @@ fn settings_reset_layout(state: tauri::State<'_, Arc<App>>) -> Value {
     settings_response(&state, status)
 }
 
-#[tauri::command]
-fn settings_save_providers(
+/// Every non-secret provider preference, in one argument.
+///
+/// One struct rather than seven positional parameters: both Settings tabs send
+/// the whole set on every Apply (each re-sends the other's fields, or a partial
+/// write blanks them), so they travel together by construction — and the fifth
+/// provider took the flat signature past clippy's argument limit, which is the
+/// shape complaining about itself.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderPrefs {
     neon_org_id: String,
     sentry_org_slug: String,
     sentry_monthly_event_quota: u64,
     azure_monthly_budget_usd: f64,
     neon_usd_per_cu_hour: f64,
     neon_usd_per_gib_month: f64,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
+    vercel_team_id: String,
+}
+
+#[tauri::command]
+fn settings_save_providers(prefs: ProviderPrefs, state: tauri::State<'_, Arc<App>>) -> Value {
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
         let current = store.settings_mut();
-        current.neon_org_id = neon_org_id.trim().to_owned();
-        current.sentry_org_slug = sentry_org_slug.trim().to_owned();
-        current.sentry_monthly_event_quota = sentry_monthly_event_quota;
+        current.neon_org_id = prefs.neon_org_id.trim().to_owned();
+        current.sentry_org_slug = prefs.sentry_org_slug.trim().to_owned();
+        current.sentry_monthly_event_quota = prefs.sentry_monthly_event_quota;
         // A non-finite value would make the whole store unserialisable
         // (`StoreError::Serialize`), taking every other preference with it.
         let launder = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
-        current.azure_monthly_budget_usd = launder(azure_monthly_budget_usd);
-        current.neon_usd_per_cu_hour = launder(neon_usd_per_cu_hour);
-        current.neon_usd_per_gib_month = launder(neon_usd_per_gib_month);
+        current.azure_monthly_budget_usd = launder(prefs.azure_monthly_budget_usd);
+        current.neon_usd_per_cu_hour = launder(prefs.neon_usd_per_cu_hour);
+        current.neon_usd_per_gib_month = launder(prefs.neon_usd_per_gib_month);
+        current.vercel_team_id = prefs.vercel_team_id.trim().to_owned();
         save_status(&store, "Saved.")
     };
     // The Neon org id and the Sentry slug are *what those reads ask for*, so an
@@ -2785,7 +2844,7 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 fn wake_for(app: &App, field: SecretField) {
     match field {
         SecretField::GitHub => wake_github(app),
-        SecretField::Neon | SecretField::Sentry => wake_usage(app, true),
+        SecretField::Neon | SecretField::Sentry | SecretField::Vercel => wake_usage(app, true),
         SecretField::Azure => app.azure_wake.notify_one(),
         // The bearer token is folded into the *signed connect payload*, so it
         // cannot be swapped on a live socket — the session has to be torn down
@@ -3027,6 +3086,7 @@ fn dump_settings() -> Value {
         github: true,
         neon: false,
         sentry: true,
+        vercel: true,
         azure: false,
         openclaw: false,
         hosts: [live.id].into_iter().collect(),

@@ -514,7 +514,7 @@ await window.__TAURI__.core.invoke("azure_cost");
 }
 ```
 
-**Three sources, three cadences, three footers.** Claude Code's token rollups are
+**Four sources, and Vercel is the odd one.** Claude Code's token rollups are
 a walk of `~/.claude/projects` on the store's `refresh_interval_secs`
 (`staleAfter` 150s). Neon consumption and Sentry event stats are hourly API reads
 inside the same loop (`staleAfter` 90m — above their own cadence, so a warning

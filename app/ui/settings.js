@@ -670,12 +670,15 @@ function azureTab(t) {
   // a partial write would silently blank the Usage tab's fields.
   apply.addEventListener("click", () =>
     mutate("settings_save_providers", {
-      neonOrgId: S.view.usage.neon.orgId,
-      sentryOrgSlug: S.view.usage.sentry.orgSlug,
-      sentryMonthlyEventQuota: int(S.view.usage.sentry.quota),
-      azureMonthlyBudgetUsd: Number(budget.value) || 0,
-      neonUsdPerCuHour: Number(S.view.usage.neon.usdPerCuHour) || 0,
-      neonUsdPerGibMonth: Number(S.view.usage.neon.usdPerGibMonth) || 0,
+      prefs: {
+        neonOrgId: S.view.usage.neon.orgId,
+        sentryOrgSlug: S.view.usage.sentry.orgSlug,
+        sentryMonthlyEventQuota: int(S.view.usage.sentry.quota),
+        azureMonthlyBudgetUsd: Number(budget.value) || 0,
+        neonUsdPerCuHour: Number(S.view.usage.neon.usdPerCuHour) || 0,
+        neonUsdPerGibMonth: Number(S.view.usage.neon.usdPerGibMonth) || 0,
+        vercelTeamId: S.view.usage.vercel.teamId,
+      },
     })
   );
   box.appendChild(actionRow(apply));
@@ -710,21 +713,32 @@ function usageTab(t) {
   );
   secretControls(sentry, t.sentry.secret);
 
+  const vercel = group(t.vercel.heading);
+  const teamId = textInput(t.vercel.teamId);
+  vercel.append(
+    field("vercel-team-id", t.vercel.teamIdLabel, teamId),
+    help(t.vercel.teamIdHelp)
+  );
+  secretControls(vercel, t.vercel.secret);
+
   const apply = button(t.saveLabel, "apply");
   apply.addEventListener("click", () =>
     mutate("settings_save_providers", {
-      neonOrgId: orgId.value,
-      sentryOrgSlug: orgSlug.value,
-      sentryMonthlyEventQuota: int(quota.value),
-      azureMonthlyBudgetUsd: Number(S.view.azure.budget.value) || 0,
-      neonUsdPerCuHour: Number(cuRate.value) || 0,
-      neonUsdPerGibMonth: Number(gibRate.value) || 0,
+      prefs: {
+        neonOrgId: orgId.value,
+        sentryOrgSlug: orgSlug.value,
+        sentryMonthlyEventQuota: int(quota.value),
+        azureMonthlyBudgetUsd: Number(S.view.azure.budget.value) || 0,
+        neonUsdPerCuHour: Number(cuRate.value) || 0,
+        neonUsdPerGibMonth: Number(gibRate.value) || 0,
+        vercelTeamId: teamId.value,
+      },
     })
   );
 
   // One Apply for both, because `settings_save_providers` writes every
   // non-secret provider preference in one go.
-  return [neon, sentry, actionRow(apply)];
+  return [neon, sentry, vercel, actionRow(apply)];
 }
 
 /**

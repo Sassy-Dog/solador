@@ -14,7 +14,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # Same HTTP stack (and feature set) as crates/agentclient and crates/github, so
 # the workspace resolves one reqwest and one TLS backend.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `gzip` is for Vercel's FOCUS export and nothing else: seven days of charges
+# is 3.4 MB uncompressed and 85 KB gzipped, measured live. Without the feature
+# the `Accept-Encoding` header the client sends is inert.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 # Log timestamps are RFC 3339 strings and every window is instant arithmetic.
 # Deliberately without the `clock` feature: nothing here reads the wall clock —
 # `now` is always an argument, as in crates/github.

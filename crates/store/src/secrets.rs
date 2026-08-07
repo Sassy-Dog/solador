@@ -53,6 +53,8 @@ pub enum SecretKey {
     NeonApiKey,
     /// Sentry `org:read` token behind the Usage panel.
     SentryUsageToken,
+    /// Vercel API token, for the Usage panel's spend rows.
+    VercelApiToken,
     /// Container-scoped SAS URL for the Azure cost export. The URL *is* the
     /// credential, which is why it lives here and not in [`crate::Settings`].
     AzureCostSasUrl,
@@ -81,6 +83,7 @@ impl SecretKey {
             SecretKey::GitHubAccessToken => "github_access_token".to_owned(),
             SecretKey::NeonApiKey => "neon_api_key".to_owned(),
             SecretKey::SentryUsageToken => "sentry_usage_token".to_owned(),
+            SecretKey::VercelApiToken => "vercel_api_token".to_owned(),
             SecretKey::AzureCostSasUrl => "azure_cost_sas_url".to_owned(),
             SecretKey::OpenClawBearerToken => "openclaw_bearer_token".to_owned(),
             SecretKey::OpenClawDeviceKey => "openclaw_device_key".to_owned(),
@@ -105,6 +108,7 @@ impl SecretKey {
                 SecretKey::GitHubAccessToken
                 | SecretKey::NeonApiKey
                 | SecretKey::SentryUsageToken
+                | SecretKey::VercelApiToken
                 | SecretKey::AzureCostSasUrl
                 | SecretKey::OpenClawBearerToken => true,
                 SecretKey::HostToken(_) | SecretKey::OpenClawDeviceKey => false,
@@ -114,6 +118,7 @@ impl SecretKey {
             SecretKey::GitHubAccessToken,
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
+            SecretKey::VercelApiToken,
             SecretKey::AzureCostSasUrl,
             SecretKey::OpenClawBearerToken,
         ];
@@ -640,6 +645,7 @@ mod tests {
             SecretKey::GitHubAccessToken,
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
+            SecretKey::VercelApiToken,
             SecretKey::AzureCostSasUrl,
             SecretKey::OpenClawBearerToken,
             SecretKey::OpenClawDeviceKey,
@@ -665,6 +671,7 @@ mod tests {
                 "github_access_token",
                 "neon_api_key",
                 "sentry_usage_token",
+                "vercel_api_token",
                 "azure_cost_sas_url",
                 "openclaw_bearer_token",
             ]
