@@ -21,6 +21,9 @@ devcanopy-github = { path = "../../crates/github" }
 # Third-party availability: the shared status vocabulary and the three
 # transports the five watched vendors publish through.
 devcanopy-servicestatus = { path = "../../crates/servicestatus" }
+# `join_all` for the five status pages, which are five independent hosts and
+# have no reason to be read in sequence. Already in the lock via crates/github.
+futures-util = "0.3"
 # This machine's own metrics, for the local host card that leads the grid. The
 # Swift app collects them through HostMetricsKit; this is the portable twin.
 devcanopy-localhost = { path = "../../crates/localhost" }

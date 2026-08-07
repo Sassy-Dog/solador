@@ -210,6 +210,8 @@ struct App {
     /// same reason and with the same discipline as `approvals` above: a
     /// delivery ledger, not something a panel renders.
     service_status: Mutex<services::StatusWatch>,
+    /// Every watched vendor's availability, as the panels render it.
+    services: Mutex<services::ServiceStatuses>,
     /// The last known reachability of each monitored host, for the banner. Same
     /// discipline as `approvals` and `service_status`: a delivery ledger, not
     /// something a card renders.
@@ -1149,8 +1151,16 @@ fn github_token(credential: Credential, state: &mut GitHubState) -> Option<Strin
 /// status does not change on the timescale of one dropped request, and a panel
 /// that flipped from "it's GitHub" back to a red "it's us" on a single timeout
 /// would be the exact misdirection this verdict exists to prevent.
-async fn poll_github_status(app: &Arc<App>) {
-    let result = github::status::client().status().await;
+async fn poll_service_status(app: &Arc<App>) {
+    // Concurrently: five independent hosts, and running them in sequence would
+    // make the pass as slow as their sum for no reason. Each carries its own
+    // 8s timeout, so the worst case is one timeout rather than five.
+    let results = futures_util::future::join_all(
+        services::ServiceId::ALL
+            .iter()
+            .map(|&service| async move { (service, services::read(service).await) }),
+    )
+    .await;
 
     // Re-read like the token, so switching the preference off applies on the
     // next pass rather than on the next launch.
@@ -1160,33 +1170,38 @@ async fn poll_github_status(app: &Arc<App>) {
     };
 
     let notices = {
-        let mut state = app.github.lock().expect("github state poisoned");
-        // The reading the watch diffs is the one this pass obtained, not the
-        // one the panel ends up rendering: a failed fetch keeps the last good
-        // status on screen, and treating that retained value as a fresh
-        // observation would make an unreachable page look like a steady state
-        // forever.
-        let reading = match &result {
-            Ok(status) => services::Reading {
-                service: services::ServiceId::GitHub,
-                status: status.component,
-                incident: status.incident.as_ref().map(|i| i.name.as_str()),
-            },
-            Err(_) => services::Reading {
-                service: services::ServiceId::GitHub,
-                status: None,
-                incident: None,
-            },
-        };
-        let notices = {
-            let mut watch = app.service_status.lock().expect("status watch poisoned");
-            watch.observe(&[reading], notify_changes)
-        };
-        match result {
-            Ok(status) => state.apply_service_status(status),
-            Err(e) => state.apply_service_status_error(e.user_message()),
+        let mut statuses = app.services.lock().expect("services poisoned");
+        for (service, result) in results {
+            match result {
+                Ok(status) => {
+                    // GitHub's reading also feeds the Repos/Runners conjunction
+                    // chip, which reads it from `GitHubState`.
+                    if service == services::ServiceId::GitHub {
+                        app.github
+                            .lock()
+                            .expect("github state poisoned")
+                            .apply_service_status(status.clone());
+                    }
+                    statuses.succeeded(service, status);
+                }
+                Err(e) => {
+                    if service == services::ServiceId::GitHub {
+                        app.github
+                            .lock()
+                            .expect("github state poisoned")
+                            .apply_service_status_error(e.user_message());
+                    }
+                    statuses.failed(service, e.user_message());
+                }
+            }
         }
-        notices
+        // Diffed against what this pass actually obtained. A failed refresh
+        // keeps the last good status for *rendering*, and treating that
+        // retained value as a fresh observation would make an unreachable page
+        // look like a steady state forever — so `readings()` reports `None`
+        // wherever the last read failed.
+        let mut watch = app.service_status.lock().expect("status watch poisoned");
+        watch.observe(&statuses.readings(), notify_changes)
     };
 
     // Last, and outside every lock: showing a banner is the one thing in this
@@ -1205,7 +1220,7 @@ async fn poll_github(app: &Arc<App>) {
     // a major outage" is most useful precisely when this panel is otherwise
     // blank — an unauthenticated cockpit that returned early here would be the
     // one that could not explain itself at all.
-    poll_github_status(app).await;
+    poll_service_status(app).await;
 
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
@@ -1935,6 +1950,24 @@ fn usage(state: tauri::State<'_, Arc<App>>) -> Value {
     FIRST_USAGE_REQUEST.call_once(|| {
         let providers = payload["providers"].as_array().map_or(0, Vec::len);
         eprintln!("usage: first frontend request ({providers} provider section(s))");
+    });
+    payload
+}
+
+/// Guards the Services panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_SERVICES_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn services(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = {
+        let statuses = state.services.lock().expect("services poisoned");
+        services::view(&statuses)
+    };
+    FIRST_SERVICES_REQUEST.call_once(|| {
+        eprintln!(
+            "services: first frontend request ({})",
+            payload["trailing"].as_str().unwrap_or_default()
+        );
     });
     payload
 }
@@ -3263,6 +3296,10 @@ fn run_dump(args: &[String]) -> bool {
         write_json(&path, &dump_azure(kind));
         return true;
     }
+    if let Some(path) = dump_flag_path(args, "--dump-services", "sample-services.json") {
+        write_json(&path, &services::view(&services::fixture_statuses()));
+        return true;
+    }
     if let Some(path) = dump_flag_path(args, "--dump-openclaw", "sample-openclaw.json") {
         let kind = if empty {
             openclaw::Fixture::Empty
@@ -3459,6 +3496,7 @@ fn main() {
         openclaw_wake: tokio::sync::Notify::new(),
         approvals: Mutex::new(github::notify::ApprovalWatch::new()),
         service_status: Mutex::new(services::StatusWatch::new()),
+        services: Mutex::new(services::ServiceStatuses::new()),
         host_reachability: Mutex::new(services::HostWatch::new()),
         handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
@@ -3517,6 +3555,7 @@ fn main() {
             runners,
             usage,
             azure_cost,
+            services,
             openclaw,
             settings_view,
             settings_save_general,
@@ -4634,7 +4673,7 @@ mod tests {
                 vec!["hosts"],
                 vec!["ghWorkflows", "ghRunners"],
                 vec!["containers", "openclawAgents", "claudeUsage"],
-                vec!["azureCost"],
+                vec!["azureCost", "services"],
             ]
         );
 
@@ -4650,7 +4689,11 @@ mod tests {
             ["half", "half"],
             "a rendered row is always whole quarters, never two thirds and a third"
         );
-        assert_eq!(narrow.len(), 6, "the halves and the quarters both split");
+        assert_eq!(
+            narrow.len(),
+            7,
+            "the halves and the quarters both split, and so does Azure Cost + Services"
+        );
 
         // Every panel still travels, exactly once, at any width — a row silently
         // dropped here is a panel the frontend can never render.
@@ -4730,11 +4773,12 @@ mod tests {
         );
         assert_eq!(
             seen["azureCost"],
-            (json!(1890.0), json!(2)),
-            "full width, so the breakdowns sit beside the costs"
+            (json!(1413.5), json!(2)),
+            "three quarters still buys the breakdowns their column beside the costs"
         );
         assert_eq!(seen["openclawAgents"], (json!(460.5), json!(1)));
         assert_eq!(seen["claudeUsage"], (json!(460.5), json!(1)));
+        assert_eq!(seen["services"], (json!(460.5), json!(1)));
     }
 
     /// The Layout tab's whole point, at the payload: the rows are the *stored*
@@ -4766,7 +4810,7 @@ mod tests {
                 vec!["claudeUsage", "azureCost", "hosts"],
                 // …then the four the layout never named, in default order.
                 vec!["ghWorkflows", "ghRunners"],
-                vec!["containers", "openclawAgents"],
+                vec!["containers", "openclawAgents", "services"],
             ]
         );
         let first = &vm["panelRows"][0];

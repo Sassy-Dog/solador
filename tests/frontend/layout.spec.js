@@ -64,7 +64,7 @@ const rgb = (hex) => {
  * everything.
  */
 async function stubPanels(page, baseURL, cockpit) {
-  const named = ["containers", "repos", "runners", "usage", "azure", "openclaw"];
+  const named = ["containers", "repos", "runners", "usage", "azure", "openclaw", "services"];
   const files = {
     containers: "sample-containers.json",
     repos: "sample-repos.json",
@@ -72,6 +72,7 @@ async function stubPanels(page, baseURL, cockpit) {
     usage: "sample-usage.json",
     azure: "sample-azure.json",
     openclaw: "sample-openclaw.json",
+    services: "sample-services.json",
   };
   const payloads = { cockpit };
   for (const name of named) payloads[name] = await fixture(baseURL, files[name]);
@@ -573,6 +574,7 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
     "ghRunners",
     "claudeUsage",
     "azureCost",
+    "services",
   ];
   const expected = vm.panelRows
     .map((row) => row.map((p) => p.id).filter((id) => known.includes(id)))
@@ -600,9 +602,15 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
     );
   expect(spans).toEqual(["1", "3", "4"]);
 
-  // …and Azure Cost has a whole row, which is what buys its two-column body.
-  expect(expected[expected.length - 1]).toEqual(["azureCost"]);
-  await expect(rows.last().locator("section")).toHaveCount(1);
+  // …and the last row is Azure Cost beside Services: three quarters still buys
+  // the cost breakdowns their own column, and five one-line service rows would
+  // leave most of a full-width band empty.
+  expect(expected[expected.length - 1]).toEqual(["azureCost", "services"]);
+  await expect(rows.last().locator("section")).toHaveCount(2);
+  const lastSpans = await rows
+    .last()
+    .evaluate((el) => [...el.children].map((c) => getComputedStyle(c).gridColumnStart.trim()));
+  expect(lastSpans).toEqual(["1", "4"]);
 });
 
 /**
@@ -706,6 +714,7 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
     "runnersPanel",
     "usagePanel",
     "azurePanel",
+    "servicesPanel",
   ];
   // Both shapes are the payload's, not this test's: the sectionless `hosts` row
   // is the grid above, so it contributes no rendered row.

@@ -1479,7 +1479,7 @@ mod tests {
     }
 
     /// The completing rule: a layout that names three panels still renders all
-    /// seven. This is what lets a saved layout survive a build that adds a
+    /// eight. This is what lets a saved layout survive a build that adds a
     /// panel — the new one appears in its default place instead of vanishing.
     #[test]
     fn a_partial_layout_is_completed_from_the_default_order() {
@@ -1500,6 +1500,7 @@ mod tests {
                 "ghRunners",
                 "containers",
                 "openclawAgents",
+                "services",
             ]
         );
         assert_eq!(order[0].1, PanelSpan::Half, "a stored span is honoured");
@@ -1566,17 +1567,13 @@ mod tests {
     #[test]
     fn moving_a_panel_walks_it_one_place_along_the_order() {
         let mut order = CockpitLayout::DEFAULT_ORDER.to_vec();
-        assert!(move_panel(&mut order, PanelKind::AzureCost, PanelMove::Up));
+        assert!(move_panel(&mut order, PanelKind::Services, PanelMove::Up));
         assert_eq!(
             ids(&order).last(),
-            Some(&"claudeUsage"),
-            "Azure Cost stepped over Usage, out of its own row"
+            Some(&"azureCost"),
+            "Services stepped over Azure Cost, out of its own row"
         );
-        assert!(move_panel(
-            &mut order,
-            PanelKind::AzureCost,
-            PanelMove::Down
-        ));
+        assert!(move_panel(&mut order, PanelKind::Services, PanelMove::Down));
         assert_eq!(ids(&order), ids(&CockpitLayout::DEFAULT_ORDER));
     }
 
@@ -1588,7 +1585,7 @@ mod tests {
         assert!(!move_panel(&mut order, PanelKind::Hosts, PanelMove::Up));
         assert!(!move_panel(
             &mut order,
-            PanelKind::AzureCost,
+            PanelKind::Services,
             PanelMove::Down
         ));
         assert_eq!(order, CockpitLayout::DEFAULT_ORDER.to_vec());
@@ -1657,7 +1654,7 @@ mod tests {
         assert_eq!(rows[0]["canMoveUp"], false, "nothing above the first row");
         assert_eq!(rows[0]["canMoveDown"], true);
         let last = rows.last().expect("a last row");
-        assert_eq!(last["id"], "azureCost");
+        assert_eq!(last["id"], "services");
         assert_eq!(last["canMoveDown"], false);
         // The renamed panel travels under the title the cockpit paints.
         assert!(rows.iter().any(|row| row["title"] == "GitHub Repos"));
@@ -1751,7 +1748,7 @@ mod tests {
                 // The three the stored layout never named, completed from the
                 // default order and packed the same way.
                 vec!["GitHub Repos", "GitHub Runners"],
-                vec!["Azure Cost"],
+                vec!["Azure Cost", "Services"],
             ]
         );
         assert_eq!(preview[1][0]["weight"], 2);

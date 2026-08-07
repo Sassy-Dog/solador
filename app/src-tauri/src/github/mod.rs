@@ -43,9 +43,6 @@ use viewmodel::color;
 
 use git::LocalRepoCounts;
 
-/// Re-exported for `main.rs`, where the bare name `github` resolves to *this*
-/// module rather than the crate it wraps.
-pub use github::status;
 /// Re-exported so `main.rs` — where the module name `github` shadows the crate
 /// name — reaches the client through this module rather than through a
 /// `::github::` escape hatch that reads like a typo.

@@ -332,6 +332,7 @@ const PANEL_SECTIONS = {
   ghRunners: "runnersPanel",
   claudeUsage: "usagePanel",
   azureCost: "azurePanel",
+  services: "servicesPanel",
   openclawAgents: "openclawPanel",
 };
 

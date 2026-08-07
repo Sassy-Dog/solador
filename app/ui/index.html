@@ -120,6 +120,20 @@
       <div class="panel-body" id="azureBody"></div>
     </section>
 
+    <!-- Services. Third-party availability for the five vendors this stack
+         depends on, each read from whatever that vendor publishes (Atlassian
+         Statuspage, status.io, or an RSS incident feed). Same rules as above:
+         every label, state word and colour is built by services.js from the
+         `services` command. -->
+    <section class="panel" id="servicesPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="servicesTitle"></h2>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="servicesTrailing"></span>
+      </header>
+      <div class="panel-body" id="servicesBody"></div>
+    </section>
+
     <!-- OpenClaw. An agent farm's per-agent status, cron health, channel
          connectivity and token usage, fed by a live WebSocket rather than a
          poll — which is why it has no footer element: the connection line
@@ -237,6 +251,7 @@
   <script src="github.js"></script>
   <script src="usage.js"></script>
   <script src="azure.js"></script>
+  <script src="services.js"></script>
   <script src="openclaw.js"></script>
 </body>
 </html>

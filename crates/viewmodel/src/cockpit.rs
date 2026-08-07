@@ -40,11 +40,12 @@ pub enum PanelKind {
     ClaudeUsage,
     OpenclawAgents,
     AzureCost,
+    Services,
 }
 
 impl PanelKind {
     /// Every kind, in the Swift `CaseIterable` declaration order.
-    pub const ALL: [PanelKind; 7] = [
+    pub const ALL: [PanelKind; 8] = [
         PanelKind::Hosts,
         PanelKind::GhRunners,
         PanelKind::Containers,
@@ -52,6 +53,7 @@ impl PanelKind {
         PanelKind::ClaudeUsage,
         PanelKind::OpenclawAgents,
         PanelKind::AzureCost,
+        PanelKind::Services,
     ];
 
     /// Stable identifier — the Swift `rawValue`, so persisted layout state and
@@ -65,6 +67,7 @@ impl PanelKind {
             PanelKind::ClaudeUsage => "claudeUsage",
             PanelKind::OpenclawAgents => "openclawAgents",
             PanelKind::AzureCost => "azureCost",
+            PanelKind::Services => "services",
         }
     }
 
@@ -90,6 +93,7 @@ impl PanelKind {
             PanelKind::ClaudeUsage => "Usage",
             PanelKind::OpenclawAgents => "OpenClaw",
             PanelKind::AzureCost => "Azure Cost",
+            PanelKind::Services => "Services",
         }
     }
 
@@ -136,6 +140,14 @@ impl PanelKind {
             PanelKind::AzureCost => 400.0,
             PanelKind::OpenclawAgents => 240.0,
             PanelKind::ClaudeUsage => 340.0,
+            // Five rows of `vendor · status word · dot`. The binding
+            // constraint is "Services Degraded" beside the longest vendor
+            // name. 240 rather than the ~220 that measures, for the same
+            // reason OpenClaw is 240: it is also the width *one content
+            // column* needs, and at 220 a quarter of an 1890pt cockpit would
+            // split five one-line rows into two columns — a split that buys a
+            // gutter and costs the scan.
+            PanelKind::Services => 240.0,
         }
     }
 }
@@ -256,14 +268,19 @@ impl CockpitLayout {
     /// so a half-row each left the row ragged and the width unspent. Azure Cost
     /// takes the full row it needs to put its top-resource breakdowns beside the
     /// costs instead of under them (`--panel-cols`, from [`panel_columns`]).
-    pub const DEFAULT_ORDER: [(PanelKind, PanelSpan); 7] = [
+    pub const DEFAULT_ORDER: [(PanelKind, PanelSpan); 8] = [
         (PanelKind::Hosts, PanelSpan::Full),
         (PanelKind::GhWorkflows, PanelSpan::Half),
         (PanelKind::GhRunners, PanelSpan::Half),
         (PanelKind::Containers, PanelSpan::Half),
         (PanelKind::OpenclawAgents, PanelSpan::Quarter),
         (PanelKind::ClaudeUsage, PanelSpan::Quarter),
-        (PanelKind::AzureCost, PanelSpan::Full),
+        // Azure Cost gives up a quarter to Services rather than Services
+        // taking a row of its own: five one-line rows would leave most of a
+        // full-width band empty, and Azure Cost still clears two content
+        // columns at three quarters of a 1890pt cockpit.
+        (PanelKind::AzureCost, PanelSpan::ThreeQuarters),
+        (PanelKind::Services, PanelSpan::Quarter),
     ];
 
     /// Layout B — "hosts-forward": big host cards on top, work surfaces below.
@@ -722,7 +739,10 @@ mod tests {
                 vec![PanelKind::GhRunners],
                 vec![PanelKind::Containers, PanelKind::OpenclawAgents], // 412 >= 400, 340
                 vec![PanelKind::ClaudeUsage],
+                // A quarter of 840 is 198, under Services' 240, so this pair
+                // splits too -- and `fill_row` widens each survivor to a full row.
                 vec![PanelKind::AzureCost],
+                vec![PanelKind::Services],
             ]
         );
         // …and the pair really is rendered as two halves, not as a two-thirds
@@ -775,7 +795,7 @@ mod tests {
             &[
                 vec![PanelKind::Containers, PanelKind::OpenclawAgents],
                 vec![PanelKind::ClaudeUsage],
-                vec![PanelKind::AzureCost],
+                vec![PanelKind::AzureCost, PanelKind::Services],
             ]
         );
     }
@@ -1093,7 +1113,10 @@ mod tests {
         assert_eq!(seen[&PanelKind::Containers], (937.0, 2));
         // Full width, and the two columns that put the breakdowns beside the
         // costs rather than under them.
-        assert_eq!(seen[&PanelKind::AzureCost], (1890.0, 2));
+        // Three quarters of 1890 still clears two content columns, which is what
+        // Azure Cost's breakdowns-beside-costs layout needs.
+        assert_eq!(seen[&PanelKind::AzureCost], (1413.5, 2));
+        assert_eq!(seen[&PanelKind::Services], (460.5, 1));
         // The quarter tracks stay one column, which is the point of a quarter.
         assert_eq!(seen[&PanelKind::OpenclawAgents], (460.5, 1));
         assert_eq!(seen[&PanelKind::ClaudeUsage], (460.5, 1));
@@ -1239,7 +1262,7 @@ mod tests {
     fn the_panel_table_travels_as_data() {
         let table = panel_table();
         let entries = table.as_array().unwrap();
-        assert_eq!(entries.len(), 7);
+        assert_eq!(entries.len(), 8);
         assert_eq!(entries[0]["id"], "hosts");
         assert_eq!(entries[0]["title"], "Hosts");
         assert_eq!(entries[0]["minWidth"], 900.0);
@@ -1307,7 +1330,7 @@ mod tests {
                 vec![PanelSpan::Full],
                 vec![PanelSpan::Half, PanelSpan::Half],
                 vec![PanelSpan::Half, PanelSpan::Quarter, PanelSpan::Quarter],
-                vec![PanelSpan::Full],
+                vec![PanelSpan::ThreeQuarters, PanelSpan::Quarter],
             ]
         );
     }
@@ -1329,7 +1352,7 @@ mod tests {
                     PanelKind::OpenclawAgents,
                     PanelKind::ClaudeUsage
                 ],
-                vec![PanelKind::AzureCost],
+                vec![PanelKind::AzureCost, PanelKind::Services],
             ]
         );
     }

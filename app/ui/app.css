@@ -370,6 +370,16 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .panel-row { display:grid; gap:var(--cockpit-gap, 16px); align-items:stretch;
   grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
+/* ---- Services -----------------------------------------------------------
+   Five one-line rows: dot, vendor, state word. No `--panel-cols` split — the
+   list is fixed at five and a second column would buy a gutter and cost the
+   scan, which is the same argument `PanelKind::Services`'s 240pt minimum
+   makes. Every colour here is Rust's, applied via CSSOM. */
+.svc-row { display:flex; align-items:baseline; gap:8px; min-width:0; }
+.svc-name { font-size:11px; font-weight:700; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.svc-state { font-size:10px; font-weight:700; white-space:nowrap; flex:none; }
+
 /* ---- The shared progress bar -------------------------------------------
    `CockpitProgressBar`. The width and the fill colour both arrive from Rust
    (`panel::progress_bar`) — the thresholds are the Swift panel's and must not

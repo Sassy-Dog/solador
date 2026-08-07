@@ -36,8 +36,11 @@
 //! endpoint rather than one call per repo, so the honest reading is available
 //! and worth taking.
 
-use servicestatus::ComponentStatus;
+use serde_json::{json, Value};
+use servicestatus::{ComponentStatus, Incident, ServiceStatus};
 use std::collections::BTreeMap;
+use viewmodel::cockpit::PanelKind;
+use viewmodel::color;
 
 /// A service whose availability the cockpit watches.
 ///
@@ -47,24 +50,72 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ServiceId {
     GitHub,
+    Anthropic,
+    Vercel,
+    Neon,
+    Azure,
 }
 
 impl ServiceId {
+    /// Every watched vendor, in the order the Services panel lists them —
+    /// roughly by how loudly this stack notices each one going down.
+    pub const ALL: [ServiceId; 5] = [
+        ServiceId::GitHub,
+        ServiceId::Anthropic,
+        ServiceId::Vercel,
+        ServiceId::Neon,
+        ServiceId::Azure,
+    ];
+
+    /// The stable key the frontend addresses a row by. Never the label: a
+    /// display name is free to change and an id is not.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            ServiceId::GitHub => "github",
+            ServiceId::Anthropic => "anthropic",
+            ServiceId::Vercel => "vercel",
+            ServiceId::Neon => "neon",
+            ServiceId::Azure => "azure",
+        }
+    }
+
     /// The vendor, for the banner's title. Short: a notification is glanced at.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             ServiceId::GitHub => "GitHub",
+            ServiceId::Anthropic => "Anthropic",
+            ServiceId::Vercel => "Vercel",
+            ServiceId::Neon => "Neon",
+            ServiceId::Azure => "Azure",
         }
     }
 
     /// The specific thing we watch, for the banner's body. Not the vendor —
-    /// "GitHub is operational again" would overclaim from one component.
+    /// "GitHub is operational again" would overclaim from one component, and
+    /// every one of these is a single component of a much larger service.
     #[must_use]
     pub fn subject(self) -> &'static str {
         match self {
             ServiceId::GitHub => "GitHub Actions",
+            ServiceId::Anthropic => "the Claude API",
+            ServiceId::Vercel => "Vercel Builds",
+            ServiceId::Neon => "Neon",
+            ServiceId::Azure => "Azure",
         }
+    }
+
+    /// Whether this vendor can say "everything is fine".
+    ///
+    /// Azure alone cannot: its feed lists active incidents and never publishes
+    /// health, so a quiet feed is *no known incidents* rather than operational.
+    /// The panel words its healthy row differently for that reason, and the
+    /// distinction is here rather than in the renderer so there is one place to
+    /// read it from.
+    #[must_use]
+    pub fn publishes_health(self) -> bool {
+        !matches!(self, ServiceId::Azure)
     }
 }
 
@@ -163,6 +214,223 @@ impl StatusWatch {
         notices
     }
 }
+
+/// One vendor's last read, plus why the last refresh did not happen.
+#[derive(Debug, Default, Clone)]
+pub struct ServiceEntry {
+    /// The last **successful** read. Deliberately kept through a failure: a
+    /// page that answered a minute ago is better evidence than nothing, and a
+    /// vendor's status does not change on the timescale of one dropped request.
+    pub status: Option<ServiceStatus>,
+    pub error: Option<String>,
+}
+
+/// Every watched vendor's availability, as the app holds it.
+#[derive(Debug, Default)]
+pub struct ServiceStatuses {
+    entries: BTreeMap<ServiceId, ServiceEntry>,
+}
+
+impl ServiceStatuses {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn succeeded(&mut self, service: ServiceId, status: ServiceStatus) {
+        let entry = self.entries.entry(service).or_default();
+        entry.status = Some(status);
+        entry.error = None;
+    }
+
+    /// Records why a refresh failed **without** dropping the last good read.
+    pub fn failed(&mut self, service: ServiceId, message: impl Into<String>) {
+        self.entries.entry(service).or_default().error = Some(message.into());
+    }
+
+    #[must_use]
+    pub fn get(&self, service: ServiceId) -> Option<&ServiceEntry> {
+        self.entries.get(&service)
+    }
+
+    /// This pass's readings, for [`StatusWatch::observe`].
+    ///
+    /// A vendor whose last read **failed** reports `None` even though
+    /// [`ServiceEntry::status`] still holds its last good value. The two
+    /// consumers want different things from the same state: the panel renders
+    /// the retained status because a minute-old reading beats a blank chip,
+    /// while the watch must not treat a value it did not just observe as a
+    /// fresh observation — that would make an unreachable page look like a
+    /// steady state forever, and `StatusWatch` would never notice the recovery
+    /// when the page came back saying something new.
+    #[must_use]
+    pub fn readings(&self) -> Vec<Reading<'_>> {
+        ServiceId::ALL
+            .iter()
+            .map(|&service| {
+                let fresh = self
+                    .entries
+                    .get(&service)
+                    .filter(|e| e.error.is_none())
+                    .and_then(|e| e.status.as_ref());
+                Reading {
+                    service,
+                    status: fresh.and_then(|s| s.component),
+                    incident: fresh
+                        .and_then(|s| s.incident.as_ref())
+                        .map(|i| i.name.as_str()),
+                }
+            })
+            .collect()
+    }
+}
+
+/// The Services panel payload: one row per watched vendor.
+///
+/// Every string and colour is decided here, like every other panel's. The row
+/// order is [`ServiceId::ALL`]'s, fixed, so a vendor never moves between polls
+/// — a list that re-sorted itself as things broke would be unreadable in
+/// exactly the moment it matters.
+#[must_use]
+pub fn view(statuses: &ServiceStatuses) -> Value {
+    let kind = PanelKind::Services;
+    let rows: Vec<Value> = ServiceId::ALL.iter().map(|&s| row(s, statuses)).collect();
+    // "2 degraded" / "all clear". Counted from the rendered rows so the
+    // trailing label can never disagree with what is under it.
+    let degraded = rows.iter().filter(|r| r["degraded"] == json!(true)).count();
+    json!({
+        "id": kind.id(),
+        "title": kind.title(),
+        "trailing": if degraded > 0 { format!("{degraded} degraded") } else { "all clear".to_owned() },
+        "rows": rows,
+    })
+}
+
+fn row(service: ServiceId, statuses: &ServiceStatuses) -> Value {
+    let entry = statuses.get(service);
+    let status = entry.and_then(|e| e.status.as_ref());
+    let component = status.and_then(|s| s.component);
+
+    let (state, color) = match component {
+        Some(ComponentStatus::Operational) => ("Operational", color::GREEN_DIM),
+        Some(ComponentStatus::MajorOutage) => ("Major Outage", color::RED),
+        Some(ComponentStatus::PartialOutage) => ("Partial Outage", color::AMBER),
+        Some(ComponentStatus::DegradedPerformance) => ("Degraded", color::AMBER),
+        // Nothing decoded. For Azure that is the *healthy* reading, because its
+        // feed lists incidents and never publishes health — so the two are
+        // worded apart rather than sharing one muted "unknown" that would be
+        // true of one and misleading about the other.
+        None if entry.is_some_and(|e| e.error.is_none()) && !service.publishes_health() => {
+            ("No Incidents", color::GREEN_DIM)
+        }
+        None => ("Unknown", color::MUTED),
+    };
+
+    // The reason a refresh failed explains why the row is not newer; it never
+    // replaces the row, because the last good reading still stands.
+    let detail = match (
+        entry.and_then(|e| e.error.as_deref()),
+        status.and_then(|s| s.incident.as_ref()),
+    ) {
+        (Some(error), _) => format!("{} — {error}", service.subject()),
+        (None, Some(incident)) => format!(
+            "{}: {} ({}).",
+            service.subject(),
+            incident.name,
+            incident.impact
+        ),
+        (None, None) => service.subject().to_owned(),
+    };
+
+    json!({
+        "id": service.id(),
+        "label": service.label(),
+        "state": state,
+        "color": color::hex(color),
+        "detail": detail,
+        // Published rather than derived from the colour: the panel's trailing
+        // count reads this, and counting amber pixels would be a second
+        // definition of "degraded" free to disagree with the first.
+        "degraded": component.is_some_and(ComponentStatus::is_degraded),
+    })
+}
+
+/// A fixture covering every rendering the Services panel has: one healthy
+/// vendor, one degraded, one in a major outage, one Azure-style "no incidents",
+/// and one never read.
+#[must_use]
+pub fn fixture_statuses() -> ServiceStatuses {
+    let mut s = ServiceStatuses::new();
+    let status = |c: Option<ComponentStatus>, incident: Option<&str>| ServiceStatus {
+        component: c,
+        incident: incident.map(|name| Incident {
+            name: name.to_owned(),
+            impact: "critical".to_owned(),
+        }),
+    };
+    s.succeeded(
+        ServiceId::GitHub,
+        status(Some(ComponentStatus::Operational), None),
+    );
+    s.succeeded(
+        ServiceId::Anthropic,
+        status(
+            Some(ComponentStatus::MajorOutage),
+            Some("Elevated API errors"),
+        ),
+    );
+    s.succeeded(
+        ServiceId::Vercel,
+        status(Some(ComponentStatus::DegradedPerformance), None),
+    );
+    // Azure's healthy reading: nothing decoded, and no error either.
+    s.succeeded(ServiceId::Azure, status(None, None));
+    // Neon is left untouched — the never-read row.
+    s
+}
+
+/// Read one vendor's status page.
+///
+/// The three transports differ enough to need their own clients and the same
+/// enough to answer one type, which is the whole point of `crates/servicestatus`.
+///
+/// # Errors
+/// [`servicestatus::StatusError`] as each adapter classifies it.
+pub async fn read(service: ServiceId) -> Result<ServiceStatus, servicestatus::StatusError> {
+    match service {
+        ServiceId::GitHub => github::status::client().status().await,
+        // `status.claude.com`, not `status.anthropic.com` — the latter 302s
+        // here, and a redirect is a convenience a vendor can retire.
+        ServiceId::Anthropic => {
+            servicestatus::StatusPageClient::new("https://status.claude.com", CLAUDE_API_COMPONENT)
+                .status()
+                .await
+        }
+        ServiceId::Vercel => {
+            servicestatus::StatusPageClient::new(
+                "https://www.vercel-status.com",
+                VERCEL_BUILDS_COMPONENT,
+            )
+            .status()
+            .await
+        }
+        ServiceId::Neon => {
+            servicestatus::StatusIoClient::new(servicestatus::statusio::NEON_PAGE_ID, None)
+                .status()
+                .await
+        }
+        ServiceId::Azure => servicestatus::AzureFeedClient::new().status().await,
+    }
+}
+
+/// `Claude API (api.anthropic.com)` on `status.claude.com`. The API rather than
+/// `claude.ai`: this stack calls the API, and the web app can be down while it
+/// is fine.
+const CLAUDE_API_COMPONENT: &str = "k8w3r06qmzrp";
+
+/// `Builds` on `www.vercel-status.com`. Builds rather than the edge network:
+/// a Vercel outage this cockpit cares about is one that stops a deploy.
+const VERCEL_BUILDS_COMPONENT: &str = "7ckq6xr6nsbv";
 
 /// Whether a monitored host is answering.
 ///
@@ -437,6 +705,141 @@ mod tests {
         assert!(
             watch.observe(&[as_reading(&healthy)], true).is_empty(),
             "and it settles"
+        );
+    }
+
+    // MARK: - the Services panel
+
+    #[test]
+    fn the_panel_renders_one_row_per_vendor_in_a_fixed_order() {
+        let vm = view(&fixture_statuses());
+        let ids: Vec<&str> = vm["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|r| r["id"].as_str().expect("id"))
+            .collect();
+        assert_eq!(
+            ids,
+            ServiceId::ALL.iter().map(|s| s.id()).collect::<Vec<_>>(),
+            "a list that re-sorted itself as things broke would be unreadable"
+        );
+        assert_eq!(vm["id"], "services");
+        assert_eq!(vm["title"], "Services");
+    }
+
+    /// Azure's feed lists incidents and never publishes health, so its healthy
+    /// reading is a *weaker* claim than everyone else's and has to be worded
+    /// as one. Both are green; only one says "Operational".
+    #[test]
+    fn azures_quiet_feed_reads_as_no_incidents_not_operational() {
+        let vm = view(&fixture_statuses());
+        let row = |id: &str| {
+            vm["rows"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .find(|r| r["id"] == id)
+                .expect("row")
+                .clone()
+        };
+        assert_eq!(row("azure")["state"], "No Incidents");
+        assert_eq!(row("github")["state"], "Operational");
+        assert_ne!(
+            row("azure")["state"],
+            row("github")["state"],
+            "two different claims must not share one word"
+        );
+        // Both healthy, so both green — the wording carries the difference.
+        assert_eq!(row("azure")["color"], row("github")["color"]);
+        assert_eq!(row("azure")["degraded"], false);
+    }
+
+    /// A vendor nobody has read yet is muted and says so. Never green: a check
+    /// that cannot answer must not report the happy path.
+    #[test]
+    fn an_unread_vendor_is_unknown_and_never_green() {
+        let vm = view(&fixture_statuses());
+        let neon = vm["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["id"] == "neon")
+            .expect("neon");
+        assert_eq!(neon["state"], "Unknown");
+        assert_eq!(neon["color"], color::hex(color::MUTED));
+        assert_eq!(neon["degraded"], false, "unknown is not degraded either");
+    }
+
+    #[test]
+    fn the_trailing_count_agrees_with_the_rows_under_it() {
+        let vm = view(&fixture_statuses());
+        let degraded = vm["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter(|r| r["degraded"] == json!(true))
+            .count();
+        assert_eq!(
+            degraded, 2,
+            "the fixture carries an outage and a degradation"
+        );
+        assert_eq!(vm["trailing"], "2 degraded");
+
+        let mut calm = ServiceStatuses::new();
+        for &s in &ServiceId::ALL {
+            calm.succeeded(
+                s,
+                ServiceStatus {
+                    component: Some(ComponentStatus::Operational),
+                    incident: None,
+                },
+            );
+        }
+        assert_eq!(view(&calm)["trailing"], "all clear", "never \"0 degraded\"");
+    }
+
+    /// A failed refresh explains why a row is not newer; it never replaces the
+    /// row, because the last good reading still stands.
+    #[test]
+    fn a_failed_refresh_keeps_the_row_and_says_why_it_is_stale() {
+        let mut statuses = fixture_statuses();
+        statuses.failed(ServiceId::GitHub, "couldn't reach the status page");
+        let vm = view(&statuses);
+        let github = vm["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["id"] == "github")
+            .expect("github");
+        assert_eq!(
+            github["state"], "Operational",
+            "the last good reading stands"
+        );
+        assert!(
+            github["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("couldn't reach"),
+            "…and the row explains why it is not newer: {github}"
+        );
+    }
+
+    /// …and that same failure makes the *watch* see nothing, so a page that
+    /// comes back saying something new still fires. The panel and the notifier
+    /// want different things from one state.
+    #[test]
+    fn a_failed_refresh_reports_no_reading_to_the_watch() {
+        let mut statuses = fixture_statuses();
+        statuses.failed(ServiceId::GitHub, "couldn't reach the status page");
+        let reading = statuses
+            .readings()
+            .into_iter()
+            .find(|r| r.service == ServiceId::GitHub)
+            .expect("github");
+        assert_eq!(
+            reading.status, None,
+            "a retained value is not a fresh observation"
         );
     }
 

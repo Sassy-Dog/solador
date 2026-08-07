@@ -845,6 +845,7 @@ dependencies = [
  "devcanopy-usage",
  "devcanopy-wire",
  "dirs",
+ "futures-util",
  "glob",
  "serde_json",
  "tauri",

@@ -408,6 +408,18 @@ centre anywhere near it:
   likewise persists with no control anywhere in Settings. It is re-read on every
   pass, so editing the store file applies without a relaunch.
 
+**Five vendors, three transports, one vocabulary.** `crates/servicestatus`
+reads GitHub, Anthropic and Vercel from Atlassian Statuspage, Neon from
+status.io, and Azure from an RSS incident feed, and lowers all three onto one
+`ComponentStatus`. The Services panel renders a row each; the GitHub reading
+additionally feeds the Repos/Runners conjunction chip.
+
+Two vendor-specific traps are recorded in the code rather than here, but both
+are worth knowing: `status.anthropic.com` **302s** to `status.claude.com`, and
+**Azure cannot say "operational"** — its feed lists active incidents and nothing
+else, so a quiet feed renders as *No Incidents*, a weaker claim than every other
+row's *Operational*, and never as a green tick Azure did not give.
+
 **The second notifier watches services rather than runs.** `services::StatusWatch`
 (`app/src-tauri/src/services.rs`) fires when a watched third-party service
 changes availability — GitHub Actions entering a major outage, and coming back

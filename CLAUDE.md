@@ -51,12 +51,17 @@ can therefore reach `main` unnoticed; that is the accepted cost of freezing it.
   rates, and a best-effort `NEON LAST INVOICE` off an undocumented endpoint —
   that one failing degrades to `—` plus a footer, never the consumption rows.
 - **Azure Cost** — the daily cost export, on its own 4h cadence.
+- **Services** — third-party availability for the five vendors this stack
+  depends on (GitHub, Anthropic, Vercel, Neon, Azure), read on the GitHub poll's
+  cadence. Three transports behind one vocabulary (`crates/servicestatus`), and
+  a change in either direction fires a desktop notification.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness footer.
 
 Those panels are arranged into rows `viewmodel::cockpit` reflows for the measured
 width — one full-width Hosts row, GitHub Repos + GitHub Runners as halves,
-Containers beside OpenClaw and Usage as quarters, then a full-width Azure Cost —
+Containers beside OpenClaw and Usage as quarters, then Azure Cost at three
+quarters beside a quarter-width Services —
 and every card in a row is the same height. An in-app Settings surface over
 `crates/store` (hosts CRUD, portfolio, credentials, container group rules,
 cockpit layout, general prefs) applies changes without a restart. The frontend is
@@ -144,7 +149,9 @@ DevCanopy/
 │   ├── store/             # settings/hosts/repos/container-rules/runner-roster/
 │   │                      # cockpit-layout JSON + OS credential-store wrappers
 │   ├── github/            # GitHub REST client (workflows, runners) + the
-│   │                      #   statuspage read and the "is it us?" verdict
+│   │                      #   "is it us?" conjunction verdict
+│   ├── servicestatus/     # Third-party availability: Atlassian Statuspage,
+│   │                      #   status.io and Azure's RSS incident feed
 │   ├── localhost/         # this machine's metrics (sysinfo); every field the
 │   │                      # platform can decline is an Option, never a 0
 │   ├── usage/             # Claude Code log rollups + Neon + Sentry usage
