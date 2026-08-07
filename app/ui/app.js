@@ -280,16 +280,25 @@ function drawCard(card, d, volumeSlots) {
     card.dataset.state = d.connection.state;
   }
 
+  const down = f(card, "card-down");
   if (d.error) {
-    // No prior sample exists yet (still connecting, or every attempt has
-    // failed): the cause, never fabricated numbers.
+    // Nothing worth plotting: still connecting, every attempt has failed, or
+    // the host answered once and can no longer be reached. The cause, never
+    // fabricated numbers — and never the *last* numbers either, which is what
+    // the `.card[data-state]` rule below the header hides. Cards are reused
+    // across polls to keep their chart history, so without that rule a host
+    // that went down would sit there wearing the readings it had when it did.
     f(card, "hostName").textContent = d.error.hostName;
     f(card, "cpuValue").textContent = "—";
-    f(card, "cpuModel").textContent = d.error.message;
-    f(card, "cpuModel").style.color = d.connection ? d.connection.color : "#e05a4f";
+    f(card, "cpuModel").textContent = "";
+    down.textContent = d.error.message;
+    down.style.color = d.connection ? d.connection.color : "#e05a4f";
+    down.hidden = false;
     stale.textContent = "";
     return;
   }
+  down.textContent = "";
+  down.hidden = true;
   f(card, "cpuModel").style.color = "";
 
   // A snapshot exists but the latest poll failed: this is real, still
@@ -476,6 +485,14 @@ function applyHostTabs(spec, grid) {
     b.textContent = t.label;
     b.dataset.host = t.id;
     if (t.id === selectedHost) b.dataset.active = "true";
+    // A tab bar shows one card and hides the rest, so a host that goes down
+    // while you are looking at another one has nothing on screen but this
+    // button. `alert` is Rust's verdict, not a state string re-read here, and
+    // the colour comes with it — CSSOM, never a `style=""` attribute.
+    if (t.alert) {
+      b.dataset.alert = "true";
+      if (t.color) b.style.color = t.color;
+    }
     b.addEventListener("click", () => {
       selectedHost = t.id;
       // Repaint now rather than on the next poll: a tab that takes up to a

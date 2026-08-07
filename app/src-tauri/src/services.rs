@@ -164,6 +164,86 @@ impl StatusWatch {
     }
 }
 
+/// Whether a monitored host is answering.
+///
+/// Two states, not the card's five: `connecting` and `sampler-stalled` are
+/// facts about a host we *can* reach, and a banner for either would fire on
+/// every launch and every agent restart respectively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reachability {
+    Reachable,
+    Unreachable,
+}
+
+/// One pass's verdict for one host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostReading<'a> {
+    /// The stable id, so a rename does not read as a new host.
+    pub id: &'a str,
+    pub name: &'a str,
+    /// `None` before the host's first poll settles — the same "not a status"
+    /// rule the statuspage readings follow.
+    pub state: Option<Reachability>,
+}
+
+/// The last known reachability of each monitored host.
+///
+/// A separate watch from [`StatusWatch`] rather than another `ServiceId`
+/// variant: hosts come and go with Settings, and a key set that changes at
+/// runtime needs [`observe`](Self::observe)'s `retain` — which would be wrong
+/// for the vendor list, where a service missing from a pass means the poll
+/// failed, not that it was deleted.
+#[derive(Debug, Default)]
+pub struct HostWatch {
+    seen: BTreeMap<String, Reachability>,
+}
+
+impl HostWatch {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Diff one poll pass against the last.
+    ///
+    /// Hosts absent from `readings` are **forgotten**, not reported: a host
+    /// removed in Settings has not gone down, and carrying its last state
+    /// forever would fire a spurious "back online" if it were ever re-added.
+    pub fn observe(&mut self, readings: &[HostReading<'_>], enabled: bool) -> Vec<StatusNotice> {
+        self.seen
+            .retain(|id, _| readings.iter().any(|r| r.id == id && r.state.is_some()));
+
+        let mut notices = Vec::new();
+        for reading in readings {
+            let Some(current) = reading.state else {
+                continue;
+            };
+            let previous = self.seen.insert(reading.id.to_owned(), current);
+            if !enabled {
+                continue;
+            }
+            match previous {
+                None => {}
+                Some(previous) if previous == current => {}
+                Some(_) => notices.push(match current {
+                    Reachability::Reachable => StatusNotice {
+                        title: format!("{} · back online", reading.name),
+                        body: format!("{} is answering again.", reading.name),
+                    },
+                    Reachability::Unreachable => StatusNotice {
+                        title: format!("{} · unreachable", reading.name),
+                        body: format!(
+                            "Couldn't reach {}. Check the host is up and the agent is running.",
+                            reading.name
+                        ),
+                    },
+                }),
+            }
+        }
+        notices
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +432,112 @@ mod tests {
         assert!(
             watch.observe(&[as_reading(&healthy)], true).is_empty(),
             "and it settles"
+        );
+    }
+
+    // MARK: - hosts
+
+    fn host(id: &str, state: Option<Reachability>) -> HostReading<'_> {
+        HostReading {
+            id,
+            name: id,
+            state,
+        }
+    }
+
+    #[test]
+    fn a_host_going_quiet_and_coming_back_fires_once_each_way() {
+        let mut watch = HostWatch::new();
+        assert!(
+            watch
+                .observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true)
+                .is_empty(),
+            "the first verdict only seeds"
+        );
+
+        let down = watch.observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true);
+        assert_eq!(down.len(), 1);
+        assert_eq!(down[0].title, "ubu-3xdv · unreachable");
+
+        assert!(
+            watch
+                .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true)
+                .is_empty(),
+            "…and does not repeat every sixty seconds"
+        );
+
+        let up = watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        assert_eq!(up.len(), 1);
+        assert_eq!(up[0].title, "ubu-3xdv · back online");
+    }
+
+    /// Before a host's first poll settles there is no verdict, and an absent
+    /// verdict must not read as either state.
+    #[test]
+    fn a_host_with_no_verdict_yet_is_not_a_transition() {
+        let mut watch = HostWatch::new();
+        watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        assert!(watch.observe(&[host("ubu-3xdv", None)], true).is_empty());
+        assert!(
+            watch
+                .observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true)
+                .is_empty(),
+            "and the state it returns to is the one it left"
+        );
+    }
+
+    /// A host removed in Settings has not gone down. Forgetting it is what
+    /// stops a re-add from firing a "back online" for an event nobody had.
+    #[test]
+    fn a_host_that_leaves_the_payload_is_forgotten_not_reported() {
+        let mut watch = HostWatch::new();
+        watch.observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true);
+        assert!(
+            watch.observe(&[], true).is_empty(),
+            "removal is not an event"
+        );
+
+        assert!(
+            watch
+                .observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true)
+                .is_empty(),
+            "re-adding it seeds again rather than announcing a recovery"
+        );
+    }
+
+    #[test]
+    fn each_host_is_tracked_on_its_own() {
+        let mut watch = HostWatch::new();
+        watch.observe(
+            &[
+                host("mac-w26h", Some(Reachability::Reachable)),
+                host("ubu-3xdv", Some(Reachability::Reachable)),
+            ],
+            true,
+        );
+        let notices = watch.observe(
+            &[
+                host("mac-w26h", Some(Reachability::Reachable)),
+                host("ubu-3xdv", Some(Reachability::Unreachable)),
+            ],
+            true,
+        );
+        assert_eq!(notices.len(), 1, "one host's trouble is not the other's");
+        assert_eq!(notices[0].title, "ubu-3xdv · unreachable");
+    }
+
+    #[test]
+    fn disabled_host_passes_still_advance_the_baseline() {
+        let mut watch = HostWatch::new();
+        watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        assert!(watch
+            .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], false)
+            .is_empty());
+        assert!(
+            watch
+                .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true)
+                .is_empty(),
+            "re-enabling must not replay an outage that began while it was off"
         );
     }
 

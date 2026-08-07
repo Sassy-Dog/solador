@@ -170,6 +170,10 @@
         <i class="glyph"></i><span class="title cpuModel"></span>
         <span class="badge thermal"></span><span class="grow"></span>
         <span class="stale staleMsg"></span><span class="big cpuValue"></span></header>
+      <!-- The whole card when the host cannot be contacted. Every element below
+           is hidden in that state (see `.card[data-state]` in app.css) rather
+           than left showing readings that stopped being true minutes ago. -->
+      <p class="card-down" hidden></p>
       <div class="chart">
         <div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
         <div class="plot cpuChart" data-h="110"></div>

@@ -15,6 +15,7 @@ use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pendin
 use viewmodel::cockpit::{
     host_columns, panel_table, CockpitLayout, PanelKind, PanelSpan, HOST_CARD_MIN_WIDTH, SPACING,
 };
+use viewmodel::color;
 
 mod azure;
 mod containers;
@@ -209,6 +210,10 @@ struct App {
     /// same reason and with the same discipline as `approvals` above: a
     /// delivery ledger, not something a panel renders.
     service_status: Mutex<services::StatusWatch>,
+    /// The last known reachability of each monitored host, for the banner. Same
+    /// discipline as `approvals` and `service_status`: a delivery ledger, not
+    /// something a card renders.
+    host_reachability: Mutex<services::HostWatch>,
     /// The Tauri handle, once the app has started — the notifier's way out to
     /// the OS.
     ///
@@ -253,29 +258,39 @@ fn view_for(s: &HostState) -> Value {
         ),
         // A snapshot exists and the most recent poll succeeded: live.
         (Some(snap), None) => host_card(&s.name, snap, &s.histories, &Connection::Live),
-        // A snapshot exists but the most recent poll failed: show it anyway
-        // (this is real data, just not current), with an unmissable stale
-        // badge instead of silently going on looking live forever.
+        // A snapshot exists but the most recent poll failed: **blank the card**
+        // and say the host cannot be contacted.
         //
-        // No sampler guard here on purpose. Both facts produce the same badge,
+        // This used to render the last snapshot behind a stale badge, on the
+        // reasoning that it was real data, just not current. A badge is not
+        // enough. Every figure on a host card is a present-tense claim — 12%
+        // CPU, 40°C, 3 containers up — and a machine that has not answered in
+        // four minutes is none of those things. Reading the card at a glance,
+        // which is the only way an always-on cockpit is ever read, the numbers
+        // are what you see and the badge is what you do not. It is the em-dash
+        // rule at card scale: an unmeasured figure is not shown as a figure.
+        //
+        // The loss is bounded and the recovery is free — `histories` stays in
+        // state, so the sparklines come back intact with the host. What is kept
+        // is *when* it went quiet, which is the one fact still true.
+        //
+        // No sampler guard here on purpose. Both facts produce the same card,
         // and when the link is down the transport failure is the more proximate
         // cause *and* the more recent one: `sampler_stale` is by then whatever
         // the last reachable health poll said, up to ten seconds before the
         // agent went quiet. Naming the sampler would send an operator to
         // restart a daemon they cannot currently reach.
-        (Some(snap), Some(msg)) => {
+        (Some(_), Some(msg)) => {
             // `None` when a snapshot exists but no successful poll is on
             // record -- unreachable via the real poll loop below (latest and
-            // last_success are always set together), but host_card must
-            // still render it as "unknown", never a fabricated `0s ago`.
-            let stale_secs = s.last_success.map(|t| t.elapsed().as_secs());
-            host_card(
+            // last_success are always set together), but the card must still
+            // render it as "unknown", never a fabricated `0s ago`.
+            let age_secs = s.last_success.map(|t| t.elapsed().as_secs());
+            pending_card(
                 &s.name,
-                snap,
-                &s.histories,
-                &Connection::Stale {
+                &Pending::Unreachable {
                     message: msg.clone(),
-                    stale_secs,
+                    age_secs,
                 },
             )
         }
@@ -348,7 +363,25 @@ fn host_tab_bar(cards: &[Value], columns: usize, overflow: HostOverflowMode) -> 
         "minHeight": viewmodel::cockpit::HOST_TABS_MIN_HEIGHT,
         "tabs": cards
             .iter()
-            .map(|card| json!({ "id": card["id"], "label": card_host_name(card) }))
+            .map(|card| {
+                // A tab bar shows one card and hides the rest, so a host that
+                // went down while you were looking at another one is invisible
+                // — which is exactly how ubu-3xdv stayed unnoticed through the
+                // 2026-08-06 outage. The alarm therefore has to live on the
+                // tab, the only thing on screen that represents a hidden host.
+                let state = card["connection"]["state"].as_str().unwrap_or_default();
+                let down = matches!(state, "unreachable" | "failed");
+                json!({
+                    "id": card["id"],
+                    "label": card_host_name(card),
+                    // Colour and alarm are decided here like every other
+                    // colour: the frontend paints `alert`, it does not derive
+                    // it from a state string it would have to know the meaning
+                    // of.
+                    "color": down.then(|| color::hex(color::RED)),
+                    "alert": down,
+                })
+            })
             .collect::<Vec<_>>(),
     })
 }
@@ -708,6 +741,67 @@ async fn poll_loop(
         let result = client.snapshot().await;
         let at = Instant::now();
         record_poll(&mut state.lock().expect("host state poisoned"), result, at);
+    }
+}
+
+/// Watches every monitored host's reachability and banners the changes.
+///
+/// A loop of its own rather than a hook inside [`poll_loop`], because that task
+/// is spawned per host with no `Arc<App>` and no way to reach the notification
+/// handle — and because the answer is cross-host by nature: one place that sees
+/// every host is also the place that can forget one the moment Settings removes
+/// it.
+///
+/// Reads the same `error` field the card renders from, so a banner and a red
+/// card can never disagree about whether a host is down. That includes the
+/// debounce: [`FAILURE_THRESHOLD`] consecutive failures before `error` is set,
+/// so a single dropped packet on a flappy tailnet never reaches the OS.
+async fn hosts_watch_loop(app: Arc<App>) {
+    let mut tick = tokio::time::interval(POLL_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+
+        let enabled = {
+            let store = app.store.lock().expect("store poisoned");
+            store.settings().notify_on_service_change
+        };
+
+        // Snapshotted into owned values first: `observe` borrows them, and the
+        // hosts lock must not be held while a banner leaves the process.
+        let readings: Vec<(String, String, Option<services::Reachability>)> = {
+            let hosts = app.hosts.lock().expect("hosts poisoned");
+            hosts
+                .iter()
+                .map(|h| {
+                    let s = h.state.lock().expect("host state poisoned");
+                    // `None` until the first poll settles either way — a host
+                    // whose task has ticked but never completed is not yet a
+                    // verdict, and seeding on one would banner the launch.
+                    let state = match (&s.latest, &s.error) {
+                        (_, Some(_)) => Some(services::Reachability::Unreachable),
+                        (Some(_), None) => Some(services::Reachability::Reachable),
+                        (None, None) => None,
+                    };
+                    (s.id.clone(), s.name.clone(), state)
+                })
+                .collect()
+        };
+
+        let notices = {
+            let borrowed: Vec<services::HostReading<'_>> = readings
+                .iter()
+                .map(|(id, name, state)| services::HostReading {
+                    id,
+                    name,
+                    state: *state,
+                })
+                .collect();
+            let mut watch = app.host_reachability.lock().expect("host watch poisoned");
+            watch.observe(&borrowed, enabled)
+        };
+
+        deliver_status_notices(&app, &notices);
     }
 }
 
@@ -2705,6 +2799,20 @@ fn unreachable_message() -> String {
 /// Deliberately *without* the local card, unlike [`dump_cockpit`]: this fixture
 /// exists to exercise one remote host's live/stale transition, and a second card
 /// on the page would only make every locator in that test ambiguous.
+/// The same envelope as [`dump_single`], for a host with nothing to plot.
+fn dump_pending(pending: &Pending) -> Value {
+    let mut card = pending_card("ubu-3xdv", pending);
+    card["id"] = json!("ubu-3xdv");
+    cockpit_payload(
+        vec![card],
+        1,
+        1000.0,
+        HostOverflowMode::Stack,
+        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        &CockpitLayout::hosts_forward(),
+    )
+}
+
 fn dump_single(connection: &Connection) -> Value {
     cockpit_payload(
         vec![dump_card("ubu-3xdv", connection)],
@@ -2804,13 +2912,22 @@ fn dump_local_card() -> Value {
 fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Value {
     let cards = vec![
         dump_card("ubu-3xdv", &Connection::Live),
-        dump_card(
-            "mac-mini",
-            &Connection::Stale {
-                message: unreachable_message(),
-                stale_secs: Some(42),
-            },
-        ),
+        {
+            // A host that answered once and can no longer be reached: a blanked
+            // card, which is what `view_for` produces for it. This used to dump
+            // the last snapshot behind a stale badge, and kept doing so for a
+            // while after the app stopped — a fixture depicting a rendering the
+            // app cannot produce is worse than no fixture.
+            let mut card = pending_card(
+                "mac-mini",
+                &Pending::Unreachable {
+                    message: unreachable_message(),
+                    age_secs: Some(42),
+                },
+            );
+            card["id"] = json!("mac-mini");
+            card
+        },
         {
             let mut card = pending_card("nuc-spare", &Pending::Failed(unreachable_message()));
             card["id"] = json!("nuc-spare");
@@ -3048,18 +3165,17 @@ fn run_dump(args: &[String]) -> bool {
         write_json(&path, &dump_single(&Connection::Live));
         return true;
     }
-    // A stale counterpart to --dump, built from the identical underlying
-    // snapshot/history (see dump_card) so tests/frontend/layout.spec.js can
-    // assert "the numbers don't change, only the badge does" against two
-    // Rust-derived fixtures instead of hand-building the stale one in JS --
-    // a hand-built fixture can't notice viewmodel's own `"stale"` string (or
-    // its message format) drifting out from under it.
-    if let Some(path) = dump_flag_path(args, "--dump-stale", "sample-stale.json") {
+    // The unreachable counterpart to --dump, so tests/frontend/layout.spec.js
+    // can assert "a host we cannot contact renders nothing at all" against two
+    // Rust-derived fixtures rather than hand-building the second in JS -- a
+    // hand-built fixture can't notice viewmodel's own state string or message
+    // format drifting out from under it.
+    if let Some(path) = dump_flag_path(args, "--dump-unreachable", "sample-unreachable.json") {
         write_json(
             &path,
-            &dump_single(&Connection::Stale {
+            &dump_pending(&Pending::Unreachable {
                 message: unreachable_message(),
-                stale_secs: Some(2),
+                age_secs: Some(2),
             }),
         );
         return true;
@@ -3343,6 +3459,7 @@ fn main() {
         openclaw_wake: tokio::sync::Notify::new(),
         approvals: Mutex::new(github::notify::ApprovalWatch::new()),
         service_status: Mutex::new(services::StatusWatch::new()),
+        host_reachability: Mutex::new(services::HostWatch::new()),
         handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
     });
@@ -3359,6 +3476,7 @@ fn main() {
     // numbers. It reads the poll set rather than owning one, so a host added in
     // Settings joins it on the next tick.
     rt.spawn(health_loop(Arc::clone(&app)));
+    rt.spawn(hosts_watch_loop(Arc::clone(&app)));
     // The GitHub panels run on the store's refresh interval and read the
     // portfolio and the token on every pass, so an edit in Settings joins them
     // on the next pass — which `wake_github` makes immediate.
@@ -3658,35 +3776,67 @@ mod tests {
     /// &Connection::Live)` wildcard landed here too and reported "live"
     /// forever. Reintroducing that wildcard must fail this test — see the
     /// task report for the round where that was confirmed by hand.
+    ///
+    /// A host we can no longer reach now renders **blank**, not as its last
+    /// snapshot behind a badge — the same defect one step further.
+    ///
+    /// This asserted the opposite until ubu-3xdv went down during the
+    /// 2026-08-06 GitHub outage and the card sat there showing four-minute-old
+    /// numbers as if they were now. Every figure on a host card is a
+    /// present-tense claim, and at a glance the numbers are what you read while
+    /// the badge is what you do not — so the whole card goes, which is the
+    /// em-dash rule applied at card scale rather than per figure.
     #[test]
-    fn stale_when_a_snapshot_exists_but_the_last_poll_failed_and_the_data_is_retained() {
+    fn an_unreachable_host_blanks_its_card_and_dates_the_outage() {
         let s = state_with(
             Some(fixture()),
             Some("Couldn't reach the agent. Check the host is up and the agent is running."),
             Some(Instant::now()),
         );
         let vm = view_for(&s);
-        assert_eq!(vm["connection"]["state"], "stale");
+        assert_eq!(vm["connection"]["state"], "unreachable");
         assert_eq!(vm["connection"]["color"], "#e05a4f");
-        let msg = vm["connection"]["message"].as_str().unwrap();
-        assert!(msg.contains("Couldn't reach the agent"));
-        assert!(msg.contains("ago"), "expected a relative age, got {msg:?}");
 
-        // The data itself must be exactly what a `Connection::Live` render of
-        // the same snapshot would have produced -- staleness changes the
-        // badge, never the numbers. Compared against a live render of the
-        // same fixture rather than a hardcoded `"34%"`, so this covers every
-        // data field at once and survives edits to `snapshot.json`.
+        // Not one figure survives: the card is an error, not a reading.
         let live = view_for(&state_with(Some(fixture()), None, Some(Instant::now())));
-        assert_eq!(vm["cpuValue"], live["cpuValue"]);
-        assert_eq!(vm["cores"], live["cores"]);
-        assert_eq!(vm["volumes"], live["volumes"]);
-        assert_eq!(vm["memValue"], live["memValue"]);
-        assert_ne!(
-            vm["connection"], live["connection"],
-            "the badge is the only thing staleness may change"
+        assert!(!live["cpuValue"].is_null(), "the live card has figures");
+        for field in ["cpuValue", "cores", "volumes", "memValue"] {
+            assert!(
+                vm[field].is_null(),
+                "{field} is a present-tense claim about a host that is not answering"
+            );
+        }
+
+        let msg = vm["error"]["message"].as_str().expect("error message");
+        assert!(msg.contains("Couldn't reach the agent"), "{msg:?}");
+        assert!(
+            msg.contains("last update") && msg.contains("ago"),
+            "when it went quiet is the one fact still true: {msg:?}"
         );
-        assert_eq!(vm["hostName"], "test-host");
+        assert_eq!(vm["error"]["hostName"], "test-host");
+    }
+
+    /// …and the loss is only on screen. `latest` and `histories` stay in state,
+    /// so the sparklines come back intact with the host rather than restarting
+    /// from an empty buffer.
+    #[test]
+    fn blanking_the_card_does_not_discard_the_state_behind_it() {
+        let s = state_with(
+            Some(fixture()),
+            Some("Couldn't reach the agent."),
+            Some(Instant::now()),
+        );
+        assert!(
+            s.latest.is_some(),
+            "the snapshot is retained, just not shown"
+        );
+
+        let recovered = state_with(Some(fixture()), None, Some(Instant::now()));
+        let vm = view_for(&recovered);
+        assert!(
+            !vm["cpuValue"].is_null(),
+            "and returns the moment it answers"
+        );
     }
 
     #[test]
@@ -3846,11 +3996,10 @@ mod tests {
             Some(true),
             Some(300),
         );
-        let msg = view_for(&s)["connection"]["message"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "unreachable");
+        // The blanked card carries the reason in `error`, not in the badge.
+        let msg = vm["error"]["message"].as_str().unwrap().to_string();
         assert!(msg.contains("Couldn't reach the agent"), "got {msg:?}");
         assert!(!msg.contains("sampler"), "got {msg:?}");
     }
@@ -3948,7 +4097,7 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(s.consecutive_failures, FAILURE_THRESHOLD);
-        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+        assert_eq!(view_for(&s)["connection"]["state"], "unreachable");
     }
 
     /// The debounce must not survive a success: a host that flaps
@@ -4033,18 +4182,24 @@ mod tests {
             );
         }
 
-        // …so the card still dates its staleness instead of falling back to
-        // the "unknown" branch `view_for` reserves for a missing
+        // …so the blanked card still dates the outage instead of falling back
+        // to the "unknown" branch `view_for` reserves for a missing
         // `last_success`.
         let vm = view_for(&s);
-        assert_eq!(vm["connection"]["state"], "stale");
-        let msg = vm["connection"]["message"].as_str().unwrap();
+        assert_eq!(vm["connection"]["state"], "unreachable");
+        let msg = vm["error"]["message"].as_str().unwrap();
         assert!(msg.contains("ago"), "expected a relative age, got {msg:?}");
         assert!(
             !msg.contains("unknown"),
             "the age is known -- a run of failures must not erase it: {msg:?}"
         );
-        assert_eq!(vm["cpuValue"], fixture_cpu_value());
+        // The snapshot is retained in state, so recovery is instant -- it is
+        // simply not rendered while the host is unreachable.
+        assert!(
+            vm["cpuValue"].is_null(),
+            "the card is blanked, not stale-badged"
+        );
+        assert!(s.latest.is_some(), "…and the reading behind it survives");
     }
 
     #[test]
@@ -4054,7 +4209,7 @@ mod tests {
         record_poll(&mut s, Ok(fixture()), first_success);
         record_poll(&mut s, Err(AgentError::AuthFailed), Instant::now());
         record_poll(&mut s, Err(AgentError::AuthFailed), Instant::now());
-        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+        assert_eq!(view_for(&s)["connection"]["state"], "unreachable");
 
         let recovered = Instant::now();
         record_poll(&mut s, Ok(fixture()), recovered);
@@ -4154,11 +4309,13 @@ mod tests {
         assert_eq!(cards[0]["connection"]["state"], "live");
         assert_eq!(cards[0]["cpuValue"], fixture_cpu_value());
 
-        assert_eq!(cards[1]["connection"]["state"], "stale");
-        assert_eq!(
-            cards[1]["cpuValue"], cards[0]["cpuValue"],
-            "a stale host keeps the numbers it last heard"
+        assert_eq!(cards[1]["connection"]["state"], "unreachable");
+        assert!(
+            cards[1]["cpuValue"].is_null(),
+            "an unreachable host shows no figures at all -- see \
+             `an_unreachable_host_blanks_its_card_and_dates_the_outage`"
         );
+        assert_eq!(cards[1]["error"]["hostName"], "beta");
 
         assert_eq!(cards[2]["connection"]["state"], "failed");
         assert_eq!(cards[2]["error"]["message"], "Agent returned HTTP 503.");
@@ -5096,7 +5253,7 @@ mod tests {
             .iter()
             .map(|c| c["connection"]["state"].as_str().expect("state"))
             .collect();
-        assert_eq!(states, vec!["live", "live", "stale", "failed"]);
+        assert_eq!(states, vec!["live", "live", "unreachable", "failed"]);
 
         let ids: Vec<&str> = cards
             .iter()

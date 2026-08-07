@@ -1,5 +1,9 @@
 :root {
   --panel:#050805; --panelAlt:#0a0f0c; --line:#13301f; --green:#33d17a;
+  /* `viewmodel::color::RED`. Every colour that *carries meaning* still arrives
+     from Rust via CSSOM — this exists for the two chrome rules that cannot
+     (a border and a keyframe), and must stay equal to the Rust constant. */
+  --red:#e05a4f;
   --muted:#5a6b60; --ink:#cfe9d8; --read:#3fb950; --write:#e0922a;
   --net:#5b8def; --netup:#9bd34a;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -55,6 +59,23 @@ body { padding:var(--cockpit-gap, 16px); }
 .topbar .host-tabs .tab { flex:none; }
 .card { padding:18px; background:var(--panel); border:1px solid var(--line);
   border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
+/* A host we cannot contact renders as its header and one sentence — every
+   chart, core grid, volume tile and process row below is hidden rather than
+   left showing the readings it had when the link dropped.
+
+   `> *:not(.hdr):not(.card-down)` rather than a `.card-body` wrapper, so an
+   element added to the template later is hidden by default here instead of
+   quietly becoming the one stale figure that survives. Cards are reused across
+   polls to keep their chart history, which is precisely why the old markup was
+   still on screen: nothing cleared it.
+
+   The border goes red too. In tabs mode only one card is visible at a time, so
+   the card itself has to be unmistakable for whichever host you are actually
+   looking at — the tab bar carries the alarm for the ones you are not. */
+.card[data-state="unreachable"], .card[data-state="failed"] { border-color:var(--red); }
+.card[data-state="unreachable"] > *:not(.hdr):not(.card-down),
+.card[data-state="failed"] > *:not(.hdr):not(.card-down) { display:none; }
+.card-down { font-size:12px; font-weight:700; margin:0; }
 /* The card's header row and the section headers below it are the same shape: a
    marker, a label that gives ground first, then a value pinned right. The host
    header used to be a row of its own above the CPU section header; the two are
@@ -269,7 +290,16 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    second amber would not have told them apart. */
 @keyframes gh-blink { from { opacity:1; } to { opacity:0.25; } }
 .dot.blink { animation:gh-blink 0.7s ease-in-out infinite alternate; }
-@media (prefers-reduced-motion: reduce) { .dot.blink { animation:none; } }
+/* A host tab whose card cannot be contacted. Same animation as the
+   needs-approval dot, because it is the same claim: this needs a human now.
+   The colour is Rust's, applied via CSSOM; only the border and the pulse are
+   here. `alert` is a decision the payload carries, never a state string this
+   file re-reads. */
+.tab[data-alert] { border-color:var(--red);
+  animation:gh-blink 0.7s ease-in-out infinite alternate; }
+@media (prefers-reduced-motion: reduce) {
+  .dot.blink, .tab[data-alert] { animation:none; }
+}
 
 /* The Runners header: stats reading left, platform chips flush right, one
    line. They used to stack, which spent a whole line of a glanceable panel on

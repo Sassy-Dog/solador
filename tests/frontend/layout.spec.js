@@ -47,6 +47,12 @@ async function stubCockpit(page, payloads) {
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
+/** `#e05a4f` as the browser reports a computed colour. */
+const rgb = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+};
+
 /**
  * Stubs the cockpit *and* every panel command, so the cards carry their real
  * contents rather than empty chrome.
@@ -321,24 +327,21 @@ test("a core cell's value text renders its usage colour", async ({ page }) => {
   expect(computed).toBe(expected);
 });
 
-test("a host that fails after connecting keeps its last-known data, with an unmissable stale indicator", async ({ page, baseURL }) => {
-  // Regression test for the "stale value presented as current" defect: a
-  // host that dies after a good poll used to render a fully live-looking
-  // card forever. Simulates that sequence by stubbing `window.__TAURI__` (no
-  // real Tauri IPC in a browser context) so the first `invoke("cockpit")`
-  // returns a live payload and every call after returns a "stale" one --
-  // the whole point is that the numbers must not change, only the connection
-  // badge.
+test("a host that fails after connecting blanks its card and says it cannot be contacted", async ({ page, baseURL }) => {
+  // Regression test for "a stale value presented as current", now taken to its
+  // conclusion. A host that dies after a good poll used to render its last
+  // reading behind a red badge — and on 2026-08-06 ubu-3xdv sat like that
+  // through a GitHub outage, showing four-minute-old numbers as if they were
+  // now. A card is read at a glance, and at a glance a card is its figures.
   //
-  // Both fixtures are dumped by the real Rust binary (`--dump` / `--dump-stale`,
-  // see tests/frontend/package.json's fixtures script and
-  // app/src-tauri/src/main.rs), from the identical underlying
-  // snapshot/history, rather than the stale one being hand-built here from
-  // `live` with a copy-pasted "stale"/message string: a hand-built copy can't
-  // notice viewmodel's own strings drifting out from under it (see finding M4).
+  // Both fixtures are dumped by the real Rust binary (`--dump` /
+  // `--dump-unreachable`, see tests/frontend/package.json's fixtures script)
+  // rather than the second being hand-built here from the first: a hand-built
+  // copy can't notice viewmodel's own state string or message format drifting
+  // out from under it (see finding M4).
   await stubCockpit(page, [
     await fixture(baseURL, "sample.json"),
-    await fixture(baseURL, "sample-stale.json"),
+    await fixture(baseURL, "sample-unreachable.json"),
   ]);
 
   await gotoApp(page);
@@ -347,17 +350,30 @@ test("a host that fails after connecting keeps its last-known data, with an unmi
   await expect(page.locator(".connDot")).toHaveAttribute("data-state", "live");
   const cpuBefore = await page.locator(".cpuValue").textContent();
   expect(cpuBefore).not.toBe("—");
+  await expect(page.locator(".cores .core").first()).toBeVisible();
 
   // The app's own poll `setInterval` (only armed when `window.__TAURI__`
   // exists) drives the second poll -- wait for that real transition rather
   // than calling into app.js internals directly.
-  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "stale", { timeout: 5000 });
+  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "unreachable", {
+    timeout: 5000,
+  });
 
-  const cpuAfter = await page.locator(".cpuValue").textContent();
-  expect(cpuAfter, "the reading must not change just because the poll failed").toBe(cpuBefore);
-  expect(cpuAfter).not.toBe("—");
-  await expect(page.locator(".staleMsg")).toContainText("Couldn't reach the agent");
-  await expect(page.locator(".staleMsg")).toContainText("ago");
+  // Not one figure survives, and the core grid is gone rather than left
+  // showing the last shape it had. Cards are reused across polls to keep their
+  // chart history, so this is the assertion that catches stale markup nobody
+  // cleared.
+  await expect(page.locator(".cpuValue")).toHaveText("—");
+  await expect(page.locator(".cores .core").first()).toBeHidden();
+  await expect(page.locator(".chart").first()).toBeHidden();
+
+  // What is left is the host's name and one sentence dating the outage.
+  const down = page.locator(".card-down");
+  await expect(down).toBeVisible();
+  await expect(down).toContainText("Couldn't reach the agent");
+  await expect(down).toContainText("last update");
+  await expect(down).toContainText("ago");
+  await expect(page.locator(".hostName")).toHaveText("ubu-3xdv");
 });
 
 test("a host whose agent stopped sampling loses the green dot even though every poll succeeded", async ({ page, baseURL }) => {
@@ -414,9 +430,10 @@ test("every configured host gets its own card, in payload order", async ({ page,
 
 test("one unreachable host shows its error card while the others stay live", async ({ page, baseURL }) => {
   // Per-host failure isolation, at the DOM. The fixture is deliberately mixed
-  // (live / stale / failed, dumped together by `--dump-cockpit`) so a shared
-  // error path -- one connection badge for the page, one `cpuValue` id shared
-  // across cards -- shows up as cards agreeing when they must not.
+  // (live / unreachable / never-connected, dumped together by
+  // `--dump-cockpit`) so a shared error path -- one connection badge for the
+  // page, one `cpuValue` id shared across cards -- shows up as cards agreeing
+  // when they must not.
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);
   await gotoApp(page);
@@ -425,19 +442,22 @@ test("one unreachable host shows its error card while the others stay live", asy
   const cards = page.locator(".cockpit .card");
   await expect(cards).toHaveCount(4);
   expect(await cards.evaluateAll((els) => els.map((e) => e.dataset.state)))
-    .toEqual(["live", "live", "stale", "failed"]);
+    .toEqual(["live", "live", "unreachable", "failed"]);
 
   // The live host is untouched by its neighbours' trouble.
   await expect(cards.nth(1).locator(".cpuValue")).toHaveText(vm.hosts[1].cpuValue);
   await expect(cards.nth(1).locator(".staleMsg")).toHaveText("");
 
-  // The stale host keeps the numbers it last heard, and says how old they are.
-  await expect(cards.nth(2).locator(".cpuValue")).toHaveText(vm.hosts[2].cpuValue);
-  await expect(cards.nth(2).locator(".staleMsg")).toContainText("Couldn't reach the agent");
+  // The unreachable host shows nothing but its name and the reason -- and
+  // crucially not its neighbour's figures, which a shared `cpuValue` selector
+  // would produce.
+  await expect(cards.nth(2).locator(".cpuValue")).toHaveText("—");
+  await expect(cards.nth(2).locator(".card-down")).toContainText("Couldn't reach the agent");
+  await expect(cards.nth(2).locator(".cores .core").first()).toBeHidden();
 
   // The host that never connected shows the cause, never a fabricated number.
   await expect(cards.nth(3).locator(".cpuValue")).toHaveText("—");
-  await expect(cards.nth(3).locator(".cpuModel")).toHaveText(vm.hosts[3].error.message);
+  await expect(cards.nth(3).locator(".card-down")).toHaveText(vm.hosts[3].error.message);
 });
 
 test("this machine leads the grid and admits what it could not measure", async ({ page, baseURL }) => {
@@ -526,9 +546,13 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
       .map((c) => c.querySelector(".hostName").textContent)
   );
   expect(overflowing, "no card's reading may be pushed past its own edge").toEqual([]);
-  const staleCard = page.locator(".cockpit .card").filter({ hasText: "Couldn't reach the agent" }).first();
-  await expect(staleCard.locator(".staleMsg")).toContainText("Couldn't reach the agent");
-  await expect(staleCard.locator(".cpuValue")).not.toHaveText("");
+  // …and the unreachable card in the same fixture carries its reason on its
+  // own line rather than in the header, where a long message would compete
+  // with the very ellipsis rule this test exists to pin.
+  const downCard = page.locator(".cockpit .card").filter({ hasText: "Couldn't reach the agent" }).first();
+  await expect(downCard.locator(".card-down")).toContainText("Couldn't reach the agent");
+  await expect(downCard.locator(".staleMsg")).toHaveText("");
+  await expect(downCard.locator(".cpuValue")).toHaveText("—");
 });
 
 test("the panel rows below the grid are the ones Rust reflowed", async ({ page, baseURL }) => {
@@ -858,6 +882,38 @@ test("the tabs overflow mode shows one host at a time, and the bar switches betw
   const shown = cards.filter({ visible: true });
   await expect(shown).toHaveCount(1);
   await expect(shown.locator(".hostName")).toHaveText(second.label);
+});
+
+/**
+ * A tab bar shows one card and hides the rest, so a host that drops while you
+ * are looking at another one has nothing on screen but its button. On
+ * 2026-08-06 ubu-3xdv went down mid-outage and stayed unnoticed for exactly
+ * that reason — the alarm has to live on the tab.
+ */
+test("a tab whose host cannot be contacted is red and pulses", async ({ page, baseURL }) => {
+  const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
+  const down = tabbed.hostTabs.tabs.filter((t) => t.alert);
+  expect(down.length, "the fixture must carry an unreachable host").toBeGreaterThan(0);
+
+  await stubCockpit(page, [tabbed]);
+  await gotoApp(page);
+
+  const alerting = page.locator("#hostTabs .tab[data-alert]");
+  await expect(alerting).toHaveCount(down.length);
+  await expect(alerting.first()).toHaveText(down[0].label);
+  await expect(alerting.first()).toHaveCSS("color", rgb(down[0].color));
+  // The pulse is what makes it findable in peripheral vision; a red tab that
+  // sits still reads as a style, not an alarm.
+  expect(
+    await alerting.first().evaluate((el) => getComputedStyle(el).animationName)
+  ).not.toBe("none");
+
+  // …and the healthy tabs are untouched, or the bar would read as all-alarm.
+  const calm = page.locator("#hostTabs .tab:not([data-alert])");
+  await expect(calm).toHaveCount(tabbed.hostTabs.tabs.length - down.length);
+  expect(
+    await calm.first().evaluate((el) => getComputedStyle(el).animationName)
+  ).toBe("none");
 });
 
 test("the host tab bar rides the Hosts title line instead of costing a row", async ({ page, baseURL }) => {

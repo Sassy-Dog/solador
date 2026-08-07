@@ -781,6 +781,27 @@ A failed poll is debounced two ticks before the card stops claiming to be
 current, matching `RemoteHostMetricsService.failureThreshold`: one missed poll on
 a flappy tailnet is a blip, not an outage.
 
+**Past that, the card goes blank.** A host we can no longer contact renders its
+name, a red border and one sentence dating the outage — not its last snapshot
+behind a badge, which is what it did until ubu-3xdv went down during the
+2026-08-06 GitHub outage and sat there showing four-minute-old numbers as if
+they were now. Every figure on a host card is a present-tense claim; at a glance
+a card *is* its figures, and the badge is the part nobody reads. This is the
+em-dash rule at card scale rather than per field, and `viewmodel::card` carries
+no `Connection::Stale` variant any more so it cannot come back by accident.
+
+The loss is only on screen: `latest` and `histories` stay in state, so the
+sparklines return intact the moment the host answers. What survives on the card
+is *when* it went quiet, the one fact still true.
+
+In tabs mode a hidden host has nothing on screen but its button, so the **tab
+carries the alarm** — red and pulsing (`alert` in the `hostTabs` payload, a
+verdict Rust makes rather than a state string the frontend re-reads). And either
+way a reachability change fires a **banner**: `services::HostWatch`, the same
+transition discipline as the statuspage watch, keyed on the same `error` field
+the card renders from so a banner and a red card can never disagree — debounce
+included.
+
 ### A succeeding poll is not proof the data is current
 
 The card's four states — connecting, live, stale, failed — are facts about
@@ -794,9 +815,11 @@ poll succeeds, the dot stays green, and the numbers are frozen — the failure m
 The agent already publishes the answer and nothing consumed it: `/v1/health`
 carries `samplerStale` and `sampleAgeSeconds`. So each host with a token is
 **also polled for health, every 10s**, alongside its 1s snapshot poll
-(`health_loop` in `src/main.rs`), and `samplerStale: true` renders the *existing*
-stale badge — red, real data, unmissable — rather than a fifth state. What
-differs is the message and the clock:
+(`health_loop` in `src/main.rs`), and `samplerStale: true` renders the stale
+badge — red, real data, unmissable. This is the **one** case that keeps its
+numbers behind a badge, and it earns that: the host is answering, so the figures
+are what it is genuinely serving. A host we cannot *reach* blanks instead (see
+below). What differs is the message and the clock:
 
 - The message names the **agent**, not the link
   (`viewmodel::card::SAMPLER_STALLED_MESSAGE`). A stalled sampler wants the agent
@@ -1168,7 +1191,9 @@ deleting a keychain item before every launch.
 
 ```bash
 cargo run -p devcanopy-app -- --dump sample.json                 # one live host
-cargo run -p devcanopy-app -- --dump-stale sample-stale.json     # …stale, same numbers
+cargo run -p devcanopy-app -- --dump-unreachable sample-unreachable.json
+#   …the link is down on a host we used to reach: a BLANK card, which is what
+#   `view_for` produces for it. No figures survive.
 cargo run -p devcanopy-app -- --dump-sampler-stale sample-sampler-stale.json
 #   …the poll SUCCEEDED and the card is stale anyway: the agent's own
 #   `/v1/health` says its sampler stopped, dated by the agent's clock.
