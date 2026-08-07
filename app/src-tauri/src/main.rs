@@ -22,6 +22,7 @@ mod github;
 mod local;
 mod openclaw;
 mod panel;
+mod services;
 mod settings;
 mod usage;
 
@@ -204,6 +205,10 @@ struct App {
     /// both panels render from", and a delivery ledger inside it would make
     /// that sentence false.
     approvals: Mutex<github::notify::ApprovalWatch>,
+    /// The last known availability of each watched third-party service, for the
+    /// same reason and with the same discipline as `approvals` above: a
+    /// delivery ledger, not something a panel renders.
+    service_status: Mutex<services::StatusWatch>,
     /// The Tauri handle, once the app has started — the notifier's way out to
     /// the OS.
     ///
@@ -1052,11 +1057,47 @@ fn github_token(credential: Credential, state: &mut GitHubState) -> Option<Strin
 /// would be the exact misdirection this verdict exists to prevent.
 async fn poll_github_status(app: &Arc<App>) {
     let result = github::status::StatusPageClient::new().summary().await;
-    let mut state = app.github.lock().expect("github state poisoned");
-    match result {
-        Ok(status) => state.apply_service_status(status),
-        Err(e) => state.apply_service_status_error(e.user_message()),
-    }
+
+    // Re-read like the token, so switching the preference off applies on the
+    // next pass rather than on the next launch.
+    let notify_changes = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().notify_on_service_change
+    };
+
+    let notices = {
+        let mut state = app.github.lock().expect("github state poisoned");
+        // The reading the watch diffs is the one this pass obtained, not the
+        // one the panel ends up rendering: a failed fetch keeps the last good
+        // status on screen, and treating that retained value as a fresh
+        // observation would make an unreachable page look like a steady state
+        // forever.
+        let reading = match &result {
+            Ok(status) => services::Reading {
+                service: services::ServiceId::GitHub,
+                status: status.actions,
+                incident: status.incident.as_ref().map(|i| i.name.as_str()),
+            },
+            Err(_) => services::Reading {
+                service: services::ServiceId::GitHub,
+                status: None,
+                incident: None,
+            },
+        };
+        let notices = {
+            let mut watch = app.service_status.lock().expect("status watch poisoned");
+            watch.observe(&[reading], notify_changes)
+        };
+        match result {
+            Ok(status) => state.apply_service_status(status),
+            Err(e) => state.apply_service_status_error(e.user_message()),
+        }
+        notices
+    };
+
+    // Last, and outside every lock: showing a banner is the one thing in this
+    // function that leaves the process.
+    deliver_status_notices(app, &notices);
 }
 
 /// One pass over every GitHub source: each enabled repo's health, this
@@ -1179,48 +1220,61 @@ async fn poll_github(app: &Arc<App>) {
 /// platform does not know is a name it ignores, so the honest port is to name
 /// the sound where the name means something and stay silent where it does not.
 #[cfg(target_os = "macos")]
-const APPROVAL_SOUND: Option<&str> = Some("NSUserNotificationDefaultSoundName");
+const NOTIFICATION_SOUND: Option<&str> = Some("NSUserNotificationDefaultSoundName");
 #[cfg(not(target_os = "macos"))]
-const APPROVAL_SOUND: Option<&str> = None;
+const NOTIFICATION_SOUND: Option<&str> = None;
 
-/// Show this pass's needs-approval banners.
+/// Show a pass's banners.
 ///
-/// The only impure half of the feature — [`github::notify::ApprovalWatch`]
-/// decided *whether* each of these exists, and this decides nothing.
+/// The only impure half of either notifier — the watches decided *whether* each
+/// of these exists, and this decides nothing. `what` names them for the one log
+/// line that can fire, so a dropped banner says which kind it was.
 ///
 /// Delivery goes through `tauri-plugin-notification`'s **Rust** API, which is
 /// why the ACL grants that plugin nothing at all: the webview is never in the
 /// path. A notice arriving before `tauri::Builder::run` has handed us a handle
 /// is dropped rather than queued — the poll loops are spawned first, so that
-/// window exists, but the pass that opens it is the seeding pass, which by
+/// window exists, but the pass that opens it is a seeding pass, which by
 /// construction produces no notices.
-fn deliver_approval_notices(app: &App, notices: &[github::notify::ApprovalNotice]) {
-    if notices.is_empty() {
+fn deliver_banners(app: &App, what: &str, banners: &[(&str, &str)]) {
+    if banners.is_empty() {
         return;
     }
     let Some(handle) = app.handle.get() else {
         eprintln!(
-            "dropping {} needs-approval notification(s): the app is not up yet",
-            notices.len()
+            "dropping {} {what} notification(s): the app is not up yet",
+            banners.len()
         );
         return;
     };
-    for notice in notices {
-        let mut builder = handle
-            .notification()
-            .builder()
-            .title(notice.title.as_str())
-            .body(notice.body.as_str());
-        if let Some(sound) = APPROVAL_SOUND {
+    for (title, body) in banners {
+        let mut builder = handle.notification().builder().title(*title).body(*body);
+        if let Some(sound) = NOTIFICATION_SOUND {
             builder = builder.sound(sound);
         }
         // Logged, not surfaced: this is the same silent no-op Swift takes when
         // the user has denied notification permission, and a cockpit panel is
         // the wrong place to report that the OS declined a banner.
         if let Err(e) = builder.show() {
-            eprintln!("could not show a needs-approval notification: {e}");
+            eprintln!("could not show a {what} notification: {e}");
         }
     }
+}
+
+fn deliver_approval_notices(app: &App, notices: &[github::notify::ApprovalNotice]) {
+    let banners: Vec<(&str, &str)> = notices
+        .iter()
+        .map(|n| (n.title.as_str(), n.body.as_str()))
+        .collect();
+    deliver_banners(app, "needs-approval", &banners);
+}
+
+fn deliver_status_notices(app: &App, notices: &[services::StatusNotice]) {
+    let banners: Vec<(&str, &str)> = notices
+        .iter()
+        .map(|n| (n.title.as_str(), n.body.as_str()))
+        .collect();
+    deliver_banners(app, "service-status", &banners);
 }
 
 /// The GitHub panels' poll loop, on the store's `refresh_interval_secs`.
@@ -3288,6 +3342,7 @@ fn main() {
         openclaw: Mutex::new(OpenClawState::new()),
         openclaw_wake: tokio::sync::Notify::new(),
         approvals: Mutex::new(github::notify::ApprovalWatch::new()),
+        service_status: Mutex::new(services::StatusWatch::new()),
         handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
     });

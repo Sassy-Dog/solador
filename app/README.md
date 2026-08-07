@@ -408,6 +408,29 @@ centre anywhere near it:
   likewise persists with no control anywhere in Settings. It is re-read on every
   pass, so editing the store file applies without a relaunch.
 
+**The second notifier watches services rather than runs.** `services::StatusWatch`
+(`app/src-tauri/src/services.rs`) fires when a watched third-party service
+changes availability — GitHub Actions entering a major outage, and coming back
+out of one. It inherits all three rules above and adds a fourth the approval
+watch does not need:
+
+- **Unknown is not a transition.** A statuspage we could not reach is not a
+  status, so an unreadable pass leaves the baseline exactly where it was.
+  Reading `None → Operational` as a recovery would announce "GitHub is back!"
+  every time a CDN blip resolved, having never said it was down. `ApprovalWatch`
+  lives with the mirror-image wart deliberately (an unreachable repo re-alerts on
+  its return) because its source is one call per repo; this one reads a single
+  endpoint, so the honest answer is available and worth taking.
+- **Seeding is per service, not global** — there is no `seeded` flag. Vendors
+  enter the map at whatever pass each first answers, and a global flag would let
+  the second vendor's very first reading fire a banner.
+- Preference: `notify_on_service_change`, default true, no UI, same rules as its
+  neighbour.
+
+Both notifiers deliver through one `deliver_banners` (`main.rs`), which is why
+the ACL still grants `tauri-plugin-notification` nothing: the webview is never
+in the path.
+
 Two honest gaps against Swift, both platform, neither hidden:
 
 - **The banner is not tappable.** Swift attaches the run's `htmlURL` to the

@@ -707,6 +707,7 @@ mod tests {
             // Flipped off the default so the round trip proves the field
             // persists rather than reappearing from `Default`.
             notify_on_approval_needed: false,
+            notify_on_service_change: false,
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
         });
 
