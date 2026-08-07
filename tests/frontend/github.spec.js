@@ -586,7 +586,7 @@ async function gotoWithVerdict(page, baseURL, availability) {
 test("both panels paint the verdict beside their own title", async ({ page, baseURL }) => {
   // One shared element would be orphaned when reflow splits the two panels
   // onto separate rows, which is why the verdict travels on both payloads.
-  const { repos } = await gotoWithVerdict(page, baseURL, chip("GitHub OK", "#1c6b41"));
+  const { repos } = await gotoWithVerdict(page, baseURL, chip("Operational", "#1c6b41"));
   for (const [chipId, titleId] of [
     ["#reposAvailability", "#reposTitle"],
     ["#runnersAvailability", "#runnersTitle"],
@@ -606,7 +606,7 @@ test("every verdict paints Rust's label and colour", async ({ page, baseURL }) =
   // applies what it is given. Amber is "GitHub is slow", red is "runs are
   // failing" or "it's ours" — the label is what tells those two apart.
   for (const [label, color] of [
-    ["GitHub OK", "#1c6b41"], // operational + fleet online
+    ["Operational", "#1c6b41"], // operational + fleet online
     ["Services Degraded", "#e09a26"], // degraded_performance / partial_outage
     ["Major Outage", "#e05a4f"], // major_outage — red, not amber
     ["Fleet Down", "#e05a4f"], // operational + fleet dark -> it's us

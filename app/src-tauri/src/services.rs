@@ -767,6 +767,32 @@ mod tests {
         assert_eq!(row("azure")["degraded"], false);
     }
 
+    /// GitHub's health is painted twice — as a Services row, and as the
+    /// availability chip beside the Repos and Runners titles — and both must
+    /// use the same word for it.
+    ///
+    /// They are two renderings of one `ComponentStatus`, so a screen calling it
+    /// *GitHub OK* in the header while the row beneath called it *Operational*
+    /// invited the reading that the two measure different things. This pins the
+    /// two literals together across the crate boundary, which is the only place
+    /// they can be compared: `crates/github` cannot see the app, and the app's
+    /// own table is a `match` arm rather than a shared constant.
+    #[test]
+    fn the_chip_and_the_services_row_call_a_healthy_github_the_same_thing() {
+        let vm = view(&fixture_statuses());
+        let github = vm["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["id"] == "github")
+            .expect("github row")
+            .clone();
+        assert_eq!(github["state"], github::status::ALL_GOOD_LABEL);
+        // And in the same green, or one would read as the weaker claim. The
+        // row carries the rendered hex, not the raw channel value.
+        assert_eq!(github["color"], color::hex(color::GREEN_DIM));
+    }
+
     /// A vendor nobody has read yet is muted and says so. Never green: a check
     /// that cannot answer must not report the happy path.
     #[test]
