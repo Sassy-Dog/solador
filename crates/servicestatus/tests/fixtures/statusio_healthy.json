@@ -1,0 +1,338 @@
+{
+  "result": {
+    "status_overall": {
+      "updated": "2026-07-31T12:30:27.215Z",
+      "status": "Operational",
+      "status_code": 100
+    },
+    "status": [
+      {
+        "name": "Database Connectivity",
+        "id": "690ccc238c3745059f2b33b2",
+        "containers": [
+          {
+            "name": "AWS ap-southeast-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-central-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS sa-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure germanywestcentral",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure eastus2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure westus3",
+            "status": "Operational"
+          }
+        ]
+      },
+      {
+        "name": "Project/Branch Operations",
+        "id": "690ccc9c1cc5d9057f11fde1",
+        "containers": [
+          {
+            "name": "AWS ap-southeast-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-central-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS sa-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure germanywestcentral",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure eastus2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure westus3",
+            "status": "Operational"
+          }
+        ]
+      },
+      {
+        "name": "Console API",
+        "id": "690cccdd8c199d057e3d8b18",
+        "containers": [
+          {
+            "name": "Global",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-central-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS sa-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure germanywestcentral",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure eastus2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure westus3",
+            "status": "Operational"
+          }
+        ]
+      },
+      {
+        "name": "Console Frontend",
+        "id": "690ccd0d702b5705544465a0",
+        "containers": [
+          {
+            "name": "Global",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-central-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS sa-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure germanywestcentral",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure eastus2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure westus3",
+            "status": "Operational"
+          }
+        ]
+      },
+      {
+        "name": "Account Creation",
+        "id": "690ccd3458ed170546c6f5e6",
+        "containers": [
+          {
+            "name": "Global",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-central-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS sa-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure germanywestcentral",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure eastus2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure westus3",
+            "status": "Operational"
+          }
+        ]
+      },
+      {
+        "name": "Console Login",
+        "id": "690ccd538c199d057e3d8b24",
+        "containers": [
+          {
+            "name": "Global",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS ap-southeast-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-central-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS eu-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS sa-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-1",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-east-2",
+            "status": "Operational"
+          },
+          {
+            "name": "AWS us-west-2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure germanywestcentral",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure eastus2",
+            "status": "Operational"
+          },
+          {
+            "name": "Azure westus3",
+            "status": "Operational"
+          }
+        ]
+      },
+      {
+        "name": "Website",
+        "id": "6878fc85709daa75be6c7e4c",
+        "containers": [
+          {
+            "name": "Global",
+            "status": "Operational"
+          }
+        ]
+      }
+    ],
+    "incidents": []
+  }
+}

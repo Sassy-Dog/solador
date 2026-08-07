@@ -15,6 +15,7 @@ use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pendin
 use viewmodel::cockpit::{
     host_columns, panel_table, CockpitLayout, PanelKind, PanelSpan, HOST_CARD_MIN_WIDTH, SPACING,
 };
+use viewmodel::color;
 
 mod azure;
 mod containers;
@@ -22,6 +23,8 @@ mod github;
 mod local;
 mod openclaw;
 mod panel;
+mod resume;
+mod services;
 mod settings;
 mod usage;
 
@@ -204,6 +207,16 @@ struct App {
     /// both panels render from", and a delivery ledger inside it would make
     /// that sentence false.
     approvals: Mutex<github::notify::ApprovalWatch>,
+    /// The last known availability of each watched third-party service, for the
+    /// same reason and with the same discipline as `approvals` above: a
+    /// delivery ledger, not something a panel renders.
+    service_status: Mutex<services::StatusWatch>,
+    /// Every watched vendor's availability, as the panels render it.
+    services: Mutex<services::ServiceStatuses>,
+    /// The last known reachability of each monitored host, for the banner. Same
+    /// discipline as `approvals` and `service_status`: a delivery ledger, not
+    /// something a card renders.
+    host_reachability: Mutex<services::HostWatch>,
     /// The Tauri handle, once the app has started — the notifier's way out to
     /// the OS.
     ///
@@ -248,29 +261,39 @@ fn view_for(s: &HostState) -> Value {
         ),
         // A snapshot exists and the most recent poll succeeded: live.
         (Some(snap), None) => host_card(&s.name, snap, &s.histories, &Connection::Live),
-        // A snapshot exists but the most recent poll failed: show it anyway
-        // (this is real data, just not current), with an unmissable stale
-        // badge instead of silently going on looking live forever.
+        // A snapshot exists but the most recent poll failed: **blank the card**
+        // and say the host cannot be contacted.
         //
-        // No sampler guard here on purpose. Both facts produce the same badge,
+        // This used to render the last snapshot behind a stale badge, on the
+        // reasoning that it was real data, just not current. A badge is not
+        // enough. Every figure on a host card is a present-tense claim — 12%
+        // CPU, 40°C, 3 containers up — and a machine that has not answered in
+        // four minutes is none of those things. Reading the card at a glance,
+        // which is the only way an always-on cockpit is ever read, the numbers
+        // are what you see and the badge is what you do not. It is the em-dash
+        // rule at card scale: an unmeasured figure is not shown as a figure.
+        //
+        // The loss is bounded and the recovery is free — `histories` stays in
+        // state, so the sparklines come back intact with the host. What is kept
+        // is *when* it went quiet, which is the one fact still true.
+        //
+        // No sampler guard here on purpose. Both facts produce the same card,
         // and when the link is down the transport failure is the more proximate
         // cause *and* the more recent one: `sampler_stale` is by then whatever
         // the last reachable health poll said, up to ten seconds before the
         // agent went quiet. Naming the sampler would send an operator to
         // restart a daemon they cannot currently reach.
-        (Some(snap), Some(msg)) => {
+        (Some(_), Some(msg)) => {
             // `None` when a snapshot exists but no successful poll is on
             // record -- unreachable via the real poll loop below (latest and
-            // last_success are always set together), but host_card must
-            // still render it as "unknown", never a fabricated `0s ago`.
-            let stale_secs = s.last_success.map(|t| t.elapsed().as_secs());
-            host_card(
+            // last_success are always set together), but the card must still
+            // render it as "unknown", never a fabricated `0s ago`.
+            let age_secs = s.last_success.map(|t| t.elapsed().as_secs());
+            pending_card(
                 &s.name,
-                snap,
-                &s.histories,
-                &Connection::Stale {
+                &Pending::Unreachable {
                     message: msg.clone(),
-                    stale_secs,
+                    age_secs,
                 },
             )
         }
@@ -343,7 +366,25 @@ fn host_tab_bar(cards: &[Value], columns: usize, overflow: HostOverflowMode) -> 
         "minHeight": viewmodel::cockpit::HOST_TABS_MIN_HEIGHT,
         "tabs": cards
             .iter()
-            .map(|card| json!({ "id": card["id"], "label": card_host_name(card) }))
+            .map(|card| {
+                // A tab bar shows one card and hides the rest, so a host that
+                // went down while you were looking at another one is invisible
+                // — which is exactly how ubu-3xdv stayed unnoticed through the
+                // 2026-08-06 outage. The alarm therefore has to live on the
+                // tab, the only thing on screen that represents a hidden host.
+                let state = card["connection"]["state"].as_str().unwrap_or_default();
+                let down = matches!(state, "unreachable" | "failed");
+                json!({
+                    "id": card["id"],
+                    "label": card_host_name(card),
+                    // Colour and alarm are decided here like every other
+                    // colour: the frontend paints `alert`, it does not derive
+                    // it from a state string it would have to know the meaning
+                    // of.
+                    "color": down.then(|| color::hex(color::RED)),
+                    "alert": down,
+                })
+            })
             .collect::<Vec<_>>(),
     })
 }
@@ -706,6 +747,113 @@ async fn poll_loop(
     }
 }
 
+/// Notices the machine waking from sleep and refreshes everything at once.
+///
+/// The five `tokio::time::interval` loops need no help: hosts and the local
+/// card tick at 1s, containers and health at 10s, and none of them is reachable
+/// from here anyway — `poll_loop` is spawned without an `Arc<App>`. What this
+/// exists for is the four *slow* loops, which would otherwise show the previous
+/// night's data for up to a full interval after the lid opens.
+///
+/// **This deliberately breaks the rule the wake channels were built for.**
+/// `app/README.md` records that every mutation wakes exactly the loop its data
+/// feeds and no other, because a wake spends a whole poll pass. A resume is not
+/// an edit to one source: it is every source at once becoming untrustworthy, so
+/// it is the one caller entitled to fire all four.
+async fn resume_loop(app: Arc<App>) {
+    let mut tick = tokio::time::interval(resume::TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick completes immediately, so take the baseline from it rather
+    // than from before the loop — otherwise the app's own startup work would
+    // read as a gap on the very first comparison.
+    tick.tick().await;
+    let mut last = resume::Sample::now();
+
+    loop {
+        tick.tick().await;
+        let now = resume::Sample::now();
+        if !now.resumed_since(last) {
+            last = now;
+            continue;
+        }
+        last = now;
+
+        eprintln!("resume detected: refreshing every source");
+        // The host watch is re-seeded *before* the wakes, so a reconnect that
+        // fails on its first attempt cannot slip a banner through in between.
+        app.host_reachability
+            .lock()
+            .expect("host watch poisoned")
+            .reset();
+
+        wake_github(&app);
+        wake_usage(&app, true);
+        app.azure_wake.notify_one();
+        wake_openclaw(&app);
+    }
+}
+
+/// Watches every monitored host's reachability and banners the changes.
+///
+/// A loop of its own rather than a hook inside [`poll_loop`], because that task
+/// is spawned per host with no `Arc<App>` and no way to reach the notification
+/// handle — and because the answer is cross-host by nature: one place that sees
+/// every host is also the place that can forget one the moment Settings removes
+/// it.
+///
+/// Reads the same `error` field the card renders from, so a banner and a red
+/// card can never disagree about whether a host is down. That includes the
+/// debounce: [`FAILURE_THRESHOLD`] consecutive failures before `error` is set,
+/// so a single dropped packet on a flappy tailnet never reaches the OS.
+async fn hosts_watch_loop(app: Arc<App>) {
+    let mut tick = tokio::time::interval(POLL_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+
+        let enabled = {
+            let store = app.store.lock().expect("store poisoned");
+            store.settings().notify_on_service_change
+        };
+
+        // Snapshotted into owned values first: `observe` borrows them, and the
+        // hosts lock must not be held while a banner leaves the process.
+        let readings: Vec<(String, String, Option<services::Reachability>)> = {
+            let hosts = app.hosts.lock().expect("hosts poisoned");
+            hosts
+                .iter()
+                .map(|h| {
+                    let s = h.state.lock().expect("host state poisoned");
+                    // `None` until the first poll settles either way — a host
+                    // whose task has ticked but never completed is not yet a
+                    // verdict, and seeding on one would banner the launch.
+                    let state = match (&s.latest, &s.error) {
+                        (_, Some(_)) => Some(services::Reachability::Unreachable),
+                        (Some(_), None) => Some(services::Reachability::Reachable),
+                        (None, None) => None,
+                    };
+                    (s.id.clone(), s.name.clone(), state)
+                })
+                .collect()
+        };
+
+        let notices = {
+            let borrowed: Vec<services::HostReading<'_>> = readings
+                .iter()
+                .map(|(id, name, state)| services::HostReading {
+                    id,
+                    name,
+                    state: *state,
+                })
+                .collect();
+            let mut watch = app.host_reachability.lock().expect("host watch poisoned");
+            watch.observe(&borrowed, enabled)
+        };
+
+        deliver_status_notices(&app, &notices);
+    }
+}
+
 /// Which existing poll task each desired host should keep, or `None` when it
 /// needs a new one. Existing indices that appear nowhere in the result are the
 /// ones whose task must be aborted.
@@ -1022,7 +1170,15 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
 /// is testable here without a token, a keychain or a network.
 fn github_token(credential: Credential, state: &mut GitHubState) -> Option<String> {
     match credential {
-        Credential::Present(token) => Some(token),
+        // Recorded here, before a single request goes out. This arm used to
+        // return the token and write nothing, so the panels went on claiming
+        // there was no credential for the whole of the pass that was holding
+        // one — several seconds of "connect a GitHub token in Settings" on
+        // every launch, at a machine where the token was fine.
+        Credential::Present(token) => {
+            state.apply_token_present();
+            Some(token)
+        }
         // The only branch that may claim nobody configured this: we asked, and
         // the store said there is nothing stored.
         Credential::Absent => {
@@ -1036,12 +1192,83 @@ fn github_token(credential: Credential, state: &mut GitHubState) -> Option<Strin
     }
 }
 
+/// One read of GitHub's public statuspage, folded into the panel state.
+///
+/// A failure is recorded but does **not** drop the last good reading: GitHub's
+/// status does not change on the timescale of one dropped request, and a panel
+/// that flipped from "it's GitHub" back to a red "it's us" on a single timeout
+/// would be the exact misdirection this verdict exists to prevent.
+async fn poll_service_status(app: &Arc<App>) {
+    // Concurrently: five independent hosts, and running them in sequence would
+    // make the pass as slow as their sum for no reason. Each carries its own
+    // 8s timeout, so the worst case is one timeout rather than five.
+    let results = futures_util::future::join_all(
+        services::ServiceId::ALL
+            .iter()
+            .map(|&service| async move { (service, services::read(service).await) }),
+    )
+    .await;
+
+    // Re-read like the token, so switching the preference off applies on the
+    // next pass rather than on the next launch.
+    let notify_changes = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().notify_on_service_change
+    };
+
+    let notices = {
+        let mut statuses = app.services.lock().expect("services poisoned");
+        for (service, result) in results {
+            match result {
+                Ok(status) => {
+                    // GitHub's reading also feeds the Repos/Runners conjunction
+                    // chip, which reads it from `GitHubState`.
+                    if service == services::ServiceId::GitHub {
+                        app.github
+                            .lock()
+                            .expect("github state poisoned")
+                            .apply_service_status(status.clone());
+                    }
+                    statuses.succeeded(service, status);
+                }
+                Err(e) => {
+                    if service == services::ServiceId::GitHub {
+                        app.github
+                            .lock()
+                            .expect("github state poisoned")
+                            .apply_service_status_error(e.user_message());
+                    }
+                    statuses.failed(service, e.user_message());
+                }
+            }
+        }
+        // Diffed against what this pass actually obtained. A failed refresh
+        // keeps the last good status for *rendering*, and treating that
+        // retained value as a fresh observation would make an unreachable page
+        // look like a steady state forever — so `readings()` reports `None`
+        // wherever the last read failed.
+        let mut watch = app.service_status.lock().expect("status watch poisoned");
+        watch.observe(&statuses.readings(), notify_changes)
+    };
+
+    // Last, and outside every lock: showing a banner is the one thing in this
+    // function that leaves the process.
+    deliver_status_notices(app, &notices);
+}
+
 /// One pass over every GitHub source: each enabled repo's health, this
 /// machine's git checkouts, and the org's self-hosted runners.
 ///
 /// No lock is ever held across an `await`; each is taken, used and dropped, in
 /// sequence, exactly as [`poll_containers`] does.
 async fn poll_github(app: &Arc<App>) {
+    // GitHub's own availability first, and deliberately **before** the token
+    // gate below. The statuspage needs no credential, and "GitHub Actions is in
+    // a major outage" is most useful precisely when this panel is otherwise
+    // blank — an unauthenticated cockpit that returned early here would be the
+    // one that could not explain itself at all.
+    poll_service_status(app).await;
+
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
     let credential = read_credential(&*app.credentials, SecretKey::GitHubAccessToken);
@@ -1149,48 +1376,61 @@ async fn poll_github(app: &Arc<App>) {
 /// platform does not know is a name it ignores, so the honest port is to name
 /// the sound where the name means something and stay silent where it does not.
 #[cfg(target_os = "macos")]
-const APPROVAL_SOUND: Option<&str> = Some("NSUserNotificationDefaultSoundName");
+const NOTIFICATION_SOUND: Option<&str> = Some("NSUserNotificationDefaultSoundName");
 #[cfg(not(target_os = "macos"))]
-const APPROVAL_SOUND: Option<&str> = None;
+const NOTIFICATION_SOUND: Option<&str> = None;
 
-/// Show this pass's needs-approval banners.
+/// Show a pass's banners.
 ///
-/// The only impure half of the feature — [`github::notify::ApprovalWatch`]
-/// decided *whether* each of these exists, and this decides nothing.
+/// The only impure half of either notifier — the watches decided *whether* each
+/// of these exists, and this decides nothing. `what` names them for the one log
+/// line that can fire, so a dropped banner says which kind it was.
 ///
 /// Delivery goes through `tauri-plugin-notification`'s **Rust** API, which is
 /// why the ACL grants that plugin nothing at all: the webview is never in the
 /// path. A notice arriving before `tauri::Builder::run` has handed us a handle
 /// is dropped rather than queued — the poll loops are spawned first, so that
-/// window exists, but the pass that opens it is the seeding pass, which by
+/// window exists, but the pass that opens it is a seeding pass, which by
 /// construction produces no notices.
-fn deliver_approval_notices(app: &App, notices: &[github::notify::ApprovalNotice]) {
-    if notices.is_empty() {
+fn deliver_banners(app: &App, what: &str, banners: &[(&str, &str)]) {
+    if banners.is_empty() {
         return;
     }
     let Some(handle) = app.handle.get() else {
         eprintln!(
-            "dropping {} needs-approval notification(s): the app is not up yet",
-            notices.len()
+            "dropping {} {what} notification(s): the app is not up yet",
+            banners.len()
         );
         return;
     };
-    for notice in notices {
-        let mut builder = handle
-            .notification()
-            .builder()
-            .title(notice.title.as_str())
-            .body(notice.body.as_str());
-        if let Some(sound) = APPROVAL_SOUND {
+    for (title, body) in banners {
+        let mut builder = handle.notification().builder().title(*title).body(*body);
+        if let Some(sound) = NOTIFICATION_SOUND {
             builder = builder.sound(sound);
         }
         // Logged, not surfaced: this is the same silent no-op Swift takes when
         // the user has denied notification permission, and a cockpit panel is
         // the wrong place to report that the OS declined a banner.
         if let Err(e) = builder.show() {
-            eprintln!("could not show a needs-approval notification: {e}");
+            eprintln!("could not show a {what} notification: {e}");
         }
     }
+}
+
+fn deliver_approval_notices(app: &App, notices: &[github::notify::ApprovalNotice]) {
+    let banners: Vec<(&str, &str)> = notices
+        .iter()
+        .map(|n| (n.title.as_str(), n.body.as_str()))
+        .collect();
+    deliver_banners(app, "needs-approval", &banners);
+}
+
+fn deliver_status_notices(app: &App, notices: &[services::StatusNotice]) {
+    let banners: Vec<(&str, &str)> = notices
+        .iter()
+        .map(|n| (n.title.as_str(), n.body.as_str()))
+        .collect();
+    deliver_banners(app, "service-status", &banners);
 }
 
 /// The GitHub panels' poll loop, on the store's `refresh_interval_secs`.
@@ -1277,6 +1517,7 @@ fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSe
         github: present(SecretKey::GitHubAccessToken),
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
+        vercel: present(SecretKey::VercelApiToken),
         azure: present(SecretKey::AzureCostSasUrl),
         openclaw: present(SecretKey::OpenClawBearerToken),
         hosts: hosts
@@ -1436,15 +1677,17 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
 
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
-    let (neon_key, sentry_token) = (
+    let (neon_key, sentry_token, vercel_token) = (
         read_credential(&*app.credentials, SecretKey::NeonApiKey),
         read_credential(&*app.credentials, SecretKey::SentryUsageToken),
+        read_credential(&*app.credentials, SecretKey::VercelApiToken),
     );
-    let (neon_org, sentry_slug) = {
+    let (neon_org, sentry_slug, vercel_team) = {
         let store = app.store.lock().expect("store poisoned");
         (
             store.settings().neon_org_id.clone(),
             store.settings().sentry_org_slug.clone(),
+            store.settings().vercel_team_id.clone(),
         )
     };
 
@@ -1472,6 +1715,14 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
             let Some(client) = usage::NeonClient::new(&key) else {
                 return;
             };
+            // Before the request, not after it: the section is what tells the
+            // operator this provider exists, and learning that from a *failure*
+            // made its first ever appearance a row of em dashes under an error.
+            {
+                let mut state = app.usage.lock().expect("usage state poisoned");
+                state.neon_mut().begin();
+                state.neon_invoice_mut().begin();
+            }
             let result = client.month_to_date(&neon_org, github::now_utc()).await;
             {
                 let mut state = app.usage.lock().expect("usage state poisoned");
@@ -1521,6 +1772,12 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
             let Some(client) = usage::SentryClient::new(&token) else {
                 return;
             };
+            // Before the request — see the Neon arm above.
+            app.usage
+                .lock()
+                .expect("usage state poisoned")
+                .sentry_mut()
+                .begin();
             let result = client.accepted_errors(&sentry_slug).await;
             let mut state = app.usage.lock().expect("usage state poisoned");
             match result {
@@ -1532,6 +1789,50 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
                         .then(|| usage::SENTRY_NO_STATS_MESSAGE.to_owned()),
                 ),
                 Err(e) => state.sentry_mut().failed(e.user_message()),
+            }
+        }
+    }
+
+    // Vercel. Same shape as Sentry above — one endpoint, one summary — and the
+    // same lock discipline: taken around `begin()`, dropped across the await,
+    // retaken to record the answer.
+    match vercel_token {
+        Credential::Absent => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .vercel_mut()
+            .unconfigure(),
+        Credential::Unreadable => app
+            .usage
+            .lock()
+            .expect("usage state poisoned")
+            .vercel_mut()
+            .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned()),
+        Credential::Present(token) => {
+            // A blank team id is legitimate — a personal account has no team,
+            // and the client omits the parameter rather than sending it empty.
+            let Some(client) = usage::VercelClient::new(&token, &vercel_team) else {
+                return;
+            };
+            // Before the request — see the Neon arm above.
+            app.usage
+                .lock()
+                .expect("usage state poisoned")
+                .vercel_mut()
+                .begin();
+            let result = client.month_to_date(github::now_utc()).await;
+            let mut state = app.usage.lock().expect("usage state poisoned");
+            match result {
+                Ok(summary) => {
+                    let empty = summary.is_unmeasured();
+                    state.vercel_mut().succeeded(
+                        summary,
+                        now,
+                        empty.then(|| usage::VERCEL_NO_SPEND_MESSAGE.to_owned()),
+                    );
+                }
+                Err(e) => state.vercel_mut().failed(e.user_message()),
             }
         }
     }
@@ -1686,12 +1987,33 @@ async fn poll_azure(app: &Arc<App>) {
     }
 }
 
-/// The Azure Cost panel's poll loop, on the reader's own fixed 4h cadence.
+/// How soon the Azure poll retries while it has never once succeeded.
+///
+/// The export's own rhythm is [`azurecost::POLL_INTERVAL`] — 4h — which is right
+/// for a file that is published daily and wrong for a first read that failed
+/// because the network was not up yet at login. `azure_wake` only fires when the
+/// SAS is re-saved, so that first failure used to sit on the cockpit, red, until
+/// the next four-hourly cycle. A minute is short enough to look self-healing and
+/// long enough that a genuinely broken SAS is not hammered.
+const AZURE_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The Azure Cost panel's poll loop, on the reader's own fixed 4h cadence once
+/// it has something to show, and a short retry until then.
 async fn azure_loop(app: Arc<App>) {
     loop {
         poll_azure(&app).await;
+        let settled = app
+            .azure
+            .lock()
+            .expect("azure state poisoned")
+            .has_succeeded();
+        let wait = if settled {
+            azurecost::POLL_INTERVAL
+        } else {
+            AZURE_FIRST_READ_RETRY
+        };
         tokio::select! {
-            () = tokio::time::sleep(azurecost::POLL_INTERVAL) => {}
+            () = tokio::time::sleep(wait) => {}
             () = app.azure_wake.notified() => {}
         }
     }
@@ -1722,6 +2044,24 @@ fn usage(state: tauri::State<'_, Arc<App>>) -> Value {
     FIRST_USAGE_REQUEST.call_once(|| {
         let providers = payload["providers"].as_array().map_or(0, Vec::len);
         eprintln!("usage: first frontend request ({providers} provider section(s))");
+    });
+    payload
+}
+
+/// Guards the Services panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_SERVICES_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn services(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = {
+        let statuses = state.services.lock().expect("services poisoned");
+        services::view(&statuses)
+    };
+    FIRST_SERVICES_REQUEST.call_once(|| {
+        eprintln!(
+            "services: first frontend request ({})",
+            payload["trailing"].as_str().unwrap_or_default()
+        );
     });
     payload
 }
@@ -2117,28 +2457,40 @@ fn settings_reset_layout(state: tauri::State<'_, Arc<App>>) -> Value {
     settings_response(&state, status)
 }
 
-#[tauri::command]
-fn settings_save_providers(
+/// Every non-secret provider preference, in one argument.
+///
+/// One struct rather than seven positional parameters: both Settings tabs send
+/// the whole set on every Apply (each re-sends the other's fields, or a partial
+/// write blanks them), so they travel together by construction — and the fifth
+/// provider took the flat signature past clippy's argument limit, which is the
+/// shape complaining about itself.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderPrefs {
     neon_org_id: String,
     sentry_org_slug: String,
     sentry_monthly_event_quota: u64,
     azure_monthly_budget_usd: f64,
     neon_usd_per_cu_hour: f64,
     neon_usd_per_gib_month: f64,
-    state: tauri::State<'_, Arc<App>>,
-) -> Value {
+    vercel_team_id: String,
+}
+
+#[tauri::command]
+fn settings_save_providers(prefs: ProviderPrefs, state: tauri::State<'_, Arc<App>>) -> Value {
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
         let current = store.settings_mut();
-        current.neon_org_id = neon_org_id.trim().to_owned();
-        current.sentry_org_slug = sentry_org_slug.trim().to_owned();
-        current.sentry_monthly_event_quota = sentry_monthly_event_quota;
+        current.neon_org_id = prefs.neon_org_id.trim().to_owned();
+        current.sentry_org_slug = prefs.sentry_org_slug.trim().to_owned();
+        current.sentry_monthly_event_quota = prefs.sentry_monthly_event_quota;
         // A non-finite value would make the whole store unserialisable
         // (`StoreError::Serialize`), taking every other preference with it.
         let launder = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
-        current.azure_monthly_budget_usd = launder(azure_monthly_budget_usd);
-        current.neon_usd_per_cu_hour = launder(neon_usd_per_cu_hour);
-        current.neon_usd_per_gib_month = launder(neon_usd_per_gib_month);
+        current.azure_monthly_budget_usd = launder(prefs.azure_monthly_budget_usd);
+        current.neon_usd_per_cu_hour = launder(prefs.neon_usd_per_cu_hour);
+        current.neon_usd_per_gib_month = launder(prefs.neon_usd_per_gib_month);
+        current.vercel_team_id = prefs.vercel_team_id.trim().to_owned();
         save_status(&store, "Saved.")
     };
     // The Neon org id and the Sentry slug are *what those reads ask for*, so an
@@ -2539,7 +2891,7 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 fn wake_for(app: &App, field: SecretField) {
     match field {
         SecretField::GitHub => wake_github(app),
-        SecretField::Neon | SecretField::Sentry => wake_usage(app, true),
+        SecretField::Neon | SecretField::Sentry | SecretField::Vercel => wake_usage(app, true),
         SecretField::Azure => app.azure_wake.notify_one(),
         // The bearer token is folded into the *signed connect payload*, so it
         // cannot be swapped on a live socket — the session has to be torn down
@@ -2586,6 +2938,20 @@ fn unreachable_message() -> String {
 /// Deliberately *without* the local card, unlike [`dump_cockpit`]: this fixture
 /// exists to exercise one remote host's live/stale transition, and a second card
 /// on the page would only make every locator in that test ambiguous.
+/// The same envelope as [`dump_single`], for a host with nothing to plot.
+fn dump_pending(pending: &Pending) -> Value {
+    let mut card = pending_card("ubu-3xdv", pending);
+    card["id"] = json!("ubu-3xdv");
+    cockpit_payload(
+        vec![card],
+        1,
+        1000.0,
+        HostOverflowMode::Stack,
+        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        &CockpitLayout::hosts_forward(),
+    )
+}
+
 fn dump_single(connection: &Connection) -> Value {
     cockpit_payload(
         vec![dump_card("ubu-3xdv", connection)],
@@ -2685,13 +3051,22 @@ fn dump_local_card() -> Value {
 fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Value {
     let cards = vec![
         dump_card("ubu-3xdv", &Connection::Live),
-        dump_card(
-            "mac-mini",
-            &Connection::Stale {
-                message: unreachable_message(),
-                stale_secs: Some(42),
-            },
-        ),
+        {
+            // A host that answered once and can no longer be reached: a blanked
+            // card, which is what `view_for` produces for it. This used to dump
+            // the last snapshot behind a stale badge, and kept doing so for a
+            // while after the app stopped — a fixture depicting a rendering the
+            // app cannot produce is worse than no fixture.
+            let mut card = pending_card(
+                "mac-mini",
+                &Pending::Unreachable {
+                    message: unreachable_message(),
+                    age_secs: Some(42),
+                },
+            );
+            card["id"] = json!("mac-mini");
+            card
+        },
         {
             let mut card = pending_card("nuc-spare", &Pending::Failed(unreachable_message()));
             card["id"] = json!("nuc-spare");
@@ -2758,6 +3133,7 @@ fn dump_settings() -> Value {
         github: true,
         neon: false,
         sentry: true,
+        vercel: true,
         azure: false,
         openclaw: false,
         hosts: [live.id].into_iter().collect(),
@@ -2881,7 +3257,13 @@ fn dump_github(empty: bool, runners: bool) -> Value {
     // as "now", so a fixture and a unit test can be read side by side.
     let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
     let state = if empty {
-        github::GitHubState::new()
+        // `apply_unauthenticated`, not a fresh `new()`: a fresh state is the
+        // *loading* one now, and dumping that under a name the suite reads as
+        // "the no-credential rendering" would quietly re-point every assertion
+        // at the wrong copy.
+        let mut state = github::GitHubState::new();
+        state.apply_unauthenticated();
+        state
     } else {
         github::fixture_state(now)
     };
@@ -2923,18 +3305,17 @@ fn run_dump(args: &[String]) -> bool {
         write_json(&path, &dump_single(&Connection::Live));
         return true;
     }
-    // A stale counterpart to --dump, built from the identical underlying
-    // snapshot/history (see dump_card) so tests/frontend/layout.spec.js can
-    // assert "the numbers don't change, only the badge does" against two
-    // Rust-derived fixtures instead of hand-building the stale one in JS --
-    // a hand-built fixture can't notice viewmodel's own `"stale"` string (or
-    // its message format) drifting out from under it.
-    if let Some(path) = dump_flag_path(args, "--dump-stale", "sample-stale.json") {
+    // The unreachable counterpart to --dump, so tests/frontend/layout.spec.js
+    // can assert "a host we cannot contact renders nothing at all" against two
+    // Rust-derived fixtures rather than hand-building the second in JS -- a
+    // hand-built fixture can't notice viewmodel's own state string or message
+    // format drifting out from under it.
+    if let Some(path) = dump_flag_path(args, "--dump-unreachable", "sample-unreachable.json") {
         write_json(
             &path,
-            &dump_single(&Connection::Stale {
+            &dump_pending(&Pending::Unreachable {
                 message: unreachable_message(),
-                stale_secs: Some(2),
+                age_secs: Some(2),
             }),
         );
         return true;
@@ -3020,6 +3401,10 @@ fn run_dump(args: &[String]) -> bool {
             azure::Fixture::Measured
         };
         write_json(&path, &dump_azure(kind));
+        return true;
+    }
+    if let Some(path) = dump_flag_path(args, "--dump-services", "sample-services.json") {
+        write_json(&path, &services::view(&services::fixture_statuses()));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-openclaw", "sample-openclaw.json") {
@@ -3217,6 +3602,9 @@ fn main() {
         openclaw: Mutex::new(OpenClawState::new()),
         openclaw_wake: tokio::sync::Notify::new(),
         approvals: Mutex::new(github::notify::ApprovalWatch::new()),
+        service_status: Mutex::new(services::StatusWatch::new()),
+        services: Mutex::new(services::ServiceStatuses::new()),
+        host_reachability: Mutex::new(services::HostWatch::new()),
         handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
     });
@@ -3233,6 +3621,8 @@ fn main() {
     // numbers. It reads the poll set rather than owning one, so a host added in
     // Settings joins it on the next tick.
     rt.spawn(health_loop(Arc::clone(&app)));
+    rt.spawn(hosts_watch_loop(Arc::clone(&app)));
+    rt.spawn(resume_loop(Arc::clone(&app)));
     // The GitHub panels run on the store's refresh interval and read the
     // portfolio and the token on every pass, so an edit in Settings joins them
     // on the next pass — which `wake_github` makes immediate.
@@ -3273,6 +3663,7 @@ fn main() {
             runners,
             usage,
             azure_cost,
+            services,
             openclaw,
             settings_view,
             settings_save_general,
@@ -3532,35 +3923,67 @@ mod tests {
     /// &Connection::Live)` wildcard landed here too and reported "live"
     /// forever. Reintroducing that wildcard must fail this test — see the
     /// task report for the round where that was confirmed by hand.
+    ///
+    /// A host we can no longer reach now renders **blank**, not as its last
+    /// snapshot behind a badge — the same defect one step further.
+    ///
+    /// This asserted the opposite until ubu-3xdv went down during the
+    /// 2026-08-06 GitHub outage and the card sat there showing four-minute-old
+    /// numbers as if they were now. Every figure on a host card is a
+    /// present-tense claim, and at a glance the numbers are what you read while
+    /// the badge is what you do not — so the whole card goes, which is the
+    /// em-dash rule applied at card scale rather than per figure.
     #[test]
-    fn stale_when_a_snapshot_exists_but_the_last_poll_failed_and_the_data_is_retained() {
+    fn an_unreachable_host_blanks_its_card_and_dates_the_outage() {
         let s = state_with(
             Some(fixture()),
             Some("Couldn't reach the agent. Check the host is up and the agent is running."),
             Some(Instant::now()),
         );
         let vm = view_for(&s);
-        assert_eq!(vm["connection"]["state"], "stale");
+        assert_eq!(vm["connection"]["state"], "unreachable");
         assert_eq!(vm["connection"]["color"], "#e05a4f");
-        let msg = vm["connection"]["message"].as_str().unwrap();
-        assert!(msg.contains("Couldn't reach the agent"));
-        assert!(msg.contains("ago"), "expected a relative age, got {msg:?}");
 
-        // The data itself must be exactly what a `Connection::Live` render of
-        // the same snapshot would have produced -- staleness changes the
-        // badge, never the numbers. Compared against a live render of the
-        // same fixture rather than a hardcoded `"34%"`, so this covers every
-        // data field at once and survives edits to `snapshot.json`.
+        // Not one figure survives: the card is an error, not a reading.
         let live = view_for(&state_with(Some(fixture()), None, Some(Instant::now())));
-        assert_eq!(vm["cpuValue"], live["cpuValue"]);
-        assert_eq!(vm["cores"], live["cores"]);
-        assert_eq!(vm["volumes"], live["volumes"]);
-        assert_eq!(vm["memValue"], live["memValue"]);
-        assert_ne!(
-            vm["connection"], live["connection"],
-            "the badge is the only thing staleness may change"
+        assert!(!live["cpuValue"].is_null(), "the live card has figures");
+        for field in ["cpuValue", "cores", "volumes", "memValue"] {
+            assert!(
+                vm[field].is_null(),
+                "{field} is a present-tense claim about a host that is not answering"
+            );
+        }
+
+        let msg = vm["error"]["message"].as_str().expect("error message");
+        assert!(msg.contains("Couldn't reach the agent"), "{msg:?}");
+        assert!(
+            msg.contains("last update") && msg.contains("ago"),
+            "when it went quiet is the one fact still true: {msg:?}"
         );
-        assert_eq!(vm["hostName"], "test-host");
+        assert_eq!(vm["error"]["hostName"], "test-host");
+    }
+
+    /// …and the loss is only on screen. `latest` and `histories` stay in state,
+    /// so the sparklines come back intact with the host rather than restarting
+    /// from an empty buffer.
+    #[test]
+    fn blanking_the_card_does_not_discard_the_state_behind_it() {
+        let s = state_with(
+            Some(fixture()),
+            Some("Couldn't reach the agent."),
+            Some(Instant::now()),
+        );
+        assert!(
+            s.latest.is_some(),
+            "the snapshot is retained, just not shown"
+        );
+
+        let recovered = state_with(Some(fixture()), None, Some(Instant::now()));
+        let vm = view_for(&recovered);
+        assert!(
+            !vm["cpuValue"].is_null(),
+            "and returns the moment it answers"
+        );
     }
 
     #[test]
@@ -3720,11 +4143,10 @@ mod tests {
             Some(true),
             Some(300),
         );
-        let msg = view_for(&s)["connection"]["message"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+        let vm = view_for(&s);
+        assert_eq!(vm["connection"]["state"], "unreachable");
+        // The blanked card carries the reason in `error`, not in the badge.
+        let msg = vm["error"]["message"].as_str().unwrap().to_string();
         assert!(msg.contains("Couldn't reach the agent"), "got {msg:?}");
         assert!(!msg.contains("sampler"), "got {msg:?}");
     }
@@ -3822,7 +4244,7 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(s.consecutive_failures, FAILURE_THRESHOLD);
-        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+        assert_eq!(view_for(&s)["connection"]["state"], "unreachable");
     }
 
     /// The debounce must not survive a success: a host that flaps
@@ -3907,18 +4329,24 @@ mod tests {
             );
         }
 
-        // …so the card still dates its staleness instead of falling back to
-        // the "unknown" branch `view_for` reserves for a missing
+        // …so the blanked card still dates the outage instead of falling back
+        // to the "unknown" branch `view_for` reserves for a missing
         // `last_success`.
         let vm = view_for(&s);
-        assert_eq!(vm["connection"]["state"], "stale");
-        let msg = vm["connection"]["message"].as_str().unwrap();
+        assert_eq!(vm["connection"]["state"], "unreachable");
+        let msg = vm["error"]["message"].as_str().unwrap();
         assert!(msg.contains("ago"), "expected a relative age, got {msg:?}");
         assert!(
             !msg.contains("unknown"),
             "the age is known -- a run of failures must not erase it: {msg:?}"
         );
-        assert_eq!(vm["cpuValue"], fixture_cpu_value());
+        // The snapshot is retained in state, so recovery is instant -- it is
+        // simply not rendered while the host is unreachable.
+        assert!(
+            vm["cpuValue"].is_null(),
+            "the card is blanked, not stale-badged"
+        );
+        assert!(s.latest.is_some(), "…and the reading behind it survives");
     }
 
     #[test]
@@ -3928,7 +4356,7 @@ mod tests {
         record_poll(&mut s, Ok(fixture()), first_success);
         record_poll(&mut s, Err(AgentError::AuthFailed), Instant::now());
         record_poll(&mut s, Err(AgentError::AuthFailed), Instant::now());
-        assert_eq!(view_for(&s)["connection"]["state"], "stale");
+        assert_eq!(view_for(&s)["connection"]["state"], "unreachable");
 
         let recovered = Instant::now();
         record_poll(&mut s, Ok(fixture()), recovered);
@@ -4028,11 +4456,13 @@ mod tests {
         assert_eq!(cards[0]["connection"]["state"], "live");
         assert_eq!(cards[0]["cpuValue"], fixture_cpu_value());
 
-        assert_eq!(cards[1]["connection"]["state"], "stale");
-        assert_eq!(
-            cards[1]["cpuValue"], cards[0]["cpuValue"],
-            "a stale host keeps the numbers it last heard"
+        assert_eq!(cards[1]["connection"]["state"], "unreachable");
+        assert!(
+            cards[1]["cpuValue"].is_null(),
+            "an unreachable host shows no figures at all -- see \
+             `an_unreachable_host_blanks_its_card_and_dates_the_outage`"
         );
+        assert_eq!(cards[1]["error"]["hostName"], "beta");
 
         assert_eq!(cards[2]["connection"]["state"], "failed");
         assert_eq!(cards[2]["error"]["message"], "Agent returned HTTP 503.");
@@ -4351,7 +4781,7 @@ mod tests {
                 vec!["hosts"],
                 vec!["ghWorkflows", "ghRunners"],
                 vec!["containers", "openclawAgents", "claudeUsage"],
-                vec!["azureCost"],
+                vec!["azureCost", "services"],
             ]
         );
 
@@ -4367,7 +4797,11 @@ mod tests {
             ["half", "half"],
             "a rendered row is always whole quarters, never two thirds and a third"
         );
-        assert_eq!(narrow.len(), 6, "the halves and the quarters both split");
+        assert_eq!(
+            narrow.len(),
+            7,
+            "the halves and the quarters both split, and so does Azure Cost + Services"
+        );
 
         // Every panel still travels, exactly once, at any width — a row silently
         // dropped here is a panel the frontend can never render.
@@ -4415,9 +4849,9 @@ mod tests {
         assert_eq!(first["columns"], 2);
     }
 
-    /// The configuration actually shipped on a 1890pt display: the halves at
-    /// 937pt, the quarter row at 929/464.5/464.5, Azure Cost across the whole
-    /// 1890 — and the content columns each of those affords.
+    /// The configuration actually shipped on a 1890pt display: every half at
+    /// 937pt whichever row it is in, the quarters at 460.5, Azure Cost across
+    /// the whole 1890 — and the content columns each of those affords.
     ///
     /// Repos clears its split by 41pt (896 of 937) and only because its numeric
     /// columns are sized to their labels; the same panel with the Swift
@@ -4440,14 +4874,19 @@ mod tests {
             (json!(937.0), json!(2)),
             "Repos pairs at 896pt; widening a column past that costs it the split"
         );
-        assert_eq!(seen["containers"], (json!(929.0), json!(2)));
+        assert_eq!(
+            seen["containers"],
+            (json!(937.0), json!(2)),
+            "the same half as the row above it — one grid, one gridline"
+        );
         assert_eq!(
             seen["azureCost"],
-            (json!(1890.0), json!(2)),
-            "full width, so the breakdowns sit beside the costs"
+            (json!(1413.5), json!(2)),
+            "three quarters still buys the breakdowns their column beside the costs"
         );
-        assert_eq!(seen["openclawAgents"], (json!(464.5), json!(1)));
-        assert_eq!(seen["claudeUsage"], (json!(464.5), json!(1)));
+        assert_eq!(seen["openclawAgents"], (json!(460.5), json!(1)));
+        assert_eq!(seen["claudeUsage"], (json!(460.5), json!(1)));
+        assert_eq!(seen["services"], (json!(460.5), json!(1)));
     }
 
     /// The Layout tab's whole point, at the payload: the rows are the *stored*
@@ -4479,14 +4918,17 @@ mod tests {
                 vec!["claudeUsage", "azureCost", "hosts"],
                 // …then the four the layout never named, in default order.
                 vec!["ghWorkflows", "ghRunners"],
-                vec!["containers", "openclawAgents"],
+                vec!["containers", "openclawAgents", "services"],
             ]
         );
         let first = &vm["panelRows"][0];
         assert_eq!(first[0]["span"], "quarter");
-        assert_eq!(first[0]["width"], 742.0, "(3000 - 32) / 4");
+        assert_eq!(first[0]["width"], 738.0, "(3000 - 3 * 16) / 4");
         assert_eq!(first[2]["id"], "hosts");
-        assert_eq!(first[2]["width"], 1484.0, "a half of the same row");
+        assert_eq!(
+            first[2]["width"], 1492.0,
+            "two of those tracks plus the gutter a half spans"
+        );
     }
 
     /// No hosts is a configuration state, not a broken app — so it arrives as
@@ -4963,7 +5405,7 @@ mod tests {
             .iter()
             .map(|c| c["connection"]["state"].as_str().expect("state"))
             .collect();
-        assert_eq!(states, vec!["live", "live", "stale", "failed"]);
+        assert_eq!(states, vec!["live", "live", "unreachable", "failed"]);
 
         let ids: Vec<&str> = cards
             .iter()

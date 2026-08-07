@@ -13,6 +13,59 @@ use serde_json::{json, Value};
 use viewmodel::color;
 use viewmodel::format::relative_age;
 
+/// What the app knows about a panel's credential.
+///
+/// Three states, because two cannot express the first frame. Every panel used to
+/// store this as a `bool` that a completed fetch set to `true`, so the value at
+/// startup — before anyone had looked — was indistinguishable from "we looked
+/// and there is nothing there". Both Repos and Runners opened on *"connect a
+/// GitHub token in Settings"* and Azure Cost on *"Add an Azure Cost SAS URL in
+/// Settings"*, telling the operator to re-paste credentials that were never
+/// missing, until the first poll landed seconds later.
+///
+/// The same rule as `HostSnapshot`'s Optionals and the cockpit's em dash, one
+/// layer up: **unknown is representable**, and a defaulted state is as much a
+/// fabrication as a defaulted number.
+///
+/// [`Unreadable`](crate::Credential::Unreadable) is deliberately *not* a variant
+/// — a locked credential store is neither of the two claims below, and each
+/// panel already carries its own field for it that outranks this one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Configured {
+    /// No pass has read the credential store yet. Renders as loading: the panel
+    /// has nothing to say about how it is configured, so it says nothing.
+    #[default]
+    Unknown,
+    /// A pass read the store and found nothing. The only state entitled to paint
+    /// a setup instruction, because it is the only one that observed the absence.
+    Absent,
+    /// A pass read a non-empty credential. Says nothing about whether the
+    /// provider then *accepted* it — a rejected token is a fetch failure and is
+    /// reported as one, never as a missing credential.
+    Present,
+}
+
+impl Configured {
+    /// Whether the panel is still waiting to find out how it is configured.
+    #[must_use]
+    pub fn is_unknown(self) -> bool {
+        self == Configured::Unknown
+    }
+
+    /// Whether a pass has observed that there is no credential. Note this is
+    /// **not** `!is_present()`: [`Unknown`](Self::Unknown) is neither.
+    #[must_use]
+    pub fn is_absent(self) -> bool {
+        self == Configured::Absent
+    }
+
+    /// Whether a pass has read a credential.
+    #[must_use]
+    pub fn is_present(self) -> bool {
+        self == Configured::Present
+    }
+}
+
 /// Seconds since the UNIX epoch.
 ///
 /// Wall clock, not `Instant`, because these values are compared against records
@@ -36,6 +89,15 @@ pub fn now_unix() -> u64 {
 /// All times are unix seconds. `now.saturating_sub(updated)` rather than a
 /// signed difference: a clock that jumped backwards reads as "just now", never
 /// as a negative age.
+///
+/// **`last_updated` must be the last *success*, not the last attempt.** The
+/// error arm renders it as `last ok {age}`, which is a promise about this
+/// argument that only the caller can keep. Two callers used to pass "when we
+/// last looked" — a Docker daemon that had never once answered reported
+/// `⚠ couldn't read docker · last ok 0s ago`, a reassurance about a reading
+/// that never existed. A panel that needs both clocks keeps them as separate
+/// fields and passes the success one here. `None` means nothing has ever
+/// succeeded, and the suffix is dropped rather than guessed.
 #[must_use]
 pub fn status_footer(
     last_updated: Option<u64>,

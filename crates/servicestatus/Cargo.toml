@@ -1,0 +1,21 @@
+[package]
+# Prefixed like `devcanopy-wire`/`devcanopy-store` to stay clear of the generic
+# name on crates.io. The lib below keeps the short import name.
+name = "devcanopy-servicestatus"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "servicestatus"
+
+[dependencies]
+serde_json = { workspace = true }
+# Same HTTP stack (and feature set) as crates/github, so the workspace resolves
+# one reqwest and one TLS backend.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

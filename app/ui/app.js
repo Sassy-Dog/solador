@@ -280,16 +280,25 @@ function drawCard(card, d, volumeSlots) {
     card.dataset.state = d.connection.state;
   }
 
+  const down = f(card, "card-down");
   if (d.error) {
-    // No prior sample exists yet (still connecting, or every attempt has
-    // failed): the cause, never fabricated numbers.
+    // Nothing worth plotting: still connecting, every attempt has failed, or
+    // the host answered once and can no longer be reached. The cause, never
+    // fabricated numbers — and never the *last* numbers either, which is what
+    // the `.card[data-state]` rule below the header hides. Cards are reused
+    // across polls to keep their chart history, so without that rule a host
+    // that went down would sit there wearing the readings it had when it did.
     f(card, "hostName").textContent = d.error.hostName;
     f(card, "cpuValue").textContent = "—";
-    f(card, "cpuModel").textContent = d.error.message;
-    f(card, "cpuModel").style.color = d.connection ? d.connection.color : "#e05a4f";
+    f(card, "cpuModel").textContent = "";
+    down.textContent = d.error.message;
+    down.style.color = d.connection ? d.connection.color : "#e05a4f";
+    down.hidden = false;
     stale.textContent = "";
     return;
   }
+  down.textContent = "";
+  down.hidden = true;
   f(card, "cpuModel").style.color = "";
 
   // A snapshot exists but the latest poll failed: this is real, still
@@ -323,6 +332,7 @@ const PANEL_SECTIONS = {
   ghRunners: "runnersPanel",
   claudeUsage: "usagePanel",
   azureCost: "azurePanel",
+  services: "servicesPanel",
   openclawAgents: "openclawPanel",
 };
 
@@ -342,11 +352,25 @@ let panelRowShape = "";
  * that matters wrong: OpenClaw + Usage stay paired at a width where Repos +
  * Runners must split, which no single global breakpoint can express.
  *
- * The tracks are each panel's `weight` (its span, in quarters) as an `fr`, so a
- * half beside two quarters is `2fr 1fr 1fr`. The weights are Rust's for the same
- * reason the rows are: `panel_widths` derived every `width` and `columns` in the
- * payload from these exact numbers, and a fraction re-typed in CSS would be free
- * to disagree with the width the panel was told it has.
+ * Every row is the same four quarter tracks (`.panel-row` in the stylesheet),
+ * and a panel claims its `weight` of them with `grid-column`. The weights are
+ * Rust's for the same reason the rows are: `panel_widths` derived every `width`
+ * and `columns` in the payload from this exact grid, so a track re-derived here
+ * would be free to disagree with the width the panel was told it has.
+ *
+ * The track list used to be per-row — `2fr 1fr 1fr` for a half beside two
+ * quarters — which looks equivalent and is not. `fr` splits what is left after
+ * the row's *own* gutters, so a two-panel row gave its halves `(W-g)/2` and a
+ * three-panel row gave its half `(W-2g)/2`. Same span, 8pt apart on the shipped
+ * cockpit, and the edge between Repos and Runners missed the edge between
+ * Containers and OpenClaw directly below it.
+ *
+ * The start line is explicit rather than left to auto-placement. A panel with no
+ * section here (`hosts`, rendered in the grid above) or one still `hidden` on a
+ * cold start is skipped by auto-placement entirely, and its neighbours would
+ * slide up into tracks Rust never gave them — painting them at a width that
+ * contradicts the `columns` their contents were laid out for. A gap is the
+ * honest rendering of a slot this container is not filling.
  */
 function applyPanelRows(rows) {
   if (!Array.isArray(rows) || !rows.length) return;
@@ -359,20 +383,25 @@ function applyPanelRows(rows) {
 
   const built = [];
   for (const row of rows) {
-    // Panels and their tracks are paired off before either is used: a row that
-    // mixes sectioned panels with sectionless ones (`hosts`) must not hand the
-    // survivors a neighbour's weight.
-    const placed = (row || [])
-      .map((panel) => [panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null, panel])
-      .filter(([section]) => section);
+    // Sections and their tracks are paired off before either is used, and the
+    // start line advances across the whole row — including the panels this
+    // container has no section for, whose quarters are still spoken for.
+    const placed = [];
+    let start = 1;
+    for (const panel of row || []) {
+      const weight = Math.min(4, Math.max(1, Number(panel && panel.weight) | 0));
+      const section = panel && PANEL_SECTIONS[panel.id] ? $(PANEL_SECTIONS[panel.id]) : null;
+      if (section) placed.push([section, `${start} / span ${weight}`]);
+      start += weight;
+    }
     if (!placed.length) continue;
     const container = document.createElement("div");
     container.className = "panel-row";
-    // CSSOM, not a `style=""` attribute: a `style-src 'self'` CSP blocks the
-    // attribute outright. Same setter the host grid's column count uses.
-    container.style.gridTemplateColumns = placed
-      .map(([, panel]) => `minmax(0, ${Math.max(1, Number(panel.weight) | 0)}fr)`)
-      .join(" ");
+    for (const [section, column] of placed) {
+      // CSSOM, not a `style=""` attribute: a `style-src 'self'` CSP blocks the
+      // attribute outright. Same setter the host grid's column count uses.
+      section.style.gridColumn = column;
+    }
     // `append` MOVES the existing sections, so each panel keeps whatever its
     // own script last painted into it — nothing is rebuilt, only re-parented.
     container.append(...placed.map(([section]) => section));
@@ -457,6 +486,14 @@ function applyHostTabs(spec, grid) {
     b.textContent = t.label;
     b.dataset.host = t.id;
     if (t.id === selectedHost) b.dataset.active = "true";
+    // A tab bar shows one card and hides the rest, so a host that goes down
+    // while you are looking at another one has nothing on screen but this
+    // button. `alert` is Rust's verdict, not a state string re-read here, and
+    // the colour comes with it — CSSOM, never a `style=""` attribute.
+    if (t.alert) {
+      b.dataset.alert = "true";
+      if (t.color) b.style.color = t.color;
+    }
     b.addEventListener("click", () => {
       selectedHost = t.id;
       // Repaint now rather than on the next poll: a tab that takes up to a

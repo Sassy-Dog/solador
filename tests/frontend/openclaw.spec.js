@@ -245,11 +245,11 @@ test("with no runtime the panel says so and renders no runtime block", async ({ 
   await expect(page.locator("#openclawTrailing")).toHaveText("");
 });
 
-test("the panel renders no status footer, because it is event-driven", async ({ page, baseURL }) => {
+test("the panel renders no staleness warning, because it is event-driven", async ({ page, baseURL }) => {
   // Every other panel polls and can therefore be stale. This one is fed by a
   // live socket and its connection line already answers "is this current" —
-  // a staleness footer would be a second, weaker answer to the same question.
+  // a staleness warning would be a second, weaker answer to the same question.
   const vm = await gotoWith(page, baseURL);
   expect(vm.footer).toBeUndefined();
-  await expect(page.locator("#openclawPanel .panel-footer")).toHaveCount(0);
+  await expect(page.locator("#openclawPanel .panel-stale")).toHaveCount(0);
 });

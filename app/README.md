@@ -20,7 +20,8 @@ app/
 ├── src-tauri/            # Rust shell
 │   ├── src/main.rs       # per-host poll tasks + the `#[tauri::command]` surface
 │   ├── src/settings.rs   # the Settings view-model and its pure rules
-│   ├── src/panel.rs      # the refresh-health footer + progress bar every panel shares
+│   ├── src/panel.rs      # the refresh-health warning + progress bar every panel
+│   │                     #   shares (`footer` in the payload, painted in the header)
 │   ├── src/local.rs      # this machine's card: the sampler's poll state and
 │   │                     #   the honest-unknown rendering
 │   ├── src/containers/   # the Containers/VMs panel: local runtimes, grouping,
@@ -124,16 +125,27 @@ travel; app.js skips them rather than Rust silently omitting a row it did
 produce.
 
 Each entry also carries a **span**: `full`, `threeQuarters`, `half` or
-`quarter`, plus the `weight` (4, 3, 2, 1) the frontend paints as that panel's
-`fr` track. So the shipped third row is `2fr 1fr 1fr` — Containers beside
-OpenClaw and Usage — and Azure Cost owns a full row, which is what affords its
-two-column body (the top-resource breakdowns sit beside the costs rather than
-under them). A panel is held to its `min_width` against **the width its span
-gives it**, not against the row's sum of minimums: the sum let a hungry panel
-borrow width from a lean neighbour that it then never got, since the track it
-renders in is its span's share. `panel_widths` is the one place that arithmetic
-lives, and `width` in the payload is its answer — the same number `columns` was
-derived from.
+`quarter`, plus the `weight` (4, 3, 2, 1) of quarter tracks the frontend gives
+that panel. So the shipped third row is Containers over two tracks beside
+OpenClaw and Usage over one each, and Azure Cost owns all four, which is what
+affords its two-column body (the top-resource breakdowns sit beside the costs
+rather than under them). A panel is held to its `min_width` against **the width
+its span gives it**, not against the row's sum of minimums: the sum let a hungry
+panel borrow width from a lean neighbour that it then never got, since the track
+it renders in is its span's share. `panel_widths` is the one place that
+arithmetic lives, and `width` in the payload is its answer — the same number
+`columns` was derived from.
+
+**Every row is the same four-quarter grid.** A quarter track is
+`(width − 3 × gap) / 4` and a span of `k` gets `k` tracks plus the `k − 1`
+gutters it swallows — the frontend paints exactly that, `repeat(4, minmax(0,1fr))`
+plus `grid-column: <start> / span k`, so it and `panel_widths` are one
+construction rather than two that can disagree. The denominator is a fixed four
+and not the row's own weight, which is a distinction that cost 8pt: dividing
+`width − (n−1) × gap` by the weights in *this* row makes the gutter total move
+with the panel count, so a `half` beside two `quarter`s came out half a gutter
+narrower than a `half` beside one `half`, and the card edge under Repos|Runners
+missed the one under Containers|OpenClaw directly below it.
 
 **A rendered row always adds up to four quarters**, so `span` is always one of
 those four words. Reflow can cut a row short — evict Usage from the quarter row
@@ -154,6 +166,20 @@ Every card in a rendered row is **the same height** (`align-items:stretch`).
 Content stays top-aligned, so a short panel beside a long one carries trailing
 space inside its card rather than leaving a ragged edge in the row.
 
+**Where a warning goes.** A panel's `footer` — `panel::status_footer`'s
+`{text, color}`, the amber `⚠ couldn't read runners … · last ok 2m ago` line —
+is painted **in the panel header, beside the title** (`.panel-stale`), not under
+the body where the Swift original puts it. It used to be a `<p>` after
+`.panel-body`, and that made the card a line taller the moment the panel
+degraded; combined with the equal-height rule above, every other card in the row
+grew with it. So a token quietly losing a scope moved half the cockpit. The
+header is always rendered, so the warning now costs no height at all. It
+ellipsises rather than wrapping — a second header line would be the growth this
+exists to prevent — with the panel title yielding its width first
+(`flex-shrink:100`, the host card's `.stale` rule) and the full text on the
+element's `title`. Usage's *per-provider* footers stay in the body: they belong
+to a section, and a section has no header to move to.
+
 `empty` keys on the count of *monitored* hosts, not on the number of cards: the
 local card is always there, so counting cards would answer "is anything
 configured" wrong forever.
@@ -173,6 +199,8 @@ await window.__TAURI__.core.invoke("containers");
   "title": "Containers / VMs",
   "trailing": "6 total · 4 up · 2 stopped · 1 missing",
   "empty": null,                     // or {"message": "no containers detected"}
+                                     //    / {"message": "looking for containers…"}
+  "loading": false,                  // true until the first `docker ps` returns
   "sections": [{
     "host": "this machine",          // local first, then remotes by name
     "label": "THIS MACHINE",
@@ -230,6 +258,8 @@ await window.__TAURI__.core.invoke("runners");
   "id": "ghWorkflows", "title": "GitHub Repos",
   "trailing": "1 needs approval · 1 running · 1 failed · 1 unreadable",
   "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
+  "loading": false,                      // true while the panel is still filling in
+  "availability": {"label": "GitHub OK", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
   "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
   "rows": [{
     "repo": "Sassy-Dog/velovate", "name": "velovate",
@@ -280,6 +310,67 @@ returns `0` there; that is a fabricated number and this deliberately does not
 copy it. The scan root is a parameter, so the tests drive real temporary
 repositories rather than a mock.
 
+**The availability verdict answers "is it us?", which a status chip cannot.**
+Both panels carry an `availability` chip beside their title, and it is a
+*conjunction*: GitHub's published `Actions` status folded with our fleet's
+per-OS state (`crates/github/src/status.rs`).
+
+| Actions | fleet | chip | colour |
+|---|---|---|---|
+| `operational` | dark | **Fleet Down** | red — ours to investigate |
+| `major_outage` | any | **Major Outage** | red — runs are failing |
+| `degraded_performance` / `partial_outage` | any | **Services Degraded** | amber — GitHub is slow |
+| `operational` | online | **GitHub OK** | dim green |
+| unreadable | any | **Status Unknown** | muted |
+
+When GitHub admits to a problem it takes the headline, at *its* severity; the
+fleet half becomes the sentence behind it ("Linux being offline is expected
+while this lasts"). The fleet only takes the headline in the case GitHub is not
+explaining — an operational Actions with a platform dark anyway, which is the
+one row that is a page rather than reassurance. Red is shared between
+**Major Outage** and **Fleet Down** deliberately: both mean *something is badly
+wrong right now*, and the label is what says whose problem it is. The
+motivating incident (2026-08-06) had every Linux runner cycling through
+`Registration <uuid> was not found` while both macs stayed up, which is
+indistinguishable at a glance from a real fleet deregistration; GitHub's own
+page read `Actions: major_outage` throughout.
+
+Three rules it inherits from the crate it lives in. **Unreachable is not
+operational** — a statuspage fetch that fails yields an explicit muted
+*unknown*, never green, and never suppresses the fleet reading it annotates.
+**A failed refresh keeps the last good reading**, because GitHub's status does
+not change on the timescale of one dropped request and flipping "it's GitHub"
+back to a red "it's us" on a single timeout is the exact misdirection this
+exists to prevent. And **an absent platform is not a dark one**: the verdict
+gates on `*_total > 0`, or an org with no Windows runners would show a
+permanent red forever.
+
+**And a fleet reading can only convict itself while it is fresh.** The verdict
+does not take a `RunnerSummary`; it takes a `Fleet`, which is either `Known(&…)`
+or `Unknown`, and `Unknown` makes **Fleet Down** unreachable by construction.
+The app hands over `Known` only when `runners_last_updated` — which advances on
+a successful fetch, never on an attempt — is within **`RUNNERS_STALE_AFTER_SECS`
+(150s)**, the same window the Runners panel's own footer uses to call its list
+stale. That coupling is the point: the moment the panel admits its roster is out
+of date, the chip stops blaming the fleet for it, and two readings of one fact
+cannot disagree on screen. A stale fleet still reports GitHub's *own* severity —
+staleness silences the fleet half, not the vendor half — and the `AllGood` detail
+drops its "every registered platform has runners online" claim, because that is a
+statement an unverifiable roster cannot support.
+
+Without that gate, an overnight suspend was enough: the laptop opened on
+2026-08-07 to a red **Fleet Down** computed from the previous evening's roster
+while all twelve runners were in fact online, which is the alarm this chip exists
+to make trustworthy. The other half of that fix is the [resume
+watchdog](#waking-up-with-the-machine).
+
+Two details worth keeping: the Actions component is matched by **id**
+(`br0l2tvcx85d`), because `components[]` carries a non-component entry called
+*"Visit www.githubstatus.com for more information"* and display names are
+Atlassian's to re-word; and the read is issued **before** `poll_github`'s token
+gate, since "GitHub is on fire" is most useful precisely when the panel is
+otherwise blank.
+
 **The runner roster is the memory that makes an absence visible.** The org's
 ephemeral runners de-register between jobs, so GitHub's registered list can
 never say "mac-s2 *should* exist". Every name it has shown us is remembered in
@@ -289,7 +380,8 @@ names. An absent name renders amber `recycling 40s` inside the 300s grace and
 red `missing 12m` past it — and those clocks are folded forward **only by a
 successful fetch**, so an hour of GitHub being unreachable ages nothing. The
 panel keeps its last-good rows through a failure and puts the reason in the
-footer (`staleAfter: 150s`).
+`footer` field (`staleAfter: 150s`), which the frontend paints **beside the
+panel title, not under its body** — see "Where a warning goes" below.
 
 **Applied without a restart.** The token and the portfolio are re-read on every
 pass, and `github_wake` cuts the sleep short after a Save, a Clear, a portfolio
@@ -334,6 +426,41 @@ centre anywhere near it:
   UI** — exactly as in Swift, where `WorkflowDisplayOptions.notifyOnApprovalNeeded`
   likewise persists with no control anywhere in Settings. It is re-read on every
   pass, so editing the store file applies without a relaunch.
+
+**Five vendors, three transports, one vocabulary.** `crates/servicestatus`
+reads GitHub, Anthropic and Vercel from Atlassian Statuspage, Neon from
+status.io, and Azure from an RSS incident feed, and lowers all three onto one
+`ComponentStatus`. The Services panel renders a row each; the GitHub reading
+additionally feeds the Repos/Runners conjunction chip.
+
+Two vendor-specific traps are recorded in the code rather than here, but both
+are worth knowing: `status.anthropic.com` **302s** to `status.claude.com`, and
+**Azure cannot say "operational"** — its feed lists active incidents and nothing
+else, so a quiet feed renders as *No Incidents*, a weaker claim than every other
+row's *Operational*, and never as a green tick Azure did not give.
+
+**The second notifier watches services rather than runs.** `services::StatusWatch`
+(`app/src-tauri/src/services.rs`) fires when a watched third-party service
+changes availability — GitHub Actions entering a major outage, and coming back
+out of one. It inherits all three rules above and adds a fourth the approval
+watch does not need:
+
+- **Unknown is not a transition.** A statuspage we could not reach is not a
+  status, so an unreadable pass leaves the baseline exactly where it was.
+  Reading `None → Operational` as a recovery would announce "GitHub is back!"
+  every time a CDN blip resolved, having never said it was down. `ApprovalWatch`
+  lives with the mirror-image wart deliberately (an unreachable repo re-alerts on
+  its return) because its source is one call per repo; this one reads a single
+  endpoint, so the honest answer is available and worth taking.
+- **Seeding is per service, not global** — there is no `seeded` flag. Vendors
+  enter the map at whatever pass each first answers, and a global flag would let
+  the second vendor's very first reading fire a banner.
+- Preference: `notify_on_service_change`, default true, no UI, same rules as its
+  neighbour.
+
+Both notifiers deliver through one `deliver_banners` (`main.rs`), which is why
+the ACL still grants `tauri-plugin-notification` nothing: the webview is never
+in the path.
 
 Two honest gaps against Swift, both platform, neither hidden:
 
@@ -406,7 +533,7 @@ await window.__TAURI__.core.invoke("azure_cost");
 }
 ```
 
-**Three sources, three cadences, three footers.** Claude Code's token rollups are
+**Four sources, and Vercel is the odd one.** Claude Code's token rollups are
 a walk of `~/.claude/projects` on the store's `refresh_interval_secs`
 (`staleAfter` 150s). Neon consumption and Sentry event stats are hourly API reads
 inside the same loop (`staleAfter` 90m — above their own cadence, so a warning
@@ -450,6 +577,25 @@ is reserved for "configured, and we could not find out". Azure draws the same
 line in a different colour: **no SAS URL is a muted setup instruction**, a failed
 read is **red** and names the failure, and rendering the first as the second
 would send an operator hunting a break that does not exist.
+
+**"Nobody has looked yet" is a state of its own**, and it is the one every panel
+used to get wrong. Each stored "is this configured" as a `bool` that only a
+*completed fetch* set, so the value at launch — before any pass had read the
+credential store — was byte-identical to "we looked and there is nothing there".
+Repos and Runners opened on `connect a GitHub token in Settings`, Azure on
+`Add an Azure Cost SAS URL in Settings`, and Containers asserted
+`no containers detected` before it had run a single `docker ps`. All of it at a
+machine where everything was configured and working.
+
+`panel::Configured` is the fix — `Unknown` / `Absent` / `Present`, defaulting to
+`Unknown` — and the half that matters is *when* `Present` is recorded: the moment
+the credential is read, **before the request**, not when the response lands. A
+pass holding a token spends seconds fetching, and for all of it the panel now
+says "loading…" rather than denying it has one. Only `Absent` may paint a setup
+instruction, because only `Absent` observed the absence. Panels also publish
+`"loading"` so the frontend can poll faster while they fill in and settle
+afterwards — the panel scripts refuse to read Rust's strings, so inferring it
+from the message text was never an option.
 
 **A credential the store refuses to read is a fourth state**, and it is neither
 of those. `Credential::Unreadable` (`main.rs`) deliberately does *not*
@@ -559,7 +705,7 @@ the snapshot would churn several times a minute for no visible reason. The
 command only reads what the socket has already published; the 2s frontend
 interval decides how soon the window notices, and drives nothing.
 
-**Which is why there is no footer.** Every other panel here carries a
+**Which is why there is no staleness warning.** Every other panel here carries a
 `status_footer` because it polls and can therefore be stale. This one's
 connection line already answers "is this current", exactly; a staleness clock
 beside it would be a second, weaker answer to the same question.
@@ -666,6 +812,27 @@ A failed poll is debounced two ticks before the card stops claiming to be
 current, matching `RemoteHostMetricsService.failureThreshold`: one missed poll on
 a flappy tailnet is a blip, not an outage.
 
+**Past that, the card goes blank.** A host we can no longer contact renders its
+name, a red border and one sentence dating the outage — not its last snapshot
+behind a badge, which is what it did until ubu-3xdv went down during the
+2026-08-06 GitHub outage and sat there showing four-minute-old numbers as if
+they were now. Every figure on a host card is a present-tense claim; at a glance
+a card *is* its figures, and the badge is the part nobody reads. This is the
+em-dash rule at card scale rather than per field, and `viewmodel::card` carries
+no `Connection::Stale` variant any more so it cannot come back by accident.
+
+The loss is only on screen: `latest` and `histories` stay in state, so the
+sparklines return intact the moment the host answers. What survives on the card
+is *when* it went quiet, the one fact still true.
+
+In tabs mode a hidden host has nothing on screen but its button, so the **tab
+carries the alarm** — red and pulsing (`alert` in the `hostTabs` payload, a
+verdict Rust makes rather than a state string the frontend re-reads). And either
+way a reachability change fires a **banner**: `services::HostWatch`, the same
+transition discipline as the statuspage watch, keyed on the same `error` field
+the card renders from so a banner and a red card can never disagree — debounce
+included.
+
 ### A succeeding poll is not proof the data is current
 
 The card's four states — connecting, live, stale, failed — are facts about
@@ -679,9 +846,11 @@ poll succeeds, the dot stays green, and the numbers are frozen — the failure m
 The agent already publishes the answer and nothing consumed it: `/v1/health`
 carries `samplerStale` and `sampleAgeSeconds`. So each host with a token is
 **also polled for health, every 10s**, alongside its 1s snapshot poll
-(`health_loop` in `src/main.rs`), and `samplerStale: true` renders the *existing*
-stale badge — red, real data, unmissable — rather than a fifth state. What
-differs is the message and the clock:
+(`health_loop` in `src/main.rs`), and `samplerStale: true` renders the stale
+badge — red, real data, unmissable. This is the **one** case that keeps its
+numbers behind a badge, and it earns that: the host is answering, so the figures
+are what it is genuinely serving. A host we cannot *reach* blanks instead (see
+below). What differs is the message and the clock:
 
 - The message names the **agent**, not the link
   (`viewmodel::card::SAMPLER_STALLED_MESSAGE`). A stalled sampler wants the agent
@@ -769,6 +938,36 @@ a portfolio fetch on a credential it has no use for.
 | a container group rule | nothing — the rules are read at render time too, by `containers` |
 | the [layout](#the-layout-tab) — a move, a width, an overflow mode, a breakpoint added or removed, a reset | nothing: `cockpit` re-reads the bands and picks one by the measured width on every frame, so the change is on screen a second later (or the moment Settings closes, which repaints immediately) |
 | a host added / removed / disabled | nothing; `reload_hosts` reconciles poll **tasks** instead |
+
+#### Waking up with the machine
+
+**A resume is the one caller allowed to wake all four at once**, and it is not a
+mutation. Closing a laptop suspends every poll task, so the four slow loops —
+GitHub, usage (1h), Azure (4h), OpenClaw — otherwise resume on their own
+schedule and the cockpit paints last night's data for up to a full interval
+after the lid opens. The rule above holds for *edits* because an edit changes
+one source; a resume is every source at once becoming untrustworthy, so
+`resume_loop` ([`src/resume.rs`](src-tauri/src/resume.rs)) fires the lot.
+
+It notices by watching two clocks rather than by asking the OS: it samples
+`Instant` and `SystemTime` every **2s**, and calls it a resume when the wall
+clock has run ≥ 20s further than the monotonic one. That is chosen over
+`NSWorkspace.didWakeNotification` for being correct whichever way macOS's
+monotonic clock behaves — if it excludes sleep the gap appears and the loops are
+nudged; if it includes sleep their own deadlines have already passed and tokio
+fires them unaided, the clocks agree, and this stays quiet. It also needs no
+platform code, so Windows gets it for free. A wall clock corrected forward by
+NTP reads as a resume too; the cost of that is one extra poll of each source,
+which is the harmless direction to be wrong in.
+
+The 1s and 10s loops need nothing — they self-heal within a tick, and
+`poll_loop` is spawned without an `Arc<App>` to be woken through anyway. But the
+host **watch** is re-seeded first (`HostWatch::reset`): the tailnet takes a few
+seconds to come back, so without it every lid-open would banner an
+"unreachable" and then a "back online" for every host. `StatusWatch` is
+deliberately *not* reset — a vendor that changed state overnight is a transition
+worth hearing about, and one that broke and recovered while we slept compares
+equal and stays quiet on its own.
 
 Every mutation answers in one shape — `{status, settings}` — and the frontend
 re-renders from the `settings` it gets back rather than patching its own copy,
@@ -1053,7 +1252,9 @@ deleting a keychain item before every launch.
 
 ```bash
 cargo run -p devcanopy-app -- --dump sample.json                 # one live host
-cargo run -p devcanopy-app -- --dump-stale sample-stale.json     # …stale, same numbers
+cargo run -p devcanopy-app -- --dump-unreachable sample-unreachable.json
+#   …the link is down on a host we used to reach: a BLANK card, which is what
+#   `view_for` produces for it. No figures survive.
 cargo run -p devcanopy-app -- --dump-sampler-stale sample-sampler-stale.json
 #   …the poll SUCCEEDED and the card is stale anyway: the agent's own
 #   `/v1/health` says its sampler stopped, dated by the agent's clock.
@@ -1323,7 +1524,9 @@ and that immediacy is itself the check on the corresponding wake:
    **Zero rows on both is still a pass for the boundary** — with no GitHub
    token in the scratch keychain both panels render `connect a GitHub token in
    Settings`, and that sentence is `github::repos_view`'s with no path to the
-   DOM except a successful `invoke`. What the counts add is the *second* thing:
+   DOM except a successful `invoke`. Expect `loading…` for the first moment
+   either way: until a pass has read the keychain the panels cannot say whether
+   a token exists, and the setup instruction appears only once one has looked. What the counts add is the *second* thing:
    a non-zero repo count proves the loop read the seeded portfolio out of the
    real store rather than a default, exactly as step 5's counts do.
 
@@ -1354,7 +1557,9 @@ and that immediacy is itself the check on the corresponding wake:
    the provider sections are *absent*, deliberately, not blank — and with no SAS
    URL the Azure panel is the single sentence `Add an Azure Cost SAS URL in
    Settings`. That sentence is `azure::UNCONFIGURED_MESSAGE`'s and has no path to
-   the DOM except a successful `invoke("azure_cost")`.
+   the DOM except a successful `invoke("azure_cost")`. It is preceded by
+   `reading export…` until the first pass reads the keychain — same rule as the
+   GitHub panels above.
 
    The Usage panel is the one surface here that needs **no credential at all** to
    populate: it walks `~/.claude/projects` on this machine. On a machine that has

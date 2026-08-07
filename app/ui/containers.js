@@ -21,6 +21,9 @@
  *  re-render the same numbers. */
 const REFRESH_MS = 10000;
 
+/** How often to ask while the panel is still filling in — see `github.js`. */
+const LOADING_REFRESH_MS = 1000;
+
 const $c = (id) => document.getElementById(id);
 
 function node(tag, cls, text) {
@@ -78,12 +81,17 @@ function renderPanel(payload) {
   for (const section of payload.sections || []) children.push(sectionNode(section));
   body.replaceChildren(...children);
 
-  // A healthy, fresh panel renders no footer at all — the cockpit stays
-  // glanceable, and a warning line means something when it appears.
-  const footer = $c("containersFooter");
-  footer.textContent = payload.footer ? payload.footer.text : "";
-  footer.style.color = payload.footer ? payload.footer.color : "";
-  footer.hidden = !payload.footer;
+  // A healthy, fresh panel renders no warning at all — the cockpit stays
+  // glanceable, and a warning means something when it appears. It sits in the
+  // header rather than under the body because a line below the content makes
+  // the card taller, and `.panel-row` stretches its neighbours to match: the
+  // panel that degraded would move the panel that did not. Ellipsised in a
+  // narrow panel, so `title` keeps the whole message reachable.
+  const stale = $c("containersStale");
+  stale.textContent = payload.footer ? payload.footer.text : "";
+  stale.title = payload.footer ? payload.footer.text : "";
+  stale.style.color = payload.footer ? payload.footer.color : "";
+  stale.hidden = !payload.footer;
 
   $c("containersPanel").hidden = false;
 }
@@ -95,17 +103,34 @@ async function refresh() {
     // Playwright suite.
     const payload = await callRust("containers", {}, "sample-containers.json");
     if (payload) renderPanel(payload);
+    return Boolean(payload && payload.loading);
   } catch {
     // A failed poll leaves the last good panel on screen rather than blanking
     // it: Rust already retains last-known rows through a bad poll, and wiping
     // the DOM here would undo that.
   }
+  // A poll that threw is not "loading" — it is a failure, and retrying it every
+  // second would be a busy loop against whatever just broke.
+  return false;
 }
 
-refresh();
-if (window.__TAURI__) {
-  setInterval(() => { if (!settingsOpen) refresh(); }, REFRESH_MS);
+let refreshTimer = null;
+
+/** Re-arms the poll at the cadence the last payload asked for. */
+function scheduleRefresh(loading) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(tick, loading ? LOADING_REFRESH_MS : REFRESH_MS);
 }
+
+async function tick() {
+  // While Settings is up the cockpit is off-screen, so skip the work — but
+  // still re-arm, or closing Settings would find a dead timer.
+  scheduleRefresh(settingsOpen ? false : await refresh());
+}
+
+refresh().then((loading) => {
+  if (window.__TAURI__) scheduleRefresh(loading);
+});
 
 // Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`:
 // read-only, and no production behaviour depends on it.

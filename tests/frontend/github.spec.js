@@ -412,18 +412,18 @@ test("the widest presence label fits the reserved slot without truncating", asyn
   }
 });
 
-test("a healthy Runners panel shows no footer", async ({ page, baseURL }) => {
+test("a healthy Runners panel shows no warning", async ({ page, baseURL }) => {
   const { runners } = await gotoWithFixtures(page, baseURL);
   expect(runners.footer).toBeNull();
-  await expect(page.locator("#runnersFooter")).toBeHidden();
+  await expect(page.locator("#runnersStale")).toBeHidden();
 });
 
 /**
  * The clock-freeze contract from the DOM's side: a failed fetch keeps every
- * last-good row on screen and adds a footer. Blanking the panel here would
+ * last-good row on screen and adds a warning. Blanking the panel here would
  * undo the retention Rust deliberately implements.
  */
-test("a failed fetch keeps the last-good rows and surfaces the error in the footer", async ({ page, baseURL }) => {
+test("a failed fetch keeps the last-good rows and surfaces the error in the header", async ({ page, baseURL }) => {
   const good = await fixture(baseURL, "sample-runners.json");
   const failing = {
     ...good,
@@ -435,14 +435,129 @@ test("a failed fetch keeps the last-good rows and surfaces the error in the foot
   await gotoWithFixtures(page, baseURL, { runners: failing });
 
   await expect(runnerRows(page)).toHaveCount(good.rows.length);
-  const footer = page.locator("#runnersFooter");
-  await expect(footer).toBeVisible();
-  await expect(footer).toHaveText(failing.footer.text);
-  await expect(footer).toHaveCSS("color", rgb(failing.footer.color));
+  const stale = page.locator("#runnersStale");
+  await expect(stale).toBeVisible();
+  await expect(stale).toHaveText(failing.footer.text);
+  await expect(stale).toHaveCSS("color", rgb(failing.footer.color));
+  // Ellipsised rather than wrapped in a narrow panel, so the whole message has
+  // to stay reachable somewhere.
+  await expect(stale).toHaveAttribute("title", failing.footer.text);
   await expect(page.locator("#runnersBody .gh-message")).toHaveCount(0);
 });
 
-test("with no token the Runners panel is one sentence, no stats and no footer", async ({ page, baseURL }) => {
+/**
+ * The reason the warning moved into the header at all. It used to be a `<p>`
+ * after `.panel-body`, so a panel grew a line the moment it degraded — and
+ * because `.panel-row` stretches every card in a row to the tallest, Repos
+ * beside it grew too. A token losing a scope moved half the cockpit.
+ */
+test("a Runners error does not make the card taller", async ({ page, baseURL }) => {
+  const good = await fixture(baseURL, "sample-runners.json");
+  await gotoWithFixtures(page, baseURL, { runners: good });
+  const healthy = await page.locator("#runnersPanel").boundingBox();
+
+  const failing = {
+    ...good,
+    footer: {
+      text: "⚠ couldn't read runners — token needs org self-hosted runners (read) · last ok 4m ago",
+      color: "#e09a26",
+    },
+  };
+  await gotoWithFixtures(page, baseURL, { runners: failing });
+  await expect(page.locator("#runnersStale")).toBeVisible();
+  const degraded = await page.locator("#runnersPanel").boundingBox();
+
+  expect(degraded.height).toBeCloseTo(healthy.height, 1);
+
+  // Sharing the header means competing for it, and the first cut of this rule
+  // copied the host card's `flex-shrink:100` — which is on the *title* there,
+  // because a CPU model is the disposable half of that line. Here the title is
+  // the panel's name, and the copy ate "GitHub Runners" down to zero the moment
+  // the warning appeared. The message is what ellipsises now, not the label.
+  const title = page.locator("#runnersTitle");
+  await expect(title).toHaveText("GitHub Runners");
+  const [titled, staled] = await Promise.all([title.boundingBox(), page.locator("#runnersStale").boundingBox()]);
+  expect(titled.width, "the panel keeps its name when it degrades").toBeGreaterThan(0);
+  expect(
+    await title.evaluate((el) => el.scrollWidth <= Math.ceil(el.getBoundingClientRect().width)),
+    "the title is not the one being truncated"
+  ).toBe(true);
+  // …and the warning sits beside the label rather than out at the far edge.
+  expect(staled.x).toBeGreaterThan(titled.x);
+});
+
+/**
+ * The reported bug, from the DOM's side: at launch Rust has not read the
+ * credential store yet, and both panels used to render "connect a GitHub token
+ * in Settings" at an operator whose token was fine. The payload now says it is
+ * loading, and the panel paints that.
+ */
+test("a loading payload paints the loading line, not the connect-a-token one", async ({ page, baseURL }) => {
+  const repos = { ...(await fixture(baseURL, "sample-repos.json")), message: { text: "loading…" }, rows: [], loading: true };
+  const runners = { ...(await fixture(baseURL, "sample-runners.json")), message: { text: "loading runners…" }, rows: [], loading: true };
+  await gotoWithFixtures(page, baseURL, { repos, runners });
+
+  await expect(page.locator("#reposBody .gh-message")).toHaveText("loading…");
+  await expect(page.locator("#runnersBody .gh-message")).toHaveText("loading runners…");
+  for (const text of await page.locator(".gh-message").allTextContents()) {
+    expect(text, "a panel that has not looked may not send anyone to Settings").not.toContain("Settings");
+  }
+});
+
+/**
+ * …and having fixed the message, the cockpit must not then sit on it. Each
+ * panel's own timer is 10s with its first tick at load, so a correct "loading…"
+ * would still outlive the data by up to ten seconds. `payload.loading` is what
+ * tightens the cadence, and dropping it is what relaxes it again.
+ */
+test("a loading panel is re-asked promptly, and settles once it is not", async ({ page, baseURL }) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const loading = { ...(await fixture(baseURL, "sample-runners.json")), message: { text: "loading runners…" }, rows: [], loading: true };
+  const settled = await fixture(baseURL, "sample-runners.json");
+
+  // Answers `loading` until the fourth ask, then the real payload — and counts
+  // every call so the cadence itself can be asserted rather than inferred.
+  await page.addInitScript(
+    (vms) => {
+      window.__RUNNER_CALLS__ = [];
+      window.__TAURI__ = {
+        core: {
+          invoke: async (command) => {
+            if (command === "cockpit") return vms.cockpit;
+            if (command === "repos") return null;
+            if (command !== "runners") return null;
+            window.__RUNNER_CALLS__.push(Date.now());
+            return window.__RUNNER_CALLS__.length > 3 ? vms.settled : vms.loading;
+          },
+        },
+      };
+    },
+    { cockpit, loading, settled }
+  );
+  await page.goto("/index.html");
+
+  // Four asks inside a couple of seconds is only reachable on the fast cadence:
+  // at the settled 10s the fourth would be half a minute away.
+  await expect
+    .poll(() => page.evaluate(() => window.__RUNNER_CALLS__.length), { timeout: 6000 })
+    .toBeGreaterThanOrEqual(4);
+  await expect(page.locator("#runnersBody .gh-row").first()).toBeVisible();
+
+  const gaps = await page.evaluate(() =>
+    window.__RUNNER_CALLS__.slice(1).map((t, i) => t - window.__RUNNER_CALLS__[i])
+  );
+  for (const gap of gaps) {
+    expect(gap, `polls while loading were ${gaps.join("/")}ms apart`).toBeLessThan(5000);
+  }
+
+  // …and once settled it backs off, or the cockpit would poll every second
+  // forever.
+  const settledCount = await page.evaluate(() => window.__RUNNER_CALLS__.length);
+  await page.waitForTimeout(2500);
+  expect(await page.evaluate(() => window.__RUNNER_CALLS__.length)).toBeLessThanOrEqual(settledCount + 1);
+});
+
+test("with no token the Runners panel is one sentence, no stats and no warning", async ({ page, baseURL }) => {
   const empty = await fixture(baseURL, "sample-runners-empty.json");
   await gotoWithFixtures(page, baseURL, { runners: empty });
 
@@ -452,8 +567,101 @@ test("with no token the Runners panel is one sentence, no stats and no footer", 
   await expect(page.locator(".gh-stat")).toHaveCount(0);
   await expect(page.locator(".gh-chip")).toHaveCount(0);
   // Nothing has been fetched, so there is nothing to be stale.
-  await expect(page.locator("#runnersFooter")).toBeHidden();
+  await expect(page.locator("#runnersStale")).toBeHidden();
   await expect(page.locator("#runnersTrailing")).toHaveText("");
+});
+
+// MARK: - GitHub availability (the conjunction chip)
+
+/** The chip as Rust builds it, for a fabricated matrix row. */
+const chip = (label, color, detail = "why") => ({ label, color, detail });
+
+/** Both panels' payloads carrying the same verdict. */
+async function gotoWithVerdict(page, baseURL, availability) {
+  const repos = { ...(await fixture(baseURL, "sample-repos.json")), availability };
+  const runners = { ...(await fixture(baseURL, "sample-runners.json")), availability };
+  return gotoWithFixtures(page, baseURL, { repos, runners });
+}
+
+test("both panels paint the verdict beside their own title", async ({ page, baseURL }) => {
+  // One shared element would be orphaned when reflow splits the two panels
+  // onto separate rows, which is why the verdict travels on both payloads.
+  const { repos } = await gotoWithVerdict(page, baseURL, chip("GitHub OK", "#1c6b41"));
+  for (const [chipId, titleId] of [
+    ["#reposAvailability", "#reposTitle"],
+    ["#runnersAvailability", "#runnersTitle"],
+  ]) {
+    await expect(page.locator(chipId)).toHaveText(repos.availability.label);
+    await expect(page.locator(chipId)).toHaveCSS("color", rgb(repos.availability.color));
+    const [c, t] = await Promise.all([
+      page.locator(chipId).boundingBox(),
+      page.locator(titleId).boundingBox(),
+    ]);
+    expect(c.x, `${chipId} sits beside ${titleId}`).toBeGreaterThan(t.x);
+  }
+});
+
+test("every verdict paints Rust's label and colour", async ({ page, baseURL }) => {
+  // Every string and colour here is Rust's; this asserts only that the frontend
+  // applies what it is given. Amber is "GitHub is slow", red is "runs are
+  // failing" or "it's ours" — the label is what tells those two apart.
+  for (const [label, color] of [
+    ["GitHub OK", "#1c6b41"], // operational + fleet online
+    ["Services Degraded", "#e09a26"], // degraded_performance / partial_outage
+    ["Major Outage", "#e05a4f"], // major_outage — red, not amber
+    ["Fleet Down", "#e05a4f"], // operational + fleet dark -> it's us
+    ["Status Unknown", "#5a6b60"], // statuspage unreadable
+  ]) {
+    await gotoWithVerdict(page, baseURL, chip(label, color));
+    await expect(page.locator("#runnersAvailability")).toHaveText(label);
+    await expect(page.locator("#runnersAvailability")).toHaveCSS("color", rgb(color));
+  }
+});
+
+test("an unreachable status page reads as unknown and keeps the fleet rows", async ({ page, baseURL }) => {
+  const good = await fixture(baseURL, "sample-runners.json");
+  await gotoWithVerdict(page, baseURL, chip("Status Unknown", "#5a6b60", "Couldn't read GitHub's status page."));
+  await expect(page.locator("#runnersAvailability")).toHaveText("Status Unknown");
+  await expect(page.locator("#runnersAvailability")).toHaveCSS("color", rgb("#5a6b60"));
+  // Never green, and never at the cost of the reading it annotates.
+  await expect(page.locator("#runnersAvailability")).not.toHaveCSS("color", rgb("#1c6b41"));
+  await expect(runnerRows(page)).toHaveCount(good.rows.length);
+});
+
+test("the incident detail is reachable on hover, as text and never as markup", async ({ page, baseURL }) => {
+  // Statuspage incident bodies carry raw HTML (`<br />`), and this is the one
+  // string on the panel sourced from someone else's CMS.
+  const detail = 'GitHub Actions: major outage. Incident: <img src=x onerror="alert(1)"> (critical).';
+  await gotoWithVerdict(page, baseURL, chip("Major Outage", "#e05a4f", detail));
+  await expect(page.locator("#runnersAvailability")).toHaveAttribute("title", detail);
+  expect(await page.locator("#runnersAvailability").evaluate((el) => el.querySelector("img"))).toBeNull();
+});
+
+test("a payload with no verdict hides the chip rather than emptying it", async ({ page, baseURL }) => {
+  await gotoWithVerdict(page, baseURL, null);
+  await expect(page.locator("#runnersAvailability")).toBeHidden();
+  await expect(page.locator("#reposAvailability")).toBeHidden();
+});
+
+/**
+ * The chip shares the header with a title that must survive and a staleness
+ * warning that is the designated give. It is short and fixed, so it takes
+ * `flex:none` — a verdict ellipsised to "GH…" would answer nothing — and it
+ * must not cost the card any height.
+ */
+test("the verdict costs no height and does not truncate", async ({ page, baseURL }) => {
+  await gotoWithVerdict(page, baseURL, null);
+  const bare = await page.locator("#runnersPanel").boundingBox();
+
+  await gotoWithVerdict(page, baseURL, chip("Fleet Down", "#e05a4f"));
+  const withChip = page.locator("#runnersAvailability");
+  await expect(withChip).toBeVisible();
+  expect((await page.locator("#runnersPanel").boundingBox()).height).toBeCloseTo(bare.height, 1);
+  expect(
+    await withChip.evaluate((el) => el.scrollWidth <= Math.ceil(el.getBoundingClientRect().width)),
+    "the verdict is never the element that ellipsises"
+  ).toBe(true);
+  await expect(page.locator("#runnersTitle")).toHaveText("GitHub Runners");
 });
 
 // MARK: - Injection

@@ -18,6 +18,12 @@ devcanopy-store = { path = "../../crates/store" }
 # The Repos / GitHub Runners panels' data layer: the REST client plus the pure
 # workflow-health, runner and roster mappings. This crate is the view side.
 devcanopy-github = { path = "../../crates/github" }
+# Third-party availability: the shared status vocabulary and the three
+# transports the five watched vendors publish through.
+devcanopy-servicestatus = { path = "../../crates/servicestatus" }
+# `join_all` for the five status pages, which are five independent hosts and
+# have no reason to be read in sequence. Already in the lock via crates/github.
+futures-util = "0.3"
 # This machine's own metrics, for the local host card that leads the grid. The
 # Swift app collects them through HostMetricsKit; this is the portable twin.
 devcanopy-localhost = { path = "../../crates/localhost" }
@@ -54,6 +60,9 @@ dirs = { workspace = true }
 uuid = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tauri = "2"
+# `derive` for the one command argument that is a struct rather than a
+# positional list (`ProviderPrefs`).
+serde = { workspace = true }
 serde_json = { workspace = true }
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-notification = "2.3.3"

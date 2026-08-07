@@ -39,6 +39,13 @@ pub const STALE_AFTER_SECS: u64 = 30;
 /// list changes on human timescales, and `docker ps` is a process spawn.
 pub const POLL_INTERVAL_SECS: u64 = 10;
 
+/// The sentence before the first `docker ps` has returned.
+///
+/// Not "no containers detected", which is a finding. This panel starts with
+/// every list empty, so until a pass completes those empties are the absence of
+/// a measurement rather than a measurement of absence.
+pub const LOADING_MESSAGE: &str = "looking for containers…";
+
 /// Seconds since the UNIX epoch — [`crate::panel::now_unix`], re-exported here
 /// because this panel's callers already reach for it under this name.
 pub use crate::panel::now_unix;
@@ -58,8 +65,18 @@ pub struct ContainersState {
     detected: Vec<LocalRuntime>,
     /// Per-runtime last-known lists, so one failing tool cannot blank its rows.
     last_known: BTreeMap<LocalRuntime, Vec<wire::Container>>,
-    /// When the local poll last completed, and what (if anything) failed.
+    /// When the local poll last *completed*, whether or not it learned
+    /// anything. `None` means no pass has run, which is what separates "there
+    /// are no containers" from "we have not looked".
     local_last_updated: Option<u64>,
+    /// When the local poll last completed **without a failing runtime**.
+    ///
+    /// Separate from `local_last_updated` because [`crate::panel::status_footer`]
+    /// renders its argument as `last ok {age}`. Feeding it "when we last looked"
+    /// made a Docker that had never once answered report
+    /// `⚠ couldn't read docker · last ok 0s ago` — a reassurance about a reading
+    /// that never happened.
+    local_last_success: Option<u64>,
     local_error: Option<String>,
     /// Remote sections, keyed by host name and only ever written on a
     /// *successful* fetch — a failed poll leaves the previous list in place
@@ -88,9 +105,13 @@ impl ContainersState {
         self.last_known = outcome.last_known;
         self.detected = detected;
         // Set on every pass, failures included: this is "when we last looked",
-        // and it is what the staleness footer measures. Whether anything was
-        // *learned* is `last_success`'s question, not this one.
+        // and it is what tells the panel it may speak at all.
         self.local_last_updated = Some(now);
+        // …and this one only when every runtime answered, because the footer
+        // renders it as "last ok". A pass where docker failed is not an ok.
+        if self.local_error.is_none() {
+            self.local_last_success = Some(now);
+        }
     }
 
     /// Records one host's successful container fetch.
@@ -160,21 +181,37 @@ pub fn view(
         rendered.push(section_view(section, &partition));
     }
 
+    // Before the first pass this panel has looked at nothing, so it cannot
+    // report that there is nothing — it used to open on "no containers
+    // detected" on a machine running twenty of them, because every list starts
+    // empty and `empty` never asked whether a poll had happened.
+    let looked = state.local_last_updated.is_some();
+
     // "Nothing here" is one sentence, not an empty grid: an unconfigured panel
     // and a broken one must not look the same.
-    let empty = state.detected.is_empty()
+    let empty = looked
+        && state.detected.is_empty()
         && state.local.is_empty()
         && state.remote.values().all(|list| list.is_empty());
 
     json!({
         "id": PanelKind::Containers.id(),
         "title": PanelKind::Containers.title(),
-        "trailing": trailing_label(state, missing),
-        "empty": if empty { json!({ "message": "no containers detected" }) } else { Value::Null },
+        // No counts before the first pass: "0 total · 0 up · 0 stopped" is three
+        // measurements nobody took. Same rule as the Usage panel's empty
+        // trailing string.
+        "trailing": if looked { json!(trailing_label(state, missing)) } else { json!("") },
+        "empty": match (looked, empty) {
+            (false, _) => json!({ "message": LOADING_MESSAGE }),
+            (true, true) => json!({ "message": "no containers detected" }),
+            (true, false) => Value::Null,
+        },
         // Sections are dropped entirely in the empty case, matching the Swift
         // panel: one sentence, not a stack of empty host headings.
-        "sections": if empty { json!([]) } else { json!(rendered) },
-        "footer": footer(state.local_last_updated, state.local_error.as_deref(), now),
+        "sections": if empty || !looked { json!([]) } else { json!(rendered) },
+        "footer": footer(state.local_last_success, state.local_error.as_deref(), now),
+        // Drives the frontend's refresh cadence while the panel fills in.
+        "loading": !looked,
     })
 }
 
@@ -436,11 +473,38 @@ mod tests {
         view(&state, &rules, &presence, NOW)
     }
 
+    /// A state whose local pass has completed and found no runtimes at all.
+    ///
+    /// The distinction most of these tests need: `ContainersState::new()` is the
+    /// frame *before* anyone ran `docker ps`, and it deliberately no longer
+    /// renders any finding.
+    fn looked() -> ContainersState {
+        let mut state = ContainersState::new();
+        state.apply_local(vec![], parse::merge(vec![], BTreeMap::new()), NOW);
+        state
+    }
+
+    /// The reported bug: every list starts empty, so the panel used to open on a
+    /// confident "no containers detected" — on a machine running twenty of them
+    /// — before the first `docker ps` had returned.
+    #[test]
+    fn a_panel_that_has_not_looked_yet_says_so_rather_than_reporting_nothing() {
+        let payload = view(&ContainersState::new(), &[], &BTreeMap::new(), NOW);
+        assert_eq!(payload["empty"]["message"], LOADING_MESSAGE);
+        assert_eq!(payload["loading"], true);
+        assert!(payload["sections"].as_array().expect("sections").is_empty());
+        assert_eq!(
+            payload["trailing"], "",
+            "0 total · 0 up · 0 stopped is three measurements nobody took"
+        );
+        assert_eq!(payload["footer"], Value::Null, "nothing to be stale yet");
+    }
+
     #[test]
     fn an_unconfigured_panel_says_so_instead_of_rendering_nothing() {
-        let state = ContainersState::new();
-        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        let payload = view(&looked(), &[], &BTreeMap::new(), NOW);
         assert_eq!(payload["empty"]["message"], "no containers detected");
+        assert_eq!(payload["loading"], false, "we looked; this is not loading");
         assert!(payload["sections"].as_array().expect("sections").is_empty());
         assert_eq!(payload["trailing"], "0 total · 0 up · 0 stopped");
     }
@@ -449,7 +513,7 @@ mod tests {
     fn a_machine_with_no_runtimes_reads_differently_from_one_with_no_containers() {
         // No runtimes at all, but a remote host is reporting: the local
         // section still renders, and it must say which of the two it is.
-        let mut state = ContainersState::new();
+        let mut state = looked();
         state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
         let payload = view(&state, &[], &BTreeMap::new(), NOW);
         let sections = payload["sections"].as_array().expect("sections");
@@ -636,12 +700,12 @@ mod tests {
     #[test]
     fn a_stale_reading_says_so_rather_than_passing_as_current() {
         let (mut state, rules, presence) = fixture_state(NOW);
-        state.local_last_updated = Some(NOW - 120);
+        state.local_last_success = Some(NOW - 120);
         let payload = view(&state, &rules, &presence, NOW);
         assert_eq!(payload["footer"]["text"], "⚠ stale · updated 2m ago");
         assert_eq!(payload["footer"]["color"], color::hex(color::AMBER));
 
-        state.local_last_updated = Some(NOW - STALE_AFTER_SECS);
+        state.local_last_success = Some(NOW - STALE_AFTER_SECS);
         let fresh_enough = view(&state, &rules, &presence, NOW);
         assert_eq!(
             fresh_enough["footer"],
@@ -680,9 +744,13 @@ mod tests {
         );
 
         let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        // A minute, which is when tart last actually answered — not the `0s ago`
+        // this asserted while the footer was fed "when we last looked". The
+        // failing pass advances that clock, so a permanently broken runtime
+        // reported itself as freshly ok on every single poll.
         assert_eq!(
             payload["footer"]["text"],
-            "⚠ couldn't read tart · last ok 0s ago"
+            "⚠ couldn't read tart · last ok 1m ago"
         );
         let names: Vec<&str> = rows(&payload["sections"][0])
             .iter()
@@ -722,11 +790,29 @@ mod tests {
         );
     }
 
+    /// A runtime that has never once answered has no "last ok" to report, and
+    /// `status_footer` drops the suffix rather than inventing one.
+    #[test]
+    fn a_runtime_that_never_answered_reports_no_last_ok_at_all() {
+        let mut state = ContainersState::new();
+        state.apply_local(
+            vec![LocalRuntime::Docker],
+            parse::merge(vec![(LocalRuntime::Docker, None)], BTreeMap::new()),
+            NOW,
+        );
+        let payload = view(&state, &[], &BTreeMap::new(), NOW);
+        assert_eq!(payload["footer"]["text"], "⚠ couldn't read docker");
+        assert_eq!(
+            payload["loading"], false,
+            "the pass completed — it just did not go well"
+        );
+    }
+
     #[test]
     fn a_failed_remote_poll_keeps_the_hosts_previous_rows() {
         // `apply_remote` is only ever called on success, so a failed poll is
         // simply the absence of a call — this pins that the section survives it.
-        let mut state = ContainersState::new();
+        let mut state = looked();
         state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
         state.retain_hosts(&BTreeSet::from(["ubu-3xdv".to_owned()]));
         let payload = view(&state, &[], &BTreeMap::new(), NOW);

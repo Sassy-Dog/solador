@@ -102,6 +102,11 @@ pub struct Settings {
     pub sentry_org_slug: String,
     /// Monthly accepted-error quota. `0` means "no quota set".
     pub sentry_monthly_event_quota: u64,
+    /// Vercel team id (non-secret; the API token is a credential). Blank for a
+    /// personal account, which is why the client omits the parameter rather
+    /// than sending it empty — Vercel answers 400 to `teamId=`.
+    #[serde(default)]
+    pub vercel_team_id: String,
     /// OpenClaw gateway URL (non-secret; the bearer token is a credential).
     pub openclaw_gateway_url: String,
     /// Fire an OS notification once when a tracked run transitions into the
@@ -113,6 +118,15 @@ pub struct Settings {
     /// either app's UI writes it. Editing the store file by hand is the only
     /// way to turn it off, in both.
     pub notify_on_approval_needed: bool,
+    /// Fire an OS notification when a watched third-party service changes
+    /// availability — GitHub Actions going into a major outage, and coming back
+    /// out of one.
+    ///
+    /// Default-true and, like its neighbour above, with **no Settings control**:
+    /// editing the store file by hand is the only way to turn it off. The
+    /// cockpit's availability chip is only true while someone is looking at it,
+    /// and the point of a multi-hour outage is to stop looking.
+    pub notify_on_service_change: bool,
     /// Mount paths hidden from the *local* machine's Volumes section. Remote
     /// hosts carry their own list on [`crate::Host`].
     pub local_hidden_volume_mounts: Vec<String>,
@@ -130,8 +144,10 @@ impl Default for Settings {
             neon_usd_per_gib_month: 0.0,
             sentry_org_slug: String::new(),
             sentry_monthly_event_quota: 0,
+            vercel_team_id: String::new(),
             openclaw_gateway_url: String::new(),
             notify_on_approval_needed: true,
+            notify_on_service_change: true,
             local_hidden_volume_mounts: Vec::new(),
         }
     }
@@ -174,19 +190,30 @@ mod tests {
         assert!(s.local_hidden_volume_mounts.is_empty());
     }
 
-    /// The one preference with no UI on either side: a store file written
-    /// before it existed must still opt *in*, because Swift's
+    /// The two preferences with no UI on either side: a store file written
+    /// before either existed must still opt *in*, because Swift's
     /// `WorkflowDisplayOptions()` default is `true` and an upgrade that
     /// silently disabled the alert would look exactly like the feature not
-    /// working.
+    /// working. The same argument covers the service-change alert, which nobody
+    /// can turn back on from the app if an upgrade turns it off.
     #[test]
-    fn a_store_file_without_the_notify_key_still_opts_in() {
+    fn a_store_file_without_the_notify_keys_still_opts_in() {
         let s: Settings = serde_json::from_str(r#"{"core_row_span":3}"#).expect("deserialize");
         assert!(s.notify_on_approval_needed);
+        assert!(s.notify_on_service_change);
 
         let off: Settings =
             serde_json::from_str(r#"{"notify_on_approval_needed":false}"#).expect("deserialize");
         assert!(!off.notify_on_approval_needed);
+        assert!(
+            off.notify_on_service_change,
+            "the two alerts are independent switches"
+        );
+
+        let quiet: Settings =
+            serde_json::from_str(r#"{"notify_on_service_change":false}"#).expect("deserialize");
+        assert!(!quiet.notify_on_service_change);
+        assert!(quiet.notify_on_approval_needed);
     }
 
     #[test]
@@ -201,8 +228,10 @@ mod tests {
             neon_usd_per_gib_month: 0.5,
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 50_000,
+            vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             notify_on_approval_needed: false,
+            notify_on_service_change: false,
             local_hidden_volume_mounts: vec!["/Volumes/Backup".into()],
         };
         let json = serde_json::to_string(&s).expect("serialize");

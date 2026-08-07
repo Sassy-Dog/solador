@@ -55,6 +55,7 @@ pub struct StoredSecrets {
     pub github: bool,
     pub neon: bool,
     pub sentry: bool,
+    pub vercel: bool,
     pub azure: bool,
     /// Whether an OpenClaw *bearer* token is stored. The device key is not
     /// represented here at all: it is minted by the app, and whether one exists
@@ -73,6 +74,7 @@ pub enum SecretField {
     GitHub,
     Neon,
     Sentry,
+    Vercel,
     Azure,
     /// The OpenClaw gateway's *bearer* token, which is optional — most gateways
     /// authenticate by device pairing instead. Deliberately not the device key:
@@ -89,6 +91,7 @@ impl SecretField {
             SecretField::GitHub => "github",
             SecretField::Neon => "neon",
             SecretField::Sentry => "sentry",
+            SecretField::Vercel => "vercel",
             SecretField::Azure => "azure",
             SecretField::OpenClaw => "openclaw",
         }
@@ -101,6 +104,7 @@ impl SecretField {
             SecretField::GitHub => SecretKey::GitHubAccessToken,
             SecretField::Neon => SecretKey::NeonApiKey,
             SecretField::Sentry => SecretKey::SentryUsageToken,
+            SecretField::Vercel => SecretKey::VercelApiToken,
             SecretField::Azure => SecretKey::AzureCostSasUrl,
             SecretField::OpenClaw => SecretKey::OpenClawBearerToken,
         }
@@ -113,6 +117,7 @@ impl SecretField {
             SecretField::GitHub,
             SecretField::Neon,
             SecretField::Sentry,
+            SecretField::Vercel,
             SecretField::Azure,
             SecretField::OpenClaw,
         ]
@@ -1065,6 +1070,19 @@ fn usage_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
                 "Powers the Sentry row on the Usage panel (accepted error events over the last 30 days). Create a personal token under User settings → Auth Tokens, or an internal-integration token, with the read-only org:read scope — organization auth tokens carry a fixed CI-oriented scope set that doesn't include it. Stored in your OS credential store; the org slug and quota are not secrets and are stored as normal preferences.",
             ),
         },
+        "vercel": {
+            "heading": "Vercel",
+            "teamIdLabel": "Team ID",
+            "teamId": settings.vercel_team_id,
+            "teamIdHelp": "Leave blank for a personal account.",
+            "secret": secret_section(
+                SecretField::Vercel,
+                "API token",
+                stored.vercel,
+                "Token stored",
+                "Powers the Vercel rows on the Usage panel (month-to-date spend, and what falls beyond the plan). Create a token under Account settings → Tokens with read access to the team whose billing you want. Stored in your OS credential store; the team ID is not a secret and is stored as a normal preference.",
+            ),
+        },
     })
 }
 
@@ -1353,6 +1371,7 @@ mod tests {
             github: true,
             neon: false,
             sentry: true,
+            vercel: false,
             azure: false,
             openclaw: false,
             hosts: [host.id].into_iter().collect(),
@@ -1479,7 +1498,7 @@ mod tests {
     }
 
     /// The completing rule: a layout that names three panels still renders all
-    /// seven. This is what lets a saved layout survive a build that adds a
+    /// eight. This is what lets a saved layout survive a build that adds a
     /// panel — the new one appears in its default place instead of vanishing.
     #[test]
     fn a_partial_layout_is_completed_from_the_default_order() {
@@ -1500,6 +1519,7 @@ mod tests {
                 "ghRunners",
                 "containers",
                 "openclawAgents",
+                "services",
             ]
         );
         assert_eq!(order[0].1, PanelSpan::Half, "a stored span is honoured");
@@ -1566,17 +1586,13 @@ mod tests {
     #[test]
     fn moving_a_panel_walks_it_one_place_along_the_order() {
         let mut order = CockpitLayout::DEFAULT_ORDER.to_vec();
-        assert!(move_panel(&mut order, PanelKind::AzureCost, PanelMove::Up));
+        assert!(move_panel(&mut order, PanelKind::Services, PanelMove::Up));
         assert_eq!(
             ids(&order).last(),
-            Some(&"claudeUsage"),
-            "Azure Cost stepped over Usage, out of its own row"
+            Some(&"azureCost"),
+            "Services stepped over Azure Cost, out of its own row"
         );
-        assert!(move_panel(
-            &mut order,
-            PanelKind::AzureCost,
-            PanelMove::Down
-        ));
+        assert!(move_panel(&mut order, PanelKind::Services, PanelMove::Down));
         assert_eq!(ids(&order), ids(&CockpitLayout::DEFAULT_ORDER));
     }
 
@@ -1588,7 +1604,7 @@ mod tests {
         assert!(!move_panel(&mut order, PanelKind::Hosts, PanelMove::Up));
         assert!(!move_panel(
             &mut order,
-            PanelKind::AzureCost,
+            PanelKind::Services,
             PanelMove::Down
         ));
         assert_eq!(order, CockpitLayout::DEFAULT_ORDER.to_vec());
@@ -1657,7 +1673,7 @@ mod tests {
         assert_eq!(rows[0]["canMoveUp"], false, "nothing above the first row");
         assert_eq!(rows[0]["canMoveDown"], true);
         let last = rows.last().expect("a last row");
-        assert_eq!(last["id"], "azureCost");
+        assert_eq!(last["id"], "services");
         assert_eq!(last["canMoveDown"], false);
         // The renamed panel travels under the title the cockpit paints.
         assert!(rows.iter().any(|row| row["title"] == "GitHub Repos"));
@@ -1751,7 +1767,7 @@ mod tests {
                 // The three the stored layout never named, completed from the
                 // default order and packed the same way.
                 vec!["GitHub Repos", "GitHub Runners"],
-                vec!["Azure Cost"],
+                vec!["Azure Cost", "Services"],
             ]
         );
         assert_eq!(preview[1][0]["weight"], 2);

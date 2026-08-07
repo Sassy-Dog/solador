@@ -51,11 +51,11 @@
     <section class="panel" id="containersPanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="containersTitle"></h2>
+        <span class="panel-stale" id="containersStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="containersTrailing"></span>
       </header>
       <div class="panel-body" id="containersBody"></div>
-      <p class="panel-footer" id="containersFooter" hidden></p>
     </section>
 
     <!-- Repos. One fixed row per tracked repo, so the card never resizes as CI
@@ -67,6 +67,7 @@
     <section class="panel" id="reposPanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="reposTitle"></h2>
+        <span class="panel-chip" id="reposAvailability" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="reposTrailing"></span>
       </header>
@@ -81,11 +82,12 @@
     <section class="panel" id="runnersPanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="runnersTitle"></h2>
+        <span class="panel-chip" id="runnersAvailability" hidden></span>
+        <span class="panel-stale" id="runnersStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="runnersTrailing"></span>
       </header>
       <div class="panel-body" id="runnersBody"></div>
-      <p class="panel-footer" id="runnersFooter" hidden></p>
     </section>
 
     <!-- Usage. Claude Code token rollups, plus a Neon and a Sentry section
@@ -96,11 +98,11 @@
     <section class="panel" id="usagePanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="usageTitle"></h2>
+        <span class="panel-stale" id="usageStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="usageTrailing"></span>
       </header>
       <div class="panel-body" id="usageBody"></div>
-      <p class="panel-footer" id="usageFooter" hidden></p>
     </section>
 
     <!-- Azure Cost. Month-to-date spend, a prior-month reference, a projection
@@ -111,11 +113,25 @@
     <section class="panel" id="azurePanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="azureTitle"></h2>
+        <span class="panel-stale" id="azureStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="azureTrailing"></span>
       </header>
       <div class="panel-body" id="azureBody"></div>
-      <p class="panel-footer" id="azureFooter" hidden></p>
+    </section>
+
+    <!-- Services. Third-party availability for the five vendors this stack
+         depends on, each read from whatever that vendor publishes (Atlassian
+         Statuspage, status.io, or an RSS incident feed). Same rules as above:
+         every label, state word and colour is built by services.js from the
+         `services` command. -->
+    <section class="panel" id="servicesPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="servicesTitle"></h2>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="servicesTrailing"></span>
+      </header>
+      <div class="panel-body" id="servicesBody"></div>
     </section>
 
     <!-- OpenClaw. An agent farm's per-agent status, cron health, channel
@@ -168,6 +184,10 @@
         <i class="glyph"></i><span class="title cpuModel"></span>
         <span class="badge thermal"></span><span class="grow"></span>
         <span class="stale staleMsg"></span><span class="big cpuValue"></span></header>
+      <!-- The whole card when the host cannot be contacted. Every element below
+           is hidden in that state (see `.card[data-state]` in app.css) rather
+           than left showing readings that stopped being true minutes ago. -->
+      <p class="card-down" hidden></p>
       <div class="chart">
         <div class="axis"><span>100%</span><span>50%</span><span>0%</span></div>
         <div class="plot cpuChart" data-h="110"></div>
@@ -231,6 +251,7 @@
   <script src="github.js"></script>
   <script src="usage.js"></script>
   <script src="azure.js"></script>
+  <script src="services.js"></script>
   <script src="openclaw.js"></script>
 </body>
 </html>

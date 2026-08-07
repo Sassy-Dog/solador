@@ -258,17 +258,21 @@ test("the Layout preview draws Rust's rows at Rust's proportions", async ({ page
   for (const [i, row] of preview.rows.entries()) {
     const line = lines.nth(i);
     await expect(line.locator(".layout-tile-name")).toHaveText(row.map((c) => c.title));
-    // The tracks are the `fr` weights the cockpit paints, so a half-width
-    // panel's tile is twice a quarter's — the preview cannot promise an
-    // arrangement the cockpit would not render.
-    const widths = await line.evaluate((el) =>
-      getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).map(parseFloat)
+    // Placed on the same four-quarter grid the cockpit is — each tile spans its
+    // weight in quarters, starting where the tiles before it left off — so the
+    // preview cannot promise an arrangement the cockpit would not render.
+    const placed = await line.evaluate((el) =>
+      [...el.children].map((c) => {
+        const s = getComputedStyle(c);
+        return [s.gridColumnStart.trim(), s.gridColumnEnd.trim()];
+      })
     );
-    const total = row.reduce((sum, cell) => sum + cell.weight, 0);
+    let start = 1;
     for (const [j, cell] of row.entries()) {
-      const share = widths[j] / widths.reduce((a, b) => a + b, 0);
-      expect(share).toBeCloseTo(cell.weight / total, 1);
+      expect(placed[j], `tile ${j} of row ${i}`).toEqual([`${start}`, `span ${cell.weight}`]);
+      start += cell.weight;
     }
+    expect(start, "a row never claims more than four quarters").toBeLessThanOrEqual(5);
   }
 });
 
@@ -567,6 +571,8 @@ test("Usage and Azure write every provider preference together", async ({ page, 
   await page.locator("#sentry-quota").fill("100000");
   await page.locator("#neon-usd-cu-hour").fill("0.106");
   await page.locator("#neon-usd-gib-month").fill("0.35");
+  await expect(page.locator("#vercel-team-id")).toHaveValue(settings.usage.vercel.teamId);
+  await page.locator("#vercel-team-id").fill("team_abc");
   await page.locator(".btn.apply").click();
 
   // The Azure budget travels with them, unchanged: `settings_save_providers`
@@ -576,15 +582,32 @@ test("Usage and Azure write every provider preference together", async ({ page, 
     {
       command: "settings_save_providers",
       args: {
-        neonOrgId: "org-abc",
-        sentryOrgSlug: settings.usage.sentry.orgSlug,
-        sentryMonthlyEventQuota: 100000,
-        azureMonthlyBudgetUsd: settings.azure.budget.value,
-        neonUsdPerCuHour: 0.106,
-        neonUsdPerGibMonth: 0.35,
+        prefs: {
+          neonOrgId: "org-abc",
+          sentryOrgSlug: settings.usage.sentry.orgSlug,
+          sentryMonthlyEventQuota: 100000,
+          azureMonthlyBudgetUsd: settings.azure.budget.value,
+          neonUsdPerCuHour: 0.106,
+          neonUsdPerGibMonth: 0.35,
+          vercelTeamId: "team_abc",
+        },
       },
     },
   ]);
+});
+
+/// The mirror image, and the edit most likely to be missed: the Azure tab
+/// re-sends every Usage preference, so a save from *there* must carry the
+/// Vercel team id too or applying a budget silently blanks it.
+test("the Azure tab passes the Vercel team id through untouched", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "azure").click();
+  await page.locator("#azure-budget").fill("250");
+  await page.locator(".btn.apply").click();
+
+  const [save] = await calls(page, "settings_save_providers");
+  expect(save.args.prefs.vercelTeamId).toBe(settings.usage.vercel.teamId);
+  expect(save.args.prefs.azureMonthlyBudgetUsd).toBe(250);
 });
 
 test("a typed org ID survives saving that provider's key", async ({ page, baseURL }) => {
@@ -607,7 +630,7 @@ test("a typed org ID survives saving that provider's key", async ({ page, baseUR
   // And the surviving value is what Apply hands to Rust.
   await page.locator(".btn.apply").click();
   const saved = await calls(page, "settings_save_providers");
-  expect(saved.at(-1).args.neonOrgId).toBe("org-fond-sea-12345678");
+  expect(saved.at(-1).args.prefs.neonOrgId).toBe("org-fond-sea-12345678");
 });
 
 test("About names the app, its version and its links", async ({ page, baseURL }) => {

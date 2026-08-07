@@ -40,11 +40,12 @@ pub enum PanelKind {
     ClaudeUsage,
     OpenclawAgents,
     AzureCost,
+    Services,
 }
 
 impl PanelKind {
     /// Every kind, in the Swift `CaseIterable` declaration order.
-    pub const ALL: [PanelKind; 7] = [
+    pub const ALL: [PanelKind; 8] = [
         PanelKind::Hosts,
         PanelKind::GhRunners,
         PanelKind::Containers,
@@ -52,6 +53,7 @@ impl PanelKind {
         PanelKind::ClaudeUsage,
         PanelKind::OpenclawAgents,
         PanelKind::AzureCost,
+        PanelKind::Services,
     ];
 
     /// Stable identifier — the Swift `rawValue`, so persisted layout state and
@@ -65,6 +67,7 @@ impl PanelKind {
             PanelKind::ClaudeUsage => "claudeUsage",
             PanelKind::OpenclawAgents => "openclawAgents",
             PanelKind::AzureCost => "azureCost",
+            PanelKind::Services => "services",
         }
     }
 
@@ -90,6 +93,7 @@ impl PanelKind {
             PanelKind::ClaudeUsage => "Usage",
             PanelKind::OpenclawAgents => "OpenClaw",
             PanelKind::AzureCost => "Azure Cost",
+            PanelKind::Services => "Services",
         }
     }
 
@@ -136,6 +140,14 @@ impl PanelKind {
             PanelKind::AzureCost => 400.0,
             PanelKind::OpenclawAgents => 240.0,
             PanelKind::ClaudeUsage => 340.0,
+            // Five rows of `vendor · status word · dot`. The binding
+            // constraint is "Services Degraded" beside the longest vendor
+            // name. 240 rather than the ~220 that measures, for the same
+            // reason OpenClaw is 240: it is also the width *one content
+            // column* needs, and at 220 a quarter of an 1890pt cockpit would
+            // split five one-line rows into two columns — a split that buys a
+            // gutter and costs the scan.
+            PanelKind::Services => 240.0,
         }
     }
 }
@@ -256,14 +268,19 @@ impl CockpitLayout {
     /// so a half-row each left the row ragged and the width unspent. Azure Cost
     /// takes the full row it needs to put its top-resource breakdowns beside the
     /// costs instead of under them (`--panel-cols`, from [`panel_columns`]).
-    pub const DEFAULT_ORDER: [(PanelKind, PanelSpan); 7] = [
+    pub const DEFAULT_ORDER: [(PanelKind, PanelSpan); 8] = [
         (PanelKind::Hosts, PanelSpan::Full),
         (PanelKind::GhWorkflows, PanelSpan::Half),
         (PanelKind::GhRunners, PanelSpan::Half),
         (PanelKind::Containers, PanelSpan::Half),
         (PanelKind::OpenclawAgents, PanelSpan::Quarter),
         (PanelKind::ClaudeUsage, PanelSpan::Quarter),
-        (PanelKind::AzureCost, PanelSpan::Full),
+        // Azure Cost gives up a quarter to Services rather than Services
+        // taking a row of its own: five one-line rows would leave most of a
+        // full-width band empty, and Azure Cost still clears two content
+        // columns at three quarters of a 1890pt cockpit.
+        (PanelKind::AzureCost, PanelSpan::ThreeQuarters),
+        (PanelKind::Services, PanelSpan::Quarter),
     ];
 
     /// Layout B — "hosts-forward": big host cards on top, work surfaces below.
@@ -516,8 +533,8 @@ pub fn host_columns(available: f64, host_count: usize, min_card_width: f64, spac
     fits.min(host_count)
 }
 
-/// The width each panel in a rendered row gets: its span's share of the row,
-/// after the gaps between them come out.
+/// The width each panel in a rendered row gets: its span's share of **one
+/// four-quarter grid**, the same grid on every row of the cockpit.
 ///
 /// `CockpitView.panelWidth(inRowOf:of:)` generalised to spans, and the reason it
 /// exists is the rule in CLAUDE.md: *panels never measure themselves*. One
@@ -525,27 +542,48 @@ pub fn host_columns(available: f64, host_count: usize, min_card_width: f64, spac
 /// a panel can decide its own content layout without a second, disagreeing,
 /// measurement of its own.
 ///
-/// The denominator is the weight of the panels **actually in this row**, not a
-/// fixed four — which is the same thing for anything [`reflow`] produced, since
-/// [`fill_row`] widens a short row until it adds up to four, and exactly what
-/// CSS `fr` does with the same weights either way. It differs only for an
-/// authored row handed straight to this function (an unmeasured width passes
-/// rows through unfilled), where dividing by the row's own weight is still the
-/// answer that leaves no empty track.
+/// One quarter track is `(available - 3 * spacing) / 4`, and a span of `k`
+/// quarters gets `k` tracks plus the `k - 1` gutters it swallows. That is
+/// exactly what CSS `repeat(4, minmax(0, 1fr))` plus `grid-column: span k`
+/// paints, which is the point: the frontend and this function are one
+/// construction rather than two that can drift. It telescopes to the whole row —
+/// `sum(k*q + (k-1)*g) + (n-1)*g == 4q + 3g == available` — so no row ever
+/// leaves a sliver unpainted.
+///
+/// **The denominator is a fixed four, not the row's own weight.** It used to be
+/// the row's, on the reasoning that [`fill_row`] widens every rendered row to
+/// four quarters anyway. The weights did add up; the *gutters* did not. Dividing
+/// `available - (n-1)*spacing` by the row's weight makes the subtracted gutter
+/// total depend on how many panels happen to share the row, so a Half came out
+/// `spacing/2` narrower beside two Quarters than beside one Half — and the
+/// gridline under Repos|Runners missed the one under Containers|OpenClaw by 8pt
+/// on the shipped cockpit. A quarter is now a quarter wherever it lands.
 ///
 /// An unknown or nonsensical `available` yields `0.0` widths rather than negative
 /// ones — the same "degrade to the layout that cannot be unreadable" rule
 /// [`host_columns`] follows, and [`panel_columns`] reads `0.0` as one column.
 #[must_use]
 pub fn panel_widths(row: &[Placement], available: f64, spacing: f64) -> Vec<f64> {
-    let total: f64 = row.iter().map(|p| f64::from(p.span.weight())).sum();
-    if row.is_empty() || total <= 0.0 || available.is_nan() {
-        return vec![0.0; row.len()];
+    if row.is_empty() {
+        return Vec::new();
     }
-    let gaps = spacing * (row.len() - 1) as f64;
-    let content = (available - gaps).max(0.0);
+    let quarters = f64::from(PanelSpan::Full.weight());
+    let quarter = if available.is_nan() {
+        0.0
+    } else {
+        ((available - spacing * (quarters - 1.0)) / quarters).max(0.0)
+    };
     row.iter()
-        .map(|p| content * f64::from(p.span.weight()) / total)
+        .map(|p| {
+            // Guarded rather than clamped per panel: at a dead width a Half
+            // would otherwise still claim the gutter it spans, reporting
+            // `spacing` points of width for a row that has none.
+            if quarter <= 0.0 {
+                return 0.0;
+            }
+            let k = f64::from(p.span.weight());
+            k * quarter + (k - 1.0) * spacing
+        })
         .collect()
 }
 
@@ -701,7 +739,10 @@ mod tests {
                 vec![PanelKind::GhRunners],
                 vec![PanelKind::Containers, PanelKind::OpenclawAgents], // 412 >= 400, 340
                 vec![PanelKind::ClaudeUsage],
+                // A quarter of 840 is 198, under Services' 240, so this pair
+                // splits too -- and `fill_row` widens each survivor to a full row.
                 vec![PanelKind::AzureCost],
+                vec![PanelKind::Services],
             ]
         );
         // …and the pair really is rendered as two halves, not as a two-thirds
@@ -730,26 +771,31 @@ mod tests {
     }
 
     /// Boundary: the quarter row holds while its narrowest track clears 340pt —
-    /// 4 * 340 + 3 * 16 = 1392. Below that Containers keeps the roomier
-    /// neighbour it can still afford and Usage takes its own row rather than a
-    /// track it does not fit.
+    /// four quarter tracks and the three gutters between them, 4 * 340 + 3 * 16
+    /// = 1408. Below that Containers keeps the roomier neighbour it can still
+    /// afford and Usage takes its own row rather than a track it does not fit.
+    ///
+    /// This is the arithmetic the comment always described; until the row-local
+    /// denominator went, the code was subtracting the two gutters *this row*
+    /// happens to have rather than the grid's three, and the boundary sat 16pt
+    /// low at 1392.
     #[test]
     fn the_quarter_row_splits_at_its_narrowest_track() {
         assert_eq!(
-            reflowed(1392.0)[2],
+            reflowed(1408.0)[2],
             vec![
                 PanelKind::Containers,
                 PanelKind::OpenclawAgents,
                 PanelKind::ClaudeUsage
             ],
-            "1392pt gives every track its minimum"
+            "1408pt gives every track its minimum"
         );
         assert_eq!(
-            &reflowed(1391.0)[2..],
+            &reflowed(1407.0)[2..],
             &[
                 vec![PanelKind::Containers, PanelKind::OpenclawAgents],
                 vec![PanelKind::ClaudeUsage],
-                vec![PanelKind::AzureCost],
+                vec![PanelKind::AzureCost, PanelKind::Services],
             ]
         );
     }
@@ -761,10 +807,10 @@ mod tests {
     ///
     /// They now render Three-quarters + Quarter, the fill closest to the
     /// proportions they were authored at, and the point of the whole exercise
-    /// is the second assertion: 900pt is two content columns of Containers,
+    /// is the second assertion: 908pt is two content columns of Containers,
     /// where 816 of the old two-thirds was one. That only became reachable when
     /// OpenClaw's floor dropped to 240 — with the name and the model ref on one
-    /// line it needed 340, and a quarter of this cockpit is 300.
+    /// line it needed 340, and a quarter of this cockpit is 292.
     #[test]
     fn a_row_reflow_cut_short_still_renders_whole_quarters() {
         let rows = reflow(&layout().rows, 1216.0, SPACING);
@@ -777,13 +823,13 @@ mod tests {
             vec![PanelSpan::ThreeQuarters, PanelSpan::Quarter]
         );
         let widths = panel_widths(&rows[2], 1216.0, SPACING);
-        assert_eq!(widths, vec![900.0, 300.0]);
+        assert_eq!(widths, vec![908.0, 292.0]);
         assert_eq!(
             panel_columns(PanelKind::Containers, widths[0], SPACING),
             2,
             "three-quarters is what buys Containers its second column here"
         );
-        // Below 976pt a quarter no longer clears OpenClaw's 240 floor, and the
+        // Below 1008pt a quarter no longer clears OpenClaw's 240 floor, and the
         // fill falls back to the even split that does — down to 816, where
         // Containers' own 400 stops fitting in half and the pair splits.
         let rows = reflow(&layout().rows, 900.0, SPACING);
@@ -933,30 +979,36 @@ mod tests {
             .collect()
     }
 
-    /// A panel alone in its row gets the whole width whatever its span — there
-    /// are no gaps to subtract, and no other track to share the row with.
+    /// A `Full` alone takes the whole width; a `Quarter` alone takes a quarter
+    /// and leaves three tracks empty, which is what CSS `grid-column: span 1`
+    /// does with the same row. The layout never renders that second case —
+    /// `filled` widens a lone panel to `Full` — but the arithmetic has to be the
+    /// grid's rather than "whatever is left over", or a span stops meaning one
+    /// thing.
     #[test]
-    fn a_lone_panel_gets_the_whole_row() {
+    fn a_lone_full_row_takes_the_whole_width() {
         let full = row(&[(PanelKind::AzureCost, PanelSpan::Full)]);
         assert_eq!(panel_widths(&full, 1890.0, SPACING), vec![1890.0]);
         let quarter = row(&[(PanelKind::ClaudeUsage, PanelSpan::Quarter)]);
-        assert_eq!(panel_widths(&quarter, 1890.0, SPACING), vec![1890.0]);
+        assert_eq!(panel_widths(&quarter, 1890.0, SPACING), vec![460.5]);
         assert!(panel_widths(&[], 1890.0, SPACING).is_empty());
     }
 
-    /// The gaps come out first, then each panel takes its span's share of what
-    /// is left — the same numbers CSS `fr` tracks would produce.
+    /// Each panel takes its span's share of the same four-quarter grid: `k`
+    /// quarter tracks plus the `k - 1` gutters that span swallows.
     #[test]
     fn a_shared_row_splits_the_width_by_span() {
-        // (1890 - 16) / 2 = 937 -- the width the shipped cockpit actually gives
-        // a two-panel row on a 1890pt display.
+        // A quarter of an 1890pt cockpit is (1890 - 3 * 16) / 4 = 460.5, so a
+        // half is 2 * 460.5 + 16 = 937 -- the width the shipped cockpit gives a
+        // two-panel row.
         let halves = row(&[
             (PanelKind::GhWorkflows, PanelSpan::Half),
             (PanelKind::GhRunners, PanelSpan::Half),
         ]);
         assert_eq!(panel_widths(&halves, 1890.0, SPACING), vec![937.0, 937.0]);
 
-        // The shipped quarter row: (1890 - 32) = 1858, halved and quartered.
+        // The shipped quarter row, off the *same* grid: the half is the 937 it
+        // is one row up, not the 929 a row-local denominator used to give it.
         let mixed = row(&[
             (PanelKind::Containers, PanelSpan::Half),
             (PanelKind::OpenclawAgents, PanelSpan::Quarter),
@@ -964,8 +1016,42 @@ mod tests {
         ]);
         assert_eq!(
             panel_widths(&mixed, 1890.0, SPACING),
-            vec![929.0, 464.5, 464.5]
+            vec![937.0, 460.5, 460.5]
         );
+    }
+
+    /// The regression this grid exists for. The old arithmetic divided
+    /// `available - (n-1) * spacing` by the row's own weight, so the subtracted
+    /// gutter total moved with the panel count: a Half came out `spacing/2`
+    /// narrower beside two Quarters than beside one Half, and the gridline under
+    /// Repos|Runners missed the one under Containers|OpenClaw by 8pt on the
+    /// shipped cockpit. Same span, same width, whatever else shares the row.
+    #[test]
+    fn a_span_is_the_same_width_in_every_row() {
+        let halves = row(&[
+            (PanelKind::GhWorkflows, PanelSpan::Half),
+            (PanelKind::GhRunners, PanelSpan::Half),
+        ]);
+        let mixed = row(&[
+            (PanelKind::Containers, PanelSpan::Half),
+            (PanelKind::OpenclawAgents, PanelSpan::Quarter),
+            (PanelKind::ClaudeUsage, PanelSpan::Quarter),
+        ]);
+        assert_eq!(
+            panel_widths(&halves, 1890.0, SPACING)[0],
+            panel_widths(&mixed, 1890.0, SPACING)[0],
+            "a Half is a Half in a two-panel row and a three-panel one"
+        );
+
+        // …and every rendered row still fills its width exactly, gutters
+        // included — the grid must not leave a sliver unpainted at any width.
+        for available in [816.0, 1216.0, 1890.0, 2732.0] {
+            for row in reflow(&layout().rows, available, SPACING) {
+                let widths = panel_widths(&row, available, SPACING);
+                let total: f64 = widths.iter().sum::<f64>() + SPACING * (row.len() - 1) as f64;
+                assert_eq!(total, available, "row {row:?} at {available}pt");
+            }
+        }
     }
 
     /// A width that cannot be trusted degrades to zero rather than to a
@@ -1022,13 +1108,18 @@ mod tests {
         }
         assert_eq!(seen[&PanelKind::GhWorkflows], (937.0, 2));
         assert_eq!(seen[&PanelKind::GhRunners], (937.0, 2));
-        assert_eq!(seen[&PanelKind::Containers], (929.0, 2));
+        // The same 937 as the halves above it, off the same grid — Containers
+        // sits under Repos and the edge between the cards is one straight line.
+        assert_eq!(seen[&PanelKind::Containers], (937.0, 2));
         // Full width, and the two columns that put the breakdowns beside the
         // costs rather than under them.
-        assert_eq!(seen[&PanelKind::AzureCost], (1890.0, 2));
+        // Three quarters of 1890 still clears two content columns, which is what
+        // Azure Cost's breakdowns-beside-costs layout needs.
+        assert_eq!(seen[&PanelKind::AzureCost], (1413.5, 2));
+        assert_eq!(seen[&PanelKind::Services], (460.5, 1));
         // The quarter tracks stay one column, which is the point of a quarter.
-        assert_eq!(seen[&PanelKind::OpenclawAgents], (464.5, 1));
-        assert_eq!(seen[&PanelKind::ClaudeUsage], (464.5, 1));
+        assert_eq!(seen[&PanelKind::OpenclawAgents], (460.5, 1));
+        assert_eq!(seen[&PanelKind::ClaudeUsage], (460.5, 1));
     }
 
     /// Capped at two: a third column of a short list costs more scanning than
@@ -1171,7 +1262,7 @@ mod tests {
     fn the_panel_table_travels_as_data() {
         let table = panel_table();
         let entries = table.as_array().unwrap();
-        assert_eq!(entries.len(), 7);
+        assert_eq!(entries.len(), 8);
         assert_eq!(entries[0]["id"], "hosts");
         assert_eq!(entries[0]["title"], "Hosts");
         assert_eq!(entries[0]["minWidth"], 900.0);
@@ -1239,7 +1330,7 @@ mod tests {
                 vec![PanelSpan::Full],
                 vec![PanelSpan::Half, PanelSpan::Half],
                 vec![PanelSpan::Half, PanelSpan::Quarter, PanelSpan::Quarter],
-                vec![PanelSpan::Full],
+                vec![PanelSpan::ThreeQuarters, PanelSpan::Quarter],
             ]
         );
     }
@@ -1261,7 +1352,7 @@ mod tests {
                     PanelKind::OpenclawAgents,
                     PanelKind::ClaudeUsage
                 ],
-                vec![PanelKind::AzureCost],
+                vec![PanelKind::AzureCost, PanelKind::Services],
             ]
         );
     }

@@ -22,6 +22,9 @@ futures-util = "0.3"
 # instant arithmetic. Already in the lock via tauri's tree.
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 thiserror = "2"
+# The vendor-neutral status vocabulary and its three transports. `conjunction`
+# lives here rather than there because it needs `RunnerSummary`.
+devcanopy-servicestatus = { path = "../servicestatus" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

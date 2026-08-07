@@ -168,7 +168,7 @@ test("an unconfigured provider contributes no section at all", async ({ page, ba
   // And the Claude half says what state it is in, in Rust's words.
   await expect(page.locator("#usageBody .pv-message")).toHaveText(usage.message.text);
   await expect(page.locator("#usageTrailing")).toHaveText("");
-  await expect(page.locator("#usageFooter")).toHaveText(usage.footer.text);
+  await expect(page.locator("#usageStale")).toHaveText(usage.footer.text);
 });
 
 /**

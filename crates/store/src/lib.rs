@@ -703,10 +703,12 @@ mod tests {
             neon_usd_per_gib_month: 0.5,
             sentry_org_slug: "sassy-dog".into(),
             sentry_monthly_event_quota: 100_000,
+            vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
             // Flipped off the default so the round trip proves the field
             // persists rather than reappearing from `Default`.
             notify_on_approval_needed: false,
+            notify_on_service_change: false,
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
         });
 

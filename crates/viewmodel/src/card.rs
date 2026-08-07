@@ -59,15 +59,12 @@ fn or_unknown(value: Option<f64>, format: impl FnOnce(f64) -> String) -> String 
 pub enum Connection {
     /// The most recent poll succeeded; the data below is current.
     Live,
-    /// A poll failed, but a prior sample exists — the data below is real,
-    /// just not current. `stale_secs` is how long ago the last successful
-    /// poll landed; surfaced so "last thing we heard" can never be mistaken
-    /// for "this is live". `None` when that age itself is unknown — renders
-    /// as "unknown", never a fabricated `0s ago`.
-    Stale {
-        message: String,
-        stale_secs: Option<u64>,
-    },
+    // There is deliberately no `Stale` variant. A poll failure over a host
+    // that *had* data used to render here — the last snapshot behind a red
+    // badge — and it is now [`Pending::Unreachable`], a blanked card. Every
+    // figure on a host card is a present-tense claim, and a badge is what a
+    // glance does not read. Reintroducing it would put four-minute-old numbers
+    // back under a green-looking grid.
     /// Every poll is *succeeding* and the data is stale anyway: the agent's
     /// own `/v1/health` reports `samplerStale`, so what it is serving is
     /// whatever its sampler last produced — or, before its first sample,
@@ -90,10 +87,6 @@ fn connection_badge(c: &Connection) -> Value {
             "color": color::hex(color::GREEN),
             "message": Value::Null,
         }),
-        Connection::Stale {
-            message,
-            stale_secs,
-        } => stale_badge(message, *stale_secs),
         // The same `"state"` and the same red as a failed poll, on purpose: the
         // frontend keys its dot on that string, and a third state would mean a
         // new rendering to design, style and test for a card that must simply
@@ -116,13 +109,30 @@ fn stale_badge(message: &str, age_secs: Option<u64>) -> Value {
     })
 }
 
-/// A host with no sample yet: still waiting on its first poll, or every poll
-/// so far has failed before one ever landed. There's no data to show, so
-/// there's no `host_card` to build — but the colour vocabulary is the same.
+/// A host with nothing worth plotting: still waiting on its first poll, every
+/// poll so far having failed before one landed, or — [`Unreachable`](Self::Unreachable)
+/// — a host that *had* data and can no longer be contacted. There's nothing to
+/// show, so there's no `host_card` to build, but the colour vocabulary is the
+/// same.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pending {
     Connecting,
     Failed(String),
+    /// The link is down on a host we used to reach.
+    ///
+    /// The card is blanked rather than left showing the last snapshot behind a
+    /// badge. A CPU percentage is a present-tense claim, and a machine that has
+    /// not answered in four minutes is not at 12% — the reading is as
+    /// unmeasured as any the em dash covers, and a full card of them is a far
+    /// louder lie than one number. What survives is `age_secs`: *when* it went
+    /// quiet is the one fact still worth reporting, and the histories are kept
+    /// in state, so the sparklines return intact with the host.
+    Unreachable {
+        message: String,
+        /// Seconds since the last successful poll. `None` is rendered
+        /// "unknown", never a fabricated `0s`.
+        age_secs: Option<u64>,
+    },
 }
 
 /// The `{"error": …}` shape the shell returns when it has nothing to show
@@ -137,6 +147,17 @@ pub fn pending_card(host_name: &str, p: &Pending) -> Value {
             "waiting for first sample…".to_string(),
         ),
         Pending::Failed(msg) => ("failed", color::RED, msg.clone()),
+        // Same wording as `stale_badge`'s suffix, because it answers the same
+        // question — only here it is the whole card rather than a badge on top
+        // of numbers that are no longer true.
+        Pending::Unreachable { message, age_secs } => (
+            "unreachable",
+            color::RED,
+            format!(
+                "{message} — last update {}",
+                age_secs.map_or_else(|| "unknown".to_string(), relative_age)
+            ),
+        ),
     };
     json!({
         "error": { "hostName": host_name, "message": message },
@@ -756,29 +777,34 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_host_card_keeps_its_data_but_turns_red_and_says_how_old_it_is() {
-        // The defect this guards against: a card that stops polling
-        // successfully but keeps rendering as if nothing were wrong. The
-        // numbers below must be the SAME numbers `Connection::Live` would
-        // have produced -- staleness changes the badge, never the data.
-        let s = fixture();
-        let h = HostHistories::new();
-        let live = host_card("ubu-3xdv", &s, &h, &Connection::Live);
-        let stale = host_card(
+    fn an_unreachable_host_renders_no_figures_and_dates_the_outage() {
+        // The defect this guards against, inverted. It used to assert that a
+        // failed poll changed the badge and never the numbers; the numbers were
+        // the problem. A card is read at a glance, and at a glance a card is
+        // its figures — so a host we cannot contact renders none of them.
+        let live = host_card(
             "ubu-3xdv",
-            &s,
-            &h,
-            &Connection::Stale {
+            &fixture(),
+            &HostHistories::new(),
+            &Connection::Live,
+        );
+        assert!(!live["cpuValue"].is_null(), "the live card has figures");
+
+        let down = pending_card(
+            "ubu-3xdv",
+            &Pending::Unreachable {
                 message: "Couldn't reach the agent. Check the host is up and the agent is running."
                     .to_string(),
-                stale_secs: Some(95),
+                age_secs: Some(95),
             },
         );
-        assert_eq!(stale["cpuValue"], live["cpuValue"]);
-        assert_eq!(stale["cores"], live["cores"]);
-        assert_eq!(stale["connection"]["state"], "stale");
-        assert_eq!(stale["connection"]["color"], "#e05a4f");
-        let msg = stale["connection"]["message"].as_str().unwrap();
+        for field in ["cpuValue", "cores", "memValue", "volumes"] {
+            assert!(down[field].is_null(), "{field} outlived the connection");
+        }
+        assert_eq!(down["connection"]["state"], "unreachable");
+        assert_eq!(down["connection"]["color"], "#e05a4f");
+        assert_eq!(down["error"]["hostName"], "ubu-3xdv");
+        let msg = down["error"]["message"].as_str().unwrap();
         assert!(msg.contains("Couldn't reach the agent"));
         assert!(
             msg.contains("1m ago"),
@@ -786,24 +812,22 @@ mod tests {
         );
     }
 
-    /// `stale_secs: None` is unreachable via the shell's own poll loop today
-    /// (see `app/src-tauri/src/main.rs`'s `view_for`), but `host_card` is a
+    /// `age_secs: None` is unreachable via the shell's own poll loop today
+    /// (see `app/src-tauri/src/main.rs`'s `view_for`), but `pending_card` is a
     /// public API and must not fall back to a fabricated `0s ago` for an
     /// unknown age -- that would be exactly the kind of defaulted number this
     /// codebase's "unknown renders an em dash/placeholder, never zero" rule
     /// exists to catch.
     #[test]
-    fn a_stale_host_card_with_an_unknown_age_says_unknown_never_zero() {
-        let vm = host_card(
+    fn an_unreachable_card_with_an_unknown_age_says_unknown_never_zero() {
+        let vm = pending_card(
             "ubu-3xdv",
-            &fixture(),
-            &HostHistories::new(),
-            &Connection::Stale {
+            &Pending::Unreachable {
                 message: "Couldn't reach the agent.".to_string(),
-                stale_secs: None,
+                age_secs: None,
             },
         );
-        let msg = vm["connection"]["message"].as_str().unwrap();
+        let msg = vm["error"]["message"].as_str().unwrap();
         assert!(msg.contains("last update unknown"), "got {msg:?}");
         assert!(
             !msg.contains("0s ago"),

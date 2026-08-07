@@ -30,6 +30,9 @@
  *  stuck poller is the one thing the footer exists to prevent. */
 const REFRESH_MS = 10000;
 
+/** How often to ask while the panel is still filling in — see `github.js`. */
+const LOADING_REFRESH_MS = 1000;
+
 const $a = (id) => document.getElementById(id);
 
 function node(tag, cls, text) {
@@ -140,12 +143,17 @@ function renderAzure(payload) {
 
   $a("azureBody").replaceChildren(...children);
 
-  // A healthy, fresh panel renders no footer at all — the cockpit stays
-  // glanceable, and a warning line means something when it appears.
-  const footer = $a("azureFooter");
-  footer.textContent = payload.footer ? payload.footer.text : "";
-  footer.style.color = payload.footer ? payload.footer.color : "";
-  footer.hidden = !payload.footer;
+  // A healthy, fresh panel renders no warning at all — the cockpit stays
+  // glanceable, and a warning means something when it appears. It sits in the
+  // header rather than under the body because a line below the content makes
+  // the card taller, and `.panel-row` stretches its neighbours to match: the
+  // panel that degraded would move the panel that did not. Ellipsised in a
+  // narrow panel, so `title` keeps the whole message reachable.
+  const stale = $a("azureStale");
+  stale.textContent = payload.footer ? payload.footer.text : "";
+  stale.title = payload.footer ? payload.footer.text : "";
+  stale.style.color = payload.footer ? payload.footer.color : "";
+  stale.hidden = !payload.footer;
 
   $a("azurePanel").hidden = false;
 }
@@ -154,16 +162,33 @@ async function refresh() {
   try {
     const payload = await callRust("azure_cost", {}, "sample-azure.json");
     if (payload) renderAzure(payload);
+    return Boolean(payload && payload.loading);
   } catch {
     // A failed poll leaves the last good panel on screen: Rust already carries
     // the last summary forward with the reason in the footer.
   }
+  // A poll that threw is not "loading" — it is a failure, and retrying it every
+  // second would be a busy loop against whatever just broke.
+  return false;
 }
 
-refresh();
-if (window.__TAURI__) {
-  setInterval(() => { if (!settingsOpen) refresh(); }, REFRESH_MS);
+let refreshTimer = null;
+
+/** Re-arms the poll at the cadence the last payload asked for. */
+function scheduleRefresh(loading) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(tick, loading ? LOADING_REFRESH_MS : REFRESH_MS);
 }
+
+async function tick() {
+  // While Settings is up the cockpit is off-screen, so skip the work — but
+  // still re-arm, or closing Settings would find a dead timer.
+  scheduleRefresh(settingsOpen ? false : await refresh());
+}
+
+refresh().then((loading) => {
+  if (window.__TAURI__) scheduleRefresh(loading);
+});
 
 // Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`.
 window.__DEVCANOPY_AZURE_TEST__ = { render: renderAzure, refresh };

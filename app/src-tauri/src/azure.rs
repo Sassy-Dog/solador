@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 
-use crate::panel::{progress_bar, status_footer};
+use crate::panel::{progress_bar, status_footer, Configured};
 
 /// `PanelStatusFooter(..., staleAfter: 5 * 60 * 60)`. The export publishes about
 /// once a day and the poll runs every 4h, so the window sits an hour past a
@@ -138,8 +138,15 @@ pub fn month_short(at: DateTime<Utc>) -> &'static str {
 /// Everything the panel renders from, plus the cache the reader needs.
 #[derive(Debug, Default)]
 pub struct AzureState {
-    /// Whether a SAS URL is stored. `false` is the setup state, not a failure.
-    configured: bool,
+    /// Whether a SAS URL is stored. [`Absent`](Configured::Absent) is the setup
+    /// state, not a failure.
+    ///
+    /// Three states rather than a `bool`: this defaulted to `false`, and the
+    /// ladder in [`view`] reads "not configured" before it reads `loading`, so
+    /// the panel opened on *"Add an Azure Cost SAS URL in Settings"* at a
+    /// machine whose SAS was fine — and `loading: true`, set right below, was
+    /// unreachable until the first poll had already begun.
+    sas: Configured,
     /// The last successful read. Retained through a failure — a daily export
     /// carried forward with its age in the footer beats a blank card.
     summary: Option<azurecost::CostSummary>,
@@ -163,23 +170,26 @@ impl AzureState {
         }
     }
 
-    /// No SAS URL configured. Everything is dropped so a stale figure cannot sit
-    /// behind the setup message and reappear the moment a *different* SAS is
-    /// pasted in.
+    /// A pass read the credential store and found no SAS URL. Everything is
+    /// dropped so a stale figure cannot sit behind the setup message and
+    /// reappear the moment a *different* SAS is pasted in.
     pub fn unconfigure(&mut self) {
-        *self = AzureState::default();
+        *self = AzureState {
+            sas: Configured::Absent,
+            ..AzureState::default()
+        };
     }
 
     /// A SAS is configured and a read is in flight.
     pub fn begin(&mut self) {
-        self.configured = true;
+        self.sas = Configured::Present;
         if self.summary.is_none() {
             self.loading = true;
         }
     }
 
     pub fn succeeded(&mut self, result: azurecost::FetchResult, at: u64) {
-        self.configured = true;
+        self.sas = Configured::Present;
         self.summary = Some(result.summary.clone());
         self.cache = Some(result);
         self.last_updated = Some(at);
@@ -188,9 +198,18 @@ impl AzureState {
     }
 
     pub fn failed(&mut self, error: String) {
-        self.configured = true;
+        self.sas = Configured::Present;
         self.last_error = Some(error);
         self.loading = false;
+    }
+
+    /// Whether the panel has ever completed a read. Drives the poll loop's
+    /// cadence: until the first success it retries far sooner than the export's
+    /// own 4h rhythm, so a launch with the network still coming up does not
+    /// leave a red card on screen until teatime.
+    #[must_use]
+    pub fn has_succeeded(&self) -> bool {
+        self.last_updated.is_some()
     }
 
     /// The credential store would not answer, so we do not know whether a SAS
@@ -203,7 +222,7 @@ impl AzureState {
     /// and one that *was* configured keeps its figures with the reason in the
     /// footer.
     pub fn unreadable(&mut self, error: String) {
-        if self.configured {
+        if self.sas.is_present() {
             self.last_error = Some(error);
             self.loading = false;
         }
@@ -267,22 +286,34 @@ pub fn view(state: &AzureState, budget: f64, now: u64) -> Value {
         "budget": Value::Null,
         "breakdowns": Value::Array(vec![]),
         "footer": Value::Null,
+        // Published for the frontend's refresh cadence: it polls faster while a
+        // panel is still filling in. Nothing is known until a pass has read the
+        // credential store, and a configured panel is loading until its first
+        // read settles either way.
+        "loading": state.sas.is_unknown() || (state.loading && state.last_error.is_none()),
     });
 
     // Swift's ladder, in Swift's order. The unconfigured branch comes first so a
-    // machine with no SAS never reports an error it has no way to have had.
-    let Some(summary) = state.summary.as_ref().filter(|_| state.configured) else {
-        payload["message"] = match (state.configured, state.last_error.as_deref()) {
-            (false, _) => json!({
+    // machine with no SAS never reports an error it has no way to have had —
+    // but only `Absent` may take it. `Unknown` is the frame before any pass has
+    // read the store, and it used to fall in here and tell an operator whose
+    // SAS was fine to go and paste one.
+    let Some(summary) = state.summary.as_ref().filter(|_| state.sas.is_present()) else {
+        payload["message"] = match (state.sas, state.last_error.as_deref()) {
+            (Configured::Unknown, _) => json!({
+                "text": LOADING_MESSAGE,
+                "color": color::hex(color::MUTED),
+            }),
+            (Configured::Absent, _) => json!({
                 "text": UNCONFIGURED_MESSAGE,
                 "color": color::hex(color::MUTED),
             }),
             // Red, and the failure named: this one *is* broken.
-            (true, Some(error)) => json!({
+            (Configured::Present, Some(error)) => json!({
                 "text": error,
                 "color": color::hex(color::RED),
             }),
-            (true, None) => json!({
+            (Configured::Present, None) => json!({
                 "text": if state.loading { LOADING_MESSAGE } else { NO_DATA_MESSAGE },
                 "color": color::hex(color::MUTED),
             }),
@@ -569,12 +600,62 @@ mod tests {
     #[test]
     fn an_unreadable_credential_store_changes_nothing_when_nothing_was_configured() {
         let mut state = AzureState::new();
+        state.unconfigure(); // a pass looked, and there is no SAS
         let before = view(&state, BUDGET, NOW);
         state.unreadable("couldn't read the credential store".to_owned());
 
         assert_eq!(view(&state, BUDGET, NOW), before);
         assert_eq!(before["message"]["text"], UNCONFIGURED_MESSAGE);
         assert_eq!(before["message"]["color"], color::hex(color::MUTED));
+    }
+
+    /// …and the same on the frame before any pass has run. A keychain that will
+    /// not answer is not evidence that the panel is loading *or* unconfigured,
+    /// so the untouched loading line stands.
+    #[test]
+    fn an_unreadable_credential_store_changes_nothing_before_the_first_pass() {
+        let mut state = AzureState::new();
+        let before = view(&state, BUDGET, NOW);
+        state.unreadable("couldn't read the credential store".to_owned());
+
+        assert_eq!(view(&state, BUDGET, NOW), before);
+        assert_eq!(before["message"]["text"], LOADING_MESSAGE);
+    }
+
+    /// The reported bug. A fresh panel has not read the credential store, so it
+    /// cannot know there is no SAS URL in it — and it used to say so anyway, on
+    /// every launch, at a machine where the SAS was fine. `loading: true` was
+    /// already set here; the `configured == false` arm above it won.
+    #[test]
+    fn the_panel_says_it_is_reading_before_it_has_looked_for_a_sas() {
+        let payload = view(&AzureState::new(), BUDGET, NOW);
+        assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
+        assert_eq!(payload["message"]["color"], color::hex(color::MUTED));
+        assert_eq!(payload["loading"], true);
+        assert!(payload["headline"].is_null());
+        assert!(payload["footer"].is_null(), "nothing to be stale yet");
+    }
+
+    /// …and the setup instruction still belongs to the pass that earned it.
+    #[test]
+    fn the_panel_asks_for_a_sas_once_a_pass_finds_none() {
+        let mut state = AzureState::new();
+        state.unconfigure();
+        let payload = view(&state, BUDGET, NOW);
+        assert_eq!(payload["message"]["text"], UNCONFIGURED_MESSAGE);
+        assert_eq!(payload["loading"], false, "we looked; this is not loading");
+    }
+
+    /// The 4h poll only earns its cadence once it has something to show. Until
+    /// then `azure_loop` retries in a minute, so a launch with the network still
+    /// coming up is not red until teatime.
+    #[test]
+    fn the_panel_reports_whether_it_has_ever_read_the_export() {
+        let mut state = AzureState::new();
+        assert!(!state.has_succeeded());
+        state.failed("unreachable".to_owned());
+        assert!(!state.has_succeeded(), "a failure is not a reading");
+        assert!(measured().has_succeeded());
     }
 
     // MARK: content

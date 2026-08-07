@@ -36,6 +36,8 @@ use github::workflows::RunRef;
 use github::{GhRunnerAbsence, GhRunnerDisplayRow, PresenceState, RepoWorkflowHealth};
 use serde_json::{json, Value};
 use store::RunnerRosterRecord;
+
+use crate::panel::Configured;
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 
@@ -154,7 +156,12 @@ pub struct GitHubState {
     /// GitHub accepted it" — a rejected token is a per-fetch failure, and the
     /// Repos panel reports that as an unreadable repo rather than as a missing
     /// credential.
-    authenticated: bool,
+    ///
+    /// Three states rather than a `bool`: this used to default to `false` and
+    /// only become `true` once a fetch *completed*, so for the whole of the
+    /// first pass — the credential read plus every request after it — both
+    /// panels claimed there was no token. See [`Configured`].
+    token: Configured,
     /// Per-repo health from the last completed pass, one entry per **enabled**
     /// tracked repo (unreachable ones included). `None` until the first pass
     /// finishes, which is what "loading…" means.
@@ -177,6 +184,17 @@ pub struct GitHubState {
     /// not know whether a token is configured, so both panels must say exactly
     /// that instead of picking one of the two claims they cannot support.
     credential_error: Option<String>,
+    /// GitHub's own published availability, from the unauthenticated
+    /// statuspage. `None` until the first read lands, or after one fails —
+    /// [`github::status::conjunction`] turns that into an explicit *unknown*
+    /// verdict rather than a green one, because a status page we could not
+    /// reach says nothing about whether Actions is up.
+    ///
+    /// Deliberately **not** cleared by a failing read: a page that answered a
+    /// minute ago is better evidence than nothing, and the panel keeps showing
+    /// it. `status_error` records why the refresh did not happen.
+    service_status: Option<servicestatus::ServiceStatus>,
+    status_error: Option<String>,
 }
 
 impl GitHubState {
@@ -193,7 +211,7 @@ impl GitHubState {
     /// *roster* is untouched — it lives in the store, so expectations resume
     /// intact when a token comes back rather than re-learning from scratch.
     pub fn apply_unauthenticated(&mut self) {
-        self.authenticated = false;
+        self.token = Configured::Absent;
         self.health = None;
         self.summary = None;
         self.runners.clear();
@@ -220,7 +238,7 @@ impl GitHubState {
     /// is the enabled-repo list, so a repo removed in Settings must lose its
     /// row on the next pass rather than linger as a stale one.
     pub fn apply_repos(&mut self, health: Vec<RepoWorkflowHealth>) {
-        self.authenticated = true;
+        self.token = Configured::Present;
         self.credential_error = None;
         self.health = Some(health);
     }
@@ -232,7 +250,7 @@ impl GitHubState {
 
     /// Records one **successful** org-runners fetch.
     pub fn apply_runners(&mut self, update: &roster::RosterUpdate, now: u64) {
-        self.authenticated = true;
+        self.token = Configured::Present;
         self.credential_error = None;
         self.summary = Some(update.summary);
         self.runners.clone_from(&update.runners);
@@ -248,10 +266,95 @@ impl GitHubState {
     /// blank a panel that still holds real data, and advancing the clock would
     /// let a permanently failing fetch look freshly updated forever.
     pub fn apply_runners_error(&mut self, message: impl Into<String>) {
-        self.authenticated = true;
+        self.token = Configured::Present;
         self.credential_error = None;
         self.runners_error = Some(message.into());
     }
+
+    /// A pass read a non-empty token from the credential store.
+    ///
+    /// Called the moment the credential is in hand, **before** the first
+    /// request — which is the whole point. Every other setter here runs after a
+    /// fetch completes, so without this one a panel spends the entire first pass
+    /// unable to say whether a token exists, and says the thing that sends the
+    /// operator to Settings. Nothing fetched is touched: this is a statement
+    /// about the credential store, not about GitHub.
+    pub fn apply_token_present(&mut self) {
+        self.token = Configured::Present;
+        self.credential_error = None;
+    }
+
+    /// Records one successful statuspage read.
+    pub fn apply_service_status(&mut self, status: servicestatus::ServiceStatus) {
+        self.service_status = Some(status);
+        self.status_error = None;
+    }
+
+    /// Records a failed statuspage read, **keeping the last good reading**.
+    ///
+    /// A page that answered a minute ago is better evidence than nothing, and
+    /// GitHub's status does not change on the timescale of one dropped
+    /// request. Dropping it here would flip a panel mid-incident from "it's
+    /// GitHub" back to a red "it's us" on a single timeout — the precise
+    /// misdirection this whole verdict exists to prevent.
+    pub fn apply_service_status_error(&mut self, message: impl Into<String>) {
+        self.status_error = Some(message.into());
+    }
+
+    /// The conjunction both panels paint: GitHub's published Actions status
+    /// folded with our fleet's per-OS state.
+    ///
+    /// The fleet half is offered **only while the runner list is fresh enough
+    /// to speak for**, against the same [`RUNNERS_STALE_AFTER_SECS`] window the
+    /// Runners panel's own footer uses. That coupling is the point: the moment
+    /// the panel admits its list is stale, the chip stops blaming the fleet, so
+    /// two readings of one fact cannot disagree.
+    ///
+    /// Without it a laptop waking from a night's sleep painted a red
+    /// "Fleet Down" off pre-sleep data while every runner was online.
+    #[must_use]
+    fn conjunction(&self, now: u64) -> github::status::Conjunction {
+        let fleet = match (self.summary.as_ref(), self.runners_last_updated) {
+            (Some(summary), Some(at)) if now.saturating_sub(at) <= RUNNERS_STALE_AFTER_SECS => {
+                github::status::Fleet::Known(summary)
+            }
+            _ => github::status::Fleet::Unknown,
+        };
+        github::status::conjunction(self.service_status.as_ref(), fleet)
+    }
+}
+
+/// The chip payload: the verdict's short label, its colour, and the sentence
+/// behind it for the `title`.
+///
+/// Colour is decided here, like every other colour the frontend paints. Green
+/// is the dim one: this chip sits on two panel headers permanently, and the
+/// resting state of an always-on cockpit should not shout.
+fn availability_chip(state: &GitHubState, now: u64) -> Value {
+    use github::status::Verdict;
+    let c = state.conjunction(now);
+    let color = match c.verdict {
+        Verdict::AllGood => color::GREEN_DIM,
+        // Amber is "GitHub is slow"; red is "workflow runs are failing". They
+        // are different afternoons and they read differently at a glance.
+        Verdict::Degraded => color::AMBER,
+        // Red is shared with `ItsUs` on purpose — both mean *something is badly
+        // wrong right now*. The label is what says whose problem it is, which
+        // is the entire point of the conjunction.
+        Verdict::MajorOutage | Verdict::ItsUs => color::RED,
+        Verdict::Unknown => color::MUTED,
+    };
+    // The reason a failed refresh is not itself the verdict: the last good
+    // reading still stands, and this only explains why it is not newer.
+    let detail = match state.status_error.as_deref() {
+        Some(error) if state.service_status.is_some() => format!("{} ({error})", c.detail),
+        _ => c.detail,
+    };
+    json!({
+        "label": c.label,
+        "color": color::hex(color),
+        "detail": detail,
+    })
 }
 
 // MARK: - Repos
@@ -345,14 +448,14 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
     // "loading…" are each a claim about a credential this pass never saw.
     let message = if let Some(reason) = state.credential_error.as_deref() {
         Some(reason)
-    } else if state.authenticated {
-        if state.health.is_none() {
-            Some(REPOS_LOADING_MESSAGE)
-        } else {
-            None
-        }
-    } else {
+    } else if state.token.is_absent() {
+        // Only a pass that looked and found nothing may say this. `Unknown`
+        // falls through to "loading…" below, which is what the first frame is.
         Some(UNAUTHENTICATED_MESSAGE)
+    } else if state.health.is_none() {
+        Some(REPOS_LOADING_MESSAGE)
+    } else {
+        None
     };
 
     // Nothing is rendered beside a message: the Swift panel branches before
@@ -372,6 +475,16 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         "title": PanelKind::GhWorkflows.title(),
         "trailing": message.map_or_else(|| json!(trailing_label(health)), |_| Value::Null),
         "message": message.map_or(Value::Null, |text| json!({ "text": text })),
+        // Published, not re-derived: the frontend polls faster while a panel is
+        // still filling in, and inferring that from the message text would make
+        // it parse a string it is otherwise careful never to interpret.
+        "loading": repos_loading(state),
+        // On both panels, not one shared element: `reflow` splits Repos and
+        // Runners onto separate rows below ~896pt, so a single chip would be
+        // orphaned from one of them at exactly the widths this cockpit runs at.
+        // `now` is a `DateTime` here and unix seconds in `runners_view`;
+        // the chip wants the same clock both panels' footers use.
+        "availability": availability_chip(state, u64::try_from(now.timestamp()).unwrap_or(0)),
         "columns": columns(),
         "rows": sorted
             .iter()
@@ -379,6 +492,15 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
             .collect::<Vec<_>>(),
         "health": if message.is_none() { health_line(health) } else { Value::Null },
     })
+}
+
+/// Whether the Repos panel is still waiting on the answer to its first pass.
+///
+/// The same predicate the message ladder uses, so the flag cannot disagree with
+/// the line the panel is painting. An unreadable credential store is *not*
+/// loading — that pass finished, with an answer we did not like.
+fn repos_loading(state: &GitHubState) -> bool {
+    state.credential_error.is_none() && !state.token.is_absent() && state.health.is_none()
 }
 
 fn columns() -> Vec<Value> {
@@ -592,12 +714,22 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // asserts there is no token *and* blanks the rows, and neither survives
     // "we could not ask". Everything the last good fetch left — stats, chips,
     // rows, footer — is rendered below with the reason on top of it.
-    if !state.authenticated && state.credential_error.is_none() {
+    //
+    // `is_absent`, not `!is_present`: before the first pass reads the credential
+    // store this panel knows nothing about the token, and the zero-credential
+    // payload is an assertion it has no basis for. That state falls through to
+    // "loading runners…" below instead.
+    if state.token.is_absent() && state.credential_error.is_none() {
         return json!({
             "id": PanelKind::GhRunners.id(),
             "title": PanelKind::GhRunners.title(),
             "trailing": Value::Null,
             "message": { "text": UNAUTHENTICATED_MESSAGE },
+            "loading": false,
+            // Still rendered with no token: "GitHub is on fire" is most useful
+            // precisely when this panel is otherwise blank, and the statuspage
+            // needs no credential to say so.
+            "availability": availability_chip(state, now),
             "stats": [],
             "chips": [],
             "rows": [],
@@ -624,6 +756,10 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         "title": PanelKind::GhRunners.title(),
         "trailing": runners_trailing(state).map_or(Value::Null, Value::String),
         "message": message.map_or(Value::Null, |text| json!({ "text": text })),
+        // Same predicate as the ladder above, published for the frontend's
+        // refresh cadence rather than inferred from the message text.
+        "loading": message.is_some_and(|text| text == RUNNERS_LOADING_MESSAGE),
+        "availability": availability_chip(state, now),
         "stats": state.summary.map(summary_stats).unwrap_or_default(),
         "chips": state.summary.map(os_chips).unwrap_or_default(),
         // Registered and remembered-absent rows, merged into one display order
@@ -944,6 +1080,14 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         github::presence::DEFAULT_GRACE_SECS,
     );
     state.apply_runners(&update, u64::try_from(now.timestamp()).unwrap_or(0));
+    // The resting availability verdict. Seeded so the dumped fixture shows the
+    // chip a healthy cockpit actually renders — without it every fixture would
+    // carry the muted "GH ?" of a statuspage nobody read, and the Playwright
+    // suite would be asserting the one state that is least representative.
+    state.apply_service_status(servicestatus::ServiceStatus {
+        component: Some(servicestatus::ComponentStatus::Operational),
+        incident: None,
+    });
     state
 }
 
@@ -1029,11 +1173,22 @@ mod tests {
 
     // MARK: - Repos: states
 
+    /// The first frame, before any pass has read the credential store.
+    ///
+    /// This used to assert [`UNAUTHENTICATED_MESSAGE`] — the panel told an
+    /// operator with a perfectly good token to go and connect one, on every
+    /// launch, because `authenticated: bool` defaulted to `false` and only a
+    /// *completed fetch* set it. A fresh state knows nothing about the token,
+    /// and "loading…" is the only line it can support.
     #[test]
-    fn the_repos_panel_asks_for_a_token_before_it_has_one() {
+    fn the_repos_panel_says_loading_before_it_has_looked_for_a_token() {
         let view = repos_view(&GitHubState::new(), now());
-        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
-        assert!(view["trailing"].is_null(), "no counts without credentials");
+        assert_eq!(view["message"]["text"], REPOS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
+        assert!(
+            view["trailing"].is_null(),
+            "no counts before the first pass"
+        );
         assert!(view["health"].is_null());
         assert!(rows(&view).is_empty());
         // The title is `PanelKind::GhWorkflows.title()`; the id stays the one
@@ -1042,13 +1197,41 @@ mod tests {
         assert_eq!(view["id"], "ghWorkflows");
     }
 
+    /// …and the setup instruction still appears for the state that earned it:
+    /// a pass that read the store and found nothing.
+    #[test]
+    fn the_repos_panel_asks_for_a_token_once_a_pass_finds_none() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        let view = repos_view(&state, now());
+        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+        assert_eq!(view["loading"], false, "we looked; this is not loading");
+        assert!(view["trailing"].is_null(), "no counts without credentials");
+        assert!(rows(&view).is_empty());
+    }
+
     #[test]
     fn the_repos_panel_says_loading_between_the_token_and_the_first_fetch() {
         let mut state = GitHubState::new();
         state.apply_runners_error("boom"); // authenticates without repo health
         let view = repos_view(&state, now());
         assert_eq!(view["message"]["text"], REPOS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
         assert!(rows(&view).is_empty());
+    }
+
+    /// The window the `Credential::Present` arm closes: a token is in hand and
+    /// the fetch is still running. Reading the credential is what proves there
+    /// is one — waiting for the fetch to finish is what used to make this frame
+    /// indistinguishable from having no token at all.
+    #[test]
+    fn a_token_in_hand_reads_as_loading_for_the_whole_of_the_fetch() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        for view in [repos_view(&state, now()), runners_view(&state, now_unix())] {
+            assert_ne!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+            assert_eq!(view["loading"], true);
+        }
     }
 
     /// Clearing the token must not leave the last-known table on screen
@@ -1709,18 +1892,33 @@ mod tests {
         state
     }
 
+    /// See `the_repos_panel_says_loading_before_it_has_looked_for_a_token` —
+    /// the same first frame, and the same line this used to get wrong.
     #[test]
-    fn the_runners_panel_asks_for_a_token_before_it_has_one() {
+    fn the_runners_panel_says_loading_before_it_has_looked_for_a_token() {
         let view = runners_view(&GitHubState::new(), now_unix());
+        assert_eq!(view["message"]["text"], RUNNERS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
+        assert!(view["trailing"].is_null());
+        assert!(view["footer"].is_null(), "nothing to be stale yet");
+        assert!(rows(&view).is_empty());
+        assert_eq!(view["title"], "GitHub Runners");
+        assert_eq!(view["id"], "ghRunners");
+    }
+
+    #[test]
+    fn the_runners_panel_asks_for_a_token_once_a_pass_finds_none() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        let view = runners_view(&state, now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+        assert_eq!(view["loading"], false, "we looked; this is not loading");
         assert!(view["trailing"].is_null());
         assert!(
             view["footer"].is_null(),
             "nothing to be stale without a token"
         );
         assert!(rows(&view).is_empty());
-        assert_eq!(view["title"], "GitHub Runners");
-        assert_eq!(view["id"], "ghRunners");
     }
 
     #[test]
@@ -1729,6 +1927,7 @@ mod tests {
         state.apply_repos(Vec::new()); // authenticates without a runners fetch
         let view = runners_view(&state, now_unix());
         assert_eq!(view["message"]["text"], RUNNERS_LOADING_MESSAGE);
+        assert_eq!(view["loading"], true);
         assert!(view["footer"].is_null());
     }
 
@@ -2205,5 +2404,193 @@ mod tests {
             runners["stats"][2],
             json!({ "label": "OFFLINE", "value": "1", "color": color::hex(color::AMBER) })
         );
+    }
+
+    // MARK: - GitHub availability (the conjunction chip)
+
+    fn service_status(actions: servicestatus::ComponentStatus) -> servicestatus::ServiceStatus {
+        servicestatus::ServiceStatus {
+            component: Some(actions),
+            incident: None,
+        }
+    }
+
+    /// A fleet in the 2026-08-06 shape: both macs up, every Linux runner dark.
+    fn linux_dark() -> GitHubState {
+        with_runners(
+            &[
+                runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle),
+                runner("ubu-1", RunnerOs::Linux, RunnerState::Offline),
+            ],
+            &[],
+        )
+    }
+
+    /// Both panels carry the chip — `reflow` splits them onto separate rows on
+    /// a narrow cockpit, so one shared element would be orphaned from one of
+    /// them at exactly the widths this is used at.
+    #[test]
+    fn both_panels_carry_the_availability_chip() {
+        let state = linux_dark();
+        for view in [repos_view(&state, now()), runners_view(&state, now_unix())] {
+            assert!(
+                view["availability"]["label"].is_string(),
+                "every payload carries a verdict"
+            );
+        }
+    }
+
+    /// The row that earns the feature: GitHub says Actions is fine, our Linux
+    /// runners are dark anyway. Red, and it names the platform.
+    #[test]
+    fn operational_github_with_a_dark_platform_is_red_and_blames_us() {
+        let mut state = linux_dark();
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], github::status::ITS_US_LABEL);
+        assert_eq!(chip["color"], color::hex(color::RED));
+        assert!(
+            chip["detail"].as_str().expect("detail").contains("Linux"),
+            "{chip}"
+        );
+    }
+
+    /// The 2026-08-06 reading: same dark fleet, but GitHub is admitting to it.
+    /// Amber, not red — nobody needs to SSH anywhere.
+    #[test]
+    fn a_major_outage_is_red_and_says_so_even_with_a_dark_platform() {
+        let mut state = linux_dark();
+        state.apply_service_status(servicestatus::ServiceStatus {
+            component: Some(servicestatus::ComponentStatus::MajorOutage),
+            incident: Some(servicestatus::Incident {
+                name: "Incident with Actions".to_owned(),
+                impact: "critical".to_owned(),
+            }),
+        });
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], github::status::MAJOR_OUTAGE_LABEL);
+        assert_eq!(chip["color"], color::hex(color::RED));
+        // Red is shared with `Fleet Down`; the label is what says whose problem
+        // it is, and the detail is what says the dark runners are expected.
+        let detail = chip["detail"].as_str().expect("detail");
+        assert!(detail.contains("expected"), "{detail}");
+        assert!(detail.contains("Linux"), "{detail}");
+        assert!(detail.contains("Incident with Actions"), "{detail}");
+    }
+
+    /// The 2026-08-07 screenshot, pinned at the panel. A laptop woke from a
+    /// night's sleep, the runner list was hours old, and the chip painted a red
+    /// "Fleet Down" while all twelve runners were online.
+    ///
+    /// The freshness window is the Runners footer's own, so the two agree by
+    /// construction: one second inside it the chip still blames the fleet, one
+    /// second outside it stops.
+    #[test]
+    fn a_runner_list_older_than_its_stale_window_stops_blaming_the_fleet() {
+        let mut state = linux_dark();
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
+
+        let fresh = &runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS)["availability"];
+        assert_eq!(
+            fresh["label"],
+            github::status::ITS_US_LABEL,
+            "at the edge of the window the reading still counts"
+        );
+        assert_eq!(fresh["color"], color::hex(color::RED));
+
+        let stale =
+            &runners_view(&state, now_unix() + RUNNERS_STALE_AFTER_SECS + 1)["availability"];
+        assert_ne!(
+            stale["label"],
+            github::status::ITS_US_LABEL,
+            "one second past it, the fleet half can no longer be vouched for"
+        );
+        assert_ne!(stale["color"], color::hex(color::RED));
+        assert!(
+            stale["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("says nothing about our own fleet"),
+            "…and it must not claim the fleet is healthy either: {stale}"
+        );
+    }
+
+    /// Amber is reserved for "GitHub is slow" — the two middle Statuspage
+    /// states — so it reads apart from a major outage at a glance.
+    #[test]
+    fn a_degraded_github_is_amber_and_named_as_degraded() {
+        for actions in [
+            servicestatus::ComponentStatus::DegradedPerformance,
+            servicestatus::ComponentStatus::PartialOutage,
+        ] {
+            let mut state = linux_dark();
+            state.apply_service_status(service_status(actions));
+            let chip = &runners_view(&state, now_unix())["availability"];
+            assert_eq!(chip["label"], github::status::DEGRADED_LABEL, "{actions:?}");
+            assert_eq!(chip["color"], color::hex(color::AMBER), "{actions:?}");
+        }
+    }
+
+    /// Green is the dim one: this sits on two headers permanently, and the
+    /// resting state of an always-on cockpit should not shout.
+    #[test]
+    fn a_healthy_fleet_under_a_healthy_github_is_dim_green() {
+        let mut state = with_runners(&[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)], &[]);
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::Operational));
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], github::status::ALL_GOOD_LABEL);
+        assert_eq!(chip["color"], color::hex(color::GREEN_DIM));
+    }
+
+    /// Unreachable is not operational. Before the first read — and after a
+    /// failed one — the chip is muted and says so, never green.
+    #[test]
+    fn an_unread_status_page_is_muted_and_never_green() {
+        let state = linux_dark();
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(chip["label"], github::status::UNKNOWN_LABEL);
+        assert_eq!(chip["color"], color::hex(color::MUTED));
+        assert_ne!(chip["color"], color::hex(color::GREEN_DIM));
+    }
+
+    /// A failed refresh keeps the last good reading rather than falling back to
+    /// unknown — GitHub's status does not change on the timescale of one
+    /// dropped request, and flipping "it's GitHub" back to a red "it's us" on a
+    /// single timeout is the misdirection this verdict exists to prevent.
+    #[test]
+    fn a_failed_refresh_keeps_the_last_good_verdict_and_notes_why() {
+        let mut state = linux_dark();
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::MajorOutage));
+        state.apply_service_status_error("couldn't reach GitHub's status page");
+        let chip = &runners_view(&state, now_unix())["availability"];
+        assert_eq!(
+            chip["label"],
+            github::status::MAJOR_OUTAGE_LABEL,
+            "the verdict survives"
+        );
+        assert!(
+            chip["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("couldn't reach"),
+            "…and explains why it is not newer: {chip}"
+        );
+    }
+
+    /// The chip renders with no token at all. "GitHub is on fire" is most
+    /// useful precisely when the panel is otherwise blank, and the statuspage
+    /// needs no credential to say it.
+    #[test]
+    fn the_chip_renders_on_an_unauthenticated_panel() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        state.apply_service_status(service_status(servicestatus::ComponentStatus::MajorOutage));
+        let view = runners_view(&state, now_unix());
+        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+        assert_eq!(
+            view["availability"]["label"],
+            github::status::MAJOR_OUTAGE_LABEL
+        );
+        assert_eq!(view["availability"]["color"], color::hex(color::RED));
     }
 }

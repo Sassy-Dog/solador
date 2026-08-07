@@ -47,6 +47,47 @@ async function stubCockpit(page, payloads) {
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
+/** `#e05a4f` as the browser reports a computed colour. */
+const rgb = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+};
+
+/**
+ * Stubs the cockpit *and* every panel command, so the cards carry their real
+ * contents rather than empty chrome.
+ *
+ * `stubCockpit` answers every command with the cockpit payload, which the panel
+ * scripts happily render as a panel with nothing in it — fine when the question
+ * is which row a section lands in, useless when it is how tall the section is
+ * or where its edge falls. Panels of identical empty height agree about
+ * everything.
+ */
+async function stubPanels(page, baseURL, cockpit) {
+  const named = ["containers", "repos", "runners", "usage", "azure", "openclaw", "services"];
+  const files = {
+    containers: "sample-containers.json",
+    repos: "sample-repos.json",
+    runners: "sample-runners.json",
+    usage: "sample-usage.json",
+    azure: "sample-azure.json",
+    openclaw: "sample-openclaw.json",
+    services: "sample-services.json",
+  };
+  const payloads = { cockpit };
+  for (const name of named) payloads[name] = await fixture(baseURL, files[name]);
+  await page.addInitScript((vms) => {
+    window.__TAURI__ = {
+      core: {
+        // `azure_cost` is the command; `azure` is the fixture. Anything else
+        // (`settings_*`) answers null, exactly as `stubCockpit` does.
+        invoke: async (command) =>
+          vms[command === "azure_cost" ? "azure" : command] ?? null,
+      },
+    };
+  }, payloads);
+}
+
 /** The one live host `--dump` writes, as the offline fallback serves it. */
 const firstHost = async (page) =>
   page.evaluate(async () => (await (await fetch("sample.json")).json()).hosts[0]);
@@ -287,24 +328,21 @@ test("a core cell's value text renders its usage colour", async ({ page }) => {
   expect(computed).toBe(expected);
 });
 
-test("a host that fails after connecting keeps its last-known data, with an unmissable stale indicator", async ({ page, baseURL }) => {
-  // Regression test for the "stale value presented as current" defect: a
-  // host that dies after a good poll used to render a fully live-looking
-  // card forever. Simulates that sequence by stubbing `window.__TAURI__` (no
-  // real Tauri IPC in a browser context) so the first `invoke("cockpit")`
-  // returns a live payload and every call after returns a "stale" one --
-  // the whole point is that the numbers must not change, only the connection
-  // badge.
+test("a host that fails after connecting blanks its card and says it cannot be contacted", async ({ page, baseURL }) => {
+  // Regression test for "a stale value presented as current", now taken to its
+  // conclusion. A host that dies after a good poll used to render its last
+  // reading behind a red badge — and on 2026-08-06 ubu-3xdv sat like that
+  // through a GitHub outage, showing four-minute-old numbers as if they were
+  // now. A card is read at a glance, and at a glance a card is its figures.
   //
-  // Both fixtures are dumped by the real Rust binary (`--dump` / `--dump-stale`,
-  // see tests/frontend/package.json's fixtures script and
-  // app/src-tauri/src/main.rs), from the identical underlying
-  // snapshot/history, rather than the stale one being hand-built here from
-  // `live` with a copy-pasted "stale"/message string: a hand-built copy can't
-  // notice viewmodel's own strings drifting out from under it (see finding M4).
+  // Both fixtures are dumped by the real Rust binary (`--dump` /
+  // `--dump-unreachable`, see tests/frontend/package.json's fixtures script)
+  // rather than the second being hand-built here from the first: a hand-built
+  // copy can't notice viewmodel's own state string or message format drifting
+  // out from under it (see finding M4).
   await stubCockpit(page, [
     await fixture(baseURL, "sample.json"),
-    await fixture(baseURL, "sample-stale.json"),
+    await fixture(baseURL, "sample-unreachable.json"),
   ]);
 
   await gotoApp(page);
@@ -313,17 +351,30 @@ test("a host that fails after connecting keeps its last-known data, with an unmi
   await expect(page.locator(".connDot")).toHaveAttribute("data-state", "live");
   const cpuBefore = await page.locator(".cpuValue").textContent();
   expect(cpuBefore).not.toBe("—");
+  await expect(page.locator(".cores .core").first()).toBeVisible();
 
   // The app's own poll `setInterval` (only armed when `window.__TAURI__`
   // exists) drives the second poll -- wait for that real transition rather
   // than calling into app.js internals directly.
-  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "stale", { timeout: 5000 });
+  await expect(page.locator(".connDot")).toHaveAttribute("data-state", "unreachable", {
+    timeout: 5000,
+  });
 
-  const cpuAfter = await page.locator(".cpuValue").textContent();
-  expect(cpuAfter, "the reading must not change just because the poll failed").toBe(cpuBefore);
-  expect(cpuAfter).not.toBe("—");
-  await expect(page.locator(".staleMsg")).toContainText("Couldn't reach the agent");
-  await expect(page.locator(".staleMsg")).toContainText("ago");
+  // Not one figure survives, and the core grid is gone rather than left
+  // showing the last shape it had. Cards are reused across polls to keep their
+  // chart history, so this is the assertion that catches stale markup nobody
+  // cleared.
+  await expect(page.locator(".cpuValue")).toHaveText("—");
+  await expect(page.locator(".cores .core").first()).toBeHidden();
+  await expect(page.locator(".chart").first()).toBeHidden();
+
+  // What is left is the host's name and one sentence dating the outage.
+  const down = page.locator(".card-down");
+  await expect(down).toBeVisible();
+  await expect(down).toContainText("Couldn't reach the agent");
+  await expect(down).toContainText("last update");
+  await expect(down).toContainText("ago");
+  await expect(page.locator(".hostName")).toHaveText("ubu-3xdv");
 });
 
 test("a host whose agent stopped sampling loses the green dot even though every poll succeeded", async ({ page, baseURL }) => {
@@ -380,9 +431,10 @@ test("every configured host gets its own card, in payload order", async ({ page,
 
 test("one unreachable host shows its error card while the others stay live", async ({ page, baseURL }) => {
   // Per-host failure isolation, at the DOM. The fixture is deliberately mixed
-  // (live / stale / failed, dumped together by `--dump-cockpit`) so a shared
-  // error path -- one connection badge for the page, one `cpuValue` id shared
-  // across cards -- shows up as cards agreeing when they must not.
+  // (live / unreachable / never-connected, dumped together by
+  // `--dump-cockpit`) so a shared error path -- one connection badge for the
+  // page, one `cpuValue` id shared across cards -- shows up as cards agreeing
+  // when they must not.
   const vm = await fixture(baseURL, "sample-cockpit.json");
   await stubCockpit(page, [vm]);
   await gotoApp(page);
@@ -391,19 +443,22 @@ test("one unreachable host shows its error card while the others stay live", asy
   const cards = page.locator(".cockpit .card");
   await expect(cards).toHaveCount(4);
   expect(await cards.evaluateAll((els) => els.map((e) => e.dataset.state)))
-    .toEqual(["live", "live", "stale", "failed"]);
+    .toEqual(["live", "live", "unreachable", "failed"]);
 
   // The live host is untouched by its neighbours' trouble.
   await expect(cards.nth(1).locator(".cpuValue")).toHaveText(vm.hosts[1].cpuValue);
   await expect(cards.nth(1).locator(".staleMsg")).toHaveText("");
 
-  // The stale host keeps the numbers it last heard, and says how old they are.
-  await expect(cards.nth(2).locator(".cpuValue")).toHaveText(vm.hosts[2].cpuValue);
-  await expect(cards.nth(2).locator(".staleMsg")).toContainText("Couldn't reach the agent");
+  // The unreachable host shows nothing but its name and the reason -- and
+  // crucially not its neighbour's figures, which a shared `cpuValue` selector
+  // would produce.
+  await expect(cards.nth(2).locator(".cpuValue")).toHaveText("—");
+  await expect(cards.nth(2).locator(".card-down")).toContainText("Couldn't reach the agent");
+  await expect(cards.nth(2).locator(".cores .core").first()).toBeHidden();
 
   // The host that never connected shows the cause, never a fabricated number.
   await expect(cards.nth(3).locator(".cpuValue")).toHaveText("—");
-  await expect(cards.nth(3).locator(".cpuModel")).toHaveText(vm.hosts[3].error.message);
+  await expect(cards.nth(3).locator(".card-down")).toHaveText(vm.hosts[3].error.message);
 });
 
 test("this machine leads the grid and admits what it could not measure", async ({ page, baseURL }) => {
@@ -492,9 +547,13 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
       .map((c) => c.querySelector(".hostName").textContent)
   );
   expect(overflowing, "no card's reading may be pushed past its own edge").toEqual([]);
-  const staleCard = page.locator(".cockpit .card").filter({ hasText: "Couldn't reach the agent" }).first();
-  await expect(staleCard.locator(".staleMsg")).toContainText("Couldn't reach the agent");
-  await expect(staleCard.locator(".cpuValue")).not.toHaveText("");
+  // …and the unreachable card in the same fixture carries its reason on its
+  // own line rather than in the header, where a long message would compete
+  // with the very ellipsis rule this test exists to pin.
+  const downCard = page.locator(".cockpit .card").filter({ hasText: "Couldn't reach the agent" }).first();
+  await expect(downCard.locator(".card-down")).toContainText("Couldn't reach the agent");
+  await expect(downCard.locator(".staleMsg")).toHaveText("");
+  await expect(downCard.locator(".cpuValue")).toHaveText("—");
 });
 
 test("the panel rows below the grid are the ones Rust reflowed", async ({ page, baseURL }) => {
@@ -515,6 +574,7 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
     "ghRunners",
     "claudeUsage",
     "azureCost",
+    "services",
   ];
   const expected = vm.panelRows
     .map((row) => row.map((p) => p.id).filter((id) => known.includes(id)))
@@ -522,27 +582,69 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
 
   const rows = page.locator("#panelRows .panel-row");
   await expect(rows).toHaveCount(expected.length);
+  // Four quarter tracks on every row, whatever it holds — the grid is the same
+  // one everywhere, and a panel claims its share with `grid-column`.
   const tracks = await rows.evaluateAll((els) =>
     els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
   );
-  expect(tracks).toEqual(expected.map((row) => row.length));
+  expect(tracks).toEqual(expected.map(() => 4));
 
   // The row the span system exists for: Containers takes half, OpenClaw and
-  // Usage a quarter each, painted as `2fr 1fr 1fr`. Ratios, not pixels — the
-  // fixture's widths are the 2732pt it was dumped for, not this viewport's.
+  // Usage a quarter each.
   const quarter = expected.findIndex(
     (row) => row.join() === "containers,openclawAgents,claudeUsage"
   );
   expect(quarter, "the wide fixture must carry the authored quarter row").toBeGreaterThan(-1);
-  const widths = await rows
+  const spans = await rows
     .nth(quarter)
-    .evaluate((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).map(parseFloat));
-  expect(widths[1]).toBeCloseTo(widths[2], 1);
-  expect(widths[0]).toBeCloseTo(widths[1] * 2, 0);
+    .evaluate((el) =>
+      [...el.children].map((c) => getComputedStyle(c).gridColumnStart.trim())
+    );
+  expect(spans).toEqual(["1", "3", "4"]);
 
-  // …and Azure Cost has a whole row, which is what buys its two-column body.
-  expect(expected[expected.length - 1]).toEqual(["azureCost"]);
-  await expect(rows.last().locator("section")).toHaveCount(1);
+  // …and the last row is Azure Cost beside Services: three quarters still buys
+  // the cost breakdowns their own column, and five one-line service rows would
+  // leave most of a full-width band empty.
+  expect(expected[expected.length - 1]).toEqual(["azureCost", "services"]);
+  await expect(rows.last().locator("section")).toHaveCount(2);
+  const lastSpans = await rows
+    .last()
+    .evaluate((el) => [...el.children].map((c) => getComputedStyle(c).gridColumnStart.trim()));
+  expect(lastSpans).toEqual(["1", "4"]);
+});
+
+/**
+ * The bug the four-quarter grid was introduced for. Each row used to size its
+ * own tracks with the weights it happened to contain — `2fr 1fr 1fr` beside
+ * `2fr 2fr` — and `fr` divides what is left after *that row's* gutters. So a
+ * Half beside two Quarters came out half a gutter narrower than a Half beside
+ * one Half, and the vertical edge between Repos and Runners missed the edge
+ * between Containers and OpenClaw directly below it by 8pt on the shipped
+ * cockpit. Both are `half`; they must land on the same gridline.
+ */
+test("a half is the same width in every row", async ({ page, baseURL }) => {
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  // Both cards have to be on screen to be measured, and `stubCockpit` leaves
+  // Repos hidden — it never answers the `repos` command with a repos payload.
+  await stubPanels(page, baseURL, vm);
+  await gotoApp(page);
+  await expect(page.locator("#reposPanel")).toBeVisible();
+  await expect(page.locator("#containersPanel")).toBeVisible();
+
+  const spanOf = (id) =>
+    vm.panelRows.flat().find((p) => p.id === id)?.span;
+  expect(spanOf("ghWorkflows"), "the fixture must carry two halves in different rows").toBe("half");
+  expect(spanOf("containers")).toBe("half");
+
+  const [repos, containers] = await Promise.all([
+    page.locator("#reposPanel").boundingBox(),
+    page.locator("#containersPanel").boundingBox(),
+  ]);
+  expect(containers.width).toBeCloseTo(repos.width, 1);
+  expect(
+    containers.x + containers.width,
+    "the edge under Repos and the edge under Containers are one line"
+  ).toBeCloseTo(repos.x + repos.width, 1);
 });
 
 test("every card sharing a row is the same height", async ({ page, baseURL }) => {
@@ -554,8 +656,14 @@ test("every card sharing a row is the same height", async ({ page, baseURL }) =>
   // half, a fixture whose panels happened to be equally tall would pass with
   // `align-items:start` back in place.
   const vm = await fixture(baseURL, "sample-cockpit.json");
-  await stubCockpit(page, [vm]);
+  // Real panel contents, not the empty chrome `stubCockpit` produces: cards of
+  // identical empty height pass a height-equality test without proving
+  // anything, and there is no trailing space in one for the slack check below
+  // to find.
+  await stubPanels(page, baseURL, vm);
   await gotoApp(page);
+  await expect(page.locator("#reposPanel")).toBeVisible();
+  await expect(page.locator("#openclawPanel .oc-agent").first()).toBeVisible();
 
   const rows = page.locator("#panelRows .panel-row");
   const shared = await rows.evaluateAll((els) =>
@@ -606,6 +714,7 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
     "runnersPanel",
     "usagePanel",
     "azurePanel",
+    "servicesPanel",
   ];
   // Both shapes are the payload's, not this test's: the sectionless `hosts` row
   // is the grid above, so it contributes no rendered row.
@@ -622,12 +731,14 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
     await expect(page.locator(`#${id}`), `${id} survived the reflow`).toHaveCount(1);
     await expect(page.locator(`#panelRows .panel-row > #${id}`)).toHaveCount(1);
   }
-  // …and every section is accounted for by the rows Rust asked for.
-  const tracks = await rows.evaluateAll((els) =>
-    els.map((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length)
+  // …and every section is accounted for by the rows Rust asked for. Counted as
+  // sections rather than as tracks: every row is the same four quarter tracks,
+  // so a track count says nothing about how many panels landed in it.
+  const perRow = await rows.evaluateAll((els) =>
+    els.map((el) => el.querySelectorAll(":scope > section").length)
   );
-  expect(tracks).toEqual(shapeOf(narrow));
-  expect(tracks.reduce((a, b) => a + b, 0)).toBe(sections.length);
+  expect(perRow).toEqual(shapeOf(narrow));
+  expect(perRow.reduce((a, b) => a + b, 0)).toBe(sections.length);
 });
 
 test("the grid lays out exactly the columns the view-model asked for", async ({ page, baseURL }) => {
@@ -780,6 +891,38 @@ test("the tabs overflow mode shows one host at a time, and the bar switches betw
   const shown = cards.filter({ visible: true });
   await expect(shown).toHaveCount(1);
   await expect(shown.locator(".hostName")).toHaveText(second.label);
+});
+
+/**
+ * A tab bar shows one card and hides the rest, so a host that drops while you
+ * are looking at another one has nothing on screen but its button. On
+ * 2026-08-06 ubu-3xdv went down mid-outage and stayed unnoticed for exactly
+ * that reason — the alarm has to live on the tab.
+ */
+test("a tab whose host cannot be contacted is red and pulses", async ({ page, baseURL }) => {
+  const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
+  const down = tabbed.hostTabs.tabs.filter((t) => t.alert);
+  expect(down.length, "the fixture must carry an unreachable host").toBeGreaterThan(0);
+
+  await stubCockpit(page, [tabbed]);
+  await gotoApp(page);
+
+  const alerting = page.locator("#hostTabs .tab[data-alert]");
+  await expect(alerting).toHaveCount(down.length);
+  await expect(alerting.first()).toHaveText(down[0].label);
+  await expect(alerting.first()).toHaveCSS("color", rgb(down[0].color));
+  // The pulse is what makes it findable in peripheral vision; a red tab that
+  // sits still reads as a style, not an alarm.
+  expect(
+    await alerting.first().evaluate((el) => getComputedStyle(el).animationName)
+  ).not.toBe("none");
+
+  // …and the healthy tabs are untouched, or the bar would read as all-alarm.
+  const calm = page.locator("#hostTabs .tab:not([data-alert])");
+  await expect(calm).toHaveCount(tabbed.hostTabs.tabs.length - down.length);
+  expect(
+    await calm.first().evaluate((el) => getComputedStyle(el).animationName)
+  ).toBe("none");
 });
 
 test("the host tab bar rides the Hosts title line instead of costing a row", async ({ page, baseURL }) => {
