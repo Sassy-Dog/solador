@@ -19,5 +19,8 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "ai-agent-skills@sassy-dog-skills": true
   }
 }
