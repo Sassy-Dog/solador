@@ -259,7 +259,7 @@ await window.__TAURI__.core.invoke("runners");
   "trailing": "1 needs approval · 1 running · 1 failed · 1 unreadable",
   "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
   "loading": false,                      // true while the panel is still filling in
-  "availability": {"label": "GitHub OK", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
+  "availability": {"label": "Operational", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
   "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
   "rows": [{
     "repo": "Sassy-Dog/velovate", "name": "velovate",
@@ -320,8 +320,16 @@ per-OS state (`crates/github/src/status.rs`).
 | `operational` | dark | **Fleet Down** | red — ours to investigate |
 | `major_outage` | any | **Major Outage** | red — runs are failing |
 | `degraded_performance` / `partial_outage` | any | **Services Degraded** | amber — GitHub is slow |
-| `operational` | online | **GitHub OK** | dim green |
+| `operational` | online | **Operational** | dim green |
 | unreadable | any | **Status Unknown** | muted |
+
+The healthy label is **Operational** — the same word, in the same dim green, as
+the Services panel's own GitHub row (described below). Both render one
+`ComponentStatus`, and the header saying *GitHub OK* while the row beneath said
+*Operational* invited the reading that they measured different things. The
+subject is already in the panel title the chip sits beside, so naming GitHub
+twice bought nothing. The two literals live either side of a crate boundary, so
+a test in `services.rs` pins them together.
 
 When GitHub admits to a problem it takes the headline, at *its* severity; the
 fleet half becomes the sentence behind it ("Linux being offline is expected

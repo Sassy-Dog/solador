@@ -12,7 +12,7 @@
 //! operational      dark      Fleet Down           red     — investigate us
 //! major_outage     any       Major Outage         red     — runs are failing
 //! degraded/partial any       Services Degraded    amber   — GitHub is slow
-//! operational      online    GitHub OK            green
+//! operational      online    Operational          green
 //! (unreadable)     any       Status Unknown       muted
 //! ```
 //!
@@ -30,7 +30,7 @@
 //!
 //! **Unknown is not zero**, restated as *unreachable is not operational*. A
 //! statuspage fetch that fails or times out yields [`Verdict::Unknown`], never
-//! a green "GitHub OK". A check that cannot answer must not report the happy
+//! a green "Operational". A check that cannot answer must not report the happy
 //! path — and it must not suppress the fleet reading either, which is why the
 //! verdict annotates the panel rather than gating it.
 //!
@@ -170,7 +170,16 @@ pub struct Conjunction {
 /// Title Case throughout: the two an operator most needs to recognise at a
 /// glance are Statuspage's own severities, and a chip that mixed
 /// "Major Outage" with "gh ok" would read as two different controls.
-pub const ALL_GOOD_LABEL: &str = "GitHub OK";
+///
+/// The healthy label is **"Operational"**, not "GitHub OK", so it matches the
+/// word the [Services panel] paints for the same condition in the same dim
+/// green. These are two renderings of one underlying `ComponentStatus`, and one
+/// screen calling it *OK* while the row beneath calls it *Operational* invites
+/// the reading that they measure different things. The subject is already in
+/// the panel title the chip sits beside, so naming GitHub again bought nothing.
+///
+/// [Services panel]: ../../../app/src-tauri/src/services.rs
+pub const ALL_GOOD_LABEL: &str = "Operational";
 pub const DEGRADED_LABEL: &str = "Services Degraded";
 pub const MAJOR_OUTAGE_LABEL: &str = "Major Outage";
 pub const ITS_US_LABEL: &str = "Fleet Down";
