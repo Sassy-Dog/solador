@@ -264,7 +264,10 @@ DevCanopy/
   its own credentials in the same Keychain service under different account names,
   and — as of the single-keychain-item migration, macOS only — consolidates them
   into one item, `secrets_v1`, rather than Swift's one-item-per-secret scheme; see
-  `app/README.md`'s "Consolidated credential item" section.
+  `app/README.md`'s "Consolidated credential item" section. The Azure Cost SAS URL
+  is exempt from consolidation: it is externally written (re-minted every 4 days by
+  the `azurecost-sas` LaunchAgent via `Scripts/refresh-azure-cost-sas.sh`), so it
+  stays a per-item entry both apps and the script agree on.
 
 ### Responsive layout (breakpoints)
 - `crates/viewmodel/src/cockpit.rs` holds the responsive math for the Tauri app

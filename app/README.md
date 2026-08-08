@@ -1219,14 +1219,19 @@ agent's 401 text and sending you to check the wrong layer.
 ### Consolidated credential item
 
 On macOS, every text credential above — host tokens, the GitHub PAT, the Neon
-and Sentry usage keys, the Azure Cost SAS URL, the OpenClaw bearer token — lives
+and Sentry usage keys, the OpenClaw bearer token — lives
 in one keychain item: service `com.sassydog.devcanopy`, account `secrets_v1`,
 value a JSON map keyed by the same account strings each credential used to have
 its own item under. One item means one keychain ACL prompt covers every
-credential this app stores, rather than a fresh "Always Allow" per secret. The
-OpenClaw *device* identity key is the one exception — raw key material, not
-text, and an account the Swift app also writes to directly — so it keeps its
-own item regardless of platform.
+credential this app stores, rather than a fresh "Always Allow" per secret. Two
+exceptions keep their own items regardless of platform. The OpenClaw *device*
+identity key — raw key material, not text, and an account the Swift app also
+writes to directly. And the Azure Cost SAS URL — the one credential with an
+**external writer**: the `com.sassydog.devcanopy.azurecost-sas` LaunchAgent
+re-mints it every 4 days and writes the per-item entry from outside the app, and
+a blob copy would shadow every refresh with a frozen one (it did — the panel read
+a migration-time SAS until it expired). `migrate_legacy` also scrubs a stale
+`azure_cost_sas_url` entry out of any blob written before this rule existed.
 
 The first launch after this landed, and every launch since that finds no
 `secrets_v1` item, copies every legacy per-item secret into that blob once
