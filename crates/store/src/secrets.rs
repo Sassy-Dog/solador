@@ -307,7 +307,7 @@ fn route_secret<S: ItemStore>(
     consolidate: bool,
     key: SecretKey,
 ) -> Result<Option<String>, SecretError> {
-    if matches!(key, SecretKey::OpenClawDeviceKey) || !consolidate {
+    if !key.consolidatable() || !consolidate {
         return store.get_item(&key.account());
     }
     match read_blob(store)? {
@@ -330,7 +330,7 @@ fn route_set_secret<S: ItemStore>(
     key: SecretKey,
     value: &str,
 ) -> Result<(), SecretError> {
-    if matches!(key, SecretKey::OpenClawDeviceKey) || !consolidate {
+    if !key.consolidatable() || !consolidate {
         return store.set_item(&key.account(), value);
     }
     let _guard = blob_lock.lock().expect("blob lock poisoned");
@@ -357,7 +357,7 @@ fn route_delete_secret<S: ItemStore>(
     consolidate: bool,
     key: SecretKey,
 ) -> Result<(), SecretError> {
-    if matches!(key, SecretKey::OpenClawDeviceKey) || !consolidate {
+    if !key.consolidatable() || !consolidate {
         return store.delete_item(&key.account());
     }
     let _guard = blob_lock.lock().expect("blob lock poisoned");
@@ -1077,6 +1077,62 @@ mod tests {
             store.get_item("neon_api_key").expect("legacy read"),
             None,
             "the legacy item must also be cleared, or a blob rebuild resurrects it"
+        );
+    }
+
+    /// The deliberate inverse of
+    /// `route_secret_with_blob_present_reads_the_blob_not_the_legacy_item`:
+    /// the SAS has an external writer (the LaunchAgent), so for THIS key the
+    /// legacy item is the truth and the blob copy is the stale one.
+    #[test]
+    fn azure_cost_sas_reads_the_legacy_item_even_when_the_blob_is_present() {
+        let store = FakeItemStore::default();
+        store
+            .set_item("azure_cost_sas_url", "sas_fresh_from_launchagent")
+            .expect("seed legacy");
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("azure_cost_sas_url".to_owned(), "sas_stale".to_owned());
+        write_blob(&store, &map).expect("seed blob");
+
+        assert_eq!(
+            route_secret(&store, true, SecretKey::AzureCostSasUrl).expect("get"),
+            Some("sas_fresh_from_launchagent".to_owned())
+        );
+    }
+
+    #[test]
+    fn azure_cost_sas_set_and_delete_never_touch_the_blob() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        // A marker entry proves the blob is never rewritten by either call.
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("neon_api_key".to_owned(), "napi_marker".to_owned());
+        write_blob(&store, &map).expect("seed blob");
+        let blob_before = store.get_item(BLOB_ACCOUNT).expect("raw blob");
+
+        route_set_secret(
+            &store,
+            &blob_lock,
+            true,
+            SecretKey::AzureCostSasUrl,
+            "sas_x",
+        )
+        .expect("set");
+        assert_eq!(
+            store.get_item("azure_cost_sas_url").expect("legacy read"),
+            Some("sas_x".to_owned())
+        );
+
+        route_delete_secret(&store, &blob_lock, true, SecretKey::AzureCostSasUrl).expect("delete");
+        assert_eq!(
+            store.get_item("azure_cost_sas_url").expect("legacy read"),
+            None
+        );
+
+        assert_eq!(
+            store.get_item(BLOB_ACCOUNT).expect("raw blob"),
+            blob_before,
+            "a per-item routed key must never rewrite the blob"
         );
     }
 
