@@ -21,6 +21,6 @@
     ]
   },
   "enabledPlugins": {
-    "ai-agent-skills@sassy-dog-skills": true
+    "sassy-dog@sassydog-skills": true
   }
 }
