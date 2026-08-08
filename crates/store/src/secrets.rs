@@ -29,10 +29,10 @@ use uuid::Uuid;
 /// (`KeychainHelper.serviceName`).
 pub const SERVICE: &str = "com.sassydog.devcanopy";
 
-/// The one keychain item all text secrets live in (a JSON map keyed by
-/// [`SecretKey::account`] strings). One item means one ACL, so one
-/// "Always Allow" covers every secret. The OpenClaw device key stays its own
-/// item: raw bytes, and an account name two apps agree on.
+/// The one keychain item all consolidatable text secrets live in (a JSON map
+/// keyed by [`SecretKey::account`] strings). One item means one ACL, so one
+/// "Always Allow" covers every consolidatable secret. Two keys stay per-item
+/// instead — see [`SecretKey::consolidatable`].
 pub const BLOB_ACCOUNT: &str = "secrets_v1";
 
 /// Every credential the app stores, and nothing else — a closed set, so a typo
@@ -57,6 +57,9 @@ pub enum SecretKey {
     VercelApiToken,
     /// Container-scoped SAS URL for the Azure cost export. The URL *is* the
     /// credential, which is why it lives here and not in [`crate::Settings`].
+    /// Stays per-item rather than joining [`BLOB_ACCOUNT`]: the LaunchAgent
+    /// maintains it from outside this process — see
+    /// [`SecretKey::consolidatable`].
     AzureCostSasUrl,
     /// Optional bearer token for the OpenClaw gateway.
     OpenClawBearerToken,
@@ -238,6 +241,11 @@ pub trait CredentialStore {
     /// through the transition and are the rebuild source if the blob is ever
     /// corrupted.
     ///
+    /// On the blob-present path — migration has already run — the call also
+    /// scrubs any non-consolidatable account out of the blob (see
+    /// [`route_migrate_legacy`]); the returned count still means "legacy
+    /// values copied", never the scrub count.
+    ///
     /// Calling this before the first [`CredentialStore::set_secret`] is
     /// **not** an invariant callers must uphold. It was, until the
     /// whole-branch review found the ordering unsafe: a denied or failed
@@ -392,14 +400,22 @@ fn route_delete_secret<S: ItemStore>(
 
 /// [`CredentialStore::migrate_legacy`]'s implementation. See [`route_secret`]
 /// for why `consolidate` is a parameter.
+///
+/// Returns `(copied, scrubbed)`. `copied` is what
+/// [`CredentialStore::migrate_legacy`] returns to its caller — legacy values
+/// copied into a freshly-written blob. `scrubbed` is a second, internal-only
+/// count of non-consolidatable accounts removed from an *existing* blob;
+/// [`KeyringStore::migrate_legacy`] logs it (count-only, when nonzero) and
+/// does not fold it into the public `Result<usize>` contract, which means
+/// "copied" and nothing else.
 fn route_migrate_legacy<S: ItemStore>(
     store: &S,
     blob_lock: &Mutex<()>,
     consolidate: bool,
     keys: &[SecretKey],
-) -> Result<usize, SecretError> {
+) -> Result<(usize, usize), SecretError> {
     if !consolidate {
-        return Ok(0);
+        return Ok((0, 0));
     }
     let _guard = blob_lock.lock().expect("blob lock poisoned");
     if let Some(mut map) = read_blob(store)? {
@@ -409,14 +425,25 @@ fn route_migrate_legacy<S: ItemStore>(
         // ever changed. Rewrite only when something was removed. The
         // returned count still means "legacy values copied": a scrub-only
         // pass is 0, so the startup log line stays truthful.
+        //
+        // Conscious trade-off: this *discards* rather than relocates. On an
+        // install where the SAS was pasted via Settings after consolidation
+        // and no LaunchAgent exists to have ever written a legacy item, the
+        // scrub deletes the only copy — there is no per-item entry to fall
+        // back to — and the Azure Cost panel shows its setup instruction
+        // until the URL is re-pasted. Accepted: a credential routing can
+        // never read again is a bigger hazard left in place than lost, and a
+        // real external writer would have overwritten a relocated copy
+        // anyway.
         let before = map.len();
         for account in non_consolidatable_accounts() {
             map.remove(&account);
         }
-        if map.len() != before {
+        let scrubbed = before - map.len();
+        if scrubbed > 0 {
             write_blob(store, &map)?;
         }
-        return Ok(0);
+        return Ok((0, scrubbed));
     }
     let mut map = std::collections::BTreeMap::new();
     for key in keys {
@@ -431,7 +458,7 @@ fn route_migrate_legacy<S: ItemStore>(
     }
     let copied = map.len();
     write_blob(store, &map)?;
-    Ok(copied)
+    Ok((copied, 0))
 }
 
 /// Compile-time half of [`KeyringStore::consolidate`]: true only on macOS.
@@ -579,7 +606,18 @@ impl CredentialStore for KeyringStore {
     }
 
     fn migrate_legacy(&self, keys: &[SecretKey]) -> Result<usize, SecretError> {
-        route_migrate_legacy(self, &self.blob_lock, Self::consolidate(), keys)
+        let (copied, scrubbed) =
+            route_migrate_legacy(self, &self.blob_lock, Self::consolidate(), keys)?;
+        // Count-only, never account names or values — matches the module's
+        // value-free rule. Only when the rewrite actually happened: a quiet
+        // pass (nothing to scrub) prints nothing.
+        if scrubbed > 0 {
+            let noun = if scrubbed == 1 { "entry" } else { "entries" };
+            eprintln!(
+                "secrets: scrubbed {scrubbed} non-consolidatable {noun} from the consolidated item"
+            );
+        }
+        Ok(copied)
     }
 }
 
@@ -723,6 +761,39 @@ mod tests {
             total,
             "two credentials share one account name"
         );
+    }
+
+    /// [`non_consolidatable_accounts`] is what the existing-blob scrub trusts
+    /// to know which accounts must never live in the blob. Its own
+    /// `debug_assert` only checks that its hand-written list is *sound*
+    /// (every listed key really is non-consolidatable) — not that the list is
+    /// *complete*. This test checks completeness directly against the
+    /// predicate, over every fixed-account key (`HostToken` excluded: it has
+    /// no fixed account to enumerate): a variant reclassified
+    /// non-consolidatable but left out of the scrub list fails here, not
+    /// silently at scrub time.
+    #[test]
+    fn non_consolidatable_accounts_matches_the_predicate_over_every_fixed_account_key() {
+        let fixed_account_keys = [
+            SecretKey::GitHubAccessToken,
+            SecretKey::NeonApiKey,
+            SecretKey::SentryUsageToken,
+            SecretKey::VercelApiToken,
+            SecretKey::AzureCostSasUrl,
+            SecretKey::OpenClawBearerToken,
+            SecretKey::OpenClawDeviceKey,
+        ];
+        let mut expected: Vec<String> = fixed_account_keys
+            .iter()
+            .filter(|key| !key.consolidatable())
+            .map(SecretKey::account)
+            .collect();
+        expected.sort();
+
+        let mut actual = non_consolidatable_accounts();
+        actual.sort();
+
+        assert_eq!(actual, expected);
     }
 
     /// The blob's premise is "this app is the only writer". The two keys that
@@ -1251,7 +1322,7 @@ mod tests {
             .set_item("github_access_token", "ghp_x")
             .expect("seed");
 
-        let copied = route_migrate_legacy(
+        let (copied, scrubbed) = route_migrate_legacy(
             &store,
             &blob_lock,
             true,
@@ -1260,6 +1331,7 @@ mod tests {
         .expect("migrate");
 
         assert_eq!(copied, 2);
+        assert_eq!(scrubbed, 0, "a fresh migration scrubs nothing");
         let map = read_blob(&store).expect("read blob").expect("blob present");
         assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
         assert_eq!(map.get("github_access_token"), Some(&"ghp_x".to_owned()));
@@ -1279,9 +1351,11 @@ mod tests {
             .set_item("neon_api_key", "napi_changed_after_migration")
             .expect("mutate legacy");
 
-        let copied = route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
-            .expect("second migrate");
+        let (copied, scrubbed) =
+            route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+                .expect("second migrate");
         assert_eq!(copied, 0);
+        assert_eq!(scrubbed, 0, "the blob has no non-consolidatable accounts");
 
         let map = read_blob(&store).expect("read blob").expect("blob present");
         assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
@@ -1292,9 +1366,11 @@ mod tests {
         let store = FakeItemStore::default();
         let blob_lock = Mutex::new(());
 
-        let copied = route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
-            .expect("migrate");
+        let (copied, scrubbed) =
+            route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+                .expect("migrate");
         assert_eq!(copied, 0);
+        assert_eq!(scrubbed, 0);
 
         let map = read_blob(&store)
             .expect("read blob")
@@ -1358,7 +1434,7 @@ mod tests {
 
         // "Relaunch": the keychain unlocks, and migration runs again.
         store.unpoison("github_access_token");
-        let copied = route_migrate_legacy(
+        let (copied, scrubbed) = route_migrate_legacy(
             &store,
             &blob_lock,
             true,
@@ -1373,6 +1449,7 @@ mod tests {
             copied, 3,
             "the retry must migrate everything, including the interim save"
         );
+        assert_eq!(scrubbed, 0, "a fresh migration scrubs nothing");
 
         let map = read_blob(&store).expect("read blob").expect("blob present");
         assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
@@ -1389,7 +1466,7 @@ mod tests {
             .expect("seed");
         store.set_item("neon_api_key", "napi_x").expect("seed");
 
-        let copied = route_migrate_legacy(
+        let (copied, scrubbed) = route_migrate_legacy(
             &store,
             &blob_lock,
             true,
@@ -1398,6 +1475,7 @@ mod tests {
         .expect("migrate");
 
         assert_eq!(copied, 1, "the device key must not be counted as copied");
+        assert_eq!(scrubbed, 0, "a fresh migration scrubs nothing");
         let map = read_blob(&store).expect("read blob").expect("blob present");
         assert!(!map.contains_key("openclaw_device_key"));
         assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
@@ -1412,7 +1490,7 @@ mod tests {
             .expect("seed");
         store.set_item("neon_api_key", "napi_x").expect("seed");
 
-        let copied = route_migrate_legacy(
+        let (copied, scrubbed) = route_migrate_legacy(
             &store,
             &blob_lock,
             true,
@@ -1421,6 +1499,7 @@ mod tests {
         .expect("migrate");
 
         assert_eq!(copied, 1, "the SAS must not be counted as copied");
+        assert_eq!(scrubbed, 0, "a fresh migration scrubs nothing");
         let map = read_blob(&store).expect("read blob").expect("blob present");
         assert!(!map.contains_key("azure_cost_sas_url"));
         assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
@@ -1441,10 +1520,12 @@ mod tests {
         map.insert("neon_api_key".to_owned(), "napi_x".to_owned());
         write_blob(&store, &map).expect("seed blob");
 
-        let copied = route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
-            .expect("migrate");
+        let (copied, scrubbed) =
+            route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+                .expect("migrate");
 
         assert_eq!(copied, 0, "a scrub-only pass copies nothing");
+        assert_eq!(scrubbed, 1, "the stale SAS entry was scrubbed");
         let map = read_blob(&store).expect("read blob").expect("blob present");
         assert!(!map.contains_key("azure_cost_sas_url"));
         assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
@@ -1464,11 +1545,15 @@ mod tests {
         map.insert("neon_api_key".to_owned(), "napi_x".to_owned());
         write_blob(&store, &map).expect("seed blob");
 
-        route_migrate_legacy(&store, &blob_lock, true, &[]).expect("first run scrubs");
+        let (_, first_scrubbed) =
+            route_migrate_legacy(&store, &blob_lock, true, &[]).expect("first run scrubs");
+        assert_eq!(first_scrubbed, 1, "the stale SAS entry was scrubbed");
         let blob_after_scrub = store.get_item(BLOB_ACCOUNT).expect("raw blob");
 
-        let copied = route_migrate_legacy(&store, &blob_lock, true, &[]).expect("second run");
+        let (copied, scrubbed) =
+            route_migrate_legacy(&store, &blob_lock, true, &[]).expect("second run");
         assert_eq!(copied, 0);
+        assert_eq!(scrubbed, 0, "a clean blob has nothing left to scrub");
         assert_eq!(
             store.get_item(BLOB_ACCOUNT).expect("raw blob"),
             blob_after_scrub,
@@ -1482,9 +1567,11 @@ mod tests {
         let blob_lock = Mutex::new(());
         store.set_item("neon_api_key", "napi_x").expect("seed");
 
-        let copied = route_migrate_legacy(&store, &blob_lock, false, &[SecretKey::NeonApiKey])
-            .expect("migrate");
+        let (copied, scrubbed) =
+            route_migrate_legacy(&store, &blob_lock, false, &[SecretKey::NeonApiKey])
+                .expect("migrate");
         assert_eq!(copied, 0);
+        assert_eq!(scrubbed, 0);
         assert_eq!(
             store.get_item(BLOB_ACCOUNT).expect("blob read"),
             None,
