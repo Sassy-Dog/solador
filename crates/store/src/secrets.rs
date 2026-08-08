@@ -90,6 +90,39 @@ impl SecretKey {
         }
     }
 
+    /// Whether this credential may live in the consolidated `secrets_v1`
+    /// blob ([`BLOB_ACCOUNT`]). The blob's premise is that **this app is the
+    /// only writer**: once the blob exists, routing never consults a legacy
+    /// item, so a secret any other process maintains would be silently
+    /// shadowed by a frozen migration-time copy. A secret with an external
+    /// writer must therefore stay per-item.
+    ///
+    /// `false` for:
+    /// - [`SecretKey::AzureCostSasUrl`] — re-minted every 4 days by the
+    ///   `com.sassydog.devcanopy.azurecost-sas` LaunchAgent
+    ///   (`Scripts/refresh-azure-cost-sas.sh`), which writes the per-item
+    ///   entry from outside this process. Consolidating it is what severed
+    ///   the Azure Cost panel from its renewal pipeline.
+    /// - [`SecretKey::OpenClawDeviceKey`] — raw key material under a
+    ///   cross-app account contract (see its variant docs); never blob
+    ///   material.
+    ///
+    /// No wildcard arm, deliberately: adding a `SecretKey` variant without
+    /// deciding whether it consolidates is a compile error — the same
+    /// discipline as [`SecretKey::static_migration_keys`].
+    #[must_use]
+    pub fn consolidatable(&self) -> bool {
+        match self {
+            SecretKey::HostToken(_)
+            | SecretKey::GitHubAccessToken
+            | SecretKey::NeonApiKey
+            | SecretKey::SentryUsageToken
+            | SecretKey::VercelApiToken
+            | SecretKey::OpenClawBearerToken => true,
+            SecretKey::AzureCostSasUrl | SecretKey::OpenClawDeviceKey => false,
+        }
+    }
+
     /// Every credential with a fixed identity that migration should always
     /// consider, alongside whatever per-host [`SecretKey::HostToken`]s the
     /// caller appends. Excludes `HostToken` (one per configured host — there
@@ -659,6 +692,21 @@ mod tests {
             total,
             "two credentials share one account name"
         );
+    }
+
+    /// The blob's premise is "this app is the only writer". The two keys that
+    /// break the premise — and only those — must refuse consolidation.
+    #[test]
+    fn consolidatable_refuses_the_externally_written_and_raw_byte_keys() {
+        assert!(!SecretKey::AzureCostSasUrl.consolidatable());
+        assert!(!SecretKey::OpenClawDeviceKey.consolidatable());
+
+        assert!(SecretKey::HostToken(Uuid::new_v4()).consolidatable());
+        assert!(SecretKey::GitHubAccessToken.consolidatable());
+        assert!(SecretKey::NeonApiKey.consolidatable());
+        assert!(SecretKey::SentryUsageToken.consolidatable());
+        assert!(SecretKey::VercelApiToken.consolidatable());
+        assert!(SecretKey::OpenClawBearerToken.consolidatable());
     }
 
     #[test]
