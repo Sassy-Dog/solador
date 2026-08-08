@@ -7,6 +7,11 @@
 # alternative. AzureCostService re-reads the Keychain on every refresh cycle, so
 # an updated item is picked up without relaunching the app.
 #
+# Both apps read the per-item entry this script writes: the frozen Swift app
+# directly, and the Tauri app because AzureCostSasUrl is exempt from the
+# secrets_v1 consolidation (crates/store::secrets — externally-written
+# secrets stay per-item; the blob would shadow every re-mint).
+#
 # Installed as a LaunchAgent (runs every 4 days + at login):
 #   ~/Library/LaunchAgents/com.sassydog.devcanopy.azurecost-sas.plist
 # Remove with:
