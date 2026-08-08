@@ -129,6 +129,9 @@ impl SecretKey {
     /// is no fixed set of ids to name here) and
     /// [`SecretKey::OpenClawDeviceKey`] (never enters the blob;
     /// [`CredentialStore::migrate_legacy`] skips it defensively too).
+    /// Also excludes [`SecretKey::AzureCostSasUrl`]: static, but not
+    /// [`SecretKey::consolidatable`] — an externally-written secret must
+    /// never enter the blob.
     ///
     /// `is_static`'s match has no wildcard arm, so adding a `SecretKey`
     /// variant without deciding whether it belongs here is a compile error —
@@ -142,9 +145,12 @@ impl SecretKey {
                 | SecretKey::NeonApiKey
                 | SecretKey::SentryUsageToken
                 | SecretKey::VercelApiToken
-                | SecretKey::AzureCostSasUrl
                 | SecretKey::OpenClawBearerToken => true,
-                SecretKey::HostToken(_) | SecretKey::OpenClawDeviceKey => false,
+                // AzureCostSasUrl is static but not consolidatable (external
+                // writer — see `consolidatable`), so migration never lists it.
+                SecretKey::HostToken(_)
+                | SecretKey::OpenClawDeviceKey
+                | SecretKey::AzureCostSasUrl => false,
             }
         }
         let keys = [
@@ -152,7 +158,6 @@ impl SecretKey {
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
-            SecretKey::AzureCostSasUrl,
             SecretKey::OpenClawBearerToken,
         ];
         debug_assert!(keys.iter().all(is_static));
@@ -296,6 +301,18 @@ fn write_blob<S: ItemStore>(
     store.set_item(BLOB_ACCOUNT, &serialize_blob(map))
 }
 
+/// Accounts the blob must never hold: every fixed-account key
+/// [`SecretKey::consolidatable`] refuses. This is what the existing-blob
+/// scrub in [`route_migrate_legacy`] removes — healing installs whose blob
+/// was written before the external-writer rule existed. `HostToken` is
+/// absent because it is consolidatable; the `debug_assert` keeps this list
+/// honest against the predicate rather than trusting hand maintenance.
+fn non_consolidatable_accounts() -> Vec<String> {
+    let keys = [SecretKey::AzureCostSasUrl, SecretKey::OpenClawDeviceKey];
+    debug_assert!(keys.iter().all(|key| !key.consolidatable()));
+    keys.iter().map(SecretKey::account).collect()
+}
+
 /// [`CredentialStore::secret`]'s routing, generic over [`ItemStore`] so it is
 /// testable without the OS. `consolidate` is a parameter rather than read
 /// internally (vs. calling [`KeyringStore::consolidate`] here) so tests can
@@ -385,13 +402,27 @@ fn route_migrate_legacy<S: ItemStore>(
         return Ok(0);
     }
     let _guard = blob_lock.lock().expect("blob lock poisoned");
-    if read_blob(store)?.is_some() {
+    if let Some(mut map) = read_blob(store)? {
+        // Migration already ran. Scrub any non-consolidatable account out
+        // of the existing blob: routing can never read it again, so it is
+        // a stale credential at rest — and a resurrection hazard if routing
+        // ever changed. Rewrite only when something was removed. The
+        // returned count still means "legacy values copied": a scrub-only
+        // pass is 0, so the startup log line stays truthful.
+        let before = map.len();
+        for account in non_consolidatable_accounts() {
+            map.remove(&account);
+        }
+        if map.len() != before {
+            write_blob(store, &map)?;
+        }
         return Ok(0);
     }
     let mut map = std::collections::BTreeMap::new();
     for key in keys {
-        // The device key never joins the blob: raw bytes, cross-app account.
-        if matches!(key, SecretKey::OpenClawDeviceKey) {
+        // Non-consolidatable keys never join the blob (see `consolidatable`);
+        // this generalizes the former device-key-only skip.
+        if !key.consolidatable() {
             continue;
         }
         if let Some(value) = store.get_item(&key.account())? {
@@ -710,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn static_migration_keys_excludes_host_tokens_and_the_device_key() {
+    fn static_migration_keys_lists_only_consolidatable_static_keys() {
         let keys = SecretKey::static_migration_keys();
         let accounts: Vec<String> = keys.iter().map(SecretKey::account).collect();
         assert_eq!(
@@ -720,12 +751,15 @@ mod tests {
                 "neon_api_key",
                 "sentry_usage_token",
                 "vercel_api_token",
-                "azure_cost_sas_url",
                 "openclaw_bearer_token",
             ]
         );
         assert!(!keys.iter().any(|k| matches!(k, SecretKey::HostToken(_))));
         assert!(!keys.contains(&SecretKey::OpenClawDeviceKey));
+        assert!(
+            !keys.contains(&SecretKey::AzureCostSasUrl),
+            "the SAS has an external writer and must never be migrated into the blob"
+        );
     }
 
     #[test]
@@ -1367,6 +1401,79 @@ mod tests {
         let map = read_blob(&store).expect("read blob").expect("blob present");
         assert!(!map.contains_key("openclaw_device_key"));
         assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+    }
+
+    #[test]
+    fn migrate_legacy_fresh_skips_non_consolidatable_keys_even_when_listed() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store
+            .set_item("azure_cost_sas_url", "sas_fresh")
+            .expect("seed");
+        store.set_item("neon_api_key", "napi_x").expect("seed");
+
+        let copied = route_migrate_legacy(
+            &store,
+            &blob_lock,
+            true,
+            &[SecretKey::AzureCostSasUrl, SecretKey::NeonApiKey],
+        )
+        .expect("migrate");
+
+        assert_eq!(copied, 1, "the SAS must not be counted as copied");
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert!(!map.contains_key("azure_cost_sas_url"));
+        assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+    }
+
+    /// Heals installs consolidated before the external-writer rule existed:
+    /// the stale SAS copy is deleted from the blob, while the legacy item —
+    /// the LaunchAgent's, not ours — is left strictly alone.
+    #[test]
+    fn migrate_legacy_scrubs_non_consolidatable_accounts_from_an_existing_blob() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        store
+            .set_item("azure_cost_sas_url", "sas_fresh_from_launchagent")
+            .expect("seed legacy");
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("azure_cost_sas_url".to_owned(), "sas_stale".to_owned());
+        map.insert("neon_api_key".to_owned(), "napi_x".to_owned());
+        write_blob(&store, &map).expect("seed blob");
+
+        let copied = route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+            .expect("migrate");
+
+        assert_eq!(copied, 0, "a scrub-only pass copies nothing");
+        let map = read_blob(&store).expect("read blob").expect("blob present");
+        assert!(!map.contains_key("azure_cost_sas_url"));
+        assert_eq!(map.get("neon_api_key"), Some(&"napi_x".to_owned()));
+        assert_eq!(
+            store.get_item("azure_cost_sas_url").expect("legacy read"),
+            Some("sas_fresh_from_launchagent".to_owned()),
+            "the scrub must never touch the LaunchAgent's item"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_scrub_re_run_is_a_no_op() {
+        let store = FakeItemStore::default();
+        let blob_lock = Mutex::new(());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("azure_cost_sas_url".to_owned(), "sas_stale".to_owned());
+        map.insert("neon_api_key".to_owned(), "napi_x".to_owned());
+        write_blob(&store, &map).expect("seed blob");
+
+        route_migrate_legacy(&store, &blob_lock, true, &[]).expect("first run scrubs");
+        let blob_after_scrub = store.get_item(BLOB_ACCOUNT).expect("raw blob");
+
+        let copied = route_migrate_legacy(&store, &blob_lock, true, &[]).expect("second run");
+        assert_eq!(copied, 0);
+        assert_eq!(
+            store.get_item(BLOB_ACCOUNT).expect("raw blob"),
+            blob_after_scrub,
+            "a clean blob must not be rewritten"
+        );
     }
 
     #[test]
