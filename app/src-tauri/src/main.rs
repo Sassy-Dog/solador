@@ -19,6 +19,7 @@ use viewmodel::color;
 
 mod azure;
 mod containers;
+mod crons;
 mod github;
 mod local;
 mod openclaw;
@@ -30,6 +31,7 @@ mod usage;
 
 use azure::AzureState;
 use containers::ContainersState;
+use crons::CronsState;
 use github::GitHubState;
 use local::LocalHostState;
 use openclaw::OpenClawState;
@@ -185,6 +187,19 @@ struct App {
     /// section and then wait out the full hour before filling it — which reads
     /// exactly like the key having been rejected.
     usage_providers_due: std::sync::atomic::AtomicBool,
+    /// The Sentry Crons panel's state, on the same fixed hourly cadence as the
+    /// other Sentry read — not the store's shared refresh interval.
+    ///
+    /// Its own lock rather than a field on [`UsageState`]: the two share a
+    /// credential and nothing else. They are different panels, on different rows,
+    /// answering different questions ("how much did we consume" vs "what is
+    /// broken"), and one lock would make a slow monitor read hold up a repaint of
+    /// the Usage card.
+    crons: Mutex<CronsState>,
+    /// Cuts the crons loop's sleep short after the Sentry token or org slug
+    /// changes. An hourly cadence is long enough that waiting one out is
+    /// indistinguishable from the credential having been rejected.
+    crons_wake: tokio::sync::Notify,
     /// The Azure Cost panel's state, on its own 4h cadence.
     azure: Mutex<AzureState>,
     /// Cuts the Azure loop's sleep short after a SAS URL is saved or cleared.
@@ -1888,6 +1903,110 @@ async fn usage_loop(app: Arc<App>) {
     }
 }
 
+// MARK: the Sentry Crons panel
+//
+// Its own loop rather than a third provider inside `poll_usage`: it is a separate
+// panel with a separate lock, and folding it in would make one keychain read and
+// one HTTP failure shared between two cards that answer different questions.
+// Same cadence as the Sentry read in there, from the same constant.
+
+/// One pass over the org's cron monitors.
+///
+/// The credential and the slug are re-read every pass, which is what makes a
+/// Settings edit apply without a relaunch — and [`App::crons_wake`] is what makes
+/// it apply *now* rather than up to an hour later.
+async fn poll_crons(app: &Arc<App>) {
+    let token = match read_credential(&*app.credentials, SecretKey::SentryUsageToken) {
+        Credential::Present(token) => token,
+        // "No token" is the setup state and paints an instruction.
+        Credential::Absent => {
+            app.crons
+                .lock()
+                .expect("crons state poisoned")
+                .unconfigure();
+            return;
+        }
+        // "The keychain would not answer" is a failure, and must not paint that
+        // instruction over a configuration that is perfectly fine.
+        Credential::Unreadable => {
+            app.crons
+                .lock()
+                .expect("crons state poisoned")
+                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
+            return;
+        }
+    };
+    let slug = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().sentry_org_slug.clone()
+    };
+    // `SentryClient::new` returns `None` only for a blank token, which
+    // `Credential::Present` has already excluded.
+    let Some(client) = usage::SentryClient::new(&token) else {
+        return;
+    };
+    // Before the request, not after it: the panel is what tells the operator this
+    // watch exists, and learning that from a completed fetch made its first frame
+    // indistinguishable from "there is no token".
+    app.crons.lock().expect("crons state poisoned").begin();
+
+    let result = client.cron_monitor_status(&slug, github::now_utc()).await;
+    let now = panel::now_unix();
+    let mut state = app.crons.lock().expect("crons state poisoned");
+    match result {
+        Ok(summary) => state.succeeded(summary, now),
+        Err(e) => state.failed(e.user_message()),
+    }
+}
+
+/// How soon the crons poll retries while it has never once succeeded.
+///
+/// Same argument as [`AZURE_FIRST_READ_RETRY`]: the hourly rhythm is right for a
+/// watch on a weekly cron and wrong for a first read that failed because the
+/// network was not up yet at login, and `crons_wake` only fires on a Settings
+/// edit — so that first failure would otherwise sit on the cockpit, red, for an
+/// hour.
+const CRONS_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The Sentry Crons panel's poll loop.
+async fn crons_loop(app: Arc<App>) {
+    loop {
+        poll_crons(&app).await;
+        let settled = app
+            .crons
+            .lock()
+            .expect("crons state poisoned")
+            .has_succeeded();
+        let wait = if settled {
+            std::time::Duration::from_secs(usage::PROVIDER_POLL_INTERVAL_SECS)
+        } else {
+            CRONS_FIRST_READ_RETRY
+        };
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = app.crons_wake.notified() => {}
+        }
+    }
+}
+
+/// Guards the Sentry Crons panel's counterpart to [`FIRST_REQUEST`].
+static FIRST_CRONS_REQUEST: std::sync::Once = std::sync::Once::new();
+
+#[tauri::command]
+fn crons(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = {
+        let panel = state.crons.lock().expect("crons state poisoned");
+        crons::view(&panel, panel::now_unix())
+    };
+    FIRST_CRONS_REQUEST.call_once(|| {
+        eprintln!(
+            "crons: first frontend request ({})",
+            payload["trailing"].as_str().unwrap_or("nothing read yet")
+        );
+    });
+    payload
+}
+
 /// What a credential read actually learned.
 ///
 /// The three cases are genuinely different and collapsing them is the
@@ -2498,6 +2617,9 @@ fn settings_save_providers(prefs: ProviderPrefs, state: tauri::State<'_, Arc<App
     // previous configuration for up to an hour. The Azure budget and the Sentry
     // quota need no wake — both are read at render time, by design.
     wake_usage(&state, true);
+    // The Sentry slug is a path segment of the cron-monitor read as well, so the
+    // Crons panel would otherwise ask the wrong org for another hour.
+    state.crons_wake.notify_one();
     settings_response(&state, status)
 }
 
@@ -2891,7 +3013,14 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 fn wake_for(app: &App, field: SecretField) {
     match field {
         SecretField::GitHub => wake_github(app),
-        SecretField::Neon | SecretField::Sentry | SecretField::Vercel => wake_usage(app, true),
+        SecretField::Neon | SecretField::Vercel => wake_usage(app, true),
+        // One credential, two panels: the Usage panel's Sentry section and the
+        // Sentry Crons panel are separate loops, so a save has to reach both or
+        // one of them keeps describing the previous token for up to an hour.
+        SecretField::Sentry => {
+            wake_usage(app, true);
+            app.crons_wake.notify_one();
+        }
         SecretField::Azure => app.azure_wake.notify_one(),
         // The bearer token is folded into the *signed connect payload*, so it
         // cannot be swapped on a live socket — the session has to be torn down
@@ -3106,6 +3235,20 @@ fn dump_usage(kind: usage::Fixture) -> Value {
 fn dump_azure(kind: azure::Fixture) -> Value {
     const NOW: u64 = 1_700_000_000;
     azure::view(&azure::fixture_state(kind, NOW), 2_000.0, NOW)
+}
+
+/// The Sentry Crons panel as a fixture.
+///
+/// Both clocks are fixed so the file is byte-stable across regenerations: the
+/// panel clock keeps the footer from drifting, and the *wire* clock is what makes
+/// the ages exactly `7d 22h` and `0d 22h` — the two figures the age rule is
+/// about — on every machine and at every hour.
+fn dump_crons(kind: crons::Fixture) -> Value {
+    const NOW: u64 = 1_700_000_000;
+    let wire_now = chrono::DateTime::parse_from_rfc3339("2026-08-04T15:00:00Z")
+        .expect("a fixed wire clock")
+        .with_timezone(&chrono::Utc);
+    crons::view(&crons::fixture_state(kind, NOW, wire_now), NOW)
 }
 
 /// The Settings payload as a fixture, built from a hand-made configuration
@@ -3407,6 +3550,21 @@ fn run_dump(args: &[String]) -> bool {
         write_json(&path, &services::view(&services::fixture_statuses()));
         return true;
     }
+    if let Some(path) = dump_flag_path(args, "--dump-crons", "sample-crons.json") {
+        let kind = if empty {
+            crons::Fixture::Healthy
+        } else if args.iter().any(|arg| arg == "--blind") {
+            crons::Fixture::Blind
+        } else if args.iter().any(|arg| arg == "--error") {
+            crons::Fixture::Failed
+        } else if args.iter().any(|arg| arg == "--unconfigured") {
+            crons::Fixture::Unconfigured
+        } else {
+            crons::Fixture::Alerting
+        };
+        write_json(&path, &dump_crons(kind));
+        return true;
+    }
     if let Some(path) = dump_flag_path(args, "--dump-openclaw", "sample-openclaw.json") {
         let kind = if empty {
             openclaw::Fixture::Empty
@@ -3597,6 +3755,8 @@ fn main() {
         usage: Mutex::new(UsageState::new()),
         usage_wake: tokio::sync::Notify::new(),
         usage_providers_due: std::sync::atomic::AtomicBool::new(false),
+        crons: Mutex::new(CronsState::new()),
+        crons_wake: tokio::sync::Notify::new(),
         azure: Mutex::new(AzureState::new()),
         azure_wake: tokio::sync::Notify::new(),
         openclaw: Mutex::new(OpenClawState::new()),
@@ -3632,6 +3792,9 @@ fn main() {
     // Usage: Claude on the store's refresh interval, Neon and Sentry hourly
     // inside the same loop.
     rt.spawn(usage_loop(Arc::clone(&app)));
+    // Sentry cron monitors, on the same fixed hourly cadence as the Sentry read
+    // inside the usage loop — a persistence watch, not a real-time alarm.
+    rt.spawn(crons_loop(Arc::clone(&app)));
     // Azure cost, on the reader's own 4h cadence.
     rt.spawn(azure_loop(Arc::clone(&app)));
     // OpenClaw: a live WebSocket, not a cadence. It idles at once when no
@@ -3664,6 +3827,7 @@ fn main() {
             usage,
             azure_cost,
             services,
+            crons,
             openclaw,
             settings_view,
             settings_save_general,
@@ -3861,6 +4025,7 @@ mod tests {
     /// | Repos + Runners | user's | **yes** — `github_loop` | `DevCanopyApp.swift:136-137` |
     /// | Claude usage | user's | **yes** — `usage_loop` | `DevCanopyApp.swift:134` |
     /// | Neon + Sentry | 1h | no | `NeonUsageService.swift:81` |
+    /// | Sentry crons | 1h | no | no Swift twin — `crons_loop` |
     /// | Azure Cost | 4h | no | `AzureCostService.swift:343` |
     /// | OpenClaw | none — event-driven | no | `OpenClawService.swift:72` |
     ///
@@ -3868,6 +4033,13 @@ mod tests {
     /// by where they read the store rather than here: `github_loop` reads
     /// `refresh_interval_secs` at its top and `usage_loop` at its own, and no
     /// other loop in this file reads it at all.
+    ///
+    /// The crons row shares `PROVIDER_POLL_INTERVAL_SECS` with the Sentry read
+    /// inside `usage_loop` rather than declaring a second hour of its own: it is
+    /// the same API on the same rhythm, and two constants would be free to
+    /// drift. The consequence to accept is that a newly-red monitor can be
+    /// invisible for up to an hour — this is a *persistence* watch, not a
+    /// real-time alarm, and the daily Slack digest remains the prompt signal.
     #[test]
     fn every_data_source_polls_on_its_swift_services_cadence() {
         let cadences: [(&str, u64, u64); 4] = [
@@ -4781,7 +4953,7 @@ mod tests {
                 vec!["hosts"],
                 vec!["ghWorkflows", "ghRunners"],
                 vec!["containers", "openclawAgents", "claudeUsage"],
-                vec!["azureCost", "services"],
+                vec!["azureCost", "services", "sentryCrons"],
             ]
         );
 
@@ -4800,7 +4972,7 @@ mod tests {
         assert_eq!(
             narrow.len(),
             7,
-            "the halves and the quarters both split, and so does Azure Cost + Services"
+            "the halves and the quarters both split, and so does the last row"
         );
 
         // Every panel still travels, exactly once, at any width — a row silently
@@ -4850,8 +5022,8 @@ mod tests {
     }
 
     /// The configuration actually shipped on a 1890pt display: every half at
-    /// 937pt whichever row it is in, the quarters at 460.5, Azure Cost across
-    /// the whole 1890 — and the content columns each of those affords.
+    /// 937pt whichever row it is in — Azure Cost included — the quarters at
+    /// 460.5, and the content columns each of those affords.
     ///
     /// Repos clears its split by 41pt (896 of 937) and only because its numeric
     /// columns are sized to their labels; the same panel with the Swift
@@ -4881,12 +5053,14 @@ mod tests {
         );
         assert_eq!(
             seen["azureCost"],
-            (json!(1413.5), json!(2)),
-            "three quarters still buys the breakdowns their column beside the costs"
+            (json!(937.0), json!(2)),
+            "a half still buys the breakdowns their column beside the costs — by \
+             121pt now that Sentry Crons shares its row, where three quarters had 597"
         );
         assert_eq!(seen["openclawAgents"], (json!(460.5), json!(1)));
         assert_eq!(seen["claudeUsage"], (json!(460.5), json!(1)));
         assert_eq!(seen["services"], (json!(460.5), json!(1)));
+        assert_eq!(seen["sentryCrons"], (json!(460.5), json!(1)));
     }
 
     /// The Layout tab's whole point, at the payload: the rows are the *stored*
@@ -4916,9 +5090,10 @@ mod tests {
             vec![
                 // The user's three, packed into one row (1 + 1 + 2 quarters)…
                 vec!["claudeUsage", "azureCost", "hosts"],
-                // …then the four the layout never named, in default order.
+                // …then the five the layout never named, in default order.
                 vec!["ghWorkflows", "ghRunners"],
                 vec!["containers", "openclawAgents", "services"],
+                vec!["sentryCrons"],
             ]
         );
         let first = &vm["panelRows"][0];

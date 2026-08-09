@@ -380,6 +380,35 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   overflow:hidden; text-overflow:ellipsis; }
 .svc-state { font-size:10px; font-weight:700; white-space:nowrap; flex:none; }
 
+/* ---- Sentry Crons ------------------------------------------------------
+   Two lines per row: the monitor name with its age, then `project/env`, the
+   state word and any qualification the age needs. Two lines rather than one is
+   what keeps `PanelKind::SentryCrons`'s minimum at 240pt -- a single line of
+   `slug · platform/prd · error · 7d 22h` would need most of 400 -- and it is
+   the same construction (and the same argument) as OpenClaw's agent rows.
+
+   The age is `flex:none` and the name is the designated give: an age reading
+   `never checked in` must not ellipsise, because the whole panel is about how
+   long something has been broken. No `--panel-cols` split, for the Services
+   panel's reason: the list is short and a second column would buy a gutter and
+   cost the scan.
+
+   Every colour here is Rust's, applied via CSSOM -- including the amber that
+   marks an age derived from a check-in rather than from an incident's start.
+   This file cannot tell the two apart and must not try. */
+.cron-row { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.cron-head { display:flex; align-items:baseline; gap:8px; min-width:0; }
+.cron-name { font-size:11px; font-weight:700; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.cron-age { margin-left:auto; font-size:10px; font-weight:700;
+  white-space:nowrap; flex:none; font-variant-numeric:tabular-nums; }
+.cron-detail { font-size:9px; color:var(--muted); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+/* The panel's one sentence: a setup instruction, a failure, a blind-read
+   warning, or the measured all-clear. Which of those it is -- and therefore its
+   colour -- is Rust's decision, exactly as it is on the Azure Cost card. */
+.cron-message { font-size:10px; }
+
 /* ---- The shared progress bar -------------------------------------------
    `CockpitProgressBar`. The width and the fill colour both arrive from Rust
    (`panel::progress_bar`) — the thresholds are the Swift panel's and must not

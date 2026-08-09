@@ -333,6 +333,7 @@ const PANEL_SECTIONS = {
   claudeUsage: "usagePanel",
   azureCost: "azurePanel",
   services: "servicesPanel",
+  sentryCrons: "cronsPanel",
   openclawAgents: "openclawPanel",
 };
 

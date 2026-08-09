@@ -53,6 +53,18 @@ can therefore reach `main` unnoticed; that is the accepted cost of freezing it.
   rates, and a best-effort `NEON LAST INVOICE` off an undocumented endpoint —
   that one failing degrades to `—` plus a footer, never the consumption rows.
 - **Azure Cost** — the daily cost export, on its own 4h cadence.
+- **Sentry Crons** — every cron monitor environment that is not `ok`, and **how
+  long it has been broken** (the same fixed 1h cadence as the other Sentry read).
+  The age comes from `activeIncident.startingTimestamp`, never from
+  `lastCheckIn` — measuring from the last attempt is what made day 6 of an
+  outage look identical to day 1, and on the monitor that motivated the panel
+  the two read 7d 22h and 0d 22h. A check-in-derived age is a *different* enum
+  variant and renders as the weaker claim it is (`≈`, amber, and a row that says
+  why). Suppressed entries (`disabled`, or a strict `isMuted: true`, at either
+  monitor or environment level) are counted and shown with their reason, never
+  dropped; and a **blind read** — no monitors at all, or a monitor carrying no
+  environments — is red, because an empty green panel is the failure this exists
+  to remove.
 - **Services** — third-party availability for the five vendors this stack
   depends on (GitHub, Anthropic, Vercel, Neon, Azure), read on the GitHub poll's
   cadence. Three transports behind one vocabulary (`crates/servicestatus`), and
@@ -62,9 +74,12 @@ can therefore reach `main` unnoticed; that is the accepted cost of freezing it.
 
 Those panels are arranged into rows `viewmodel::cockpit` reflows for the measured
 width — one full-width Hosts row, GitHub Repos + GitHub Runners as halves,
-Containers beside OpenClaw and Usage as quarters, then Azure Cost at three
-quarters beside a quarter-width Services —
-and every card in a row is the same height. An in-app Settings surface over
+Containers beside OpenClaw and Usage as quarters, then Azure Cost at a half
+beside quarter-width Services and Sentry Crons —
+and every card in a row is the same height. (Azure Cost gave up a quarter to
+Sentry Crons and is a Half now, so it drops to one content column below a
+~1648pt cockpit rather than ~1094 — a measured trade, not a regression.)
+An in-app Settings surface over
 `crates/store` (hosts CRUD, portfolio, credentials, container group rules,
 cockpit layout, general prefs) applies changes without a restart. The frontend is
 plain HTML/CSS/JS with no bundler (`app/ui/`) and has its own Playwright e2e suite
@@ -165,6 +180,7 @@ DevCanopy/
 │   │                      # machine (src/local.rs); `cockpit`, `containers`
 │   │                      # (src/containers/), `repos`/`runners` (src/github/),
 │   │                      # `usage` (src/usage.rs), `azure_cost` (src/azure.rs),
+│   │                      # `crons` (src/crons.rs — Sentry cron monitors),
 │   │                      # `openclaw` (src/openclaw.rs — a live session, not a
 │   │                      # poll) + the `settings_*` surface (src/settings.rs)
 │   └── ui/                # Frontend: plain HTML/CSS/JS, no bundler
@@ -173,6 +189,7 @@ DevCanopy/
 │                          #  containers.js = Containers/VMs panel,
 │                          #  github.js = Repos + GitHub Runners panels,
 │                          #  usage.js = Usage panel, azure.js = Azure Cost,
+│                          #  cronmonitors.js = Sentry Crons,
 │                          #  openclaw.js = OpenClaw panel)
 └── tests/frontend/         # Playwright e2e suite for app/ui/ (own package.json)
 ```
@@ -245,6 +262,15 @@ DevCanopy/
   over a rolling 30d window, optional quota bar). Same 1h cadence + `—` rules as Neon.
   Distinct from `Services/SentrySetup.swift`, which is the app's own crash-reporting
   bootstrap — nothing in `SentryUsage*` touches the Sentry SDK.
+- Sentry cron monitors (Tauri only): `crates/usage/src/sentry.rs`'s
+  `cron_monitors()` / `summarize_monitors()` plus `app/src-tauri/src/crons.rs`.
+  Same `org:read` token as the usage read and the same 1h cadence. Three wire
+  traps are documented there and each has a test: there is **no** flat
+  `projectSlug` (it is `project.slug`), **no** `hasMoreEnvironments` and no
+  environment-truncation signal at all, and `activeIncident` is a key on every
+  environment that holds `null` on the healthy ones. Build fixtures from the raw
+  REST payload — the Sentry MCP server normalises the response and synthesises
+  the first two, so fixtures derived from it are self-consistent and wrong.
 
 ### Authentication
 - **Repos / GitHub Runners panels**: a fine-grained PAT with read-only access to
@@ -259,6 +285,10 @@ DevCanopy/
   the read-only `org:read` scope, entered in Settings → Usage (org auth tokens carry
   a fixed CI-oriented scope set that excludes it). The non-secret org slug and
   monthly event quota are `@AppStorage` preferences, not Keychain items.
+- **Sentry Crons panel** (Tauri only): the *same* `org:read` token and org slug as
+  the Usage panel's Sentry section — one credential, two panels, so saving or
+  clearing it wakes both poll loops or one of them keeps describing the previous
+  token for up to an hour.
 - All credentials stored in the macOS Keychain (`Services/KeychainHelper.swift`);
   never persisted in SwiftData. The Tauri shell (`crates/store::secrets`) stores
   its own credentials in the same Keychain service under different account names,

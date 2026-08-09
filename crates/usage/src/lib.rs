@@ -3,7 +3,8 @@
 //!
 //! - [`claude`] — token rollups walked out of Claude Code's local JSONL logs.
 //! - [`neon`] — month-to-date Neon compute + branch storage for one org.
-//! - [`sentry`] — accepted error events for one org over a rolling window.
+//! - [`sentry`] — accepted error events for one org over a rolling window, plus
+//!   the cron monitors that are not ok and **how long they have been broken**.
 //!
 //! Three rules run through the whole crate:
 //!
@@ -35,5 +36,9 @@ mod urlpath;
 
 pub use claude::{summarize_logs, UsageSummary, UsageTotals};
 pub use neon::{estimate_usd, NeonClient, NeonInvoiceSummary, NeonUsageError, NeonUsageSummary};
-pub use sentry::{SentryClient, SentryUsageError, SentryUsageSummary};
+pub use sentry::{
+    summarize_monitors, CronAge, CronAlert, CronEnvironment, CronIncident, CronMonitor,
+    CronMonitorsSummary, CronProject, CronSuppression, SentryClient, SentryUsageError,
+    SentryUsageSummary,
+};
 pub use vercel::{VercelClient, VercelUsageError, VercelUsageSummary};

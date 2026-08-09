@@ -128,18 +128,20 @@ test("both breakdown columns render, capped at five rows each", async ({ page, b
   );
 });
 
-test("on a three-quarter card the breakdowns sit beside the costs, not under them", async ({ page, baseURL }) => {
-  // Azure Cost is authored three quarters wide -- it gave a quarter to the
-  // Services panel -- and three quarters is still enough for `panel_columns`
-  // to afford it two content columns. The split itself is CSS over
-  // `--panel-cols`, so this is about the frontend applying Rust's count rather
-  // than deciding one. The fixture is dumped at 2732pt.
+test("on a half-width card the breakdowns sit beside the costs, not under them", async ({ page, baseURL }) => {
+  // Azure Cost is authored half a row wide -- it gave its other two quarters to
+  // the Services and Sentry Crons panels -- and a half is still enough for
+  // `panel_columns` to afford it two content columns, though with far less
+  // headroom than the Three-quarters it used to have (2 * 400 + 16 = 816pt of a
+  // half, which needs a 1648pt cockpit rather than a 1094pt one). The split
+  // itself is CSS over `--panel-cols`, so this is about the frontend applying
+  // Rust's count rather than deciding one. The fixture is dumped at 2732pt.
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const azurePanel = cockpit.panelRows.flat().find((p) => p.id === "azureCost");
   expect(
     azurePanel.span,
-    "three quarters is what still buys the breakdowns their own column"
-  ).toBe("threeQuarters");
+    "a half is what still buys the breakdowns their own column"
+  ).toBe("half");
   expect(azurePanel.columns, "wide enough for the two-column body").toBe(2);
 
   await gotoWithAzure(page, baseURL);

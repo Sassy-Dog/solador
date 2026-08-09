@@ -134,6 +134,24 @@
       <div class="panel-body" id="servicesBody"></div>
     </section>
 
+    <!-- Sentry Crons. Every cron monitor environment that is not ok, and how
+         long it has been broken. Distinct from the Services panel beside it:
+         that one answers "is the vendor up?" and this one "is our own job
+         green?". Same rules as above — the monitor name, the `project/env`
+         scope, the state word, the age and every colour are built by
+         cronmonitors.js from the `crons` command. In particular this file has no
+         idea how an age is formatted, or that an age measured from a check-in is
+         rendered differently from one measured from an incident's start. -->
+    <section class="panel" id="cronsPanel" hidden>
+      <header class="panel-hdr">
+        <h2 class="panel-title" id="cronsTitle"></h2>
+        <span class="panel-stale" id="cronsStale" hidden></span>
+        <span class="grow"></span>
+        <span class="panel-trailing" id="cronsTrailing"></span>
+      </header>
+      <div class="panel-body" id="cronsBody"></div>
+    </section>
+
     <!-- OpenClaw. An agent farm's per-agent status, cron health, channel
          connectivity and token usage, fed by a live WebSocket rather than a
          poll — which is why it has no footer element: the connection line
@@ -252,6 +270,7 @@
   <script src="usage.js"></script>
   <script src="azure.js"></script>
   <script src="services.js"></script>
+  <script src="cronmonitors.js"></script>
   <script src="openclaw.js"></script>
 </body>
 </html>
