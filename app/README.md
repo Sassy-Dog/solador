@@ -656,6 +656,96 @@ The Sentry quota, the Azure budget and the two Neon rates wake nothing on
 purpose — all four are read at render time, so changing one repaints the bar or
 row it feeds on the next 10s frontend tick with no fetch involved.
 
+## The `crons` command
+
+The **Sentry Crons** panel: every cron monitor environment that is not `ok`, and
+**how long it has been broken**.
+
+```js
+await window.__TAURI__.core.invoke("crons");
+```
+
+```jsonc
+{
+  "id": "sentryCrons", "title": "Sentry Crons",
+  "trailing": "3 not ok · 1 suppressed",  // or "all ok", or "couldn't read"
+  "message": null,                        // or {"text": …, "color": …} — see the ladder below
+  "rows": [
+    {
+      "id": "platform/cron-relay-drift-check/prd",
+      "label": "cron-relay-drift-check",
+      "detail": "platform/prd · error",   // + the suppression reason, + why an age is soft
+      "age": "7d 22h",                    // "≈ 0d 22h" / "never checked in" / "—"
+      "ageColor": "#e05a4f",              // red = from the incident, amber = weaker claim
+      "color": "#e05a4f",                 // muted when suppressed
+      "suppressed": false,
+      "title": "cron-relay-drift-check (platform/prd) — error for 7d 22h"
+    }
+  ],
+  "footer": null                          // staleAfter 90m, the other Sentry read's window
+}
+```
+
+**The age is the whole panel.** `cron-relay-drift-check` sat red for a week with
+no signal after the first hour, because the Sentry rule behind it fires on *first
+seen* and *regression*: a weekly cron alerts once and then goes quiet, so day 6 of
+an outage looks identical to day 1. Making the sixth day *look* like the sixth day
+means measuring from `activeIncident.startingTimestamp`, **never** from
+`lastCheckIn` — a job that runs on schedule and keeps failing checks in
+constantly, so it looks freshly broken every day. Measured live on that monitor,
+the two read **7d 22h** and **0d 22h**.
+
+So the provenance travels all the way to the pixel. `crates/usage`'s `CronAge` is
+an enum, not a `u64`: `Incident` is the real figure, `SinceLastCheckIn` is reached
+only when there is no incident to read and renders with a `≈` in amber plus a
+detail line naming the fallback, `NeverCheckedIn` renders words rather than a
+duration, and an unreadable timestamp is the em dash — it does **not** borrow the
+other field, which would be the wrong number wearing the right label.
+
+**Three traps in the wire**, all of which bit the Slack half of this work first,
+all three traceable to fixtures built from the Sentry **MCP server's** normalised
+output rather than the raw REST payload:
+
+| the mistake | the truth |
+|---|---|
+| `projectSlug` | nested at `project.slug` — the flat field does not exist, and reading it rendered `undefined/prd` for a week |
+| `hasMoreEnvironments` | does not exist, and there is **no** environment-truncation signal of any kind, so no guard here pretends otherwise |
+| `activeIncident` present ⇒ failing | it is a key on **every** environment and is `null` on healthy ones |
+
+**Suppression is counted, not dropped.** `status == "disabled"` or
+`isMuted == true` — *strict* `true`; missing, `false`, `1` and `"true"` all stay
+red — at **either** the monitor or the environment level mutes a row to grey and
+prints its reason, and it still occupies a row. A monitor somebody muted six
+months ago and forgot is exactly what this panel should surface.
+
+**A blind read is red, never empty-and-green.** Four states the ladder in
+`view()` keeps apart, in this order: `Configured::Unknown` (the frame before any
+pass has read the keychain) paints the loading line; `Absent` is the only state
+entitled to say *"Connect a Sentry token in Settings"*; a failed read is red and
+names the failure; and a **measured** org with nothing broken is the only one
+allowed to say so. On top of that, two readings that would otherwise render as a
+calm empty card are red: **no monitors at all** (an org with no crons, a mistyped
+slug and an under-scoped token are indistinguishable) and **a monitor carrying no
+environments** (nothing could be read about it, which is not the same as "it is
+fine"). Rows that *were* read stay on screen under that warning, and the trailing
+label says `couldn't read` rather than `all ok`.
+
+There is deliberately **no** "suspiciously few monitors" guard: the wire carries
+no expected count, and a threshold shipped in the binary would be a number nobody
+set, warning a fresh org about a list that is simply short.
+
+**Hourly, and a persistence watch rather than an alarm.** `crons_loop` shares
+`usage::PROVIDER_POLL_INTERVAL_SECS` with the Sentry read inside `usage_loop` —
+same API, same rhythm, one constant — so a newly-red monitor can be invisible for
+up to an hour. That is accepted: the outage that motivated the work ran seven
+days, and the daily Slack digest remains the prompt signal. Saving or clearing the
+Sentry token, or editing the org slug, wakes both loops; a first read that failed
+retries after a minute rather than waiting out the hour. The monitor list is
+walked across `Link`-header pages (only a `results="true"` next relation means
+there is more — Sentry emits `next` on the last page too), and a list running past
+ten pages is a **failure**, because a partial list of monitors reads as "the ones
+that are missing are fine".
+
 ## The `openclaw` command
 
 The **OpenClaw** panel: a glanceable rollup of an OpenClaw agent farm — per-agent
@@ -1394,7 +1484,7 @@ DEVCANOPY_SEED_HOST="smoke-$(date +%H%M%S)|100.87.202.125|7878" \
   cargo run -p devcanopy-app                   # 2. scratch store, distinctive name
 ```
 
-Then tick these off. Seven terminal lines and four on-screen reads — the terminal
+Then tick these off. Eight terminal lines and four on-screen reads — the terminal
 half works on a machine whose screen you cannot see.
 
 - [ ] **Terminal** — `cockpit: first frontend request (1 host(s), <N>pt)`
@@ -1403,6 +1493,8 @@ half works on a machine whose screen you cannot see.
 - [ ] **Terminal** — `runners: first frontend request (N runner row(s))` — **0 is a pass**
 - [ ] **Terminal** — `usage: first frontend request (N provider section(s))` — **0 is a pass**
 - [ ] **Terminal** — `azure_cost: first frontend request (headline: false)` — **false is a pass**
+- [ ] **Terminal** — `crons: first frontend request (nothing read yet)` — that wording
+      **is** the pass with no Sentry token; `all ok` or `N not ok` with one
 - [ ] **Terminal** — `openclaw: first frontend request (trailing: "")` — **empty is a pass**
 - [ ] **Screen** — the **local card** leads the host grid with this machine's name, a
       green dot, CPU/memory changing between ticks, and on macOS `Pressure: —` and
@@ -1416,7 +1508,7 @@ half works on a machine whose screen you cannot see.
       your seeded host **and the three seeded container group rules below it**, and
       **Done** returns to the cockpit.
 
-All eleven ticked ⇒ every registered command round-tripped through the ACL and the
+All twelve ticked ⇒ every registered command round-tripped through the ACL and the
 IPC transport. **A zero, a `false` or an empty string is a pass**: those are Rust's
 own unconfigured sentences, and none of them has a path to the DOM except a
 successful `invoke`. What fails this test is a *missing line* or a blank panel.

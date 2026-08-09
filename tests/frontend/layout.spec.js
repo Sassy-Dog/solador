@@ -64,7 +64,7 @@ const rgb = (hex) => {
  * everything.
  */
 async function stubPanels(page, baseURL, cockpit) {
-  const named = ["containers", "repos", "runners", "usage", "azure", "openclaw", "services"];
+  const named = ["containers", "repos", "runners", "usage", "azure", "openclaw", "services", "crons"];
   const files = {
     containers: "sample-containers.json",
     repos: "sample-repos.json",
@@ -73,6 +73,7 @@ async function stubPanels(page, baseURL, cockpit) {
     azure: "sample-azure.json",
     openclaw: "sample-openclaw.json",
     services: "sample-services.json",
+    crons: "sample-crons.json",
   };
   const payloads = { cockpit };
   for (const name of named) payloads[name] = await fixture(baseURL, files[name]);
@@ -575,6 +576,7 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
     "claudeUsage",
     "azureCost",
     "services",
+    "sentryCrons",
   ];
   const expected = vm.panelRows
     .map((row) => row.map((p) => p.id).filter((id) => known.includes(id)))
@@ -602,15 +604,16 @@ test("the panel rows below the grid are the ones Rust reflowed", async ({ page, 
     );
   expect(spans).toEqual(["1", "3", "4"]);
 
-  // …and the last row is Azure Cost beside Services: three quarters still buys
-  // the cost breakdowns their own column, and five one-line service rows would
-  // leave most of a full-width band empty.
-  expect(expected[expected.length - 1]).toEqual(["azureCost", "services"]);
-  await expect(rows.last().locator("section")).toHaveCount(2);
+  // …and the last row is Azure Cost beside the two lean panels: a half still
+  // buys the cost breakdowns their own column, and a row of its own for either
+  // short list would leave most of a full-width band empty. Same shape as the
+  // quarter row above it, so the two land on the same gridlines.
+  expect(expected[expected.length - 1]).toEqual(["azureCost", "services", "sentryCrons"]);
+  await expect(rows.last().locator("section")).toHaveCount(3);
   const lastSpans = await rows
     .last()
     .evaluate((el) => [...el.children].map((c) => getComputedStyle(c).gridColumnStart.trim()));
-  expect(lastSpans).toEqual(["1", "4"]);
+  expect(lastSpans).toEqual(["1", "3", "4"]);
 });
 
 /**
@@ -715,6 +718,7 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
     "usagePanel",
     "azurePanel",
     "servicesPanel",
+    "cronsPanel",
   ];
   // Both shapes are the payload's, not this test's: the sectionless `hosts` row
   // is the grid above, so it contributes no rendered row.
