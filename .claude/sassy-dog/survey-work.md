@@ -1,5 +1,5 @@
 ---
-scan_paths: DevCanopy DevCanopyTests Packages agent/src Scripts
+scan_paths: crates app tests/frontend DevCanopy DevCanopyTests Packages agent/src Scripts
 exclude_pathspecs: ":!agent/target :!*.xcodeproj"
 ci_workflow: ci.yml
 priority_labels: [sev:high, sev:medium, sev:low]
