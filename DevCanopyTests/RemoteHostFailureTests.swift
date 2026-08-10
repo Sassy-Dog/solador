@@ -13,7 +13,7 @@ final class RemoteHostFailureTests: XCTestCase {
         let json = """
         {
           "status": "ok",
-          "hostname": "ubu-3xdv",
+          "hostname": "ubu-01",
           "version": "0.3.1",
           "sampleAgeSeconds": 2,
           "samplerStale": false
@@ -22,7 +22,7 @@ final class RemoteHostFailureTests: XCTestCase {
         let info = try RemoteHostMetricsService.snapshotDecoder.decode(
             HealthInfo.self, from: Data(json.utf8)
         )
-        XCTAssertEqual(info.hostname, "ubu-3xdv")
+        XCTAssertEqual(info.hostname, "ubu-01")
         XCTAssertEqual(info.version, "0.3.1")
         XCTAssertEqual(info.status, "ok")
         XCTAssertEqual(info.sampleAgeSeconds, 2)

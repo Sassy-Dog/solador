@@ -384,7 +384,7 @@ fn host_tab_bar(cards: &[Value], columns: usize, overflow: HostOverflowMode) -> 
             .map(|card| {
                 // A tab bar shows one card and hides the rest, so a host that
                 // went down while you were looking at another one is invisible
-                // — which is exactly how ubu-3xdv stayed unnoticed through the
+                // — which is exactly how ubu-01 stayed unnoticed through the
                 // 2026-08-06 outage. The alarm therefore has to live on the
                 // tab, the only thing on screen that represents a hidden host.
                 let state = card["connection"]["state"].as_str().unwrap_or_default();
@@ -3120,8 +3120,8 @@ fn unreachable_message() -> String {
 /// on the page would only make every locator in that test ambiguous.
 /// The same envelope as [`dump_single`], for a host with nothing to plot.
 fn dump_pending(pending: &Pending) -> Value {
-    let mut card = pending_card("ubu-3xdv", pending);
-    card["id"] = json!("ubu-3xdv");
+    let mut card = pending_card("ubu-01", pending);
+    card["id"] = json!("ubu-01");
     cockpit_payload(
         vec![card],
         1,
@@ -3134,7 +3134,7 @@ fn dump_pending(pending: &Pending) -> Value {
 
 fn dump_single(connection: &Connection) -> Value {
     cockpit_payload(
-        vec![dump_card("ubu-3xdv", connection)],
+        vec![dump_card("ubu-01", connection)],
         1,
         1000.0,
         HostOverflowMode::Stack,
@@ -3230,7 +3230,7 @@ fn dump_local_card() -> Value {
 /// dumps the tab bar — the one host-grid rendering no other fixture reaches.
 fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Value {
     let cards = vec![
-        dump_card("ubu-3xdv", &Connection::Live),
+        dump_card("ubu-01", &Connection::Live),
         {
             // A host that answered once and can no longer be reached: a blanked
             // card, which is what `view_for` produces for it. This used to dump
@@ -3316,7 +3316,7 @@ fn dump_settings() -> Value {
         ..store::Settings::default()
     };
 
-    let mut live = Host::new("workstation", "100.100.100.100");
+    let mut live = Host::new("ubu-01", "100.100.100.100");
     live.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
     live.hidden_volume_mounts = vec!["/mnt/scratch".into()];
     let mut spare = Host::new("nuc-spare", "100.64.0.7");
@@ -3404,7 +3404,7 @@ fn dump_container_rules() -> Vec<ContainerGroupRule> {
         "workflow jobs",
         store::ContainerRuleAction::Collapse,
     )
-    .on_host("workstation");
+    .on_host("ubu-01");
     with_count.expected_count = Some(4);
     vec![
         ContainerGroupRule::new(
@@ -3412,7 +3412,7 @@ fn dump_container_rules() -> Vec<ContainerGroupRule> {
             "ci runners",
             store::ContainerRuleAction::Collapse,
         )
-        .on_host("workstation"),
+        .on_host("ubu-01"),
         with_count,
         ContainerGroupRule::new("ghcr.io/*", "", store::ContainerRuleAction::Hide),
         ContainerGroupRule::new("build-vm", "", store::ContainerRuleAction::Expect)
@@ -4173,7 +4173,7 @@ mod tests {
     /// A host we can no longer reach now renders **blank**, not as its last
     /// snapshot behind a badge — the same defect one step further.
     ///
-    /// This asserted the opposite until ubu-3xdv went down during the
+    /// This asserted the opposite until ubu-01 went down during the
     /// 2026-08-06 GitHub outage and the card sat there showing four-minute-old
     /// numbers as if they were now. Every figure on a host card is a
     /// present-tense claim, and at a glance the numbers are what you read while
@@ -4824,7 +4824,7 @@ mod tests {
             .collect()
     }
 
-    /// The case this exists for: a 10-core Mac beside the 36-core ubu-3xdv.
+    /// The case this exists for: a 10-core Mac beside the 36-core ubu-01.
     /// Alone the Mac's block is 220 and ubu's is 334; sharing a row they are
     /// both 334, so every section below the block starts at the same height.
     #[test]
@@ -4910,7 +4910,7 @@ mod tests {
     /// cards and the same width, so nothing but the preference moved.
     #[test]
     fn the_tabs_preference_collapses_the_stacked_grid_into_a_tab_bar() {
-        let cards = tab_cards(&["mac-studio", "ubu-3xdv", "nuc-spare"]);
+        let cards = tab_cards(&["mac-studio", "ubu-01", "nuc-spare"]);
 
         let tabbed = tabbed_payload(cards.clone(), 2, 1000.0);
         assert_eq!(tabbed["hostColumns"], 1, "1000pt cannot pair 900pt cards");
@@ -4921,9 +4921,9 @@ mod tests {
             tabs.iter()
                 .map(|tab| tab["label"].as_str().expect("label"))
                 .collect::<Vec<_>>(),
-            vec!["mac-studio", "ubu-3xdv", "nuc-spare"]
+            vec!["mac-studio", "ubu-01", "nuc-spare"]
         );
-        assert_eq!(tabs[1]["id"], "ubu-3xdv");
+        assert_eq!(tabs[1]["id"], "ubu-01");
         // The container's floor is Rust's, matching HostsPanel's
         // `.frame(minHeight: 780)`: only one card is on screen at a time, so
         // nothing else is sizing it.
@@ -4940,7 +4940,7 @@ mod tests {
     /// itself would be `host_tabs` re-implemented in JS.
     #[test]
     fn the_tabs_preference_does_nothing_while_the_cards_still_fit() {
-        let cards = tab_cards(&["mac-studio", "ubu-3xdv"]);
+        let cards = tab_cards(&["mac-studio", "ubu-01"]);
         // 2 * 900 + 16 = 1816: exactly enough for two cards.
         let paired = tabbed_payload(cards.clone(), 1, 1816.0);
         assert_eq!(paired["hostColumns"], 2);
@@ -5210,13 +5210,13 @@ mod tests {
             zed,
             Host::new("mac-mini", "10.0.0.1"),
             off,
-            Host::new("ubu-3xdv", "10.0.0.2"),
+            Host::new("ubu-01", "10.0.0.2"),
         ];
         let names: Vec<&str> = display_order(&hosts)
             .iter()
             .map(|h| h.name.as_str())
             .collect();
-        assert_eq!(names, vec!["mac-mini", "ubu-3xdv", "zed"]);
+        assert_eq!(names, vec!["mac-mini", "ubu-01", "zed"]);
     }
 
     // MARK: DEVCANOPY_SEED_HOST
@@ -5224,10 +5224,10 @@ mod tests {
     #[test]
     fn a_seed_string_parses_the_way_swift_parses_it() {
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125|9000|tok"),
+            parse_seed_host("ubu-01|100.100.100.100|9000|tok"),
             Some(SeedHost {
-                name: "ubu-3xdv".into(),
-                address: "100.87.202.125".into(),
+                name: "ubu-01".into(),
+                address: "100.100.100.100".into(),
                 port: 9000,
                 token: "tok".into(),
             })
@@ -5235,16 +5235,16 @@ mod tests {
         // Port and token are both optional, and an unparseable port falls
         // back to the agent default rather than rejecting the whole seed.
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125"),
+            parse_seed_host("ubu-01|100.100.100.100"),
             Some(SeedHost {
-                name: "ubu-3xdv".into(),
-                address: "100.87.202.125".into(),
+                name: "ubu-01".into(),
+                address: "100.100.100.100".into(),
                 port: store::DEFAULT_AGENT_PORT,
                 token: String::new(),
             })
         );
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125|not-a-port|tok")
+            parse_seed_host("ubu-01|100.100.100.100|not-a-port|tok")
                 .expect("seed")
                 .port,
             store::DEFAULT_AGENT_PORT
@@ -5252,7 +5252,7 @@ mod tests {
         // An empty port field keeps the empty token field addressable -- the
         // Swift split does not omit empty subsequences, and neither does this.
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125||tok")
+            parse_seed_host("ubu-01|100.100.100.100||tok")
                 .expect("seed")
                 .token,
             "tok"
@@ -5261,7 +5261,7 @@ mod tests {
 
     #[test]
     fn a_seed_string_missing_a_name_or_address_is_rejected() {
-        for raw in ["", "just-a-name", "|100.87.202.125", "ubu-3xdv|", "|"] {
+        for raw in ["", "just-a-name", "|100.100.100.100", "ubu-01|", "|"] {
             assert_eq!(parse_seed_host(raw), None, "raw {raw:?}");
         }
     }
@@ -5280,15 +5280,15 @@ mod tests {
         let id = seed_from_env(
             &mut store,
             &credentials,
-            Some("ubu-3xdv|100.87.202.125|9000|agent-token"),
+            Some("ubu-01|100.100.100.100|9000|agent-token"),
         )
         .expect("seed")
         .expect("a host was added");
 
         assert_eq!(store.hosts().len(), 1);
         let host = &store.hosts()[0];
-        assert_eq!(host.name, "ubu-3xdv");
-        assert_eq!(host.address, "100.87.202.125");
+        assert_eq!(host.name, "ubu-01");
+        assert_eq!(host.address, "100.100.100.100");
         assert_eq!(host.port, 9000);
         assert_eq!(host.id.to_string(), id);
 
@@ -5312,7 +5312,7 @@ mod tests {
     fn seeding_an_address_that_is_already_configured_is_a_no_op() {
         let (_dir, mut store) = scratch_store();
         let credentials = MemoryCredentialStore::new();
-        let seed = "ubu-3xdv|100.87.202.125|7878|agent-token";
+        let seed = "ubu-01|100.100.100.100|7878|agent-token";
 
         seed_from_env(&mut store, &credentials, Some(seed)).expect("first seed");
         let first = store.hosts()[0].clone();
@@ -5322,7 +5322,7 @@ mod tests {
             seed_from_env(
                 &mut store,
                 &credentials,
-                Some("renamed|100.87.202.125|7878|other-token"),
+                Some("renamed|100.100.100.100|7878|other-token"),
             )
             .expect("second seed"),
             None
@@ -5360,7 +5360,7 @@ mod tests {
     fn a_seed_without_a_token_writes_no_credential() {
         let (_dir, mut store) = scratch_store();
         let credentials = MemoryCredentialStore::new();
-        seed_from_env(&mut store, &credentials, Some("ubu-3xdv|100.87.202.125")).expect("seed");
+        seed_from_env(&mut store, &credentials, Some("ubu-01|100.100.100.100")).expect("seed");
         assert_eq!(store.hosts().len(), 1);
         assert!(
             credentials.accounts().is_empty(),
@@ -5374,11 +5374,11 @@ mod tests {
         let credentials = MemoryCredentialStore::new();
         {
             let mut store = Store::open_in(dir.path()).expect("open");
-            seed_from_env(&mut store, &credentials, Some("ubu-3xdv|100.87.202.125")).expect("seed");
+            seed_from_env(&mut store, &credentials, Some("ubu-01|100.100.100.100")).expect("seed");
         }
         let reopened = Store::open_in(dir.path()).expect("reopen");
         assert_eq!(reopened.hosts().len(), 1);
-        assert_eq!(reopened.hosts()[0].name, "ubu-3xdv");
+        assert_eq!(reopened.hosts()[0].name, "ubu-01");
     }
 
     // MARK: what a credential read learned, and what each answer is allowed to
@@ -5660,10 +5660,7 @@ mod tests {
             .iter()
             .map(|c| c["id"].as_str().expect("id"))
             .collect();
-        assert_eq!(
-            ids,
-            vec![local::CARD_ID, "ubu-3xdv", "mac-mini", "nuc-spare"]
-        );
+        assert_eq!(ids, vec![local::CARD_ID, "ubu-01", "mac-mini", "nuc-spare"]);
 
         // The local card carries the em dashes the shipped one really does —
         // no portable memory-pressure source and no dependency-free GPU read —

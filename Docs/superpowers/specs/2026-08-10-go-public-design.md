@@ -32,20 +32,22 @@ personal identifiers, and **zero `secrets.*` referenced anywhere in CI**.
 It did find **private network topology**, which a first pass missed because the
 grep output was truncated:
 
-- `crates/store/src/lib.rs:15` — the crate's module-level doc example is
-  `Host::new("ubu-3xdv", "100.87.202.125")`. A real hostname and a real
-  Tailscale address, rendered into public rustdoc, on line 15 of the crate's
-  entry point.
-- `crates/store/src/containers.rs:217-230` — `seeded_rules()` ships three
-  default rules, **two of them pinned `.on_host("ubu-3xdv")`**.
-- `crates/store/src/lib.rs:715,945,1002` and `crates/store/src/hosts.rs:81,96,104`
-  — the same host/IP pair as test fixtures.
+The literal values are deliberately not repeated here — this document is
+published too — but they were a real machine name and a real tailnet address,
+appearing in roughly 180 places:
 
-None of this is a credential, and a `100.64.0.0/10` CGNAT address is only
-routable from inside the tailnet. It is still private infrastructure topology
-published under the author's name, and the doc-comment instance is the one that
-matters most: it is documentation, not test data, so it renders on docs.rs and
-reads as an invitation.
+- `crates/store/src/lib.rs:15` — the crate's module-level **doc example**
+  constructed a `Host` from both. This is the instance that mattered most: it
+  is documentation rather than test data, so it renders on docs.rs and reads
+  as an invitation.
+- `crates/store/src/containers.rs` — `seeded_rules()` shipped three default
+  rules, **two of them pinned to that host by name**.
+- Test fixtures throughout `crates/store`, `crates/viewmodel`, `crates/wire`,
+  `app/src-tauri`, the Playwright suite, and `agent/`.
+
+None of it is a credential, and a `100.64.0.0/10` CGNAT address is routable
+only from inside the tailnet. It is still a map of private infrastructure
+published under the author's name, and it is cheap to remove.
 
 ## Goal
 
@@ -190,7 +192,7 @@ rejects elsewhere (see the Sentry Crons blind-read rule).
   address with obvious placeholders (`"workstation"`, `"100.100.100.100"`).
   Highest priority of the three: it renders as documentation.
 - `crates/store/src/containers.rs:217-230` — `seeded_rules()` returns three
-  rules, two `.on_host("ubu-3xdv")`. Seed becomes empty (see above).
+  rules, two `.on_host("ubu-01")`. Seed becomes empty (see above).
 - `crates/store/src/lib.rs:715,945,1002`, `crates/store/src/hosts.rs:81,96,104`
   — test fixtures. Lowest priority, but change them in the same pass so the
   string is gone from the tree entirely and a future grep stays clean.

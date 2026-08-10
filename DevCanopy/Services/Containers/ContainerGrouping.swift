@@ -43,8 +43,8 @@ struct ContainerGroupRule: Identifiable, Equatable {
     }
 
     static let seededDefaults: [ContainerGroupRule] = [
-        ContainerGroupRule(pattern: "sassydog-ghr-ubu-*", label: "ghr runners", host: "ubu-3xdv"),
-        ContainerGroupRule(pattern: "api-*", label: "workflow jobs", host: "ubu-3xdv"),
+        ContainerGroupRule(pattern: "sassydog-ghr-ubu-*", label: "ghr runners", host: "ubu-01"),
+        ContainerGroupRule(pattern: "api-*", label: "workflow jobs", host: "ubu-01"),
         ContainerGroupRule(pattern: "ghcr.io/*", label: "", action: .hide)
     ]
 

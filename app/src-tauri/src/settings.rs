@@ -1008,7 +1008,7 @@ fn hosts_tab(
         },
         "add": {
             "heading": "Add Host",
-            "nameLabel": "Name (e.g. ubu-3xdv)",
+            "nameLabel": "Name (e.g. ubu-01)",
             "addressLabel": "Address (Tailscale IP or MagicDNS name)",
             "portLabel": "Port",
             "portDefault": DEFAULT_AGENT_PORT.to_string(),
@@ -1206,8 +1206,8 @@ mod tests {
     #[test]
     fn a_healthy_agent_reports_its_hostname_and_version() {
         assert_eq!(
-            health_result(&Ok(health("ubu-3xdv", "0.4.0", Some(false)))),
-            "✓ ubu-3xdv · agent v0.4.0"
+            health_result(&Ok(health("ubu-01", "0.4.0", Some(false)))),
+            "✓ ubu-01 · agent v0.4.0"
         );
     }
 
@@ -1217,13 +1217,13 @@ mod tests {
     #[test]
     fn a_stale_sampler_is_appended_not_swallowed() {
         assert_eq!(
-            health_result(&Ok(health("ubu-3xdv", "0.4.0", Some(true)))),
-            "✓ ubu-3xdv · agent v0.4.0 · sampler stale"
+            health_result(&Ok(health("ubu-01", "0.4.0", Some(true)))),
+            "✓ ubu-01 · agent v0.4.0 · sampler stale"
         );
         // An agent too old to send the field is not "stale" — it is silent.
         assert_eq!(
-            health_result(&Ok(health("ubu-3xdv", "0.3.0", None))),
-            "✓ ubu-3xdv · agent v0.3.0"
+            health_result(&Ok(health("ubu-01", "0.3.0", None))),
+            "✓ ubu-01 · agent v0.3.0"
         );
     }
 
@@ -1256,9 +1256,9 @@ mod tests {
     #[test]
     fn a_failure_line_never_leaks_the_underlying_error_text() {
         let line = health_result(&Err(AgentError::Unreachable(
-            "error sending request for url (http://100.87.202.125:7878/v1/health)".into(),
+            "error sending request for url (http://100.100.100.100:7878/v1/health)".into(),
         )));
-        assert!(!line.contains("100.87.202.125"), "{line}");
+        assert!(!line.contains("100.100.100.100"), "{line}");
         assert!(!line.contains("http"), "{line}");
     }
 
@@ -1371,7 +1371,7 @@ mod tests {
         };
         settings.local_hidden_volume_mounts = vec!["/Volumes/Backup".into()];
 
-        let mut host = Host::new("ubu-3xdv", "100.87.202.125");
+        let mut host = Host::new("ubu-01", "100.100.100.100");
         host.port = 9000;
         host.hidden_volume_mounts = vec!["/mnt/scratch".into()];
         let mut off = Host::new("mac-mini", "100.64.0.2");
@@ -1959,8 +1959,8 @@ mod tests {
         // Settings edits a *configuration*, so a disabled host must still be
         // listed -- the cockpit is what filters on `enabled`.
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["name"], "ubu-3xdv");
-        assert_eq!(rows[0]["endpoint"], "100.87.202.125:9000");
+        assert_eq!(rows[0]["name"], "ubu-01");
+        assert_eq!(rows[0]["endpoint"], "100.100.100.100:9000");
         assert_eq!(rows[0]["enabled"], true);
         assert_eq!(rows[0]["tokenStored"], true);
         assert_eq!(rows[0]["hiddenVolumes"][0], "/mnt/scratch");
@@ -1978,7 +1978,7 @@ mod tests {
     /// sides of the expected-count field.
     fn rules() -> Vec<ContainerGroupRule> {
         let mut collapse =
-            ContainerGroupRule::new("api-*", "workflow jobs", Action::Collapse).on_host("ubu-3xdv");
+            ContainerGroupRule::new("api-*", "workflow jobs", Action::Collapse).on_host("ubu-01");
         collapse.expected_count = Some(4);
         vec![
             collapse,
@@ -2005,7 +2005,7 @@ mod tests {
         assert_eq!(rows[0]["action"], "collapse");
         assert_eq!(rows[0]["pattern"], "api-*");
         assert_eq!(rows[0]["label"], "workflow jobs");
-        assert_eq!(rows[0]["host"], "ubu-3xdv");
+        assert_eq!(rows[0]["host"], "ubu-01");
         assert_eq!(rows[0]["collapseOnly"], true);
 
         assert_eq!(rows[1]["index"], 1);
@@ -2070,7 +2070,7 @@ mod tests {
         // "All hosts", this machine, both stored hosts by name, then the orphan.
         assert_eq!(
             options,
-            vec!["", LOCAL_HOST_SCOPE, "mac-mini", "ubu-3xdv", "retired-box"]
+            vec!["", LOCAL_HOST_SCOPE, "mac-mini", "ubu-01", "retired-box"]
         );
         assert_eq!(
             rules_of(&vm)["rows"][0]["hostOptions"][0]["label"],
@@ -2079,7 +2079,7 @@ mod tests {
 
         // A scope that *does* exist is not duplicated into the list.
         let scoped =
-            vec![ContainerGroupRule::new("api-*", "jobs", Action::Collapse).on_host("ubu-3xdv")];
+            vec![ContainerGroupRule::new("api-*", "jobs", Action::Collapse).on_host("ubu-01")];
         let vm = view(&settings, &hosts, &repos, &scoped, None, &stored, &facts());
         let options = rules_of(&vm)["rows"][0]["hostOptions"]
             .as_array()
@@ -2137,8 +2137,8 @@ mod tests {
         assert_eq!(list[1].action, Action::Expect);
         assert!(apply_rule_edit(&mut list, 1, RuleField::Pattern, "vm-*"));
         assert_eq!(list[1].pattern, "vm-*");
-        assert!(apply_rule_edit(&mut list, 1, RuleField::Host, "ubu-3xdv"));
-        assert_eq!(list[1].host.as_deref(), Some("ubu-3xdv"));
+        assert!(apply_rule_edit(&mut list, 1, RuleField::Host, "ubu-01"));
+        assert_eq!(list[1].host.as_deref(), Some("ubu-01"));
         assert!(apply_rule_edit(&mut list, 1, RuleField::Expected, "7"));
         assert_eq!(list[1].expected_count, Some(7));
     }
@@ -2150,7 +2150,7 @@ mod tests {
         let mut list = rules();
         assert!(apply_rule_edit(&mut list, 0, RuleField::Host, ""));
         assert_eq!(list[0].host, None);
-        assert!(list[0].applies_to("ubu-3xdv"));
+        assert!(list[0].applies_to("ubu-01"));
         assert!(list[0].applies_to(LOCAL_HOST_SCOPE));
     }
 

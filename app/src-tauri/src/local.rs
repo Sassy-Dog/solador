@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn the_local_card_is_named_after_this_machine_without_the_local_suffix() {
         assert_eq!(display_name(Some("mac-studio.local".into())), "mac-studio");
-        assert_eq!(display_name(Some("ubu-3xdv".into())), "ubu-3xdv");
+        assert_eq!(display_name(Some("ubu-01".into())), "ubu-01");
     }
 
     #[test]

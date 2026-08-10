@@ -896,25 +896,25 @@ mod tests {
         let mut watch = HostWatch::new();
         assert!(
             watch
-                .observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true)
+                .observe(&[host("ubu-01", Some(Reachability::Reachable))], true)
                 .is_empty(),
             "the first verdict only seeds"
         );
 
-        let down = watch.observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true);
+        let down = watch.observe(&[host("ubu-01", Some(Reachability::Unreachable))], true);
         assert_eq!(down.len(), 1);
-        assert_eq!(down[0].title, "ubu-3xdv · unreachable");
+        assert_eq!(down[0].title, "ubu-01 · unreachable");
 
         assert!(
             watch
-                .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true)
+                .observe(&[host("ubu-01", Some(Reachability::Unreachable))], true)
                 .is_empty(),
             "…and does not repeat every sixty seconds"
         );
 
-        let up = watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        let up = watch.observe(&[host("ubu-01", Some(Reachability::Reachable))], true);
         assert_eq!(up.len(), 1);
-        assert_eq!(up[0].title, "ubu-3xdv · back online");
+        assert_eq!(up[0].title, "ubu-01 · back online");
     }
 
     /// Before a host's first poll settles there is no verdict, and an absent
@@ -922,11 +922,11 @@ mod tests {
     #[test]
     fn a_host_with_no_verdict_yet_is_not_a_transition() {
         let mut watch = HostWatch::new();
-        watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
-        assert!(watch.observe(&[host("ubu-3xdv", None)], true).is_empty());
+        watch.observe(&[host("ubu-01", Some(Reachability::Reachable))], true);
+        assert!(watch.observe(&[host("ubu-01", None)], true).is_empty());
         assert!(
             watch
-                .observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true)
+                .observe(&[host("ubu-01", Some(Reachability::Reachable))], true)
                 .is_empty(),
             "and the state it returns to is the one it left"
         );
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn a_host_that_leaves_the_payload_is_forgotten_not_reported() {
         let mut watch = HostWatch::new();
-        watch.observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true);
+        watch.observe(&[host("ubu-01", Some(Reachability::Unreachable))], true);
         assert!(
             watch.observe(&[], true).is_empty(),
             "removal is not an event"
@@ -945,7 +945,7 @@ mod tests {
 
         assert!(
             watch
-                .observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true)
+                .observe(&[host("ubu-01", Some(Reachability::Reachable))], true)
                 .is_empty(),
             "re-adding it seeds again rather than announcing a recovery"
         );
@@ -957,19 +957,19 @@ mod tests {
         watch.observe(
             &[
                 host("mac-w26h", Some(Reachability::Reachable)),
-                host("ubu-3xdv", Some(Reachability::Reachable)),
+                host("ubu-01", Some(Reachability::Reachable)),
             ],
             true,
         );
         let notices = watch.observe(
             &[
                 host("mac-w26h", Some(Reachability::Reachable)),
-                host("ubu-3xdv", Some(Reachability::Unreachable)),
+                host("ubu-01", Some(Reachability::Unreachable)),
             ],
             true,
         );
         assert_eq!(notices.len(), 1, "one host's trouble is not the other's");
-        assert_eq!(notices[0].title, "ubu-3xdv · unreachable");
+        assert_eq!(notices[0].title, "ubu-01 · unreachable");
     }
 
     /// Opening the lid must not banner. The tailnet takes a few seconds to
@@ -979,32 +979,32 @@ mod tests {
     #[test]
     fn a_reset_makes_the_next_reading_seed_rather_than_fire() {
         let mut watch = HostWatch::new();
-        watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        watch.observe(&[host("ubu-01", Some(Reachability::Reachable))], true);
 
         watch.reset();
         assert!(
             watch
-                .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true)
+                .observe(&[host("ubu-01", Some(Reachability::Unreachable))], true)
                 .is_empty(),
             "the first reading after a resume is a seed, not a transition"
         );
         // …and the watch is live again straight afterwards, so a host that
         // really did die during the nap is still reported once it settles.
-        let notices = watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        let notices = watch.observe(&[host("ubu-01", Some(Reachability::Reachable))], true);
         assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].title, "ubu-3xdv · back online");
+        assert_eq!(notices[0].title, "ubu-01 · back online");
     }
 
     #[test]
     fn disabled_host_passes_still_advance_the_baseline() {
         let mut watch = HostWatch::new();
-        watch.observe(&[host("ubu-3xdv", Some(Reachability::Reachable))], true);
+        watch.observe(&[host("ubu-01", Some(Reachability::Reachable))], true);
         assert!(watch
-            .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], false)
+            .observe(&[host("ubu-01", Some(Reachability::Unreachable))], false)
             .is_empty());
         assert!(
             watch
-                .observe(&[host("ubu-3xdv", Some(Reachability::Unreachable))], true)
+                .observe(&[host("ubu-01", Some(Reachability::Unreachable))], true)
                 .is_empty(),
             "re-enabling must not replay an outage that began while it was off"
         );

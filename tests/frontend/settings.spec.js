@@ -20,7 +20,7 @@ test.afterEach(async ({ page }) => {
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
-const TEST_RESULT = "✓ ubu-3xdv · agent v0.4.0";
+const TEST_RESULT = "✓ ubu-01 · agent v0.4.0";
 
 /**
  * Stubs the whole IPC surface with the Rust-dumped payloads (there is no real

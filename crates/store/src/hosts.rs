@@ -54,7 +54,7 @@ impl Host {
         }
     }
 
-    /// This host's agent base URL, e.g. `http://100.87.202.125:7878`.
+    /// This host's agent base URL, e.g. `http://100.100.100.100:7878`.
     ///
     /// Plain HTTP is correct here: the transport is Tailscale, which is what
     /// carries the encryption (see `agent/README.md`).
@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn new_uses_the_swift_defaults() {
-        let host = Host::new("ubu-3xdv", "100.87.202.125");
+        let host = Host::new("ubu-01", "100.100.100.100");
         assert_eq!(host.port, 7878);
         assert!(host.enabled);
         assert!(host.hidden_volume_mounts.is_empty());
@@ -93,15 +93,15 @@ mod tests {
 
     #[test]
     fn base_url_joins_address_and_port() {
-        let mut host = Host::new("ubu-3xdv", "100.87.202.125");
-        assert_eq!(host.base_url(), "http://100.87.202.125:7878");
+        let mut host = Host::new("ubu-01", "100.100.100.100");
+        assert_eq!(host.base_url(), "http://100.100.100.100:7878");
         host.port = 9000;
-        assert_eq!(host.base_url(), "http://100.87.202.125:9000");
+        assert_eq!(host.base_url(), "http://100.100.100.100:9000");
     }
 
     #[test]
     fn round_trips_through_json() {
-        let mut host = Host::new("ubu-3xdv", "100.87.202.125");
+        let mut host = Host::new("ubu-01", "100.100.100.100");
         host.hidden_volume_mounts = vec!["/mnt/scratch".into()];
         host.enabled = false;
         let json = serde_json::to_string(&host).expect("serialize");

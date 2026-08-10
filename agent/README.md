@@ -4,7 +4,7 @@ A small per-host metrics agent. It exposes host metrics and a container/VM list
 over HTTP (JSON), guarded by a bearer token. The [DevCanopy](../) macOS app polls
 it over **Tailscale** to render a dashboard.
 
-Runs on Linux (e.g. `ubu-3xdv`) and macOS. Metrics come from
+Runs on Linux (e.g. `ubu-01`) and macOS. Metrics come from
 [`sysinfo`](https://crates.io/crates/sysinfo); the server is
 [`axum`](https://crates.io/crates/axum) on `tokio`.
 
@@ -138,7 +138,7 @@ curl -s localhost:7878/v1/snapshot          # -> 401
 
 ## Install on a Linux host (systemd user service)
 
-From the crate directory on the target host (e.g. `ubu-3xdv`):
+From the crate directory on the target host (e.g. `ubu-01`):
 
 ```bash
 ./deploy/install.sh
@@ -179,7 +179,7 @@ Use this once a host is already installed and you want to ship a new agent build
 It is the unattended counterpart to `install.sh`: it **never prompts for a token**
 and only swaps the binary.
 
-From the crate directory on the target host (e.g. `ubu-3xdv`, on a fresh checkout
+From the crate directory on the target host (e.g. `ubu-01`, on a fresh checkout
 of the new commit):
 
 ```bash

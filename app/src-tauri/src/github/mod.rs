@@ -1120,7 +1120,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     let registered = [
         runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Busy),
         runner(2, "mac-s2", RunnerOs::MacOs, RunnerState::Idle),
-        runner(3, "ubu-3xdv", RunnerOs::Linux, RunnerState::Idle),
+        runner(3, "ubu-01", RunnerOs::Linux, RunnerState::Idle),
         runner(4, "ubu-spare", RunnerOs::Linux, RunnerState::Offline),
     ];
     // Two remembered names that are not registered right now: one inside the

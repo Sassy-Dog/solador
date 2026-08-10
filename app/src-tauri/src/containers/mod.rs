@@ -404,7 +404,7 @@ pub fn fixture_state(
     state.advance_clock(LOCAL_HOST_SCOPE, now);
 
     state.apply_remote(
-        "ubu-3xdv".to_owned(),
+        "ubu-01".to_owned(),
         vec![
             container("sassydog-ghr-ubu-1", "Up 12 minutes", true, "podman"),
             container(
@@ -416,7 +416,7 @@ pub fn fixture_state(
             container("postgres", "Up 6 days", true, "podman"),
         ],
     );
-    state.advance_clock("ubu-3xdv", now);
+    state.advance_clock("ubu-01", now);
 
     let rules = vec![
         ContainerGroupRule::new(
@@ -424,7 +424,7 @@ pub fn fixture_state(
             "ghr runners",
             ContainerRuleAction::Collapse,
         )
-        .on_host("ubu-3xdv"),
+        .on_host("ubu-01"),
         ContainerGroupRule::new("vm-*", "", ContainerRuleAction::Expect).on_host(LOCAL_HOST_SCOPE),
     ];
 
@@ -514,7 +514,7 @@ mod tests {
         // No runtimes at all, but a remote host is reporting: the local
         // section still renders, and it must say which of the two it is.
         let mut state = looked();
-        state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
+        state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
         let payload = view(&state, &[], &BTreeMap::new(), NOW);
         let sections = payload["sections"].as_array().expect("sections");
         assert_eq!(sections[0]["host"], LOCAL_HOST_SCOPE);
@@ -526,7 +526,7 @@ mod tests {
             parse::merge(vec![(LocalRuntime::Docker, Some(vec![]))], BTreeMap::new()),
             NOW,
         );
-        with_runtime.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
+        with_runtime.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
         let payload = view(&with_runtime, &[], &BTreeMap::new(), NOW);
         assert_eq!(
             payload["sections"][0]["empty"]["message"], "no containers",
@@ -654,7 +654,7 @@ mod tests {
     fn an_aggregate_row_renders_its_count_and_running_total() {
         let payload = fixture_view();
         let remote = &payload["sections"][1];
-        assert_eq!(remote["host"], "ubu-3xdv");
+        assert_eq!(remote["host"], "ubu-01");
         let names: Vec<&str> = rows(remote)
             .iter()
             .map(|r| r["name"].as_str().expect("name"))
@@ -781,8 +781,8 @@ mod tests {
             ),
             NOW,
         );
-        state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
-        state.advance_clock("ubu-3xdv", NOW);
+        state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
+        state.advance_clock("ubu-01", NOW);
         state.advance_clock(LOCAL_HOST_SCOPE, NOW);
 
         state.retain_hosts(&BTreeSet::new());
@@ -790,7 +790,7 @@ mod tests {
         let sections = payload["sections"].as_array().expect("sections");
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0]["host"], LOCAL_HOST_SCOPE);
-        assert!(!state.last_success.contains_key("ubu-3xdv"));
+        assert!(!state.last_success.contains_key("ubu-01"));
         assert!(
             state.last_success.contains_key(LOCAL_HOST_SCOPE),
             "the local section is never 'unconfigured'"
@@ -820,8 +820,8 @@ mod tests {
         // `apply_remote` is only ever called on success, so a failed poll is
         // simply the absence of a call — this pins that the section survives it.
         let mut state = looked();
-        state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
-        state.retain_hosts(&BTreeSet::from(["ubu-3xdv".to_owned()]));
+        state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
+        state.retain_hosts(&BTreeSet::from(["ubu-01".to_owned()]));
         let payload = view(&state, &[], &BTreeMap::new(), NOW);
         assert_eq!(payload["sections"][1]["rows"][0]["name"], "web");
     }

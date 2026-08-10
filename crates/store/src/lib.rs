@@ -12,7 +12,7 @@
 //! ```no_run
 //! # fn main() -> Result<(), store::StoreError> {
 //! let mut store = store::Store::open()?;
-//! store.upsert_host(store::Host::new("ubu-3xdv", "100.87.202.125"));
+//! store.upsert_host(store::Host::new("ubu-01", "100.100.100.100"));
 //! store.save()?;
 //! # Ok(()) }
 //! ```
@@ -720,7 +720,7 @@ mod tests {
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
         });
 
-        let mut host = Host::new("ubu-3xdv", "100.87.202.125");
+        let mut host = Host::new("ubu-01", "100.100.100.100");
         host.hidden_volume_mounts = vec!["/mnt/scratch".into()];
         let host_id = host.id;
         store.upsert_host(host);
@@ -950,11 +950,11 @@ mod tests {
         let mut store = Store::open_in(dir.path()).expect("open");
         assert!(store.hosts().is_empty());
 
-        let host = Host::new("ubu-3xdv", "100.87.202.125");
+        let host = Host::new("ubu-01", "100.100.100.100");
         let id = host.id;
         store.upsert_host(host);
         assert_eq!(store.hosts().len(), 1);
-        assert_eq!(store.host(id).expect("read").name, "ubu-3xdv");
+        assert_eq!(store.host(id).expect("read").name, "ubu-01");
 
         store.host_mut(id).expect("update").enabled = false;
         assert!(!store.host(id).expect("read back").enabled);
@@ -962,10 +962,10 @@ mod tests {
         // Upserting the same id updates in place instead of duplicating it —
         // two rows sharing an id would mean two hosts on one credential.
         let mut renamed = store.host(id).expect("clone source").clone();
-        renamed.name = "ubu-3xdv (spare)".into();
+        renamed.name = "ubu-01 (spare)".into();
         store.upsert_host(renamed);
         assert_eq!(store.hosts().len(), 1);
-        assert_eq!(store.host(id).expect("read").name, "ubu-3xdv (spare)");
+        assert_eq!(store.host(id).expect("read").name, "ubu-01 (spare)");
 
         assert_eq!(store.remove_host(id).expect("delete").id, id);
         assert!(store.hosts().is_empty());
@@ -1007,7 +1007,7 @@ mod tests {
     fn the_file_holds_no_secret_material() {
         let dir = temp_dir();
         let mut store = Store::open_in(dir.path()).expect("open");
-        let host = Host::new("ubu-3xdv", "100.87.202.125");
+        let host = Host::new("ubu-01", "100.100.100.100");
         let host_id = host.id;
         store.upsert_host(host);
         store.settings_mut().neon_org_id = "org-123".into();

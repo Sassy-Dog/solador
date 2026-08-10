@@ -10,7 +10,8 @@ gotcha_summary: >
   ruleset requires exactly three contexts — `Rust workspace + frontend e2e`, `Windows workspace
   tests`, `Rust agent` — so Rust changes must stay Windows-portable. `agent/` is a separate Cargo
   workspace (its own `Cargo.lock` and `rust-toolchain.toml`, its own CI job) that the root
-  `./dev test`/`./dev lint` do not touch, and it must be redeployed to `ubu-3xdv` after changes.
+  `./dev test`/`./dev lint` do not touch, and it must be redeployed to the host
+  running it after changes.
   Swift-only legacy, should a change ever touch `DevCanopy/`: run `./Scripts/generate-project.sh`
   after adding/removing/renaming `.swift` files (XcodeGen), `Packages/HostMetricsKit` is a local
   SwiftPM package, and Debug signs with team 52YMXC3348.

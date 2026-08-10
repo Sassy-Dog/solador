@@ -105,10 +105,10 @@ test("present, absent and aggregate rows carry Rust's strings and colours", asyn
 
   // The collapsed group renders last in its section, with its match count in
   // the name and its running count where a status would be.
-  const remote = payload.sections.find((s) => s.host === "ubu-3xdv");
+  const remote = payload.sections.find((s) => s.host === "ubu-01");
   const aggregate = remote.rows.at(-1);
   expect(aggregate.kind).toBe("aggregate");
-  const lastRemoteRow = rowsOf(page, "ubu-3xdv").last();
+  const lastRemoteRow = rowsOf(page, "ubu-01").last();
   await expect(lastRemoteRow).toHaveAttribute("data-kind", "aggregate");
   await expect(lastRemoteRow.locator(".cont-name")).toHaveText(aggregate.name);
   await expect(lastRemoteRow.locator(".cont-status")).toHaveText(aggregate.status);

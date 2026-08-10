@@ -433,7 +433,7 @@ fn an_empty_container_list_is_not_a_decode_failure() {
 fn deserialises_the_agents_health_payload() {
     let h: Health = serde_json::from_str(HEALTH_FIXTURE).expect("agent JSON must deserialise");
     assert_eq!(h.status, "ok");
-    assert_eq!(h.hostname, "ubu-3xdv");
+    assert_eq!(h.hostname, "ubu-01");
     assert_eq!(h.version, "0.4.0");
     assert_eq!(h.sample_age_seconds, Some(2));
     assert_eq!(h.sampler_stale, Some(false));

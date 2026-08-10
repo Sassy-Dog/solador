@@ -40,7 +40,7 @@ struct HostsSettingsView: View {
             }
 
             Section {
-                TextField("Name (e.g. ubu-3xdv)", text: $newName)
+                TextField("Name (e.g. ubu-01)", text: $newName)
                 TextField("Address (Tailscale IP or MagicDNS name)", text: $newAddress)
                 TextField("Port", text: $newPort)
                 SecureField("Agent token", text: $newToken)

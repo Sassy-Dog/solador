@@ -1109,7 +1109,7 @@ mod tests {
         }
     }
 
-    /// The ubu-3xdv process table, as sysinfo hands it over on Linux: ONE SQL
+    /// The ubu-01 process table, as sysinfo hands it over on Linux: ONE SQL
     /// Server engine (pid 8723) whose sibling threads are each their own row
     /// carrying the whole process's 1.9 GB RSS and a slice of its CPU, the
     /// watchdog process beside it (pid 5371), and a ZFS kernel thread.
@@ -1342,7 +1342,7 @@ mod tests {
         assert_eq!(mounts(&vols), vec!["/data"]);
     }
 
-    /// THE ubu-3xdv `/shared` bug: a bind mount of the root filesystem reads
+    /// THE ubu-01 `/shared` bug: a bind mount of the root filesystem reads
     /// statvfs at a different instant than `/`, so on a busy host the available
     /// bytes differ between the two entries and size-based dedupe randomly
     /// misses — the duplicate flaps in and out every sample. Same backing

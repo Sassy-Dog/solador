@@ -215,7 +215,7 @@ pub fn matches_glob(name: &str, pattern: &str) -> bool {
 /// The rules a store that has never configured any starts with: none.
 ///
 /// Empty on purpose. The three shipped defaults named one operator's machines
-/// — two of them pinned `.on_host("ubu-3xdv")` — and grouping is per-deployment
+/// — two of them pinned `.on_host("ubu-01")` — and grouping is per-deployment
 /// by nature. A shipped example rule silently groups a stranger's containers by
 /// a rule they never wrote, which is harder to diagnose than no grouping at
 /// all: the panel looks like it is working and quietly hides or folds rows.
@@ -392,12 +392,12 @@ mod tests {
     #[test]
     fn host_scope_applies_to_its_host_only() {
         let scoped = ContainerGroupRule::new("api-*", "jobs", ContainerRuleAction::Collapse)
-            .on_host("ubu-3xdv");
-        assert!(scoped.applies_to("ubu-3xdv"));
+            .on_host("ubu-01");
+        assert!(scoped.applies_to("ubu-01"));
         assert!(!scoped.applies_to(LOCAL_HOST_SCOPE));
 
         let unscoped = ContainerGroupRule::new("api-*", "jobs", ContainerRuleAction::Collapse);
-        assert!(unscoped.applies_to("ubu-3xdv"));
+        assert!(unscoped.applies_to("ubu-01"));
         assert!(unscoped.applies_to(LOCAL_HOST_SCOPE));
     }
 
@@ -442,7 +442,7 @@ mod tests {
             },
         );
         records.insert(
-            presence_key("ubu-3xdv", "api-9"),
+            presence_key("ubu-01", "api-9"),
             ContainerPresenceRecord {
                 last_seen: 200,
                 runtime: Some("podman".into()),
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(local.len(), 1);
         assert_eq!(local["vm-1"].last_seen, 100);
 
-        let remote = records_for_host(&records, "ubu-3xdv");
+        let remote = records_for_host(&records, "ubu-01");
         assert_eq!(remote.len(), 1);
         assert_eq!(remote["api-9"].runtime.as_deref(), Some("podman"));
 

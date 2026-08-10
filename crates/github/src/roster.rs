@@ -194,7 +194,7 @@ pub fn display_rows(
 /// instead of sorting them as the strings "2" and "10".
 ///
 /// ASCII-scoped on purpose: runner names are machine-assigned slugs
-/// (`mac-s1`, `ubu-3xdv`), not user prose, so full Unicode collation would buy
+/// (`mac-s1`, `ubu-01`), not user prose, so full Unicode collation would buy
 /// nothing this input can exercise.
 fn natural_cmp(a: &str, b: &str) -> Ordering {
     let mut left = a.chars().peekable();

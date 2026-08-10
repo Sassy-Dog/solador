@@ -8,7 +8,7 @@ Status: implemented
 The cockpit rendered a fixed two-column `Grid`, and the Hosts panel packed host cards
 side-by-side whenever `width >= hosts.count * 760`. On a portrait display (~1568pt of
 content) two host cards landed at ≈752pt each — just barely passing that check — so
-both rendered squeezed: the 36-core grid on `ubu-3xdv` collapsed to `···` labels and
+both rendered squeezed: the 36-core grid on `ubu-01` collapsed to `···` labels and
 volume mounts truncated.
 
 When the check *did* fail, the fallback was a `TabView`, which hides a host behind a

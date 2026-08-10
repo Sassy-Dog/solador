@@ -265,7 +265,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The verified `nvidia-smi` line from ubu-3xdv's RTX 3060 12GB, in the
+    /// The verified `nvidia-smi` line from ubu-01's RTX 3060 12GB, in the
     /// `nounits` form this agent queries.
     const RTX_3060_IDLE: &str = "0, 0, 12288\n";
 

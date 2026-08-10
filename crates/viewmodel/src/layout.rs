@@ -499,7 +499,7 @@ mod tests {
     /// single tall row.
     #[test]
     fn core_columns_prefers_the_largest_even_divisor() {
-        assert_eq!(cols(36), 9); // ubu-3xdv: 9 x 4
+        assert_eq!(cols(36), 9); // ubu-01: 9 x 4
         assert_eq!(cols(16), 8); // 8 x 2
         assert_eq!(cols(12), 6); // 6 x 2
         assert_eq!(cols(10), 5); // 5 x 2
@@ -641,7 +641,7 @@ mod tests {
     }
 
     /// The case this exists for: Chris's cockpit, a 10-core Mac beside the
-    /// 36-core ubu-3xdv. At a 900pt-class card the Mac takes 2 rows (220) and
+    /// 36-core ubu-01. At a 900pt-class card the Mac takes 2 rows (220) and
     /// ubu takes 6 (334); aligned, both blocks are 334 while each keeps the
     /// column count its own core count divides into.
     #[test]

@@ -268,7 +268,7 @@ mod tests {
     // makes it a rule rather than a platform accident.
     // -----------------------------------------------------------------------
 
-    /// The ubu-3xdv process table, as sysinfo hands it over on Linux: ONE SQL
+    /// The ubu-01 process table, as sysinfo hands it over on Linux: ONE SQL
     /// Server engine (pid 8723) whose sibling threads are each their own row
     /// carrying the whole process's 1.9 GB RSS and a slice of its CPU, the
     /// watchdog process beside it (pid 5371), and a ZFS kernel thread.

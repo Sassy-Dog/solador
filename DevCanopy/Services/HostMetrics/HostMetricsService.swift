@@ -57,7 +57,7 @@ class HostMetricsService: ObservableObject {
     /// hosts, UserDefaults for the local one). Set by whoever builds the service.
     var persistHiddenMounts: ((Set<String>) -> Void)?
 
-    /// Display name of this host (e.g. "mac-w26h", "ubu-3xdv").
+    /// Display name of this host (e.g. "mac-w26h", "ubu-01").
     let hostName: String
 
     private var volumeStabilizer = VolumeStabilizer()

@@ -751,7 +751,7 @@ The fixture is only useful if it matches production. Fetch a live snapshot and c
 
 ```bash
 curl -s -H "Authorization: Bearer $DEVCANOPY_AGENT_TOKEN" \
-  http://100.87.202.125:7878/v1/snapshot > /tmp/live-snapshot.json
+  http://100.100.100.100:7878/v1/snapshot > /tmp/live-snapshot.json
 cp /tmp/live-snapshot.json crates/wire/tests/fixtures/snapshot-live.json
 ```
 
@@ -896,7 +896,7 @@ mod tests {
         s.gpu.vram_total_gb = 0.0;
         s.gpu.usage = 0.0;
         let h = HostHistories::new();
-        let vm = host_card("ubu-3xdv", &s, &h);
+        let vm = host_card("ubu-01", &s, &h);
         assert_eq!(vm["gpuValue"], "—");
         assert_eq!(vm["vramText"], "VRAM: —");
     }
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn volumes_are_ordered_fullest_first() {
-        let vm = host_card("ubu-3xdv", &fixture(), &HostHistories::new());
+        let vm = host_card("ubu-01", &fixture(), &HostHistories::new());
         let mounts: Vec<&str> = vm["volumes"].as_array().unwrap()
             .iter().map(|v| v["mount"].as_str().unwrap()).collect();
         assert_eq!(mounts, vec!["/boot", "/mnt/data", "/"]);
@@ -922,7 +922,7 @@ mod tests {
 
     #[test]
     fn processes_are_ranked_separately_for_cpu_and_ram() {
-        let vm = host_card("ubu-3xdv", &fixture(), &HostHistories::new());
+        let vm = host_card("ubu-01", &fixture(), &HostHistories::new());
         assert_eq!(vm["topCpu"][0]["name"], "cargo");
         assert_eq!(vm["topCpu"][0]["value"], "184%");
         assert_eq!(vm["topRam"][0]["value"], "2.1 GB");
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn the_ladder_and_block_height_travel_with_the_view_model() {
-        let vm = host_card("ubu-3xdv", &fixture(), &HostHistories::new());
+        let vm = host_card("ubu-01", &fixture(), &HostHistories::new());
         assert_eq!(vm["coreBlockHeight"], 220.0);
         let rungs = vm["coreLadder"].as_array().unwrap();
         assert_eq!(rungs.len(), 5);
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn every_core_gets_a_hue_and_a_usage_coloured_value() {
-        let vm = host_card("ubu-3xdv", &fixture(), &HostHistories::new());
+        let vm = host_card("ubu-01", &fixture(), &HostHistories::new());
         let cores = vm["cores"].as_array().unwrap();
         assert_eq!(cores.len(), 16);
         assert_eq!(cores[0]["label"], "Core 0");
@@ -1493,7 +1493,7 @@ fn current_view_model() -> Value {
     let mut h = HostHistories::new();
     // seed enough history that the charts have something to draw
     for _ in 0..120 { h.record(&snap); }
-    host_card("ubu-3xdv", &snap, &h)
+    host_card("ubu-01", &snap, &h)
 }
 
 #[tauri::command]
@@ -2031,9 +2031,9 @@ fn main() {
     // Configuration is env-driven for the skeleton; Settings arrives with the
     // store crate in a later plan.
     let host_id = std::env::var("DEVCANOPY_HOST_ID").unwrap_or_else(|_| "default".into());
-    let name = std::env::var("DEVCANOPY_HOST_NAME").unwrap_or_else(|_| "ubu-3xdv".into());
+    let name = std::env::var("DEVCANOPY_HOST_NAME").unwrap_or_else(|_| "ubu-01".into());
     let url = std::env::var("DEVCANOPY_HOST_URL")
-        .unwrap_or_else(|_| "http://100.87.202.125:7878".into());
+        .unwrap_or_else(|_| "http://100.100.100.100:7878".into());
     let token = std::env::var("DEVCANOPY_AGENT_TOKEN")
         .ok()
         .or_else(|| load_token(&host_id))
@@ -2116,18 +2116,18 @@ In `app/ui/app.js`, replace the IIFE at the bottom:
 
 ```bash
 cargo build -p devcanopy-app --release
-DEVCANOPY_HOST_URL=http://100.87.202.125:7878 \
+DEVCANOPY_HOST_URL=http://100.100.100.100:7878 \
 DEVCANOPY_AGENT_TOKEN=<token> \
-DEVCANOPY_HOST_NAME=ubu-3xdv \
+DEVCANOPY_HOST_NAME=ubu-01 \
   ./target/release/devcanopy-app
 ```
 
-Expected: the card shows live values from `ubu-3xdv`, charts fill in over ~30s as history accumulates, and the core count matches the real host.
+Expected: the card shows live values from `ubu-01`, charts fill in over ~30s as history accumulates, and the core count matches the real host.
 
 Then verify the failure path — run with a deliberately wrong token:
 
 ```bash
-DEVCANOPY_HOST_URL=http://100.87.202.125:7878 \
+DEVCANOPY_HOST_URL=http://100.100.100.100:7878 \
 DEVCANOPY_AGENT_TOKEN=wrong \
   ./target/release/devcanopy-app
 ```

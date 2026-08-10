@@ -332,7 +332,7 @@ test("a core cell's value text renders its usage colour", async ({ page }) => {
 test("a host that fails after connecting blanks its card and says it cannot be contacted", async ({ page, baseURL }) => {
   // Regression test for "a stale value presented as current", now taken to its
   // conclusion. A host that dies after a good poll used to render its last
-  // reading behind a red badge — and on 2026-08-06 ubu-3xdv sat like that
+  // reading behind a red badge — and on 2026-08-06 ubu-01 sat like that
   // through a GitHub outage, showing four-minute-old numbers as if they were
   // now. A card is read at a glance, and at a glance a card is its figures.
   //
@@ -375,7 +375,7 @@ test("a host that fails after connecting blanks its card and says it cannot be c
   await expect(down).toContainText("Couldn't reach the agent");
   await expect(down).toContainText("last update");
   await expect(down).toContainText("ago");
-  await expect(page.locator(".hostName")).toHaveText("ubu-3xdv");
+  await expect(page.locator(".hostName")).toHaveText("ubu-01");
 });
 
 test("a host whose agent stopped sampling loses the green dot even though every poll succeeded", async ({ page, baseURL }) => {
@@ -900,7 +900,7 @@ test("the tabs overflow mode shows one host at a time, and the bar switches betw
 /**
  * A tab bar shows one card and hides the rest, so a host that drops while you
  * are looking at another one has nothing on screen but its button. On
- * 2026-08-06 ubu-3xdv went down mid-outage and stayed unnoticed for exactly
+ * 2026-08-06 ubu-01 went down mid-outage and stayed unnoticed for exactly
  * that reason — the alarm has to live on the tab.
  */
 test("a tab whose host cannot be contacted is red and pulses", async ({ page, baseURL }) => {
