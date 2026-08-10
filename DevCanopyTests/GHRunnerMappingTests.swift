@@ -51,8 +51,8 @@ final class PortfolioReposTests: XCTestCase {
 
     func testNormalizedMatchingHandlesPunctuation() {
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "tailoredtip", in: slugs)) // slug tailored-tip
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "qr-ninja", in: slugs))
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "velovate", in: slugs))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "pipe-fitting", in: slugs))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "gadget", in: slugs))
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "what2wear", in: slugs))
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "devcanopy", in: slugs)) // now tracked
         XCTAssertTrue(PortfolioRepos.matches(repoDirName: "platform", in: slugs)) // now tracked
@@ -61,7 +61,7 @@ final class PortfolioReposTests: XCTestCase {
 
     func testMatchingRespectsTheProvidedSet() {
         // A repo only matches when its slug is in the live set.
-        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "velovate", in: ["Sassy-Dog/velovate"]))
-        XCTAssertFalse(PortfolioRepos.matches(repoDirName: "velovate", in: ["Sassy-Dog/qr-ninja"]))
+        XCTAssertTrue(PortfolioRepos.matches(repoDirName: "gadget", in: ["acme/gadget"]))
+        XCTAssertFalse(PortfolioRepos.matches(repoDirName: "gadget", in: ["acme/pipe-fitting"]))
     }
 }

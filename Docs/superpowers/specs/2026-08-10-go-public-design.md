@@ -22,12 +22,12 @@ problem that only become problems once strangers can see it or run it:
    code on those machines. This is the most reliably exploited GitHub Actions
    misconfiguration there is, and the irony is direct: the app ships a **GitHub
    Runners** panel whose purpose is watching that exact pool.
-2. **A broken first run.** The shipped store seeds six `Sassy-Dog/*` repos and a
+2. **A broken first run.** The shipped store seeds six `acme/*` repos and a
    `sassydog-ghr-ubu-*` container rule. A stranger's first launch opens on six
    rows of 404s against repos they cannot read.
 3. **Dangling identity.** Settings links "Report an Issue" at a repo that is
    about to become an archive, and the Azure Cost help text names the storage
-   account `stsassydog` in the UI.
+   account name in the UI.
 
 An exposure scan of the working tree found **no credentials**: no Sentry DSN
 (`project.yml:74` ships `SENTRY_DSN: ""`), no Azure subscription IDs, no
@@ -171,7 +171,7 @@ ephemeral… so caching matters more here") now applies to all three jobs.
 The shipped app is Tauri. `DevCanopy/Services/GitHub/PortfolioRepos.swift:12-21`
 is the frozen Swift mirror; the live path is:
 
-- `crates/store/src/repos.rs:16-23` — seed of six `Sassy-Dog/*` slugs → empty.
+- `crates/store/src/repos.rs:16-23` — seed of six `acme/*` slugs → empty.
 - `crates/store/src/repos.rs:8` — `ORG` const, removed with the seed.
 - `crates/store/src/repos.rs:77` — `seed_matches_the_swift_portfolio()` asserts
   `len() == 6`. Rewrite and rename: it treats the frozen Swift app as the
@@ -209,7 +209,7 @@ rejects elsewhere (see the Sentry Crons blind-read rule).
   `cpmadrid/solador`. Re-point to `cpmadrid/solador`, or users file bugs
   into an archive.
 - **L1032** — Azure Cost help text reads *"the cost-exports container on
-  stsassydog"*. Generalize; it ships a private storage account name in the UI.
+  <the account>"*. Generalize; it ships a private storage account name in the UI.
 - **L39** — doc link to `cpmadrid/solador/issues/15`, which will 404.
 
 ### Rename to Solador
@@ -240,7 +240,7 @@ them orphans every credential in daily use to change strings no user ever sees.
 ### Governance
 
 `.github/required-checks.yml` states it is *"Rendered into this repo's branch
-ruleset by Sassy-Dog/platform"* against a contract doc in a private repo. That
+ruleset by acme/toolkit"* against a contract doc in a private repo. That
 automation does not exist at `cpmadrid`. Correct the comment to say the ruleset
 is hand-maintained, or remove the file.
 
@@ -295,7 +295,7 @@ to `false` on a new repo.
    `.claude/settings.json`, and `.claude/hooks/sassydog-post-edit.sh` at the new
    owner, repo, and project number.
 3. **Branch protection** — hand-build the ruleset and merge queue that
-   `Sassy-Dog/platform` used to render. Required contexts: `Rust agent`,
+   `acme/toolkit` used to render. Required contexts: `Rust agent`,
    `Rust workspace + frontend e2e`, `Windows workspace tests`.
 4. **Archive** `cpmadrid/solador` — last, after the new repo is verified.
 

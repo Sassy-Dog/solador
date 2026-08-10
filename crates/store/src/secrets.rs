@@ -37,6 +37,12 @@ pub const SERVICE: &str = "app.solador.desktop";
 /// because they stay in the Keychain being useless.
 pub const LEGACY_SERVICE: &str = "com.sassydog.devcanopy";
 
+/// Account recording that the pre-rename adoption completed cleanly.
+///
+/// Its presence is the *only* thing that stops adoption running again, which
+/// is what makes a failed or partial pass retryable rather than permanent.
+const SERVICE_MIGRATION_MARKER: &str = "migrated_from_legacy_service_v1";
+
 /// The one keychain item all consolidatable text secrets live in (a JSON map
 /// keyed by [`SecretKey::account`] strings). One item means one ACL, so one
 /// "Always Allow" covers every consolidatable secret. Two keys stay per-item
@@ -351,36 +357,49 @@ fn route_migrate_service<S: ItemStore>(
     current: &S,
     keys: &[SecretKey],
 ) -> Result<usize, SecretError> {
-    // The blob first: on a consolidated install it holds everything, so its
-    // presence alone means this migration has already happened.
+    // A positive marker, not "does the destination hold anything".
+    //
+    // The obvious guard -- treat any present account as proof this already
+    // ran -- is wrong in a way that costs the operator every credential they
+    // have. `route_migrate_legacy` writes the consolidated blob even when it
+    // copied nothing, so a *failed* adoption followed by consolidation leaves
+    // `secrets_v1` = `{}` sitting in the destination. That looks exactly like
+    // "already migrated", and the adoption never runs again. One denied
+    // Keychain prompt on first launch -- and a renamed binary prompts for
+    // every legacy item it touches -- would orphan the lot.
+    if current.get_item(SERVICE_MIGRATION_MARKER)?.is_some() {
+        return Ok(0);
+    }
+
     let mut accounts: Vec<String> = vec![BLOB_ACCOUNT.to_owned()];
     accounts.extend(keys.iter().map(SecretKey::account));
-    // The Azure SAS no longer has a `SecretKey`, but a pre-rename install can
-    // still be holding one. Copied so the *scrub* can then remove it from the
-    // blob on the far side, rather than leaving it stranded under a service
-    // nothing will ever look at again.
-    accounts.push(RETIRED_AZURE_SAS_ACCOUNT.to_owned());
     // The device key, explicitly. `static_migration_keys` leaves it out on
-    // purpose — it never enters the blob — so relying on the caller's list
+    // purpose -- it never enters the blob -- so relying on the caller's list
     // silently drops the one credential a human cannot re-type: losing it
     // means re-pairing the OpenClaw device identity from scratch.
     accounts.push(SecretKey::OpenClawDeviceKey.account());
     accounts.sort();
     accounts.dedup();
 
-    for account in &accounts {
-        if current.get_item(account)?.is_some() {
-            return Ok(0);
-        }
-    }
-
     let mut copied = 0;
     for account in &accounts {
+        // The destination always wins, so a retry after a partial pass fills
+        // the gaps instead of clobbering what already arrived -- and a
+        // credential the operator set up by hand is never overwritten.
+        if current.get_item(account)?.is_some() {
+            continue;
+        }
         if let Some(value) = legacy.get_item(account)? {
             current.set_item(account, &value)?;
             copied += 1;
         }
     }
+
+    // Written only after a clean pass. Any error above propagates *without*
+    // the marker, so the next launch retries rather than sealing the failure
+    // in permanently. This is also what stops a cleared credential being
+    // resurrected later: once the marker is down, adoption never runs again.
+    current.set_item(SERVICE_MIGRATION_MARKER, "1")?;
     Ok(copied)
 }
 
@@ -857,7 +876,7 @@ mod tests {
     /// runs twice hands back a credential the operator has since *cleared*,
     /// resurrecting a revoked token on every launch forever.
     #[test]
-    fn adoption_never_writes_over_a_service_that_already_holds_anything() {
+    fn adoption_never_writes_over_a_credential_that_is_already_there() {
         let legacy = FakeItemStore::default();
         let current = FakeItemStore::default();
         legacy
@@ -878,21 +897,23 @@ mod tests {
         );
     }
 
-    /// A consolidated install keeps everything in the blob, so the blob alone
-    /// has to count as "already migrated" — otherwise the per-item scan below
-    /// it sees nothing and cheerfully re-copies stale entries over the top.
+    /// The inverse of what this used to assert, and the reason the guard moved
+    /// to a marker: a blob is *not* proof of adoption. `route_migrate_legacy`
+    /// writes one even having copied nothing, so treating its presence as
+    /// "done" is what sealed a failed pass in permanently.
     #[test]
-    fn a_destination_holding_only_the_blob_still_counts_as_migrated() {
+    fn a_blob_alone_is_not_proof_that_adoption_ran() {
         let legacy = FakeItemStore::default();
         let current = FakeItemStore::default();
         legacy.set_item("neon_api_key", "napi_old").expect("seed");
-        current.set_item(BLOB_ACCOUNT, "{}").expect("seed");
+        current
+            .set_item(BLOB_ACCOUNT, "{}")
+            .expect("seed an empty blob");
 
         let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
             .expect("migrate");
 
-        assert_eq!(copied, 0);
-        assert!(current.get_item("neon_api_key").expect("read").is_none());
+        assert_eq!(copied, 1, "the credential must still be adopted");
     }
 
     /// A genuine first install has nothing to adopt, and must not be an error.
@@ -905,25 +926,137 @@ mod tests {
         assert_eq!(copied, 0);
     }
 
-    /// The Azure SAS has no `SecretKey` any more, but a pre-rename install can
-    /// still hold one — and it has to arrive on this side for the blob scrub to
-    /// be able to remove it.
+    /// Deliberately *not* copied. On a healthy pre-rename install the SAS was
+    /// per-item by design (externally written, consolidation-exempt), so
+    /// copying it lands a live credential under an account that no `SecretKey`
+    /// spells — nothing can read it and nothing can delete it. The blob copy
+    /// already carries it wherever the scrub can actually reach it.
     #[test]
-    fn the_retired_azure_account_is_adopted_so_the_scrub_can_reach_it() {
+    fn the_retired_azure_account_is_not_copied_into_an_account_nothing_can_reach() {
         let legacy = FakeItemStore::default();
         let current = FakeItemStore::default();
         legacy
             .set_item(RETIRED_AZURE_SAS_ACCOUNT, "https://acct...?sig=x")
             .expect("seed");
 
+        route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("migrate");
+
+        assert!(
+            current
+                .get_item(RETIRED_AZURE_SAS_ACCOUNT)
+                .expect("read")
+                .is_none(),
+            "an orphaned credential at rest is worse than a deleted one"
+        );
+    }
+
+    /// The defect this whole rework exists for. `route_migrate_legacy` writes
+    /// the consolidated blob even when it copied nothing, so a failed adoption
+    /// followed by consolidation used to leave `secrets_v1` = `{}` behind —
+    /// which the old guard read as "already migrated", permanently. One denied
+    /// Keychain prompt orphaned every credential the operator had.
+    #[test]
+    fn a_failed_pass_is_retried_and_is_not_sealed_by_an_empty_blob() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+        legacy.set_item("neon_api_key", "napi_x").expect("seed");
+        legacy.poison_reads("neon_api_key");
+
+        let keys = SecretKey::static_migration_keys();
+        assert!(
+            route_migrate_service(&legacy, &current, &keys).is_err(),
+            "a backend failure must surface, not be swallowed"
+        );
+        assert!(
+            current
+                .get_item(SERVICE_MIGRATION_MARKER)
+                .expect("read")
+                .is_none(),
+            "a failed pass must not mark itself done"
+        );
+
+        // Consolidation then runs and writes an empty blob, exactly as it does
+        // on a genuine first launch.
+        write_blob(&current, &std::collections::BTreeMap::new()).expect("seed blob");
+
+        legacy.unpoison("neon_api_key");
+        route_migrate_service(&legacy, &current, &keys).expect("retry");
+        // The end state, not the count: the first pass got as far as the
+        // alphabetically-earlier account before dying, so the retry copies
+        // only what is missing. What matters is that nothing is left behind.
+        for (account, value) in [("github_access_token", "ghp_x"), ("neon_api_key", "napi_x")] {
+            assert_eq!(
+                current.get_item(account).expect("read"),
+                Some(value.to_owned()),
+                "{account} was not adopted by the retry"
+            );
+        }
+        assert!(
+            current
+                .get_item(SERVICE_MIGRATION_MARKER)
+                .expect("read")
+                .is_some(),
+            "a clean pass marks itself done"
+        );
+    }
+
+    /// A pass that died halfway leaves some accounts across and some behind.
+    /// The retry has to complete it without clobbering what already arrived.
+    #[test]
+    fn a_partial_pass_is_completed_rather_than_restarted() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+        legacy.set_item("neon_api_key", "napi_x").expect("seed");
+        // Already across from the pass that died.
+        current
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+
         let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
             .expect("migrate");
 
-        assert_eq!(copied, 1);
-        assert!(current
-            .get_item(RETIRED_AZURE_SAS_ACCOUNT)
-            .expect("read")
-            .is_some());
+        assert_eq!(copied, 1, "only the missing one is copied");
+        assert_eq!(
+            current.get_item("neon_api_key").expect("read"),
+            Some("napi_x".to_owned())
+        );
+    }
+
+    /// Once the marker is down, adoption never runs again — which is what
+    /// stops a credential the operator has since *cleared* being handed back
+    /// on the next launch, forever.
+    #[test]
+    fn a_completed_migration_never_resurrects_a_cleared_credential() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item("github_access_token", "ghp_revoked")
+            .expect("seed");
+
+        route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("first pass");
+        current
+            .delete_item("github_access_token")
+            .expect("operator clears it");
+
+        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("second pass");
+
+        assert_eq!(copied, 0);
+        assert!(
+            current
+                .get_item("github_access_token")
+                .expect("read")
+                .is_none(),
+            "a revoked token must stay cleared"
+        );
     }
 
     #[test]

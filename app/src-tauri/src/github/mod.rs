@@ -48,8 +48,6 @@ use git::LocalRepoCounts;
 /// `::github::` escape hatch that reads like a typo.
 pub use github::GitHubClient;
 
-/// The org whose self-hosted runners the Runners panel reports on — Swift's
-/// `PortfolioRepos.org`, which `crates/store` already spells once.
 /// A pass read the settings and found no GitHub organization.
 ///
 /// The Runners panel lists `GET /orgs/{org}/actions/runners`, so without an

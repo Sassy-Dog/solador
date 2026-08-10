@@ -10,13 +10,13 @@ preflight_commands: |
 pr_template_sections: [Summary, Changes, Testing]
 merge_queue: true
 board:
-  number: 5
-  owner: Sassy-Dog
-  project_id: PVT_kwDODSBhws4BaqCG
-  status_field_id: PVTSSF_lADODSBhws4BaqCGzhVgAc8
-  ready_option_id: 8dcb24a9
-  backlog_option_id: 906f24bb
-  in_progress_option_id: d04a8f33
+  number: TODO  # set when the board is created (runbook R8)
+  owner: cpmadrid
+  project_id: TODO
+  status_field_id: TODO
+  ready_option_id: TODO
+  backlog_option_id: TODO
+  in_progress_option_id: TODO
 ---
 
 ## subagent-rules

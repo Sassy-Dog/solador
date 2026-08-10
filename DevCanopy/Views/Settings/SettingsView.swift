@@ -213,7 +213,7 @@ struct AzureCostSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Used by the Azure Cost panel. Paste a container-scoped, read+list SAS URL for the `cost-exports` container on `stsassydog` (e.g. `https://stsassydog.blob.core.windows.net/cost-exports?sv=...&sig=...`). The SAS is the only credential — no Azure sign-in. Stored in your macOS Keychain.")
+                Text("Used by the Azure Cost panel. Paste a container-scoped, read+list SAS URL for your `cost-exports` container (e.g. `https://<account>.blob.core.windows.net/cost-exports?sv=...&sig=...`). The SAS is the only credential — no Azure sign-in. Stored in your macOS Keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
@@ -425,8 +425,8 @@ struct AboutView: View {
                 .frame(width: 200)
 
             VStack(alignment: .leading, spacing: 8) {
-                Link("GitHub Repository", destination: URL(string: "https://github.com/Sassy-Dog/devcanopy")!)
-                Link("Report an Issue", destination: URL(string: "https://github.com/Sassy-Dog/devcanopy/issues")!)
+                Link("GitHub Repository", destination: URL(string: "https://github.com/cpmadrid/solador")!)
+                Link("Report an Issue", destination: URL(string: "https://github.com/cpmadrid/solador/issues")!)
                 Link("Documentation", destination: URL(string: "https://devcanopy.app/docs")!)
             }
 

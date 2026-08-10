@@ -150,7 +150,7 @@ final class KeychainHelper {
     }
 
     /// Container-scoped, read+list user-delegation SAS URL for the platform Azure
-    /// Cost Management export (e.g. `https://stsassydog.blob.core.windows.net/
+    /// Cost Management export (e.g. `https://<account>.blob.core.windows.net/
     /// cost-exports?sv=...&sig=...`). The SAS *is* the credential — the app never
     /// holds an Azure identity, it just appends the query to plain blob GETs.
     func saveAzureCostSAS(_ sasURL: String) throws {

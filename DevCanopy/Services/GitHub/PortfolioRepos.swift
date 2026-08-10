@@ -12,7 +12,7 @@ enum PortfolioRepos {
     /// (`Settings.github_org`): hardcoding it meant every install queried one
     /// particular organization's runners, so the Runners panel could only ever
     /// work for its author. Do not copy this pattern forward.
-    static let org = "Sassy-Dog"
+    static let org = "acme"
 
     /// Empty on purpose: a portfolio is per-operator, so there is no defensible
     /// default. Shipping one author's repositories meant every other user's

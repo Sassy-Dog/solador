@@ -27,7 +27,7 @@ struct PortfolioSettingsView: View {
 
             Section {
                 HStack {
-                    TextField("owner/name (e.g. Sassy-Dog/velovate)", text: $newSlug)
+                    TextField("owner/name (e.g. acme/gadget)", text: $newSlug)
                         .onSubmit { add() }
                     Button("Add") { add() }
                         .disabled(!newSlug.contains("/"))

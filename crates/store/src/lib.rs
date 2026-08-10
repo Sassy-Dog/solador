@@ -233,12 +233,15 @@ impl Store {
     pub fn open() -> Result<Self, StoreError> {
         let dir = Store::default_dir()?;
         if let Some(config) = dirs::config_dir() {
-            // Best effort, and deliberately not fatal: a store that could not
-            // be adopted is a first launch, which works. Refusing to start
-            // because an *old* directory was unreadable would be worse.
-            if let Err(e) = Store::adopt_legacy_dir(&config.join(LEGACY_APP_DIR_NAME), &dir) {
-                eprintln!("could not adopt the pre-rename store: {e}");
-            }
+            // Fatal on purpose, and this was the other way round until a review
+            // pointed out what "best effort" costs here. `open_in` below
+            // *creates and seeds* a store when it finds none, and adoption is
+            // then skipped forever because the target exists. So a single
+            // transient failure — a permissions blip, a full disk — would
+            // masquerade as a first launch permanently, with every host, repo,
+            // layout and container rule gone and nothing said about it.
+            // Refusing to start is recoverable; silently starting empty is not.
+            Store::adopt_legacy_dir(&config.join(LEGACY_APP_DIR_NAME), &dir)?;
         }
         Store::open_in(dir)
     }
@@ -262,16 +265,18 @@ impl Store {
         if target.exists() || !source.exists() {
             return Ok(false);
         }
-        fs::create_dir_all(dir).map_err(|source| StoreError::Io {
-            action: "create the store directory",
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        fs::copy(&source, &target).map_err(|e| StoreError::Io {
-            action: "adopt the pre-rename store",
-            path: target.clone(),
+        // Read-then-atomic-write rather than `fs::copy`, which writes the
+        // target in place: a crash mid-copy would leave a truncated file that
+        // `open_in` refuses to parse (deliberately fatal), and adoption would
+        // never re-run because the target now exists — bricking every launch
+        // until someone deleted it by hand. `write_atomically` renames into
+        // place, so the target either does not exist or is whole.
+        let contents = fs::read_to_string(&source).map_err(|e| StoreError::Io {
+            action: "read the pre-rename store",
+            path: source.clone(),
             source: e,
         })?;
+        write_atomically(&target, &contents)?;
         Ok(true)
     }
 
@@ -674,6 +679,27 @@ mod tests {
         let reopened = Store::open_in(&current).expect("reopen");
         let slugs: Vec<&str> = reopened.repos().iter().map(|r| r.slug.as_str()).collect();
         assert_eq!(slugs, vec!["acme/current"]);
+    }
+
+    /// The adopted file is written whole or not at all. Without this, a crash
+    /// mid-copy leaves a truncated store that `open_in` refuses to parse — and
+    /// adoption never re-runs, because the target now exists.
+    #[test]
+    fn an_adopted_store_leaves_no_temp_file_and_parses() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+        let mut old = Store::open_in(&legacy).expect("seed");
+        old.upsert_repo(TrackedRepo::new("acme/widget"));
+        old.save().expect("save");
+
+        Store::adopt_legacy_dir(&legacy, &current).expect("adopt");
+
+        assert_eq!(entries(&current), vec![STORE_FILE_NAME.to_owned()]);
+        assert!(
+            Store::open_in(&current).is_ok(),
+            "the adopted file must parse"
+        );
     }
 
     /// A genuine first install has nothing to adopt, and that is not an error.

@@ -40,7 +40,7 @@ answers "what do I need to go look at" without opening GitHub.
 per repo (returns completed + in-progress + queued, push + pull_request events).
 Keep that. Change only what we derive from the response and how often.
 
-- `PortfolioRepos.slugs` gains `cpmadrid/solador` and `Sassy-Dog/platform`.
+- `PortfolioRepos.slugs` gains `cpmadrid/solador` and `acme/toolkit`.
 - Poll interval 120s → 60s (6 repos × 1 call/min ≈ 360/hr, far under the 5000/hr
   authenticated limit).
 

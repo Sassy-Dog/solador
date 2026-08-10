@@ -2,7 +2,7 @@
 
 This repo's instance of the org **Versioning spec v1.0** (frozen 2026-07-11;
 source of truth: `~/Documents/Cortex/Sassy Dog/Architecture/Development/Versioning.md`,
-mirrored on [platform#397](https://github.com/Sassy-Dog/platform/issues/397)).
+mirrored on [platform#397](https://github.com/acme/toolkit/issues/397)).
 Adopted for [devcanopy#98](https://github.com/cpmadrid/solador/issues/98).
 When this doc and the spec conflict, the spec wins; when this doc and the
 scripts disagree, that is drift — fix one of them in the same PR.

@@ -107,7 +107,7 @@ jobs:
         working-directory: tests/frontend
         run: npx playwright install chromium
 
-      # `npm test`'s `pretest` script builds devcanopy-app and runs its --dump
+      # `npm test`'s `pretest` script builds solador-app and runs its --dump
       # mode to (re)generate the gitignored app/ui/sample.json fixture the
       # suite serves, so the build always happens before Playwright runs
       # against it — npm's pretest/test ordering is what enforces that, not
@@ -121,7 +121,7 @@ jobs:
 
   windows-tests:
     name: Windows workspace tests
-    # GitHub-hosted, deliberately not self-hosted: the sassy-dog fleet is
+    # GitHub-hosted, deliberately not self-hosted: the former self-hosted fleet was
     # macOS/Linux only. This replaces what used to be a `cargo check --target
     # x86_64-pc-windows-msvc` cross-check inside rust-workspace above. That
     # check was only ever a proxy for "does this still compile on Windows",
@@ -150,7 +150,7 @@ jobs:
       # the WebView2 SDK bindings themselves at build time, so no extra
       # apt/choco-equivalent setup should be needed — unlike Linux, which needs
       # webkit2gtk/appindicator system packages this repo doesn't install
-      # anywhere. Narrow this to `-p devcanopy-wire -p viewmodel -p agentclient`
+      # anywhere. Narrow this to `-p solador-wire -p viewmodel -p agentclient`
       # if a real run shows app/src-tauri needs something this image doesn't
       # have, and say why in the job/PR rather than narrowing silently.
       - name: Test

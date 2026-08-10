@@ -58,7 +58,7 @@ protocol BlobFetching: Sendable {
 /// container base and query string and append the query to plain GETs (the SAS
 /// *is* the credential, so there is no `Authorization` header).
 struct URLSessionBlobFetcher: BlobFetching {
-    /// e.g. `https://stsassydog.blob.core.windows.net/cost-exports` (no trailing slash).
+    /// e.g. `https://<account>.blob.core.windows.net/cost-exports` (no trailing slash).
     let containerBase: String
     /// The SAS query, e.g. `sv=...&sig=...` (no leading `?`).
     let sasQuery: String

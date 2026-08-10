@@ -27,7 +27,7 @@
     "sassydog-skills": {
       "source": {
         "source": "github",
-        "repo": "Sassy-Dog/sassydog-skills"
+        "repo": "acme/sassydog-skills"
       }
     }
   }

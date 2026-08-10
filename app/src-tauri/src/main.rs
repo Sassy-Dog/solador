@@ -3860,21 +3860,37 @@ fn main() {
         // entries into the blob *within this service*, so anything still
         // sitting under the pre-rename service has to arrive first or it is
         // simply not there to fold.
-        match credentials.migrate_service(&migrate_keys) {
-            Ok(0) => {}
-            Ok(n) => eprintln!("secrets: adopted {n} credential(s) from the pre-rename service"),
-            Err(e) => eprintln!(
-                "secrets: could not adopt pre-rename credentials (they remain readable under the old service): {e}"
-            ),
-        }
-        match credentials.migrate_legacy(&migrate_keys) {
-            Ok(0) => {}
+        let adopted = match credentials.migrate_service(&migrate_keys) {
+            Ok(0) => true,
             Ok(n) => {
-                eprintln!(
-                    "secrets: migrated {n} credential(s) into the consolidated keychain item"
-                );
+                eprintln!("secrets: adopted {n} credential(s) from the pre-rename service");
+                true
             }
-            Err(e) => eprintln!("secrets: migration failed (legacy items still readable): {e}"),
+            Err(e) => {
+                eprintln!(
+                    "secrets: could not adopt pre-rename credentials, will retry next launch: {e}"
+                );
+                false
+            }
+        };
+        // Consolidation is skipped after a failed adoption -- not the launch.
+        // The app must still open: an unreadable keychain means panels ask for
+        // credentials, which is a working app, whereas refusing to start is
+        // not. What consolidation would add is a blob in the destination, and
+        // the fewer artefacts a failed pass leaves for the retry to reason
+        // about, the better.
+        if adopted {
+            match credentials.migrate_legacy(&migrate_keys) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!(
+                        "secrets: migrated {n} credential(s) into the consolidated keychain item"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("secrets: migration failed (legacy items still readable): {e}");
+                }
+            }
         }
     }
 

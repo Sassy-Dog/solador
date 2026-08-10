@@ -120,7 +120,7 @@ plan/reviews that produced the original skeleton.
 > pinned by the root `rust-toolchain.toml`, same convention as `agent/`'s.
 
 ### Backlog & workflow skills
-The backlog is **GitHub Project board #5** (`Sassy-Dog`), status-column driven:
+The backlog is a user-level **GitHub Project** under `cpmadrid`, status-column driven:
 **Backlog → Ready → In progress → In review → Done**. It is the source of truth for
 backlog state (not labels). Five generated `.claude/skills/` automate the loop:
 - **plate-it** (`plate it`) — synthesize a prioritized plate from the board + CI + tech debt.

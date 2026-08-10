@@ -61,12 +61,25 @@ impl SasError {
 /// The executables to try, in order.
 ///
 /// On Windows the CLI is `az.cmd`, and `Command::new("az")` will not find it:
-/// `CreateProcess` appends `.exe`, never `.cmd`. Trying the plain name first
-/// keeps Unix a single spawn.
+/// `CreateProcess` appends `.exe`, never `.cmd`.
+///
+/// On Unix the bare name is tried first and then the usual install prefixes
+/// **by absolute path**, because a `PATH` lookup is not enough here. A macOS
+/// app launched from Finder or the Dock inherits a minimal
+/// `/usr/bin:/bin:/usr/sbin:/sbin` — not the shell's — so Homebrew's
+/// `/opt/homebrew/bin/az` is invisible to it. The module doc above names that
+/// trap; this is what actually handles it. Without these the panel reports
+/// "Azure CLI not found" forever on a machine where it is installed and signed
+/// in, and only a terminal launch would ever work.
 const CANDIDATES: &[&str] = if cfg!(windows) {
     &["az.cmd", "az.bat", "az"]
 } else {
-    &["az"]
+    &[
+        "az",
+        "/opt/homebrew/bin/az",
+        "/usr/local/bin/az",
+        "/usr/bin/az",
+    ]
 };
 
 /// Mints a read+list, container-scoped, HTTPS-only user-delegation SAS URL.
