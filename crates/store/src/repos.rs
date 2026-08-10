@@ -1,26 +1,11 @@
-//! The tracked repo portfolio — the Rust mirror of SwiftData's `TrackedRepo`
-//! (`DevCanopy/Models/TrackedRepo.swift`) and the one-time seed in
-//! `Services/GitHub/PortfolioRepos.swift`.
+//! The tracked repo portfolio — the Rust mirror of SwiftData's `TrackedRepo`.
+//!
+//! There is no seed. A portfolio is per-operator by nature, so there is no
+//! defensible default: shipping one author's repositories meant every other
+//! user's first launch opened on rows of 404s against repositories they cannot
+//! read. The Repos panel asks for a repo instead (`NO_REPOS_MESSAGE`).
 
 use serde::{Deserialize, Serialize};
-
-/// The org every seeded slug belongs to (`PortfolioRepos.org`).
-pub const ORG: &str = "Sassy-Dog";
-
-/// The list a brand-new store is seeded with, in Swift's order.
-///
-/// Seeding happens exactly once — when no store file has ever existed (see
-/// [`crate::Store::open_in`]). After that the set is user-editable and editing
-/// this array does not retro-edit an already-seeded store, matching
-/// `PortfolioStore`'s contract.
-pub const SEED_SLUGS: [&str; 6] = [
-    "Sassy-Dog/velovate",
-    "Sassy-Dog/qr-ninja",
-    "Sassy-Dog/tailoredtip",
-    "Sassy-Dog/what2wear",
-    "Sassy-Dog/devcanopy",
-    "Sassy-Dog/platform",
-];
 
 /// One repo in the tracked portfolio. The `owner/name` slug is the identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,13 +41,14 @@ impl TrackedRepo {
     }
 }
 
-/// The seed set as owned records — what a first-run store starts with.
+/// What a brand-new store starts with: nothing.
+///
+/// Kept as a function rather than inlining `Vec::new()` at the one call site in
+/// [`crate::Store::open_in`], because *what a fresh store begins with* is a
+/// product decision that deserves a name and a place to be argued with.
 #[must_use]
 pub fn seeded_repos() -> Vec<TrackedRepo> {
-    SEED_SLUGS
-        .iter()
-        .map(|slug| TrackedRepo::new(*slug))
-        .collect()
+    Vec::new()
 }
 
 const fn enabled_by_default() -> bool {
@@ -74,26 +60,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seed_matches_the_swift_portfolio() {
-        let seeded = seeded_repos();
-        assert_eq!(seeded.len(), 6);
-        assert_eq!(
-            seeded.iter().map(|r| r.slug.as_str()).collect::<Vec<_>>(),
-            vec![
-                "Sassy-Dog/velovate",
-                "Sassy-Dog/qr-ninja",
-                "Sassy-Dog/tailoredtip",
-                "Sassy-Dog/what2wear",
-                "Sassy-Dog/devcanopy",
-                "Sassy-Dog/platform",
-            ]
+    fn a_fresh_store_seeds_no_repos() {
+        assert!(
+            seeded_repos().is_empty(),
+            "a first-run store must not ship one operator's portfolio to everyone"
         );
-        assert!(seeded
-            .iter()
-            .all(|r| r.enabled && r.watched_workflows.is_none()));
-        assert!(seeded
-            .iter()
-            .all(|r| r.slug.starts_with(&format!("{ORG}/"))));
     }
 
     #[test]

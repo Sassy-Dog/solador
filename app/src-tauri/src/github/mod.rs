@@ -50,7 +50,14 @@ pub use github::GitHubClient;
 
 /// The org whose self-hosted runners the Runners panel reports on — Swift's
 /// `PortfolioRepos.org`, which `crates/store` already spells once.
-pub const ORG: &str = store::repos::ORG;
+/// A pass read the settings and found no GitHub organization.
+///
+/// The Runners panel lists `GET /orgs/{org}/actions/runners`, so without an
+/// org there is nothing it could ask for — and no org it could guess. This
+/// used to be a hardcoded constant, which meant every install queried one
+/// particular organization and every other operator got a panel that was
+/// broken by construction.
+pub const NO_ORG_MESSAGE: &str = "set your GitHub organization in Settings";
 
 /// Absence grace before a de-registered runner escalates from amber
 /// "recycling" to red "missing" — `crates/github`'s shipped 5 minutes, which
@@ -171,6 +178,10 @@ pub struct GitHubState {
     /// first pass — the credential read plus every request after it — both
     /// panels claimed there was no token. See [`Configured`].
     token: Configured,
+    /// Whether a GitHub organization is configured, read from settings on every
+    /// pass exactly as the token is. Only the Runners panel consults it: repos
+    /// are tracked by full `owner/name` slug and need no org at all.
+    org: Configured,
     /// Per-repo health from the last completed pass, one entry per **enabled**
     /// tracked repo (unreachable ones included). `None` until the first pass
     /// finishes, which is what "loading…" means.
@@ -291,6 +302,22 @@ impl GitHubState {
     pub fn apply_token_present(&mut self) {
         self.token = Configured::Present;
         self.credential_error = None;
+    }
+
+    /// Records whether an organization is configured, from the settings read
+    /// each pass makes. Like [`apply_token_present`](Self::apply_token_present)
+    /// this runs *before* the request, so the first frame can already tell
+    /// "not configured" apart from "configured, still fetching".
+    ///
+    /// Whitespace-only counts as unset: a stray space in a text field is not
+    /// an organization, and `GET /orgs/ /actions/runners` fails in a way that
+    /// reads as a server problem rather than a settings one.
+    pub fn apply_org(&mut self, org: &str) {
+        self.org = if org.trim().is_empty() {
+            Configured::Absent
+        } else {
+            Configured::Present
+        };
     }
 
     /// Records one successful statuspage read.
@@ -724,6 +751,29 @@ const RUNNER_STATUS_W: f64 = 74.0;
 /// and is never recomputed here — that is what freezes them while GitHub is
 /// unreachable.
 #[must_use]
+/// The panel carrying nothing but a setup line: no rows, no stats, no footer.
+///
+/// One constructor for every "not configured yet" state, so two of them cannot
+/// drift into rendering different shapes for the same situation.
+fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
+    json!({
+        "id": PanelKind::GhRunners.id(),
+        "title": PanelKind::GhRunners.title(),
+        "trailing": Value::Null,
+        "message": { "text": message },
+        "loading": false,
+        // Still rendered while unconfigured: "GitHub is on fire" is most useful
+        // precisely when this panel is otherwise blank, and the statuspage
+        // needs no credential to say so.
+        "availability": availability_chip(state, now),
+        "stats": [],
+        "chips": [],
+        "rows": [],
+        // Nothing configured means nothing fetched, so nothing to be stale.
+        "footer": Value::Null,
+    })
+}
+
 pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // `credential_error` holds this branch back: the zero-credential payload
     // asserts there is no token *and* blanks the rows, and neither survives
@@ -735,22 +785,21 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // payload is an assertion it has no basis for. That state falls through to
     // "loading runners…" below instead.
     if state.token.is_absent() && state.credential_error.is_none() {
-        return json!({
-            "id": PanelKind::GhRunners.id(),
-            "title": PanelKind::GhRunners.title(),
-            "trailing": Value::Null,
-            "message": { "text": UNAUTHENTICATED_MESSAGE },
-            "loading": false,
-            // Still rendered with no token: "GitHub is on fire" is most useful
-            // precisely when this panel is otherwise blank, and the statuspage
-            // needs no credential to say so.
-            "availability": availability_chip(state, now),
-            "stats": [],
-            "chips": [],
-            "rows": [],
-            // No footer without credentials: there is nothing to be stale.
-            "footer": Value::Null,
-        });
+        return runners_setup_view(state, now, UNAUTHENTICATED_MESSAGE);
+    }
+
+    // A token in hand but no organization is a *different* setup step, and
+    // saying the wrong one sends the operator to the wrong screen. Ordered
+    // after the token because the token is the more fundamental of the two:
+    // someone with neither should be told to paste a credential first, not to
+    // name an org nothing could yet query on their behalf.
+    //
+    // `is_absent`, not `!is_present`, for the same reason as the token above:
+    // before the first pass reads settings this panel knows nothing, and
+    // `Unknown` must fall through to "loading runners…" rather than assert a
+    // misconfiguration it has not observed.
+    if state.org.is_absent() && state.credential_error.is_none() {
+        return runners_setup_view(state, now, NO_ORG_MESSAGE);
     }
 
     // "loading runners…" only while nothing has been heard AND nothing has
@@ -1953,6 +2002,63 @@ mod tests {
             "nothing to be stale without a token"
         );
         assert!(rows(&view).is_empty());
+    }
+
+    /// The organization is a second setup step, and it has its own line. This
+    /// panel lists `GET /orgs/{org}/actions/runners`; with a token but no org
+    /// there is nothing it could ask for.
+    #[test]
+    fn the_runners_panel_asks_for_an_org_once_a_pass_finds_none() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        state.apply_org("");
+        let view = runners_view(&state, now_unix());
+        assert_eq!(view["message"]["text"], NO_ORG_MESSAGE);
+        assert_ne!(
+            view["message"]["text"], UNAUTHENTICATED_MESSAGE,
+            "the token is fine; sending them to paste another is the old bug"
+        );
+        assert_eq!(view["loading"], false, "we looked; this is not loading");
+        assert!(rows(&view).is_empty());
+        assert!(view["footer"].is_null(), "nothing fetched, nothing stale");
+    }
+
+    /// The first frame, before any pass has read settings. `Unknown` is not
+    /// `Absent`: asserting a misconfiguration nobody has observed is the same
+    /// mistake the token side already made once.
+    #[test]
+    fn an_unread_org_reads_as_loading_rather_than_as_misconfigured() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        let view = runners_view(&state, now_unix());
+        assert_ne!(view["message"]["text"], NO_ORG_MESSAGE);
+        assert_eq!(view["loading"], true);
+    }
+
+    /// With neither, the credential is the step to name: an operator sent to
+    /// fill in an organization first would be configuring something nothing
+    /// could yet query on their behalf.
+    #[test]
+    fn a_missing_token_outranks_a_missing_org() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        state.apply_org("");
+        let view = runners_view(&state, now_unix());
+        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+    }
+
+    /// A stray space in a text field is not an organization. Left untrimmed it
+    /// would produce `GET /orgs/ /actions/runners`, whose failure reads as a
+    /// server problem rather than the settings one it is.
+    #[test]
+    fn whitespace_is_not_an_organization() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        state.apply_org("   ");
+        assert_eq!(
+            runners_view(&state, now_unix())["message"]["text"],
+            NO_ORG_MESSAGE
+        );
     }
 
     #[test]

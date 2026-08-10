@@ -232,10 +232,12 @@ impl Store {
     /// in [`Store::default_dir`] is a thin default over this, not a separate
     /// code path.
     ///
-    /// **Seed-once**: the portfolio in [`repos::SEED_SLUGS`] is written only on
-    /// that first creation. Once the file exists, its repo list is the truth —
-    /// an empty list stays empty, matching `PortfolioStore`'s contract in the
-    /// Swift app. Editing `SEED_SLUGS` never retro-edits a seeded store.
+    /// **Seed-once**: [`repos::seeded_repos`] is consulted only on that first
+    /// creation. It returns nothing today — a portfolio is per-operator, so
+    /// there is no defensible default — but the contract is what matters and
+    /// outlives the empty seed: once the file exists, its repo list is the
+    /// truth, and a later build that reintroduces a seed must never retro-edit
+    /// a store that already exists.
     ///
     /// # Errors
     /// [`StoreError::Parse`] if the file is not JSON this crate understands,
@@ -559,17 +561,13 @@ mod tests {
     }
 
     #[test]
-    fn first_open_seeds_the_portfolio_and_writes_the_file() {
+    fn first_open_writes_the_file_and_tracks_nothing() {
         let dir = temp_dir();
         let store = Store::open_in(dir.path()).expect("open");
 
-        assert_eq!(
-            store
-                .repos()
-                .iter()
-                .map(|repo| repo.slug.as_str())
-                .collect::<Vec<_>>(),
-            repos::SEED_SLUGS.to_vec()
+        assert!(
+            store.repos().is_empty(),
+            "a first-run store tracks nothing until the operator says otherwise"
         );
         assert!(store.hosts().is_empty());
         assert_eq!(store.settings(), &Settings::default());
@@ -652,24 +650,28 @@ mod tests {
         );
     }
 
+    /// The seed is empty, so this can no longer be tested by deleting seeded
+    /// rows. What it guards is the contract rather than the contents: a store
+    /// that exists is never re-seeded, which is what would stop a later build
+    /// reintroducing a seed and injecting it into everyone's saved portfolio.
     #[test]
-    fn seeding_happens_only_once() {
+    fn an_existing_store_is_never_re_seeded() {
         let dir = temp_dir();
 
         let mut store = Store::open_in(dir.path()).expect("first open");
-        assert_eq!(store.repos().len(), repos::SEED_SLUGS.len());
-        // The user deletes every seeded repo...
-        for slug in repos::SEED_SLUGS {
-            assert!(store.remove_repo(slug).is_some(), "remove {slug}");
-        }
+        assert!(store.repos().is_empty(), "nothing is seeded");
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
         store.save().expect("save");
 
-        // ...and they stay deleted across a reopen. An empty list is a
-        // decision, not an unseeded store.
         let reopened = Store::open_in(dir.path()).expect("reopen");
-        assert!(
-            reopened.repos().is_empty(),
-            "a store that exists must never be re-seeded"
+        assert_eq!(
+            reopened
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"],
+            "opening an existing store must add nothing to it"
         );
     }
 
@@ -677,15 +679,20 @@ mod tests {
     fn a_store_that_exists_with_edits_keeps_them() {
         let dir = temp_dir();
         let mut store = Store::open_in(dir.path()).expect("first open");
-        store.remove_repo("Sassy-Dog/platform").expect("remove");
-        store.upsert_repo(TrackedRepo::new("Sassy-Dog/openclaw"));
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
+        store.upsert_repo(TrackedRepo::new("acme/gadget"));
+        store.save().expect("save");
+
+        let mut store = Store::open_in(dir.path()).expect("reopen");
+        store.remove_repo("acme/widget").expect("remove");
+        store.upsert_repo(TrackedRepo::new("acme/sprocket"));
         store.save().expect("save");
 
         let reopened = Store::open_in(dir.path()).expect("reopen");
         let slugs: Vec<&str> = reopened.repos().iter().map(|r| r.slug.as_str()).collect();
-        assert!(!slugs.contains(&"Sassy-Dog/platform"));
-        assert!(slugs.contains(&"Sassy-Dog/openclaw"));
-        assert_eq!(slugs.len(), repos::SEED_SLUGS.len());
+        assert!(!slugs.contains(&"acme/widget"));
+        assert!(slugs.contains(&"acme/sprocket"));
+        assert_eq!(slugs.len(), 2);
     }
 
     #[test]
@@ -698,6 +705,7 @@ mod tests {
             core_row_span: 3,
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 250.0,
+            github_org: "acme".into(),
             neon_org_id: "org-123".into(),
             neon_usd_per_cu_hour: 0.175,
             neon_usd_per_gib_month: 0.5,
@@ -718,9 +726,12 @@ mod tests {
         store.upsert_host(host);
         store.upsert_host(Host::new("mac-mini", "100.64.0.2"));
 
+        // Added rather than assumed: nothing is seeded, so the repo this test
+        // round-trips has to be one the test put there.
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
         store
-            .repo_mut("Sassy-Dog/devcanopy")
-            .expect("seeded repo")
+            .repo_mut("acme/widget")
+            .expect("the repo just added")
             .watched_workflows = Some(vec!["Release".into()]);
 
         store.save().expect("save");
@@ -736,7 +747,7 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .repo("Sassy-Dog/devcanopy")
+                .repo("acme/widget")
                 .expect("repo")
                 .watched_workflows
                 .as_deref(),
@@ -930,10 +941,7 @@ mod tests {
         let nested = dir.path().join("Application Support").join(APP_DIR_NAME);
         let store = Store::open_in(&nested).expect("open");
         assert!(store.path().exists());
-        assert_eq!(
-            Store::open_in(&nested).expect("reopen").repos().len(),
-            repos::SEED_SLUGS.len()
-        );
+        assert!(Store::open_in(&nested).expect("reopen").repos().is_empty());
     }
 
     #[test]
@@ -1119,7 +1127,12 @@ mod tests {
     #[test]
     fn unreadable_rules_fall_back_to_the_seeds_without_failing_the_open() {
         let dir = temp_dir();
-        Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path()).expect("first open");
+        // A repo of our own, so the "untouched" assertion below is a real
+        // claim. Against an empty seed, a length check would pass whether or
+        // not the bad value had taken the rest of the store with it.
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
+        store.save().expect("save");
         let path = dir.path().join(STORE_FILE_NAME);
         let mut data: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
@@ -1129,7 +1142,14 @@ mod tests {
         let reopened = Store::open_in(dir.path()).expect("a bad rules value must still open");
         assert_eq!(reopened.container_rules(), containers::seeded_rules());
         // ...and the rest of the store is untouched by it.
-        assert_eq!(reopened.repos().len(), repos::SEED_SLUGS.len());
+        assert_eq!(
+            reopened
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
     }
 
     #[test]
@@ -1201,7 +1221,11 @@ mod tests {
     #[test]
     fn a_store_file_without_a_runner_roster_still_opens() {
         let dir = temp_dir();
-        Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path()).expect("first open");
+        // As above: something to preserve, so "the rest still opens" is a
+        // claim an empty portfolio cannot satisfy for free.
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
+        store.save().expect("save");
         let path = dir.path().join(STORE_FILE_NAME);
         let mut data: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
@@ -1213,7 +1237,14 @@ mod tests {
 
         let reopened = Store::open_in(dir.path()).expect("an older file must still open");
         assert!(reopened.runner_roster().is_empty());
-        assert_eq!(reopened.repos().len(), repos::SEED_SLUGS.len());
+        assert_eq!(
+            reopened
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
     }
 
     #[test]

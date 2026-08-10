@@ -660,6 +660,21 @@ function portfolioTab(t) {
   return [list, add];
 }
 
+function githubTab(t) {
+  const org = group(t.org.heading);
+  const input = textInput(t.org.value);
+  org.append(field("github-org", t.org.label, input), help(t.org.help));
+  const apply = button(t.org.saveLabel, "apply");
+  // Its own command, not `settings_save_providers`: that one writes every
+  // non-secret provider preference at once, so sending it from here would
+  // blank every field this tab does not show.
+  apply.addEventListener("click", () =>
+    mutate("settings_save_github", { org: input.value })
+  );
+  org.appendChild(actionRow(apply));
+  return [secretGroup(t.heading, t.secret), org];
+}
+
 function azureTab(t) {
   const box = group(t.budget.heading);
   const budget = numberInput(t.budget.value, 0);
@@ -836,7 +851,7 @@ function renderBody() {
   const build = {
     general: generalTab,
     layout: layoutTab,
-    github: (t) => [secretGroup(t.heading, t.secret)],
+    github: githubTab,
     portfolio: portfolioTab,
     hosts: hostsTab,
     azure: azureTab,

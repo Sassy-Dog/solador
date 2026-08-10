@@ -1293,6 +1293,19 @@ async fn poll_github(app: &Arc<App>) {
     };
     let Some(token) = token else { return };
 
+    // Re-read every pass alongside the token, and for the same reason: a Save
+    // in Settings must apply on the next pass rather than the next launch.
+    // Two blocks, not one — taking the store and panel-state locks together
+    // here would be the only place in this pass that holds both at once.
+    let org = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().github_org.trim().to_owned()
+    };
+    {
+        let mut state = app.github.lock().expect("github state poisoned");
+        state.apply_org(&org);
+    }
+
     let repos: Vec<(String, Option<Vec<String>>)> = {
         let store = app.store.lock().expect("store poisoned");
         store
@@ -1330,9 +1343,23 @@ async fn poll_github(app: &Arc<App>) {
     // on a successful fetch — so a failing GitHub leaves every absence clock
     // frozen at the last successful poll instead of ageing a healthy runner
     // into a red alarm.
-    let update = client
-        .runner_roster(github::ORG, &roster, now, github::RUNNER_GRACE_SECS)
-        .await;
+    // `None` when no org is configured, rather than a fetch that fails: the
+    // request would be `GET /orgs//actions/runners`, whose 404 would surface in
+    // the footer as "GitHub is unreachable" when the truth is a settings field
+    // nobody has filled in. The panel already names that state; this keeps a
+    // fabricated transport error from talking over it.
+    //
+    // The repos half of the pass continues either way — repos are tracked by
+    // full `owner/name` slug and need no organization.
+    let update = if org.is_empty() {
+        None
+    } else {
+        Some(
+            client
+                .runner_roster(&org, &roster, now, github::RUNNER_GRACE_SECS)
+                .await,
+        )
+    };
 
     // Re-read like the token, so switching the preference off applies on the
     // next pass rather than on the next launch.
@@ -1354,14 +1381,19 @@ async fn poll_github(app: &Arc<App>) {
         if let Some(local) = local {
             state.apply_local(local);
         }
-        match &update {
-            Ok(update) => state.apply_runners(update, panel::now_unix()),
-            // The transport error is logged, not shown: a 403 for a missing
-            // scope is what this almost always is, and "HTTP 403" sends the
-            // operator to check the network instead of the PAT.
-            Err(e) => {
-                eprintln!("org runners fetch failed: {e}");
-                state.apply_runners_error(github::RUNNERS_ERROR_MESSAGE);
+        // `None` is the no-org case, and it applies nothing on purpose: the
+        // panel's own setup line is the whole of what there is to say, and
+        // an error here would bury it.
+        if let Some(update) = &update {
+            match update {
+                Ok(update) => state.apply_runners(update, panel::now_unix()),
+                // The transport error is logged, not shown: a 403 for a missing
+                // scope is what this almost always is, and "HTTP 403" sends the
+                // operator to check the network instead of the PAT.
+                Err(e) => {
+                    eprintln!("org runners fetch failed: {e}");
+                    state.apply_runners_error(github::RUNNERS_ERROR_MESSAGE);
+                }
             }
         }
     }
@@ -1369,7 +1401,7 @@ async fn poll_github(app: &Arc<App>) {
     // Persisted only on success, and only when it actually changed — a steady
     // org produces an identical roster poll after poll, and rewriting the store
     // file every minute for no change is a write nobody asked for.
-    if let Ok(update) = &update {
+    if let Some(Ok(update)) = &update {
         let mut store = app.store.lock().expect("store poisoned");
         if store.set_runner_roster(github::roster_to_records(&update.roster)) {
             if let Err(e) = store.save() {
@@ -2576,6 +2608,25 @@ fn settings_reset_layout(state: tauri::State<'_, Arc<App>>) -> Value {
     settings_response(&state, status)
 }
 
+/// The GitHub organization the Runners panel queries.
+///
+/// A command of its own rather than a field on [`ProviderPrefs`]: that struct
+/// is sent whole by two tabs precisely because a partial write blanks the
+/// fields the sending tab does not show, and the GitHub tab shows none of
+/// them. One field, one command, nothing to blank.
+#[tauri::command]
+fn settings_save_github(org: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        store.settings_mut().github_org = org.trim().to_owned();
+        save_status(&store, "Saved.")
+    };
+    // No wake: unlike the usage loops on their hourly cadence, the GitHub poll
+    // re-reads settings on every pass, so this applies within one refresh
+    // interval by the same mechanism that makes a re-pasted token apply.
+    settings_response(&state, status)
+}
+
 /// Every non-secret provider preference, in one argument.
 ///
 /// One struct rather than seven positional parameters: both Settings tabs send
@@ -3287,6 +3338,9 @@ fn dump_settings() -> Value {
     // cover.
     let settings = store::Settings {
         openclaw_gateway_url: "ws://gateway.local:7878".into(),
+        // Populated so the frontend suite sees the GitHub org field in its
+        // filled state; its empty state is covered by the Rust view tests.
+        github_org: "acme".into(),
         ..settings
     };
     let facts = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
@@ -3318,7 +3372,13 @@ fn dump_settings() -> Value {
     settings::view(
         &settings,
         &[live, spare],
-        &store::seeded_repos(),
+        // Explicit, not `seeded_repos()`: nothing is seeded any more, and this
+        // fixture is what the Playwright suite renders the Portfolio tab from
+        // — an empty list would silently stop covering it.
+        &[
+            store::TrackedRepo::new("acme/widget"),
+            store::TrackedRepo::new("acme/gadget"),
+        ],
         &dump_container_rules(),
         Some(&layout),
         &stored,
@@ -3837,6 +3897,7 @@ fn main() {
             settings_add_breakpoint,
             settings_remove_breakpoint,
             settings_reset_layout,
+            settings_save_github,
             settings_save_providers,
             settings_add_host,
             settings_set_host_enabled,

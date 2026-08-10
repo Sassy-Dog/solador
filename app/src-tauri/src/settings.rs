@@ -409,7 +409,7 @@ pub fn view(
         ],
         "general": general_tab(settings),
         "layout": layout_tab(layout, settings.host_overflow_mode),
-        "github": github_tab(stored),
+        "github": github_tab(settings, stored),
         "portfolio": portfolio_tab(repos),
         "hosts": hosts_tab(settings, hosts, rules, stored),
         "azure": azure_tab(settings, stored),
@@ -464,7 +464,7 @@ fn secret_section(field: SecretField, label: &str, stored: bool, badge: &str, he
     })
 }
 
-fn github_tab(stored: &StoredSecrets) -> Value {
+fn github_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
     json!({
         "heading": "GitHub Token",
         "secret": secret_section(
@@ -474,6 +474,16 @@ fn github_tab(stored: &StoredSecrets) -> Value {
             "Token stored",
             "Used by the Repos panel. Grant the fine-grained PAT read access to Actions (workflow runs), Contents (remote branch counts), Issues (open-issue counts), and Pull requests (open-PR counts). Stored in your OS credential store.",
         ),
+        // Not a credential, so it lives in the store beside the other org
+        // identifiers rather than in the keychain — same treatment as the Neon
+        // org id and the Sentry slug.
+        "org": {
+            "heading": "GitHub Organization",
+            "label": "Organization (e.g. acme)",
+            "value": settings.github_org,
+            "help": "Used by the GitHub Runners panel to list your organization's self-hosted runners. Leave blank if you have none — the panel says so rather than showing an empty list.",
+            "saveLabel": "Save",
+        },
     })
 }
 
@@ -1376,7 +1386,14 @@ mod tests {
             openclaw: false,
             hosts: [host.id].into_iter().collect(),
         };
-        (settings, vec![host, off], store::seeded_repos(), stored)
+        // Explicit, not `seeded_repos()`: nothing is seeded any more, and a
+        // fixture built from an empty seed would leave every portfolio
+        // assertion below passing over zero rows.
+        let repos = vec![
+            store::TrackedRepo::new("acme/widget"),
+            store::TrackedRepo::new("acme/gadget"),
+        ];
+        (settings, vec![host, off], repos, stored)
     }
 
     /// The default OpenClaw facts: nothing connected, nothing paired, no key.
