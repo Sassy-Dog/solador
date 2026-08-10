@@ -1,4 +1,4 @@
-# Go public — fresh repo at `cpmadrid/devcanopy`
+# Go public — fresh repo at `cpmadrid/solador`
 
 Date: 2026-08-10
 Status: proposed
@@ -49,7 +49,7 @@ reads as an invitation.
 
 ## Goal
 
-A public repository at `cpmadrid/devcanopy` that a stranger can read, build,
+A public repository at `cpmadrid/solador` that a stranger can read, build,
 run without hitting Sassy-Dog-specific defaults, and file a well-routed issue
 against — with the self-hosted runner pool no longer reachable from it.
 
@@ -73,32 +73,54 @@ audience is developers willing to run `cargo build`. Phase 2 is what makes
 
 | Decision | Choice | Why |
 |---|---|---|
-| Migration shape | Fresh repo at `cpmadrid/devcanopy`; **archive** the old one | Fresh start was the stated constraint. Archiving (not deleting) keeps 86 closed issues and full history searchable |
+| Migration shape | Fresh repo at `cpmadrid/solador`; **archive** the old one | Fresh start was the stated constraint. Archiving (not deleting) keeps 86 closed issues and full history searchable |
 | Old repo disposition | Archive, read-only, reversible | The 86 closed issues hold reasoning `CLAUDE.md` references but does not contain |
 | Visibility flip timing | **After** CI moves off self-hosted, verified green | Never a window where public + self-hosted coexist |
 | License | Apache-2.0 | Permissive like MIT, plus a patent grant and a §6 trademark clause protecting a named product |
 | CI runners | `ubuntu-latest`, `macos-latest`, `windows-latest` | Free on public repos, including macOS — removes the two-runner pool constraint that froze the Swift jobs |
 | Portfolio seed | Empty | A seeded roster is correct for one user and wrong for every other |
 | Bundle ID / keychain service | **Unchanged** (`com.sassydog.*`) | Invisible to users; changing it orphans every stored credential for zero user benefit |
-| Product name | **Unchanged** (DevCanopy) | With no website there is no domain to buy, so the name only has to be a good repo name. `devcanopy` is unclaimed and unambiguous |
+| Product name | **Solador** | See below |
+| Rename scope | Package manifests, product strings, docs — **not** the identity layer | The `devcanopy-` prefix exists only in `Cargo.toml`; crates are imported as `wire`/`store`/`github`, so zero `.rs` files change. The identity layer is stateful and stays |
 | `.claude/sassy-dog/*` | Ship it | Process, not secrets. Differentiating, and useful to contributors. Reversible |
 | Signing / releases | Deferred to Phase 2 | Certificate procurement has lead time; see *Out of scope* |
 
 ### On the name
 
-`DevCockpit` / `cockpit.dev` was considered and rejected on three grounds:
-[Cockpit](https://cockpit-project.org) is Red Hat's server admin console in the
-same product category; `cockpit` is already the load-bearing internal noun
-across 101 files (`CockpitView`, `crates/viewmodel/src/cockpit.rs`,
-`cockpit_layout`); and "cockpit" is operator vocabulary, while the stated
-audience is developers. DevCanopy's metaphor does not land, but the name is
-unclaimed — a rarer property, and the one a rename would spend.
+**Solador** — Spanish, from *solar* (to floor, to pave, to tile) plus the agent
+suffix *-dor*: a tiler, the tradesperson who lays tiles. The cockpit is a grid
+of tiles; a solador is who arranges them.
+
+It is the only candidate examined that is unclaimed on **every** registry:
+no GitHub repository of that name, and `solador`, `solador-wire`,
+`solador-store` all free on crates.io, plus Homebrew and npm.
+
+Rejected alternatives, and why they are recorded rather than forgotten — each
+died of a collision that a narrow search initially hid:
+
+| Candidate | Killed by |
+|---|---|
+| `DevCockpit` / `cockpit.dev` | [Cockpit](https://cockpit-project.org) is Red Hat's server admin console in the same category; `cockpit` is already the internal noun across 101 files; and it is *operator* vocabulary while the audience is developers |
+| `Tessera` | Nine exact-name repos, including a 1,177★ graphite dashboard, a 288★ AI-coding-session workspace, and a 257★ Rust UI library. Bare search is swamped by Tesseract (75k★) |
+| `Vane`, `Crow`, `Vigil` | 36k★ / 7.6k★ / 1.9k★ exact-name repos — and Vigil is itself an infrastructure status page |
+| `Keel`, `Pennant`, `Ballast` | 2,721★ / 590★ / 469★ |
+| `Telltale`, `Plumb` | Clean enough (22★ / 145★) but passed over |
+
+The old name is retired for the reasons originally stated: the canopy metaphor
+communicates nothing, and the `Dev-` prefix was filler. The prefix's job —
+signalling the audience — turns out to be one no name has to do: Sentry,
+Grafana, Prometheus, Tailscale, Linear, Vercel, Neon, Bun and Deno all decline
+it. The README, the screenshots, and where it is posted carry that instead.
+
+Two known costs, accepted: *Solador* is one vowel from *Salvador* and will be
+misheard, and it names the **rendering** rather than the **watching**, so it
+carries no meaning to a newcomer until the README supplies one.
 
 ## Sequencing
 
 The ordering is the security control, not a convenience:
 
-1. Create `cpmadrid/devcanopy` **private**. Push current state as one commit —
+1. Create `cpmadrid/solador` **private**. Push current state as one commit —
    a fresh `git init` in a clean export of the working tree, not an orphan
    branch pushed from the existing clone, so no object from the old history can
    ride along. The local working clone re-points at the new remote here, at
@@ -178,11 +200,35 @@ rejects elsewhere (see the Sentry Crons blind-read rule).
 `app/src-tauri/src/settings.rs`:
 
 - **L1171-1172** — "GitHub Repository" and "Report an Issue" point at
-  `Sassy-Dog/devcanopy`. Re-point to `cpmadrid/devcanopy`, or users file bugs
+  `Sassy-Dog/devcanopy`. Re-point to `cpmadrid/solador`, or users file bugs
   into an archive.
 - **L1032** — Azure Cost help text reads *"the cost-exports container on
   stsassydog"*. Generalize; it ships a private storage account name in the UI.
 - **L39** — doc link to `Sassy-Dog/devcanopy/issues/15`, which will 404.
+
+### Rename to Solador
+
+Cheaper than it looks. The `devcanopy-` prefix lives **only in package
+manifests** — every crate declares a short `[lib] name` (`wire`, `store`,
+`github`), so there are **zero `devcanopy_` paths in any `.rs` file** and no
+`use` statement changes.
+
+Renamed:
+
+- Nine `name = "devcanopy-*"` lines in `crates/*/Cargo.toml` and
+  `app/src-tauri/Cargo.toml`, plus the ~10 dependency declarations that
+  reference them, plus a regenerated `Cargo.lock`.
+- `app/src-tauri/tauri.conf.json:3` `productName`, and the window `title` at
+  `:10`.
+- `README.md`, `CLAUDE.md`, `app/README.md`, `Docs/*`, `Scripts/*` strings.
+
+**Not** renamed, and this is the point of the split: `SERVICE`
+(`crates/store/src/secrets.rs:30`), `APP_DIR_NAME`
+(`crates/store/src/lib.rs:61`), the bundle identifier
+(`app/src-tauri/tauri.conf.json:5`), and the `azurecost-sas` LaunchAgent label.
+Those four are **stateful** — they address a live keychain item, an on-disk
+store, an installed app's macOS identity, and a running LaunchAgent. Renaming
+them orphans every credential in daily use to change strings no user ever sees.
 
 ### Governance
 
@@ -257,10 +303,10 @@ certificate procurement has lead time and it is a separable body of work. The
 2026-07-27 cross-platform spec already treats signing as non-negotiable for the
 shipping goal; this spec is its prerequisite, not its replacement.
 
-**Also out of scope:** renaming the product, changing the
-`com.sassydog.*` bundle identifier or keychain service, a marketing website,
-and un-freezing the Swift app (though free macOS CI minutes make that newly
-affordable).
+**Also out of scope:** changing the `com.sassydog.*` bundle identifier,
+keychain service, `APP_DIR_NAME`, or LaunchAgent label — the rename stops at
+the identity layer, deliberately. A marketing website. Un-freezing the Swift
+app (though free macOS CI minutes make that newly affordable).
 
 ## Risks
 
@@ -280,7 +326,7 @@ affordable).
 - Exposure scan re-run immediately before the visibility flip.
 - First-run smoke against a temporary data directory: empty portfolio renders a
   setup instruction, no 404 rows, no `sassydog-ghr-ubu-*` rule present.
-- Settings → both links resolve to `cpmadrid/devcanopy`.
+- Settings → both links resolve to `cpmadrid/solador`.
 - Azure Cost help text contains no storage account name.
 - A fork PR from a throwaway account triggers CI and touches no self-hosted
   runner.
