@@ -406,9 +406,9 @@ pub fn fixture_state(
     state.apply_remote(
         "ubu-01".to_owned(),
         vec![
-            container("sassydog-ghr-ubu-1", "Up 12 minutes", true, "podman"),
+            container("acme-ci-runner-1", "Up 12 minutes", true, "podman"),
             container(
-                "sassydog-ghr-ubu-2",
+                "acme-ci-runner-2",
                 "Exited (0) 1 minute ago",
                 false,
                 "podman",
@@ -420,7 +420,7 @@ pub fn fixture_state(
 
     let rules = vec![
         ContainerGroupRule::new(
-            "sassydog-ghr-ubu-*",
+            "acme-ci-runner-*",
             "ghr runners",
             ContainerRuleAction::Collapse,
         )

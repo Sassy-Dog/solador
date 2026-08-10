@@ -529,13 +529,13 @@ test("Portfolio adds, toggles and edits watched workflows", async ({ page, baseU
 
   const add = page.locator(".btn.add");
   await expect(add).toBeDisabled();
-  await page.locator("#repo-slug").fill("velovate");
+  await page.locator("#repo-slug").fill("gadget");
   await expect(add, "a bare name is not owner/name").toBeDisabled();
-  await page.locator("#repo-slug").fill("Sassy-Dog/openclaw");
+  await page.locator("#repo-slug").fill("acme/lathe");
   await expect(add).toBeEnabled();
   await add.click();
   expect(await calls(page, "settings_add_repo")).toEqual([
-    { command: "settings_add_repo", args: { slug: "Sassy-Dog/openclaw" } },
+    { command: "settings_add_repo", args: { slug: "acme/lathe" } },
   ]);
 
   const first = settings.portfolio.rows[0].slug;

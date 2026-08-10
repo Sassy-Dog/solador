@@ -129,7 +129,7 @@ const LONGEST_W: f64 = 42.0; // "LONGEST" 37.8
 const MONO_11_CHAR_W: f64 = 6.6;
 
 /// The longest repo short-name the column holds without ellipsis, in
-/// characters. `tailoredtip` is 11 today; 14 leaves headroom without leaving a
+/// characters. `flywheel` is 11 today; 14 leaves headroom without leaving a
 /// visible void between the name and the numbers, and anything longer
 /// ellipsizes rather than pushing a column (`.gh-repo-name` sets
 /// `text-overflow`).
@@ -1025,7 +1025,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
             name: name.to_owned(),
             event: "push".to_owned(),
             status: status.to_owned(),
-            html_url: format!("https://github.com/Sassy-Dog/x/actions/runs/{id}"),
+            html_url: format!("https://github.com/acme/x/actions/runs/{id}"),
             created_at: (now - chrono::TimeDelta::minutes(minutes_ago)).to_rfc3339(),
             head_branch: Some("main".to_owned()),
             conclusion: conclusion.map(ToOwned::to_owned),
@@ -1052,33 +1052,33 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         ),
         // A build in flight: amber dot, amber JOBS, an elapsed LONGEST.
         health(
-            "Sassy-Dog/qr-ninja",
+            "acme/pipe-fitting",
             &[run(2, "CI", "in_progress", None, 95)],
             counts(Some(3), Some(9), Some(2)),
         ),
         // Parked at an approval gate: the blinking dot.
         health(
-            "Sassy-Dog/tailoredtip",
+            "acme/flywheel",
             &[run(3, "Release", "waiting", None, 6)],
             counts(Some(2), Some(1), Some(1)),
         ),
         // Red, and its side counts came back while its runs failed.
         health(
-            "Sassy-Dog/velovate",
+            "acme/gadget",
             &[run(4, "CI", "completed", Some("failure"), 12)],
             counts(Some(41), Some(23), Some(5)),
         ),
         // The PAT could read the runs but not the Issues/PRs scopes: every
         // side count is an em dash while the repo stays green.
         health(
-            "Sassy-Dog/what2wear",
+            "acme/cogwheel",
             &[run(5, "CI", "completed", Some("success"), 240)],
             counts(None, None, None),
         ),
         // The runs themselves could not be fetched: muted dot, all em dashes.
-        RepoWorkflowHealth::unreachable("Sassy-Dog/platform"),
+        RepoWorkflowHealth::unreachable("acme/toolkit"),
     ]);
-    // Four of the six repos are checked out here; `platform` and `what2wear`
+    // Four of the six repos are checked out here; `platform` and `cogwheel`
     // are not, so their LOCAL/WT cells are em dashes rather than zeroes.
     state.apply_local(BTreeMap::from([
         (
@@ -1092,21 +1092,21 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
             },
         ),
         (
-            "qrninja".to_owned(),
+            "pipefitting".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(2),
                 worktrees: Some(1),
             },
         ),
         (
-            "tailoredtip".to_owned(),
+            "flywheel".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(1),
                 worktrees: Some(1),
             },
         ),
         (
-            "velovate".to_owned(),
+            "gadget".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(0),
                 worktrees: Some(1),
@@ -1381,10 +1381,10 @@ mod tests {
     /// look at them, so the unreachable row is clickable too.
     #[test]
     fn an_unreachable_row_is_still_clickable() {
-        let state = ready(vec![RepoWorkflowHealth::unreachable("Sassy-Dog/platform")]);
+        let state = ready(vec![RepoWorkflowHealth::unreachable("acme/toolkit")]);
         assert_eq!(
             only_row(&state, now())["url"],
-            "https://github.com/Sassy-Dog/platform/actions"
+            "https://github.com/acme/toolkit/actions"
         );
     }
 
@@ -1426,7 +1426,7 @@ mod tests {
 
         for slug in [
             "acme/widget",
-            "Sassy-Dog/qr-ninja",
+            "acme/pipe-fitting",
             "o/r",
             "some-org/some.repo",
         ] {
@@ -1457,7 +1457,7 @@ mod tests {
     #[test]
     fn unknown_renders_an_em_dash_and_a_real_zero_renders_a_dimmed_zero() {
         let state = ready(vec![health_of(
-            "Sassy-Dog/velovate",
+            "acme/gadget",
             &[],
             RepoCounts {
                 remote_branches: Some(0),
@@ -1487,7 +1487,7 @@ mod tests {
     #[test]
     fn a_non_zero_count_renders_in_ink() {
         let state = ready(vec![health_of(
-            "o/velovate",
+            "o/gadget",
             &[],
             RepoCounts {
                 remote_branches: Some(41),
@@ -1522,14 +1522,14 @@ mod tests {
     #[test]
     fn local_counts_join_by_normalized_name() {
         let mut state = ready(vec![health_of(
-            "Sassy-Dog/tailored-tip",
+            "acme/fly-wheel",
             &[],
             RepoCounts::default(),
         )]);
         // The directory on disk is spelled differently from the slug — which
         // is exactly what `normalize` exists to bridge.
         state.apply_local(BTreeMap::from([(
-            "tailoredtip".to_owned(),
+            "flywheel".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(5),
                 worktrees: Some(2),
@@ -1544,9 +1544,9 @@ mod tests {
     /// for the other — never a zero, and never both blanked.
     #[test]
     fn a_half_readable_repo_reports_the_half_it_knows() {
-        let mut state = ready(vec![health_of("o/velovate", &[], RepoCounts::default())]);
+        let mut state = ready(vec![health_of("o/gadget", &[], RepoCounts::default())]);
         state.apply_local(BTreeMap::from([(
-            "velovate".to_owned(),
+            "gadget".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(3),
                 worktrees: None,
@@ -1915,7 +1915,7 @@ mod tests {
         );
         // The names actually on the board today are far inside it, so nothing
         // ellipsizes in practice.
-        for name in ["devcanopy", "tailoredtip", "sassydog-web", "what2wear"] {
+        for name in ["devcanopy", "flywheel", "acme-web", "cogwheel"] {
             let width = name.len() as f64 * MONO_11_CHAR_W;
             assert!(width <= REPO_NAME_W, "{name} needs {width}pt");
         }
@@ -1938,13 +1938,13 @@ mod tests {
     #[test]
     fn rows_are_sorted_by_short_name_case_insensitively() {
         let state = ready(vec![
-            health_of("Sassy-Dog/Velovate", &[], RepoCounts::default()),
+            health_of("acme/Gadget", &[], RepoCounts::default()),
             health_of("acme/widget", &[], RepoCounts::default()),
             health_of("Other-Org/apple", &[], RepoCounts::default()),
         ]);
         assert_eq!(
             row_names(&repos_view(&state, now())),
-            vec!["apple", "Velovate", "widget"]
+            vec!["apple", "Gadget", "widget"]
         );
     }
 

@@ -709,7 +709,7 @@ mod tests {
             neon_org_id: "org-123".into(),
             neon_usd_per_cu_hour: 0.175,
             neon_usd_per_gib_month: 0.5,
-            sentry_org_slug: "sassy-dog".into(),
+            sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 100_000,
             vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
@@ -979,28 +979,22 @@ mod tests {
         let mut store = Store::open_in(dir.path()).expect("open");
         let seeded = store.repos().len();
 
-        store.upsert_repo(TrackedRepo::new("Sassy-Dog/openclaw"));
+        store.upsert_repo(TrackedRepo::new("acme/lathe"));
         assert_eq!(store.repos().len(), seeded + 1);
 
-        store
-            .repo_mut("Sassy-Dog/openclaw")
-            .expect("update")
-            .enabled = false;
-        assert!(!store.repo("Sassy-Dog/openclaw").expect("read").enabled);
+        store.repo_mut("acme/lathe").expect("update").enabled = false;
+        assert!(!store.repo("acme/lathe").expect("read").enabled);
 
-        store.upsert_repo(TrackedRepo::new("Sassy-Dog/openclaw"));
+        store.upsert_repo(TrackedRepo::new("acme/lathe"));
         assert_eq!(store.repos().len(), seeded + 1, "slug is the identity");
-        assert!(store.repo("Sassy-Dog/openclaw").expect("read").enabled);
+        assert!(store.repo("acme/lathe").expect("read").enabled);
 
         assert_eq!(
-            store
-                .remove_repo("Sassy-Dog/openclaw")
-                .expect("delete")
-                .slug,
-            "Sassy-Dog/openclaw"
+            store.remove_repo("acme/lathe").expect("delete").slug,
+            "acme/lathe"
         );
         assert_eq!(store.repos().len(), seeded);
-        assert!(store.remove_repo("Sassy-Dog/openclaw").is_none());
+        assert!(store.remove_repo("acme/lathe").is_none());
     }
 
     #[test]
@@ -1034,7 +1028,7 @@ mod tests {
         }
 
         // Nor is there a *field* a credential could be smuggled into. Checked
-        // on keys, not the raw text: the org slug `Sassy-Dog` contains "sas",
+        // on keys, not the raw text: an org slug like `acme-sas-team` contains "sas",
         // and a substring scan of the whole file would fail on that forever
         // while proving nothing.
         let json: serde_json::Value = serde_json::from_str(&raw).expect("parse");

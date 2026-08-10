@@ -343,9 +343,9 @@ mod tests {
 
     #[test]
     fn glob_seeded_runner_pattern() {
-        assert!(matches_glob("sassydog-ghr-ubu-1", "sassydog-ghr-ubu-*"));
-        assert!(matches_glob("sassydog-ghr-ubu-", "sassydog-ghr-ubu-*"));
-        assert!(!matches_glob("sassydog-ghr-mac-1", "sassydog-ghr-ubu-*"));
+        assert!(matches_glob("acme-ci-runner-1", "acme-ci-runner-*"));
+        assert!(matches_glob("acme-ci-runner-", "acme-ci-runner-*"));
+        assert!(!matches_glob("acme-ci-mac-1", "acme-ci-runner-*"));
     }
 
     #[test]

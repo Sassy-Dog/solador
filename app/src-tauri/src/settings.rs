@@ -183,7 +183,7 @@ pub fn parse_port(raw: &str) -> u16 {
 /// Whether a repo slug is addable, per `PortfolioStore.add(slug:)`.
 ///
 /// Returns the trimmed slug. The duplicate check is case-insensitive because
-/// GitHub's own is: `Sassy-Dog/velovate` and `sassy-dog/velovate` are one repo,
+/// GitHub's own is: `acme/gadget` and `Acme/gadget` are one repo,
 /// and tracking both would double every count it feeds.
 #[must_use]
 pub fn validated_slug(raw: &str, existing: &[TrackedRepo]) -> Option<String> {
@@ -504,7 +504,7 @@ fn portfolio_tab(repos: &[TrackedRepo]) -> Value {
             .collect::<Vec<_>>(),
         "add": {
             "heading": "Add Repo",
-            "slugLabel": "owner/name (e.g. Sassy-Dog/velovate)",
+            "slugLabel": "owner/name (e.g. acme/gadget)",
             "buttonLabel": "Add",
             "help": "Drives the Repos and GitHub Runners panels. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive.",
         },
@@ -1280,10 +1280,10 @@ mod tests {
     fn a_slug_must_look_like_owner_name() {
         let existing = [];
         assert_eq!(
-            validated_slug("  Sassy-Dog/velovate  ", &existing).as_deref(),
-            Some("Sassy-Dog/velovate")
+            validated_slug("  acme/gadget  ", &existing).as_deref(),
+            Some("acme/gadget")
         );
-        for raw in ["velovate", "/velovate", "Sassy-Dog/", "", "   "] {
+        for raw in ["gadget", "/gadget", "acme/", "", "   "] {
             assert_eq!(validated_slug(raw, &existing), None, "raw {raw:?}");
         }
     }
@@ -1292,12 +1292,12 @@ mod tests {
     /// spellings would double every count the slug feeds.
     #[test]
     fn a_duplicate_slug_is_rejected_whatever_its_case() {
-        let existing = [TrackedRepo::new("Sassy-Dog/velovate")];
-        assert_eq!(validated_slug("Sassy-Dog/velovate", &existing), None);
-        assert_eq!(validated_slug("sassy-dog/VELOVATE", &existing), None);
+        let existing = [TrackedRepo::new("acme/gadget")];
+        assert_eq!(validated_slug("acme/gadget", &existing), None);
+        assert_eq!(validated_slug("acme/GADGET", &existing), None);
         assert_eq!(
-            validated_slug("Sassy-Dog/qr-ninja", &existing).as_deref(),
-            Some("Sassy-Dog/qr-ninja")
+            validated_slug("acme/pipe-fitting", &existing).as_deref(),
+            Some("acme/pipe-fitting")
         );
     }
 
@@ -1312,7 +1312,7 @@ mod tests {
         for raw in ["", "   ", ",,", "\n"] {
             assert_eq!(parse_workflows(raw), None, "raw {raw:?}");
         }
-        let mut repo = TrackedRepo::new("Sassy-Dog/velovate");
+        let mut repo = TrackedRepo::new("acme/gadget");
         repo.watched_workflows = parse_workflows(" release.yml ,, deploy.yml\n");
         assert_eq!(workflows_text(&repo), "release.yml, deploy.yml");
         repo.watched_workflows = parse_workflows(&workflows_text(&repo));
@@ -1363,7 +1363,7 @@ mod tests {
             core_row_span: 3,
             host_overflow_mode: HostOverflowMode::Tabs,
             neon_org_id: "org-abc".into(),
-            sentry_org_slug: "sassy-dog".into(),
+            sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 50_000,
             azure_monthly_budget_usd: 250.0,
             neon_usd_per_cu_hour: 0.106,
@@ -2390,7 +2390,7 @@ mod tests {
             vm["usage"]["neon"]["usdPerGibMonthLabel"],
             "$ per GiB-month storage"
         );
-        assert_eq!(vm["usage"]["sentry"]["orgSlug"], "sassy-dog");
+        assert_eq!(vm["usage"]["sentry"]["orgSlug"], "acme");
         assert_eq!(vm["usage"]["sentry"]["quota"], 50_000);
         assert_eq!(vm["azure"]["budget"]["value"], 250.0);
     }

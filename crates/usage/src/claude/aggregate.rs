@@ -202,7 +202,7 @@ mod tests {
                 offset_hours: 0.0,
                 request_id: "req_1",
                 model: "claude-sonnet-4-5",
-                project: "velovate",
+                project: "gadget",
                 input: 0,
                 output: 0,
                 cache_write: 0,
@@ -534,7 +534,7 @@ mod tests {
             Rec {
                 request_id: "a",
                 model: "claude-sonnet-4-5",
-                project: "velovate",
+                project: "gadget",
                 input: 1_000_000,
                 ..Rec::default()
             }
@@ -542,7 +542,7 @@ mod tests {
             Rec {
                 request_id: "b",
                 model: "claude-opus-4-7",
-                project: "qr-ninja",
+                project: "pipe-fitting",
                 input: 1_000_000,
                 ..Rec::default()
             }
@@ -550,10 +550,13 @@ mod tests {
         ];
         let summary = summarize_at_utc(&records);
         assert_eq!(summary.projects_last_7d.len(), 2);
-        // Equal tokens (1M each), so the name tiebreak puts qr-ninja first.
-        assert_eq!(summary.projects_last_7d[0].name, "qr-ninja");
-        assert!((summary.projects_last_7d[0].totals.cost_usd - 15.0).abs() < 1e-9);
-        assert_eq!(summary.projects_last_7d[1].name, "velovate");
+        // Equal tokens (1M each), so the name tiebreak decides — and it is
+        // alphabetical, not by cost: `gadget` leads despite the opus record
+        // under `pipe-fitting` being the more expensive of the two. That
+        // separation is the point of the test.
+        assert_eq!(summary.projects_last_7d[0].name, "gadget");
+        assert_eq!(summary.projects_last_7d[1].name, "pipe-fitting");
+        assert!((summary.projects_last_7d[1].totals.cost_usd - 15.0).abs() < 1e-9);
     }
 
     /// Twin of `testPerModelBreakdownGroupsByModel`.

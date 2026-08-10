@@ -685,19 +685,19 @@ fn fixture_summary() -> UsageSummary {
                 totals: totals(2_100_000),
             },
             usage::claude::UsageBreakdown {
-                name: "velovate".to_owned(),
+                name: "gadget".to_owned(),
                 totals: totals(1_050_000),
             },
             usage::claude::UsageBreakdown {
-                name: "qr-ninja".to_owned(),
+                name: "pipe-fitting".to_owned(),
                 totals: totals(840_000),
             },
             usage::claude::UsageBreakdown {
-                name: "tailoredtip".to_owned(),
+                name: "flywheel".to_owned(),
                 totals: totals(300_000),
             },
             usage::claude::UsageBreakdown {
-                name: "sassydog-web".to_owned(),
+                name: "acme-web".to_owned(),
                 totals: totals(20_000),
             },
         ],

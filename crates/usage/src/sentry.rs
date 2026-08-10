@@ -1166,7 +1166,7 @@ mod tests {
     async fn requests_the_rolling_window_for_the_configured_org() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/0/organizations/sassy-dog/stats_v2/"))
+            .and(path("/api/0/organizations/acme/stats_v2/"))
             .and(header("authorization", "Bearer sentry_token_value"))
             .and(query_param("field", query::FIELD))
             .and(query_param("category", "error"))
@@ -1177,7 +1177,7 @@ mod tests {
             .await;
 
         let summary = client(&server.uri())
-            .accepted_errors("sassy-dog")
+            .accepted_errors("acme")
             .await
             .expect("should decode");
         assert_eq!(summary.accepted_error_events(), Some(12_345));
@@ -1256,7 +1256,7 @@ mod tests {
             .await;
 
         let summary = client(&server.uri())
-            .accepted_errors("sassy-dog")
+            .accepted_errors("acme")
             .await
             .expect("an org with no ingest is a successful answer");
         assert_eq!(summary, SentryUsageSummary::Unmeasured);
@@ -1273,7 +1273,7 @@ mod tests {
             .await;
 
         let err = client(&server.uri())
-            .accepted_errors("sassy-dog")
+            .accepted_errors("acme")
             .await
             .unwrap_err();
         assert!(err.is_auth_failure());
@@ -1292,7 +1292,7 @@ mod tests {
             .await;
 
         let err = client(&server.uri())
-            .accepted_errors("sassy-dog")
+            .accepted_errors("acme")
             .await
             .unwrap_err();
         assert_eq!(err, SentryUsageError::Http { status: 503 });
@@ -1308,7 +1308,7 @@ mod tests {
             .await;
 
         let err = client(&server.uri())
-            .accepted_errors("sassy-dog")
+            .accepted_errors("acme")
             .await
             .unwrap_err();
         assert!(
@@ -1320,7 +1320,7 @@ mod tests {
     #[tokio::test]
     async fn an_unroutable_host_is_unreachable() {
         let err = client("http://127.0.0.1:1")
-            .accepted_errors("sassy-dog")
+            .accepted_errors("acme")
             .await
             .unwrap_err();
         assert!(
@@ -1340,7 +1340,7 @@ mod tests {
             .await;
 
         client(&server.uri())
-            .accepted_errors("sassy-dog")
+            .accepted_errors("acme")
             .await
             .expect("decodes");
 
@@ -1522,7 +1522,7 @@ mod tests {
             "slug": "nightly-rollup",
             "status": "active",
             "isMuted": false,
-            "project": { "slug": "velovate-jobs" },
+            "project": { "slug": "gadget-jobs" },
             "environments": [
               {
                 "name": "prd",
@@ -1893,7 +1893,7 @@ mod tests {
     async fn cron_monitors_reads_every_monitor_in_the_org() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/0/organizations/sassy-dog/monitors/"))
+            .and(path("/api/0/organizations/acme/monitors/"))
             .and(header("authorization", "Bearer sentry_token_value"))
             .and(query_param("per_page", "100"))
             .respond_with(json(DRIFT_CHECK))
@@ -1901,7 +1901,7 @@ mod tests {
             .await;
 
         let summary = client(&server.uri())
-            .cron_monitor_status("sassy-dog", cron_now())
+            .cron_monitor_status("acme", cron_now())
             .await
             .expect("should decode");
         assert_eq!(summary.monitor_count(), 1);
@@ -1941,13 +1941,13 @@ mod tests {
             );
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/0/organizations/sassy-dog/monitors/"))
+            .and(path("/api/0/organizations/acme/monitors/"))
             .respond_with(json(&healthy))
             .mount(&server)
             .await;
 
         let summary = client(&server.uri())
-            .cron_monitor_status("sassy-dog", cron_now())
+            .cron_monitor_status("acme", cron_now())
             .await
             .expect("a healthy payload decodes");
         assert_eq!(summary.monitor_count(), 1);
@@ -1989,7 +1989,7 @@ mod tests {
             .await;
 
         let err = client(&server.uri())
-            .cron_monitor_status("sassy-dog", cron_now())
+            .cron_monitor_status("acme", cron_now())
             .await
             .unwrap_err();
         assert!(err.is_auth_failure());
@@ -2008,7 +2008,7 @@ mod tests {
             .await;
 
         let err = client(&server.uri())
-            .cron_monitor_status("sassy-dog", cron_now())
+            .cron_monitor_status("acme", cron_now())
             .await
             .unwrap_err();
         assert!(
@@ -2022,7 +2022,7 @@ mod tests {
     async fn a_paged_monitor_list_is_walked_to_the_end() {
         let server = MockServer::start().await;
         let more = format!(
-            "<{0}/api/0/organizations/sassy-dog/monitors/?&cursor=0%3A100%3A0>; \
+            "<{0}/api/0/organizations/acme/monitors/?&cursor=0%3A100%3A0>; \
              rel=\"next\"; results=\"true\"; cursor=\"0:100:0\"",
             server.uri()
         );
@@ -2043,7 +2043,7 @@ mod tests {
             .await;
 
         let summary = client(&server.uri())
-            .cron_monitor_status("sassy-dog", cron_now())
+            .cron_monitor_status("acme", cron_now())
             .await
             .expect("both pages decode");
         assert_eq!(summary.monitor_count(), 2, "both pages counted");
@@ -2056,7 +2056,7 @@ mod tests {
     async fn an_endless_monitor_list_fails_rather_than_answering_partially() {
         let server = MockServer::start().await;
         let more = format!(
-            "<{0}/api/0/organizations/sassy-dog/monitors/>; \
+            "<{0}/api/0/organizations/acme/monitors/>; \
              rel=\"next\"; results=\"true\"; cursor=\"0:100:0\"",
             server.uri()
         );
@@ -2066,7 +2066,7 @@ mod tests {
             .await;
 
         let err = client(&server.uri())
-            .cron_monitor_status("sassy-dog", cron_now())
+            .cron_monitor_status("acme", cron_now())
             .await
             .unwrap_err();
         assert_eq!(err, SentryUsageError::MonitorListTruncated);
@@ -2086,7 +2086,7 @@ mod tests {
             .await;
 
         client(&server.uri())
-            .cron_monitors("sassy-dog")
+            .cron_monitors("acme")
             .await
             .expect("decodes");
 

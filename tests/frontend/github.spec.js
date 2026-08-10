@@ -226,7 +226,7 @@ test("every repo row is its own tap target, including the unreachable one", asyn
   }
   // `platform` is the repo whose runs could not be fetched — being unable to
   // read a repo's CI is exactly when you want to go and look at it.
-  const unreachable = repos.rows.findIndex((r) => r.name === "platform");
+  const unreachable = repos.rows.findIndex((r) => r.name === "toolkit");
   expect(unreachable).toBeGreaterThan(-1);
   await rows.nth(unreachable).click();
   expect(

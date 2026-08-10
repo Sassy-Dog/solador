@@ -44,7 +44,7 @@ pub struct LocalRepoCounts {
 ///
 /// Port of `PortfolioRepos.normalize`, and the *only* join between a tracked
 /// slug and a directory on disk — which is what lets the slug
-/// `Sassy-Dog/tailored-tip` find the folder `tailoredtip`.
+/// `acme/fly-wheel` find the folder `flywheel`.
 #[must_use]
 pub fn normalize(raw: &str) -> String {
     raw.chars()
@@ -259,16 +259,16 @@ mod tests {
 
     // MARK: - normalize
 
-    /// The join that makes the slug `tailored-tip` find the folder
-    /// `tailoredtip`. Without it the LOCAL/WT columns read "—" for every repo
+    /// The join that makes the slug `fly-wheel` find the folder
+    /// `flywheel`. Without it the LOCAL/WT columns read "—" for every repo
     /// whose directory name is punctuated differently from its slug.
     #[test]
     fn normalize_strips_punctuation_and_case() {
-        assert_eq!(normalize("tailored-tip"), "tailoredtip");
-        assert_eq!(normalize("TailoredTip"), "tailoredtip");
-        assert_eq!(normalize("qr-ninja"), "qrninja");
-        assert_eq!(normalize("qr_ninja "), "qrninja");
-        assert_eq!(normalize("what2wear"), "what2wear");
+        assert_eq!(normalize("fly-wheel"), "flywheel");
+        assert_eq!(normalize("FlyWheel"), "flywheel");
+        assert_eq!(normalize("pipe-fitting"), "pipefitting");
+        assert_eq!(normalize("pipe_fitting "), "pipefitting");
+        assert_eq!(normalize("cogwheel"), "cogwheel");
         assert_eq!(normalize("---"), "");
     }
 
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn a_directory_with_a_dot_git_entry_is_a_repo_root() {
         let dir = temp();
-        let repo = fake_repo(dir.path(), "velovate");
+        let repo = fake_repo(dir.path(), "gadget");
         assert_eq!(discover(&[dir.path().to_path_buf()], MAX_DEPTH), vec![repo]);
     }
 
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn discovery_finds_repos_nested_under_a_group_directory() {
         let dir = temp();
-        let repo = fake_repo(&dir.path().join("sassy-dog"), "platform");
+        let repo = fake_repo(&dir.path().join("acme"), "platform");
         assert_eq!(discover(&[dir.path().to_path_buf()], MAX_DEPTH), vec![repo]);
     }
 
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn a_missing_root_is_skipped_rather_than_failing_the_scan() {
         let dir = temp();
-        let repo = fake_repo(dir.path(), "velovate");
+        let repo = fake_repo(dir.path(), "gadget");
         let roots = vec![dir.path().join("does-not-exist"), dir.path().to_path_buf()];
         assert_eq!(discover(&roots, MAX_DEPTH), vec![repo]);
     }
@@ -348,9 +348,9 @@ mod tests {
     #[test]
     fn scan_keys_repos_by_their_normalized_directory_name() {
         let dir = temp();
-        fake_repo(dir.path(), "qr-ninja");
+        fake_repo(dir.path(), "pipe-fitting");
         let found = scan(&[dir.path().to_path_buf()], MAX_DEPTH);
-        assert_eq!(found.keys().collect::<Vec<_>>(), vec!["qrninja"]);
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec!["pipefitting"]);
     }
 
     /// A directory that is not a real repo yields "—" on both columns, never a
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn counts_branches_and_worktrees_of_a_real_repository() {
         let dir = temp();
-        let repo = real_repo(dir.path(), "velovate");
+        let repo = real_repo(dir.path(), "gadget");
 
         assert_eq!(branch_count(&repo), Some(1), "just the initial branch");
         assert_eq!(worktree_count(&repo), Some(1), "just the main checkout");
@@ -383,7 +383,7 @@ mod tests {
         run_git(&repo, &["branch", "feat/two"]);
         assert_eq!(branch_count(&repo), Some(3));
 
-        let linked = dir.path().join("velovate-wt");
+        let linked = dir.path().join("gadget-wt");
         run_git(
             &repo,
             &[
@@ -398,7 +398,7 @@ mod tests {
         // …and the scan reports the same numbers through the join key.
         let found = scan(&[dir.path().to_path_buf()], MAX_DEPTH);
         assert_eq!(
-            found.get("velovate"),
+            found.get("gadget"),
             Some(&LocalRepoCounts {
                 local_branches: Some(3),
                 worktrees: Some(2),

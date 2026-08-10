@@ -418,8 +418,8 @@ pub fn fixture_state(kind: Fixture, at: u64) -> AzureState {
         spend_projected: 1_942.18,
         by_resource: costs(&[
             ("rg-platform", 612.10),
-            ("rg-velovate", 388.44),
-            ("rg-qr-ninja", 141.02),
+            ("rg-gadget", 388.44),
+            ("rg-pipe-fitting", 141.02),
             ("rg-shared", 92.80),
             ("rg-scratch", 40.19),
             ("rg-sixth-never-rendered", 9.99),

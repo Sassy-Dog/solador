@@ -242,7 +242,7 @@ mod tests {
             neon_org_id: "org-abc".into(),
             neon_usd_per_cu_hour: 0.175,
             neon_usd_per_gib_month: 0.5,
-            sentry_org_slug: "sassy-dog".into(),
+            sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 50_000,
             vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),

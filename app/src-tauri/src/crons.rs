@@ -444,7 +444,7 @@ fn fixture_monitors(
             ),
             monitor(
                 "nightly-rollup",
-                "velovate-jobs",
+                "gadget-jobs",
                 vec![environment("prd", "ok", Some(2 * HOUR), None)],
             ),
         ];
@@ -464,7 +464,7 @@ fn fixture_monitors(
         // No incident, so the age falls back to the check-in — and says so.
         monitor(
             "nightly-rollup",
-            "velovate-jobs",
+            "gadget-jobs",
             vec![environment("prd", "missed_checkin", Some(22 * HOUR), None)],
         ),
         // Never checked in at all: no duration to render.
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(row["ageColor"], color::hex(color::AMBER));
         assert_eq!(
             row["detail"],
-            "velovate-jobs/prd · missed_checkin · no incident · since last check-in"
+            "gadget-jobs/prd · missed_checkin · no incident · since last check-in"
         );
         assert!(row["title"]
             .as_str()

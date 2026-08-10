@@ -51,7 +51,7 @@ pub struct ApprovalNotice {
 
 impl ApprovalNotice {
     /// `repo` is the **short** name (`short_name()`), matching Swift's
-    /// `h.shortName` — the banner is glanced at, and `Sassy-Dog/` on every line
+    /// `h.shortName` — the banner is glanced at, and `acme/` on every line
     /// is the part that is always the same.
     fn new(repo: &str, run: &RunRef) -> Self {
         Self {
@@ -136,7 +136,7 @@ mod tests {
             name: name.to_owned(),
             event: "push".to_owned(),
             status: status.to_owned(),
-            html_url: format!("https://github.com/Sassy-Dog/x/actions/runs/{id}"),
+            html_url: format!("https://github.com/acme/x/actions/runs/{id}"),
             created_at: now().to_rfc3339(),
             head_branch: Some(branch.to_owned()),
             conclusion: None,
@@ -202,7 +202,7 @@ mod tests {
             &[
                 health("acme/widget", &[run(1, "Release", "main", "waiting")]),
                 health(
-                    "Sassy-Dog/qr-ninja",
+                    "acme/pipe-fitting",
                     &[run(2, "Deploy", "release/2.0", "waiting")],
                 ),
             ],
@@ -217,7 +217,7 @@ mod tests {
                     body: "Release · main is parked at an approval gate.".to_owned(),
                 },
                 ApprovalNotice {
-                    title: "qr-ninja · needs approval".to_owned(),
+                    title: "pipe-fitting · needs approval".to_owned(),
                     body: "Deploy · release/2.0 is parked at an approval gate.".to_owned(),
                 },
             ]

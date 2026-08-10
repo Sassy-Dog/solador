@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// One repo in the tracked portfolio. The `owner/name` slug is the identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedRepo {
-    /// `owner/name`, e.g. `Sassy-Dog/velovate`.
+    /// `owner/name`, e.g. `acme/gadget`.
     pub slug: String,
     /// Disabled repos stay configured but are not fetched.
     #[serde(default = "enabled_by_default")]
@@ -34,7 +34,7 @@ impl TrackedRepo {
         }
     }
 
-    /// Repo name after the slash, e.g. `velovate`.
+    /// Repo name after the slash, e.g. `gadget`.
     #[must_use]
     pub fn name(&self) -> &str {
         self.slug.rsplit('/').next().unwrap_or("")
@@ -69,14 +69,14 @@ mod tests {
 
     #[test]
     fn name_is_the_slug_after_the_slash() {
-        assert_eq!(TrackedRepo::new("Sassy-Dog/velovate").name(), "velovate");
-        assert_eq!(TrackedRepo::new("velovate").name(), "velovate");
+        assert_eq!(TrackedRepo::new("acme/gadget").name(), "gadget");
+        assert_eq!(TrackedRepo::new("gadget").name(), "gadget");
     }
 
     #[test]
     fn round_trips_through_json() {
         let repo = TrackedRepo {
-            slug: "Sassy-Dog/velovate".into(),
+            slug: "acme/gadget".into(),
             enabled: false,
             watched_workflows: Some(vec!["Release".into(), "deploy.yml".into()]),
         };
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn optional_fields_fall_back_when_absent() {
         let repo: TrackedRepo =
-            serde_json::from_str(r#"{"slug":"Sassy-Dog/platform"}"#).expect("deserialize");
+            serde_json::from_str(r#"{"slug":"acme/toolkit"}"#).expect("deserialize");
         assert!(repo.enabled);
         assert!(repo.watched_workflows.is_none());
     }
