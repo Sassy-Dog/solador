@@ -104,15 +104,15 @@ elif [[ -n "${SENTRY_DSN:-}" ]]; then
 else
     log_info "Resolving SENTRY_DSN from Doppler (devcanopy/dev)..."
     if ! command_exists doppler; then
-        log_error "doppler CLI is required to resolve SENTRY_DSN (brew install dopplerhq/cli/doppler)."
-        log_error "Or pre-set SENTRY_DSN in the environment, or pass --skip-sentry."
+        log_error "SENTRY_DSN comes from the maintainer's Doppler project and is not available to contributors."
+        log_error "Build with --skip-sentry, or pre-set SENTRY_DSN in the environment."
         exit 1
     fi
     # --plain writes the value to stdout only, so doppler's stderr is safe to
     # surface — it explains *why* (not logged in, no access, no such secret).
     if ! SENTRY_DSN="$(doppler secrets get SENTRY_DSN --project devcanopy --config dev --plain)"; then
         log_error "Could not read SENTRY_DSN from Doppler (project devcanopy, config dev)."
-        log_error "Check 'doppler login' and your access, or pass --skip-sentry."
+        log_error "Maintainers: check 'doppler login' and your access. Everyone else: pass --skip-sentry."
         exit 1
     fi
     if [[ -z "$SENTRY_DSN" ]]; then

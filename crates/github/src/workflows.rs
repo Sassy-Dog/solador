@@ -1248,7 +1248,7 @@ mod tests {
         assert_eq!(resp.workflow_runs.len(), 6);
 
         let h = health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &resp.workflow_runs,
             None,
             RepoCounts {

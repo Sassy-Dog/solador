@@ -33,10 +33,11 @@ use crate::openclaw;
 /// Hard-coded via the crate version (`app/src-tauri/Cargo.toml`, mirrored in
 /// `tauri.conf.json`) rather than derived from git the way the Swift app's is
 /// (`Scripts/get-version-info.sh`, CalVer per `Docs/VERSIONING.md`). Wiring the
-/// shell into that derivation is [#15]; until then this is a deliberate,
+/// shell into that derivation is still to do; until then this is a deliberate,
 /// documented placeholder rather than a number pretending to be a release.
 ///
-/// [#15]: https://github.com/Sassy-Dog/devcanopy/issues/15
+/// The tracking issue lived in the pre-publication repository, which is now an
+/// archive, so the reason is stated here instead of linked.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The label on the button that opens this surface.
@@ -1039,7 +1040,7 @@ fn azure_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
             "SAS URL",
             stored.azure,
             "SAS stored",
-            "Used by the Azure Cost panel. Paste a container-scoped, read+list SAS URL for the cost-exports container on stsassydog. The SAS is the only credential — no Azure sign-in. Stored in your OS credential store.",
+            "Used by the Azure Cost panel. Paste a container-scoped, read+list SAS URL for your cost-exports container. The SAS is the only credential — no Azure sign-in. Stored in your OS credential store.",
         ),
     })
 }
@@ -1178,8 +1179,8 @@ fn about_tab() -> Value {
         "version": format!("Version {VERSION}"),
         "tagline": "Monitor your development infrastructure",
         "links": [
-            { "label": "GitHub Repository", "url": "https://github.com/Sassy-Dog/devcanopy" },
-            { "label": "Report an Issue", "url": "https://github.com/Sassy-Dog/devcanopy/issues" },
+            { "label": "GitHub Repository", "url": "https://github.com/cpmadrid/solador" },
+            { "label": "Report an Issue", "url": "https://github.com/cpmadrid/solador/issues" },
             { "label": "Documentation", "url": "https://devcanopy.app/docs" },
         ],
         "copyright": "© 2024 Sassy Dog",

@@ -373,7 +373,7 @@ mod tests {
     async fn sends_the_bearer_token_and_the_api_version_headers() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/repos/Sassy-Dog/devcanopy/actions/runs"))
+            .and(path("/repos/acme/widget/actions/runs"))
             .and(header_matcher("authorization", "Bearer ghp_s3cret"))
             .and(header_matcher("accept", "application/vnd.github+json"))
             .and(header_matcher("x-github-api-version", API_VERSION))
@@ -384,7 +384,7 @@ mod tests {
             .await;
 
         let runs = GitHubClient::with_base_url(server.uri(), "ghp_s3cret")
-            .workflow_runs("Sassy-Dog/devcanopy")
+            .workflow_runs("acme/widget")
             .await
             .expect("should decode");
         assert_eq!(runs.len(), 6);

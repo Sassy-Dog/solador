@@ -1046,7 +1046,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     state.apply_repos(vec![
         // Green, and a genuine zero on every count.
         health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(1, "CI", "completed", Some("success"), 30)],
             counts(Some(12), Some(4), Some(0)),
         ),
@@ -1082,7 +1082,10 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     // are not, so their LOCAL/WT cells are em dashes rather than zeroes.
     state.apply_local(BTreeMap::from([
         (
-            "devcanopy".to_owned(),
+            // Keyed by the *normalised short name*, so this has to track the
+            // slug above it — a stale key here joins nothing and the LOCAL/WT
+            // cells quietly become em dashes the test was not asserting.
+            "widget".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(7),
                 worktrees: Some(3),
@@ -1368,17 +1371,10 @@ mod tests {
     /// Character-for-character parity with `GHWorkflowsPanel.openActions(_:)`.
     #[test]
     fn a_row_carries_the_swift_tap_target() {
-        let state = ready(vec![health_of(
-            "Sassy-Dog/devcanopy",
-            &[],
-            RepoCounts::default(),
-        )]);
+        let state = ready(vec![health_of("acme/widget", &[], RepoCounts::default())]);
         let row = only_row(&state, now());
-        assert_eq!(row["url"], "https://github.com/Sassy-Dog/devcanopy/actions");
-        assert_eq!(
-            row["linkLabel"],
-            "Open Sassy-Dog/devcanopy on GitHub Actions"
-        );
+        assert_eq!(row["url"], "https://github.com/acme/widget/actions");
+        assert_eq!(row["linkLabel"], "Open acme/widget on GitHub Actions");
     }
 
     /// Not being able to read a repo's runs is exactly when you want to go and
@@ -1429,7 +1425,7 @@ mod tests {
             glob::Pattern::new(allow[0]["url"].as_str().expect("scope url")).expect("valid glob");
 
         for slug in [
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             "Sassy-Dog/qr-ninja",
             "o/r",
             "some-org/some.repo",
@@ -1440,8 +1436,8 @@ mod tests {
 
         for refused in [
             // The About tab's links — still unopenable, and that is deliberate.
-            "https://github.com/Sassy-Dog/devcanopy",
-            "https://github.com/Sassy-Dog/devcanopy/issues",
+            "https://github.com/acme/widget",
+            "https://github.com/acme/widget/issues",
             "https://github.com/settings/tokens",
             // Anywhere else at all.
             "https://evil.example/actions",
@@ -1943,12 +1939,12 @@ mod tests {
     fn rows_are_sorted_by_short_name_case_insensitively() {
         let state = ready(vec![
             health_of("Sassy-Dog/Velovate", &[], RepoCounts::default()),
-            health_of("Sassy-Dog/devcanopy", &[], RepoCounts::default()),
+            health_of("acme/widget", &[], RepoCounts::default()),
             health_of("Other-Org/apple", &[], RepoCounts::default()),
         ]);
         assert_eq!(
             row_names(&repos_view(&state, now())),
-            vec!["apple", "devcanopy", "Velovate"]
+            vec!["apple", "Velovate", "widget"]
         );
     }
 

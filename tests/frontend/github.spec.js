@@ -189,7 +189,14 @@ test("the loading state replaces the table rather than showing an empty one", as
 test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", async ({ page, baseURL }) => {
   const { repos } = await gotoWithFixtures(page, baseURL);
 
-  await repoRows(page).first().click();
+  // Addressed by repo, not by position: rows are sorted by short name, so
+  // `.first()` silently follows any rename of any *other* fixture repo, and
+  // the literal below then fails for a reason that has nothing to do with
+  // what this test is about.
+  const i = repos.rows.findIndex((r) => r.repo === "acme/widget");
+  expect(i, "the fixture must contain the repo this test addresses").toBeGreaterThanOrEqual(0);
+
+  await repoRows(page).nth(i).click();
 
   const opens = await page.evaluate(() =>
     window.__CALLS__.filter((c) => c.command === "plugin:opener|open_url")
@@ -199,9 +206,11 @@ test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", as
   // something" assertion and still be a second author of the only string the
   // granted ACL scope accepts.
   expect(opens).toEqual([
-    { command: "plugin:opener|open_url", args: { url: repos.rows[0].url } },
+    { command: "plugin:opener|open_url", args: { url: repos.rows[i].url } },
   ]);
-  expect(repos.rows[0].url).toBe("https://github.com/Sassy-Dog/devcanopy/actions");
+  // Written out, never interpolated -- interpolating would be the very
+  // rebuild the comment above rules out.
+  expect(repos.rows[i].url).toBe("https://github.com/acme/widget/actions");
 });
 
 test("every repo row is its own tap target, including the unreachable one", async ({ page, baseURL }) => {
