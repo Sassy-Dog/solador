@@ -76,6 +76,15 @@ pub const UNAUTHENTICATED_MESSAGE: &str = "connect a GitHub token in Settings";
 /// Repos, authenticated, before the first fetch has landed.
 pub const REPOS_LOADING_MESSAGE: &str = "loading…";
 
+/// A pass finished and the portfolio is empty.
+///
+/// Distinct from [`UNAUTHENTICATED_MESSAGE`], and the distinction is the whole
+/// point: the credential is fine, there is simply nothing tracked yet. Telling
+/// an operator to connect a token they already connected sends them to the
+/// wrong screen — the same mistake, one state over, that
+/// `the_repos_panel_says_loading_before_it_has_looked_for_a_token` records.
+pub const NO_REPOS_MESSAGE: &str = "no repos tracked — add one in Settings → Portfolio";
+
 /// Runners, same moment. Swift words this one differently and the difference is
 /// kept: the Repos panel says what it is doing, the Runners panel says what it
 /// is fetching.
@@ -454,6 +463,12 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         Some(UNAUTHENTICATED_MESSAGE)
     } else if state.health.is_none() {
         Some(REPOS_LOADING_MESSAGE)
+    } else if state.health.as_ref().is_some_and(Vec::is_empty) {
+        // A finished pass with nothing tracked. Must sit *after* the
+        // `is_none()` arm: `None` is loading and `Some([])` is empty, and
+        // collapsing the two would make the very first frame — before any pass
+        // has run — claim the portfolio is empty when it has not yet looked.
+        Some(NO_REPOS_MESSAGE)
     } else {
         None
     };
@@ -1232,6 +1247,25 @@ mod tests {
             assert_ne!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
             assert_eq!(view["loading"], true);
         }
+    }
+
+    /// …and the state one step past that: the fetch finished, and there was
+    /// nothing to fetch. A token is in hand, so the connect line would be a
+    /// lie; the pass is done, so "loading…" would be one too. Without a line
+    /// of its own this rendered as a table with no rows — an empty panel that
+    /// looks identical to a healthy one, which is the failure this codebase
+    /// rejects wherever else it appears.
+    #[test]
+    fn a_finished_pass_with_no_tracked_repos_asks_for_a_repo() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        state.apply_repos(Vec::new());
+        let view = repos_view(&state, now());
+        assert_eq!(view["message"]["text"], NO_REPOS_MESSAGE);
+        assert_eq!(view["loading"], false, "the pass finished; not loading");
+        assert!(view["trailing"].is_null(), "no counts to summarise");
+        assert!(view["health"].is_null());
+        assert!(rows(&view).is_empty());
     }
 
     /// Clearing the token must not leave the last-known table on screen
