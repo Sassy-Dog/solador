@@ -173,6 +173,34 @@ journalctl --user -u solador-agent -f
 To rotate the token: edit `~/.config/solador-agent.env`, then
 `systemctl --user restart solador-agent`.
 
+## Upgrading from the pre-rename agent
+
+Hosts running the old `devcanopy-agent` are handed over automatically by
+`install.sh` — run it exactly as for a fresh install. It will:
+
+1. Stop and disable the `devcanopy-agent` user unit **before** the new one
+   starts, because the old one holds the port the new one wants.
+2. Carry the bearer token across from `~/.config/devcanopy-agent.env`.
+
+That second step is the one that matters. The env file name *and* the variable
+name both changed, so without it the installer finds no existing token and
+mints a fresh one — which the cockpit's stored per-host credential no longer
+matches, with nothing anywhere reporting the divergence.
+
+The old binary, env file and unit file are **left in place** as the rollback
+path. Once the new agent is healthy:
+
+```bash
+rm -f ~/.config/systemd/user/devcanopy-agent.service ~/.config/devcanopy-agent.env
+sudo rm -rf /opt/devcanopy-agent      # or ~/.local/bin/devcanopy-agent
+systemctl --user daemon-reload
+```
+
+If you skip the handover and install over a running old agent, the failure is
+misleading: the new unit crash-loops on `EADDRINUSE` every three seconds while
+the old one keeps serving `/v1/health`, and the installer reports a version
+timeout that names neither the port conflict nor the other unit.
+
 ## Redeploy an existing host (upgrade in place)
 
 Use this once a host is already installed and you want to ship a new agent build.

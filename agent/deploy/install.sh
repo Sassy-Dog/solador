@@ -28,6 +28,13 @@ ENV_FILE="$HOME/.config/solador-agent.env"
 UNIT_SRC="$SCRIPT_DIR/${BIN_NAME}.service"
 UNIT_DST="$HOME/.config/systemd/user/${BIN_NAME}.service"
 
+# The pre-rename install. Everything below that mentions these exists to hand a
+# host over from the old agent without the operator noticing anything except a
+# version bump.
+LEGACY_BIN_NAME="devcanopy-agent"
+LEGACY_ENV_FILE="$HOME/.config/${LEGACY_BIN_NAME}.env"
+LEGACY_UNIT="$HOME/.config/systemd/user/${LEGACY_BIN_NAME}.service"
+
 # ---- preflight -------------------------------------------------------------
 command -v cargo >/dev/null 2>&1 || { echo "ERROR: cargo not found in PATH." >&2; exit 1; }
 command -v systemctl >/dev/null 2>&1 || { echo "ERROR: systemctl not found (Linux + systemd required)." >&2; exit 1; }
@@ -61,11 +68,39 @@ else
 fi
 echo "==> Binary installed: $INSTALL_DIR/$BIN_NAME"
 
+# ---- hand over from the pre-rename install ---------------------------------
+# Must run BEFORE the systemd block below, and before the token is resolved.
+#
+# Without this, installing over an old agent fails in a way that looks like
+# something else entirely: the new unit binds the same tailnet address and port,
+# gets EADDRINUSE, and — with Restart=always — crash-loops every 3s, while the
+# OLD agent keeps answering /v1/health with the OLD token. verify_health then
+# reports "did not report version within timeout", naming neither the port
+# conflict nor the other unit. Monitoring keeps working throughout, so the
+# whole thing looks less broken than it is.
+if [ -f "$LEGACY_UNIT" ]; then
+    echo "==> Found a pre-rename install ($LEGACY_BIN_NAME). Handing over."
+    # Stop first: it holds the port the new unit is about to want.
+    systemctl --user stop "$LEGACY_BIN_NAME" 2>/dev/null || true
+    systemctl --user disable "$LEGACY_BIN_NAME" 2>/dev/null || true
+    echo "    stopped and disabled $LEGACY_BIN_NAME"
+fi
+
 # ---- env file (token) ------------------------------------------------------
 mkdir -p "$(dirname "$ENV_FILE")"
 EXISTING_TOKEN=""
 if [ -f "$ENV_FILE" ]; then
     EXISTING_TOKEN="$(grep -E '^SOLADOR_AGENT_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+fi
+# Carry the old token across. This is the part that matters: the file name AND
+# the key both changed, so the new grep above finds nothing on an old host and
+# the script would silently mint a FRESH token — leaving the cockpit's stored
+# per-host credential pointing at nothing, with no signal anywhere that the two
+# had diverged. A token the operator never sees changing is a token they cannot
+# be asked to re-enter.
+if [ -z "$EXISTING_TOKEN" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+    EXISTING_TOKEN="$(grep -E '^DEVCANOPY_AGENT_TOKEN=' "$LEGACY_ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+    [ -n "$EXISTING_TOKEN" ] && echo "==> Carried the bearer token over from $LEGACY_ENV_FILE"
 fi
 
 if [ -n "$EXISTING_TOKEN" ]; then
@@ -88,6 +123,11 @@ fi
 EXISTING_BIND=""
 if [ -f "$ENV_FILE" ]; then
     EXISTING_BIND="$(grep -E '^SOLADOR_AGENT_BIND=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+fi
+# ...and the same carry-over, so a host that deliberately opted out of the
+# tailnet default keeps its choice instead of silently reverting to detection.
+if [ -z "$EXISTING_BIND" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+    EXISTING_BIND="$(grep -E '^DEVCANOPY_AGENT_BIND=' "$LEGACY_ENV_FILE" | head -n1 | cut -d= -f2- || true)"
 fi
 
 detect_tailscale_ip() {
@@ -132,6 +172,10 @@ systemctl --user enable "$BIN_NAME"
 # `restart` (not `enable --now`) so a re-run actually picks up the rebuilt binary —
 # `--now` only starts a stopped unit, it won't restart a running one.
 systemctl --user restart "$BIN_NAME"
+
+# The old binary, env file and unit file are left on disk on purpose: they cost
+# nothing, and they are the rollback path if the new agent does not come up.
+# Remove them by hand once you are satisfied.
 
 # Survive logout / start on boot.
 if command -v loginctl >/dev/null 2>&1; then
