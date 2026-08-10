@@ -63,6 +63,16 @@ log_info "Building..."
 # leaves it unset so the no-op path stays exercised. Never hardcoded.
 SENTRY_DSN="${SENTRY_DSN:-}"
 
+# The team id, same shape as the DSN above: resolved outside this file, passed
+# as a command-line build setting so it overrides whatever xcodegen wrote.
+# Omitted entirely when unresolved — passing DEVELOPMENT_TEAM="" would override
+# automatic signing with nothing, which is worse than not passing it.
+resolve_development_team
+SIGNING_SETTINGS=()
+if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
+    SIGNING_SETTINGS+=("DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM")
+fi
+
 if command_exists xcbeautify; then
     xcodebuild \
         -project "$PROJECT_NAME" \
@@ -73,6 +83,7 @@ if command_exists xcbeautify; then
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
         MARKETING_VERSION="$MARKETING_VERSION" \
         SENTRY_DSN="$SENTRY_DSN" \
+        ${SIGNING_SETTINGS[@]+"${SIGNING_SETTINGS[@]}"} \
         build | xcbeautify
 else
     xcodebuild \
@@ -84,6 +95,7 @@ else
         CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
         MARKETING_VERSION="$MARKETING_VERSION" \
         SENTRY_DSN="$SENTRY_DSN" \
+        ${SIGNING_SETTINGS[@]+"${SIGNING_SETTINGS[@]}"} \
         -quiet \
         build
 fi

@@ -66,14 +66,27 @@ if [[ $TAURI -eq 1 ]]; then
     # cargo stamps a *fresh ad-hoc* signature on every relink, and a new signing
     # identity invalidates the Keychain ACLs the app's stored credentials carry —
     # so every rebuild re-prompts for every item (4+ prompts per run). Re-sign with
-    # the stable Apple Development identity (team 52YMXC3348, the same one
-    # project.yml gives the Swift Debug build) so the ACLs keep matching across
+    # the stable Apple Development identity (the team `config.sh` resolves, the
+    # same one the Swift Debug build uses) so the ACLs keep matching across
     # rebuilds. macOS only, and silently skipped where no identity is installed
     # (CI, other machines) — an unsigned run still works, it just re-prompts.
     if [[ "$(uname -s)" == "Darwin" ]]; then
         CODESIGN_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-        if [[ "$CODESIGN_IDENTITIES" == *"Apple Development"* ]]; then
-            codesign --force --sign "Apple Development" "$TAURI_BINARY" >/dev/null 2>&1 ||
+        SIGN_LINES="$(printf '%s\n' "$CODESIGN_IDENTITIES" | grep -F "Apple Development" || true)"
+        # Narrow to this team when we know it. `--sign "Apple Development"` is a
+        # PREFIX match, so a keychain holding certs for two teams makes codesign
+        # fail with an ambiguity error — and that failure lands in the `||`
+        # below as a warning nobody reads, leaving the binary ad-hoc signed and
+        # the Keychain prompting on every run. The exact thing this block exists
+        # to prevent.
+        if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
+            TEAM_LINES="$(printf '%s\n' "$SIGN_LINES" | grep -F "($DEVELOPMENT_TEAM)" || true)"
+            [[ -n "$TEAM_LINES" ]] && SIGN_LINES="$TEAM_LINES"
+        fi
+        # The SHA-1, not the name: a hash names exactly one certificate.
+        SIGN_ID="$(printf '%s\n' "$SIGN_LINES" | head -n1 | awk '{print $2}')"
+        if [[ -n "$SIGN_ID" ]]; then
+            codesign --force --sign "$SIGN_ID" "$TAURI_BINARY" >/dev/null 2>&1 ||
                 log_warning "Could not re-sign $TAURI_PACKAGE — the Keychain may re-prompt"
         fi
     fi

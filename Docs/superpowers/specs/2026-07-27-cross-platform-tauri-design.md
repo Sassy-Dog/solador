@@ -246,7 +246,7 @@ app's own storage.
 
 | Platform | Signing | Runtime dependency |
 |---|---|---|
-| macOS | Developer ID + notarization (team `52YMXC3348`) | none |
+| macOS | Developer ID + notarization | none |
 | Windows | Code-signing certificate — Azure Trusted Signing fits the existing Azure estate | WebView2; evergreen on Win11, bootstrapper bundled for older Win10 |
 
 CI becomes `macos` (already self-hosted, #118) + `windows-latest`. Dropping Linux

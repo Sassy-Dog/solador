@@ -1267,7 +1267,7 @@ entry point:
 ```
 
 That builds the same package plain cargo does and then, on macOS, re-signs the
-binary with the stable `Apple Development` identity (team `52YMXC3348`) before
+binary with the stable `Apple Development` identity (team `the maintainer's Apple team id`) before
 launching it. That step is the whole reason to prefer it: cargo stamps a *fresh
 ad-hoc* signature on every relink, and each new identity invalidates the Keychain
 ACLs on the app's stored credentials — so a bare-cargo launch re-prompts for every
