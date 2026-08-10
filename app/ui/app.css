@@ -1,11 +1,11 @@
 :root {
-  --panel:#050805; --panelAlt:#0a0f0c; --line:#13301f; --green:#33d17a;
+  --panel:#0b1020; --panelAlt:#131b30; --line:#1c2b4a; --green:#4ec98a;
   /* `viewmodel::color::RED`. Every colour that *carries meaning* still arrives
      from Rust via CSSOM — this exists for the two chrome rules that cannot
      (a border and a keyframe), and must stay equal to the Rust constant. */
-  --red:#e05a4f;
-  --muted:#5a6b60; --ink:#cfe9d8; --read:#3fb950; --write:#e0922a;
-  --net:#5b8def; --netup:#9bd34a;
+  --red:#e0614f;
+  --muted:#8090ac; --ink:#e8e2d4; --read:#3fb950; --write:#e0922a;
+  --net:#3fc8d4; --netup:#9bd34a;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 * { box-sizing: border-box; }

@@ -4159,7 +4159,10 @@ mod tests {
         let s = state_with(Some(fixture()), None, Some(Instant::now()));
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "live");
-        assert_eq!(vm["connection"]["color"], "#33d17a");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::GREEN)
+        );
         assert!(vm["connection"]["message"].is_null());
         assert_eq!(vm["cpuValue"], fixture_cpu_value());
     }
@@ -4188,7 +4191,10 @@ mod tests {
         );
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "unreachable");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::RED)
+        );
 
         // Not one figure survives: the card is an error, not a reading.
         let live = view_for(&state_with(Some(fixture()), None, Some(Instant::now())));
@@ -4237,7 +4243,10 @@ mod tests {
         let s = state_with(None, Some("Couldn't reach the agent."), None);
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "failed");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::RED)
+        );
         assert_eq!(vm["error"]["message"], "Couldn't reach the agent.");
         assert_eq!(vm["error"]["hostName"], "test-host");
         assert!(
@@ -4251,7 +4260,10 @@ mod tests {
         let s = state_with(None, None, None);
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "connecting");
-        assert_eq!(vm["connection"]["color"], "#e09a26");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::AMBER)
+        );
         assert_eq!(vm["error"]["message"], "waiting for first sample…");
         assert!(vm.get("cpuValue").is_none());
     }
@@ -4283,7 +4295,10 @@ mod tests {
         let vm = view_for(&s);
 
         assert_eq!(vm["connection"]["state"], "stale");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::RED)
+        );
         let msg = vm["connection"]["message"].as_str().unwrap();
         assert!(msg.contains("sampler"), "got {msg:?}");
 

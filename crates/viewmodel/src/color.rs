@@ -1,23 +1,37 @@
-//! CockpitTheme, verbatim from `DevCanopy/Views/Cockpit/CockpitTheme.swift`,
-//! plus the chart hues from `HostMetricsPanel.swift`.
+//! The cockpit palette.
+//!
+//! Azulejo-derived: a cobalt ground, glaze-cream ink and terracotta warmth —
+//! the tilework a *solador* lays. Ported from
+//! `DevCanopy/Views/Cockpit/CockpitTheme.swift` (a phosphor-green CRT scheme)
+//! and re-toned here; the frozen Swift app still carries the original.
+//!
+//! Two constants left blue behind: `CPU` and `NET` moved to turquoise because
+//! a cobalt ground claims blue for itself, and a metric series the colour of
+//! the panel behind it is not a series.
+//!
+//! `GPU`, `READ`, `WRITE`, `NET_UP` and `CORE_COLORS` are deliberately **not**
+//! re-toned. They are legend swatches: `app.css` uses each exactly once as a
+//! `.sw-*` background beside its own label, so they need to be distinct from
+//! *each other*, not from the ground. Re-toning them would be churn without a
+//! reader who benefits.
 
 pub const BACKGROUND: u32 = 0x0000_0000;
-pub const PANEL: u32 = 0x0005_0805;
-pub const PANEL_ALT: u32 = 0x000A_0F0C;
-pub const LINE: u32 = 0x0013_301F;
-pub const GREEN: u32 = 0x0033_D17A;
-pub const GREEN_DIM: u32 = 0x001C_6B41;
-pub const AMBER: u32 = 0x00E0_9A26;
-pub const RED: u32 = 0x00E0_5A4F;
-pub const MUTED: u32 = 0x005A_6B60;
-pub const INK: u32 = 0x00CF_E9D8;
+pub const PANEL: u32 = 0x000B_1020;
+pub const PANEL_ALT: u32 = 0x0013_1B30;
+pub const LINE: u32 = 0x001C_2B4A;
+pub const GREEN: u32 = 0x004E_C98A;
+pub const GREEN_DIM: u32 = 0x002F_7A5C;
+pub const AMBER: u32 = 0x00E0_A03A;
+pub const RED: u32 = 0x00E0_614F;
+pub const MUTED: u32 = 0x0080_90AC;
+pub const INK: u32 = 0x00E8_E2D4;
 
-pub const CPU: u32 = 0x005B_8DEF;
-pub const MEM: u32 = 0x00B0_66F0;
+pub const CPU: u32 = 0x003F_C8D4;
+pub const MEM: u32 = 0x00A9_7CE8;
 pub const GPU: u32 = 0x0033_C7C7;
 pub const READ: u32 = 0x003F_B950;
 pub const WRITE: u32 = 0x00E0_922A;
-pub const NET: u32 = 0x005B_8DEF;
+pub const NET: u32 = 0x003F_C8D4;
 pub const NET_UP: u32 = 0x009B_D34A;
 
 /// The 10 cycling per-core hues.
@@ -110,8 +124,12 @@ mod tests {
 
     #[test]
     fn hex_renders_six_digit_lowercase() {
-        assert_eq!(hex(GREEN), "#33d17a");
-        assert_eq!(hex(PANEL), "#050805");
+        // Synthetic inputs on purpose: this is a test of the *formatter*, and
+        // feeding it palette constants made it fail on a re-palette for a
+        // reason that had nothing to do with formatting.
+        assert_eq!(hex(0x00AB_CDEF), "#abcdef");
+        // Leading zeroes in any channel must survive.
+        assert_eq!(hex(0x0000_0102), "#000102");
         // Black must survive as six zeroes, not collapse to "#0".
         assert_eq!(hex(BACKGROUND), "#000000");
     }
@@ -120,7 +138,6 @@ mod tests {
     /// darker than `green`, or the two stop reading as a pair.
     #[test]
     fn green_dim_is_darker_than_green() {
-        assert_eq!(hex(GREEN_DIM), "#1c6b41");
         let lum = |c: u32| ((c >> 16) & 0xFF) + ((c >> 8) & 0xFF) + (c & 0xFF);
         assert!(lum(GREEN_DIM) < lum(GREEN));
     }
@@ -182,5 +199,83 @@ mod tests {
         assert_ne!(hue(9), hue(0), "core 9 is still inside the first cycle");
         assert_eq!(hue(11), hue(1));
         assert_eq!(hue(20), hue(0));
+    }
+}
+
+#[cfg(test)]
+mod css_sync {
+    use super::*;
+
+    /// `app/ui/app.css` mirrors a handful of these constants for the two chrome
+    /// rules that cannot read them through CSSOM (a border and a keyframe). The
+    /// comment there says they must stay equal to the Rust constant — this is
+    /// what makes that true rather than hoped.
+    ///
+    /// Worth stating why it is a test and not a convention: every colour that
+    /// *carries meaning* is published from Rust at render time, so a drifted
+    /// token does not break a panel loudly. It desynchronises one border from
+    /// every value beside it, which is exactly the kind of defect that survives
+    /// review and ships.
+    #[test]
+    fn the_css_mirror_matches_the_rust_constants() {
+        let css = include_str!("../../../app/ui/app.css");
+        for (token, value) in [
+            ("--panel:", PANEL),
+            ("--panelAlt:", PANEL_ALT),
+            ("--line:", LINE),
+            ("--green:", GREEN),
+            ("--red:", RED),
+            ("--muted:", MUTED),
+            ("--ink:", INK),
+            ("--read:", READ),
+            ("--write:", WRITE),
+            ("--net:", NET),
+            ("--netup:", NET_UP),
+        ] {
+            let at = css
+                .find(token)
+                .unwrap_or_else(|| panic!("{token} is missing from app.css"));
+            let got: String = css[at + token.len()..]
+                .trim_start()
+                .chars()
+                .take(7)
+                .collect();
+            assert_eq!(
+                got,
+                hex(value),
+                "{token} in app.css drifted from its Rust constant"
+            );
+        }
+    }
+
+    /// The Playwright crons suite writes four of these out as literals,
+    /// because two of them reach it under the same key and telling them apart
+    /// in JS would mean re-deriving the panel's own logic there. That is a
+    /// reasonable trade *only* while something fails when they drift — which
+    /// is this.
+    #[test]
+    fn the_crons_spec_mirror_matches_the_rust_constants() {
+        let js = include_str!("../../../tests/frontend/crons.spec.js");
+        for (decl, value) in [
+            ("const RED = ", RED),
+            ("const AMBER = ", AMBER),
+            ("const MUTED = ", MUTED),
+            ("const GREEN_DIM = ", GREEN_DIM),
+        ] {
+            let at = js
+                .find(decl)
+                .unwrap_or_else(|| panic!("{decl} is missing from crons.spec.js"));
+            let got: String = js[at + decl.len()..]
+                .trim_start()
+                .trim_start_matches('"')
+                .chars()
+                .take(7)
+                .collect();
+            assert_eq!(
+                got,
+                hex(value),
+                "{decl}in crons.spec.js drifted from its Rust constant"
+            );
+        }
     }
 }

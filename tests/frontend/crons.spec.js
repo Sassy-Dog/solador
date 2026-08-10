@@ -24,10 +24,16 @@ const rgb = (hex) => {
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
 
-const RED = "#e05a4f";
-const AMBER = "#e09a26";
-const MUTED = "#5a6b60";
-const GREEN_DIM = "#1c6b41";
+// Mirrors of crates/viewmodel/src/color.rs. Written out rather than derived
+// from a fixture because two of them arrive under the same key (`ageColor`),
+// so telling them apart in JS would mean re-deriving the panel's own logic.
+// The drift risk that creates is closed from the Rust side:
+// `color::css_sync` parses this file and fails if any of the four stops
+// matching its constant.
+const RED = "#e0614f";
+const AMBER = "#e0a03a";
+const MUTED = "#8090ac";
+const GREEN_DIM = "#2f7a5c";
 
 async function gotoWithCrons(page, baseURL, payload) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");

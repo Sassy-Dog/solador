@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(cores.len(), 16);
         assert_eq!(cores[0]["label"], "Core 0");
         // core 3 is at 94% in the fixture -> red
-        assert_eq!(cores[3]["valueColor"], "#e05a4f");
+        assert_eq!(cores[3]["valueColor"], crate::color::hex(crate::color::RED));
 
         // 16 cores and 10 hues, so the fixture actually exercises the
         // `i % CORE_COLORS.len()` wraparound: core 10 returns to core 0's hue
@@ -772,7 +772,10 @@ mod tests {
             &Connection::Live,
         );
         assert_eq!(vm["connection"]["state"], "live");
-        assert_eq!(vm["connection"]["color"], "#33d17a");
+        assert_eq!(
+            vm["connection"]["color"],
+            crate::color::hex(crate::color::GREEN)
+        );
         assert!(vm["connection"]["message"].is_null());
     }
 
@@ -802,7 +805,10 @@ mod tests {
             assert!(down[field].is_null(), "{field} outlived the connection");
         }
         assert_eq!(down["connection"]["state"], "unreachable");
-        assert_eq!(down["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            down["connection"]["color"],
+            crate::color::hex(crate::color::RED)
+        );
         assert_eq!(down["error"]["hostName"], "ubu-01");
         let msg = down["error"]["message"].as_str().unwrap();
         assert!(msg.contains("Couldn't reach the agent"));
@@ -855,7 +861,10 @@ mod tests {
         );
 
         assert_eq!(stalled["connection"]["state"], "stale");
-        assert_eq!(stalled["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            stalled["connection"]["color"],
+            crate::color::hex(crate::color::RED)
+        );
         let msg = stalled["connection"]["message"].as_str().unwrap();
         assert!(msg.contains("sampler"), "got {msg:?}");
         // The agent's own age, not this side's: 95s is what `/v1/health`
@@ -903,7 +912,10 @@ mod tests {
         assert_eq!(vm["error"]["hostName"], "ubu-01");
         assert_eq!(vm["error"]["message"], "waiting for first sample…");
         assert_eq!(vm["connection"]["state"], "connecting");
-        assert_eq!(vm["connection"]["color"], "#e09a26");
+        assert_eq!(
+            vm["connection"]["color"],
+            crate::color::hex(crate::color::AMBER)
+        );
     }
 
     #[test]
@@ -914,6 +926,9 @@ mod tests {
         );
         assert_eq!(vm["error"]["message"], "Couldn't reach the agent.");
         assert_eq!(vm["connection"]["state"], "failed");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            crate::color::hex(crate::color::RED)
+        );
     }
 }

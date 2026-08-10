@@ -292,7 +292,7 @@ function drawCard(card, d, volumeSlots) {
     f(card, "cpuValue").textContent = "—";
     f(card, "cpuModel").textContent = "";
     down.textContent = d.error.message;
-    down.style.color = d.connection ? d.connection.color : "#e05a4f";
+    down.style.color = d.connection ? d.connection.color : "var(--red)";
     down.hidden = false;
     stale.textContent = "";
     return;
@@ -601,7 +601,7 @@ window.__DEVCANOPY_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.si
     // this file (see the top-of-file note and `render()`'s volume bars).
     document.body.innerHTML = `<pre>failed to load cockpit: ${esc(e)}</pre>`;
     const pre = document.body.querySelector("pre");
-    pre.style.color = "#e05a4f";
+    pre.style.color = "var(--red)";
     pre.style.padding = "20px";
   }
   if (window.__TAURI__) {
