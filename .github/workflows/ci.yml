@@ -23,10 +23,11 @@ concurrency:
 jobs:
   agent-tests:
     name: Rust agent
-    # dtolnay/rust-toolchain installs into $HOME, so it needs no root — which is
-    # what makes this job portable to the fleet (the image ships no rustup/cargo
-    # and the runner is non-root with no sudo).
-    runs-on: [self-hosted, linux, sassy-dog]
+    # GitHub-hosted, and it must stay that way: on a public repo a self-hosted
+    # runner executes any fork's pull request on our own machines. Nothing here
+    # needed the fleet — dtolnay/rust-toolchain installs into $HOME and honors
+    # agent/rust-toolchain.toml, so the job carries its own toolchain.
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: agent
@@ -57,11 +58,15 @@ jobs:
 
   rust-workspace:
     name: Rust workspace + frontend e2e
-    # The Tauri app (app/src-tauri) only builds on macOS/Windows targets, and the
-    # frontend suite needs a real WebView-capable desktop to serve/build against,
-    # so this runs on the same self-hosted Mac pool as swift-tests/lint rather
-    # than the Linux pool agent-tests uses.
-    runs-on: [self-hosted, macOS, sassy-dog]
+    # macOS is required, not preferred: app/src-tauri only builds on
+    # macOS/Windows targets, and the frontend suite needs a real WebView-capable
+    # desktop to serve/build against. macos-latest provides both, and Playwright
+    # installs its own chromium, so the image needs nothing bespoke.
+    #
+    # Formerly the self-hosted Mac pool, alongside swift-tests/lint — both of
+    # which are gone. Hosted runners are free on public repos, including macOS,
+    # which is what removes the two-runner scarcity that froze the Swift jobs.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
