@@ -31,8 +31,15 @@ function derivePort(seed) {
 
 const PORT = derivePort(WORKTREE_ROOT);
 
+const SCREENSHOTS = process.env.SCREENSHOTS === "1";
+
 export default {
   testDir: ".",
+  // The screenshot generator shares this harness -- same server, same CSP,
+  // same fixtures -- but is not a test: it makes no claim about what is
+  // correct. `npm test` skips it; `npm run screenshots` runs only it.
+  testMatch: SCREENSHOTS ? ["**/screenshots.spec.js"] : ["**/*.spec.js"],
+  testIgnore: SCREENSHOTS ? [] : ["**/screenshots.spec.js"],
   use: { baseURL: `http://127.0.0.1:${PORT}` },
   webServer: {
     command: `python3 csp_server.py ${PORT}`,
