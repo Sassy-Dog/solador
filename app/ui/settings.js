@@ -914,8 +914,8 @@ async function closeSettings() {
 $s("settingsToggle").addEventListener("click", openSettings);
 $s("settingsClose").addEventListener("click", closeSettings);
 
-// Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`:
+// Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
-window.__DEVCANOPY_SETTINGS_TEST__ = { open: openSettings, close: closeSettings, tab: () => S.tab };
+window.__SOLADOR_SETTINGS_TEST__ = { open: openSettings, close: closeSettings, tab: () => S.tab };
 
 })();

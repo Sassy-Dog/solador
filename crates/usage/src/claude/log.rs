@@ -180,12 +180,12 @@ mod tests {
     /// point of stripping the suffix.
     #[test]
     fn every_worktree_of_a_repo_attributes_to_one_project() {
-        let root = project_name("/Repos/devcanopy");
+        let root = project_name("/Repos/widget");
         assert_eq!(
-            project_name("/Repos/devcanopy/.claude/worktrees/agent-aaa"),
+            project_name("/Repos/widget/.claude/worktrees/agent-aaa"),
             root
         );
-        assert_eq!(project_name("/Repos/devcanopy/.warp-worktrees/bbb"), root);
+        assert_eq!(project_name("/Repos/widget/.warp-worktrees/bbb"), root);
     }
 
     #[test]

@@ -1142,7 +1142,7 @@ fn openclaw_tab(
             "Bearer token (optional)",
             stored.openclaw,
             "Token stored",
-            "DevCanopy monitors an OpenClaw agent farm over a WebSocket. Most gateways authenticate via device pairing (below); a bearer token is only needed if the gateway requires one. The gateway's controlUi.allowedOrigins must permit this host. Stored in your OS credential store.",
+            "Solador monitors an OpenClaw agent farm over a WebSocket. Most gateways authenticate via device pairing (below); a bearer token is only needed if the gateway requires one. The gateway's controlUi.allowedOrigins must permit this host. Stored in your OS credential store.",
         ),
         "pairingHeading": "Device Pairing",
         "statusLabel": "Status",
@@ -1174,15 +1174,15 @@ fn openclaw_tab(
 
 fn about_tab() -> Value {
     json!({
-        "name": "DevCanopy",
+        "name": "Solador",
         "version": format!("Version {VERSION}"),
-        "tagline": "Monitor your development infrastructure",
+        "tagline": "Everything around your code, at a glance",
         "links": [
             { "label": "GitHub Repository", "url": "https://github.com/cpmadrid/solador" },
             { "label": "Report an Issue", "url": "https://github.com/cpmadrid/solador/issues" },
-            { "label": "Documentation", "url": "https://devcanopy.app/docs" },
+            { "label": "Documentation", "url": "https://github.com/cpmadrid/solador#readme" },
         ],
-        "copyright": "© 2024 Sassy Dog",
+        "copyright": "© 2026 Chris Madrid · Apache-2.0",
     })
 }
 
@@ -2404,7 +2404,7 @@ mod tests {
     fn the_about_tab_names_the_app_and_its_version() {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
-        assert_eq!(vm["about"]["name"], "DevCanopy");
+        assert_eq!(vm["about"]["name"], "Solador");
         assert_eq!(vm["about"]["version"], format!("Version {VERSION}"));
         assert_eq!(vm["about"]["links"].as_array().expect("links").len(), 3);
     }

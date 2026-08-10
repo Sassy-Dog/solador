@@ -23,7 +23,7 @@ const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// Filesystem types that are transient, remote, or pseudo. Copied from the
 /// agent's list so a local card and a remote card agree on what a "volume" is.
-/// The agent's `DEVCANOPY_AGENT_SKIP_FSTYPES` override is deliberately not
+/// The agent's `SOLADOR_AGENT_SKIP_FSTYPES` override is deliberately not
 /// carried over: that is an operator knob for a headless daemon on someone
 /// else's fleet, not something a desktop app should read out of its own env.
 const SKIP_FSTYPES: &[&str] = &[

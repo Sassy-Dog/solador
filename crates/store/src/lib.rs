@@ -56,9 +56,18 @@ pub use settings::{HostOverflowMode, Settings};
 pub const STORE_VERSION: u32 = 1;
 
 /// Directory under the platform config dir, named for the app's bundle id:
-/// `~/Library/Application Support/com.sassydog.devcanopy.app` on macOS,
-/// `%APPDATA%\com.sassydog.devcanopy.app` on Windows.
-pub const APP_DIR_NAME: &str = "com.sassydog.devcanopy.app";
+/// `~/Library/Application Support/app.solador.desktop` on macOS,
+/// `%APPDATA%\app.solador.desktop` on Windows. An install that predates the
+/// rename is adopted once by [`Store::adopt_legacy_dir`].
+pub const APP_DIR_NAME: &str = "app.solador.desktop";
+
+/// The data directory this app used before it was renamed.
+///
+/// Kept so an upgrade does not silently look like a first launch: hosts, the
+/// tracked portfolio, the cockpit layout and every container rule live in that
+/// one file, and an app that quietly starts empty is indistinguishable from an
+/// app that lost them.
+pub const LEGACY_APP_DIR_NAME: &str = "com.sassydog.devcanopy.app";
 
 /// The one file the whole store lives in.
 pub const STORE_FILE_NAME: &str = "store.json";
@@ -94,7 +103,7 @@ pub enum StoreError {
     /// The file exists but is not a store. Deliberately an error and not a
     /// silent reset: clobbering a file we failed to understand is how a
     /// configuration disappears.
-    #[error("{} is not a valid DevCanopy store: {source}", path.display())]
+    #[error("{} is not a valid Solador store: {source}", path.display())]
     Parse {
         path: PathBuf,
         #[source]
@@ -222,7 +231,48 @@ impl Store {
     /// # Errors
     /// [`StoreError::NoConfigDir`], plus anything [`Store::open_in`] returns.
     pub fn open() -> Result<Self, StoreError> {
-        Store::open_in(Store::default_dir()?)
+        let dir = Store::default_dir()?;
+        if let Some(config) = dirs::config_dir() {
+            // Best effort, and deliberately not fatal: a store that could not
+            // be adopted is a first launch, which works. Refusing to start
+            // because an *old* directory was unreadable would be worse.
+            if let Err(e) = Store::adopt_legacy_dir(&config.join(LEGACY_APP_DIR_NAME), &dir) {
+                eprintln!("could not adopt the pre-rename store: {e}");
+            }
+        }
+        Store::open_in(dir)
+    }
+
+    /// Moves a pre-rename store file into `dir`, once.
+    ///
+    /// Copy-then-leave rather than move: the old file staying put is what makes
+    /// this reversible if someone runs an older build afterwards, and an
+    /// orphaned JSON file costs nothing. Returns whether anything was adopted.
+    ///
+    /// Does nothing if `dir` already has a store file — the live store always
+    /// wins. That guard is what keeps this idempotent across every launch, not
+    /// just the first.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] if the directory could not be created or the file
+    /// could not be copied.
+    pub fn adopt_legacy_dir(legacy_dir: &Path, dir: &Path) -> Result<bool, StoreError> {
+        let target = dir.join(STORE_FILE_NAME);
+        let source = legacy_dir.join(STORE_FILE_NAME);
+        if target.exists() || !source.exists() {
+            return Ok(false);
+        }
+        fs::create_dir_all(dir).map_err(|source| StoreError::Io {
+            action: "create the store directory",
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        fs::copy(&source, &target).map_err(|e| StoreError::Io {
+            action: "adopt the pre-rename store",
+            path: target.clone(),
+            source: e,
+        })?;
+        Ok(true)
     }
 
     /// Opens the store in `dir`, creating and seeding it if no store file has
@@ -558,6 +608,84 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    // MARK: - Adopting the pre-rename store directory
+
+    /// A rename moves the data directory, and an app that quietly starts empty
+    /// is indistinguishable from one that lost every host, repo and layout the
+    /// operator configured.
+    #[test]
+    fn a_renamed_install_adopts_the_store_from_its_old_directory() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+
+        let mut old = Store::open_in(&legacy).expect("seed the old store");
+        old.upsert_repo(TrackedRepo::new("acme/widget"));
+        old.upsert_host(Host::new("ubu-01", "100.100.100.100"));
+        old.save().expect("save");
+
+        assert!(Store::adopt_legacy_dir(&legacy, &current).expect("adopt"));
+
+        let adopted = Store::open_in(&current).expect("open");
+        assert_eq!(
+            adopted
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
+        assert_eq!(adopted.hosts().len(), 1);
+    }
+
+    /// Copy, not move: an older build run afterwards still finds its store.
+    #[test]
+    fn adoption_leaves_the_old_directory_intact() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+        Store::open_in(&legacy).expect("seed");
+
+        Store::adopt_legacy_dir(&legacy, &current).expect("adopt");
+
+        assert!(legacy.join(STORE_FILE_NAME).exists());
+    }
+
+    /// The live store always wins, which is what makes this safe to run on
+    /// every launch rather than only the first.
+    #[test]
+    fn adoption_never_overwrites_an_existing_store() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+
+        let mut old = Store::open_in(&legacy).expect("seed old");
+        old.upsert_repo(TrackedRepo::new("acme/from-the-past"));
+        old.save().expect("save");
+
+        let mut live = Store::open_in(&current).expect("seed current");
+        live.upsert_repo(TrackedRepo::new("acme/current"));
+        live.save().expect("save");
+
+        assert!(!Store::adopt_legacy_dir(&legacy, &current).expect("adopt"));
+
+        let reopened = Store::open_in(&current).expect("reopen");
+        let slugs: Vec<&str> = reopened.repos().iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["acme/current"]);
+    }
+
+    /// A genuine first install has nothing to adopt, and that is not an error.
+    #[test]
+    fn a_fresh_install_adopts_nothing_and_still_opens() {
+        let root = temp_dir();
+        let current = root.path().join(APP_DIR_NAME);
+        assert!(
+            !Store::adopt_legacy_dir(&root.path().join(LEGACY_APP_DIR_NAME), &current)
+                .expect("adopt")
+        );
+        assert!(Store::open_in(&current).expect("open").repos().is_empty());
     }
 
     #[test]

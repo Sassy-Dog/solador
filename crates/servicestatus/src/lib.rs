@@ -173,7 +173,7 @@ pub(crate) async fn get_text(http: &reqwest::Client, url: &str) -> Result<String
 pub(crate) fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
-        .user_agent(concat!("DevCanopy/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Solador/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("reqwest client")
 }

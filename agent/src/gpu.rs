@@ -366,7 +366,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_binary_produces_no_output() {
         let got = capped_output(
-            "devcanopy-no-such-binary-217",
+            "solador-no-such-binary-217",
             &["--version"],
             PROBE_TIMEOUT,
         )

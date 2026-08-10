@@ -18,7 +18,7 @@ const esc = (v) =>
 /**
  * The one way this frontend talks to Rust.
  *
- * `fixture` is the offline fallback (`cargo run -p devcanopy-app -- --dump*`):
+ * `fixture` is the offline fallback (`cargo run -p solador-app -- --dump*`):
  * the same payload shape the command returns, so that path can't diverge from
  * the real one. See app/README.md's smoke test for why every fixture must be
  * deleted before exercising the IPC boundary by hand. A command with no
@@ -583,7 +583,7 @@ function renderCockpit(p) {
 // this closure -- this is what lets a test drive many renders directly and
 // assert chart bookkeeping stays flat, instead of waiting on real poll ticks.
 // Read-only, no production behaviour depends on it.
-window.__DEVCANOPY_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size };
+window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size };
 
 (async () => {
   // The width the host grid actually has. Rust turns it into a column count;

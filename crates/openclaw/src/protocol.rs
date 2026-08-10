@@ -19,7 +19,7 @@ use crate::rpc::Envelope;
 /// which is what its scope policy is written against.
 pub const CLIENT_ID: &str = "openclaw-tui";
 /// Human-facing client name.
-pub const DISPLAY_NAME: &str = "DevCanopy";
+pub const DISPLAY_NAME: &str = "Solador";
 /// Connect as a UI, not a headless worker.
 pub const CLIENT_MODE: &str = "ui";
 /// The role whose scopes are requested below.
@@ -383,7 +383,7 @@ mod tests {
 
         let client = &params["client"];
         assert_eq!(client["id"], "openclaw-tui");
-        assert_eq!(client["displayName"], "DevCanopy");
+        assert_eq!(client["displayName"], "Solador");
         assert_eq!(client["version"], "1.2.3");
         assert_eq!(client["mode"], "ui");
         assert_eq!(client["instanceId"], SEED9_DEVICE_ID);

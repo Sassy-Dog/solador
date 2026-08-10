@@ -391,13 +391,8 @@ pub fn fixture_state(
     let mut state = ContainersState::new();
     state.detected = vec![LocalRuntime::Docker, LocalRuntime::Tart];
     state.local = vec![
-        container("devcanopy-db", "Up 3 hours", true, "docker"),
-        container(
-            "devcanopy-cache",
-            "Exited (0) 2 minutes ago",
-            false,
-            "docker",
-        ),
+        container("acme-db", "Up 3 hours", true, "docker"),
+        container("acme-cache", "Exited (0) 2 minutes ago", false, "docker"),
         container("vm-2", "running", true, "tart"),
     ];
     state.local_last_updated = Some(now);
@@ -604,7 +599,7 @@ mod tests {
         let local = &payload["sections"][0];
         let running = rows(local)
             .iter()
-            .find(|r| r["name"] == "devcanopy-db")
+            .find(|r| r["name"] == "acme-db")
             .expect("db row");
         assert_eq!(running["kind"], "present");
         assert_eq!(running["status"], "Up 3 hours");
@@ -614,7 +609,7 @@ mod tests {
 
         let stopped = rows(local)
             .iter()
-            .find(|r| r["name"] == "devcanopy-cache")
+            .find(|r| r["name"] == "acme-cache")
             .expect("cache row");
         assert_eq!(stopped["status"], "Exited (0) 2 minutes ago");
         assert_eq!(stopped["dotColor"], color::hex(color::MUTED));

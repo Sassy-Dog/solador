@@ -235,8 +235,8 @@ if (window.__TAURI__) {
   setInterval(() => { if (!settingsOpen) refresh(); }, REFRESH_MS);
 }
 
-// Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`:
+// Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
-window.__DEVCANOPY_OPENCLAW_TEST__ = { render: renderOpenClaw, refresh };
+window.__SOLADOR_OPENCLAW_TEST__ = { render: renderOpenClaw, refresh };
 
 })();

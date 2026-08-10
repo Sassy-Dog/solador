@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Redeploy (or roll back) the DevCanopy metrics agent on an existing Linux host.
+# Redeploy (or roll back) the Solador metrics agent on an existing Linux host.
 #
 # Unlike install.sh, this script is **non-interactive**: it never prompts for a
 # token. It assumes the host is already installed (env file + systemd user unit
@@ -30,8 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=agent/deploy/lib.sh
 source "$SCRIPT_DIR/lib.sh"
 CRATE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BIN_NAME="devcanopy-agent"
-ENV_FILE="$HOME/.config/devcanopy-agent.env"
+BIN_NAME="solador-agent"
+ENV_FILE="$HOME/.config/solador-agent.env"
 UNIT_NAME="$BIN_NAME"
 
 # ---- locate the installed binary -------------------------------------------
@@ -48,8 +48,8 @@ resolve_install_path() {
             return 0
         fi
     fi
-    if [ -e "/opt/devcanopy-agent/$BIN_NAME" ]; then
-        printf '%s\n' "/opt/devcanopy-agent/$BIN_NAME"
+    if [ -e "/opt/solador-agent/$BIN_NAME" ]; then
+        printf '%s\n' "/opt/solador-agent/$BIN_NAME"
     else
         printf '%s\n' "$HOME/.local/bin/$BIN_NAME"
     fi

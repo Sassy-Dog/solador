@@ -13,7 +13,7 @@ use crate::now_unix;
 /// The agent's default listen port (`MonitoredHost.port`).
 pub const DEFAULT_AGENT_PORT: u16 = 7878;
 
-/// One remote machine running the DevCanopy agent.
+/// One remote machine running the Solador agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Host {
     /// Stable identity, and the key the host's bearer token is stored under.

@@ -275,10 +275,10 @@ fn battery_deserialises_from_shared_contract_fixture() {
 /// before merging a change to the wire types, then re-run this test:
 ///
 /// ```bash
-/// curl -fsS -H "Authorization: Bearer $DEVCANOPY_AGENT_TOKEN" \
+/// curl -fsS -H "Authorization: Bearer $SOLADOR_AGENT_TOKEN" \
 ///   http://<agent-host>:7878/v1/snapshot \
 ///   > crates/wire/tests/fixtures/snapshot-live.json
-/// cargo test -p devcanopy-wire --locked
+/// cargo test -p solador-wire --locked
 /// ```
 ///
 /// Write straight to the path below: a capture that lands anywhere else makes

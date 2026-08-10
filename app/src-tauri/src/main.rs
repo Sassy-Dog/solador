@@ -1,4 +1,4 @@
-//! DevCanopy shell. The frontend receives a finished view-model and paints;
+//! Solador shell. The frontend receives a finished view-model and paints;
 //! all logic lives in `viewmodel`.
 
 use agentclient::{AgentClient, AgentError};
@@ -3714,17 +3714,17 @@ fn run_dump(args: &[String]) -> bool {
     false
 }
 
-/// Where the store lives. `DEVCANOPY_STORE_DIR` overrides the platform default
+/// Where the store lives. `SOLADOR_STORE_DIR` overrides the platform default
 /// so a smoke run or a throwaway experiment can seed a scratch store instead
 /// of editing the real one (see the manual IPC smoke test in `app/README.md`).
 fn open_store() -> Result<Store, StoreError> {
-    match std::env::var_os("DEVCANOPY_STORE_DIR") {
+    match std::env::var_os("SOLADOR_STORE_DIR") {
         Some(dir) => Store::open_in(dir),
         None => Store::open(),
     }
 }
 
-/// One host as `DEVCANOPY_SEED_HOST` spells it.
+/// One host as `SOLADOR_SEED_HOST` spells it.
 #[derive(Debug, PartialEq, Eq)]
 struct SeedHost {
     name: String,
@@ -3755,7 +3755,7 @@ fn parse_seed_host(raw: &str) -> Option<SeedHost> {
     })
 }
 
-/// Provisions a host from `DEVCANOPY_SEED_HOST` if one with that address is
+/// Provisions a host from `SOLADOR_SEED_HOST` if one with that address is
 /// not already configured — headless/first-run setup, exactly as in Swift.
 ///
 /// The same-address no-op is what makes this safe to leave set: relaunching
@@ -3819,13 +3819,13 @@ fn main() {
     let mut store = match open_store() {
         Ok(store) => store,
         Err(e) => {
-            eprintln!("could not open the DevCanopy store: {e}");
+            eprintln!("could not open the Solador store: {e}");
             std::process::exit(1);
         }
     };
     // Tokens live in the OS credential store, never in the store file. The
     // *service* string matches the Swift `KeychainHelper`
-    // (`com.sassydog.devcanopy`), but the *account* does not: Swift stores
+    // (the pre-rename service, see `store::LEGACY_SERVICE`), but the *account* does not: Swift stores
     // each host's token under `host_token_<UUID>`
     // (`DevCanopy/Services/KeychainHelper.swift`), `store::SecretKey` stores
     // it under `host-<UUID>`. Nothing is actually reused today -- a token
@@ -3843,7 +3843,7 @@ fn main() {
     // isn't already tracked), so its id never had a legacy item to miss.
     // Count only; never values.
     //
-    // Skipped entirely under `DEVCANOPY_STORE_DIR`: that variable points
+    // Skipped entirely under `SOLADOR_STORE_DIR`: that variable points
     // `store.json` at a scratch directory, but the credential *service*
     // stays the real one (see `open_store`) -- so a scratch/smoke run would
     // migrate against whatever host list the scratch store happens to have
@@ -3853,9 +3853,20 @@ fn main() {
     // launch. `migrate_legacy`'s own "blob already exists" guard can't catch
     // this: an empty or wrong host list still looks like "nothing to copy",
     // not a scratch run.
-    if std::env::var_os("DEVCANOPY_STORE_DIR").is_none() {
+    if std::env::var_os("SOLADOR_STORE_DIR").is_none() {
         let mut migrate_keys = SecretKey::static_migration_keys();
         migrate_keys.extend(store.hosts().iter().map(|h| SecretKey::HostToken(h.id)));
+        // Before consolidation, not after: `migrate_legacy` folds per-item
+        // entries into the blob *within this service*, so anything still
+        // sitting under the pre-rename service has to arrive first or it is
+        // simply not there to fold.
+        match credentials.migrate_service(&migrate_keys) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("secrets: adopted {n} credential(s) from the pre-rename service"),
+            Err(e) => eprintln!(
+                "secrets: could not adopt pre-rename credentials (they remain readable under the old service): {e}"
+            ),
+        }
         match credentials.migrate_legacy(&migrate_keys) {
             Ok(0) => {}
             Ok(n) => {
@@ -3867,9 +3878,9 @@ fn main() {
         }
     }
 
-    let seed = std::env::var("DEVCANOPY_SEED_HOST").ok();
+    let seed = std::env::var("SOLADOR_SEED_HOST").ok();
     if let Err(e) = seed_from_env(&mut store, &credentials, seed.as_deref()) {
-        eprintln!("could not seed a host from DEVCANOPY_SEED_HOST: {e}");
+        eprintln!("could not seed a host from SOLADOR_SEED_HOST: {e}");
     }
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -5291,7 +5302,7 @@ mod tests {
         assert_eq!(names, vec!["mac-mini", "ubu-01", "zed"]);
     }
 
-    // MARK: DEVCANOPY_SEED_HOST
+    // MARK: SOLADOR_SEED_HOST
 
     #[test]
     fn a_seed_string_parses_the_way_swift_parses_it() {
@@ -5377,7 +5388,7 @@ mod tests {
         assert!(!raw.contains("agent-token"));
     }
 
-    /// The no-op that makes `DEVCANOPY_SEED_HOST` safe to leave exported:
+    /// The no-op that makes `SOLADOR_SEED_HOST` safe to leave exported:
     /// relaunching must not accumulate duplicate hosts. Address, not name, is
     /// the identity — the name is the field the user edits.
     #[test]
@@ -5469,7 +5480,7 @@ mod tests {
     impl UnreadableCredentialStore {
         fn refusal() -> SecretError {
             SecretError::CorruptBlob {
-                account: "devcanopy-secrets".to_owned(),
+                account: "solador-secrets".to_owned(),
             }
         }
     }

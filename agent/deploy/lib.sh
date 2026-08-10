@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Shared helpers for the DevCanopy agent deploy scripts (install.sh, redeploy.sh).
+# Shared helpers for the Solador agent deploy scripts (install.sh, redeploy.sh).
 #
 # Sourced, never executed on its own. Nothing in here prints the bearer token.
 #
@@ -38,7 +38,7 @@ crate_version() {
 # ---- health endpoint --------------------------------------------------------
 # Build the URL to probe from the agent's configured bind address.
 #
-# The bind is whatever DEVCANOPY_AGENT_BIND resolved to at install time — a
+# The bind is whatever SOLADOR_AGENT_BIND resolved to at install time — a
 # tailnet IPv4 by default, but the operator can opt into a wildcard behind a
 # firewall. A wildcard is not an address you can dial, so probe loopback there;
 # an IPv6 literal needs brackets before it is a legal URL host.
@@ -77,13 +77,13 @@ verify_health() {
     [ -f "$env_file" ] || { echo "ERROR: env file $env_file not found; cannot verify." >&2; return 1; }
 
     local token bind port url
-    token="$(grep -E '^DEVCANOPY_AGENT_TOKEN=' "$env_file" | head -n1 | cut -d= -f2-)"
-    bind="$(grep -E '^DEVCANOPY_AGENT_BIND=' "$env_file" | head -n1 | cut -d= -f2-)"
-    port="$(grep -E '^DEVCANOPY_AGENT_PORT=' "$env_file" | head -n1 | cut -d= -f2-)"
+    token="$(grep -E '^SOLADOR_AGENT_TOKEN=' "$env_file" | head -n1 | cut -d= -f2-)"
+    bind="$(grep -E '^SOLADOR_AGENT_BIND=' "$env_file" | head -n1 | cut -d= -f2-)"
+    port="$(grep -E '^SOLADOR_AGENT_PORT=' "$env_file" | head -n1 | cut -d= -f2-)"
     url="$(health_url "$bind" "$port")"
 
     if [ -z "$token" ]; then
-        echo "ERROR: no DEVCANOPY_AGENT_TOKEN in $env_file; cannot verify." >&2
+        echo "ERROR: no SOLADOR_AGENT_TOKEN in $env_file; cannot verify." >&2
         return 1
     fi
 
@@ -129,7 +129,7 @@ verify_health() {
         echo "         built  (per Cargo.toml): $expected_version" >&2
         echo "       A stale binary is still serving. Check that the unit's ExecStart" >&2
         echo "       points at the path the binary was installed to:" >&2
-        echo "         systemctl --user cat devcanopy-agent | grep ExecStart" >&2
+        echo "         systemctl --user cat solador-agent | grep ExecStart" >&2
     else
         echo "ERROR: /v1/health did not report version $expected_version within timeout." >&2
         echo "       Last response: ${body:-<no response>}" >&2

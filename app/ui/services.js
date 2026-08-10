@@ -104,8 +104,8 @@ refresh().then((loading) => {
   if (window.__TAURI__) scheduleRefresh(loading);
 });
 
-// Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`:
+// Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
-window.__DEVCANOPY_SERVICES_TEST__ = { render, refresh };
+window.__SOLADOR_SERVICES_TEST__ = { render, refresh };
 
 })();

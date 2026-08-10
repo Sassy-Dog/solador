@@ -105,7 +105,7 @@ impl GitHubClient {
                 // a blanket 403, token permissions notwithstanding. reqwest
                 // sends none by default (URLSession always does, which is why
                 // the Swift port never hit this). Observed live, issue #186.
-                .user_agent(concat!("DevCanopy/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("Solador/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("reqwest client"),
         }

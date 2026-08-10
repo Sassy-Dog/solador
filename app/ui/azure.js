@@ -190,7 +190,7 @@ refresh().then((loading) => {
   if (window.__TAURI__) scheduleRefresh(loading);
 });
 
-// Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`.
-window.__DEVCANOPY_AZURE_TEST__ = { render: renderAzure, refresh };
+// Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`.
+window.__SOLADOR_AZURE_TEST__ = { render: renderAzure, refresh };
 
 })();

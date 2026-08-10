@@ -1,4 +1,4 @@
-//! Polls a DevCanopy agent over HTTP. Replaces
+//! Polls a Solador agent over HTTP. Replaces
 //! `Services/HostMetrics/RemoteHostMetricsService.swift`.
 //!
 //! The error variants mirror the Swift `failureTooltip` cases so the shell can

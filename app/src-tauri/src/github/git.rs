@@ -298,8 +298,8 @@ mod tests {
     #[test]
     fn discovery_does_not_descend_into_a_repo() {
         let dir = temp();
-        let repo = fake_repo(dir.path(), "devcanopy");
-        fake_repo(&repo.join("nested"), "devcanopy");
+        let repo = fake_repo(dir.path(), "widget");
+        fake_repo(&repo.join("nested"), "widget");
         assert_eq!(
             discover(&[dir.path().to_path_buf()], MAX_DEPTH),
             vec![repo],

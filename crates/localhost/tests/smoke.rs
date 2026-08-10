@@ -9,7 +9,7 @@
 //!
 //! ## Skip-safety
 //!
-//! Set `DEVCANOPY_SKIP_HOST_SAMPLING_TESTS` to skip. A sandbox that reports no
+//! Set `SOLADOR_SKIP_HOST_SAMPLING_TESTS` to skip. A sandbox that reports no
 //! memory at all is also treated as "nothing to sample here" rather than as a
 //! failure — the crate cannot be blamed for a kernel that will not answer, and
 //! a red test in that environment would be noise, not signal.
@@ -25,13 +25,13 @@ use localhost::LocalSampler;
 const SAMPLE_GAP: Duration = Duration::from_millis(300);
 
 fn skip_requested() -> bool {
-    std::env::var_os("DEVCANOPY_SKIP_HOST_SAMPLING_TESTS").is_some()
+    std::env::var_os("SOLADOR_SKIP_HOST_SAMPLING_TESTS").is_some()
 }
 
 #[test]
 fn sampling_the_real_machine_produces_a_well_formed_snapshot() {
     if skip_requested() {
-        eprintln!("skipping: DEVCANOPY_SKIP_HOST_SAMPLING_TESTS is set");
+        eprintln!("skipping: SOLADOR_SKIP_HOST_SAMPLING_TESTS is set");
         return;
     }
 
@@ -144,7 +144,7 @@ fn sampling_the_real_machine_produces_a_well_formed_snapshot() {
 #[test]
 fn a_real_sample_lowers_onto_the_wire_contract() {
     if skip_requested() {
-        eprintln!("skipping: DEVCANOPY_SKIP_HOST_SAMPLING_TESTS is set");
+        eprintln!("skipping: SOLADOR_SKIP_HOST_SAMPLING_TESTS is set");
         return;
     }
 

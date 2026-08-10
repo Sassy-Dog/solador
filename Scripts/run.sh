@@ -34,8 +34,8 @@ done
 
 # --tauri: run the cross-platform Tauri cockpit from the root Rust workspace
 # instead of the SwiftUI app. Everything below this block is the SwiftUI path,
-# untouched. exec keeps the caller's environment (DEVCANOPY_SEED_HOST,
-# DEVCANOPY_STORE_DIR, ...) reaching the app.
+# untouched. exec keeps the caller's environment (SOLADOR_SEED_HOST,
+# SOLADOR_STORE_DIR, ...) reaching the app.
 if [[ $TAURI -eq 1 ]]; then
     ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
     TAURI_PACKAGE="solador-app"
@@ -133,10 +133,10 @@ if [[ "$LOG_MODE" == "console" ]] || [[ "$LOG_MODE" == "both" ]]; then
     
     # Set up environment variables for logging
     ENV_VARS=()
-    ENV_VARS+=("DEVCANOPY_LOG_CONSOLE=1")
+    ENV_VARS+=("SOLADOR_LOG_CONSOLE=1")
     
     if [[ -n "$LOG_LEVEL" ]]; then
-        ENV_VARS+=("DEVCANOPY_LOG_LEVEL=$LOG_LEVEL")
+        ENV_VARS+=("SOLADOR_LOG_LEVEL=$LOG_LEVEL")
     fi
     
     # Run binary directly in foreground with logging

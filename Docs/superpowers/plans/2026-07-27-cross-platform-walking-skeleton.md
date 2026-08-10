@@ -750,7 +750,7 @@ Expected: PASS, 4 tests
 The fixture is only useful if it matches production. Fetch a live snapshot and confirm the same types deserialise it:
 
 ```bash
-curl -s -H "Authorization: Bearer $DEVCANOPY_AGENT_TOKEN" \
+curl -s -H "Authorization: Bearer $SOLADOR_AGENT_TOKEN" \
   http://100.100.100.100:7878/v1/snapshot > /tmp/live-snapshot.json
 cp /tmp/live-snapshot.json crates/wire/tests/fixtures/snapshot-live.json
 ```
@@ -2030,11 +2030,11 @@ Replace `fn main` in `app/src-tauri/src/main.rs`:
 fn main() {
     // Configuration is env-driven for the skeleton; Settings arrives with the
     // store crate in a later plan.
-    let host_id = std::env::var("DEVCANOPY_HOST_ID").unwrap_or_else(|_| "default".into());
-    let name = std::env::var("DEVCANOPY_HOST_NAME").unwrap_or_else(|_| "ubu-01".into());
-    let url = std::env::var("DEVCANOPY_HOST_URL")
+    let host_id = std::env::var("SOLADOR_HOST_ID").unwrap_or_else(|_| "default".into());
+    let name = std::env::var("SOLADOR_HOST_NAME").unwrap_or_else(|_| "ubu-01".into());
+    let url = std::env::var("SOLADOR_HOST_URL")
         .unwrap_or_else(|_| "http://100.100.100.100:7878".into());
-    let token = std::env::var("DEVCANOPY_AGENT_TOKEN")
+    let token = std::env::var("SOLADOR_AGENT_TOKEN")
         .ok()
         .or_else(|| load_token(&host_id))
         .unwrap_or_default();
@@ -2116,9 +2116,9 @@ In `app/ui/app.js`, replace the IIFE at the bottom:
 
 ```bash
 cargo build -p devcanopy-app --release
-DEVCANOPY_HOST_URL=http://100.100.100.100:7878 \
-DEVCANOPY_AGENT_TOKEN=<token> \
-DEVCANOPY_HOST_NAME=ubu-01 \
+SOLADOR_HOST_URL=http://100.100.100.100:7878 \
+SOLADOR_AGENT_TOKEN=<token> \
+SOLADOR_HOST_NAME=ubu-01 \
   ./target/release/devcanopy-app
 ```
 
@@ -2127,8 +2127,8 @@ Expected: the card shows live values from `ubu-01`, charts fill in over ~30s as 
 Then verify the failure path — run with a deliberately wrong token:
 
 ```bash
-DEVCANOPY_HOST_URL=http://100.100.100.100:7878 \
-DEVCANOPY_AGENT_TOKEN=wrong \
+SOLADOR_HOST_URL=http://100.100.100.100:7878 \
+SOLADOR_AGENT_TOKEN=wrong \
   ./target/release/devcanopy-app
 ```
 

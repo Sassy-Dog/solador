@@ -1915,7 +1915,7 @@ mod tests {
         );
         // The names actually on the board today are far inside it, so nothing
         // ellipsizes in practice.
-        for name in ["devcanopy", "flywheel", "acme-web", "cogwheel"] {
+        for name in ["pipe-fitting", "flywheel", "acme-web", "cogwheel"] {
             let width = name.len() as f64 * MONO_11_CHAR_W;
             assert!(width <= REPO_NAME_W, "{name} needs {width}pt");
         }

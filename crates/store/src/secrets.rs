@@ -27,7 +27,15 @@ use uuid::Uuid;
 
 /// Keychain/Credential-Manager service name, identical to the Swift app's
 /// (`KeychainHelper.serviceName`).
-pub const SERVICE: &str = "com.sassydog.devcanopy";
+pub const SERVICE: &str = "app.solador.desktop";
+
+/// The Keychain service this app used before it was renamed.
+///
+/// Every credential lived under it: the GitHub PAT, the provider tokens, every
+/// per-host agent token, and the OpenClaw device identity. A rename without a
+/// migration orphans all of them at once — and orphaned is worse than deleted,
+/// because they stay in the Keychain being useless.
+pub const LEGACY_SERVICE: &str = "com.sassydog.devcanopy";
 
 /// The one keychain item all consolidatable text secrets live in (a JSON map
 /// keyed by [`SecretKey::account`] strings). One item means one ACL, so one
@@ -243,6 +251,14 @@ pub trait CredentialStore {
     fn migrate_legacy(&self, _keys: &[SecretKey]) -> Result<usize, SecretError> {
         Ok(0)
     }
+
+    /// Adopts credentials written under the pre-rename service. Default: none.
+    ///
+    /// # Errors
+    /// Implementations may fail on a backend error.
+    fn migrate_service(&self, _keys: &[SecretKey]) -> Result<usize, SecretError> {
+        Ok(0)
+    }
 }
 
 /// Parse the blob's JSON map. Value-free on failure by construction.
@@ -315,6 +331,58 @@ fn non_consolidatable_accounts() -> Vec<String> {
 /// dropping it from this list would leave a stale credential sitting in the
 /// consolidated item forever with nothing left to remove it.
 const RETIRED_AZURE_SAS_ACCOUNT: &str = "azure_cost_sas_url";
+
+/// Copies every credential from a pre-rename service into this one.
+///
+/// Generic over [`ItemStore`] on both sides so the whole thing is testable
+/// without an OS keychain — the same reason the routing below is.
+///
+/// **Copy, never move.** The old entries stay where they are: an operator who
+/// runs an older build afterwards still finds their credentials, and deleting
+/// somebody's secrets as a side effect of a rename is not a trade this code
+/// gets to make on their behalf.
+///
+/// **Once, and never over the top.** If the destination holds anything at all
+/// this returns 0 without reading further. A second pass must not resurrect a
+/// credential the operator has since cleared — that is the failure mode where
+/// a "helpful" migration hands back a revoked token forever.
+fn route_migrate_service<S: ItemStore>(
+    legacy: &S,
+    current: &S,
+    keys: &[SecretKey],
+) -> Result<usize, SecretError> {
+    // The blob first: on a consolidated install it holds everything, so its
+    // presence alone means this migration has already happened.
+    let mut accounts: Vec<String> = vec![BLOB_ACCOUNT.to_owned()];
+    accounts.extend(keys.iter().map(SecretKey::account));
+    // The Azure SAS no longer has a `SecretKey`, but a pre-rename install can
+    // still be holding one. Copied so the *scrub* can then remove it from the
+    // blob on the far side, rather than leaving it stranded under a service
+    // nothing will ever look at again.
+    accounts.push(RETIRED_AZURE_SAS_ACCOUNT.to_owned());
+    // The device key, explicitly. `static_migration_keys` leaves it out on
+    // purpose — it never enters the blob — so relying on the caller's list
+    // silently drops the one credential a human cannot re-type: losing it
+    // means re-pairing the OpenClaw device identity from scratch.
+    accounts.push(SecretKey::OpenClawDeviceKey.account());
+    accounts.sort();
+    accounts.dedup();
+
+    for account in &accounts {
+        if current.get_item(account)?.is_some() {
+            return Ok(0);
+        }
+    }
+
+    let mut copied = 0;
+    for account in &accounts {
+        if let Some(value) = legacy.get_item(account)? {
+            current.set_item(account, &value)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
 
 /// [`CredentialStore::secret`]'s routing, generic over [`ItemStore`] so it is
 /// testable without the OS. `consolidate` is a parameter rather than read
@@ -519,11 +587,11 @@ impl KeyringStore {
     ///   hits, but a shared blob crosses at roughly five hosts, after which
     ///   *every* save and delete fails (the read-modify-write rewrites the
     ///   whole map).
-    /// - **`DEVCANOPY_LEGACY_SECRETS=1`**, checked fresh on every call — the
+    /// - **`SOLADOR_LEGACY_SECRETS=1`**, checked fresh on every call — the
     ///   manual escape hatch: abandoning consolidation is one env var, not
     ///   deleting the `secrets_v1` item before every launch.
     fn consolidate() -> bool {
-        CONSOLIDATE && std::env::var_os("DEVCANOPY_LEGACY_SECRETS").is_none()
+        CONSOLIDATE && std::env::var_os("SOLADOR_LEGACY_SECRETS").is_none()
     }
 }
 
@@ -598,6 +666,25 @@ impl CredentialStore for KeyringStore {
         self.entry(&account)?
             .set_secret(value)
             .map_err(|source| SecretError::Backend { account, source })
+    }
+
+    fn migrate_service(&self, keys: &[SecretKey]) -> Result<usize, SecretError> {
+        if self.service == LEGACY_SERVICE {
+            return Ok(0);
+        }
+        let legacy = KeyringStore::with_service(LEGACY_SERVICE);
+        let copied = route_migrate_service(&legacy, self, keys)?;
+        if copied > 0 {
+            // Count only, never account names or values — the module's
+            // value-free rule applies to its own progress reports.
+            let noun = if copied == 1 {
+                "credential"
+            } else {
+                "credentials"
+            };
+            eprintln!("adopted {copied} {noun} from the pre-rename keychain service");
+        }
+        Ok(copied)
     }
 
     fn migrate_legacy(&self, keys: &[SecretKey]) -> Result<usize, SecretError> {
@@ -694,9 +781,149 @@ mod tests {
 
     use super::*;
 
+    /// The service name is not a detail: it is the address of every credential
+    /// this app has. Pinned in a test so moving it is always a deliberate act
+    /// with a migration attached — which is exactly how it moved last time.
+    ///
+    /// It used to have to match the frozen Swift app's keychain helper, and no
+    /// longer does. That app is frozen, still reads the old service, and will
+    /// keep finding its own credentials there because this migration *copies*
+    /// rather than moves.
     #[test]
-    fn service_matches_the_swift_keychain_helper() {
-        assert_eq!(SERVICE, "com.sassydog.devcanopy");
+    fn the_service_is_the_renamed_one_and_the_old_name_is_still_known() {
+        assert_eq!(SERVICE, "app.solador.desktop");
+        assert_eq!(
+            LEGACY_SERVICE, "com.sassydog.devcanopy",
+            "the migration cannot find what it cannot name"
+        );
+        assert_ne!(SERVICE, LEGACY_SERVICE);
+    }
+
+    // MARK: - Adopting the pre-rename service
+
+    /// The whole point: a rename must not orphan every credential the operator
+    /// has. Orphaned is worse than deleted — the secrets stay in the Keychain,
+    /// being useless.
+    #[test]
+    fn a_rename_adopts_every_credential_from_the_old_service() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+        legacy.set_item("neon_api_key", "napi_x").expect("seed");
+        legacy
+            .set_item("openclaw_device_key", "seed-bytes")
+            .expect("seed");
+
+        let keys = SecretKey::static_migration_keys();
+        let copied = route_migrate_service(&legacy, &current, &keys).expect("migrate");
+
+        assert_eq!(copied, 3);
+        assert_eq!(
+            current.get_item("github_access_token").expect("read"),
+            Some("ghp_x".to_owned())
+        );
+        // The device identity above all: losing it means re-pairing with the
+        // OpenClaw gateway, which is the one credential a human cannot simply
+        // re-type.
+        assert_eq!(
+            current.get_item("openclaw_device_key").expect("read"),
+            Some("seed-bytes".to_owned())
+        );
+    }
+
+    /// Copy, never move. An operator who runs an older build afterwards still
+    /// finds their credentials; deleting somebody's secrets as a side effect of
+    /// a rename is not this code's call to make.
+    #[test]
+    fn adoption_leaves_the_old_service_intact() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+
+        route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("migrate");
+
+        assert_eq!(
+            legacy.get_item("github_access_token").expect("read"),
+            Some("ghp_x".to_owned())
+        );
+    }
+
+    /// The failure mode this guards is specific and nasty: a migration that
+    /// runs twice hands back a credential the operator has since *cleared*,
+    /// resurrecting a revoked token on every launch forever.
+    #[test]
+    fn adoption_never_writes_over_a_service_that_already_holds_anything() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item("github_access_token", "ghp_old")
+            .expect("seed");
+        current
+            .set_item("github_access_token", "ghp_current")
+            .expect("seed");
+
+        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("migrate");
+
+        assert_eq!(copied, 0, "a populated service is never migrated into");
+        assert_eq!(
+            current.get_item("github_access_token").expect("read"),
+            Some("ghp_current".to_owned()),
+            "the live credential must win"
+        );
+    }
+
+    /// A consolidated install keeps everything in the blob, so the blob alone
+    /// has to count as "already migrated" — otherwise the per-item scan below
+    /// it sees nothing and cheerfully re-copies stale entries over the top.
+    #[test]
+    fn a_destination_holding_only_the_blob_still_counts_as_migrated() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy.set_item("neon_api_key", "napi_old").expect("seed");
+        current.set_item(BLOB_ACCOUNT, "{}").expect("seed");
+
+        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("migrate");
+
+        assert_eq!(copied, 0);
+        assert!(current.get_item("neon_api_key").expect("read").is_none());
+    }
+
+    /// A genuine first install has nothing to adopt, and must not be an error.
+    #[test]
+    fn a_fresh_install_adopts_nothing_quietly() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("migrate");
+        assert_eq!(copied, 0);
+    }
+
+    /// The Azure SAS has no `SecretKey` any more, but a pre-rename install can
+    /// still hold one — and it has to arrive on this side for the blob scrub to
+    /// be able to remove it.
+    #[test]
+    fn the_retired_azure_account_is_adopted_so_the_scrub_can_reach_it() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item(RETIRED_AZURE_SAS_ACCOUNT, "https://acct...?sig=x")
+            .expect("seed");
+
+        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("migrate");
+
+        assert_eq!(copied, 1);
+        assert!(current
+            .get_item(RETIRED_AZURE_SAS_ACCOUNT)
+            .expect("read")
+            .is_some());
     }
 
     #[test]

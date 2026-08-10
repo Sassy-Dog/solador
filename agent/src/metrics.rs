@@ -1,6 +1,6 @@
 //! Host metric sampling.
 //!
-//! The wire types are NOT defined here — they live in the `devcanopy-wire`
+//! The wire types are NOT defined here — they live in the `solador-wire`
 //! crate (imported as `wire`) and are re-exported below, so the agent that
 //! produces the JSON and the app that consumes it cannot drift. This module
 //! owns only the sampling: how each value is measured, and the `MetricsState`
@@ -74,7 +74,7 @@ const PROCESS_TOP_LIMIT: usize = 5;
 pub const STALE_INTERVALS: u32 = 3;
 
 // ---------------------------------------------------------------------------
-// Wire contract types: see the `devcanopy-wire` crate, re-exported at the top
+// Wire contract types: see the `solador-wire` crate, re-exported at the top
 // of this module. They used to be defined here, duplicated field-for-field
 // against the Swift decoder — which is exactly how
 // `HostMetricsError.decodeFailed` ("agent/app version skew") came to exist. One
@@ -89,7 +89,7 @@ pub const STALE_INTERVALS: u32 = 3;
 /// Env var holding a comma-separated fstype skip list. When set it REPLACES the
 /// default list entirely (an operator who sets it owns the whole policy); an
 /// empty value disables fstype filtering.
-pub const SKIP_FSTYPES_ENV: &str = "DEVCANOPY_AGENT_SKIP_FSTYPES";
+pub const SKIP_FSTYPES_ENV: &str = "SOLADOR_AGENT_SKIP_FSTYPES";
 
 /// Filesystem types that are transient, remote, or pseudo — mounts that flap
 /// (autofs/NFS automounts) or aren't host storage. Filtering them at the source

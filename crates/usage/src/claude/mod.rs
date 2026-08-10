@@ -77,14 +77,14 @@ mod tests {
             )
         };
 
-        let sessions = root.path().join("devcanopy");
+        let sessions = root.path().join("widget");
         fs::create_dir_all(&sessions).expect("mkdir");
         write_log(
             &sessions.join("session-1.jsonl"),
             &format!(
                 "{}\n{}\n",
-                call("r1", "/Repos/devcanopy", 100),
-                call("r2", "/Repos/devcanopy", 50)
+                call("r1", "/Repos/widget", 100),
+                call("r2", "/Repos/widget", 50)
             ),
             now,
         );
@@ -94,8 +94,8 @@ mod tests {
             &sessions.join("session-2.jsonl"),
             &format!(
                 "{}\n{}\n",
-                call("r2", "/Repos/devcanopy/.claude/worktrees/agent-x", 50),
-                call("r3", "/Repos/devcanopy/.claude/worktrees/agent-x", 25)
+                call("r2", "/Repos/widget/.claude/worktrees/agent-x", 50),
+                call("r3", "/Repos/widget/.claude/worktrees/agent-x", 25)
             ),
             now,
         );
@@ -113,7 +113,7 @@ mod tests {
             1,
             "the worktree attributes to its repo"
         );
-        assert_eq!(summary.projects_last_7d[0].name, "devcanopy");
+        assert_eq!(summary.projects_last_7d[0].name, "widget");
         assert_eq!(summary.models_last_7d[0].name, "claude-opus-4-7");
     }
 }
