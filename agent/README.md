@@ -1,7 +1,7 @@
-# DevCanopy Agent
+# Solador Agent
 
 A small per-host metrics agent. It exposes host metrics and a container/VM list
-over HTTP (JSON), guarded by a bearer token. The [DevCanopy](../) macOS app polls
+over HTTP (JSON), guarded by a bearer token. The [Solador](../) macOS app polls
 it over **Tailscale** to render a dashboard.
 
 Runs on Linux (e.g. `ubu-01`) and macOS. Metrics come from
@@ -225,9 +225,9 @@ version.)
 No cargo or rebuild is needed to roll back — that's the point of keeping the prior
 binary on the host.
 
-## How DevCanopy connects
+## How Solador connects
 
-- DevCanopy reaches the host over Tailscale at `http://<tailscale-host>:7878`.
+- Solador reaches the host over Tailscale at `http://<tailscale-host>:7878`.
 - It sends `Authorization: Bearer <token>` (the same token from the env file) on
   every request, polling `/v1/snapshot` and `/v1/containers`.
 - The agent binds the tailnet interface by default (`DEVCANOPY_AGENT_BIND`), so

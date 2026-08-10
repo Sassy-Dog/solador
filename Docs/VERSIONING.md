@@ -1,9 +1,9 @@
-# Versioning — DevCanopy instance
+# Versioning — Solador instance
 
 This repo's instance of the org **Versioning spec v1.0** (frozen 2026-07-11;
 source of truth: `~/Documents/Cortex/Sassy Dog/Architecture/Development/Versioning.md`,
 mirrored on [platform#397](https://github.com/Sassy-Dog/platform/issues/397)).
-Adopted for [devcanopy#98](https://github.com/Sassy-Dog/devcanopy/issues/98).
+Adopted for [devcanopy#98](https://github.com/cpmadrid/solador/issues/98).
 When this doc and the spec conflict, the spec wins; when this doc and the
 scripts disagree, that is drift — fix one of them in the same PR.
 
@@ -74,7 +74,7 @@ Exactly one mint site: `Scripts/publish.sh` (→ `./dev publish`) invoking
 Single-tier repo: umbrella `v*` only, no tier tags, no tier-vs-tag change
 detection (nothing to path-scope). Declared stance: **no channel tags yet** —
 builds are unsigned/un-notarized and local-only until
-[devcanopy#15](https://github.com/Sassy-Dog/devcanopy/issues/15) (signing /
+[devcanopy#15](https://github.com/cpmadrid/solador/issues/15) (signing /
 notarization / Sparkle) lands; at first external distribution, add
 `mac-direct/<version>-<build>-<UTCts>` per submission, and map Sparkle keys
 per the §7 macOS row (`sparkle:version` = **build number**,
@@ -107,7 +107,7 @@ action consumes the minted tag, never `tag_name:`-creates its own).
 
 ## Adoption status (§9)
 
-Pre-release: DevCanopy has not yet shipped an artifact intended to leave a
+Pre-release: Solador has not yet shipped an artifact intended to leave a
 developer's machine (publish builds are unsigned; "do NOT distribute
 externally until #15"). Per the §9 adoption-timing rule the scheme is wired
 and active now, so the first distributed build simply uses whatever CalVer

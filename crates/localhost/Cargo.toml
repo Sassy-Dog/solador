@@ -1,7 +1,7 @@
 [package]
-# Prefixed like `devcanopy-wire`/`devcanopy-store` to stay clear of the
+# Prefixed like `solador-wire`/`solador-store` to stay clear of the
 # `localhost` name on crates.io. The lib below keeps the short import name.
-name = "devcanopy-localhost"
+name = "solador-localhost"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ rust-version.workspace = true
 name = "localhost"
 
 [dependencies]
-devcanopy-wire = { path = "../wire" }
+solador-wire = { path = "../wire" }
 # Same major as `agent/Cargo.toml` so the two samplers share semantics and the
 # repo only ever learns one sysinfo API. Default features off: this crate needs
 # CPU/memory/processes (`system`), mounted filesystems (`disk`) and interface

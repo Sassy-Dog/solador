@@ -47,7 +47,7 @@ Replace the `slugs` array:
         "Sassy-Dog/qr-ninja",
         "Sassy-Dog/tailored-tip",
         "Sassy-Dog/what2wear",
-        "Sassy-Dog/devcanopy",
+        "cpmadrid/solador",
         "Sassy-Dog/platform"
     ]
 ```
@@ -586,7 +586,7 @@ Expected: `✅ Xcode project generated successfully`
 - [ ] **Step 9: Build + test**
 
 Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && ./dev test 2>&1 | tail -10`
-Expected: `✅ All tests passed`. If the compiler reports a leftover reference to `RepoCIStatus`, `PortfolioCIPanel`, or `.portfolioCI`, fix that reference (grep: `grep -rn "RepoCIStatus\|PortfolioCIPanel\|portfolioCI\|\.statuses" DevCanopy DevCanopyTests`).
+Expected: `✅ All tests passed`. If the compiler reports a leftover reference to `RepoCIStatus`, `PortfolioCIPanel`, or `.portfolioCI`, fix that reference (grep: `grep -rn "RepoCIStatus\|PortfolioCIPanel\|portfolioCI\|\.statuses" Solador DevCanopyTests`).
 
 - [ ] **Step 10: Commit**
 
@@ -609,7 +609,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Launch**
 
-Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && osascript -e 'tell application "DevCanopy" to quit' 2>/dev/null; ./dev run`
+Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && osascript -e 'tell application "Solador" to quit' 2>/dev/null; ./dev run`
 (Allow ~60s to build + launch.)
 
 - [ ] **Step 2: Confirm the panel**
@@ -624,7 +624,7 @@ In the cockpit (row 3, left of Git/Worktrees), confirm the panel titled **CI HEA
 
 - [ ] **Step 3: (Optional) screenshot for the record**
 
-Capture the cockpit window (DevCanopy must be frontmost) to confirm visually, then continue.
+Capture the cockpit window (Solador must be frontmost) to confirm visually, then continue.
 
 ---
 

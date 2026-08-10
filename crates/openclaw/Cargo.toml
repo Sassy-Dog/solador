@@ -1,8 +1,8 @@
 [package]
-# Prefixed like `devcanopy-wire`/`devcanopy-store`/`devcanopy-github` to stay
+# Prefixed like `solador-wire`/`solador-store`/`solador-github` to stay
 # clear of the short name on crates.io. The lib below keeps the short import
 # name.
-name = "devcanopy-openclaw"
+name = "solador-openclaw"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true

@@ -1,11 +1,11 @@
-# DevCanopy
+# Solador
 
 A native macOS cockpit for watching your development infrastructure at a glance —
 designed to live full-screen on a second monitor.
 
 ## Features
 
-DevCanopy renders a grid of glanceable panels:
+Solador renders a grid of glanceable panels:
 
 - **Hosts** — live CPU / memory / disk / network / GPU / battery for each machine,
   pulled from a small per-host agent over [Tailscale](https://tailscale.com).
@@ -32,7 +32,7 @@ DevCanopy renders a grid of glanceable panels:
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/Sassy-Dog/devcanopy.git
+git clone https://github.com/cpmadrid/solador.git
 cd devcanopy
 ```
 
@@ -127,7 +127,7 @@ All credentials are stored in the macOS Keychain.
 
 ### Terminal support
 
-DevCanopy can open repositories in your preferred terminal:
+Solador can open repositories in your preferred terminal:
 - Terminal.app
 - iTerm2
 - Warp

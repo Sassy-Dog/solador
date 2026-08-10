@@ -5,10 +5,14 @@ Status: proposed
 
 ## Problem
 
-DevCanopy lives at `Sassy-Dog/devcanopy` with `INTERNAL` visibility. The
-2026-07-27 cross-platform spec set the goal as *"shipped to other developers"*,
-but nothing has shipped: `gh release list` is empty, and the repo is not
-readable by anyone outside the org.
+The project sits in its pre-publication home — a company-org repository with
+`INTERNAL` visibility, under its former name. The 2026-07-27 cross-platform
+spec set the goal as *"shipped to other developers"*, but nothing has shipped:
+`gh release list` is empty, and the repository is not readable by anyone
+outside the org.
+
+(Written before the rename, so the sections below describe the old repository
+and the old name. The destination is `cpmadrid/solador`; see *On the name*.)
 
 Making it visible is not a settings toggle. The repo carries three classes of
 problem that only become problems once strangers can see it or run it:
@@ -202,11 +206,11 @@ rejects elsewhere (see the Sentry Crons blind-read rule).
 `app/src-tauri/src/settings.rs`:
 
 - **L1171-1172** — "GitHub Repository" and "Report an Issue" point at
-  `Sassy-Dog/devcanopy`. Re-point to `cpmadrid/solador`, or users file bugs
+  `cpmadrid/solador`. Re-point to `cpmadrid/solador`, or users file bugs
   into an archive.
 - **L1032** — Azure Cost help text reads *"the cost-exports container on
   stsassydog"*. Generalize; it ships a private storage account name in the UI.
-- **L39** — doc link to `Sassy-Dog/devcanopy/issues/15`, which will 404.
+- **L39** — doc link to `cpmadrid/solador/issues/15`, which will 404.
 
 ### Rename to Solador
 
@@ -292,7 +296,7 @@ to `false` on a new repo.
 3. **Branch protection** — hand-build the ruleset and merge queue that
    `Sassy-Dog/platform` used to render. Required contexts: `Rust agent`,
    `Rust workspace + frontend e2e`, `Windows workspace tests`.
-4. **Archive** `Sassy-Dog/devcanopy` — last, after the new repo is verified.
+4. **Archive** `cpmadrid/solador` — last, after the new repo is verified.
 
 The local clone's remote is *not* in this list: it moves at sequencing step 1,
 because pushing the fresh commit requires it.

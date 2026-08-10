@@ -1,10 +1,10 @@
-# DevCanopy - AI Assistant Instructions
+# Solador - AI Assistant Instructions
 
-This file provides context for Claude Code when working with the DevCanopy codebase.
+This file provides context for Claude Code when working with the Solador codebase.
 
 ## Project Overview
 
-DevCanopy is a native macOS cockpit that watches development infrastructure at a
+Solador is a native macOS cockpit that watches development infrastructure at a
 glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **Hosts** — live CPU/memory/disk/network/GPU/battery from a per-host agent over Tailscale
 - **Containers** — podman/docker/tart containers and VMs on those hosts

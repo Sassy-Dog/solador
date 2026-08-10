@@ -5,11 +5,11 @@ Status: proposed
 
 ## Problem
 
-DevCanopy is macOS-only: SwiftUI views, SwiftData models, IOKit metrics, Keychain.
+Solador is macOS-only: SwiftUI views, SwiftData models, IOKit metrics, Keychain.
 The goal is to ship it to other developers, and most developer desktops are macOS or
 Windows.
 
-The port is also an opportunity to fix something already wrong. DevCanopy currently
+The port is also an opportunity to fix something already wrong. Solador currently
 maintains **two Swift reimplementations of Rust code it already owns**:
 
 | Swift | Duplicates | Evidence |

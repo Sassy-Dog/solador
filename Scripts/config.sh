@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# DevCanopy Configuration
-export APP_NAME="DevCanopy"
+# Solador Configuration
+export APP_NAME="Solador"
 export BUNDLE_IDENTIFIER="com.sassydog.devcanopy"
 export MINIMUM_MACOS_VERSION="14.0"
 
@@ -21,7 +21,7 @@ export DERIVED_DATA_PATH="$BUILD_DIR/DerivedData"
 export PRODUCTS_DIR="$BUILD_DIR/Products"
 
 # Xcode settings
-export SCHEME_NAME="DevCanopy"
+export SCHEME_NAME="Solador"
 export PROJECT_NAME="DevCanopy.xcodeproj"
 
 # Signing (will be configured later)

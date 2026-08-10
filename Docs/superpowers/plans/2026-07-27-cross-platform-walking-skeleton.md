@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A running Tauri app on macOS that renders the real DevCanopy host card from live metrics served by the existing agent, with all presentation logic in unit-tested Rust and the Swift app untouched.
+**Goal:** A running Tauri app on macOS that renders the real Solador host card from live metrics served by the existing agent, with all presentation logic in unit-tested Rust and the Swift app untouched.
 
 **Architecture:** Three new Rust crates under a root workspace — `metrics` (wire types shared by agent and app), `agentclient` (HTTP polling), `viewmodel` (formatters, colour rules, layout policy, view-model assembly) — plus a Tauri v2 shell whose frontend is static HTML/CSS/JS with no build step. The frontend receives a finished view-model and only paints.
 
@@ -29,7 +29,7 @@ Every task's requirements implicitly include these.
 
 Both were found by checking the spec against the code; apply them to the spec when this plan lands.
 
-1. **The spec's crate list omits an agent client.** `crates/metrics` covers collection and `crates/sources` covers third-party APIs, but nothing owned "poll a DevCanopy agent over HTTP" — which is `Services/HostMetrics/RemoteHostMetricsService.swift` today. This plan adds `crates/agentclient`.
+1. **The spec's crate list omits an agent client.** `crates/metrics` covers collection and `crates/sources` covers third-party APIs, but nothing owned "poll a Solador agent over HTTP" — which is `Services/HostMetrics/RemoteHostMetricsService.swift` today. This plan adds `crates/agentclient`.
 
 2. **The spec claimed phases 1–3 delete the duplication while the Swift app still ships. They don't.** Swift cannot consume a Rust crate without FFI, so `HostMetricsKit` survives until either the Swift app retires or the local machine is served by a localhost agent. The honest framing: phases 1–3 *build the replacement*; deletion lands later. This plan does not claim otherwise.
 
@@ -633,7 +633,7 @@ Expected: FAIL — `unresolved import 'metrics::Snapshot'`
 `crates/metrics/src/lib.rs`:
 
 ```rust
-//! The DevCanopy agent's JSON contract.
+//! The Solador agent's JSON contract.
 //!
 //! One definition, serialised by the agent and deserialised by the app. That
 //! is the point: the Swift app defines these types a second time, which is
@@ -1261,7 +1261,7 @@ Expected: FAIL — `cannot find type 'AgentClient' in this scope`
 Prepend to `crates/agentclient/src/lib.rs`:
 
 ```rust
-//! Polls a DevCanopy agent over HTTP. Replaces
+//! Polls a Solador agent over HTTP. Replaces
 //! `Services/HostMetrics/RemoteHostMetricsService.swift`.
 //!
 //! The error variants mirror the Swift `failureTooltip` cases so the shell can
@@ -1405,14 +1405,14 @@ fn main() { tauri_build::build() }
 ```json
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DevCanopy",
+  "productName": "Solador",
   "version": "0.1.0",
   "identifier": "com.sassydog.devcanopy.app",
   "build": { "frontendDist": "../ui" },
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "DevCanopy", "width": 1000, "height": 1120, "resizable": true, "minWidth": 200, "minHeight": 400 }
+      { "title": "Solador", "width": 1000, "height": 1120, "resizable": true, "minWidth": 200, "minHeight": 400 }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
@@ -1468,7 +1468,7 @@ Set the window's label so the capability binds to it — in `tauri.conf.json`, a
 `"label": "main"` to the window object:
 
 ```json
-{ "label": "main", "title": "DevCanopy", "width": 1000, "height": 1120, "resizable": true, "minWidth": 200, "minHeight": 400 }
+{ "label": "main", "title": "Solador", "width": 1000, "height": 1120, "resizable": true, "minWidth": 200, "minHeight": 400 }
 ```
 
 No `fs`, `shell`, `http` or `dialog` plugin is added anywhere in this plan. Adding one
@@ -1479,7 +1479,7 @@ later is a security review checkpoint, not a routine dependency bump.
 `app/src-tauri/src/main.rs`:
 
 ```rust
-//! DevCanopy shell. The frontend receives a finished view-model and paints;
+//! Solador shell. The frontend receives a finished view-model and paints;
 //! all logic lives in `viewmodel`.
 
 use serde_json::Value;
@@ -1525,7 +1525,7 @@ fn main() {
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>DevCanopy</title>
+<title>Solador</title>
 <link rel="stylesheet" href="app.css" />
 </head>
 <body>
@@ -1819,7 +1819,7 @@ Run: `cargo build -p devcanopy-app --release`
 Expected: builds clean.
 
 Run: `./target/release/devcanopy-app`
-Expected: a window titled "DevCanopy" showing the host card with 16 core cells and populated charts. Close it.
+Expected: a window titled "Solador" showing the host card with 16 core cells and populated charts. Close it.
 
 - [ ] **Step 6: Write the Playwright layout test**
 
@@ -1981,7 +1981,7 @@ would deadlock if it did.
 Replace everything in `app/src-tauri/src/main.rs` above `fn main`:
 
 ```rust
-//! DevCanopy shell. The frontend receives a finished view-model and paints;
+//! Solador shell. The frontend receives a finished view-model and paints;
 //! all logic lives in `viewmodel`.
 
 use agentclient::AgentClient;

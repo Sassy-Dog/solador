@@ -38,7 +38,7 @@ done
 # DEVCANOPY_STORE_DIR, ...) reaching the app.
 if [[ $TAURI -eq 1 ]]; then
     ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
-    TAURI_PACKAGE="devcanopy-app"
+    TAURI_PACKAGE="solador-app"
 
     # --release composes with --tauri; anything else is the app's own argument
     # (e.g. the --dump fixture modes documented in app/README.md).
