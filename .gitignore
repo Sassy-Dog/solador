@@ -150,3 +150,7 @@ tests/frontend/test-results/
 .claude/*
 !.claude/hooks/
 !.claude/settings.json
+
+# direnv: `.envrc` is committed and holds no values; the real ones live here.
+.envrc.local
+.direnv/

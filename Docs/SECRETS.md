@@ -9,9 +9,8 @@ whole point of this document:
 - **Runtime credentials** — the tokens *you* give the app so it can read your
   GitHub, Neon, Sentry, Vercel and Azure accounts. These live in your OS
   credential store. The app never writes them to disk.
-- **Build-time configuration** — values the maintainer's release build needs.
-  These come from Doppler, and every one of them has a documented way to build
-  without it.
+- **Build-time configuration** — two optional environment variables the
+  maintainer's *release* build uses. Everything else builds without them.
 
 ## Runtime credentials
 
@@ -38,32 +37,62 @@ container-scoped, read-only SAS per poll by shelling out to the Azure CLI
 
 ## Build-time configuration
 
-Org convention: **Doppler is the source of truth**, and consumer repos must not
-keep their own copy of a shared value.
+Two values, both **optional**, both read from the **environment**. No build
+script knows where they come from, and no contributor needs to.
 
-| Value | Source | Building without it |
+| Variable | Needed for | Without it |
 |---|---|---|
-| `SENTRY_DSN` | Doppler `devcanopy/dev` | `./dev publish --skip-sentry`, or set `SENTRY_DSN` in the environment. A build with no DSN makes Sentry no-op, which is the default for every non-release build. |
-| `TEAM_ID` (Apple) | Doppler `_stores/apple`, referenced from `devcanopy/dev` | Set `DEVELOPMENT_TEAM` in the environment or in the gitignored `Scripts/config.local.sh`. Unset, Xcode picks a team and `./dev build` still works. |
+| `SENTRY_DSN` | `./dev publish` only | Pass `--skip-sentry` to release without crash reporting. Every non-release build already leaves it empty, so the no-op path is the common one. |
+| `DEVELOPMENT_TEAM` | picking a specific Apple signing team | Xcode picks one. `./dev build` works either way. |
 
-Neither is required to build, test or run this project. Both fail with a message
-naming the escape hatch rather than a wall.
+Nothing in the day-to-day loop needs either: `./dev`, `./dev test`, `./dev lint`
+and `./dev build` all work on a clean clone with neither set.
+
+### Locally — direnv
+
+`.envrc` is committed and holds no values; it sources `.envrc.local`, which is
+gitignored. Put real values there:
+
+```bash
+# .envrc.local
+export SENTRY_DSN="https://…@….ingest.sentry.io/…"
+export DEVELOPMENT_TEAM="XXXXXXXXXX"
+```
+
+Then `direnv allow` once. If you pull these from a secret manager, do that in
+`.envrc.local` too — the build scripts never see the difference.
+
+### In CI — workflow secrets
+
+A release workflow sets them from `secrets.*`:
+
+```yaml
+env:
+  SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+  DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+```
+
+**Deliberately not in `ci.yml`.** That workflow references **zero** secrets, and
+that is a security property rather than an oversight: this repository is public,
+so a fork's pull request runs CI, and a secret reachable from a fork PR is a
+secret you have given away. `ci.yml` builds and tests — neither needs one.
+Signing and releasing belong in a separate workflow that does not run on
+`pull_request`.
 
 ### Why the Apple team id is here at all
 
 It is **not** confidential — a team id ships in the signature of every binary
-Apple distributes, and you can read it out of any signed app. It is in Doppler
-for single-source-of-truth reasons: it was previously copied into `project.yml`,
-which is the kind of duplication that goes stale silently and that the org
-convention exists to prevent.
+Apple distributes, and you can read it out of any signed app. It lives outside
+the repository because it was previously copied into `project.yml`, and a copy
+goes stale silently.
 
-That distinction is why its resolution ladder is deliberately soft — environment
-override first, Doppler second, a warning and Xcode's own choice third. A hard
-requirement would make the repo unbuildable for anyone without Doppler access,
-which is a real cost to protect a value that is not protected anyway.
+That is also why its handling is soft: unset produces a warning and Xcode's own
+choice, never a failure. A hard requirement would make the repository
+unbuildable for anyone who has not been handed a value — a real cost, to protect
+something that is not protected anyway.
 
 ## Contributors
 
 You need none of the above. `./dev`, `./dev test` and `./dev lint` work on a
-clean clone with no credentials, no Doppler, and no Azure CLI. Panels you have
+clean clone with no credentials and no Azure CLI. Panels you have
 not configured say so rather than failing.
