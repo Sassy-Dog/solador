@@ -37,8 +37,9 @@
 //! summary and downloads not one partition body.
 //!
 //! There is no app wiring here: no credential store, no polling loop, no UI.
-//! The SAS lives in `crates/store` (`SecretKey::AzureCostSasUrl`), and the poll
-//! cadence a caller should use is [`POLL_INTERVAL`].
+//! The caller supplies a container-scoped SAS URL — the shell mints a
+//! short-lived one per poll from the operator's Azure CLI session and stores
+//! nothing — and the cadence to use is [`POLL_INTERVAL`].
 
 pub mod blob;
 pub mod csv;

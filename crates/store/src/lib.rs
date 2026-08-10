@@ -705,6 +705,8 @@ mod tests {
             core_row_span: 3,
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 250.0,
+            azure_storage_account: "acmestorage".into(),
+            azure_cost_container: "cost-exports".into(),
             github_org: "acme".into(),
             neon_org_id: "org-123".into(),
             neon_usd_per_cu_hour: 0.175,
@@ -1038,7 +1040,6 @@ mod tests {
             SecretKey::GitHubAccessToken.account(),
             SecretKey::NeonApiKey.account(),
             SecretKey::SentryUsageToken.account(),
-            SecretKey::AzureCostSasUrl.account(),
             SecretKey::OpenClawBearerToken.account(),
         ] {
             assert!(

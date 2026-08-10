@@ -697,7 +697,24 @@ function azureTab(t) {
     })
   );
   box.appendChild(actionRow(apply));
-  return [box, secretGroup(t.secretHeading, t.secret)];
+
+  // Where the export lives. No credential group: the panel signs its own
+  // read using the operator's Azure CLI session and stores nothing.
+  const exp = group(t.export.heading);
+  const account = textInput(t.export.account);
+  const container = textInput(t.export.container);
+  exp.append(
+    field("azure-account", t.export.accountLabel, account),
+    field("azure-container", t.export.containerLabel, container),
+    help(t.export.help)
+  );
+  const saveExport = button(t.export.saveLabel, "apply");
+  saveExport.addEventListener("click", () =>
+    mutate("settings_save_azure", { account: account.value, container: container.value })
+  );
+  exp.appendChild(actionRow(saveExport));
+
+  return [box, exp];
 }
 
 function usageTab(t) {

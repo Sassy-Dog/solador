@@ -57,7 +57,6 @@ pub struct StoredSecrets {
     pub neon: bool,
     pub sentry: bool,
     pub vercel: bool,
-    pub azure: bool,
     /// Whether an OpenClaw *bearer* token is stored. The device key is not
     /// represented here at all: it is minted by the app, and whether one exists
     /// is answered by the device id the Device Pairing block shows.
@@ -76,7 +75,6 @@ pub enum SecretField {
     Neon,
     Sentry,
     Vercel,
-    Azure,
     /// The OpenClaw gateway's *bearer* token, which is optional — most gateways
     /// authenticate by device pairing instead. Deliberately not the device key:
     /// that is 32 raw bytes minted by this app, never typed by a human, and it
@@ -93,7 +91,6 @@ impl SecretField {
             SecretField::Neon => "neon",
             SecretField::Sentry => "sentry",
             SecretField::Vercel => "vercel",
-            SecretField::Azure => "azure",
             SecretField::OpenClaw => "openclaw",
         }
     }
@@ -106,7 +103,6 @@ impl SecretField {
             SecretField::Neon => SecretKey::NeonApiKey,
             SecretField::Sentry => SecretKey::SentryUsageToken,
             SecretField::Vercel => SecretKey::VercelApiToken,
-            SecretField::Azure => SecretKey::AzureCostSasUrl,
             SecretField::OpenClaw => SecretKey::OpenClawBearerToken,
         }
     }
@@ -119,7 +115,6 @@ impl SecretField {
             SecretField::Neon,
             SecretField::Sentry,
             SecretField::Vercel,
-            SecretField::Azure,
             SecretField::OpenClaw,
         ]
         .into_iter()
@@ -413,7 +408,7 @@ pub fn view(
         "github": github_tab(settings, stored),
         "portfolio": portfolio_tab(repos),
         "hosts": hosts_tab(settings, hosts, rules, stored),
-        "azure": azure_tab(settings, stored),
+        "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
         "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(),
@@ -1024,7 +1019,7 @@ fn hosts_tab(
     })
 }
 
-fn azure_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
+fn azure_tab(settings: &Settings) -> Value {
     json!({
         "heading": "Azure Cost",
         "budget": {
@@ -1034,14 +1029,18 @@ fn azure_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
             "help": "Powers the projected-vs-budget bar on the Azure Cost panel. Leave at 0 to hide the bar.",
             "saveLabel": "Apply",
         },
-        "secretHeading": "Azure Cost SAS",
-        "secret": secret_section(
-            SecretField::Azure,
-            "SAS URL",
-            stored.azure,
-            "SAS stored",
-            "Used by the Azure Cost panel. Paste a container-scoped, read+list SAS URL for your cost-exports container. The SAS is the only credential — no Azure sign-in. Stored in your OS credential store.",
-        ),
+        // No credential section: the Azure Cost panel has no stored secret.
+        // It mints a short-lived SAS per poll from the operator's own Azure
+        // CLI session, so what it needs is an address, not a token.
+        "export": {
+            "heading": "Cost Export",
+            "accountLabel": "Storage account",
+            "account": settings.azure_storage_account,
+            "containerLabel": "Container (e.g. cost-exports)",
+            "container": settings.azure_cost_container,
+            "help": "The panel signs its own read-only request using the Azure CLI, so `az` must be installed and signed in (`az login`). Nothing is stored: the signature is minted per refresh and lives only as long as one read.",
+            "saveLabel": "Save",
+        },
     })
 }
 
@@ -1366,6 +1365,8 @@ mod tests {
             sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 50_000,
             azure_monthly_budget_usd: 250.0,
+            azure_storage_account: "acmestorage".into(),
+            azure_cost_container: "cost-exports".into(),
             neon_usd_per_cu_hour: 0.106,
             neon_usd_per_gib_month: 0.35,
             ..Settings::default()
@@ -1383,7 +1384,6 @@ mod tests {
             neon: false,
             sentry: true,
             vercel: false,
-            azure: false,
             openclaw: false,
             hosts: [host.id].into_iter().collect(),
         };
@@ -2241,13 +2241,11 @@ mod tests {
         assert_eq!(vm["github"]["secret"]["storedLabel"], "Token stored");
         assert_eq!(vm["usage"]["neon"]["secret"]["stored"], false);
         assert_eq!(vm["usage"]["sentry"]["secret"]["stored"], true);
-        assert_eq!(vm["azure"]["secret"]["stored"], false);
 
         // Each section names the key its Save/Clear sends back.
         assert_eq!(vm["github"]["secret"]["key"], "github");
         assert_eq!(vm["usage"]["neon"]["secret"]["key"], "neon");
         assert_eq!(vm["usage"]["sentry"]["secret"]["key"], "sentry");
-        assert_eq!(vm["azure"]["secret"]["key"], "azure");
     }
 
     /// The whole reason `StoredSecrets` is booleans: a payload that could
@@ -2263,7 +2261,6 @@ mod tests {
             SecretKey::GitHubAccessToken.account(),
             SecretKey::NeonApiKey.account(),
             SecretKey::SentryUsageToken.account(),
-            SecretKey::AzureCostSasUrl.account(),
             SecretKey::OpenClawBearerToken.account(),
             // The one credential that is raw key material. Nothing on this
             // surface may name it, let alone carry it.
@@ -2283,7 +2280,6 @@ mod tests {
             &vm["github"]["secret"],
             &vm["usage"]["neon"]["secret"],
             &vm["usage"]["sentry"]["secret"],
-            &vm["azure"]["secret"],
             &vm["openclaw"]["secret"],
         ] {
             let mut keys: Vec<&str> = secret
@@ -2393,6 +2389,15 @@ mod tests {
         assert_eq!(vm["usage"]["sentry"]["orgSlug"], "acme");
         assert_eq!(vm["usage"]["sentry"]["quota"], 50_000);
         assert_eq!(vm["azure"]["budget"]["value"], 250.0);
+        // The Azure tab has no credential section at all any more: the panel
+        // signs its own request per poll and stores nothing. What it carries
+        // instead is an address.
+        assert!(
+            vm["azure"]["secret"].is_null(),
+            "the Azure panel has no stored credential"
+        );
+        assert_eq!(vm["azure"]["export"]["account"], "acmestorage");
+        assert_eq!(vm["azure"]["export"]["container"], "cost-exports");
     }
 
     #[test]
@@ -2410,7 +2415,6 @@ mod tests {
             SecretField::GitHub,
             SecretField::Neon,
             SecretField::Sentry,
-            SecretField::Azure,
             SecretField::OpenClaw,
         ];
         for field in fields {

@@ -1565,7 +1565,6 @@ fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSe
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
         vercel: present(SecretKey::VercelApiToken),
-        azure: present(SecretKey::AzureCostSasUrl),
         openclaw: present(SecretKey::OpenClawBearerToken),
         hosts: hosts
             .iter()
@@ -2093,33 +2092,67 @@ fn wake_usage(app: &App, providers: bool) {
 /// straight into the fetcher, whose `Debug` redacts it and whose errors are
 /// stripped of their URL before they become strings.
 async fn poll_azure(app: &Arc<App>) {
-    let sas = match read_credential(&*app.credentials, SecretKey::AzureCostSasUrl) {
-        Credential::Present(sas) => sas,
-        Credential::Absent => {
-            app.azure
-                .lock()
-                .expect("azure state poisoned")
-                .unconfigure();
-            return;
-        }
-        // Not `unconfigure()`: that paints "Add an Azure Cost SAS URL in
-        // Settings" — the one state this panel must never confuse with a
-        // failure — over a configuration that is perfectly fine, and it throws
-        // away the fingerprint cache, so the next good read re-downloads every
-        // partition. A locked keychain is a failure, and it says so.
-        Credential::Unreadable => {
-            app.azure
-                .lock()
-                .expect("azure state poisoned")
-                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
-            return;
-        }
+    // Re-read every pass, like the GitHub token and org: a Save in Settings
+    // must apply on the next poll rather than the next launch.
+    let (account, container) = {
+        let store = app.store.lock().expect("store poisoned");
+        let settings = store.settings();
+        (
+            settings.azure_storage_account.trim().to_owned(),
+            settings.azure_cost_container.trim().to_owned(),
+        )
     };
+    if account.is_empty() || container.is_empty() {
+        app.azure
+            .lock()
+            .expect("azure state poisoned")
+            .unconfigure();
+        return;
+    }
 
     let previous = {
         let mut state = app.azure.lock().expect("azure state poisoned");
         state.begin();
         state.cached()
+    };
+
+    // Minted per poll rather than cached. `az` costs a second or two against a
+    // four-hour cadence, and a cache would need an expiry clock, an
+    // invalidation path for a settings change, and an answer for a token that
+    // expires mid-fetch — none of which buys anything at this rhythm.
+    //
+    // Blocking (it spawns a process), so it goes off the executor exactly as
+    // `docker ps` does.
+    let now = github::now_utc();
+    let minted = {
+        let (account, container) = (account.clone(), container.clone());
+        tokio::task::spawn_blocking(move || azure::sas::mint(&account, &container, now)).await
+    };
+    let sas = match minted {
+        Ok(Ok(url)) => url,
+        // `failed`, never `unconfigure`: the account and container are set, so
+        // painting "add an Azure storage account in Settings" would send the
+        // operator to fix something that is already right — and it would throw
+        // away the fingerprint cache, making the next good read re-download
+        // every partition.
+        Ok(Err(e)) => {
+            app.azure
+                .lock()
+                .expect("azure state poisoned")
+                .failed(e.user_message());
+            return;
+        }
+        Err(e) => {
+            // The spawn_blocking task itself died — a panic or a shutdown.
+            // Logged without the account name, and reported as the failure it
+            // is rather than as a misconfiguration.
+            eprintln!("azure sas mint task failed: {e}");
+            app.azure
+                .lock()
+                .expect("azure state poisoned")
+                .failed("could not mint an Azure SAS".to_owned());
+            return;
+        }
     };
     // An unchanged export costs one blob listing and no partition bodies — the
     // fingerprint from the last success is what buys that.
@@ -2608,6 +2641,31 @@ fn settings_reset_layout(state: tauri::State<'_, Arc<App>>) -> Value {
     settings_response(&state, status)
 }
 
+/// Where the Azure cost export lives.
+///
+/// Its own command for the same reason as the GitHub org: `ProviderPrefs` is
+/// sent whole by two tabs, so a third sender would have to re-send fields it
+/// does not show or blank them.
+#[tauri::command]
+fn settings_save_azure(
+    account: String,
+    container: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let current = store.settings_mut();
+        current.azure_storage_account = account.trim().to_owned();
+        current.azure_cost_container = container.trim().to_owned();
+        save_status(&store, "Saved.")
+    };
+    // Woken, unlike the GitHub org: the Azure poll runs on a four-hour rhythm,
+    // so without this an operator who has just fixed a typo waits until
+    // teatime to find out whether it worked.
+    state.azure_wake.notify_one();
+    settings_response(&state, status)
+}
+
 /// The GitHub organization the Runners panel queries.
 ///
 /// A command of its own rather than a field on [`ProviderPrefs`]: that struct
@@ -3072,7 +3130,6 @@ fn wake_for(app: &App, field: SecretField) {
             wake_usage(app, true);
             app.crons_wake.notify_one();
         }
-        SecretField::Azure => app.azure_wake.notify_one(),
         // The bearer token is folded into the *signed connect payload*, so it
         // cannot be swapped on a live socket — the session has to be torn down
         // and re-handshaked, which is exactly what this wake does.
@@ -3328,7 +3385,6 @@ fn dump_settings() -> Value {
         neon: false,
         sentry: true,
         vercel: true,
-        azure: false,
         openclaw: false,
         hosts: [live.id].into_iter().collect(),
     };
@@ -3910,6 +3966,7 @@ fn main() {
             settings_add_breakpoint,
             settings_remove_breakpoint,
             settings_reset_layout,
+            settings_save_azure,
             settings_save_github,
             settings_save_providers,
             settings_add_host,
@@ -5748,7 +5805,7 @@ mod tests {
         assert_eq!(rows[1]["enabled"], false);
 
         assert_eq!(vm["github"]["secret"]["stored"], true);
-        assert_eq!(vm["azure"]["secret"]["stored"], false);
+        assert!(vm["azure"]["secret"].is_null(), "no Azure credential");
         assert!(!vm["portfolio"]["rows"]
             .as_array()
             .expect("repo rows")

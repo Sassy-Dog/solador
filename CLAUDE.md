@@ -232,7 +232,7 @@ DevCanopy/
   to store this as a `bool` a completed fetch set, so the first frame — before
   any pass had looked — was indistinguishable from "there is no credential":
   Repos and Runners opened on `connect a GitHub token in Settings`, Azure on
-  `Add an Azure Cost SAS URL in Settings`, Containers on `no containers
+  `Add an Azure storage account in Settings`, Containers on `no containers
   detected`, on a machine where all of it was fine. Only `Absent` may paint a
   setup instruction; `Unknown` renders the panel's loading line. A defaulted
   *state* is as much a fabrication as a defaulted number.
@@ -294,10 +294,11 @@ DevCanopy/
   its own credentials in the same Keychain service under different account names,
   and — as of the single-keychain-item migration, macOS only — consolidates them
   into one item, `secrets_v1`, rather than Swift's one-item-per-secret scheme; see
-  `app/README.md`'s "Consolidated credential item" section. The Azure Cost SAS URL
-  is exempt from consolidation: it is externally written (re-minted every 4 days by
-  the `azurecost-sas` LaunchAgent via `Scripts/refresh-azure-cost-sas.sh`), so it
-  stays a per-item entry both apps and the script agree on.
+  `app/README.md`'s "Consolidated credential item" section. The Azure Cost panel no longer
+  stores a credential at all: it mints a short-lived, container-scoped SAS per
+  poll by shelling out to the Azure CLI (`az`, signed in as the operator), so
+  there is no LaunchAgent, no keychain item and no consolidation exemption. The
+  storage account and container are ordinary `Settings` fields.
 
 ### Responsive layout (breakpoints)
 - `crates/viewmodel/src/cockpit.rs` holds the responsive math for the Tauri app

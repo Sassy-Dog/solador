@@ -55,12 +55,6 @@ pub enum SecretKey {
     SentryUsageToken,
     /// Vercel API token, for the Usage panel's spend rows.
     VercelApiToken,
-    /// Container-scoped SAS URL for the Azure cost export. The URL *is* the
-    /// credential, which is why it lives here and not in [`crate::Settings`].
-    /// Stays per-item rather than joining [`BLOB_ACCOUNT`]: the LaunchAgent
-    /// maintains it from outside this process — see
-    /// [`SecretKey::consolidatable`].
-    AzureCostSasUrl,
     /// Optional bearer token for the OpenClaw gateway.
     OpenClawBearerToken,
     /// The 32-byte Ed25519 seed behind this install's OpenClaw device identity.
@@ -87,7 +81,6 @@ impl SecretKey {
             SecretKey::NeonApiKey => "neon_api_key".to_owned(),
             SecretKey::SentryUsageToken => "sentry_usage_token".to_owned(),
             SecretKey::VercelApiToken => "vercel_api_token".to_owned(),
-            SecretKey::AzureCostSasUrl => "azure_cost_sas_url".to_owned(),
             SecretKey::OpenClawBearerToken => "openclaw_bearer_token".to_owned(),
             SecretKey::OpenClawDeviceKey => "openclaw_device_key".to_owned(),
         }
@@ -101,11 +94,6 @@ impl SecretKey {
     /// writer must therefore stay per-item.
     ///
     /// `false` for:
-    /// - [`SecretKey::AzureCostSasUrl`] — re-minted every 4 days by the
-    ///   `com.sassydog.devcanopy.azurecost-sas` LaunchAgent
-    ///   (`Scripts/refresh-azure-cost-sas.sh`), which writes the per-item
-    ///   entry from outside this process. Consolidating it is what severed
-    ///   the Azure Cost panel from its renewal pipeline.
     /// - [`SecretKey::OpenClawDeviceKey`] — raw key material under a
     ///   cross-app account contract (see its variant docs); never blob
     ///   material.
@@ -122,7 +110,7 @@ impl SecretKey {
             | SecretKey::SentryUsageToken
             | SecretKey::VercelApiToken
             | SecretKey::OpenClawBearerToken => true,
-            SecretKey::AzureCostSasUrl | SecretKey::OpenClawDeviceKey => false,
+            SecretKey::OpenClawDeviceKey => false,
         }
     }
 
@@ -132,10 +120,6 @@ impl SecretKey {
     /// is no fixed set of ids to name here) and
     /// [`SecretKey::OpenClawDeviceKey`] (never enters the blob;
     /// [`CredentialStore::migrate_legacy`] skips it defensively too).
-    /// Also excludes [`SecretKey::AzureCostSasUrl`]: static, but not
-    /// [`SecretKey::consolidatable`] — an externally-written secret must
-    /// never enter the blob.
-    ///
     /// `is_static`'s match has no wildcard arm, so adding a `SecretKey`
     /// variant without deciding whether it belongs here is a compile error —
     /// replacing a hand-maintained list at the call site that a new variant
@@ -149,11 +133,7 @@ impl SecretKey {
                 | SecretKey::SentryUsageToken
                 | SecretKey::VercelApiToken
                 | SecretKey::OpenClawBearerToken => true,
-                // AzureCostSasUrl is static but not consolidatable (external
-                // writer — see `consolidatable`), so migration never lists it.
-                SecretKey::HostToken(_)
-                | SecretKey::OpenClawDeviceKey
-                | SecretKey::AzureCostSasUrl => false,
+                SecretKey::HostToken(_) | SecretKey::OpenClawDeviceKey => false,
             }
         }
         let keys = [
@@ -316,10 +296,25 @@ fn write_blob<S: ItemStore>(
 /// absent because it is consolidatable; the `debug_assert` keeps this list
 /// honest against the predicate rather than trusting hand maintenance.
 fn non_consolidatable_accounts() -> Vec<String> {
-    let keys = [SecretKey::AzureCostSasUrl, SecretKey::OpenClawDeviceKey];
+    let keys = [SecretKey::OpenClawDeviceKey];
     debug_assert!(keys.iter().all(|key| !key.consolidatable()));
-    keys.iter().map(SecretKey::account).collect()
+    let mut accounts: Vec<String> = keys.iter().map(SecretKey::account).collect();
+    accounts.push(RETIRED_AZURE_SAS_ACCOUNT.to_owned());
+    accounts
 }
+
+/// The account of a credential this app no longer keeps.
+///
+/// The Azure Cost SAS used to live in the credential store, written from
+/// outside this process by a LaunchAgent — which is why it was exempt from
+/// consolidation. The app now mints its own SAS per poll from the operator's
+/// Entra session and stores nothing, so [`SecretKey`] has no variant for it.
+///
+/// The name survives here because the *scrub* must: an install upgraded from a
+/// build that had this key may still carry the account inside its blob, and
+/// dropping it from this list would leave a stale credential sitting in the
+/// consolidated item forever with nothing left to remove it.
+const RETIRED_AZURE_SAS_ACCOUNT: &str = "azure_cost_sas_url";
 
 /// [`CredentialStore::secret`]'s routing, generic over [`ItemStore`] so it is
 /// testable without the OS. `consolidate` is a parameter rather than read
@@ -721,7 +716,6 @@ mod tests {
         );
         assert_eq!(SecretKey::NeonApiKey.account(), "neon_api_key");
         assert_eq!(SecretKey::SentryUsageToken.account(), "sentry_usage_token");
-        assert_eq!(SecretKey::AzureCostSasUrl.account(), "azure_cost_sas_url");
         assert_eq!(
             SecretKey::OpenClawBearerToken.account(),
             "openclaw_bearer_token"
@@ -748,7 +742,6 @@ mod tests {
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
-            SecretKey::AzureCostSasUrl,
             SecretKey::OpenClawBearerToken,
             SecretKey::OpenClawDeviceKey,
         ];
@@ -779,7 +772,6 @@ mod tests {
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
             SecretKey::VercelApiToken,
-            SecretKey::AzureCostSasUrl,
             SecretKey::OpenClawBearerToken,
             SecretKey::OpenClawDeviceKey,
         ];
@@ -788,6 +780,13 @@ mod tests {
             .filter(|key| !key.consolidatable())
             .map(SecretKey::account)
             .collect();
+        // Plus the one account no `SecretKey` spells any more. The Azure Cost
+        // SAS was removed when the app learned to mint its own, but an
+        // upgraded install can still be carrying it in the blob, so the scrub
+        // list is deliberately *wider* than the predicate. Named here rather
+        // than tolerated, so a future addition to the list still has to be
+        // justified rather than merely accommodated.
+        expected.push(RETIRED_AZURE_SAS_ACCOUNT.to_owned());
         expected.sort();
 
         let mut actual = non_consolidatable_accounts();
@@ -800,7 +799,6 @@ mod tests {
     /// break the premise — and only those — must refuse consolidation.
     #[test]
     fn consolidatable_refuses_the_externally_written_and_raw_byte_keys() {
-        assert!(!SecretKey::AzureCostSasUrl.consolidatable());
         assert!(!SecretKey::OpenClawDeviceKey.consolidatable());
 
         assert!(SecretKey::HostToken(Uuid::new_v4()).consolidatable());
@@ -827,10 +825,6 @@ mod tests {
         );
         assert!(!keys.iter().any(|k| matches!(k, SecretKey::HostToken(_))));
         assert!(!keys.contains(&SecretKey::OpenClawDeviceKey));
-        assert!(
-            !keys.contains(&SecretKey::AzureCostSasUrl),
-            "the SAS has an external writer and must never be migrated into the blob"
-        );
     }
 
     #[test]
@@ -963,7 +957,6 @@ mod tests {
             SecretKey::GitHubAccessToken.account(),
             SecretKey::NeonApiKey.account(),
             SecretKey::SentryUsageToken.account(),
-            SecretKey::AzureCostSasUrl.account(),
             SecretKey::OpenClawBearerToken.account(),
             SecretKey::OpenClawDeviceKey.account(),
             SecretKey::HostToken(uuid::Uuid::nil()).account(),
@@ -1182,62 +1175,6 @@ mod tests {
             store.get_item("neon_api_key").expect("legacy read"),
             None,
             "the legacy item must also be cleared, or a blob rebuild resurrects it"
-        );
-    }
-
-    /// The deliberate inverse of
-    /// `route_secret_with_blob_present_reads_the_blob_not_the_legacy_item`:
-    /// the SAS has an external writer (the LaunchAgent), so for THIS key the
-    /// legacy item is the truth and the blob copy is the stale one.
-    #[test]
-    fn azure_cost_sas_reads_the_legacy_item_even_when_the_blob_is_present() {
-        let store = FakeItemStore::default();
-        store
-            .set_item("azure_cost_sas_url", "sas_fresh_from_launchagent")
-            .expect("seed legacy");
-        let mut map = std::collections::BTreeMap::new();
-        map.insert("azure_cost_sas_url".to_owned(), "sas_stale".to_owned());
-        write_blob(&store, &map).expect("seed blob");
-
-        assert_eq!(
-            route_secret(&store, true, SecretKey::AzureCostSasUrl).expect("get"),
-            Some("sas_fresh_from_launchagent".to_owned())
-        );
-    }
-
-    #[test]
-    fn azure_cost_sas_set_and_delete_never_touch_the_blob() {
-        let store = FakeItemStore::default();
-        let blob_lock = Mutex::new(());
-        // A marker entry proves the blob is never rewritten by either call.
-        let mut map = std::collections::BTreeMap::new();
-        map.insert("neon_api_key".to_owned(), "napi_marker".to_owned());
-        write_blob(&store, &map).expect("seed blob");
-        let blob_before = store.get_item(BLOB_ACCOUNT).expect("raw blob");
-
-        route_set_secret(
-            &store,
-            &blob_lock,
-            true,
-            SecretKey::AzureCostSasUrl,
-            "sas_x",
-        )
-        .expect("set");
-        assert_eq!(
-            store.get_item("azure_cost_sas_url").expect("legacy read"),
-            Some("sas_x".to_owned())
-        );
-
-        route_delete_secret(&store, &blob_lock, true, SecretKey::AzureCostSasUrl).expect("delete");
-        assert_eq!(
-            store.get_item("azure_cost_sas_url").expect("legacy read"),
-            None
-        );
-
-        assert_eq!(
-            store.get_item(BLOB_ACCOUNT).expect("raw blob"),
-            blob_before,
-            "a per-item routed key must never rewrite the blob"
         );
     }
 
@@ -1490,13 +1427,9 @@ mod tests {
             .expect("seed");
         store.set_item("neon_api_key", "napi_x").expect("seed");
 
-        let (copied, scrubbed) = route_migrate_legacy(
-            &store,
-            &blob_lock,
-            true,
-            &[SecretKey::AzureCostSasUrl, SecretKey::NeonApiKey],
-        )
-        .expect("migrate");
+        let (copied, scrubbed) =
+            route_migrate_legacy(&store, &blob_lock, true, &[SecretKey::NeonApiKey])
+                .expect("migrate");
 
         assert_eq!(copied, 1, "the SAS must not be counted as copied");
         assert_eq!(scrubbed, 0, "a fresh migration scrubs nothing");
@@ -1577,5 +1510,29 @@ mod tests {
             None,
             "consolidate=false must never create the blob"
         );
+    }
+}
+
+#[cfg(test)]
+mod retired_accounts {
+    use super::*;
+
+    /// The Azure Cost SAS is no longer a credential this app keeps — it mints
+    /// a short-lived one per poll instead. But an install upgraded from a
+    /// build that stored it may still carry the account inside its
+    /// consolidated blob, and nothing else would ever remove it.
+    #[test]
+    fn the_retired_azure_account_is_still_scrubbed_from_an_upgraded_blob() {
+        assert!(
+            non_consolidatable_accounts().contains(&RETIRED_AZURE_SAS_ACCOUNT.to_owned()),
+            "an upgraded install would keep a dead credential in its blob forever"
+        );
+    }
+
+    /// The name is load-bearing precisely because no `SecretKey` spells it any
+    /// more: a typo here is a scrub that silently matches nothing.
+    #[test]
+    fn the_retired_account_name_is_the_one_that_was_written() {
+        assert_eq!(RETIRED_AZURE_SAS_ACCOUNT, "azure_cost_sas_url");
     }
 }

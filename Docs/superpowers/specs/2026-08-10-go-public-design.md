@@ -231,7 +231,8 @@ Renamed:
 **Not** renamed, and this is the point of the split: `SERVICE`
 (`crates/store/src/secrets.rs:30`), `APP_DIR_NAME`
 (`crates/store/src/lib.rs:61`), the bundle identifier
-(`app/src-tauri/tauri.conf.json:5`), and the `azurecost-sas` LaunchAgent label.
+(`app/src-tauri/tauri.conf.json:5`). A fourth — the `azurecost-sas` LaunchAgent
+label — was on this list until Task 10 deleted the LaunchAgent outright.
 Those four are **stateful** — they address a live keychain item, an on-disk
 store, an installed app's macOS identity, and a running LaunchAgent. Renaming
 them orphans every credential in daily use to change strings no user ever sees.

@@ -511,10 +511,13 @@ test("a credential saves, clears, and never comes back", async ({ page, baseURL 
 
 test("a credential with nothing stored offers nothing to clear", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "azure").click();
-  // The other side of the badge — the fixture deliberately stores no SAS.
-  expect(settings.azure.secret.stored).toBe(false);
-  const box = page.locator('.group[data-secret="azure"]');
+  // Neon, not Azure: the Azure panel has no stored credential at all any more
+  // (it signs its own request per poll), so it can no longer stand for "a
+  // credential with nothing stored". The fixture deliberately stores no Neon
+  // key, which is the same claim with a subject that still exists.
+  await tab(page, "usage").click();
+  expect(settings.usage.neon.secret.stored).toBe(false);
+  const box = page.locator('.group[data-secret="neon"]');
   await expect(box.locator(".clear")).toBeDisabled();
   await expect(box.locator(".badge-ok")).toHaveCount(0);
 });
@@ -603,7 +606,10 @@ test("the Azure tab passes the Vercel team id through untouched", async ({ page,
   const settings = await openSettings(page, baseURL);
   await tab(page, "azure").click();
   await page.locator("#azure-budget").fill("250");
-  await page.locator(".btn.apply").click();
+  // `.first()`: the tab now carries a second Apply for the export address, and
+  // this test is about the budget one. Addressed by position rather than by a
+  // new hook because the order is the reading order.
+  await page.locator(".btn.apply").first().click();
 
   const [save] = await calls(page, "settings_save_providers");
   expect(save.args.prefs.vercelTeamId).toBe(settings.usage.vercel.teamId);
