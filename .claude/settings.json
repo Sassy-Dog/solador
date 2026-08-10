@@ -9,7 +9,7 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/Scripts/format-hook.sh",
             "timeout": 30,
-            "statusMessage": "Formatting Swift…"
+            "statusMessage": "Formatting Swift\u2026"
           },
           {
             "type": "command",
@@ -19,16 +19,5 @@
         ]
       }
     ]
-  },
-  "enabledPlugins": {
-    "sassy-dog@sassydog-skills": true
-  },
-  "extraKnownMarketplaces": {
-    "sassydog-skills": {
-      "source": {
-        "source": "github",
-        "repo": "acme/sassydog-skills"
-      }
-    }
   }
 }
