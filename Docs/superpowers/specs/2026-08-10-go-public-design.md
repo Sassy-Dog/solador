@@ -297,7 +297,9 @@ to `false` on a new repo.
 3. **Branch protection** — hand-build the ruleset and merge queue that
    `acme/toolkit` used to render. Required contexts: `Rust agent`,
    `Rust workspace + frontend e2e`, `Windows workspace tests`.
-4. **Archive** `cpmadrid/solador` — last, after the new repo is verified.
+4. **Archive** the pre-publication repository — the private one this was
+   exported from, never the repo created in step 1 — last, after the new repo
+   is verified.
 
 The local clone's remote is *not* in this list: it moves at sequencing step 1,
 because pushing the fresh commit requires it.

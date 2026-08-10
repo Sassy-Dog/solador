@@ -122,14 +122,18 @@ plan/reviews that produced the original skeleton.
 ### Backlog & workflow skills
 The backlog is a user-level **GitHub Project** under `cpmadrid`, status-column driven:
 **Backlog → Ready → In progress → In review → Done**. It is the source of truth for
-backlog state (not labels). Five generated `.claude/skills/` automate the loop:
-- **plate-it** (`plate it`) — synthesize a prioritized plate from the board + CI + tech debt.
-- **fill-it** (`fill it`) — groom Backlog issues until dispatchable, promote to **Ready**.
+backlog state (not labels). Six skills from the `sassy-dog` plugin automate the
+loop, configured per-repo by `.claude/sassy-dog/*.md` — which is **gitignored**,
+so a fresh clone regenerates it with `refresh-skills`:
+- **survey-work** (`what's on our plate`) — synthesize a prioritized plate from the board + CI + tech debt.
+- **groom-backlog** (`groom it`) — groom Backlog issues until dispatchable, promote to **Ready**.
 - **take-it** (`take #N`) — ship specific issues in parallel worktrees.
-- **drain-it** (`drain it` / `/loop 5m /drain-it`) — loop dispatcher; ships from **Ready** until empty.
+- **dispatch-ready** (`drain it` / `/loop 5m /dispatch-ready`) — loop dispatcher; ships from **Ready** until empty.
 - **send-it** (`send it`) — single-PR end-to-end flow (worktree audit → gates → PR → merge).
+- **tidy-repo** (`clean it`) — post-shipping branch/worktree/stash reconciliation.
 
-The contract: **Ready means dispatchable** — fill-it produces it, drain-it consumes it.
+The contract: **Ready means dispatchable** — groom-backlog produces it,
+dispatch-ready consumes it.
 
 ### Project Structure
 ```
