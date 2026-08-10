@@ -577,7 +577,14 @@ mod tests {
             ),
             NOW,
         );
-        let rules = store::seeded_rules();
+        // The test's own rule, not the seed's: nothing is seeded any more, and
+        // this test is *about* what a hide rule does to the totals, so the rule
+        // doing the hiding belongs in front of the reader.
+        let rules = vec![store::ContainerGroupRule::new(
+            "ghcr.io/*",
+            "",
+            store::ContainerRuleAction::Hide,
+        )];
         let payload = view(&state, &rules, &BTreeMap::new(), NOW);
         assert_eq!(
             payload["trailing"], "3 total · 2 up · 1 stopped",

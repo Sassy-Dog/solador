@@ -3316,7 +3316,7 @@ fn dump_settings() -> Value {
         ..store::Settings::default()
     };
 
-    let mut live = Host::new("ubu-3xdv", "100.87.202.125");
+    let mut live = Host::new("workstation", "100.100.100.100");
     live.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
     live.hidden_volume_mounts = vec!["/mnt/scratch".into()];
     let mut spare = Host::new("nuc-spare", "100.64.0.7");
@@ -3389,28 +3389,41 @@ fn dump_settings() -> Value {
 /// The rules the Settings fixture carries — the seeded three, plus the two
 /// renderings seeding alone never reaches.
 ///
-/// The seeds give a scoped Collapse, a second Collapse, and an all-hosts Hide.
-/// What they do not give is an **Expect** row (whose Collapse-only fields must
-/// therefore be absent), a live **expected count** (the field's non-empty
-/// state), or a rule scoped to a host that no longer exists — the case
-/// `rule_host_options` grows an extra option for, and the one where a picker
-/// silently renders blank if it doesn't.
+/// Every rendering the rule editor has, in one list.
+///
+/// Written out rather than grown from `seeded_rules()`, which is empty now —
+/// a fixture derived from it would cover nothing at all. Between them these
+/// five carry: a host-scoped Collapse, an all-hosts Hide, a live **expected
+/// count** (the field's non-empty state), an **Expect** row whose
+/// Collapse-only fields must therefore be absent, and a rule scoped to a host
+/// that no longer exists — the case `rule_host_options` grows an extra option
+/// for, and the one where a picker silently renders blank if it doesn't.
 fn dump_container_rules() -> Vec<ContainerGroupRule> {
-    let mut rules = store::seeded_rules();
-    rules[1].expected_count = Some(4);
-    rules.push(
+    let mut with_count = ContainerGroupRule::new(
+        "api-*",
+        "workflow jobs",
+        store::ContainerRuleAction::Collapse,
+    )
+    .on_host("workstation");
+    with_count.expected_count = Some(4);
+    vec![
+        ContainerGroupRule::new(
+            "runner-*",
+            "ci runners",
+            store::ContainerRuleAction::Collapse,
+        )
+        .on_host("workstation"),
+        with_count,
+        ContainerGroupRule::new("ghcr.io/*", "", store::ContainerRuleAction::Hide),
         ContainerGroupRule::new("build-vm", "", store::ContainerRuleAction::Expect)
             .on_host(store::LOCAL_HOST_SCOPE),
-    );
-    rules.push(
         ContainerGroupRule::new(
             "legacy-*",
             "legacy jobs",
             store::ContainerRuleAction::Collapse,
         )
         .on_host("retired-box"),
-    );
-    rules
+    ]
 }
 
 /// The OpenClaw panel as a fixture, one per rendering it has.
