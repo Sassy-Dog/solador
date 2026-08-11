@@ -21,5 +21,4 @@ labels: enhancement
 ---
 
 Worth knowing before you write: things deliberately **not** in scope are
-alerting, history and retention, anything requiring a server, and support for
-the frozen SwiftUI app under `DevCanopy/`.
+alerting, history and retention, and anything requiring a server.

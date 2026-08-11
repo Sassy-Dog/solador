@@ -56,7 +56,7 @@ which pins its own toolchain and has its own CI job:
 
 | crate | what it owns |
 |---|---|
-| [`wire`](../crates/wire) | the agent's JSON contract (package `devcanopy-wire`, imported as `wire`) |
+| [`wire`](../crates/wire) | the agent's JSON contract (package `solador-wire`, imported as `wire`) |
 | [`agentclient`](../crates/agentclient) | the HTTP client for `/v1/snapshot`, `/v1/containers`, `/v1/health` |
 | [`viewmodel`](../crates/viewmodel) | every string, colour and layout number the frontend paints |
 | [`store`](../crates/store) | settings / hosts / repos / rules / roster JSON + the OS credential store |
@@ -234,11 +234,18 @@ Three sources feed it, all in [`src-tauri/src/containers/`](src-tauri/src/contai
   poll, never render time, so a failing source freezes its clocks rather than
   ageing everything toward a false alarm.
 
-Seeded rules match Swift's (`sassydog-ghr-ubu-*` → "ghr runners" and `api-*` →
-"workflow jobs" on `ubu-01`, `ghcr.io/*` hidden) and seed **only** when the
-store has never carried rules: a deliberately emptied list stays empty. They are
-edited under [Settings → Hosts](#settings), beside the host list whose names
-scope them.
+There are **no seeded rules** — a store that has never configured any starts
+with none. This is deliberate: the three rules that used to ship named one
+operator's machines, two of them pinned to a specific host, and grouping is
+per-deployment by nature. A shipped example rule silently groups a stranger's
+containers by a rule they never wrote, which is harder to diagnose than no
+grouping at all — the panel looks like it is working while quietly hiding or
+folding rows.
+
+**Order is the contract** for whatever you do configure: matching is
+first-match-wins, so a hide rule above a collapse rule changes what the panel
+shows. Rules are edited under [Settings → Hosts](#settings), beside the host
+list whose names scope them.
 
 ## The `repos` and `runners` commands
 
@@ -1277,7 +1284,7 @@ machine) the step is skipped silently and you get the bare-cargo behaviour.
 The bare command still works and is what everything non-interactive uses:
 
 ```bash
-cargo run -p devcanopy-app          # from the repo root
+cargo run -p solador-app          # from the repo root
 ```
 
 CI builds the same binary the same way — `cargo test --locked --workspace` in both
@@ -1296,7 +1303,7 @@ run, a fresh checkout, a machine you are driving over SSH.
 | `SOLADOR_STORE_DIR`       | platform config dir            | Where `store.json` lives. A scratch directory here keeps `store.json` — and only `store.json` — out of the real one. **Not** the keychain: the credential *service* is always the real one, so credential migration is skipped whenever this is set (see "Consolidated credential item" below); a scratch run touches no keychain item at all beyond whatever per-item reads/writes the panels themselves make. |
 | `SOLADOR_LEGACY_SECRETS`  | unset                          | Set to `1` to skip credential migration and force per-item keychain routing, even on macOS — the rollback switch for consolidation. See "Consolidated credential item" below. |
 
-Tokens live in the OS credential store (service `com.sassydog.devcanopy`), never
+Tokens live in the OS credential store (service `app.solador.desktop`), never
 in `store.json`. Account `host-<uuid>` is the storage key either way, but what
 that means depends on platform and migration state: pre-migration, on any
 non-macOS target, or under `SOLADOR_LEGACY_SECRETS=1`, it names its own
@@ -1310,7 +1317,7 @@ agent's 401 text and sending you to check the wrong layer.
 
 On macOS, every text credential above — host tokens, the GitHub PAT, the Neon
 and Sentry usage keys, the OpenClaw bearer token — lives
-in one keychain item: service `com.sassydog.devcanopy`, account `secrets_v1`,
+in one keychain item: service `app.solador.desktop`, account `secrets_v1`,
 value a JSON map keyed by the same account strings each credential used to have
 its own item under. One item means one keychain ACL prompt covers every
 credential this app stores, rather than a fresh "Always Allow" per secret. One
@@ -1358,32 +1365,32 @@ deleting a keychain item before every launch.
 ### Offline fixtures
 
 ```bash
-cargo run -p devcanopy-app -- --dump sample.json                 # one live host
-cargo run -p devcanopy-app -- --dump-unreachable sample-unreachable.json
+cargo run -p solador-app -- --dump sample.json                 # one live host
+cargo run -p solador-app -- --dump-unreachable sample-unreachable.json
 #   …the link is down on a host we used to reach: a BLANK card, which is what
 #   `view_for` produces for it. No figures survive.
-cargo run -p devcanopy-app -- --dump-sampler-stale sample-sampler-stale.json
+cargo run -p solador-app -- --dump-sampler-stale sample-sampler-stale.json
 #   …the poll SUCCEEDED and the card is stale anyway: the agent's own
 #   `/v1/health` says its sampler stopped, dated by the agent's clock.
-cargo run -p devcanopy-app -- --dump-cockpit sample-cockpit.json # three hosts: live / stale / failed
+cargo run -p solador-app -- --dump-cockpit sample-cockpit.json # three hosts: live / stale / failed
 #   …plus `--width <pt>` (which column count to compute), `--hosts <n>` (how
 #   many of the three to include; 0 is the unconfigured cockpit) and `--tabs`
 #   (the "Show as tabs" overflow mode, which only changes the payload at a
 #   width where the cards were going to stack anyway).
-cargo run -p devcanopy-app -- --dump-settings sample-settings.json # the Settings surface
-cargo run -p devcanopy-app -- --dump-containers sample-containers.json # the Containers panel
+cargo run -p solador-app -- --dump-settings sample-settings.json # the Settings surface
+cargo run -p solador-app -- --dump-containers sample-containers.json # the Containers panel
 #   …plus `--empty`, which dumps the no-runtimes state with a failed-tool footer.
-cargo run -p devcanopy-app -- --dump-repos sample-repos.json         # the Repos panel
-cargo run -p devcanopy-app -- --dump-runners sample-runners.json     # the Runners panel
+cargo run -p solador-app -- --dump-repos sample-repos.json         # the Repos panel
+cargo run -p solador-app -- --dump-runners sample-runners.json     # the Runners panel
 #   …both take `--empty`, which dumps the no-credential state.
-cargo run -p devcanopy-app -- --dump-usage sample-usage.json         # the Usage panel
+cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage panel
 #   …plus `--unmeasured` (both providers answering, neither measuring: the em
 #   dash path, with the quota set and the bar therefore suppressed) and
 #   `--empty` (no summary, no provider configured).
-cargo run -p devcanopy-app -- --dump-azure sample-azure.json         # the Azure Cost panel
+cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS) and `--empty` (no SAS URL at all).
-cargo run -p devcanopy-app -- --dump-openclaw sample-openclaw.json   # the OpenClaw panel
+cargo run -p solador-app -- --dump-openclaw sample-openclaw.json   # the OpenClaw panel
 #   …plus `--pairing` (the banner with the approve command), `--error` (a
 #   rejected handshake, red), `--idle` (no gateway URL: the muted Settings
 #   hint), `--empty` (no runtime at all) and `--unmeasured` (the same live farm
@@ -1485,7 +1492,7 @@ paths are the ⏱ extras at the end.
 rm -f app/ui/sample*.json                      # 1. fixtures MUST be gone
 SOLADOR_STORE_DIR=$(mktemp -d) \
 SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
-  cargo run -p devcanopy-app                   # 2. scratch store, distinctive name
+  cargo run -p solador-app                   # 2. scratch store, distinctive name
 ```
 
 Then tick these off. Eight terminal lines and four on-screen reads — the terminal
@@ -1560,7 +1567,7 @@ and that immediacy is itself the check on the corresponding wake:
    ```bash
    SOLADOR_STORE_DIR=$(mktemp -d) \
    SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878|$TOKEN" \
-     cargo run -p devcanopy-app
+     cargo run -p solador-app
    ```
 
    Leave `$TOKEN` unset to exercise the zero-setup case below; set it to the

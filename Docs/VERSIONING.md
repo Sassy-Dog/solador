@@ -1,16 +1,14 @@
 # Versioning — Solador instance
 
-This repo's instance of the org **Versioning spec v1.0** (frozen 2026-07-11;
-source of truth: `~/Documents/Cortex/Sassy Dog/Architecture/Development/Versioning.md`,
-mirrored on [platform#397](https://github.com/acme/toolkit/issues/397)).
-Adopted for [devcanopy#98](https://github.com/cpmadrid/solador/issues/98).
-When this doc and the spec conflict, the spec wins; when this doc and the
-scripts disagree, that is drift — fix one of them in the same PR.
+This repo's instance of a **Versioning spec v1.0** frozen 2026-07-11. The spec
+itself is kept privately; everything it requires of this repo is restated here,
+so this document stands alone. When this doc and the scripts disagree, that is
+drift — fix one of them in the same PR.
 
 ## Classification (§7)
 
-**macOS app row ∪ generated-projects (XcodeGen) row.** One shipping tier: the
-DevCanopy.app binary. Two declared non-tiers:
+**Desktop app row.** One shipping tier: the Solador binary. One declared
+non-tier:
 
 - **Rust agent** (`agent/`): **N/A** — an internal artifact hand-deployed to
   our own hosts by operator-run scripts (`agent/deploy/redeploy.sh`), never
@@ -19,8 +17,6 @@ DevCanopy.app binary. Two declared non-tiers:
   crate-internal (a declared §7 internal-tools semver exception); nothing
   consumes it as a release version. Revisit at the first artifact that leaves
   our machines.
-- **HostMetricsKit** (`Packages/HostMetricsKit/`): local path-referenced SPM
-  package, versionless by construction — never published.
 
 ## The two numbers (§1–§3)
 
@@ -31,13 +27,13 @@ DevCanopy.app binary. Two declared non-tiers:
 
 Consumers — version is **never** computed anywhere else:
 
-- `Scripts/build.sh` injects both as **command-line xcodebuild build settings**
-  (`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`). Per the §7
-  generated-projects row, version values never go into `project.yml`
-  (generate-time evaluation would stale them per commit); `project.yml` keeps
-  only static **inert** baselines (`0.0.0` / `1`) for Xcode-GUI builds, never
-  hand-bumped. `Info.plist` indirects via `$(MARKETING_VERSION)` /
-  `$(CURRENT_PROJECT_VERSION)`.
+- **No build consumer yet.** The Xcode build that injected these as
+  `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` went with the SwiftUI app.
+  `app/src-tauri/tauri.conf.json` still carries a hand-written `version: 0.1.0`,
+  which contradicts this document and is inert only while `bundle.active` is
+  `false`. Wiring the minted version into the Tauri bundle is part of **#15**;
+  until then nothing consumes the mint except `Scripts/publish.sh`, which
+  refuses to run.
 - `Scripts/publish.sh` consumes the mint's output contract (below) and pins
   the build via `MARKETING_VERSION=<minted>` so the artifact is stamped with
   exactly the tagged version.
@@ -116,11 +112,16 @@ coming back.
 
 ## Tests (§3, mandatory)
 
-`DevCanopyTests/VersioningScriptTests.swift` runs the scripts against
-hermetic bare-origin git fixtures (real `ls-remote` probes): patch floor,
-month-roll reset, §2 idempotency, the §4 collision replay
-(prior-month-commit release → first-commit-of-month release → two distinct
-versions), same-commit mint reuse, pin-never-auto-bumps, probe fail-closed,
-build-number totality / `--at <ref>` / pin / fail-closed, and the §6
-CalVer-exceeds-`v0.1.1` monotonicity vector. They run in the standard
-`./dev test` suite (CI: "Swift app tests").
+> **These scripts currently have NO test coverage.** Their only tests were
+> `DevCanopyTests/VersioningScriptTests.swift`, which ran hermetic bare-origin
+> git fixtures (real `ls-remote` probes) over: patch floor, month-roll reset,
+> §2 idempotency, the §4 collision replay (prior-month-commit release →
+> first-commit-of-month release → two distinct versions), same-commit mint
+> reuse, pin-never-auto-bumps, probe fail-closed, build-number totality /
+> `--at <ref>` / pin / fail-closed, and the §6 CalVer-exceeds-`v0.1.1`
+> monotonicity vector.
+>
+> That file was deleted with the SwiftUI app. The scripts it covered survive
+> because **#15** needs them, so the coverage has to be rebuilt — as a shell
+> or Rust integration test — before the minting logic is trusted to stamp a
+> real release. Restoring it is part of #15's scope.

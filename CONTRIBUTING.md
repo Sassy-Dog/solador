@@ -1,14 +1,20 @@
 # Contributing
 
-## Read this first
+## Prerequisites
 
-**`DevCanopy/` is frozen.** It is a complete SwiftUI application kept as a
-parity reference — not built, not tested, not linted, and possibly not
-compiling. Swift changes will not be accepted. Everything ships from `app/` and
-`crates/`.
+Solador targets **macOS and Windows**; the [agent](agent/) is the Linux piece.
+[README.md](README.md#prerequisites) has the full list with rationale — the
+short version:
 
-Saying that up front because the Swift tree is large enough to look like the
-main event.
+| | |
+|---|---|
+| **Rust** | via [rustup](https://rustup.rs). Don't pick a version — `rust-toolchain.toml` pins one and rustup installs it, with `rustfmt` and `clippy`, on first `cargo` run. |
+| **macOS** | Xcode Command Line Tools (`xcode-select --install`). Required for `cc`/`ld` — Rust links against Apple's SDK — plus `codesign` and `iconutil`. Full Xcode is not needed. |
+| **Windows** | MSVC C++ Build Tools, and the WebView2 runtime on Windows 10. |
+| **Node 22** | only for `tests/frontend`. Not needed to build or run. |
+
+If `./dev` fails with a linker error that never mentions Xcode, the Command
+Line Tools are what's missing.
 
 ## The loop
 

@@ -43,7 +43,7 @@ script knows where they come from, and no contributor needs to.
 | Variable | Needed for | Without it |
 |---|---|---|
 | `SENTRY_DSN` | `./dev publish` only | Pass `--skip-sentry` to release without crash reporting. Every non-release build already leaves it empty, so the no-op path is the common one. |
-| `DEVELOPMENT_TEAM` | picking a specific Apple signing team | Xcode picks one. `./dev build` works either way. |
+| `DEVELOPMENT_TEAM` | picking a specific Apple signing team | `codesign` falls back to an ad-hoc signature. `./dev build` works either way. |
 
 Nothing in the day-to-day loop needs either: `./dev`, `./dev test`, `./dev lint`
 and `./dev build` all work on a clean clone with neither set.
@@ -83,11 +83,10 @@ Signing and releasing belong in a separate workflow that does not run on
 
 It is **not** confidential — a team id ships in the signature of every binary
 Apple distributes, and you can read it out of any signed app. It lives outside
-the repository because it was previously copied into `project.yml`, and a copy
-goes stale silently.
+the repository because a copy of it in a build config goes stale silently.
 
-That is also why its handling is soft: unset produces a warning and Xcode's own
-choice, never a failure. A hard requirement would make the repository
+That is also why its handling is soft: unset produces a warning and an ad-hoc
+signature, never a failure. A hard requirement would make the repository
 unbuildable for anyone who has not been handed a value — a real cost, to protect
 something that is not protected anyway.
 

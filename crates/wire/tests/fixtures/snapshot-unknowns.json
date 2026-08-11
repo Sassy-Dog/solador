@@ -14,6 +14,6 @@
     { "mount": "/media/empty", "usedGB": 0.0, "totalGB": 0.0 }
   ],
   "processes": [
-    { "pid": 812, "name": "solador-agent", "cpuPercent": 0.4, "memoryMB": 9.0 }
+    { "pid": 812, "name": "devcanopy-agent", "cpuPercent": 0.4, "memoryMB": 9.0 }
   ]
 }
