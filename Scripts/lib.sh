@@ -28,7 +28,7 @@ command_exists() {
 # Ensure we're in the project root
 ensure_project_root() {
     if [[ ! -f "project.yml" && ! -d "DevCanopy.xcodeproj" ]]; then
-        log_error "Not in DevCanopy project root directory"
+        log_error "Not in Solador project root directory"
         exit 1
     fi
 }

@@ -18,7 +18,7 @@ const esc = (v) =>
 /**
  * The one way this frontend talks to Rust.
  *
- * `fixture` is the offline fallback (`cargo run -p devcanopy-app -- --dump*`):
+ * `fixture` is the offline fallback (`cargo run -p solador-app -- --dump*`):
  * the same payload shape the command returns, so that path can't diverge from
  * the real one. See app/README.md's smoke test for why every fixture must be
  * deleted before exercising the IPC boundary by hand. A command with no
@@ -38,6 +38,21 @@ const callRust = async (command, args, fixture) => {
 // close to repaint at the real width immediately rather than up to a tick late.
 let settingsOpen = false;
 let refreshCockpit = async () => {};
+
+// Panels poll on their own timers and skip the work while Settings is up, so
+// closing it used to leave every one of them stale for a full slow-cadence
+// tick. `refreshCockpit` only repaints the host cards -- the panels are
+// separate. Each registers here; `closeSettings` brings them all current at
+// once, which is what makes a setting you just saved visible immediately
+// rather than up to ten seconds later still showing its own setup
+// instruction.
+const PANEL_REFRESHERS = [];
+const registerPanelRefresh = (fn) => PANEL_REFRESHERS.push(fn);
+// allSettled, not all: one panel whose provider is down must not stop the rest
+// from repainting.
+const refreshPanels = async () => {
+  await Promise.allSettled(PANEL_REFRESHERS.map((fn) => fn()));
+};
 
 const CHARTS = new Map();
 
@@ -292,7 +307,7 @@ function drawCard(card, d, volumeSlots) {
     f(card, "cpuValue").textContent = "—";
     f(card, "cpuModel").textContent = "";
     down.textContent = d.error.message;
-    down.style.color = d.connection ? d.connection.color : "#e05a4f";
+    down.style.color = d.connection ? d.connection.color : "var(--red)";
     down.hidden = false;
     stale.textContent = "";
     return;
@@ -583,7 +598,7 @@ function renderCockpit(p) {
 // this closure -- this is what lets a test drive many renders directly and
 // assert chart bookkeeping stays flat, instead of waiting on real poll ticks.
 // Read-only, no production behaviour depends on it.
-window.__DEVCANOPY_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size };
+window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size };
 
 (async () => {
   // The width the host grid actually has. Rust turns it into a column count;
@@ -601,7 +616,7 @@ window.__DEVCANOPY_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.si
     // this file (see the top-of-file note and `render()`'s volume bars).
     document.body.innerHTML = `<pre>failed to load cockpit: ${esc(e)}</pre>`;
     const pre = document.body.querySelector("pre");
-    pre.style.color = "#e05a4f";
+    pre.style.color = "var(--red)";
     pre.style.padding = "20px";
   }
   if (window.__TAURI__) {

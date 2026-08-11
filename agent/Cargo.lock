@@ -94,29 +94,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
-name = "devcanopy-agent"
-version = "0.4.0"
-dependencies = [
- "axum",
- "devcanopy-wire",
- "serde",
- "serde_json",
- "sysinfo",
- "time",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "devcanopy-wire"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -618,6 +595,29 @@ checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "solador-agent"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "solador-wire",
+ "sysinfo",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "solador-wire"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ final class ClaudeUsageAggregatorTests: XCTestCase {
         offsetHours: Double = 0,
         requestId: String = "req_1",
         model: String = "claude-sonnet-4-5",
-        project: String = "velovate",
+        project: String = "gadget",
         input: Int = 0,
         output: Int = 0,
         cacheWrite: Int = 0,
@@ -105,15 +105,15 @@ final class ClaudeUsageAggregatorTests: XCTestCase {
 
     func testPerProjectAttributionSortedByTokensDesc() {
         let records = [
-            record(requestId: "a", model: "claude-sonnet-4-5", project: "velovate", input: 1_000_000),
-            record(requestId: "b", model: "claude-opus-4-7", project: "qr-ninja", input: 1_000_000)
+            record(requestId: "a", model: "claude-sonnet-4-5", project: "gadget", input: 1_000_000),
+            record(requestId: "b", model: "claude-opus-4-7", project: "pipe-fitting", input: 1_000_000)
         ]
         let summary = ClaudeUsageAggregator.summarize(records: records, now: now)
         XCTAssertEqual(summary.projectsLast7d.count, 2)
-        // equal tokens (1M each) → name tiebreak => qr-ninja first
-        XCTAssertEqual(summary.projectsLast7d[0].name, "qr-ninja")
+        // equal tokens (1M each) → name tiebreak => pipe-fitting first
+        XCTAssertEqual(summary.projectsLast7d[0].name, "pipe-fitting")
         XCTAssertEqual(summary.projectsLast7d[0].totals.costUSD, 15.0, accuracy: 0.0001)
-        XCTAssertEqual(summary.projectsLast7d[1].name, "velovate")
+        XCTAssertEqual(summary.projectsLast7d[1].name, "gadget")
     }
 
     func testPerModelBreakdownGroupsByModel() {

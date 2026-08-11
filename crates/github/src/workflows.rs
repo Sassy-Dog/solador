@@ -477,7 +477,7 @@ mod tests {
                     "event": "push",
                     "status": status,
                     "conclusion": conclusion,
-                    "html_url": "https://github.com/Sassy-Dog/velovate/actions/runs/1",
+                    "html_url": "https://github.com/acme/gadget/actions/runs/1",
                     "created_at": "2026-05-29T12:00:00Z",
                     "updated_at": "2026-05-29T12:05:00Z",
                     "run_started_at": null,
@@ -529,8 +529,8 @@ mod tests {
 
     #[test]
     fn repo_workflow_health_short_name() {
-        let h = health_of("Sassy-Dog/velovate", &[]);
-        assert_eq!(h.short_name(), "velovate");
+        let h = health_of("acme/gadget", &[]);
+        assert_eq!(h.short_name(), "gadget");
         assert!(h.is_healthy(), "no runs = not failed, reachable");
         assert!(h.reachable, "the mapping path means the repo was fetched");
     }
@@ -552,13 +552,13 @@ mod tests {
 
     #[test]
     fn an_unreachable_repo_is_never_healthy() {
-        let h = RepoWorkflowHealth::unreachable("Sassy-Dog/platform");
+        let h = RepoWorkflowHealth::unreachable("acme/toolkit");
         assert!(!h.reachable);
         assert!(
             !h.is_healthy(),
             "an unreachable repo must not count as healthy"
         );
-        assert_eq!(h.short_name(), "platform");
+        assert_eq!(h.short_name(), "toolkit");
     }
 
     // MARK: - health() categorization
@@ -579,7 +579,7 @@ mod tests {
                 .created("2026-05-29T12:00:00Z")
                 .build(),
         ];
-        let h = health_of("Sassy-Dog/velovate", &runs);
+        let h = health_of("acme/gadget", &runs);
         assert_eq!(
             h.main.as_ref().and_then(|r| r.conclusion),
             Some(RunConclusion::Failure),
@@ -641,7 +641,7 @@ mod tests {
             Run::new("Release", "waiting", None).id(10).build(),
             Run::new("CI", "in_progress", None).id(11).build(),
         ];
-        let h = health_of("Sassy-Dog/velovate", &runs);
+        let h = health_of("acme/gadget", &runs);
         assert_eq!(
             h.needs_approval.len(),
             1,
@@ -737,7 +737,7 @@ mod tests {
                 .id(2)
                 .build(),
         ];
-        let h = health_of("Sassy-Dog/velovate", &runs);
+        let h = health_of("acme/gadget", &runs);
         assert!(
             h.is_healthy(),
             "default view ignores the workflow_run failure (legacy behaviour preserved)"
@@ -756,7 +756,7 @@ mod tests {
                 .id(2)
                 .build(),
         ];
-        let h = watched("Sassy-Dog/velovate", &runs, &["release.yml"]);
+        let h = watched("acme/gadget", &runs, &["release.yml"]);
         assert!(
             !h.is_healthy(),
             "watched release failure must redden the repo"
@@ -1248,7 +1248,7 @@ mod tests {
         assert_eq!(resp.workflow_runs.len(), 6);
 
         let h = health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &resp.workflow_runs,
             None,
             RepoCounts {

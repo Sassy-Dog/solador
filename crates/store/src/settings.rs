@@ -88,6 +88,29 @@ pub struct Settings {
     pub host_overflow_mode: HostOverflowMode,
     /// Monthly Azure budget in USD. `0` means "no budget set" and hides the bar.
     pub azure_monthly_budget_usd: f64,
+    /// Storage account holding the Azure cost export (non-secret — the SAS is
+    /// minted per poll from the operator's own Entra session and never stored).
+    ///
+    /// Empty means unset, which the panel says out loud. This was a constant
+    /// in a shell script until the app learned to mint its own SAS; a storage
+    /// account is per-deployment and there is nothing to default it to.
+    #[serde(default)]
+    pub azure_storage_account: String,
+    /// Blob container within that account, e.g. `cost-exports`. Empty means
+    /// unset. Named by whoever configured the export, so it is not guessable
+    /// either.
+    #[serde(default)]
+    pub azure_cost_container: String,
+    /// GitHub organization whose self-hosted runners the Runners panel lists
+    /// (non-secret; the token is a credential). Empty means unset.
+    ///
+    /// There is no default and there must not be one. This was a hardcoded
+    /// constant until it became clear that every install was querying one
+    /// particular organization's runners — a panel that could only ever work
+    /// for its author. Unset is said out loud rather than rendered as an empty
+    /// roster, which would be indistinguishable from an org with no runners.
+    #[serde(default)]
+    pub github_org: String,
     /// Neon organization id (non-secret; the API key is a credential).
     pub neon_org_id: String,
     /// Neon compute rate in USD per CU-hour (non-secret; `0` = unset, which
@@ -139,6 +162,9 @@ impl Default for Settings {
             core_row_span: DEFAULT_CORE_ROW_SPAN,
             host_overflow_mode: HostOverflowMode::default(),
             azure_monthly_budget_usd: 0.0,
+            azure_storage_account: String::new(),
+            azure_cost_container: String::new(),
+            github_org: String::new(),
             neon_org_id: String::new(),
             neon_usd_per_cu_hour: 0.0,
             neon_usd_per_gib_month: 0.0,
@@ -183,6 +209,10 @@ mod tests {
         assert_eq!(s.host_overflow_mode, HostOverflowMode::Stack);
         assert_eq!(s.azure_monthly_budget_usd, 0.0);
         assert_eq!(s.sentry_monthly_event_quota, 0);
+        assert!(
+            s.github_org.is_empty(),
+            "no org may be guessed on anyone's behalf"
+        );
         assert!(s.neon_org_id.is_empty());
         assert!(s.sentry_org_slug.is_empty());
         assert!(s.openclaw_gateway_url.is_empty());
@@ -223,10 +253,13 @@ mod tests {
             core_row_span: 4,
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 125.5,
+            azure_storage_account: "acmestorage".into(),
+            azure_cost_container: "cost-exports".into(),
+            github_org: "acme".into(),
             neon_org_id: "org-abc".into(),
             neon_usd_per_cu_hour: 0.175,
             neon_usd_per_gib_month: 0.5,
-            sentry_org_slug: "sassy-dog".into(),
+            sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 50_000,
             vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),

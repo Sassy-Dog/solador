@@ -1,163 +1,166 @@
-# DevCanopy
+# Solador
 
-A native macOS cockpit for watching your development infrastructure at a glance —
-designed to live full-screen on a second monitor.
+A cockpit for everything around your code — machines, CI, containers, spend,
+vendor status, agents — read at a glance from a second monitor.
 
-## Features
+*Solador* is Spanish for **tiler**: the tradesperson who lays tiles. The cockpit
+is a grid of tiles; this is what arranges them.
 
-DevCanopy renders a grid of glanceable panels:
+![The Solador cockpit](Docs/assets/screenshots/cockpit.png)
 
-- **Hosts** — live CPU / memory / disk / network / GPU / battery for each machine,
-  pulled from a small per-host agent over [Tailscale](https://tailscale.com).
-- **Containers** — podman, docker, and tart containers/VMs running on those hosts.
-- **Repos** — one fixed row per watched repo: running-workflow count and longest-running
-  elapsed, alongside local/remote branch and worktree counts, across your portfolio.
-- **GitHub Runners** — self-hosted runner availability and activity.
-- **Usage** — token rollups from your local Claude Code usage logs, plus per-provider
-  usage: month-to-date Neon compute and branch storage.
+Runs on **macOS and Windows**.
 
-## Architecture
+## Is this for you?
 
-- **macOS app** (`DevCanopy/`) — SwiftUI + SwiftData cockpit. Polls remote hosts,
-  reads local git/Claude state, and renders the panels.
-- **Agent** (`agent/`) — a small Rust ([axum](https://crates.io/crates/axum)) HTTP
-  service that exposes host metrics and a container list as JSON, guarded by a bearer
-  token. Runs on Linux and macOS; the app reaches it over Tailscale. See
-  [`agent/README.md`](agent/README.md).
-- **HostMetricsKit** (`Packages/HostMetricsKit/`) — a local Swift package that
-  collects local-machine metrics (CPU/GPU/battery via IOKit and `sysinfo`-style
-  sampling), shared by the app and reusable by the agent's macOS build.
+Probably not, and it's cheaper to say so here than after you've cloned it.
 
-## Quick Start
+Solador is opinionated about a specific stack. It is most useful if you run
+several repos on **GitHub Actions**, keep machines you reach over **Tailscale**,
+and pay **Neon, Sentry, Vercel or Azure**. Every panel is independent and
+degrades to a setup line when unconfigured, so you can use two of nine — but if
+none of that describes you, there is not much here.
 
-1. Clone the repository:
+It is also **not a monitoring product**. There are no alerts, no history beyond
+what fits on screen, no retention, no server. It is a window you leave open.
+
+## What it shows
+
+| Panel | Reads |
+|---|---|
+| **Hosts** | CPU, memory, disk, network, GPU, battery — this machine plus any host running the [agent](agent/) |
+| **Containers / VMs** | docker, podman and tart, locally and on every host |
+| **GitHub Repos** | running workflows, longest-running elapsed, branch and worktree counts |
+| **GitHub Runners** | your org's self-hosted runners, with an absence roster |
+| **Usage** | Claude Code token rollups, plus Neon, Sentry and Vercel consumption |
+| **Azure Cost** | the daily cost export, month to date |
+| **Sentry Crons** | every cron monitor that is not `ok`, and **how long it has been broken** |
+| **Services** | availability for GitHub, Anthropic, Vercel, Neon and Azure |
+| **OpenClaw** | an agent farm, over a live WebSocket |
+
+<details>
+<summary>Individual panels</summary>
+
+| | |
+|:--:|:--:|
+| ![Repos](Docs/assets/screenshots/panel-repos.png) | ![Runners](Docs/assets/screenshots/panel-runners.png) |
+| ![Containers](Docs/assets/screenshots/panel-containers.png) | ![Usage](Docs/assets/screenshots/panel-usage.png) |
+| ![Sentry Crons](Docs/assets/screenshots/panel-crons.png) | ![Services](Docs/assets/screenshots/panel-services.png) |
+
+At a narrower width the layout reflows rather than scrolling:
+
+![Narrow](Docs/assets/screenshots/cockpit-narrow.png)
+
+</details>
+
+## The one design rule
+
+**Unknown is representable, and it is never rendered as zero.**
+
+Every value a producer might fail to measure is optional the whole way down —
+an absent key decodes to nothing, and `0` means *measured zero*. A dash is a
+dash:
+
+- `—` means nobody could find out.
+- A dimmed `0` means there are genuinely none.
+- `≈` with an amber tint means the figure is inferred, not observed.
+- An empty green panel is treated as a **bug**, because a panel that has never
+  successfully read anything looks identical to one where all is well.
+
+Most of the fiddly code here exists to keep those apart. If you only take one
+idea from this repository, take that one.
+
+## No telemetry
+
+The app carries **no crash-reporting or analytics SDK of any kind**. The only
+thing it sends anywhere are the API calls you configure, with your own
+credentials, to the vendors you chose. Credentials live in your OS credential
+store, never in the settings file.
+
+## Running it
+
+There are **no binaries yet** — see [Status](#status). Build from source:
+
 ```bash
-git clone https://github.com/Sassy-Dog/devcanopy.git
-cd devcanopy
+git clone https://github.com/cpmadrid/solador
+cd solador
+./dev            # build and run (debug)
+./dev run --release
 ```
 
-2. Build and run:
-```bash
-./dev run
+You'll need a recent stable Rust toolchain (pinned by `rust-toolchain.toml`) and
+Node 22 for the frontend test suite.
+
+Nothing is configured on first launch: no repos, no hosts, no credentials. Each
+panel tells you what it wants. Open **Settings** and add what you care about.
+
+| To get | Give it |
+|---|---|
+| Repos | a fine-grained GitHub PAT with read access to Actions, Contents, Issues and Pull requests |
+| Runners | the same token, plus your **GitHub organization** |
+| Hosts | the [agent](agent/) on each machine, and its bearer token |
+| Usage / Cost | a Neon org key, a Sentry `org:read` token, a Vercel token, an Azure Cost SAS URL |
+
+## Two apps in one repository
+
+Worth knowing before you go looking:
+
+- **`app/` + `crates/`** — the Tauri app. This is Solador, and it is what ships.
+- **`DevCanopy/`** — a complete SwiftUI application, **frozen**. It was the
+  original macOS-only version and is kept as a parity reference. It is not
+  built, tested or linted in CI, and it may not even compile. Changes land in
+  the Rust app; Swift pull requests will not be accepted.
+
+The Swift tree is large enough that finding it unexplained costs an hour.
+
+## Layout
+
 ```
+app/src-tauri/   Tauri shell: one poll task per panel, plus the settings surface
+app/ui/          Frontend — plain HTML/CSS/JS, no bundler
+crates/          The real work: viewmodel, store, github, usage, azurecost,
+                 servicestatus, openclaw, localhost, wire, agentclient
+agent/           The per-host metrics agent (its own workspace and CI job)
+tests/frontend/  Playwright suite for app/ui
+DevCanopy/       The frozen Swift app
+```
+
+Every string and colour a panel paints is decided in Rust and published to the
+frontend. The frontend lays out; it does not invent labels.
 
 ## Development
 
-### Common Commands
-
-- `./dev` - Build and run in debug mode
-- `./dev run --release` - Run release build
-- `./dev run --log console --log-level debug` - Run with console logging
-- `./dev test` - Run all tests: the Swift app, plus the root Rust workspace
-  (`crates/*`, `app/src-tauri` — the experimental cross-platform cockpit,
-  see below) and its `tests/frontend` Playwright e2e suite
-- `./dev lint` - Run SwiftLint + SwiftFormat, plus `cargo fmt`/`clippy` for the
-  root Rust workspace (mirrors CI)
-- `./dev format` - Auto-fix formatting with SwiftFormat + `cargo fmt`
-- `./dev clean` - Clean build artifacts
-- `./dev xcode` - Open in Xcode
-- `./dev publish` - Create a new release (CalVer minted from git)
-- `./prd` - Build production version
-
-### Linting
-
-`./dev lint` runs the exact checks CI runs (`swiftlint --strict` against
-`lint-baseline.json`, plus `swiftformat --lint`), so lint failures surface locally
-instead of after a CI round-trip. Run `./Scripts/install-hooks.sh` once to enable a
-**pre-push hook** that runs it automatically before every push (bypass a single push
-with `git push --no-verify`). With Claude Code, a `PostToolUse` hook
-(`.claude/settings.json`) also auto-formats each `.swift` file as it's edited.
-
-### Requirements
-
-- macOS 14.0 (Sonoma) or later
-- Xcode 15.0 or later
-- XcodeGen (`brew install xcodegen`)
-- SwiftLint + SwiftFormat (`brew install swiftlint swiftformat`) — for `./dev lint`
-- [Rust toolchain](https://rustup.rs) — for the agent (`agent/`) and, since this
-  branch, the root Rust workspace (`crates/*`, `app/src-tauri`); each pins its own
-  version via its own `rust-toolchain.toml`
-
-### Project Structure
-
-```
-DevCanopy/
-├── dev                     # Development script (entry point)
-├── prd                     # Production build script
-├── Scripts/                # Build and utility scripts
-├── project.yml             # XcodeGen configuration
-├── DevCanopy/              # macOS app source (the shipped app)
-│   ├── App/               # App lifecycle, ContentView, CockpitView host
-│   ├── Models/            # SwiftData models (MonitoredHost, AppSettings, WorkflowRunModels)
-│   ├── Services/          # Host/agent, GitHub CI, containers, Claude usage, worktrees
-│   ├── Views/             # SwiftUI views (Cockpit panels + Settings)
-│   └── Resources/         # Info.plist, entitlements, assets
-├── DevCanopyTests/         # App unit tests
-├── Packages/
-│   └── HostMetricsKit/    # Local Swift package: local-machine metrics collection
-├── agent/                  # Rust per-host metrics agent -- own Cargo workspace
-│
-│                           # Experimental cross-platform cockpit (a Tauri app
-│                           # rendering every panel the SwiftUI app does; the
-│                           # SwiftUI app above stays the shipped product):
-├── Cargo.toml              # Root Rust workspace: crates/* + app/src-tauri
-├── crates/                 # wire, viewmodel, agentclient, store, localhost,
-│                           #   github, usage, azurecost, openclaw
-├── app/                    # app/src-tauri (Tauri shell) + app/ui (plain HTML/CSS/JS)
-└── tests/frontend/         # Playwright e2e suite for app/ui/
+```bash
+./dev test        # cargo test --workspace + the Playwright suite
+./dev lint        # fmt + clippy, exactly what CI runs
+./dev format      # fix formatting
 ```
 
-## Configuration
+`./Scripts/install-hooks.sh` wires lint to a pre-push hook.
 
-### Connecting hosts
+Screenshots in this README are generated, not captured:
 
-Remote hosts run the agent (`agent/`) and are reached over Tailscale. Add a host in
-**Settings → Hosts** with its Tailscale address and the agent's bearer token; the
-token is stored in the macOS Keychain, never in SwiftData.
+```bash
+cd tests/frontend && npm run screenshots
+```
 
-### GitHub authentication
+They render the real frontend against the same fixtures the tests assert on, so
+they cannot drift from the shipped palette.
 
-The Repos and GitHub Runners panels read GitHub data using a **fine-grained personal
-access token** with read-only access to **Actions** (workflow runs), **Contents**
-(remote branch counts), **Issues** (open-issue counts), and **Pull requests** (open-PR
-counts). Add it in **Settings → GitHub Token**. See
-[`Docs/github-setup.md`](Docs/github-setup.md).
+## Status
 
-All credentials are stored in the macOS Keychain.
+Early. It runs every day on the author's desk, which is a different claim from
+*finished*:
 
-### Terminal support
-
-DevCanopy can open repositories in your preferred terminal:
-- Terminal.app
-- iTerm2
-- Warp
-- Ghostty
-
-## Building for Release
-
-1. Ensure you're on the main branch with a clean working tree, up to date with origin
-2. Run `./dev publish`
-3. The script will:
-   - Verify CI is green for HEAD (fails closed)
-   - Run tests
-   - Mint and push the CalVer release tag (`vYYYY.M.P`, derived from git — no version bump commit)
-   - Build the release version stamped with the minted version
-
-Versioning is CalVer derived from git — see [`Docs/VERSIONING.md`](Docs/VERSIONING.md).
+- **No signed builds.** macOS Gatekeeper will block an unsigned app, so today
+  the practical audience is people willing to build it themselves.
+- **No releases**, and therefore no upgrade path.
+- The Tauri IPC boundary has no automated coverage; `app/README.md` carries a
+  manual smoke checklist that is the only thing exercising it.
 
 ## Contributing
 
-This is an internal Sassy Dog repository. The backlog lives on GitHub Project board
-#5 (status-column driven); see [`CLAUDE.md`](CLAUDE.md) for the workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
 
-1. Create a feature branch (`git checkout -b feat/your-change`)
-2. Run `./Scripts/install-hooks.sh` once to enable the pre-push lint gate
-3. Commit using conventional commits (`feat:`, `fix:`, `chore:`, `docs:`)
-4. Push and open a Pull Request
-5. Wait for CI to pass, then merge
+## License
 
-## Acknowledgments
-
-- Built with Swift and SwiftUI
-- Agent built in Rust with axum and tokio
-- Integrates with the GitHub API and Tailscale
+[Apache-2.0](LICENSE).

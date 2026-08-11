@@ -1,7 +1,7 @@
 [package]
 # Prefixed to stay clear of the popular `metrics` crate on crates.io, matching
-# the `devcanopy-agent` precedent. The lib below keeps the short import name.
-name = "devcanopy-wire"
+# the `solador-agent` precedent. The lib below keeps the short import name.
+name = "solador-wire"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true

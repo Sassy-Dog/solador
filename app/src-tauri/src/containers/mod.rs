@@ -391,24 +391,19 @@ pub fn fixture_state(
     let mut state = ContainersState::new();
     state.detected = vec![LocalRuntime::Docker, LocalRuntime::Tart];
     state.local = vec![
-        container("devcanopy-db", "Up 3 hours", true, "docker"),
-        container(
-            "devcanopy-cache",
-            "Exited (0) 2 minutes ago",
-            false,
-            "docker",
-        ),
+        container("acme-db", "Up 3 hours", true, "docker"),
+        container("acme-cache", "Exited (0) 2 minutes ago", false, "docker"),
         container("vm-2", "running", true, "tart"),
     ];
     state.local_last_updated = Some(now);
     state.advance_clock(LOCAL_HOST_SCOPE, now);
 
     state.apply_remote(
-        "ubu-3xdv".to_owned(),
+        "ubu-01".to_owned(),
         vec![
-            container("sassydog-ghr-ubu-1", "Up 12 minutes", true, "podman"),
+            container("acme-ci-runner-1", "Up 12 minutes", true, "podman"),
             container(
-                "sassydog-ghr-ubu-2",
+                "acme-ci-runner-2",
                 "Exited (0) 1 minute ago",
                 false,
                 "podman",
@@ -416,15 +411,15 @@ pub fn fixture_state(
             container("postgres", "Up 6 days", true, "podman"),
         ],
     );
-    state.advance_clock("ubu-3xdv", now);
+    state.advance_clock("ubu-01", now);
 
     let rules = vec![
         ContainerGroupRule::new(
-            "sassydog-ghr-ubu-*",
+            "acme-ci-runner-*",
             "ghr runners",
             ContainerRuleAction::Collapse,
         )
-        .on_host("ubu-3xdv"),
+        .on_host("ubu-01"),
         ContainerGroupRule::new("vm-*", "", ContainerRuleAction::Expect).on_host(LOCAL_HOST_SCOPE),
     ];
 
@@ -514,7 +509,7 @@ mod tests {
         // No runtimes at all, but a remote host is reporting: the local
         // section still renders, and it must say which of the two it is.
         let mut state = looked();
-        state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
+        state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
         let payload = view(&state, &[], &BTreeMap::new(), NOW);
         let sections = payload["sections"].as_array().expect("sections");
         assert_eq!(sections[0]["host"], LOCAL_HOST_SCOPE);
@@ -526,7 +521,7 @@ mod tests {
             parse::merge(vec![(LocalRuntime::Docker, Some(vec![]))], BTreeMap::new()),
             NOW,
         );
-        with_runtime.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
+        with_runtime.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
         let payload = view(&with_runtime, &[], &BTreeMap::new(), NOW);
         assert_eq!(
             payload["sections"][0]["empty"]["message"], "no containers",
@@ -577,7 +572,14 @@ mod tests {
             ),
             NOW,
         );
-        let rules = store::seeded_rules();
+        // The test's own rule, not the seed's: nothing is seeded any more, and
+        // this test is *about* what a hide rule does to the totals, so the rule
+        // doing the hiding belongs in front of the reader.
+        let rules = vec![store::ContainerGroupRule::new(
+            "ghcr.io/*",
+            "",
+            store::ContainerRuleAction::Hide,
+        )];
         let payload = view(&state, &rules, &BTreeMap::new(), NOW);
         assert_eq!(
             payload["trailing"], "3 total · 2 up · 1 stopped",
@@ -597,7 +599,7 @@ mod tests {
         let local = &payload["sections"][0];
         let running = rows(local)
             .iter()
-            .find(|r| r["name"] == "devcanopy-db")
+            .find(|r| r["name"] == "acme-db")
             .expect("db row");
         assert_eq!(running["kind"], "present");
         assert_eq!(running["status"], "Up 3 hours");
@@ -607,7 +609,7 @@ mod tests {
 
         let stopped = rows(local)
             .iter()
-            .find(|r| r["name"] == "devcanopy-cache")
+            .find(|r| r["name"] == "acme-cache")
             .expect("cache row");
         assert_eq!(stopped["status"], "Exited (0) 2 minutes ago");
         assert_eq!(stopped["dotColor"], color::hex(color::MUTED));
@@ -647,7 +649,7 @@ mod tests {
     fn an_aggregate_row_renders_its_count_and_running_total() {
         let payload = fixture_view();
         let remote = &payload["sections"][1];
-        assert_eq!(remote["host"], "ubu-3xdv");
+        assert_eq!(remote["host"], "ubu-01");
         let names: Vec<&str> = rows(remote)
             .iter()
             .map(|r| r["name"].as_str().expect("name"))
@@ -774,8 +776,8 @@ mod tests {
             ),
             NOW,
         );
-        state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
-        state.advance_clock("ubu-3xdv", NOW);
+        state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
+        state.advance_clock("ubu-01", NOW);
         state.advance_clock(LOCAL_HOST_SCOPE, NOW);
 
         state.retain_hosts(&BTreeSet::new());
@@ -783,7 +785,7 @@ mod tests {
         let sections = payload["sections"].as_array().expect("sections");
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0]["host"], LOCAL_HOST_SCOPE);
-        assert!(!state.last_success.contains_key("ubu-3xdv"));
+        assert!(!state.last_success.contains_key("ubu-01"));
         assert!(
             state.last_success.contains_key(LOCAL_HOST_SCOPE),
             "the local section is never 'unconfigured'"
@@ -813,8 +815,8 @@ mod tests {
         // `apply_remote` is only ever called on success, so a failed poll is
         // simply the absence of a call — this pins that the section survives it.
         let mut state = looked();
-        state.apply_remote("ubu-3xdv".to_owned(), vec![container("web", true)]);
-        state.retain_hosts(&BTreeSet::from(["ubu-3xdv".to_owned()]));
+        state.apply_remote("ubu-01".to_owned(), vec![container("web", true)]);
+        state.retain_hosts(&BTreeSet::from(["ubu-01".to_owned()]));
         let payload = view(&state, &[], &BTreeMap::new(), NOW);
         assert_eq!(payload["sections"][1]["rows"][0]["name"], "web");
     }

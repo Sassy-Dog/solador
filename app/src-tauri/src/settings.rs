@@ -33,10 +33,11 @@ use crate::openclaw;
 /// Hard-coded via the crate version (`app/src-tauri/Cargo.toml`, mirrored in
 /// `tauri.conf.json`) rather than derived from git the way the Swift app's is
 /// (`Scripts/get-version-info.sh`, CalVer per `Docs/VERSIONING.md`). Wiring the
-/// shell into that derivation is [#15]; until then this is a deliberate,
+/// shell into that derivation is still to do; until then this is a deliberate,
 /// documented placeholder rather than a number pretending to be a release.
 ///
-/// [#15]: https://github.com/Sassy-Dog/devcanopy/issues/15
+/// The tracking issue lived in the pre-publication repository, which is now an
+/// archive, so the reason is stated here instead of linked.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The label on the button that opens this surface.
@@ -56,7 +57,6 @@ pub struct StoredSecrets {
     pub neon: bool,
     pub sentry: bool,
     pub vercel: bool,
-    pub azure: bool,
     /// Whether an OpenClaw *bearer* token is stored. The device key is not
     /// represented here at all: it is minted by the app, and whether one exists
     /// is answered by the device id the Device Pairing block shows.
@@ -75,7 +75,6 @@ pub enum SecretField {
     Neon,
     Sentry,
     Vercel,
-    Azure,
     /// The OpenClaw gateway's *bearer* token, which is optional — most gateways
     /// authenticate by device pairing instead. Deliberately not the device key:
     /// that is 32 raw bytes minted by this app, never typed by a human, and it
@@ -92,7 +91,6 @@ impl SecretField {
             SecretField::Neon => "neon",
             SecretField::Sentry => "sentry",
             SecretField::Vercel => "vercel",
-            SecretField::Azure => "azure",
             SecretField::OpenClaw => "openclaw",
         }
     }
@@ -105,7 +103,6 @@ impl SecretField {
             SecretField::Neon => SecretKey::NeonApiKey,
             SecretField::Sentry => SecretKey::SentryUsageToken,
             SecretField::Vercel => SecretKey::VercelApiToken,
-            SecretField::Azure => SecretKey::AzureCostSasUrl,
             SecretField::OpenClaw => SecretKey::OpenClawBearerToken,
         }
     }
@@ -118,7 +115,6 @@ impl SecretField {
             SecretField::Neon,
             SecretField::Sentry,
             SecretField::Vercel,
-            SecretField::Azure,
             SecretField::OpenClaw,
         ]
         .into_iter()
@@ -182,7 +178,7 @@ pub fn parse_port(raw: &str) -> u16 {
 /// Whether a repo slug is addable, per `PortfolioStore.add(slug:)`.
 ///
 /// Returns the trimmed slug. The duplicate check is case-insensitive because
-/// GitHub's own is: `Sassy-Dog/velovate` and `sassy-dog/velovate` are one repo,
+/// GitHub's own is: `acme/gadget` and `Acme/gadget` are one repo,
 /// and tracking both would double every count it feeds.
 #[must_use]
 pub fn validated_slug(raw: &str, existing: &[TrackedRepo]) -> Option<String> {
@@ -409,10 +405,10 @@ pub fn view(
         ],
         "general": general_tab(settings),
         "layout": layout_tab(layout, settings.host_overflow_mode),
-        "github": github_tab(stored),
+        "github": github_tab(settings, stored),
         "portfolio": portfolio_tab(repos),
         "hosts": hosts_tab(settings, hosts, rules, stored),
-        "azure": azure_tab(settings, stored),
+        "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
         "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(),
@@ -464,7 +460,7 @@ fn secret_section(field: SecretField, label: &str, stored: bool, badge: &str, he
     })
 }
 
-fn github_tab(stored: &StoredSecrets) -> Value {
+fn github_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
     json!({
         "heading": "GitHub Token",
         "secret": secret_section(
@@ -474,6 +470,16 @@ fn github_tab(stored: &StoredSecrets) -> Value {
             "Token stored",
             "Used by the Repos panel. Grant the fine-grained PAT read access to Actions (workflow runs), Contents (remote branch counts), Issues (open-issue counts), and Pull requests (open-PR counts). Stored in your OS credential store.",
         ),
+        // Not a credential, so it lives in the store beside the other org
+        // identifiers rather than in the keychain — same treatment as the Neon
+        // org id and the Sentry slug.
+        "org": {
+            "heading": "GitHub Organization",
+            "label": "Organization (e.g. acme)",
+            "value": settings.github_org,
+            "help": "Used by the GitHub Runners panel to list your organization's self-hosted runners. Leave blank if you have none — the panel says so rather than showing an empty list.",
+            "saveLabel": "Save",
+        },
     })
 }
 
@@ -493,7 +499,7 @@ fn portfolio_tab(repos: &[TrackedRepo]) -> Value {
             .collect::<Vec<_>>(),
         "add": {
             "heading": "Add Repo",
-            "slugLabel": "owner/name (e.g. Sassy-Dog/velovate)",
+            "slugLabel": "owner/name (e.g. acme/gadget)",
             "buttonLabel": "Add",
             "help": "Drives the Repos and GitHub Runners panels. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive.",
         },
@@ -998,7 +1004,7 @@ fn hosts_tab(
         },
         "add": {
             "heading": "Add Host",
-            "nameLabel": "Name (e.g. ubu-3xdv)",
+            "nameLabel": "Name (e.g. ubu-01)",
             "addressLabel": "Address (Tailscale IP or MagicDNS name)",
             "portLabel": "Port",
             "portDefault": DEFAULT_AGENT_PORT.to_string(),
@@ -1013,7 +1019,7 @@ fn hosts_tab(
     })
 }
 
-fn azure_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
+fn azure_tab(settings: &Settings) -> Value {
     json!({
         "heading": "Azure Cost",
         "budget": {
@@ -1023,14 +1029,18 @@ fn azure_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
             "help": "Powers the projected-vs-budget bar on the Azure Cost panel. Leave at 0 to hide the bar.",
             "saveLabel": "Apply",
         },
-        "secretHeading": "Azure Cost SAS",
-        "secret": secret_section(
-            SecretField::Azure,
-            "SAS URL",
-            stored.azure,
-            "SAS stored",
-            "Used by the Azure Cost panel. Paste a container-scoped, read+list SAS URL for the cost-exports container on stsassydog. The SAS is the only credential — no Azure sign-in. Stored in your OS credential store.",
-        ),
+        // No credential section: the Azure Cost panel has no stored secret.
+        // It mints a short-lived SAS per poll from the operator's own Azure
+        // CLI session, so what it needs is an address, not a token.
+        "export": {
+            "heading": "Cost Export",
+            "accountLabel": "Storage account",
+            "account": settings.azure_storage_account,
+            "containerLabel": "Container (e.g. cost-exports)",
+            "container": settings.azure_cost_container,
+            "help": "The panel signs its own read-only request using the Azure CLI, so `az` must be installed and signed in (`az login`). Nothing is stored: the signature is minted per refresh and lives only as long as one read.",
+            "saveLabel": "Save",
+        },
     })
 }
 
@@ -1132,7 +1142,7 @@ fn openclaw_tab(
             "Bearer token (optional)",
             stored.openclaw,
             "Token stored",
-            "DevCanopy monitors an OpenClaw agent farm over a WebSocket. Most gateways authenticate via device pairing (below); a bearer token is only needed if the gateway requires one. The gateway's controlUi.allowedOrigins must permit this host. Stored in your OS credential store.",
+            "Solador monitors an OpenClaw agent farm over a WebSocket. Most gateways authenticate via device pairing (below); a bearer token is only needed if the gateway requires one. The gateway's controlUi.allowedOrigins must permit this host. Stored in your OS credential store.",
         ),
         "pairingHeading": "Device Pairing",
         "statusLabel": "Status",
@@ -1164,15 +1174,15 @@ fn openclaw_tab(
 
 fn about_tab() -> Value {
     json!({
-        "name": "DevCanopy",
+        "name": "Solador",
         "version": format!("Version {VERSION}"),
-        "tagline": "Monitor your development infrastructure",
+        "tagline": "Everything around your code, at a glance",
         "links": [
-            { "label": "GitHub Repository", "url": "https://github.com/Sassy-Dog/devcanopy" },
-            { "label": "Report an Issue", "url": "https://github.com/Sassy-Dog/devcanopy/issues" },
-            { "label": "Documentation", "url": "https://devcanopy.app/docs" },
+            { "label": "GitHub Repository", "url": "https://github.com/cpmadrid/solador" },
+            { "label": "Report an Issue", "url": "https://github.com/cpmadrid/solador/issues" },
+            { "label": "Documentation", "url": "https://github.com/cpmadrid/solador#readme" },
         ],
-        "copyright": "© 2024 Sassy Dog",
+        "copyright": "© 2026 Chris Madrid · Apache-2.0",
     })
 }
 
@@ -1196,8 +1206,8 @@ mod tests {
     #[test]
     fn a_healthy_agent_reports_its_hostname_and_version() {
         assert_eq!(
-            health_result(&Ok(health("ubu-3xdv", "0.4.0", Some(false)))),
-            "✓ ubu-3xdv · agent v0.4.0"
+            health_result(&Ok(health("ubu-01", "0.4.0", Some(false)))),
+            "✓ ubu-01 · agent v0.4.0"
         );
     }
 
@@ -1207,13 +1217,13 @@ mod tests {
     #[test]
     fn a_stale_sampler_is_appended_not_swallowed() {
         assert_eq!(
-            health_result(&Ok(health("ubu-3xdv", "0.4.0", Some(true)))),
-            "✓ ubu-3xdv · agent v0.4.0 · sampler stale"
+            health_result(&Ok(health("ubu-01", "0.4.0", Some(true)))),
+            "✓ ubu-01 · agent v0.4.0 · sampler stale"
         );
         // An agent too old to send the field is not "stale" — it is silent.
         assert_eq!(
-            health_result(&Ok(health("ubu-3xdv", "0.3.0", None))),
-            "✓ ubu-3xdv · agent v0.3.0"
+            health_result(&Ok(health("ubu-01", "0.3.0", None))),
+            "✓ ubu-01 · agent v0.3.0"
         );
     }
 
@@ -1246,9 +1256,9 @@ mod tests {
     #[test]
     fn a_failure_line_never_leaks_the_underlying_error_text() {
         let line = health_result(&Err(AgentError::Unreachable(
-            "error sending request for url (http://100.87.202.125:7878/v1/health)".into(),
+            "error sending request for url (http://100.100.100.100:7878/v1/health)".into(),
         )));
-        assert!(!line.contains("100.87.202.125"), "{line}");
+        assert!(!line.contains("100.100.100.100"), "{line}");
         assert!(!line.contains("http"), "{line}");
     }
 
@@ -1269,10 +1279,10 @@ mod tests {
     fn a_slug_must_look_like_owner_name() {
         let existing = [];
         assert_eq!(
-            validated_slug("  Sassy-Dog/velovate  ", &existing).as_deref(),
-            Some("Sassy-Dog/velovate")
+            validated_slug("  acme/gadget  ", &existing).as_deref(),
+            Some("acme/gadget")
         );
-        for raw in ["velovate", "/velovate", "Sassy-Dog/", "", "   "] {
+        for raw in ["gadget", "/gadget", "acme/", "", "   "] {
             assert_eq!(validated_slug(raw, &existing), None, "raw {raw:?}");
         }
     }
@@ -1281,12 +1291,12 @@ mod tests {
     /// spellings would double every count the slug feeds.
     #[test]
     fn a_duplicate_slug_is_rejected_whatever_its_case() {
-        let existing = [TrackedRepo::new("Sassy-Dog/velovate")];
-        assert_eq!(validated_slug("Sassy-Dog/velovate", &existing), None);
-        assert_eq!(validated_slug("sassy-dog/VELOVATE", &existing), None);
+        let existing = [TrackedRepo::new("acme/gadget")];
+        assert_eq!(validated_slug("acme/gadget", &existing), None);
+        assert_eq!(validated_slug("acme/GADGET", &existing), None);
         assert_eq!(
-            validated_slug("Sassy-Dog/qr-ninja", &existing).as_deref(),
-            Some("Sassy-Dog/qr-ninja")
+            validated_slug("acme/pipe-fitting", &existing).as_deref(),
+            Some("acme/pipe-fitting")
         );
     }
 
@@ -1301,7 +1311,7 @@ mod tests {
         for raw in ["", "   ", ",,", "\n"] {
             assert_eq!(parse_workflows(raw), None, "raw {raw:?}");
         }
-        let mut repo = TrackedRepo::new("Sassy-Dog/velovate");
+        let mut repo = TrackedRepo::new("acme/gadget");
         repo.watched_workflows = parse_workflows(" release.yml ,, deploy.yml\n");
         assert_eq!(workflows_text(&repo), "release.yml, deploy.yml");
         repo.watched_workflows = parse_workflows(&workflows_text(&repo));
@@ -1352,16 +1362,18 @@ mod tests {
             core_row_span: 3,
             host_overflow_mode: HostOverflowMode::Tabs,
             neon_org_id: "org-abc".into(),
-            sentry_org_slug: "sassy-dog".into(),
+            sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 50_000,
             azure_monthly_budget_usd: 250.0,
+            azure_storage_account: "acmestorage".into(),
+            azure_cost_container: "cost-exports".into(),
             neon_usd_per_cu_hour: 0.106,
             neon_usd_per_gib_month: 0.35,
             ..Settings::default()
         };
         settings.local_hidden_volume_mounts = vec!["/Volumes/Backup".into()];
 
-        let mut host = Host::new("ubu-3xdv", "100.87.202.125");
+        let mut host = Host::new("ubu-01", "100.100.100.100");
         host.port = 9000;
         host.hidden_volume_mounts = vec!["/mnt/scratch".into()];
         let mut off = Host::new("mac-mini", "100.64.0.2");
@@ -1372,11 +1384,17 @@ mod tests {
             neon: false,
             sentry: true,
             vercel: false,
-            azure: false,
             openclaw: false,
             hosts: [host.id].into_iter().collect(),
         };
-        (settings, vec![host, off], store::seeded_repos(), stored)
+        // Explicit, not `seeded_repos()`: nothing is seeded any more, and a
+        // fixture built from an empty seed would leave every portfolio
+        // assertion below passing over zero rows.
+        let repos = vec![
+            store::TrackedRepo::new("acme/widget"),
+            store::TrackedRepo::new("acme/gadget"),
+        ];
+        (settings, vec![host, off], repos, stored)
     }
 
     /// The default OpenClaw facts: nothing connected, nothing paired, no key.
@@ -1942,8 +1960,8 @@ mod tests {
         // Settings edits a *configuration*, so a disabled host must still be
         // listed -- the cockpit is what filters on `enabled`.
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["name"], "ubu-3xdv");
-        assert_eq!(rows[0]["endpoint"], "100.87.202.125:9000");
+        assert_eq!(rows[0]["name"], "ubu-01");
+        assert_eq!(rows[0]["endpoint"], "100.100.100.100:9000");
         assert_eq!(rows[0]["enabled"], true);
         assert_eq!(rows[0]["tokenStored"], true);
         assert_eq!(rows[0]["hiddenVolumes"][0], "/mnt/scratch");
@@ -1961,7 +1979,7 @@ mod tests {
     /// sides of the expected-count field.
     fn rules() -> Vec<ContainerGroupRule> {
         let mut collapse =
-            ContainerGroupRule::new("api-*", "workflow jobs", Action::Collapse).on_host("ubu-3xdv");
+            ContainerGroupRule::new("api-*", "workflow jobs", Action::Collapse).on_host("ubu-01");
         collapse.expected_count = Some(4);
         vec![
             collapse,
@@ -1988,7 +2006,7 @@ mod tests {
         assert_eq!(rows[0]["action"], "collapse");
         assert_eq!(rows[0]["pattern"], "api-*");
         assert_eq!(rows[0]["label"], "workflow jobs");
-        assert_eq!(rows[0]["host"], "ubu-3xdv");
+        assert_eq!(rows[0]["host"], "ubu-01");
         assert_eq!(rows[0]["collapseOnly"], true);
 
         assert_eq!(rows[1]["index"], 1);
@@ -2053,7 +2071,7 @@ mod tests {
         // "All hosts", this machine, both stored hosts by name, then the orphan.
         assert_eq!(
             options,
-            vec!["", LOCAL_HOST_SCOPE, "mac-mini", "ubu-3xdv", "retired-box"]
+            vec!["", LOCAL_HOST_SCOPE, "mac-mini", "ubu-01", "retired-box"]
         );
         assert_eq!(
             rules_of(&vm)["rows"][0]["hostOptions"][0]["label"],
@@ -2062,7 +2080,7 @@ mod tests {
 
         // A scope that *does* exist is not duplicated into the list.
         let scoped =
-            vec![ContainerGroupRule::new("api-*", "jobs", Action::Collapse).on_host("ubu-3xdv")];
+            vec![ContainerGroupRule::new("api-*", "jobs", Action::Collapse).on_host("ubu-01")];
         let vm = view(&settings, &hosts, &repos, &scoped, None, &stored, &facts());
         let options = rules_of(&vm)["rows"][0]["hostOptions"]
             .as_array()
@@ -2120,8 +2138,8 @@ mod tests {
         assert_eq!(list[1].action, Action::Expect);
         assert!(apply_rule_edit(&mut list, 1, RuleField::Pattern, "vm-*"));
         assert_eq!(list[1].pattern, "vm-*");
-        assert!(apply_rule_edit(&mut list, 1, RuleField::Host, "ubu-3xdv"));
-        assert_eq!(list[1].host.as_deref(), Some("ubu-3xdv"));
+        assert!(apply_rule_edit(&mut list, 1, RuleField::Host, "ubu-01"));
+        assert_eq!(list[1].host.as_deref(), Some("ubu-01"));
         assert!(apply_rule_edit(&mut list, 1, RuleField::Expected, "7"));
         assert_eq!(list[1].expected_count, Some(7));
     }
@@ -2133,7 +2151,7 @@ mod tests {
         let mut list = rules();
         assert!(apply_rule_edit(&mut list, 0, RuleField::Host, ""));
         assert_eq!(list[0].host, None);
-        assert!(list[0].applies_to("ubu-3xdv"));
+        assert!(list[0].applies_to("ubu-01"));
         assert!(list[0].applies_to(LOCAL_HOST_SCOPE));
     }
 
@@ -2223,13 +2241,11 @@ mod tests {
         assert_eq!(vm["github"]["secret"]["storedLabel"], "Token stored");
         assert_eq!(vm["usage"]["neon"]["secret"]["stored"], false);
         assert_eq!(vm["usage"]["sentry"]["secret"]["stored"], true);
-        assert_eq!(vm["azure"]["secret"]["stored"], false);
 
         // Each section names the key its Save/Clear sends back.
         assert_eq!(vm["github"]["secret"]["key"], "github");
         assert_eq!(vm["usage"]["neon"]["secret"]["key"], "neon");
         assert_eq!(vm["usage"]["sentry"]["secret"]["key"], "sentry");
-        assert_eq!(vm["azure"]["secret"]["key"], "azure");
     }
 
     /// The whole reason `StoredSecrets` is booleans: a payload that could
@@ -2245,7 +2261,6 @@ mod tests {
             SecretKey::GitHubAccessToken.account(),
             SecretKey::NeonApiKey.account(),
             SecretKey::SentryUsageToken.account(),
-            SecretKey::AzureCostSasUrl.account(),
             SecretKey::OpenClawBearerToken.account(),
             // The one credential that is raw key material. Nothing on this
             // surface may name it, let alone carry it.
@@ -2265,7 +2280,6 @@ mod tests {
             &vm["github"]["secret"],
             &vm["usage"]["neon"]["secret"],
             &vm["usage"]["sentry"]["secret"],
-            &vm["azure"]["secret"],
             &vm["openclaw"]["secret"],
         ] {
             let mut keys: Vec<&str> = secret
@@ -2372,16 +2386,25 @@ mod tests {
             vm["usage"]["neon"]["usdPerGibMonthLabel"],
             "$ per GiB-month storage"
         );
-        assert_eq!(vm["usage"]["sentry"]["orgSlug"], "sassy-dog");
+        assert_eq!(vm["usage"]["sentry"]["orgSlug"], "acme");
         assert_eq!(vm["usage"]["sentry"]["quota"], 50_000);
         assert_eq!(vm["azure"]["budget"]["value"], 250.0);
+        // The Azure tab has no credential section at all any more: the panel
+        // signs its own request per poll and stores nothing. What it carries
+        // instead is an address.
+        assert!(
+            vm["azure"]["secret"].is_null(),
+            "the Azure panel has no stored credential"
+        );
+        assert_eq!(vm["azure"]["export"]["account"], "acmestorage");
+        assert_eq!(vm["azure"]["export"]["container"], "cost-exports");
     }
 
     #[test]
     fn the_about_tab_names_the_app_and_its_version() {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
-        assert_eq!(vm["about"]["name"], "DevCanopy");
+        assert_eq!(vm["about"]["name"], "Solador");
         assert_eq!(vm["about"]["version"], format!("Version {VERSION}"));
         assert_eq!(vm["about"]["links"].as_array().expect("links").len(), 3);
     }
@@ -2392,7 +2415,6 @@ mod tests {
             SecretField::GitHub,
             SecretField::Neon,
             SecretField::Sentry,
-            SecretField::Azure,
             SecretField::OpenClaw,
         ];
         for field in fields {

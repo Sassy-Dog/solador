@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# DevCanopy Configuration
-export APP_NAME="DevCanopy"
+# Solador Configuration
+export APP_NAME="Solador"
 export BUNDLE_IDENTIFIER="com.sassydog.devcanopy"
 export MINIMUM_MACOS_VERSION="14.0"
 
@@ -21,12 +21,35 @@ export DERIVED_DATA_PATH="$BUILD_DIR/DerivedData"
 export PRODUCTS_DIR="$BUILD_DIR/Products"
 
 # Xcode settings
-export SCHEME_NAME="DevCanopy"
+export SCHEME_NAME="Solador"
 export PROJECT_NAME="DevCanopy.xcodeproj"
 
-# Signing (will be configured later)
-export DEVELOPMENT_TEAM=""
+# Signing.
+#
+# The Apple team id is deliberately NOT stored in this repository — it used to
+# sit in `project.yml`, which goes stale silently. It arrives from the
+# environment instead: `.envrc.local` locally, `secrets.*` in a release
+# workflow.
+#
+# It is not a secret either: a team id ships in the signature of every binary
+# Apple distributes. Unset is a warning, never a wall — a contributor must
+# still be able to build.
+export DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
 export CODE_SIGN_IDENTITY=""
+
+# Reports on DEVELOPMENT_TEAM. There is nothing to resolve: it is read from the
+# environment, and that is the entire contract.
+#
+# Locally, direnv exports it (see `.envrc`). In CI, a release workflow sets it
+# from `secrets.*`. Neither is this script's business, and that is the point —
+# a build script that knows where a value *comes from* has to be edited every
+# time that changes, and every contributor has to learn the answer.
+resolve_development_team() {
+    [[ -n "$DEVELOPMENT_TEAM" ]] && return 0
+    log_warning "DEVELOPMENT_TEAM is unset — letting Xcode pick a signing team."
+    log_warning "Set it in .envrc.local if you need a specific one (see .envrc)."
+    return 0
+}
 
 # Terminal support: the name→bundle-identifier mapping lives in the app
 # (Views/Settings/SettingsView.swift, detectAvailableTerminals). It's intentionally

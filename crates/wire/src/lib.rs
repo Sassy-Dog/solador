@@ -1,4 +1,4 @@
-//! The DevCanopy agent's JSON contract.
+//! The Solador agent's JSON contract.
 //!
 //! One definition, serialised by the agent and deserialised by the app. That
 //! is the point: the Swift app defines these types a second time, which is

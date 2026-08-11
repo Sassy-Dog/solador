@@ -43,24 +43,24 @@ Replace the `slugs` array:
 ```swift
     /// owner/name slugs.
     static let slugs = [
-        "Sassy-Dog/velovate",
-        "Sassy-Dog/qr-ninja",
-        "Sassy-Dog/tailored-tip",
-        "Sassy-Dog/what2wear",
-        "Sassy-Dog/devcanopy",
-        "Sassy-Dog/platform"
+        "acme/gadget",
+        "acme/pipe-fitting",
+        "acme/fly-wheel",
+        "acme/cogwheel",
+        "cpmadrid/solador",
+        "acme/toolkit"
     ]
 ```
 
 - [ ] **Step 2: Build to confirm it compiles**
 
-Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && ./dev test`
+Run: `cd /Users/dev/Repos/acme/devcanopy/devcanopy && ./dev test`
 Expected: `✅ All tests passed` (no behavior change yet; just more repos).
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy
+cd /Users/dev/Repos/acme/devcanopy/devcanopy
 git add DevCanopy/Services/GitHub/PortfolioRepos.swift
 git commit -m "feat(ci): track devcanopy and platform in the curated repo set
 
@@ -90,7 +90,7 @@ Append these tests to `DevCanopyTests/PortfolioCIMappingTests.swift`, just befor
             makeCreated(dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push"), "2026-05-29T11:00:00Z"), // newer
             makeCreated(dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/x", event: "pull_request"), "2026-05-29T12:00:00Z")
         ]
-        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
+        let h = PortfolioCIMapping.health(repo: "acme/gadget", runs: runs)
         XCTAssertEqual(h.main?.conclusion, .failure, "main = newest push-on-main run")
         XCTAssertEqual(h.main?.context, "main")
     }
@@ -141,7 +141,7 @@ Append these tests to `DevCanopyTests/PortfolioCIMappingTests.swift`, just befor
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && ./dev test 2>&1 | tail -20`
+Run: `cd /Users/dev/Repos/acme/devcanopy/devcanopy && ./dev test 2>&1 | tail -20`
 Expected: compile error — `health`, `RepoCIHealth`, `RunRef` are undefined.
 
 - [ ] **Step 3: Add the new types and categorizer**
@@ -237,13 +237,13 @@ Note: `createdDate` and `isoFractional` are `private static` on `PortfolioCIMapp
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && ./dev test 2>&1 | tail -8`
+Run: `cd /Users/dev/Repos/acme/devcanopy/devcanopy && ./dev test 2>&1 | tail -8`
 Expected: `✅ All tests passed` (old `map` tests + new `health` tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy
+cd /Users/dev/Repos/acme/devcanopy/devcanopy
 git add DevCanopy/Services/GitHub/PortfolioCIMapping.swift DevCanopyTests/PortfolioCIMappingTests.swift
 git commit -m "feat(ci): per-repo health categorizer (main/lastPR/running)
 
@@ -554,7 +554,7 @@ struct CIHealthPanel: CockpitPanelView {
 - [ ] **Step 5: Delete the old panel**
 
 ```bash
-cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy
+cd /Users/dev/Repos/acme/devcanopy/devcanopy
 git rm DevCanopy/Views/Cockpit/Panels/PortfolioCIPanel.swift
 ```
 
@@ -572,26 +572,26 @@ Add a short-name test for the new type (replacing the deleted one):
 
 ```swift
     func testRepoCIHealthShortName() {
-        let h = PortfolioCIMapping.health(repo: "Sassy-Dog/velovate", runs: [])
-        XCTAssertEqual(h.shortName, "velovate")
+        let h = PortfolioCIMapping.health(repo: "acme/gadget", runs: [])
+        XCTAssertEqual(h.shortName, "gadget")
         XCTAssertTrue(h.isClean, "no runs = nothing running, nothing failed")
     }
 ```
 
 - [ ] **Step 8: Regenerate the project (a file was added and one removed)**
 
-Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && ./Scripts/generate-project.sh`
+Run: `cd /Users/dev/Repos/acme/devcanopy/devcanopy && ./Scripts/generate-project.sh`
 Expected: `✅ Xcode project generated successfully`
 
 - [ ] **Step 9: Build + test**
 
-Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && ./dev test 2>&1 | tail -10`
-Expected: `✅ All tests passed`. If the compiler reports a leftover reference to `RepoCIStatus`, `PortfolioCIPanel`, or `.portfolioCI`, fix that reference (grep: `grep -rn "RepoCIStatus\|PortfolioCIPanel\|portfolioCI\|\.statuses" DevCanopy DevCanopyTests`).
+Run: `cd /Users/dev/Repos/acme/devcanopy/devcanopy && ./dev test 2>&1 | tail -10`
+Expected: `✅ All tests passed`. If the compiler reports a leftover reference to `RepoCIStatus`, `PortfolioCIPanel`, or `.portfolioCI`, fix that reference (grep: `grep -rn "RepoCIStatus\|PortfolioCIPanel\|portfolioCI\|\.statuses" Solador DevCanopyTests`).
 
 - [ ] **Step 10: Commit**
 
 ```bash
-cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy
+cd /Users/dev/Repos/acme/devcanopy/devcanopy
 git add -A
 git commit -m "feat(cockpit): CI Health panel (running + needs-attention sections)
 
@@ -609,7 +609,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Launch**
 
-Run: `cd /Users/chris/Repos/sassy-dog/devcanopy/devcanopy && osascript -e 'tell application "DevCanopy" to quit' 2>/dev/null; ./dev run`
+Run: `cd /Users/dev/Repos/acme/devcanopy/devcanopy && osascript -e 'tell application "Solador" to quit' 2>/dev/null; ./dev run`
 (Allow ~60s to build + launch.)
 
 - [ ] **Step 2: Confirm the panel**
@@ -624,7 +624,7 @@ In the cockpit (row 3, left of Git/Worktrees), confirm the panel titled **CI HEA
 
 - [ ] **Step 3: (Optional) screenshot for the record**
 
-Capture the cockpit window (DevCanopy must be frontmost) to confirm visually, then continue.
+Capture the cockpit window (Solador must be frontmost) to confirm visually, then continue.
 
 ---
 

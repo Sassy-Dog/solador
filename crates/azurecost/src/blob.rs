@@ -93,7 +93,7 @@ fn extract_tag_values(xml: &str, tag: &str) -> Vec<String> {
 
 /// [`BlobFetcher`] over a container-scoped SAS URL.
 pub struct SasBlobFetcher {
-    /// e.g. `https://stsassydog.blob.core.windows.net/cost-exports`, with no
+    /// e.g. `https://<account>.blob.core.windows.net/cost-exports`, with no
     /// trailing slash.
     container_base: String,
     /// The SAS query, e.g. `sv=…&sig=…`, with no leading `?`. **A credential**

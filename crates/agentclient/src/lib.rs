@@ -1,4 +1,4 @@
-//! Polls a DevCanopy agent over HTTP. Replaces
+//! Polls a Solador agent over HTTP. Replaces
 //! `Services/HostMetrics/RemoteHostMetricsService.swift`.
 //!
 //! The error variants mirror the Swift `failureTooltip` cases so the shell can
@@ -245,7 +245,7 @@ mod tests {
             .await
             .expect("should decode");
         assert_eq!(h.status, "ok");
-        assert_eq!(h.hostname, "ubu-3xdv");
+        assert_eq!(h.hostname, "ubu-01");
         assert_eq!(h.sampler_stale, Some(false));
     }
 

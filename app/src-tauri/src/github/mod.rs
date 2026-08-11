@@ -48,9 +48,14 @@ use git::LocalRepoCounts;
 /// `::github::` escape hatch that reads like a typo.
 pub use github::GitHubClient;
 
-/// The org whose self-hosted runners the Runners panel reports on — Swift's
-/// `PortfolioRepos.org`, which `crates/store` already spells once.
-pub const ORG: &str = store::repos::ORG;
+/// A pass read the settings and found no GitHub organization.
+///
+/// The Runners panel lists `GET /orgs/{org}/actions/runners`, so without an
+/// org there is nothing it could ask for — and no org it could guess. This
+/// used to be a hardcoded constant, which meant every install queried one
+/// particular organization and every other operator got a panel that was
+/// broken by construction.
+pub const NO_ORG_MESSAGE: &str = "set your GitHub organization in Settings";
 
 /// Absence grace before a de-registered runner escalates from amber
 /// "recycling" to red "missing" — `crates/github`'s shipped 5 minutes, which
@@ -75,6 +80,15 @@ pub const UNAUTHENTICATED_MESSAGE: &str = "connect a GitHub token in Settings";
 
 /// Repos, authenticated, before the first fetch has landed.
 pub const REPOS_LOADING_MESSAGE: &str = "loading…";
+
+/// A pass finished and the portfolio is empty.
+///
+/// Distinct from [`UNAUTHENTICATED_MESSAGE`], and the distinction is the whole
+/// point: the credential is fine, there is simply nothing tracked yet. Telling
+/// an operator to connect a token they already connected sends them to the
+/// wrong screen — the same mistake, one state over, that
+/// `the_repos_panel_says_loading_before_it_has_looked_for_a_token` records.
+pub const NO_REPOS_MESSAGE: &str = "no repos tracked — add one in Settings → Portfolio";
 
 /// Runners, same moment. Swift words this one differently and the difference is
 /// kept: the Repos panel says what it is doing, the Runners panel says what it
@@ -113,7 +127,7 @@ const LONGEST_W: f64 = 42.0; // "LONGEST" 37.8
 const MONO_11_CHAR_W: f64 = 6.6;
 
 /// The longest repo short-name the column holds without ellipsis, in
-/// characters. `tailoredtip` is 11 today; 14 leaves headroom without leaving a
+/// characters. `flywheel` is 11 today; 14 leaves headroom without leaving a
 /// visible void between the name and the numbers, and anything longer
 /// ellipsizes rather than pushing a column (`.gh-repo-name` sets
 /// `text-overflow`).
@@ -162,6 +176,10 @@ pub struct GitHubState {
     /// first pass — the credential read plus every request after it — both
     /// panels claimed there was no token. See [`Configured`].
     token: Configured,
+    /// Whether a GitHub organization is configured, read from settings on every
+    /// pass exactly as the token is. Only the Runners panel consults it: repos
+    /// are tracked by full `owner/name` slug and need no org at all.
+    org: Configured,
     /// Per-repo health from the last completed pass, one entry per **enabled**
     /// tracked repo (unreachable ones included). `None` until the first pass
     /// finishes, which is what "loading…" means.
@@ -282,6 +300,22 @@ impl GitHubState {
     pub fn apply_token_present(&mut self) {
         self.token = Configured::Present;
         self.credential_error = None;
+    }
+
+    /// Records whether an organization is configured, from the settings read
+    /// each pass makes. Like [`apply_token_present`](Self::apply_token_present)
+    /// this runs *before* the request, so the first frame can already tell
+    /// "not configured" apart from "configured, still fetching".
+    ///
+    /// Whitespace-only counts as unset: a stray space in a text field is not
+    /// an organization, and `GET /orgs/ /actions/runners` fails in a way that
+    /// reads as a server problem rather than a settings one.
+    pub fn apply_org(&mut self, org: &str) {
+        self.org = if org.trim().is_empty() {
+            Configured::Absent
+        } else {
+            Configured::Present
+        };
     }
 
     /// Records one successful statuspage read.
@@ -454,6 +488,12 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         Some(UNAUTHENTICATED_MESSAGE)
     } else if state.health.is_none() {
         Some(REPOS_LOADING_MESSAGE)
+    } else if state.health.as_ref().is_some_and(Vec::is_empty) {
+        // A finished pass with nothing tracked. Must sit *after* the
+        // `is_none()` arm: `None` is loading and `Some([])` is empty, and
+        // collapsing the two would make the very first frame — before any pass
+        // has run — claim the portfolio is empty when it has not yet looked.
+        Some(NO_REPOS_MESSAGE)
     } else {
         None
     };
@@ -709,6 +749,29 @@ const RUNNER_STATUS_W: f64 = 74.0;
 /// and is never recomputed here — that is what freezes them while GitHub is
 /// unreachable.
 #[must_use]
+/// The panel carrying nothing but a setup line: no rows, no stats, no footer.
+///
+/// One constructor for every "not configured yet" state, so two of them cannot
+/// drift into rendering different shapes for the same situation.
+fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
+    json!({
+        "id": PanelKind::GhRunners.id(),
+        "title": PanelKind::GhRunners.title(),
+        "trailing": Value::Null,
+        "message": { "text": message },
+        "loading": false,
+        // Still rendered while unconfigured: "GitHub is on fire" is most useful
+        // precisely when this panel is otherwise blank, and the statuspage
+        // needs no credential to say so.
+        "availability": availability_chip(state, now),
+        "stats": [],
+        "chips": [],
+        "rows": [],
+        // Nothing configured means nothing fetched, so nothing to be stale.
+        "footer": Value::Null,
+    })
+}
+
 pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // `credential_error` holds this branch back: the zero-credential payload
     // asserts there is no token *and* blanks the rows, and neither survives
@@ -720,22 +783,21 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // payload is an assertion it has no basis for. That state falls through to
     // "loading runners…" below instead.
     if state.token.is_absent() && state.credential_error.is_none() {
-        return json!({
-            "id": PanelKind::GhRunners.id(),
-            "title": PanelKind::GhRunners.title(),
-            "trailing": Value::Null,
-            "message": { "text": UNAUTHENTICATED_MESSAGE },
-            "loading": false,
-            // Still rendered with no token: "GitHub is on fire" is most useful
-            // precisely when this panel is otherwise blank, and the statuspage
-            // needs no credential to say so.
-            "availability": availability_chip(state, now),
-            "stats": [],
-            "chips": [],
-            "rows": [],
-            // No footer without credentials: there is nothing to be stale.
-            "footer": Value::Null,
-        });
+        return runners_setup_view(state, now, UNAUTHENTICATED_MESSAGE);
+    }
+
+    // A token in hand but no organization is a *different* setup step, and
+    // saying the wrong one sends the operator to the wrong screen. Ordered
+    // after the token because the token is the more fundamental of the two:
+    // someone with neither should be told to paste a credential first, not to
+    // name an org nothing could yet query on their behalf.
+    //
+    // `is_absent`, not `!is_present`, for the same reason as the token above:
+    // before the first pass reads settings this panel knows nothing, and
+    // `Unknown` must fall through to "loading runners…" rather than assert a
+    // misconfiguration it has not observed.
+    if state.org.is_absent() && state.credential_error.is_none() {
+        return runners_setup_view(state, now, NO_ORG_MESSAGE);
     }
 
     // "loading runners…" only while nothing has been heard AND nothing has
@@ -961,7 +1023,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
             name: name.to_owned(),
             event: "push".to_owned(),
             status: status.to_owned(),
-            html_url: format!("https://github.com/Sassy-Dog/x/actions/runs/{id}"),
+            html_url: format!("https://github.com/acme/x/actions/runs/{id}"),
             created_at: (now - chrono::TimeDelta::minutes(minutes_ago)).to_rfc3339(),
             head_branch: Some("main".to_owned()),
             conclusion: conclusion.map(ToOwned::to_owned),
@@ -982,64 +1044,67 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     state.apply_repos(vec![
         // Green, and a genuine zero on every count.
         health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(1, "CI", "completed", Some("success"), 30)],
             counts(Some(12), Some(4), Some(0)),
         ),
         // A build in flight: amber dot, amber JOBS, an elapsed LONGEST.
         health(
-            "Sassy-Dog/qr-ninja",
+            "acme/pipe-fitting",
             &[run(2, "CI", "in_progress", None, 95)],
             counts(Some(3), Some(9), Some(2)),
         ),
         // Parked at an approval gate: the blinking dot.
         health(
-            "Sassy-Dog/tailoredtip",
+            "acme/flywheel",
             &[run(3, "Release", "waiting", None, 6)],
             counts(Some(2), Some(1), Some(1)),
         ),
         // Red, and its side counts came back while its runs failed.
         health(
-            "Sassy-Dog/velovate",
+            "acme/gadget",
             &[run(4, "CI", "completed", Some("failure"), 12)],
             counts(Some(41), Some(23), Some(5)),
         ),
         // The PAT could read the runs but not the Issues/PRs scopes: every
         // side count is an em dash while the repo stays green.
         health(
-            "Sassy-Dog/what2wear",
+            "acme/cogwheel",
             &[run(5, "CI", "completed", Some("success"), 240)],
             counts(None, None, None),
         ),
         // The runs themselves could not be fetched: muted dot, all em dashes.
-        RepoWorkflowHealth::unreachable("Sassy-Dog/platform"),
+        RepoWorkflowHealth::unreachable("acme/toolkit"),
     ]);
-    // Four of the six repos are checked out here; `platform` and `what2wear`
+    // Four of the six repos are checked out here; `platform` and `cogwheel`
     // are not, so their LOCAL/WT cells are em dashes rather than zeroes.
     state.apply_local(BTreeMap::from([
         (
-            "devcanopy".to_owned(),
+            // Keyed by the *normalised short name*, so this has to track the
+            // slug above it — a stale key here joins nothing and the LOCAL/WT
+            // cells quietly become em dashes the test was not asserting.
+            "widget".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(7),
                 worktrees: Some(3),
             },
         ),
         (
-            "qrninja".to_owned(),
+            "pipefitting".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(2),
                 worktrees: Some(1),
             },
         ),
         (
-            "tailoredtip".to_owned(),
+            "flywheel".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(1),
                 worktrees: Some(1),
             },
         ),
         (
-            "velovate".to_owned(),
+            "gadget".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(0),
                 worktrees: Some(1),
@@ -1056,7 +1121,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     let registered = [
         runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Busy),
         runner(2, "mac-s2", RunnerOs::MacOs, RunnerState::Idle),
-        runner(3, "ubu-3xdv", RunnerOs::Linux, RunnerState::Idle),
+        runner(3, "ubu-01", RunnerOs::Linux, RunnerState::Idle),
         runner(4, "ubu-spare", RunnerOs::Linux, RunnerState::Offline),
     ];
     // Two remembered names that are not registered right now: one inside the
@@ -1234,6 +1299,25 @@ mod tests {
         }
     }
 
+    /// …and the state one step past that: the fetch finished, and there was
+    /// nothing to fetch. A token is in hand, so the connect line would be a
+    /// lie; the pass is done, so "loading…" would be one too. Without a line
+    /// of its own this rendered as a table with no rows — an empty panel that
+    /// looks identical to a healthy one, which is the failure this codebase
+    /// rejects wherever else it appears.
+    #[test]
+    fn a_finished_pass_with_no_tracked_repos_asks_for_a_repo() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        state.apply_repos(Vec::new());
+        let view = repos_view(&state, now());
+        assert_eq!(view["message"]["text"], NO_REPOS_MESSAGE);
+        assert_eq!(view["loading"], false, "the pass finished; not loading");
+        assert!(view["trailing"].is_null(), "no counts to summarise");
+        assert!(view["health"].is_null());
+        assert!(rows(&view).is_empty());
+    }
+
     /// Clearing the token must not leave the last-known table on screen
     /// claiming knowledge the app no longer has.
     #[test]
@@ -1285,27 +1369,20 @@ mod tests {
     /// Character-for-character parity with `GHWorkflowsPanel.openActions(_:)`.
     #[test]
     fn a_row_carries_the_swift_tap_target() {
-        let state = ready(vec![health_of(
-            "Sassy-Dog/devcanopy",
-            &[],
-            RepoCounts::default(),
-        )]);
+        let state = ready(vec![health_of("acme/widget", &[], RepoCounts::default())]);
         let row = only_row(&state, now());
-        assert_eq!(row["url"], "https://github.com/Sassy-Dog/devcanopy/actions");
-        assert_eq!(
-            row["linkLabel"],
-            "Open Sassy-Dog/devcanopy on GitHub Actions"
-        );
+        assert_eq!(row["url"], "https://github.com/acme/widget/actions");
+        assert_eq!(row["linkLabel"], "Open acme/widget on GitHub Actions");
     }
 
     /// Not being able to read a repo's runs is exactly when you want to go and
     /// look at them, so the unreachable row is clickable too.
     #[test]
     fn an_unreachable_row_is_still_clickable() {
-        let state = ready(vec![RepoWorkflowHealth::unreachable("Sassy-Dog/platform")]);
+        let state = ready(vec![RepoWorkflowHealth::unreachable("acme/toolkit")]);
         assert_eq!(
             only_row(&state, now())["url"],
-            "https://github.com/Sassy-Dog/platform/actions"
+            "https://github.com/acme/toolkit/actions"
         );
     }
 
@@ -1346,8 +1423,8 @@ mod tests {
             glob::Pattern::new(allow[0]["url"].as_str().expect("scope url")).expect("valid glob");
 
         for slug in [
-            "Sassy-Dog/devcanopy",
-            "Sassy-Dog/qr-ninja",
+            "acme/widget",
+            "acme/pipe-fitting",
             "o/r",
             "some-org/some.repo",
         ] {
@@ -1357,8 +1434,8 @@ mod tests {
 
         for refused in [
             // The About tab's links — still unopenable, and that is deliberate.
-            "https://github.com/Sassy-Dog/devcanopy",
-            "https://github.com/Sassy-Dog/devcanopy/issues",
+            "https://github.com/acme/widget",
+            "https://github.com/acme/widget/issues",
             "https://github.com/settings/tokens",
             // Anywhere else at all.
             "https://evil.example/actions",
@@ -1378,7 +1455,7 @@ mod tests {
     #[test]
     fn unknown_renders_an_em_dash_and_a_real_zero_renders_a_dimmed_zero() {
         let state = ready(vec![health_of(
-            "Sassy-Dog/velovate",
+            "acme/gadget",
             &[],
             RepoCounts {
                 remote_branches: Some(0),
@@ -1408,7 +1485,7 @@ mod tests {
     #[test]
     fn a_non_zero_count_renders_in_ink() {
         let state = ready(vec![health_of(
-            "o/velovate",
+            "o/gadget",
             &[],
             RepoCounts {
                 remote_branches: Some(41),
@@ -1443,14 +1520,14 @@ mod tests {
     #[test]
     fn local_counts_join_by_normalized_name() {
         let mut state = ready(vec![health_of(
-            "Sassy-Dog/tailored-tip",
+            "acme/fly-wheel",
             &[],
             RepoCounts::default(),
         )]);
         // The directory on disk is spelled differently from the slug — which
         // is exactly what `normalize` exists to bridge.
         state.apply_local(BTreeMap::from([(
-            "tailoredtip".to_owned(),
+            "flywheel".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(5),
                 worktrees: Some(2),
@@ -1465,9 +1542,9 @@ mod tests {
     /// for the other — never a zero, and never both blanked.
     #[test]
     fn a_half_readable_repo_reports_the_half_it_knows() {
-        let mut state = ready(vec![health_of("o/velovate", &[], RepoCounts::default())]);
+        let mut state = ready(vec![health_of("o/gadget", &[], RepoCounts::default())]);
         state.apply_local(BTreeMap::from([(
-            "velovate".to_owned(),
+            "gadget".to_owned(),
             LocalRepoCounts {
                 local_branches: Some(3),
                 worktrees: None,
@@ -1836,7 +1913,7 @@ mod tests {
         );
         // The names actually on the board today are far inside it, so nothing
         // ellipsizes in practice.
-        for name in ["devcanopy", "tailoredtip", "sassydog-web", "what2wear"] {
+        for name in ["pipe-fitting", "flywheel", "acme-web", "cogwheel"] {
             let width = name.len() as f64 * MONO_11_CHAR_W;
             assert!(width <= REPO_NAME_W, "{name} needs {width}pt");
         }
@@ -1859,13 +1936,13 @@ mod tests {
     #[test]
     fn rows_are_sorted_by_short_name_case_insensitively() {
         let state = ready(vec![
-            health_of("Sassy-Dog/Velovate", &[], RepoCounts::default()),
-            health_of("Sassy-Dog/devcanopy", &[], RepoCounts::default()),
+            health_of("acme/Gadget", &[], RepoCounts::default()),
+            health_of("acme/widget", &[], RepoCounts::default()),
             health_of("Other-Org/apple", &[], RepoCounts::default()),
         ]);
         assert_eq!(
             row_names(&repos_view(&state, now())),
-            vec!["apple", "devcanopy", "Velovate"]
+            vec!["apple", "Gadget", "widget"]
         );
     }
 
@@ -1919,6 +1996,63 @@ mod tests {
             "nothing to be stale without a token"
         );
         assert!(rows(&view).is_empty());
+    }
+
+    /// The organization is a second setup step, and it has its own line. This
+    /// panel lists `GET /orgs/{org}/actions/runners`; with a token but no org
+    /// there is nothing it could ask for.
+    #[test]
+    fn the_runners_panel_asks_for_an_org_once_a_pass_finds_none() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        state.apply_org("");
+        let view = runners_view(&state, now_unix());
+        assert_eq!(view["message"]["text"], NO_ORG_MESSAGE);
+        assert_ne!(
+            view["message"]["text"], UNAUTHENTICATED_MESSAGE,
+            "the token is fine; sending them to paste another is the old bug"
+        );
+        assert_eq!(view["loading"], false, "we looked; this is not loading");
+        assert!(rows(&view).is_empty());
+        assert!(view["footer"].is_null(), "nothing fetched, nothing stale");
+    }
+
+    /// The first frame, before any pass has read settings. `Unknown` is not
+    /// `Absent`: asserting a misconfiguration nobody has observed is the same
+    /// mistake the token side already made once.
+    #[test]
+    fn an_unread_org_reads_as_loading_rather_than_as_misconfigured() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        let view = runners_view(&state, now_unix());
+        assert_ne!(view["message"]["text"], NO_ORG_MESSAGE);
+        assert_eq!(view["loading"], true);
+    }
+
+    /// With neither, the credential is the step to name: an operator sent to
+    /// fill in an organization first would be configuring something nothing
+    /// could yet query on their behalf.
+    #[test]
+    fn a_missing_token_outranks_a_missing_org() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        state.apply_org("");
+        let view = runners_view(&state, now_unix());
+        assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
+    }
+
+    /// A stray space in a text field is not an organization. Left untrimmed it
+    /// would produce `GET /orgs/ /actions/runners`, whose failure reads as a
+    /// server problem rather than the settings one it is.
+    #[test]
+    fn whitespace_is_not_an_organization() {
+        let mut state = GitHubState::new();
+        state.apply_token_present();
+        state.apply_org("   ");
+        assert_eq!(
+            runners_view(&state, now_unix())["message"]["text"],
+            NO_ORG_MESSAGE
+        );
     }
 
     #[test]

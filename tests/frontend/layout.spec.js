@@ -332,7 +332,7 @@ test("a core cell's value text renders its usage colour", async ({ page }) => {
 test("a host that fails after connecting blanks its card and says it cannot be contacted", async ({ page, baseURL }) => {
   // Regression test for "a stale value presented as current", now taken to its
   // conclusion. A host that dies after a good poll used to render its last
-  // reading behind a red badge — and on 2026-08-06 ubu-3xdv sat like that
+  // reading behind a red badge — and on 2026-08-06 ubu-01 sat like that
   // through a GitHub outage, showing four-minute-old numbers as if they were
   // now. A card is read at a glance, and at a glance a card is its figures.
   //
@@ -375,7 +375,7 @@ test("a host that fails after connecting blanks its card and says it cannot be c
   await expect(down).toContainText("Couldn't reach the agent");
   await expect(down).toContainText("last update");
   await expect(down).toContainText("ago");
-  await expect(page.locator(".hostName")).toHaveText("ubu-3xdv");
+  await expect(page.locator(".hostName")).toHaveText("ubu-01");
 });
 
 test("a host whose agent stopped sampling loses the green dot even though every poll succeeded", async ({ page, baseURL }) => {
@@ -900,7 +900,7 @@ test("the tabs overflow mode shows one host at a time, and the bar switches betw
 /**
  * A tab bar shows one card and hides the rest, so a host that drops while you
  * are looking at another one has nothing on screen but its button. On
- * 2026-08-06 ubu-3xdv went down mid-outage and stayed unnoticed for exactly
+ * 2026-08-06 ubu-01 went down mid-outage and stayed unnoticed for exactly
  * that reason — the alarm has to live on the tab.
  */
 test("a tab whose host cannot be contacted is red and pulses", async ({ page, baseURL }) => {
@@ -1026,7 +1026,7 @@ test("repeated renders do not leak chart bookkeeping (multi-host)", async ({ pag
   // counter matches on the first card and then rebuilds every other card's
   // cells on every poll, which is the same leak with more cards.
   //
-  // app.js exposes a read-only test hook (window.__DEVCANOPY_TEST__)
+  // app.js exposes a read-only test hook (window.__SOLADOR_TEST__)
   // specifically so this can be driven directly rather than waiting on real
   // poll ticks.
   const vm = await fixture(baseURL, "sample-cockpit.json");
@@ -1043,8 +1043,8 @@ test("repeated renders do not leak chart bookkeeping (multi-host)", async ({ pag
     ({ d, n }) => {
       const results = [];
       for (let i = 0; i < n; i++) {
-        window.__DEVCANOPY_TEST__.render(d);
-        results.push(window.__DEVCANOPY_TEST__.chartCount());
+        window.__SOLADOR_TEST__.render(d);
+        results.push(window.__SOLADOR_TEST__.chartCount());
       }
       return results;
     },
@@ -1082,10 +1082,10 @@ test("a host that leaves the payload takes its chart bookkeeping with it", async
 
   const cards = page.locator(".cockpit .card");
   await expect(cards).toHaveCount(many.hosts.length);
-  const before = await page.evaluate(() => window.__DEVCANOPY_TEST__.chartCount());
+  const before = await page.evaluate(() => window.__SOLADOR_TEST__.chartCount());
 
   await expect(cards).toHaveCount(1, { timeout: 5000 });
-  const after = await page.evaluate(() => window.__DEVCANOPY_TEST__.chartCount());
+  const after = await page.evaluate(() => window.__SOLADOR_TEST__.chartCount());
 
   expect(after).toBe(5 + one.hosts[0].cores.length);
   expect(after).toBeLessThan(before);

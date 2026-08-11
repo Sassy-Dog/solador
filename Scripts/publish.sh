@@ -92,8 +92,8 @@ log_success "CI is green for HEAD"
 # Resolve the Sentry DSN (issue #75). #18's integration reads the DSN from the
 # SENTRY_DSN build setting (→ SentryDSN Info.plist key) and no-ops when it is
 # empty; local and CI builds leave it empty on purpose, but a *release* that
-# silently never reports is the bug this guards. Doppler is the source of truth
-# (devcanopy/dev). Resolved here — in pre-flight, not right before build.sh — so
+# silently never reports is the bug this guards. The environment is the source
+# of truth. Checked here — in pre-flight, not right before build.sh — so
 # a missing DSN fails before the tag is minted and pushed, not after.
 # Never log the value; log only that resolution happened.
 if [[ $SKIP_SENTRY -eq 1 ]]; then
@@ -102,25 +102,11 @@ if [[ $SKIP_SENTRY -eq 1 ]]; then
 elif [[ -n "${SENTRY_DSN:-}" ]]; then
     log_info "Using SENTRY_DSN from the environment"
 else
-    log_info "Resolving SENTRY_DSN from Doppler (devcanopy/dev)..."
-    if ! command_exists doppler; then
-        log_error "doppler CLI is required to resolve SENTRY_DSN (brew install dopplerhq/cli/doppler)."
-        log_error "Or pre-set SENTRY_DSN in the environment, or pass --skip-sentry."
-        exit 1
-    fi
-    # --plain writes the value to stdout only, so doppler's stderr is safe to
-    # surface — it explains *why* (not logged in, no access, no such secret).
-    if ! SENTRY_DSN="$(doppler secrets get SENTRY_DSN --project devcanopy --config dev --plain)"; then
-        log_error "Could not read SENTRY_DSN from Doppler (project devcanopy, config dev)."
-        log_error "Check 'doppler login' and your access, or pass --skip-sentry."
-        exit 1
-    fi
-    if [[ -z "$SENTRY_DSN" ]]; then
-        log_error "Doppler returned an empty SENTRY_DSN (project devcanopy, config dev)."
-        log_error "Set the secret in Doppler, or pass --skip-sentry."
-        exit 1
-    fi
-    log_success "Resolved SENTRY_DSN from Doppler (value not logged)"
+    log_error "SENTRY_DSN is not set, so this release would ship without crash reporting."
+    log_error "Locally: put it in .envrc.local and let direnv export it (see .envrc)."
+    log_error "In CI: set it from the workflow's secrets."
+    log_error "Or pass --skip-sentry to release deliberately without one."
+    exit 1
 fi
 # build.sh reads SENTRY_DSN from the environment and forwards it to xcodebuild.
 export SENTRY_DSN

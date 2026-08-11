@@ -1,4 +1,4 @@
-//! DevCanopy shell. The frontend receives a finished view-model and paints;
+//! Solador shell. The frontend receives a finished view-model and paints;
 //! all logic lives in `viewmodel`.
 
 use agentclient::{AgentClient, AgentError};
@@ -384,7 +384,7 @@ fn host_tab_bar(cards: &[Value], columns: usize, overflow: HostOverflowMode) -> 
             .map(|card| {
                 // A tab bar shows one card and hides the rest, so a host that
                 // went down while you were looking at another one is invisible
-                // — which is exactly how ubu-3xdv stayed unnoticed through the
+                // — which is exactly how ubu-01 stayed unnoticed through the
                 // 2026-08-06 outage. The alarm therefore has to live on the
                 // tab, the only thing on screen that represents a hidden host.
                 let state = card["connection"]["state"].as_str().unwrap_or_default();
@@ -1293,6 +1293,19 @@ async fn poll_github(app: &Arc<App>) {
     };
     let Some(token) = token else { return };
 
+    // Re-read every pass alongside the token, and for the same reason: a Save
+    // in Settings must apply on the next pass rather than the next launch.
+    // Two blocks, not one — taking the store and panel-state locks together
+    // here would be the only place in this pass that holds both at once.
+    let org = {
+        let store = app.store.lock().expect("store poisoned");
+        store.settings().github_org.trim().to_owned()
+    };
+    {
+        let mut state = app.github.lock().expect("github state poisoned");
+        state.apply_org(&org);
+    }
+
     let repos: Vec<(String, Option<Vec<String>>)> = {
         let store = app.store.lock().expect("store poisoned");
         store
@@ -1330,9 +1343,23 @@ async fn poll_github(app: &Arc<App>) {
     // on a successful fetch — so a failing GitHub leaves every absence clock
     // frozen at the last successful poll instead of ageing a healthy runner
     // into a red alarm.
-    let update = client
-        .runner_roster(github::ORG, &roster, now, github::RUNNER_GRACE_SECS)
-        .await;
+    // `None` when no org is configured, rather than a fetch that fails: the
+    // request would be `GET /orgs//actions/runners`, whose 404 would surface in
+    // the footer as "GitHub is unreachable" when the truth is a settings field
+    // nobody has filled in. The panel already names that state; this keeps a
+    // fabricated transport error from talking over it.
+    //
+    // The repos half of the pass continues either way — repos are tracked by
+    // full `owner/name` slug and need no organization.
+    let update = if org.is_empty() {
+        None
+    } else {
+        Some(
+            client
+                .runner_roster(&org, &roster, now, github::RUNNER_GRACE_SECS)
+                .await,
+        )
+    };
 
     // Re-read like the token, so switching the preference off applies on the
     // next pass rather than on the next launch.
@@ -1354,14 +1381,19 @@ async fn poll_github(app: &Arc<App>) {
         if let Some(local) = local {
             state.apply_local(local);
         }
-        match &update {
-            Ok(update) => state.apply_runners(update, panel::now_unix()),
-            // The transport error is logged, not shown: a 403 for a missing
-            // scope is what this almost always is, and "HTTP 403" sends the
-            // operator to check the network instead of the PAT.
-            Err(e) => {
-                eprintln!("org runners fetch failed: {e}");
-                state.apply_runners_error(github::RUNNERS_ERROR_MESSAGE);
+        // `None` is the no-org case, and it applies nothing on purpose: the
+        // panel's own setup line is the whole of what there is to say, and
+        // an error here would bury it.
+        if let Some(update) = &update {
+            match update {
+                Ok(update) => state.apply_runners(update, panel::now_unix()),
+                // The transport error is logged, not shown: a 403 for a missing
+                // scope is what this almost always is, and "HTTP 403" sends the
+                // operator to check the network instead of the PAT.
+                Err(e) => {
+                    eprintln!("org runners fetch failed: {e}");
+                    state.apply_runners_error(github::RUNNERS_ERROR_MESSAGE);
+                }
             }
         }
     }
@@ -1369,7 +1401,7 @@ async fn poll_github(app: &Arc<App>) {
     // Persisted only on success, and only when it actually changed — a steady
     // org produces an identical roster poll after poll, and rewriting the store
     // file every minute for no change is a write nobody asked for.
-    if let Ok(update) = &update {
+    if let Some(Ok(update)) = &update {
         let mut store = app.store.lock().expect("store poisoned");
         if store.set_runner_roster(github::roster_to_records(&update.roster)) {
             if let Err(e) = store.save() {
@@ -1533,7 +1565,6 @@ fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSe
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
         vercel: present(SecretKey::VercelApiToken),
-        azure: present(SecretKey::AzureCostSasUrl),
         openclaw: present(SecretKey::OpenClawBearerToken),
         hosts: hosts
             .iter()
@@ -2061,33 +2092,67 @@ fn wake_usage(app: &App, providers: bool) {
 /// straight into the fetcher, whose `Debug` redacts it and whose errors are
 /// stripped of their URL before they become strings.
 async fn poll_azure(app: &Arc<App>) {
-    let sas = match read_credential(&*app.credentials, SecretKey::AzureCostSasUrl) {
-        Credential::Present(sas) => sas,
-        Credential::Absent => {
-            app.azure
-                .lock()
-                .expect("azure state poisoned")
-                .unconfigure();
-            return;
-        }
-        // Not `unconfigure()`: that paints "Add an Azure Cost SAS URL in
-        // Settings" — the one state this panel must never confuse with a
-        // failure — over a configuration that is perfectly fine, and it throws
-        // away the fingerprint cache, so the next good read re-downloads every
-        // partition. A locked keychain is a failure, and it says so.
-        Credential::Unreadable => {
-            app.azure
-                .lock()
-                .expect("azure state poisoned")
-                .unreadable(CREDENTIAL_UNREADABLE_MESSAGE.to_owned());
-            return;
-        }
+    // Re-read every pass, like the GitHub token and org: a Save in Settings
+    // must apply on the next poll rather than the next launch.
+    let (account, container) = {
+        let store = app.store.lock().expect("store poisoned");
+        let settings = store.settings();
+        (
+            settings.azure_storage_account.trim().to_owned(),
+            settings.azure_cost_container.trim().to_owned(),
+        )
     };
+    if account.is_empty() || container.is_empty() {
+        app.azure
+            .lock()
+            .expect("azure state poisoned")
+            .unconfigure();
+        return;
+    }
 
     let previous = {
         let mut state = app.azure.lock().expect("azure state poisoned");
         state.begin();
         state.cached()
+    };
+
+    // Minted per poll rather than cached. `az` costs a second or two against a
+    // four-hour cadence, and a cache would need an expiry clock, an
+    // invalidation path for a settings change, and an answer for a token that
+    // expires mid-fetch — none of which buys anything at this rhythm.
+    //
+    // Blocking (it spawns a process), so it goes off the executor exactly as
+    // `docker ps` does.
+    let now = github::now_utc();
+    let minted = {
+        let (account, container) = (account.clone(), container.clone());
+        tokio::task::spawn_blocking(move || azure::sas::mint(&account, &container, now)).await
+    };
+    let sas = match minted {
+        Ok(Ok(url)) => url,
+        // `failed`, never `unconfigure`: the account and container are set, so
+        // painting "add an Azure storage account in Settings" would send the
+        // operator to fix something that is already right — and it would throw
+        // away the fingerprint cache, making the next good read re-download
+        // every partition.
+        Ok(Err(e)) => {
+            app.azure
+                .lock()
+                .expect("azure state poisoned")
+                .failed(e.user_message());
+            return;
+        }
+        Err(e) => {
+            // The spawn_blocking task itself died — a panic or a shutdown.
+            // Logged without the account name, and reported as the failure it
+            // is rather than as a misconfiguration.
+            eprintln!("azure sas mint task failed: {e}");
+            app.azure
+                .lock()
+                .expect("azure state poisoned")
+                .failed("could not mint an Azure SAS".to_owned());
+            return;
+        }
     };
     // An unchanged export costs one blob listing and no partition bodies — the
     // fingerprint from the last success is what buys that.
@@ -2576,6 +2641,50 @@ fn settings_reset_layout(state: tauri::State<'_, Arc<App>>) -> Value {
     settings_response(&state, status)
 }
 
+/// Where the Azure cost export lives.
+///
+/// Its own command for the same reason as the GitHub org: `ProviderPrefs` is
+/// sent whole by two tabs, so a third sender would have to re-send fields it
+/// does not show or blank them.
+#[tauri::command]
+fn settings_save_azure(
+    account: String,
+    container: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let current = store.settings_mut();
+        current.azure_storage_account = account.trim().to_owned();
+        current.azure_cost_container = container.trim().to_owned();
+        save_status(&store, "Saved.")
+    };
+    // Woken, unlike the GitHub org: the Azure poll runs on a four-hour rhythm,
+    // so without this an operator who has just fixed a typo waits until
+    // teatime to find out whether it worked.
+    state.azure_wake.notify_one();
+    settings_response(&state, status)
+}
+
+/// The GitHub organization the Runners panel queries.
+///
+/// A command of its own rather than a field on [`ProviderPrefs`]: that struct
+/// is sent whole by two tabs precisely because a partial write blanks the
+/// fields the sending tab does not show, and the GitHub tab shows none of
+/// them. One field, one command, nothing to blank.
+#[tauri::command]
+fn settings_save_github(org: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        store.settings_mut().github_org = org.trim().to_owned();
+        save_status(&store, "Saved.")
+    };
+    // No wake: unlike the usage loops on their hourly cadence, the GitHub poll
+    // re-reads settings on every pass, so this applies within one refresh
+    // interval by the same mechanism that makes a re-pasted token apply.
+    settings_response(&state, status)
+}
+
 /// Every non-secret provider preference, in one argument.
 ///
 /// One struct rather than seven positional parameters: both Settings tabs send
@@ -3021,7 +3130,6 @@ fn wake_for(app: &App, field: SecretField) {
             wake_usage(app, true);
             app.crons_wake.notify_one();
         }
-        SecretField::Azure => app.azure_wake.notify_one(),
         // The bearer token is folded into the *signed connect payload*, so it
         // cannot be swapped on a live socket — the session has to be torn down
         // and re-handshaked, which is exactly what this wake does.
@@ -3069,8 +3177,8 @@ fn unreachable_message() -> String {
 /// on the page would only make every locator in that test ambiguous.
 /// The same envelope as [`dump_single`], for a host with nothing to plot.
 fn dump_pending(pending: &Pending) -> Value {
-    let mut card = pending_card("ubu-3xdv", pending);
-    card["id"] = json!("ubu-3xdv");
+    let mut card = pending_card("ubu-01", pending);
+    card["id"] = json!("ubu-01");
     cockpit_payload(
         vec![card],
         1,
@@ -3083,7 +3191,7 @@ fn dump_pending(pending: &Pending) -> Value {
 
 fn dump_single(connection: &Connection) -> Value {
     cockpit_payload(
-        vec![dump_card("ubu-3xdv", connection)],
+        vec![dump_card("ubu-01", connection)],
         1,
         1000.0,
         HostOverflowMode::Stack,
@@ -3179,7 +3287,7 @@ fn dump_local_card() -> Value {
 /// dumps the tab bar — the one host-grid rendering no other fixture reaches.
 fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Value {
     let cards = vec![
-        dump_card("ubu-3xdv", &Connection::Live),
+        dump_card("ubu-01", &Connection::Live),
         {
             // A host that answered once and can no longer be reached: a blanked
             // card, which is what `view_for` produces for it. This used to dump
@@ -3265,7 +3373,7 @@ fn dump_settings() -> Value {
         ..store::Settings::default()
     };
 
-    let mut live = Host::new("ubu-3xdv", "100.87.202.125");
+    let mut live = Host::new("ubu-01", "100.100.100.100");
     live.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
     live.hidden_volume_mounts = vec!["/mnt/scratch".into()];
     let mut spare = Host::new("nuc-spare", "100.64.0.7");
@@ -3277,7 +3385,6 @@ fn dump_settings() -> Value {
         neon: false,
         sentry: true,
         vercel: true,
-        azure: false,
         openclaw: false,
         hosts: [live.id].into_iter().collect(),
     };
@@ -3287,6 +3394,9 @@ fn dump_settings() -> Value {
     // cover.
     let settings = store::Settings {
         openclaw_gateway_url: "ws://gateway.local:7878".into(),
+        // Populated so the frontend suite sees the GitHub org field in its
+        // filled state; its empty state is covered by the Rust view tests.
+        github_org: "acme".into(),
         ..settings
     };
     let facts = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
@@ -3318,7 +3428,13 @@ fn dump_settings() -> Value {
     settings::view(
         &settings,
         &[live, spare],
-        &store::seeded_repos(),
+        // Explicit, not `seeded_repos()`: nothing is seeded any more, and this
+        // fixture is what the Playwright suite renders the Portfolio tab from
+        // — an empty list would silently stop covering it.
+        &[
+            store::TrackedRepo::new("acme/widget"),
+            store::TrackedRepo::new("acme/gadget"),
+        ],
         &dump_container_rules(),
         Some(&layout),
         &stored,
@@ -3329,28 +3445,41 @@ fn dump_settings() -> Value {
 /// The rules the Settings fixture carries — the seeded three, plus the two
 /// renderings seeding alone never reaches.
 ///
-/// The seeds give a scoped Collapse, a second Collapse, and an all-hosts Hide.
-/// What they do not give is an **Expect** row (whose Collapse-only fields must
-/// therefore be absent), a live **expected count** (the field's non-empty
-/// state), or a rule scoped to a host that no longer exists — the case
-/// `rule_host_options` grows an extra option for, and the one where a picker
-/// silently renders blank if it doesn't.
+/// Every rendering the rule editor has, in one list.
+///
+/// Written out rather than grown from `seeded_rules()`, which is empty now —
+/// a fixture derived from it would cover nothing at all. Between them these
+/// five carry: a host-scoped Collapse, an all-hosts Hide, a live **expected
+/// count** (the field's non-empty state), an **Expect** row whose
+/// Collapse-only fields must therefore be absent, and a rule scoped to a host
+/// that no longer exists — the case `rule_host_options` grows an extra option
+/// for, and the one where a picker silently renders blank if it doesn't.
 fn dump_container_rules() -> Vec<ContainerGroupRule> {
-    let mut rules = store::seeded_rules();
-    rules[1].expected_count = Some(4);
-    rules.push(
+    let mut with_count = ContainerGroupRule::new(
+        "api-*",
+        "workflow jobs",
+        store::ContainerRuleAction::Collapse,
+    )
+    .on_host("ubu-01");
+    with_count.expected_count = Some(4);
+    vec![
+        ContainerGroupRule::new(
+            "runner-*",
+            "ci runners",
+            store::ContainerRuleAction::Collapse,
+        )
+        .on_host("ubu-01"),
+        with_count,
+        ContainerGroupRule::new("ghcr.io/*", "", store::ContainerRuleAction::Hide),
         ContainerGroupRule::new("build-vm", "", store::ContainerRuleAction::Expect)
             .on_host(store::LOCAL_HOST_SCOPE),
-    );
-    rules.push(
         ContainerGroupRule::new(
             "legacy-*",
             "legacy jobs",
             store::ContainerRuleAction::Collapse,
         )
         .on_host("retired-box"),
-    );
-    rules
+    ]
 }
 
 /// The OpenClaw panel as a fixture, one per rendering it has.
@@ -3585,17 +3714,17 @@ fn run_dump(args: &[String]) -> bool {
     false
 }
 
-/// Where the store lives. `DEVCANOPY_STORE_DIR` overrides the platform default
+/// Where the store lives. `SOLADOR_STORE_DIR` overrides the platform default
 /// so a smoke run or a throwaway experiment can seed a scratch store instead
 /// of editing the real one (see the manual IPC smoke test in `app/README.md`).
 fn open_store() -> Result<Store, StoreError> {
-    match std::env::var_os("DEVCANOPY_STORE_DIR") {
+    match std::env::var_os("SOLADOR_STORE_DIR") {
         Some(dir) => Store::open_in(dir),
         None => Store::open(),
     }
 }
 
-/// One host as `DEVCANOPY_SEED_HOST` spells it.
+/// One host as `SOLADOR_SEED_HOST` spells it.
 #[derive(Debug, PartialEq, Eq)]
 struct SeedHost {
     name: String,
@@ -3626,7 +3755,7 @@ fn parse_seed_host(raw: &str) -> Option<SeedHost> {
     })
 }
 
-/// Provisions a host from `DEVCANOPY_SEED_HOST` if one with that address is
+/// Provisions a host from `SOLADOR_SEED_HOST` if one with that address is
 /// not already configured — headless/first-run setup, exactly as in Swift.
 ///
 /// The same-address no-op is what makes this safe to leave set: relaunching
@@ -3690,13 +3819,13 @@ fn main() {
     let mut store = match open_store() {
         Ok(store) => store,
         Err(e) => {
-            eprintln!("could not open the DevCanopy store: {e}");
+            eprintln!("could not open the Solador store: {e}");
             std::process::exit(1);
         }
     };
     // Tokens live in the OS credential store, never in the store file. The
     // *service* string matches the Swift `KeychainHelper`
-    // (`com.sassydog.devcanopy`), but the *account* does not: Swift stores
+    // (the pre-rename service, see `store::LEGACY_SERVICE`), but the *account* does not: Swift stores
     // each host's token under `host_token_<UUID>`
     // (`DevCanopy/Services/KeychainHelper.swift`), `store::SecretKey` stores
     // it under `host-<UUID>`. Nothing is actually reused today -- a token
@@ -3714,7 +3843,7 @@ fn main() {
     // isn't already tracked), so its id never had a legacy item to miss.
     // Count only; never values.
     //
-    // Skipped entirely under `DEVCANOPY_STORE_DIR`: that variable points
+    // Skipped entirely under `SOLADOR_STORE_DIR`: that variable points
     // `store.json` at a scratch directory, but the credential *service*
     // stays the real one (see `open_store`) -- so a scratch/smoke run would
     // migrate against whatever host list the scratch store happens to have
@@ -3724,23 +3853,50 @@ fn main() {
     // launch. `migrate_legacy`'s own "blob already exists" guard can't catch
     // this: an empty or wrong host list still looks like "nothing to copy",
     // not a scratch run.
-    if std::env::var_os("DEVCANOPY_STORE_DIR").is_none() {
+    if std::env::var_os("SOLADOR_STORE_DIR").is_none() {
         let mut migrate_keys = SecretKey::static_migration_keys();
         migrate_keys.extend(store.hosts().iter().map(|h| SecretKey::HostToken(h.id)));
-        match credentials.migrate_legacy(&migrate_keys) {
-            Ok(0) => {}
+        // Before consolidation, not after: `migrate_legacy` folds per-item
+        // entries into the blob *within this service*, so anything still
+        // sitting under the pre-rename service has to arrive first or it is
+        // simply not there to fold.
+        let adopted = match credentials.migrate_service(&migrate_keys) {
+            Ok(0) => true,
             Ok(n) => {
-                eprintln!(
-                    "secrets: migrated {n} credential(s) into the consolidated keychain item"
-                );
+                eprintln!("secrets: adopted {n} credential(s) from the pre-rename service");
+                true
             }
-            Err(e) => eprintln!("secrets: migration failed (legacy items still readable): {e}"),
+            Err(e) => {
+                eprintln!(
+                    "secrets: could not adopt pre-rename credentials, will retry next launch: {e}"
+                );
+                false
+            }
+        };
+        // Consolidation is skipped after a failed adoption -- not the launch.
+        // The app must still open: an unreadable keychain means panels ask for
+        // credentials, which is a working app, whereas refusing to start is
+        // not. What consolidation would add is a blob in the destination, and
+        // the fewer artefacts a failed pass leaves for the retry to reason
+        // about, the better.
+        if adopted {
+            match credentials.migrate_legacy(&migrate_keys) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!(
+                        "secrets: migrated {n} credential(s) into the consolidated keychain item"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("secrets: migration failed (legacy items still readable): {e}");
+                }
+            }
         }
     }
 
-    let seed = std::env::var("DEVCANOPY_SEED_HOST").ok();
+    let seed = std::env::var("SOLADOR_SEED_HOST").ok();
     if let Err(e) = seed_from_env(&mut store, &credentials, seed.as_deref()) {
-        eprintln!("could not seed a host from DEVCANOPY_SEED_HOST: {e}");
+        eprintln!("could not seed a host from SOLADOR_SEED_HOST: {e}");
     }
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -3837,6 +3993,8 @@ fn main() {
             settings_add_breakpoint,
             settings_remove_breakpoint,
             settings_reset_layout,
+            settings_save_azure,
+            settings_save_github,
             settings_save_providers,
             settings_add_host,
             settings_set_host_enabled,
@@ -4085,7 +4243,10 @@ mod tests {
         let s = state_with(Some(fixture()), None, Some(Instant::now()));
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "live");
-        assert_eq!(vm["connection"]["color"], "#33d17a");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::GREEN)
+        );
         assert!(vm["connection"]["message"].is_null());
         assert_eq!(vm["cpuValue"], fixture_cpu_value());
     }
@@ -4099,7 +4260,7 @@ mod tests {
     /// A host we can no longer reach now renders **blank**, not as its last
     /// snapshot behind a badge — the same defect one step further.
     ///
-    /// This asserted the opposite until ubu-3xdv went down during the
+    /// This asserted the opposite until ubu-01 went down during the
     /// 2026-08-06 GitHub outage and the card sat there showing four-minute-old
     /// numbers as if they were now. Every figure on a host card is a
     /// present-tense claim, and at a glance the numbers are what you read while
@@ -4114,7 +4275,10 @@ mod tests {
         );
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "unreachable");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::RED)
+        );
 
         // Not one figure survives: the card is an error, not a reading.
         let live = view_for(&state_with(Some(fixture()), None, Some(Instant::now())));
@@ -4163,7 +4327,10 @@ mod tests {
         let s = state_with(None, Some("Couldn't reach the agent."), None);
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "failed");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::RED)
+        );
         assert_eq!(vm["error"]["message"], "Couldn't reach the agent.");
         assert_eq!(vm["error"]["hostName"], "test-host");
         assert!(
@@ -4177,7 +4344,10 @@ mod tests {
         let s = state_with(None, None, None);
         let vm = view_for(&s);
         assert_eq!(vm["connection"]["state"], "connecting");
-        assert_eq!(vm["connection"]["color"], "#e09a26");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::AMBER)
+        );
         assert_eq!(vm["error"]["message"], "waiting for first sample…");
         assert!(vm.get("cpuValue").is_none());
     }
@@ -4209,7 +4379,10 @@ mod tests {
         let vm = view_for(&s);
 
         assert_eq!(vm["connection"]["state"], "stale");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            viewmodel::color::hex(viewmodel::color::RED)
+        );
         let msg = vm["connection"]["message"].as_str().unwrap();
         assert!(msg.contains("sampler"), "got {msg:?}");
 
@@ -4750,7 +4923,7 @@ mod tests {
             .collect()
     }
 
-    /// The case this exists for: a 10-core Mac beside the 36-core ubu-3xdv.
+    /// The case this exists for: a 10-core Mac beside the 36-core ubu-01.
     /// Alone the Mac's block is 220 and ubu's is 334; sharing a row they are
     /// both 334, so every section below the block starts at the same height.
     #[test]
@@ -4836,7 +5009,7 @@ mod tests {
     /// cards and the same width, so nothing but the preference moved.
     #[test]
     fn the_tabs_preference_collapses_the_stacked_grid_into_a_tab_bar() {
-        let cards = tab_cards(&["mac-studio", "ubu-3xdv", "nuc-spare"]);
+        let cards = tab_cards(&["mac-studio", "ubu-01", "nuc-spare"]);
 
         let tabbed = tabbed_payload(cards.clone(), 2, 1000.0);
         assert_eq!(tabbed["hostColumns"], 1, "1000pt cannot pair 900pt cards");
@@ -4847,9 +5020,9 @@ mod tests {
             tabs.iter()
                 .map(|tab| tab["label"].as_str().expect("label"))
                 .collect::<Vec<_>>(),
-            vec!["mac-studio", "ubu-3xdv", "nuc-spare"]
+            vec!["mac-studio", "ubu-01", "nuc-spare"]
         );
-        assert_eq!(tabs[1]["id"], "ubu-3xdv");
+        assert_eq!(tabs[1]["id"], "ubu-01");
         // The container's floor is Rust's, matching HostsPanel's
         // `.frame(minHeight: 780)`: only one card is on screen at a time, so
         // nothing else is sizing it.
@@ -4866,7 +5039,7 @@ mod tests {
     /// itself would be `host_tabs` re-implemented in JS.
     #[test]
     fn the_tabs_preference_does_nothing_while_the_cards_still_fit() {
-        let cards = tab_cards(&["mac-studio", "ubu-3xdv"]);
+        let cards = tab_cards(&["mac-studio", "ubu-01"]);
         // 2 * 900 + 16 = 1816: exactly enough for two cards.
         let paired = tabbed_payload(cards.clone(), 1, 1816.0);
         assert_eq!(paired["hostColumns"], 2);
@@ -5136,24 +5309,24 @@ mod tests {
             zed,
             Host::new("mac-mini", "10.0.0.1"),
             off,
-            Host::new("ubu-3xdv", "10.0.0.2"),
+            Host::new("ubu-01", "10.0.0.2"),
         ];
         let names: Vec<&str> = display_order(&hosts)
             .iter()
             .map(|h| h.name.as_str())
             .collect();
-        assert_eq!(names, vec!["mac-mini", "ubu-3xdv", "zed"]);
+        assert_eq!(names, vec!["mac-mini", "ubu-01", "zed"]);
     }
 
-    // MARK: DEVCANOPY_SEED_HOST
+    // MARK: SOLADOR_SEED_HOST
 
     #[test]
     fn a_seed_string_parses_the_way_swift_parses_it() {
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125|9000|tok"),
+            parse_seed_host("ubu-01|100.100.100.100|9000|tok"),
             Some(SeedHost {
-                name: "ubu-3xdv".into(),
-                address: "100.87.202.125".into(),
+                name: "ubu-01".into(),
+                address: "100.100.100.100".into(),
                 port: 9000,
                 token: "tok".into(),
             })
@@ -5161,16 +5334,16 @@ mod tests {
         // Port and token are both optional, and an unparseable port falls
         // back to the agent default rather than rejecting the whole seed.
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125"),
+            parse_seed_host("ubu-01|100.100.100.100"),
             Some(SeedHost {
-                name: "ubu-3xdv".into(),
-                address: "100.87.202.125".into(),
+                name: "ubu-01".into(),
+                address: "100.100.100.100".into(),
                 port: store::DEFAULT_AGENT_PORT,
                 token: String::new(),
             })
         );
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125|not-a-port|tok")
+            parse_seed_host("ubu-01|100.100.100.100|not-a-port|tok")
                 .expect("seed")
                 .port,
             store::DEFAULT_AGENT_PORT
@@ -5178,7 +5351,7 @@ mod tests {
         // An empty port field keeps the empty token field addressable -- the
         // Swift split does not omit empty subsequences, and neither does this.
         assert_eq!(
-            parse_seed_host("ubu-3xdv|100.87.202.125||tok")
+            parse_seed_host("ubu-01|100.100.100.100||tok")
                 .expect("seed")
                 .token,
             "tok"
@@ -5187,7 +5360,7 @@ mod tests {
 
     #[test]
     fn a_seed_string_missing_a_name_or_address_is_rejected() {
-        for raw in ["", "just-a-name", "|100.87.202.125", "ubu-3xdv|", "|"] {
+        for raw in ["", "just-a-name", "|100.100.100.100", "ubu-01|", "|"] {
             assert_eq!(parse_seed_host(raw), None, "raw {raw:?}");
         }
     }
@@ -5206,15 +5379,15 @@ mod tests {
         let id = seed_from_env(
             &mut store,
             &credentials,
-            Some("ubu-3xdv|100.87.202.125|9000|agent-token"),
+            Some("ubu-01|100.100.100.100|9000|agent-token"),
         )
         .expect("seed")
         .expect("a host was added");
 
         assert_eq!(store.hosts().len(), 1);
         let host = &store.hosts()[0];
-        assert_eq!(host.name, "ubu-3xdv");
-        assert_eq!(host.address, "100.87.202.125");
+        assert_eq!(host.name, "ubu-01");
+        assert_eq!(host.address, "100.100.100.100");
         assert_eq!(host.port, 9000);
         assert_eq!(host.id.to_string(), id);
 
@@ -5231,14 +5404,14 @@ mod tests {
         assert!(!raw.contains("agent-token"));
     }
 
-    /// The no-op that makes `DEVCANOPY_SEED_HOST` safe to leave exported:
+    /// The no-op that makes `SOLADOR_SEED_HOST` safe to leave exported:
     /// relaunching must not accumulate duplicate hosts. Address, not name, is
     /// the identity — the name is the field the user edits.
     #[test]
     fn seeding_an_address_that_is_already_configured_is_a_no_op() {
         let (_dir, mut store) = scratch_store();
         let credentials = MemoryCredentialStore::new();
-        let seed = "ubu-3xdv|100.87.202.125|7878|agent-token";
+        let seed = "ubu-01|100.100.100.100|7878|agent-token";
 
         seed_from_env(&mut store, &credentials, Some(seed)).expect("first seed");
         let first = store.hosts()[0].clone();
@@ -5248,7 +5421,7 @@ mod tests {
             seed_from_env(
                 &mut store,
                 &credentials,
-                Some("renamed|100.87.202.125|7878|other-token"),
+                Some("renamed|100.100.100.100|7878|other-token"),
             )
             .expect("second seed"),
             None
@@ -5286,7 +5459,7 @@ mod tests {
     fn a_seed_without_a_token_writes_no_credential() {
         let (_dir, mut store) = scratch_store();
         let credentials = MemoryCredentialStore::new();
-        seed_from_env(&mut store, &credentials, Some("ubu-3xdv|100.87.202.125")).expect("seed");
+        seed_from_env(&mut store, &credentials, Some("ubu-01|100.100.100.100")).expect("seed");
         assert_eq!(store.hosts().len(), 1);
         assert!(
             credentials.accounts().is_empty(),
@@ -5300,11 +5473,11 @@ mod tests {
         let credentials = MemoryCredentialStore::new();
         {
             let mut store = Store::open_in(dir.path()).expect("open");
-            seed_from_env(&mut store, &credentials, Some("ubu-3xdv|100.87.202.125")).expect("seed");
+            seed_from_env(&mut store, &credentials, Some("ubu-01|100.100.100.100")).expect("seed");
         }
         let reopened = Store::open_in(dir.path()).expect("reopen");
         assert_eq!(reopened.hosts().len(), 1);
-        assert_eq!(reopened.hosts()[0].name, "ubu-3xdv");
+        assert_eq!(reopened.hosts()[0].name, "ubu-01");
     }
 
     // MARK: what a credential read learned, and what each answer is allowed to
@@ -5323,7 +5496,7 @@ mod tests {
     impl UnreadableCredentialStore {
         fn refusal() -> SecretError {
             SecretError::CorruptBlob {
-                account: "devcanopy-secrets".to_owned(),
+                account: "solador-secrets".to_owned(),
             }
         }
     }
@@ -5586,10 +5759,7 @@ mod tests {
             .iter()
             .map(|c| c["id"].as_str().expect("id"))
             .collect();
-        assert_eq!(
-            ids,
-            vec![local::CARD_ID, "ubu-3xdv", "mac-mini", "nuc-spare"]
-        );
+        assert_eq!(ids, vec![local::CARD_ID, "ubu-01", "mac-mini", "nuc-spare"]);
 
         // The local card carries the em dashes the shipped one really does —
         // no portable memory-pressure source and no dependency-free GPU read —
@@ -5662,7 +5832,7 @@ mod tests {
         assert_eq!(rows[1]["enabled"], false);
 
         assert_eq!(vm["github"]["secret"]["stored"], true);
-        assert_eq!(vm["azure"]["secret"]["stored"], false);
+        assert!(vm["azure"]["secret"].is_null(), "no Azure credential");
         assert!(!vm["portfolio"]["rows"]
             .as_array()
             .expect("repo rows")

@@ -448,7 +448,7 @@ mod tests {
         let mut s = fixture();
         s.gpu = wire::Gpu::zeros();
         let h = HostHistories::new();
-        let vm = host_card("ubu-3xdv", &s, &h, &Connection::Live);
+        let vm = host_card("ubu-01", &s, &h, &Connection::Live);
         assert_eq!(vm["gpuValue"], "—");
         assert_eq!(vm["vramText"], "VRAM: —");
     }
@@ -468,7 +468,7 @@ mod tests {
         }
         assert_eq!(h.gpu.len(), 10, "the buffer really does fill with zeros");
 
-        let vm = host_card("ubu-3xdv", &s, &h, &Connection::Live);
+        let vm = host_card("ubu-01", &s, &h, &Connection::Live);
         assert_eq!(vm["gpuValue"], "—");
         assert!(
             vm["gpuHistory"].as_array().expect("gpuHistory").is_empty(),
@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn volumes_are_ordered_fullest_first() {
         let vm = host_card(
-            "ubu-3xdv",
+            "ubu-01",
             &fixture(),
             &HostHistories::new(),
             &Connection::Live,
@@ -673,7 +673,7 @@ mod tests {
                 memory_mb: 6144.0,
             },
         ];
-        let vm = host_card("ubu-3xdv", &s, &HostHistories::new(), &Connection::Live);
+        let vm = host_card("ubu-01", &s, &HostHistories::new(), &Connection::Live);
         assert_ne!(vm["topCpu"][0]["name"], vm["topRam"][0]["name"]);
         assert_eq!(vm["topCpu"][0]["name"], "burst");
         assert_eq!(vm["topCpu"][0]["value"], "195%");
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn the_ladder_and_block_height_travel_with_the_view_model() {
         let vm = host_card(
-            "ubu-3xdv",
+            "ubu-01",
             &fixture(),
             &HostHistories::new(),
             &Connection::Live,
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn every_core_gets_a_hue_and_a_usage_coloured_value() {
         let vm = host_card(
-            "ubu-3xdv",
+            "ubu-01",
             &fixture(),
             &HostHistories::new(),
             &Connection::Live,
@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(cores.len(), 16);
         assert_eq!(cores[0]["label"], "Core 0");
         // core 3 is at 94% in the fixture -> red
-        assert_eq!(cores[3]["valueColor"], "#e05a4f");
+        assert_eq!(cores[3]["valueColor"], crate::color::hex(crate::color::RED));
 
         // 16 cores and 10 hues, so the fixture actually exercises the
         // `i % CORE_COLORS.len()` wraparound: core 10 returns to core 0's hue
@@ -766,13 +766,16 @@ mod tests {
     #[test]
     fn a_live_host_card_carries_a_green_connection_badge_with_no_message() {
         let vm = host_card(
-            "ubu-3xdv",
+            "ubu-01",
             &fixture(),
             &HostHistories::new(),
             &Connection::Live,
         );
         assert_eq!(vm["connection"]["state"], "live");
-        assert_eq!(vm["connection"]["color"], "#33d17a");
+        assert_eq!(
+            vm["connection"]["color"],
+            crate::color::hex(crate::color::GREEN)
+        );
         assert!(vm["connection"]["message"].is_null());
     }
 
@@ -783,7 +786,7 @@ mod tests {
         // the problem. A card is read at a glance, and at a glance a card is
         // its figures — so a host we cannot contact renders none of them.
         let live = host_card(
-            "ubu-3xdv",
+            "ubu-01",
             &fixture(),
             &HostHistories::new(),
             &Connection::Live,
@@ -791,7 +794,7 @@ mod tests {
         assert!(!live["cpuValue"].is_null(), "the live card has figures");
 
         let down = pending_card(
-            "ubu-3xdv",
+            "ubu-01",
             &Pending::Unreachable {
                 message: "Couldn't reach the agent. Check the host is up and the agent is running."
                     .to_string(),
@@ -802,8 +805,11 @@ mod tests {
             assert!(down[field].is_null(), "{field} outlived the connection");
         }
         assert_eq!(down["connection"]["state"], "unreachable");
-        assert_eq!(down["connection"]["color"], "#e05a4f");
-        assert_eq!(down["error"]["hostName"], "ubu-3xdv");
+        assert_eq!(
+            down["connection"]["color"],
+            crate::color::hex(crate::color::RED)
+        );
+        assert_eq!(down["error"]["hostName"], "ubu-01");
         let msg = down["error"]["message"].as_str().unwrap();
         assert!(msg.contains("Couldn't reach the agent"));
         assert!(
@@ -821,7 +827,7 @@ mod tests {
     #[test]
     fn an_unreachable_card_with_an_unknown_age_says_unknown_never_zero() {
         let vm = pending_card(
-            "ubu-3xdv",
+            "ubu-01",
             &Pending::Unreachable {
                 message: "Couldn't reach the agent.".to_string(),
                 age_secs: None,
@@ -844,9 +850,9 @@ mod tests {
     fn a_stalled_sampler_renders_the_stale_badge_and_names_the_agent() {
         let s = fixture();
         let h = HostHistories::new();
-        let live = host_card("ubu-3xdv", &s, &h, &Connection::Live);
+        let live = host_card("ubu-01", &s, &h, &Connection::Live);
         let stalled = host_card(
-            "ubu-3xdv",
+            "ubu-01",
             &s,
             &h,
             &Connection::SamplerStale {
@@ -855,7 +861,10 @@ mod tests {
         );
 
         assert_eq!(stalled["connection"]["state"], "stale");
-        assert_eq!(stalled["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            stalled["connection"]["color"],
+            crate::color::hex(crate::color::RED)
+        );
         let msg = stalled["connection"]["message"].as_str().unwrap();
         assert!(msg.contains("sampler"), "got {msg:?}");
         // The agent's own age, not this side's: 95s is what `/v1/health`
@@ -882,7 +891,7 @@ mod tests {
     #[test]
     fn a_stalled_sampler_with_no_reported_age_says_unknown_never_zero() {
         let vm = host_card(
-            "ubu-3xdv",
+            "ubu-01",
             &fixture(),
             &HostHistories::new(),
             &Connection::SamplerStale {
@@ -899,21 +908,27 @@ mod tests {
 
     #[test]
     fn a_connecting_host_has_no_data_and_an_amber_badge() {
-        let vm = pending_card("ubu-3xdv", &Pending::Connecting);
-        assert_eq!(vm["error"]["hostName"], "ubu-3xdv");
+        let vm = pending_card("ubu-01", &Pending::Connecting);
+        assert_eq!(vm["error"]["hostName"], "ubu-01");
         assert_eq!(vm["error"]["message"], "waiting for first sample…");
         assert_eq!(vm["connection"]["state"], "connecting");
-        assert_eq!(vm["connection"]["color"], "#e09a26");
+        assert_eq!(
+            vm["connection"]["color"],
+            crate::color::hex(crate::color::AMBER)
+        );
     }
 
     #[test]
     fn a_host_that_never_connected_has_no_data_and_a_red_badge() {
         let vm = pending_card(
-            "ubu-3xdv",
+            "ubu-01",
             &Pending::Failed("Couldn't reach the agent.".to_string()),
         );
         assert_eq!(vm["error"]["message"], "Couldn't reach the agent.");
         assert_eq!(vm["connection"]["state"], "failed");
-        assert_eq!(vm["connection"]["color"], "#e05a4f");
+        assert_eq!(
+            vm["connection"]["color"],
+            crate::color::hex(crate::color::RED)
+        );
     }
 }

@@ -8,8 +8,8 @@ public struct Logger {
     private let osLog: OSLog
 
     // Check environment variables
-    private static let consoleLoggingEnabled = ProcessInfo.processInfo.environment["DEVCANOPY_LOG_CONSOLE"] == "1"
-    private static let logLevelString = ProcessInfo.processInfo.environment["DEVCANOPY_LOG_LEVEL"] ?? "info"
+    private static let consoleLoggingEnabled = ProcessInfo.processInfo.environment["SOLADOR_LOG_CONSOLE"] == "1"
+    private static let logLevelString = ProcessInfo.processInfo.environment["SOLADOR_LOG_LEVEL"] ?? "info"
 
     public enum LogLevel: Int, Comparable {
         case debug = 0

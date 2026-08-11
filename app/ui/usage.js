@@ -198,8 +198,13 @@ refresh().then((loading) => {
   if (window.__TAURI__) scheduleRefresh(loading);
 });
 
-// Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`:
+// Brought current when Settings closes, rather than waiting out this panel's
+// own timer. Re-arms too, so a panel that turns out to be loading switches to
+// the fast cadence immediately.
+registerPanelRefresh(async () => scheduleRefresh(await refresh()));
+
+// Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
-window.__DEVCANOPY_USAGE_TEST__ = { render: renderUsage, refresh };
+window.__SOLADOR_USAGE_TEST__ = { render: renderUsage, refresh };
 
 })();

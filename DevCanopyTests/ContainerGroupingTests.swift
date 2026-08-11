@@ -184,10 +184,10 @@ final class ContainerGroupingTests: XCTestCase {
     }
 
     func testHostScopeSurvivesRoundTrip() {
-        let original = [ContainerGroupRule(pattern: "api-*", label: "jobs", host: "ubu-3xdv")]
+        let original = [ContainerGroupRule(pattern: "api-*", label: "jobs", host: "ubu-01")]
         let decoded = ContainerGroupRule.load(from: ContainerGroupRule.encode(original))
         XCTAssertEqual(decoded, original)
-        XCTAssertEqual(decoded[0].host, "ubu-3xdv")
+        XCTAssertEqual(decoded[0].host, "ubu-01")
     }
 
     // MARK: - Hide rules & migration

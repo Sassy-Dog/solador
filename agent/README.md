@@ -1,10 +1,10 @@
-# DevCanopy Agent
+# Solador Agent
 
 A small per-host metrics agent. It exposes host metrics and a container/VM list
-over HTTP (JSON), guarded by a bearer token. The [DevCanopy](../) macOS app polls
+over HTTP (JSON), guarded by a bearer token. The [Solador](../) macOS app polls
 it over **Tailscale** to render a dashboard.
 
-Runs on Linux (e.g. `ubu-3xdv`) and macOS. Metrics come from
+Runs on Linux (e.g. `ubu-01`) and macOS. Metrics come from
 [`sysinfo`](https://crates.io/crates/sysinfo); the server is
 [`axum`](https://crates.io/crates/axum) on `tokio`.
 
@@ -74,7 +74,7 @@ Notes:
 - Memory has **no** `usagePercentage` key — the Swift side computes it.
 - `volumes` entries are `{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0, "fstype": "ext4" }`.
   `fstype` is lowercased and omitted (not `null`) when unknown. Transient, remote,
-  and pseudo filesystems are filtered out at the source (see `DEVCANOPY_AGENT_SKIP_FSTYPES`),
+  and pseudo filesystems are filtered out at the source (see `SOLADOR_AGENT_SKIP_FSTYPES`),
   and bind mounts of the same filesystem collapse to the shortest mount path.
 - `processes` is the union of the top 5 by CPU and the top 5 by memory, so it runs
   5–10 entries long. Every entry is a **process** (agent ≥ 0.3.1): on Linux
@@ -104,10 +104,10 @@ rootless, so it works as a normal user.
 
 | Env var                  | Required | Default | Meaning                          |
 |--------------------------|----------|---------|----------------------------------|
-| `DEVCANOPY_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
-| `DEVCANOPY_AGENT_BIND`   | no       | tailnet IP | Host/interface to bind. Defaults to the detected Tailscale IP (`100.x`), so the agent only listens on the tailnet. Set to `0.0.0.0` (or `::`) to bind all interfaces — opt-in only, behind a firewall. If unset and no Tailscale IP can be detected, the server refuses to start rather than exposing the public NIC. |
-| `DEVCANOPY_AGENT_PORT`   | no       | `7878`  | TCP port. Bound on `DEVCANOPY_AGENT_BIND`. |
-| `DEVCANOPY_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
+| `SOLADOR_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
+| `SOLADOR_AGENT_BIND`   | no       | tailnet IP | Host/interface to bind. Defaults to the detected Tailscale IP (`100.x`), so the agent only listens on the tailnet. Set to `0.0.0.0` (or `::`) to bind all interfaces — opt-in only, behind a firewall. If unset and no Tailscale IP can be detected, the server refuses to start rather than exposing the public NIC. |
+| `SOLADOR_AGENT_PORT`   | no       | `7878`  | TCP port. Bound on `SOLADOR_AGENT_BIND`. |
+| `SOLADOR_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
 | `RUST_LOG`               | no       | `info`  | Log filter (tracing).            |
 
 Default skipped fstypes (transient/remote/pseudo filesystems, so automounts like
@@ -127,10 +127,10 @@ filtering is enabled; `fuseblk` (NTFS via FUSE — a real local disk) is kept.
 ```bash
 cargo build              # debug
 cargo test               # unit + contract tests
-cargo build --release    # optimized binary at target/release/devcanopy-agent
+cargo build --release    # optimized binary at target/release/solador-agent
 
 # Locally there's usually no tailnet IP, so bind loopback explicitly:
-DEVCANOPY_AGENT_TOKEN=secret DEVCANOPY_AGENT_BIND=127.0.0.1 cargo run
+SOLADOR_AGENT_TOKEN=secret SOLADOR_AGENT_BIND=127.0.0.1 cargo run
 # in another shell:
 curl -s -H "Authorization: Bearer secret" localhost:7878/v1/snapshot | jq
 curl -s localhost:7878/v1/snapshot          # -> 401
@@ -138,7 +138,7 @@ curl -s localhost:7878/v1/snapshot          # -> 401
 
 ## Install on a Linux host (systemd user service)
 
-From the crate directory on the target host (e.g. `ubu-3xdv`):
+From the crate directory on the target host (e.g. `ubu-01`):
 
 ```bash
 ./deploy/install.sh
@@ -146,13 +146,13 @@ From the crate directory on the target host (e.g. `ubu-3xdv`):
 
 The script:
 1. Builds `--release`.
-2. Installs the binary to `/opt/devcanopy-agent/` (falls back to `~/.local/bin`).
-3. Writes `~/.config/devcanopy-agent.env` with the token (prompted **without
+2. Installs the binary to `/opt/solador-agent/` (falls back to `~/.local/bin`).
+3. Writes `~/.config/solador-agent.env` with the token (prompted **without
    echo**; press Enter to auto-generate), the detected Tailscale bind address,
    and the port, mode `600`. The full token is never printed to stdout — the
    script reports only the env-file path and the token's last 4 characters.
-4. Installs the **user** unit `~/.config/systemd/user/devcanopy-agent.service`,
-   then `systemctl --user enable --now devcanopy-agent` and enables lingering so
+4. Installs the **user** unit `~/.config/systemd/user/solador-agent.service`,
+   then `systemctl --user enable --now solador-agent` and enables lingering so
    it starts on boot and survives logout.
 5. **Verifies** by polling `/v1/health` (at the bind/port it just wrote, so this
    works on a tailnet-only agent) until it reports the `[package]` version from
@@ -165,13 +165,41 @@ It runs as **your user** (not root) so rootless `podman ps` works.
 Manage it:
 
 ```bash
-systemctl --user status devcanopy-agent
-systemctl --user restart devcanopy-agent
-journalctl --user -u devcanopy-agent -f
+systemctl --user status solador-agent
+systemctl --user restart solador-agent
+journalctl --user -u solador-agent -f
 ```
 
-To rotate the token: edit `~/.config/devcanopy-agent.env`, then
-`systemctl --user restart devcanopy-agent`.
+To rotate the token: edit `~/.config/solador-agent.env`, then
+`systemctl --user restart solador-agent`.
+
+## Upgrading from the pre-rename agent
+
+Hosts running the old `devcanopy-agent` are handed over automatically by
+`install.sh` — run it exactly as for a fresh install. It will:
+
+1. Stop and disable the `devcanopy-agent` user unit **before** the new one
+   starts, because the old one holds the port the new one wants.
+2. Carry the bearer token across from `~/.config/devcanopy-agent.env`.
+
+That second step is the one that matters. The env file name *and* the variable
+name both changed, so without it the installer finds no existing token and
+mints a fresh one — which the cockpit's stored per-host credential no longer
+matches, with nothing anywhere reporting the divergence.
+
+The old binary, env file and unit file are **left in place** as the rollback
+path. Once the new agent is healthy:
+
+```bash
+rm -f ~/.config/systemd/user/devcanopy-agent.service ~/.config/devcanopy-agent.env
+sudo rm -rf /opt/devcanopy-agent      # or ~/.local/bin/devcanopy-agent
+systemctl --user daemon-reload
+```
+
+If you skip the handover and install over a running old agent, the failure is
+misleading: the new unit crash-loops on `EADDRINUSE` every three seconds while
+the old one keeps serving `/v1/health`, and the installer reports a version
+timeout that names neither the port conflict nor the other unit.
 
 ## Redeploy an existing host (upgrade in place)
 
@@ -179,7 +207,7 @@ Use this once a host is already installed and you want to ship a new agent build
 It is the unattended counterpart to `install.sh`: it **never prompts for a token**
 and only swaps the binary.
 
-From the crate directory on the target host (e.g. `ubu-3xdv`, on a fresh checkout
+From the crate directory on the target host (e.g. `ubu-01`, on a fresh checkout
 of the new commit):
 
 ```bash
@@ -188,11 +216,11 @@ of the new commit):
 
 What it does:
 1. Reads the target version from `Cargo.toml` and builds `--release`.
-2. Preserves the currently-installed binary as `devcanopy-agent.prev` (the
+2. Preserves the currently-installed binary as `solador-agent.prev` (the
    rollback anchor).
 3. **Atomically swaps** the new binary into place. The running binary can't be
    overwritten in place — Linux returns `ETXTBSY` ("Text file busy") — so the
-   script stages the build to `devcanopy-agent.new` and `mv`s it over the live
+   script stages the build to `solador-agent.new` and `mv`s it over the live
    path. A rename over a running executable is allowed even when an in-place
    write is not.
 4. Restarts the user service.
@@ -201,7 +229,7 @@ What it does:
    reports the expected version, the script fails loudly and tells you to roll
    back — the bad binary is live but you have a one-command escape hatch.
 
-It requires an existing `~/.config/devcanopy-agent.env` and systemd user unit; if
+It requires an existing `~/.config/solador-agent.env` and systemd user unit; if
 the host has never been installed it errors and points you at `install.sh`. It
 honors the same `/opt` → `~/.local/bin` install layout (resolved from the unit's
 `ExecStart`) and uses `sudo` only if the install directory isn't user-writable.
@@ -215,7 +243,7 @@ failed), restore the previous binary with one command:
 ./deploy/redeploy.sh rollback
 ```
 
-It atomically swaps `devcanopy-agent.prev` back into place, restarts the service,
+It atomically swaps `solador-agent.prev` back into place, restarts the service,
 and verifies the agent comes back online via `/v1/health`. The swap is
 reversible: the binary you rolled back over becomes the new `.prev`, so re-running
 `rollback` rolls forward again. (The agent binary has no `--version` flag, so
@@ -225,12 +253,12 @@ version.)
 No cargo or rebuild is needed to roll back — that's the point of keeping the prior
 binary on the host.
 
-## How DevCanopy connects
+## How Solador connects
 
-- DevCanopy reaches the host over Tailscale at `http://<tailscale-host>:7878`.
+- Solador reaches the host over Tailscale at `http://<tailscale-host>:7878`.
 - It sends `Authorization: Bearer <token>` (the same token from the env file) on
   every request, polling `/v1/snapshot` and `/v1/containers`.
-- The agent binds the tailnet interface by default (`DEVCANOPY_AGENT_BIND`), so
+- The agent binds the tailnet interface by default (`SOLADOR_AGENT_BIND`), so
   the port is not served on the public NIC. Verify with
   `ss -tlnp | grep 7878` — it should show only the `100.x` address. Binding all
   interfaces (`0.0.0.0`) is opt-in and should only be done behind a firewall.

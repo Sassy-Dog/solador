@@ -459,9 +459,9 @@ mod tests {
     #[test]
     fn a_scoped_rule_applies_only_on_its_host() {
         let containers = [container("api-1", true, "podman")];
-        let rules = [collapse("api-*", "jobs").on_host("ubu-3xdv")];
+        let rules = [collapse("api-*", "jobs").on_host("ubu-01")];
 
-        let scoped = part(&containers, &rules, "ubu-3xdv");
+        let scoped = part(&containers, &rules, "ubu-01");
         assert!(scoped.individual.is_empty());
         assert_eq!(scoped.aggregates.len(), 1);
 
@@ -477,9 +477,9 @@ mod tests {
     fn a_scoped_hide_hides_only_on_its_host() {
         let containers = [container("ghcr.io/img", false, "docker")];
         let rules = [
-            ContainerGroupRule::new("ghcr.io/*", "", ContainerRuleAction::Hide).on_host("ubu-3xdv"),
+            ContainerGroupRule::new("ghcr.io/*", "", ContainerRuleAction::Hide).on_host("ubu-01"),
         ];
-        assert!(part(&containers, &rules, "ubu-3xdv").individual.is_empty());
+        assert!(part(&containers, &rules, "ubu-01").individual.is_empty());
         assert_eq!(
             names(&part(&containers, &rules, LOCAL_HOST_SCOPE).individual),
             vec!["ghcr.io/img"]
@@ -603,9 +603,9 @@ mod tests {
     #[test]
     fn a_host_scoped_expectation_emits_only_on_its_host() {
         let presence = records(&[("vm-1", record(40, Some("tart")))]);
-        let rules = [expect_rule("vm-*").on_host("ubu-3xdv")];
+        let rules = [expect_rule("vm-*").on_host("ubu-01")];
         assert_eq!(
-            partition(&[], &rules, "ubu-3xdv", &presence, Some(10_000), GRACE)
+            partition(&[], &rules, "ubu-01", &presence, Some(10_000), GRACE)
                 .expected_absent
                 .len(),
             1
@@ -748,10 +748,7 @@ mod tests {
             presence_key(LOCAL_HOST_SCOPE, "vm-1"),
             record(40, Some("tart")),
         );
-        all.insert(
-            presence_key("ubu-3xdv", "vm-1"),
-            record(9_999, Some("tart")),
-        );
+        all.insert(presence_key("ubu-01", "vm-1"), record(9_999, Some("tart")));
 
         let parts = partition(
             &[],

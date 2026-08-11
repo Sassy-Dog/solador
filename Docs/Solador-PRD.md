@@ -1,4 +1,4 @@
-# DevCanopy
+# Solador
 
 > **⚠️ Superseded — see #20.** This document describes the original cloud-estate
 > direction (Vercel/Neon/Cloudflare service monitoring) that was deferred. The
@@ -19,7 +19,7 @@
 
 ## Executive Summary
 
-DevCanopy is a native macOS dashboard application that provides developers with a unified, glanceable view of their development infrastructure. The app monitors local git repositories for drift from remote branches and aggregates status information from cloud services including GitHub, Vercel, Neon, and Cloudflare.
+Solador is a native macOS dashboard application that provides developers with a unified, glanceable view of their development infrastructure. The app monitors local git repositories for drift from remote branches and aggregates status information from cloud services including GitHub, Vercel, Neon, and Cloudflare.
 
 The core value proposition is reducing context-switching and cognitive load for developers who manage multiple repositories and cloud resources. Rather than bouncing between GitHub, Vercel dashboards, and terminal windows, developers can see their entire estate's health at a glance—ideally on a second monitor while working.
 

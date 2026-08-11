@@ -12,7 +12,7 @@
 //! ```no_run
 //! # fn main() -> Result<(), store::StoreError> {
 //! let mut store = store::Store::open()?;
-//! store.upsert_host(store::Host::new("ubu-3xdv", "100.87.202.125"));
+//! store.upsert_host(store::Host::new("ubu-01", "100.100.100.100"));
 //! store.save()?;
 //! # Ok(()) }
 //! ```
@@ -56,9 +56,18 @@ pub use settings::{HostOverflowMode, Settings};
 pub const STORE_VERSION: u32 = 1;
 
 /// Directory under the platform config dir, named for the app's bundle id:
-/// `~/Library/Application Support/com.sassydog.devcanopy.app` on macOS,
-/// `%APPDATA%\com.sassydog.devcanopy.app` on Windows.
-pub const APP_DIR_NAME: &str = "com.sassydog.devcanopy.app";
+/// `~/Library/Application Support/app.solador.desktop` on macOS,
+/// `%APPDATA%\app.solador.desktop` on Windows. An install that predates the
+/// rename is adopted once by [`Store::adopt_legacy_dir`].
+pub const APP_DIR_NAME: &str = "app.solador.desktop";
+
+/// The data directory this app used before it was renamed.
+///
+/// Kept so an upgrade does not silently look like a first launch: hosts, the
+/// tracked portfolio, the cockpit layout and every container rule live in that
+/// one file, and an app that quietly starts empty is indistinguishable from an
+/// app that lost them.
+pub const LEGACY_APP_DIR_NAME: &str = "com.sassydog.devcanopy.app";
 
 /// The one file the whole store lives in.
 pub const STORE_FILE_NAME: &str = "store.json";
@@ -94,7 +103,7 @@ pub enum StoreError {
     /// The file exists but is not a store. Deliberately an error and not a
     /// silent reset: clobbering a file we failed to understand is how a
     /// configuration disappears.
-    #[error("{} is not a valid DevCanopy store: {source}", path.display())]
+    #[error("{} is not a valid Solador store: {source}", path.display())]
     Parse {
         path: PathBuf,
         #[source]
@@ -222,7 +231,53 @@ impl Store {
     /// # Errors
     /// [`StoreError::NoConfigDir`], plus anything [`Store::open_in`] returns.
     pub fn open() -> Result<Self, StoreError> {
-        Store::open_in(Store::default_dir()?)
+        let dir = Store::default_dir()?;
+        if let Some(config) = dirs::config_dir() {
+            // Fatal on purpose, and this was the other way round until a review
+            // pointed out what "best effort" costs here. `open_in` below
+            // *creates and seeds* a store when it finds none, and adoption is
+            // then skipped forever because the target exists. So a single
+            // transient failure — a permissions blip, a full disk — would
+            // masquerade as a first launch permanently, with every host, repo,
+            // layout and container rule gone and nothing said about it.
+            // Refusing to start is recoverable; silently starting empty is not.
+            Store::adopt_legacy_dir(&config.join(LEGACY_APP_DIR_NAME), &dir)?;
+        }
+        Store::open_in(dir)
+    }
+
+    /// Moves a pre-rename store file into `dir`, once.
+    ///
+    /// Copy-then-leave rather than move: the old file staying put is what makes
+    /// this reversible if someone runs an older build afterwards, and an
+    /// orphaned JSON file costs nothing. Returns whether anything was adopted.
+    ///
+    /// Does nothing if `dir` already has a store file — the live store always
+    /// wins. That guard is what keeps this idempotent across every launch, not
+    /// just the first.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] if the directory could not be created or the file
+    /// could not be copied.
+    pub fn adopt_legacy_dir(legacy_dir: &Path, dir: &Path) -> Result<bool, StoreError> {
+        let target = dir.join(STORE_FILE_NAME);
+        let source = legacy_dir.join(STORE_FILE_NAME);
+        if target.exists() || !source.exists() {
+            return Ok(false);
+        }
+        // Read-then-atomic-write rather than `fs::copy`, which writes the
+        // target in place: a crash mid-copy would leave a truncated file that
+        // `open_in` refuses to parse (deliberately fatal), and adoption would
+        // never re-run because the target now exists — bricking every launch
+        // until someone deleted it by hand. `write_atomically` renames into
+        // place, so the target either does not exist or is whole.
+        let contents = fs::read_to_string(&source).map_err(|e| StoreError::Io {
+            action: "read the pre-rename store",
+            path: source.clone(),
+            source: e,
+        })?;
+        write_atomically(&target, &contents)?;
+        Ok(true)
     }
 
     /// Opens the store in `dir`, creating and seeding it if no store file has
@@ -232,10 +287,12 @@ impl Store {
     /// in [`Store::default_dir`] is a thin default over this, not a separate
     /// code path.
     ///
-    /// **Seed-once**: the portfolio in [`repos::SEED_SLUGS`] is written only on
-    /// that first creation. Once the file exists, its repo list is the truth —
-    /// an empty list stays empty, matching `PortfolioStore`'s contract in the
-    /// Swift app. Editing `SEED_SLUGS` never retro-edits a seeded store.
+    /// **Seed-once**: [`repos::seeded_repos`] is consulted only on that first
+    /// creation. It returns nothing today — a portfolio is per-operator, so
+    /// there is no defensible default — but the contract is what matters and
+    /// outlives the empty seed: once the file exists, its repo list is the
+    /// truth, and a later build that reintroduces a seed must never retro-edit
+    /// a store that already exists.
     ///
     /// # Errors
     /// [`StoreError::Parse`] if the file is not JSON this crate understands,
@@ -558,18 +615,113 @@ mod tests {
         names
     }
 
+    // MARK: - Adopting the pre-rename store directory
+
+    /// A rename moves the data directory, and an app that quietly starts empty
+    /// is indistinguishable from one that lost every host, repo and layout the
+    /// operator configured.
     #[test]
-    fn first_open_seeds_the_portfolio_and_writes_the_file() {
+    fn a_renamed_install_adopts_the_store_from_its_old_directory() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+
+        let mut old = Store::open_in(&legacy).expect("seed the old store");
+        old.upsert_repo(TrackedRepo::new("acme/widget"));
+        old.upsert_host(Host::new("ubu-01", "100.100.100.100"));
+        old.save().expect("save");
+
+        assert!(Store::adopt_legacy_dir(&legacy, &current).expect("adopt"));
+
+        let adopted = Store::open_in(&current).expect("open");
+        assert_eq!(
+            adopted
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
+        assert_eq!(adopted.hosts().len(), 1);
+    }
+
+    /// Copy, not move: an older build run afterwards still finds its store.
+    #[test]
+    fn adoption_leaves_the_old_directory_intact() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+        Store::open_in(&legacy).expect("seed");
+
+        Store::adopt_legacy_dir(&legacy, &current).expect("adopt");
+
+        assert!(legacy.join(STORE_FILE_NAME).exists());
+    }
+
+    /// The live store always wins, which is what makes this safe to run on
+    /// every launch rather than only the first.
+    #[test]
+    fn adoption_never_overwrites_an_existing_store() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+
+        let mut old = Store::open_in(&legacy).expect("seed old");
+        old.upsert_repo(TrackedRepo::new("acme/from-the-past"));
+        old.save().expect("save");
+
+        let mut live = Store::open_in(&current).expect("seed current");
+        live.upsert_repo(TrackedRepo::new("acme/current"));
+        live.save().expect("save");
+
+        assert!(!Store::adopt_legacy_dir(&legacy, &current).expect("adopt"));
+
+        let reopened = Store::open_in(&current).expect("reopen");
+        let slugs: Vec<&str> = reopened.repos().iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["acme/current"]);
+    }
+
+    /// The adopted file is written whole or not at all. Without this, a crash
+    /// mid-copy leaves a truncated store that `open_in` refuses to parse — and
+    /// adoption never re-runs, because the target now exists.
+    #[test]
+    fn an_adopted_store_leaves_no_temp_file_and_parses() {
+        let root = temp_dir();
+        let legacy = root.path().join(LEGACY_APP_DIR_NAME);
+        let current = root.path().join(APP_DIR_NAME);
+        let mut old = Store::open_in(&legacy).expect("seed");
+        old.upsert_repo(TrackedRepo::new("acme/widget"));
+        old.save().expect("save");
+
+        Store::adopt_legacy_dir(&legacy, &current).expect("adopt");
+
+        assert_eq!(entries(&current), vec![STORE_FILE_NAME.to_owned()]);
+        assert!(
+            Store::open_in(&current).is_ok(),
+            "the adopted file must parse"
+        );
+    }
+
+    /// A genuine first install has nothing to adopt, and that is not an error.
+    #[test]
+    fn a_fresh_install_adopts_nothing_and_still_opens() {
+        let root = temp_dir();
+        let current = root.path().join(APP_DIR_NAME);
+        assert!(
+            !Store::adopt_legacy_dir(&root.path().join(LEGACY_APP_DIR_NAME), &current)
+                .expect("adopt")
+        );
+        assert!(Store::open_in(&current).expect("open").repos().is_empty());
+    }
+
+    #[test]
+    fn first_open_writes_the_file_and_tracks_nothing() {
         let dir = temp_dir();
         let store = Store::open_in(dir.path()).expect("open");
 
-        assert_eq!(
-            store
-                .repos()
-                .iter()
-                .map(|repo| repo.slug.as_str())
-                .collect::<Vec<_>>(),
-            repos::SEED_SLUGS.to_vec()
+        assert!(
+            store.repos().is_empty(),
+            "a first-run store tracks nothing until the operator says otherwise"
         );
         assert!(store.hosts().is_empty());
         assert_eq!(store.settings(), &Settings::default());
@@ -652,24 +804,28 @@ mod tests {
         );
     }
 
+    /// The seed is empty, so this can no longer be tested by deleting seeded
+    /// rows. What it guards is the contract rather than the contents: a store
+    /// that exists is never re-seeded, which is what would stop a later build
+    /// reintroducing a seed and injecting it into everyone's saved portfolio.
     #[test]
-    fn seeding_happens_only_once() {
+    fn an_existing_store_is_never_re_seeded() {
         let dir = temp_dir();
 
         let mut store = Store::open_in(dir.path()).expect("first open");
-        assert_eq!(store.repos().len(), repos::SEED_SLUGS.len());
-        // The user deletes every seeded repo...
-        for slug in repos::SEED_SLUGS {
-            assert!(store.remove_repo(slug).is_some(), "remove {slug}");
-        }
+        assert!(store.repos().is_empty(), "nothing is seeded");
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
         store.save().expect("save");
 
-        // ...and they stay deleted across a reopen. An empty list is a
-        // decision, not an unseeded store.
         let reopened = Store::open_in(dir.path()).expect("reopen");
-        assert!(
-            reopened.repos().is_empty(),
-            "a store that exists must never be re-seeded"
+        assert_eq!(
+            reopened
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"],
+            "opening an existing store must add nothing to it"
         );
     }
 
@@ -677,15 +833,20 @@ mod tests {
     fn a_store_that_exists_with_edits_keeps_them() {
         let dir = temp_dir();
         let mut store = Store::open_in(dir.path()).expect("first open");
-        store.remove_repo("Sassy-Dog/platform").expect("remove");
-        store.upsert_repo(TrackedRepo::new("Sassy-Dog/openclaw"));
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
+        store.upsert_repo(TrackedRepo::new("acme/gadget"));
+        store.save().expect("save");
+
+        let mut store = Store::open_in(dir.path()).expect("reopen");
+        store.remove_repo("acme/widget").expect("remove");
+        store.upsert_repo(TrackedRepo::new("acme/sprocket"));
         store.save().expect("save");
 
         let reopened = Store::open_in(dir.path()).expect("reopen");
         let slugs: Vec<&str> = reopened.repos().iter().map(|r| r.slug.as_str()).collect();
-        assert!(!slugs.contains(&"Sassy-Dog/platform"));
-        assert!(slugs.contains(&"Sassy-Dog/openclaw"));
-        assert_eq!(slugs.len(), repos::SEED_SLUGS.len());
+        assert!(!slugs.contains(&"acme/widget"));
+        assert!(slugs.contains(&"acme/sprocket"));
+        assert_eq!(slugs.len(), 2);
     }
 
     #[test]
@@ -698,10 +859,13 @@ mod tests {
             core_row_span: 3,
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 250.0,
+            azure_storage_account: "acmestorage".into(),
+            azure_cost_container: "cost-exports".into(),
+            github_org: "acme".into(),
             neon_org_id: "org-123".into(),
             neon_usd_per_cu_hour: 0.175,
             neon_usd_per_gib_month: 0.5,
-            sentry_org_slug: "sassy-dog".into(),
+            sentry_org_slug: "acme".into(),
             sentry_monthly_event_quota: 100_000,
             vercel_team_id: "team_fixture".into(),
             openclaw_gateway_url: "https://gateway.example".into(),
@@ -712,15 +876,18 @@ mod tests {
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
         });
 
-        let mut host = Host::new("ubu-3xdv", "100.87.202.125");
+        let mut host = Host::new("ubu-01", "100.100.100.100");
         host.hidden_volume_mounts = vec!["/mnt/scratch".into()];
         let host_id = host.id;
         store.upsert_host(host);
         store.upsert_host(Host::new("mac-mini", "100.64.0.2"));
 
+        // Added rather than assumed: nothing is seeded, so the repo this test
+        // round-trips has to be one the test put there.
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
         store
-            .repo_mut("Sassy-Dog/devcanopy")
-            .expect("seeded repo")
+            .repo_mut("acme/widget")
+            .expect("the repo just added")
             .watched_workflows = Some(vec!["Release".into()]);
 
         store.save().expect("save");
@@ -736,7 +903,7 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .repo("Sassy-Dog/devcanopy")
+                .repo("acme/widget")
                 .expect("repo")
                 .watched_workflows
                 .as_deref(),
@@ -930,10 +1097,7 @@ mod tests {
         let nested = dir.path().join("Application Support").join(APP_DIR_NAME);
         let store = Store::open_in(&nested).expect("open");
         assert!(store.path().exists());
-        assert_eq!(
-            Store::open_in(&nested).expect("reopen").repos().len(),
-            repos::SEED_SLUGS.len()
-        );
+        assert!(Store::open_in(&nested).expect("reopen").repos().is_empty());
     }
 
     #[test]
@@ -942,11 +1106,11 @@ mod tests {
         let mut store = Store::open_in(dir.path()).expect("open");
         assert!(store.hosts().is_empty());
 
-        let host = Host::new("ubu-3xdv", "100.87.202.125");
+        let host = Host::new("ubu-01", "100.100.100.100");
         let id = host.id;
         store.upsert_host(host);
         assert_eq!(store.hosts().len(), 1);
-        assert_eq!(store.host(id).expect("read").name, "ubu-3xdv");
+        assert_eq!(store.host(id).expect("read").name, "ubu-01");
 
         store.host_mut(id).expect("update").enabled = false;
         assert!(!store.host(id).expect("read back").enabled);
@@ -954,10 +1118,10 @@ mod tests {
         // Upserting the same id updates in place instead of duplicating it —
         // two rows sharing an id would mean two hosts on one credential.
         let mut renamed = store.host(id).expect("clone source").clone();
-        renamed.name = "ubu-3xdv (spare)".into();
+        renamed.name = "ubu-01 (spare)".into();
         store.upsert_host(renamed);
         assert_eq!(store.hosts().len(), 1);
-        assert_eq!(store.host(id).expect("read").name, "ubu-3xdv (spare)");
+        assert_eq!(store.host(id).expect("read").name, "ubu-01 (spare)");
 
         assert_eq!(store.remove_host(id).expect("delete").id, id);
         assert!(store.hosts().is_empty());
@@ -971,35 +1135,29 @@ mod tests {
         let mut store = Store::open_in(dir.path()).expect("open");
         let seeded = store.repos().len();
 
-        store.upsert_repo(TrackedRepo::new("Sassy-Dog/openclaw"));
+        store.upsert_repo(TrackedRepo::new("acme/lathe"));
         assert_eq!(store.repos().len(), seeded + 1);
 
-        store
-            .repo_mut("Sassy-Dog/openclaw")
-            .expect("update")
-            .enabled = false;
-        assert!(!store.repo("Sassy-Dog/openclaw").expect("read").enabled);
+        store.repo_mut("acme/lathe").expect("update").enabled = false;
+        assert!(!store.repo("acme/lathe").expect("read").enabled);
 
-        store.upsert_repo(TrackedRepo::new("Sassy-Dog/openclaw"));
+        store.upsert_repo(TrackedRepo::new("acme/lathe"));
         assert_eq!(store.repos().len(), seeded + 1, "slug is the identity");
-        assert!(store.repo("Sassy-Dog/openclaw").expect("read").enabled);
+        assert!(store.repo("acme/lathe").expect("read").enabled);
 
         assert_eq!(
-            store
-                .remove_repo("Sassy-Dog/openclaw")
-                .expect("delete")
-                .slug,
-            "Sassy-Dog/openclaw"
+            store.remove_repo("acme/lathe").expect("delete").slug,
+            "acme/lathe"
         );
         assert_eq!(store.repos().len(), seeded);
-        assert!(store.remove_repo("Sassy-Dog/openclaw").is_none());
+        assert!(store.remove_repo("acme/lathe").is_none());
     }
 
     #[test]
     fn the_file_holds_no_secret_material() {
         let dir = temp_dir();
         let mut store = Store::open_in(dir.path()).expect("open");
-        let host = Host::new("ubu-3xdv", "100.87.202.125");
+        let host = Host::new("ubu-01", "100.100.100.100");
         let host_id = host.id;
         store.upsert_host(host);
         store.settings_mut().neon_org_id = "org-123".into();
@@ -1026,7 +1184,7 @@ mod tests {
         }
 
         // Nor is there a *field* a credential could be smuggled into. Checked
-        // on keys, not the raw text: the org slug `Sassy-Dog` contains "sas",
+        // on keys, not the raw text: an org slug like `acme-sas-team` contains "sas",
         // and a substring scan of the whole file would fail on that forever
         // while proving nothing.
         let json: serde_json::Value = serde_json::from_str(&raw).expect("parse");
@@ -1036,7 +1194,6 @@ mod tests {
             SecretKey::GitHubAccessToken.account(),
             SecretKey::NeonApiKey.account(),
             SecretKey::SentryUsageToken.account(),
-            SecretKey::AzureCostSasUrl.account(),
             SecretKey::OpenClawBearerToken.account(),
         ] {
             assert!(
@@ -1119,7 +1276,12 @@ mod tests {
     #[test]
     fn unreadable_rules_fall_back_to_the_seeds_without_failing_the_open() {
         let dir = temp_dir();
-        Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path()).expect("first open");
+        // A repo of our own, so the "untouched" assertion below is a real
+        // claim. Against an empty seed, a length check would pass whether or
+        // not the bad value had taken the rest of the store with it.
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
+        store.save().expect("save");
         let path = dir.path().join(STORE_FILE_NAME);
         let mut data: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
@@ -1129,7 +1291,14 @@ mod tests {
         let reopened = Store::open_in(dir.path()).expect("a bad rules value must still open");
         assert_eq!(reopened.container_rules(), containers::seeded_rules());
         // ...and the rest of the store is untouched by it.
-        assert_eq!(reopened.repos().len(), repos::SEED_SLUGS.len());
+        assert_eq!(
+            reopened
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
     }
 
     #[test]
@@ -1201,7 +1370,11 @@ mod tests {
     #[test]
     fn a_store_file_without_a_runner_roster_still_opens() {
         let dir = temp_dir();
-        Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path()).expect("first open");
+        // As above: something to preserve, so "the rest still opens" is a
+        // claim an empty portfolio cannot satisfy for free.
+        store.upsert_repo(TrackedRepo::new("acme/widget"));
+        store.save().expect("save");
         let path = dir.path().join(STORE_FILE_NAME);
         let mut data: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
@@ -1213,7 +1386,14 @@ mod tests {
 
         let reopened = Store::open_in(dir.path()).expect("an older file must still open");
         assert!(reopened.runner_roster().is_empty());
-        assert_eq!(reopened.repos().len(), repos::SEED_SLUGS.len());
+        assert_eq!(
+            reopened
+                .repos()
+                .iter()
+                .map(|r| r.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
     }
 
     #[test]

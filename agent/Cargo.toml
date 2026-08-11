@@ -6,7 +6,7 @@
 [workspace]
 
 [package]
-name = "devcanopy-agent"
+name = "solador-agent"
 # 0.4.0: `gpu` is measured on hosts with an NVIDIA card, via `nvidia-smi`
 # (#217). A minor, not a patch: this agent produces a wire field it has never
 # produced before. Still omitted everywhere nothing is measured.
@@ -18,11 +18,11 @@ name = "devcanopy-agent"
 # fabricated thread rows).
 version = "0.4.0"
 edition = "2021"
-description = "Per-host metrics agent polled by DevCanopy over Tailscale"
+description = "Per-host metrics agent polled by Solador over Tailscale"
 license = "MIT"
 
 [[bin]]
-name = "devcanopy-agent"
+name = "solador-agent"
 path = "src/main.rs"
 
 [dependencies]
@@ -30,7 +30,7 @@ axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 # The wire contract itself. One definition, shared with the app.
-devcanopy-wire = { path = "../crates/wire" }
+solador-wire = { path = "../crates/wire" }
 serde_json = "1"
 sysinfo = "0.39"
 time = { version = "0.3", features = ["formatting", "macros"] }

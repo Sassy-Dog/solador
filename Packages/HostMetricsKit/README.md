@@ -1,7 +1,7 @@
 # HostMetricsKit
 
 Local Swift package for **local-machine** metric collection on macOS — CPU, memory,
-GPU, battery, and disk/network sampling via IOKit/Mach — consumed by the DevCanopy
+GPU, battery, and disk/network sampling via IOKit/Mach — consumed by the Solador
 app. (Remote hosts are sampled by the Rust agent in `agent/`, not this package.)
 
 ## Ownership & sync policy
@@ -26,8 +26,8 @@ reflect that provenance, not a live relationship.
 ### Decision
 
 Decided **2026-06-15** (GitHub issue
-[#41](https://github.com/Sassy-Dog/devcanopy/issues/41)): neither
-extract-a-shared-package nor Lupita-as-upstream. DevCanopy's HostMetricsKit is
+[#41](https://github.com/cpmadrid/solador/issues/41)): neither
+extract-a-shared-package nor Lupita-as-upstream. Solador's HostMetricsKit is
 canonical; Lupita is dead and reference-only.
 
 ## Layout

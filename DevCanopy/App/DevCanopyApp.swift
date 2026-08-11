@@ -41,8 +41,8 @@ struct DevCanopyApp: App {
         // no-op unless a SENTRY_DSN is configured (env var / Info.plist), so a
         // normal local launch is entirely unaffected — no telemetry by default.
         SentrySetup.start()
-        appLogger.debug("Console logging: \(ProcessInfo.processInfo.environment["DEVCANOPY_LOG_CONSOLE"] ?? "disabled")")
-        appLogger.debug("Log level: \(ProcessInfo.processInfo.environment["DEVCANOPY_LOG_LEVEL"] ?? "info")")
+        appLogger.debug("Console logging: \(ProcessInfo.processInfo.environment["SOLADOR_LOG_CONSOLE"] ?? "disabled")")
+        appLogger.debug("Log level: \(ProcessInfo.processInfo.environment["SOLADOR_LOG_LEVEL"] ?? "info")")
 
         do {
             let schema = Schema([

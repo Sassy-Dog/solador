@@ -681,23 +681,23 @@ fn fixture_summary() -> UsageSummary {
         last_7d: totals(4_310_000),
         projects_last_7d: vec![
             usage::claude::UsageBreakdown {
-                name: "devcanopy".to_owned(),
+                name: "solador".to_owned(),
                 totals: totals(2_100_000),
             },
             usage::claude::UsageBreakdown {
-                name: "velovate".to_owned(),
+                name: "gadget".to_owned(),
                 totals: totals(1_050_000),
             },
             usage::claude::UsageBreakdown {
-                name: "qr-ninja".to_owned(),
+                name: "pipe-fitting".to_owned(),
                 totals: totals(840_000),
             },
             usage::claude::UsageBreakdown {
-                name: "tailoredtip".to_owned(),
+                name: "flywheel".to_owned(),
                 totals: totals(300_000),
             },
             usage::claude::UsageBreakdown {
-                name: "sassydog-web".to_owned(),
+                name: "acme-web".to_owned(),
                 totals: totals(20_000),
             },
         ],
@@ -862,7 +862,7 @@ mod tests {
         assert_eq!(payload["projects"]["label"], "TOP PROJECTS (7D)");
         let rows = payload["projects"]["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 4, "the fifth project is cut");
-        assert_eq!(rows[0]["name"], "devcanopy");
+        assert_eq!(rows[0]["name"], "solador");
         assert_eq!(rows[0]["value"], "2.1M");
         assert_eq!(rows[0]["dotColor"], color::hex(color::GREEN_DIM));
 

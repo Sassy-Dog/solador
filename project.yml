@@ -11,7 +11,11 @@ options:
   generateEmptyDirectories: true
 
 settings:
-  DEVELOPMENT_TEAM: 52YMXC3348
+  # No DEVELOPMENT_TEAM here on purpose. Org convention puts the Apple team id
+  # in Doppler `_stores/apple` as TEAM_ID and says consumer repos must not keep
+  # their own copy; this file was exactly such a copy. `Scripts/config.sh`
+  # resolves it and `Scripts/build.sh` passes it as a command-line build
+  # setting, which overrides whatever xcodegen writes into the pbxproj.
   # Static INERT baselines for Xcode-GUI builds only (org Versioning spec §7,
   # generated-projects row): version values are NEVER computed into this file —
   # xcodegen evaluates it at generate-time, so a real value here would go stale

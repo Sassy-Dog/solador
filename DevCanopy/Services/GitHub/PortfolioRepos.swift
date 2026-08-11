@@ -5,19 +5,23 @@ import Foundation
 /// this enum only provides the one-time seed and the slug/name normalization used
 /// to match an on-disk repo directory against a tracked slug.
 enum PortfolioRepos {
-    static let org = "Sassy-Dog"
+    /// The organization `GHRunnersService` queries for self-hosted runners.
+    ///
+    /// Retained only because this app is frozen and still has to compile. The
+    /// cross-platform app replaced this constant with a `github_org` **setting**
+    /// (`Settings.github_org`): hardcoding it meant every install queried one
+    /// particular organization's runners, so the Runners panel could only ever
+    /// work for its author. Do not copy this pattern forward.
+    static let org = "acme"
 
-    /// The list used to seed `TrackedRepo` once, on first run. After that the set
-    /// is user-editable in Settings; changing this array does not retro-edit an
-    /// already-seeded store.
-    static let seedSlugs = [
-        "Sassy-Dog/velovate",
-        "Sassy-Dog/qr-ninja",
-        "Sassy-Dog/tailoredtip",
-        "Sassy-Dog/what2wear",
-        "Sassy-Dog/devcanopy",
-        "Sassy-Dog/platform"
-    ]
+    /// Empty on purpose: a portfolio is per-operator, so there is no defensible
+    /// default. Shipping one author's repositories meant every other user's
+    /// first launch opened on rows of 404s against repos they cannot read.
+    ///
+    /// The seed-once contract still holds — a store that exists is never
+    /// re-seeded — which is what would stop a future non-empty seed being
+    /// retro-applied to somebody's saved portfolio.
+    static let seedSlugs: [String] = []
 
     /// Normalizes a repo/dir name for matching: lowercase, letters+digits only,
     /// so slug `tailored-tip` matches an on-disk dir `tailoredtip`.

@@ -75,11 +75,11 @@ final class AzureCostCSVTests: XCTestCase {
             "resourceGroupName,costInUsd",
             "rg-sassydog,175.45",
             "RG-SASSYDOG,22.12", // same group, reported uppercase in some rows
-            "rg-velovate-prd,321.65"
+            "rg-gadget-prd,321.65"
         ].joined(separator: "\n")
 
         let agg = try aggregateCostCsv(csv)
-        assertResources(agg.byResource, [("rg-velovate-prd", 321.65), ("rg-sassydog", 197.57)])
+        assertResources(agg.byResource, [("rg-gadget-prd", 321.65), ("rg-sassydog", 197.57)])
     }
 
     func testAggregateNormalizesDisplayCasingToLowercase() throws {

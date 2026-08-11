@@ -189,7 +189,14 @@ test("the loading state replaces the table rather than showing an empty one", as
 test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", async ({ page, baseURL }) => {
   const { repos } = await gotoWithFixtures(page, baseURL);
 
-  await repoRows(page).first().click();
+  // Addressed by repo, not by position: rows are sorted by short name, so
+  // `.first()` silently follows any rename of any *other* fixture repo, and
+  // the literal below then fails for a reason that has nothing to do with
+  // what this test is about.
+  const i = repos.rows.findIndex((r) => r.repo === "acme/widget");
+  expect(i, "the fixture must contain the repo this test addresses").toBeGreaterThanOrEqual(0);
+
+  await repoRows(page).nth(i).click();
 
   const opens = await page.evaluate(() =>
     window.__CALLS__.filter((c) => c.command === "plugin:opener|open_url")
@@ -199,9 +206,11 @@ test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", as
   // something" assertion and still be a second author of the only string the
   // granted ACL scope accepts.
   expect(opens).toEqual([
-    { command: "plugin:opener|open_url", args: { url: repos.rows[0].url } },
+    { command: "plugin:opener|open_url", args: { url: repos.rows[i].url } },
   ]);
-  expect(repos.rows[0].url).toBe("https://github.com/Sassy-Dog/devcanopy/actions");
+  // Written out, never interpolated -- interpolating would be the very
+  // rebuild the comment above rules out.
+  expect(repos.rows[i].url).toBe("https://github.com/acme/widget/actions");
 });
 
 test("every repo row is its own tap target, including the unreachable one", async ({ page, baseURL }) => {
@@ -217,7 +226,7 @@ test("every repo row is its own tap target, including the unreachable one", asyn
   }
   // `platform` is the repo whose runs could not be fetched — being unable to
   // read a repo's CI is exactly when you want to go and look at it.
-  const unreachable = repos.rows.findIndex((r) => r.name === "platform");
+  const unreachable = repos.rows.findIndex((r) => r.name === "toolkit");
   expect(unreachable).toBeGreaterThan(-1);
   await rows.nth(unreachable).click();
   expect(
@@ -680,7 +689,17 @@ test("repo and runner names reach the DOM as text, never as markup", async ({ pa
 
   await expect(repoRows(page).first().locator(".gh-repo-name")).toHaveText(hostile);
   await expect(runnerRows(page).first().locator(".gh-runner-name")).toHaveText(hostile);
-  await expect(page.locator("img")).toHaveCount(0);
+  // Every <img> on the page must be one the page itself put there. This used to
+  // read `toHaveCount(0)`, which was the same claim while index.html contained
+  // no images at all — the brand mark in the topbar retired that shortcut. The
+  // assertion is deliberately about *provenance* rather than about the payload:
+  // matching `img[src="x"]` would only catch the exact string this test injects
+  // and would pass for the next payload that reaches the DOM as markup.
+  const srcs = await page.locator("img").evaluateAll((els) => els.map((el) => el.getAttribute("src")));
+  // Non-vacuous on purpose: if the locator found nothing, an injected <img>
+  // would also go unseen and the check below would pass on an empty list.
+  expect(srcs.length).toBeGreaterThan(0);
+  expect([...new Set(srcs)]).toEqual(["mark.svg"]);
   expect(await page.evaluate(() => window.__PWNED__)).toBeUndefined();
 });
 

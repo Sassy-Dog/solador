@@ -1,10 +1,10 @@
-# DevCanopy - AI Assistant Instructions
+# Solador - AI Assistant Instructions
 
-This file provides context for Claude Code when working with the DevCanopy codebase.
+This file provides context for Claude Code when working with the Solador codebase.
 
 ## Project Overview
 
-DevCanopy is a native macOS cockpit that watches development infrastructure at a
+Solador is a native macOS cockpit that watches development infrastructure at a
 glance, rendered as a grid of panels (see `DevCanopy/Views/Cockpit/Panels/`):
 - **Hosts** — live CPU/memory/disk/network/GPU/battery from a per-host agent over Tailscale
 - **Containers** — podman/docker/tart containers and VMs on those hosts
@@ -120,16 +120,20 @@ plan/reviews that produced the original skeleton.
 > pinned by the root `rust-toolchain.toml`, same convention as `agent/`'s.
 
 ### Backlog & workflow skills
-The backlog is **GitHub Project board #5** (`Sassy-Dog`), status-column driven:
+The backlog is a user-level **GitHub Project** under `cpmadrid`, status-column driven:
 **Backlog → Ready → In progress → In review → Done**. It is the source of truth for
-backlog state (not labels). Five generated `.claude/skills/` automate the loop:
-- **plate-it** (`plate it`) — synthesize a prioritized plate from the board + CI + tech debt.
-- **fill-it** (`fill it`) — groom Backlog issues until dispatchable, promote to **Ready**.
+backlog state (not labels). Six skills from the `sassy-dog` plugin automate the
+loop, configured per-repo by `.claude/sassy-dog/*.md` — which is **gitignored**,
+so a fresh clone regenerates it with `refresh-skills`:
+- **survey-work** (`what's on our plate`) — synthesize a prioritized plate from the board + CI + tech debt.
+- **groom-backlog** (`groom it`) — groom Backlog issues until dispatchable, promote to **Ready**.
 - **take-it** (`take #N`) — ship specific issues in parallel worktrees.
-- **drain-it** (`drain it` / `/loop 5m /drain-it`) — loop dispatcher; ships from **Ready** until empty.
+- **dispatch-ready** (`drain it` / `/loop 5m /dispatch-ready`) — loop dispatcher; ships from **Ready** until empty.
 - **send-it** (`send it`) — single-PR end-to-end flow (worktree audit → gates → PR → merge).
+- **tidy-repo** (`clean it`) — post-shipping branch/worktree/stash reconciliation.
 
-The contract: **Ready means dispatchable** — fill-it produces it, drain-it consumes it.
+The contract: **Ready means dispatchable** — groom-backlog produces it,
+dispatch-ready consumes it.
 
 ### Project Structure
 ```
@@ -232,7 +236,7 @@ DevCanopy/
   to store this as a `bool` a completed fetch set, so the first frame — before
   any pass had looked — was indistinguishable from "there is no credential":
   Repos and Runners opened on `connect a GitHub token in Settings`, Azure on
-  `Add an Azure Cost SAS URL in Settings`, Containers on `no containers
+  `Add an Azure storage account in Settings`, Containers on `no containers
   detected`, on a machine where all of it was fine. Only `Absent` may paint a
   setup instruction; `Unknown` renders the panel's loading line. A defaulted
   *state* is as much a fabrication as a defaulted number.
@@ -294,10 +298,11 @@ DevCanopy/
   its own credentials in the same Keychain service under different account names,
   and — as of the single-keychain-item migration, macOS only — consolidates them
   into one item, `secrets_v1`, rather than Swift's one-item-per-secret scheme; see
-  `app/README.md`'s "Consolidated credential item" section. The Azure Cost SAS URL
-  is exempt from consolidation: it is externally written (re-minted every 4 days by
-  the `azurecost-sas` LaunchAgent via `Scripts/refresh-azure-cost-sas.sh`), so it
-  stays a per-item entry both apps and the script agree on.
+  `app/README.md`'s "Consolidated credential item" section. The Azure Cost panel no longer
+  stores a credential at all: it mints a short-lived, container-scoped SAS per
+  poll by shelling out to the Azure CLI (`az`, signed in as the operator), so
+  there is no LaunchAgent, no keychain item and no consolidation exemption. The
+  storage account and container are ordinary `Settings` fields.
 
 ### Responsive layout (breakpoints)
 - `crates/viewmodel/src/cockpit.rs` holds the responsive math for the Tauri app

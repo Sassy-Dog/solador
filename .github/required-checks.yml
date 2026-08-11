@@ -1,9 +1,13 @@
 # Checks that must pass before a PR merges to the default branch.
-# Rendered into this repo's branch ruleset by Sassy-Dog/platform.
-# `satisfies` claims org-wide floor categories; every repo must claim
-# lint and test at least once across its checks.
 #
-# Contract: https://github.com/Sassy-Dog/platform/blob/main/docs/GITHUB-CI-GATES.md
+# Hand-maintained. This used to be rendered into the branch ruleset by an
+# internal automation repo that no longer applies here, so the ruleset and this
+# file are now kept in step by a person: change one, change the other.
+#
+# The `context` strings must match the job `name:` values in ci.yml exactly —
+# a ruleset waits forever on a context no job reports. `satisfies` records
+# which category each check covers, so a future job can be added without
+# rediscovering why these three exist.
 required_checks:
   - context: "Rust agent"
     satisfies: [lint, unit]

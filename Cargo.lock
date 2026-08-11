@@ -12,9 +12,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agentclient"
 version = "0.1.0"
 dependencies = [
- "devcanopy-wire",
  "reqwest 0.12.28",
  "serde_json",
+ "solador-wire",
  "thiserror 2.0.19",
  "tokio",
  "wiremock",
@@ -858,143 +858,6 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "devcanopy-app"
-version = "0.1.0"
-dependencies = [
- "agentclient",
- "chrono",
- "devcanopy-azurecost",
- "devcanopy-github",
- "devcanopy-localhost",
- "devcanopy-openclaw",
- "devcanopy-servicestatus",
- "devcanopy-store",
- "devcanopy-usage",
- "devcanopy-wire",
- "dirs",
- "futures-util",
- "glob",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tempfile",
- "tokio",
- "uuid",
- "viewmodel",
-]
-
-[[package]]
-name = "devcanopy-azurecost"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "reqwest 0.12.28",
- "serde",
- "thiserror 2.0.19",
- "tokio",
- "wiremock",
-]
-
-[[package]]
-name = "devcanopy-github"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "devcanopy-servicestatus",
- "futures-util",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "wiremock",
-]
-
-[[package]]
-name = "devcanopy-localhost"
-version = "0.1.0"
-dependencies = [
- "devcanopy-wire",
- "objc2-core-foundation",
- "objc2-foundation",
- "objc2-io-kit",
- "serde_json",
- "starship-battery",
- "sysinfo",
- "time",
-]
-
-[[package]]
-name = "devcanopy-openclaw"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.0",
- "ed25519-dalek",
- "futures-util",
- "getrandom 0.4.3",
- "hex",
- "http",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.19",
- "tokio",
- "tokio-tungstenite",
- "url",
-]
-
-[[package]]
-name = "devcanopy-servicestatus"
-version = "0.1.0"
-dependencies = [
- "reqwest 0.12.28",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "wiremock",
-]
-
-[[package]]
-name = "devcanopy-store"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "keyring",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "uuid",
-]
-
-[[package]]
-name = "devcanopy-usage"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "percent-encoding",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "wiremock",
-]
-
-[[package]]
-name = "devcanopy-wire"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -3895,6 +3758,143 @@ dependencies = [
 ]
 
 [[package]]
+name = "solador-app"
+version = "0.1.0"
+dependencies = [
+ "agentclient",
+ "chrono",
+ "dirs",
+ "futures-util",
+ "glob",
+ "serde",
+ "serde_json",
+ "solador-azurecost",
+ "solador-github",
+ "solador-localhost",
+ "solador-openclaw",
+ "solador-servicestatus",
+ "solador-store",
+ "solador-usage",
+ "solador-wire",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "viewmodel",
+]
+
+[[package]]
+name = "solador-azurecost"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "solador-github"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "solador-servicestatus",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "solador-localhost"
+version = "0.1.0"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-io-kit",
+ "serde_json",
+ "solador-wire",
+ "starship-battery",
+ "sysinfo",
+ "time",
+]
+
+[[package]]
+name = "solador-openclaw"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.0",
+ "ed25519-dalek",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "http",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
+name = "solador-servicestatus"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "solador-store"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "keyring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
+name = "solador-usage"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "solador-wire"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "soup3"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4990,9 +4990,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "viewmodel"
 version = "0.1.0"
 dependencies = [
- "devcanopy-wire",
  "serde",
  "serde_json",
+ "solador-wire",
 ]
 
 [[package]]

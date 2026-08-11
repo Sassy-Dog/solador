@@ -212,24 +212,21 @@ pub fn matches_glob(name: &str, pattern: &str) -> bool {
     rest.len() >= last.len() && rest.ends_with(last)
 }
 
-/// The rules a store that has never configured any starts with — Swift's
-/// `ContainerGroupRule.seededDefaults`, in order.
+/// The rules a store that has never configured any starts with: none.
 ///
-/// Order is the contract: matching is first-match-wins, so moving the hide
-/// rule above the collapse rules would change what the panel shows.
+/// Empty on purpose. The three shipped defaults named one operator's machines
+/// — two of them pinned `.on_host("ubu-01")` — and grouping is per-deployment
+/// by nature. A shipped example rule silently groups a stranger's containers by
+/// a rule they never wrote, which is harder to diagnose than no grouping at
+/// all: the panel looks like it is working and quietly hides or folds rows.
+///
+/// **Order remains the contract** for whatever the operator does configure:
+/// matching is first-match-wins, so a hide rule above a collapse rule changes
+/// what the panel shows. That is a property of [`crate::Store::container_rules`]
+/// and its consumers, not of this empty seed.
 #[must_use]
 pub fn seeded_rules() -> Vec<ContainerGroupRule> {
-    vec![
-        ContainerGroupRule::new(
-            "sassydog-ghr-ubu-*",
-            "ghr runners",
-            ContainerRuleAction::Collapse,
-        )
-        .on_host("ubu-3xdv"),
-        ContainerGroupRule::new("api-*", "workflow jobs", ContainerRuleAction::Collapse)
-            .on_host("ubu-3xdv"),
-        ContainerGroupRule::new("ghcr.io/*", "", ContainerRuleAction::Hide),
-    ]
+    Vec::new()
 }
 
 /// The seeded rules as a borrowable slice, so [`crate::Store::container_rules`]
@@ -306,19 +303,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seeds_match_the_swift_defaults_in_order() {
-        let seeded = seeded_rules();
-        assert_eq!(seeded.len(), 3);
-        assert_eq!(seeded[0].pattern, "sassydog-ghr-ubu-*");
-        assert_eq!(seeded[0].label, "ghr runners");
-        assert_eq!(seeded[0].action, ContainerRuleAction::Collapse);
-        assert_eq!(seeded[0].host.as_deref(), Some("ubu-3xdv"));
-        assert_eq!(seeded[1].pattern, "api-*");
-        assert_eq!(seeded[1].label, "workflow jobs");
-        assert_eq!(seeded[1].host.as_deref(), Some("ubu-3xdv"));
-        assert_eq!(seeded[2].pattern, "ghcr.io/*");
-        assert_eq!(seeded[2].action, ContainerRuleAction::Hide);
-        assert_eq!(seeded[2].host, None);
+    fn a_fresh_store_seeds_no_container_rules() {
+        assert!(
+            seeded_rules().is_empty(),
+            "seeded rules named one operator's hosts and image registry"
+        );
     }
 
     /// The editor's parse is the strict counterpart of the file decoder's
@@ -354,9 +343,9 @@ mod tests {
 
     #[test]
     fn glob_seeded_runner_pattern() {
-        assert!(matches_glob("sassydog-ghr-ubu-1", "sassydog-ghr-ubu-*"));
-        assert!(matches_glob("sassydog-ghr-ubu-", "sassydog-ghr-ubu-*"));
-        assert!(!matches_glob("sassydog-ghr-mac-1", "sassydog-ghr-ubu-*"));
+        assert!(matches_glob("acme-ci-runner-1", "acme-ci-runner-*"));
+        assert!(matches_glob("acme-ci-runner-", "acme-ci-runner-*"));
+        assert!(!matches_glob("acme-ci-mac-1", "acme-ci-runner-*"));
     }
 
     #[test]
@@ -403,12 +392,12 @@ mod tests {
     #[test]
     fn host_scope_applies_to_its_host_only() {
         let scoped = ContainerGroupRule::new("api-*", "jobs", ContainerRuleAction::Collapse)
-            .on_host("ubu-3xdv");
-        assert!(scoped.applies_to("ubu-3xdv"));
+            .on_host("ubu-01");
+        assert!(scoped.applies_to("ubu-01"));
         assert!(!scoped.applies_to(LOCAL_HOST_SCOPE));
 
         let unscoped = ContainerGroupRule::new("api-*", "jobs", ContainerRuleAction::Collapse);
-        assert!(unscoped.applies_to("ubu-3xdv"));
+        assert!(unscoped.applies_to("ubu-01"));
         assert!(unscoped.applies_to(LOCAL_HOST_SCOPE));
     }
 
@@ -453,7 +442,7 @@ mod tests {
             },
         );
         records.insert(
-            presence_key("ubu-3xdv", "api-9"),
+            presence_key("ubu-01", "api-9"),
             ContainerPresenceRecord {
                 last_seen: 200,
                 runtime: Some("podman".into()),
@@ -464,7 +453,7 @@ mod tests {
         assert_eq!(local.len(), 1);
         assert_eq!(local["vm-1"].last_seen, 100);
 
-        let remote = records_for_host(&records, "ubu-3xdv");
+        let remote = records_for_host(&records, "ubu-01");
         assert_eq!(remote.len(), 1);
         assert_eq!(remote["api-9"].runtime.as_deref(), Some("podman"));
 

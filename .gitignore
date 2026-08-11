@@ -141,3 +141,16 @@ app/ui/sample-openclaw-unmeasured.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/
+
+# Local agent tooling. The hooks are self-contained (shellcheck + rustfmt) and
+# useful to any contributor; everything else under .claude/ configures a plugin
+# from a marketplace that is not public, so it stays on the machine that uses
+# it. Deny-by-default on purpose: an entry naming one directory would leave the
+# next one the tooling invents equally exposed.
+.claude/*
+!.claude/hooks/
+!.claude/settings.json
+
+# direnv: `.envrc` is committed and holds no values; the real ones live here.
+.envrc.local
+.direnv/

@@ -1365,15 +1365,15 @@ mod tests {
     fn the_theme_travels_as_painted_hex() {
         let t = theme();
         assert_eq!(t["background"], "#000000");
-        assert_eq!(t["panel"], "#050805");
-        assert_eq!(t["panelAlt"], "#0a0f0c");
-        assert_eq!(t["line"], "#13301f");
-        assert_eq!(t["green"], "#33d17a");
-        assert_eq!(t["greenDim"], "#1c6b41");
-        assert_eq!(t["amber"], "#e09a26");
-        assert_eq!(t["red"], "#e05a4f");
-        assert_eq!(t["muted"], "#5a6b60");
-        assert_eq!(t["ink"], "#cfe9d8");
+        assert_eq!(t["panel"], crate::color::hex(crate::color::PANEL));
+        assert_eq!(t["panelAlt"], crate::color::hex(crate::color::PANEL_ALT));
+        assert_eq!(t["line"], crate::color::hex(crate::color::LINE));
+        assert_eq!(t["green"], crate::color::hex(crate::color::GREEN));
+        assert_eq!(t["greenDim"], crate::color::hex(crate::color::GREEN_DIM));
+        assert_eq!(t["amber"], crate::color::hex(crate::color::AMBER));
+        assert_eq!(t["red"], crate::color::hex(crate::color::RED));
+        assert_eq!(t["muted"], crate::color::hex(crate::color::MUTED));
+        assert_eq!(t["ink"], crate::color::hex(crate::color::INK));
     }
 
     #[test]

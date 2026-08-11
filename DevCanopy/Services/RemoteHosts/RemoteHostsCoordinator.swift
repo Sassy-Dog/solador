@@ -23,11 +23,11 @@ final class RemoteHostsCoordinator: ObservableObject {
         self.modelContext = modelContext
     }
 
-    /// Provisions a host from `DEVCANOPY_SEED_HOST` ("name|address|port|token") if
+    /// Provisions a host from `SOLADOR_SEED_HOST` ("name|address|port|token") if
     /// one with that address isn't already configured. Useful for headless setup
     /// and first-run provisioning; no-op when the env var is unset.
     func seedFromEnvironmentIfNeeded() {
-        guard let raw = ProcessInfo.processInfo.environment["DEVCANOPY_SEED_HOST"] else { return }
+        guard let raw = ProcessInfo.processInfo.environment["SOLADOR_SEED_HOST"] else { return }
         let parts = raw.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return }
         let name = parts[0], address = parts[1]

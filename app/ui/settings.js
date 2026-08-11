@@ -660,6 +660,21 @@ function portfolioTab(t) {
   return [list, add];
 }
 
+function githubTab(t) {
+  const org = group(t.org.heading);
+  const input = textInput(t.org.value);
+  org.append(field("github-org", t.org.label, input), help(t.org.help));
+  const apply = button(t.org.saveLabel, "apply");
+  // Its own command, not `settings_save_providers`: that one writes every
+  // non-secret provider preference at once, so sending it from here would
+  // blank every field this tab does not show.
+  apply.addEventListener("click", () =>
+    mutate("settings_save_github", { org: input.value })
+  );
+  org.appendChild(actionRow(apply));
+  return [secretGroup(t.heading, t.secret), org];
+}
+
 function azureTab(t) {
   const box = group(t.budget.heading);
   const budget = numberInput(t.budget.value, 0);
@@ -682,7 +697,24 @@ function azureTab(t) {
     })
   );
   box.appendChild(actionRow(apply));
-  return [box, secretGroup(t.secretHeading, t.secret)];
+
+  // Where the export lives. No credential group: the panel signs its own
+  // read using the operator's Azure CLI session and stores nothing.
+  const exp = group(t.export.heading);
+  const account = textInput(t.export.account);
+  const container = textInput(t.export.container);
+  exp.append(
+    field("azure-account", t.export.accountLabel, account),
+    field("azure-container", t.export.containerLabel, container),
+    help(t.export.help)
+  );
+  const saveExport = button(t.export.saveLabel, "apply");
+  saveExport.addEventListener("click", () =>
+    mutate("settings_save_azure", { account: account.value, container: container.value })
+  );
+  exp.appendChild(actionRow(saveExport));
+
+  return [box, exp];
 }
 
 function usageTab(t) {
@@ -836,7 +868,7 @@ function renderBody() {
   const build = {
     general: generalTab,
     layout: layoutTab,
-    github: (t) => [secretGroup(t.heading, t.secret)],
+    github: githubTab,
     portfolio: portfolioTab,
     hosts: hostsTab,
     azure: azureTab,
@@ -877,13 +909,17 @@ async function closeSettings() {
   // Repaint at the real width now rather than up to a poll interval late: the
   // cockpit measured zero while it was hidden.
   await refreshCockpit();
+  // ...and the panels, which keep their own timers. Without this a credential
+  // or address saved a second ago leaves its panel still displaying the setup
+  // instruction that asked for it.
+  await refreshPanels();
 }
 
 $s("settingsToggle").addEventListener("click", openSettings);
 $s("settingsClose").addEventListener("click", closeSettings);
 
-// Test-only introspection, matching app.js's `window.__DEVCANOPY_TEST__`:
+// Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
-window.__DEVCANOPY_SETTINGS_TEST__ = { open: openSettings, close: closeSettings, tab: () => S.tab };
+window.__SOLADOR_SETTINGS_TEST__ = { open: openSettings, close: closeSettings, tab: () => S.tab };
 
 })();

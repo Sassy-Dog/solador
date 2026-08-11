@@ -17,6 +17,8 @@
 //! red and names the failure. Rendering the first as an error would send an
 //! operator hunting a break that does not exist.
 
+pub mod sas;
+
 use chrono::{DateTime, Datelike, Utc};
 use serde_json::{json, Value};
 use viewmodel::cockpit::PanelKind;
@@ -31,7 +33,12 @@ use crate::panel::{progress_bar, status_footer, Configured};
 pub const STALE_AFTER_SECS: u64 = 5 * 60 * 60;
 
 /// The panel's zero-setup state. An instruction, not a failure.
-pub const UNCONFIGURED_MESSAGE: &str = "Add an Azure Cost SAS URL in Settings";
+///
+/// Names the storage account, not a SAS: the panel stopped storing a SAS when
+/// it learned to mint its own per poll, and this message outlived that change —
+/// telling operators to paste a credential the Settings surface no longer has a
+/// field for.
+pub const UNCONFIGURED_MESSAGE: &str = "Add an Azure storage account in Settings";
 
 /// Configured, with a read in flight and nothing to show yet.
 pub const LOADING_MESSAGE: &str = "reading export…";
@@ -138,8 +145,10 @@ pub fn month_short(at: DateTime<Utc>) -> &'static str {
 /// Everything the panel renders from, plus the cache the reader needs.
 #[derive(Debug, Default)]
 pub struct AzureState {
-    /// Whether a SAS URL is stored. [`Absent`](Configured::Absent) is the setup
-    /// state, not a failure.
+    /// Whether the export's address is configured — a storage account and a
+    /// container. [`Absent`](Configured::Absent) is the setup state, not a
+    /// failure. (Named `sas` for the credential this panel used to store; it
+    /// mints a short-lived one per poll now and keeps nothing.)
     ///
     /// Three states rather than a `bool`: this defaulted to `false`, and the
     /// ladder in [`view`] reads "not configured" before it reads `loading`, so
@@ -210,22 +219,6 @@ impl AzureState {
     #[must_use]
     pub fn has_succeeded(&self) -> bool {
         self.last_updated.is_some()
-    }
-
-    /// The credential store would not answer, so we do not know whether a SAS
-    /// URL is configured.
-    ///
-    /// Distinct from [`unconfigure`](Self::unconfigure) on purpose: that one
-    /// paints the setup instruction and drops the cache, both of which are
-    /// wrong here. A panel that has never been configured stays silent — a
-    /// keychain hiccup must not conjure a card for a provider nobody set up —
-    /// and one that *was* configured keeps its figures with the reason in the
-    /// footer.
-    pub fn unreadable(&mut self, error: String) {
-        if self.sas.is_present() {
-            self.last_error = Some(error);
-            self.loading = false;
-        }
     }
 
     /// The fingerprinted last success, for the next read's cache check.
@@ -418,8 +411,8 @@ pub fn fixture_state(kind: Fixture, at: u64) -> AzureState {
         spend_projected: 1_942.18,
         by_resource: costs(&[
             ("rg-platform", 612.10),
-            ("rg-velovate", 388.44),
-            ("rg-qr-ninja", 141.02),
+            ("rg-gadget", 388.44),
+            ("rg-pipe-fitting", 141.02),
             ("rg-shared", 92.80),
             ("rg-scratch", 40.19),
             ("rg-sixth-never-rendered", 9.99),
@@ -581,45 +574,18 @@ mod tests {
     /// configuration — and drops the fingerprint cache, so the next good read
     /// re-downloads every partition the cache exists to avoid.
     #[test]
-    fn an_unreadable_credential_store_keeps_the_card_and_the_cache() {
+    fn a_failed_mint_keeps_the_card_and_the_cache() {
         let mut state = measured();
-        state.unreadable("couldn't read the credential store".to_owned());
+        state.failed("Azure CLI could not mint a SAS: Please run 'az login'".to_owned());
 
         let payload = view(&state, BUDGET, NOW + 60);
         assert!(payload["message"].is_null(), "the card stays up");
         assert_eq!(payload["headline"]["value"], "$1,284.55");
         assert_eq!(
             payload["footer"]["text"],
-            "⚠ couldn't read the credential store · last ok 1m ago"
+            "⚠ Azure CLI could not mint a SAS: Please run 'az login' · last ok 1m ago"
         );
         assert!(state.cached().is_some(), "the fingerprint cache survives");
-    }
-
-    /// …but it must not conjure an error for a panel nobody configured: on a
-    /// machine with no SAS URL a keychain hiccup should change nothing at all.
-    #[test]
-    fn an_unreadable_credential_store_changes_nothing_when_nothing_was_configured() {
-        let mut state = AzureState::new();
-        state.unconfigure(); // a pass looked, and there is no SAS
-        let before = view(&state, BUDGET, NOW);
-        state.unreadable("couldn't read the credential store".to_owned());
-
-        assert_eq!(view(&state, BUDGET, NOW), before);
-        assert_eq!(before["message"]["text"], UNCONFIGURED_MESSAGE);
-        assert_eq!(before["message"]["color"], color::hex(color::MUTED));
-    }
-
-    /// …and the same on the frame before any pass has run. A keychain that will
-    /// not answer is not evidence that the panel is loading *or* unconfigured,
-    /// so the untouched loading line stands.
-    #[test]
-    fn an_unreadable_credential_store_changes_nothing_before_the_first_pass() {
-        let mut state = AzureState::new();
-        let before = view(&state, BUDGET, NOW);
-        state.unreadable("couldn't read the credential store".to_owned());
-
-        assert_eq!(view(&state, BUDGET, NOW), before);
-        assert_eq!(before["message"]["text"], LOADING_MESSAGE);
     }
 
     /// The reported bug. A fresh panel has not read the credential store, so it

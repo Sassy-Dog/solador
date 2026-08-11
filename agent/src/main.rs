@@ -1,7 +1,7 @@
-//! DevCanopy per-host metrics agent.
+//! Solador per-host metrics agent.
 //!
 //! An axum HTTP server exposing host metrics and a container list as JSON,
-//! guarded by a bearer token. DevCanopy (a macOS app) polls it over Tailscale.
+//! guarded by a bearer token. Solador (a macOS app) polls it over Tailscale.
 
 mod containers;
 mod gpu;
@@ -19,16 +19,16 @@ async fn main() {
     init_tracing();
 
     // Required bearer token — refuse to start without it.
-    let token = match std::env::var("DEVCANOPY_AGENT_TOKEN") {
+    let token = match std::env::var("SOLADOR_AGENT_TOKEN") {
         Ok(t) if !t.trim().is_empty() => t,
         _ => {
-            eprintln!("FATAL: DEVCANOPY_AGENT_TOKEN must be set (non-empty). Refusing to start.");
+            eprintln!("FATAL: SOLADOR_AGENT_TOKEN must be set (non-empty). Refusing to start.");
             std::process::exit(1);
         }
     };
 
     // Port: env override, default 7878.
-    let port: u16 = std::env::var("DEVCANOPY_AGENT_PORT")
+    let port: u16 = std::env::var("SOLADOR_AGENT_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(7878);
@@ -49,9 +49,9 @@ async fn main() {
 
     // Resolve the bind host. Default is the host's Tailscale (tailnet) IP so the
     // agent is *not* reachable on the public NIC. Binding all interfaces
-    // (0.0.0.0 / ::) requires explicit opt-in via DEVCANOPY_AGENT_BIND.
+    // (0.0.0.0 / ::) requires explicit opt-in via SOLADOR_AGENT_BIND.
     let bind_host = match resolve_bind_host(
-        std::env::var("DEVCANOPY_AGENT_BIND").ok(),
+        std::env::var("SOLADOR_AGENT_BIND").ok(),
         detect_tailscale_ip,
     ) {
         Ok(h) => h,
@@ -70,7 +70,7 @@ async fn main() {
         }
     };
 
-    tracing::info!("devcanopy-agent v{VERSION} listening on {addr} (host={hostname})");
+    tracing::info!("solador-agent v{VERSION} listening on {addr} (host={hostname})");
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("FATAL: server error: {e}");
@@ -99,7 +99,7 @@ fn is_tailscale_ipv4(ip: std::net::Ipv4Addr) -> bool {
 
 /// Decide the host portion of the bind address.
 ///
-/// - If `DEVCANOPY_AGENT_BIND` is set (non-empty), honor it verbatim. This is
+/// - If `SOLADOR_AGENT_BIND` is set (non-empty), honor it verbatim. This is
 ///   the only way to bind a non-tailnet interface, including the explicit
 ///   opt-ins `0.0.0.0` / `::` for all-interfaces.
 /// - Otherwise default to the detected Tailscale IP so the agent only listens
@@ -123,7 +123,7 @@ where
     match detect() {
         Some(ip) => Ok(ip),
         None => Err(
-            "could not detect a Tailscale IP to bind to. Set DEVCANOPY_AGENT_BIND \
+            "could not detect a Tailscale IP to bind to. Set SOLADOR_AGENT_BIND \
              to the tailnet address (e.g. 100.x.y.z), or to 0.0.0.0 to bind all \
              interfaces (only do this behind a firewall)."
                 .to_string(),
@@ -241,7 +241,7 @@ mod tests {
         let got = resolve_bind_host(None, || None);
         assert!(got.is_err(), "must refuse to start, not default to 0.0.0.0");
         let msg = got.unwrap_err();
-        assert!(msg.contains("DEVCANOPY_AGENT_BIND"));
+        assert!(msg.contains("SOLADOR_AGENT_BIND"));
     }
 
     #[test]

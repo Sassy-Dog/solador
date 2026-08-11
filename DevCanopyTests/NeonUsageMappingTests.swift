@@ -14,7 +14,7 @@ final class NeonUsageMappingTests: XCTestCase {
     {
       "projects": [
         {
-          "project_id": "qr-ninja",
+          "project_id": "pipe-fitting",
           "periods": [
             {
               "period_id": "p1",
@@ -35,7 +35,7 @@ final class NeonUsageMappingTests: XCTestCase {
           ]
         },
         {
-          "project_id": "velovate",
+          "project_id": "gadget",
           "periods": [
             {
               "consumption": [

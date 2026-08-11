@@ -333,7 +333,7 @@ mod tests {
         let mut records = BTreeMap::new();
         note(
             &mut records,
-            "ubu-3xdv",
+            "ubu-01",
             &[vm("vm-1", "tart")],
             None,
             &[expect_rule("vm-*")],
@@ -341,12 +341,12 @@ mod tests {
         );
         // No rules at all now, but the local poll may only prune local keys.
         note_local(&mut records, &[], &ok(&["tart"]), &[], NOW + 10);
-        assert!(records_for_host(&records, "ubu-3xdv").contains_key("vm-1"));
+        assert!(records_for_host(&records, "ubu-01").contains_key("vm-1"));
     }
 
     #[test]
     fn a_host_scoped_rule_only_records_on_its_host() {
-        let rules = [expect_rule("vm-*").on_host("ubu-3xdv")];
+        let rules = [expect_rule("vm-*").on_host("ubu-01")];
         let mut records = BTreeMap::new();
         note_local(
             &mut records,
@@ -359,13 +359,13 @@ mod tests {
 
         note(
             &mut records,
-            "ubu-3xdv",
+            "ubu-01",
             &[vm("vm-1", "tart")],
             None,
             &rules,
             NOW,
         );
-        assert!(records_for_host(&records, "ubu-3xdv").contains_key("vm-1"));
+        assert!(records_for_host(&records, "ubu-01").contains_key("vm-1"));
     }
 
     #[test]
@@ -373,7 +373,7 @@ mod tests {
         let mut records = BTreeMap::new();
         let outcome = note(
             &mut records,
-            "ubu-3xdv",
+            "ubu-01",
             &[vm("vm-1", "tart")],
             None,
             &[expect_rule("vm-*")],
@@ -381,10 +381,7 @@ mod tests {
         );
         assert!(outcome.records_changed);
         assert!(outcome.clock_advances);
-        assert_eq!(
-            records_for_host(&records, "ubu-3xdv")["vm-1"].last_seen,
-            NOW
-        );
+        assert_eq!(records_for_host(&records, "ubu-01")["vm-1"].last_seen, NOW);
     }
 
     #[test]

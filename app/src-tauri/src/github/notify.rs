@@ -43,7 +43,7 @@ use std::collections::HashSet;
 /// there was a click to spend it on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalNotice {
-    /// `"devcanopy · needs approval"`.
+    /// `"widget · needs approval"`.
     pub title: String,
     /// `"Release · main is parked at an approval gate."`.
     pub body: String,
@@ -51,7 +51,7 @@ pub struct ApprovalNotice {
 
 impl ApprovalNotice {
     /// `repo` is the **short** name (`short_name()`), matching Swift's
-    /// `h.shortName` — the banner is glanced at, and `Sassy-Dog/` on every line
+    /// `h.shortName` — the banner is glanced at, and `acme/` on every line
     /// is the part that is always the same.
     fn new(repo: &str, run: &RunRef) -> Self {
         Self {
@@ -136,7 +136,7 @@ mod tests {
             name: name.to_owned(),
             event: "push".to_owned(),
             status: status.to_owned(),
-            html_url: format!("https://github.com/Sassy-Dog/x/actions/runs/{id}"),
+            html_url: format!("https://github.com/acme/x/actions/runs/{id}"),
             created_at: now().to_rfc3339(),
             head_branch: Some(branch.to_owned()),
             conclusion: None,
@@ -156,7 +156,7 @@ mod tests {
     fn the_first_pass_only_seeds() {
         let mut watch = ApprovalWatch::new();
         let pass = [health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(1, "Release", "main", "waiting")],
         )];
 
@@ -170,21 +170,18 @@ mod tests {
     fn a_run_entering_the_gate_alerts_once_with_the_swift_wording() {
         let mut watch = ApprovalWatch::new();
         watch.observe(
-            &[health(
-                "Sassy-Dog/devcanopy",
-                &[run(1, "CI", "main", "completed")],
-            )],
+            &[health("acme/widget", &[run(1, "CI", "main", "completed")])],
             true,
         );
 
         let parked = [health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(2, "Release", "main", "waiting")],
         )];
         assert_eq!(
             watch.observe(&parked, true),
             vec![ApprovalNotice {
-                title: "devcanopy · needs approval".to_owned(),
+                title: "widget · needs approval".to_owned(),
                 body: "Release · main is parked at an approval gate.".to_owned(),
             }]
         );
@@ -203,12 +200,9 @@ mod tests {
 
         let notices = watch.observe(
             &[
+                health("acme/widget", &[run(1, "Release", "main", "waiting")]),
                 health(
-                    "Sassy-Dog/devcanopy",
-                    &[run(1, "Release", "main", "waiting")],
-                ),
-                health(
-                    "Sassy-Dog/qr-ninja",
+                    "acme/pipe-fitting",
                     &[run(2, "Deploy", "release/2.0", "waiting")],
                 ),
             ],
@@ -219,11 +213,11 @@ mod tests {
             notices,
             vec![
                 ApprovalNotice {
-                    title: "devcanopy · needs approval".to_owned(),
+                    title: "widget · needs approval".to_owned(),
                     body: "Release · main is parked at an approval gate.".to_owned(),
                 },
                 ApprovalNotice {
-                    title: "qr-ninja · needs approval".to_owned(),
+                    title: "pipe-fitting · needs approval".to_owned(),
                     body: "Deploy · release/2.0 is parked at an approval gate.".to_owned(),
                 },
             ]
@@ -238,7 +232,7 @@ mod tests {
         watch.observe(&[], true);
         watch.observe(
             &[health(
-                "Sassy-Dog/devcanopy",
+                "acme/widget",
                 &[
                     run(1, "Release", "main", "waiting"),
                     run(2, "Deploy", "main", "waiting"),
@@ -250,7 +244,7 @@ mod tests {
         // Run 1 was approved and is now executing; run 2 is still parked.
         let notices = watch.observe(
             &[health(
-                "Sassy-Dog/devcanopy",
+                "acme/widget",
                 &[
                     run(1, "Release", "main", "in_progress"),
                     run(2, "Deploy", "main", "waiting"),
@@ -270,11 +264,11 @@ mod tests {
         watch.observe(&[], true);
 
         let parked = [health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(7, "Release", "main", "waiting")],
         )];
         let running = [health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(7, "Release", "main", "in_progress")],
         )];
 
@@ -293,7 +287,7 @@ mod tests {
         watch.observe(&[], false);
 
         let parked = [health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(1, "Release", "main", "waiting")],
         )];
         assert_eq!(watch.observe(&parked, false), Vec::new());
@@ -312,10 +306,7 @@ mod tests {
         for status in ["queued", "in_progress", "completed", "pending", "requested"] {
             assert_eq!(
                 watch.observe(
-                    &[health(
-                        "Sassy-Dog/devcanopy",
-                        &[run(1, "CI", "main", status)]
-                    )],
+                    &[health("acme/widget", &[run(1, "CI", "main", status)])],
                     true
                 ),
                 Vec::new(),
@@ -334,15 +325,12 @@ mod tests {
         watch.observe(&[], true);
 
         let parked = [health(
-            "Sassy-Dog/devcanopy",
+            "acme/widget",
             &[run(1, "Release", "main", "waiting")],
         )];
         assert_eq!(watch.observe(&parked, true).len(), 1);
         assert_eq!(
-            watch.observe(
-                &[RepoWorkflowHealth::unreachable("Sassy-Dog/devcanopy")],
-                true
-            ),
+            watch.observe(&[RepoWorkflowHealth::unreachable("acme/widget")], true),
             Vec::new()
         );
         assert_eq!(watch.observe(&parked, true).len(), 1);

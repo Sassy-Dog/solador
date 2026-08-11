@@ -153,8 +153,8 @@ mod tests {
     #[test]
     fn project_name_from_a_plain_repo_path() {
         assert_eq!(
-            project_name("/Users/chris/Repos/sassy-dog/velovate/velovate-app"),
-            "velovate-app"
+            project_name("/Users/dev/Repos/Acme/gadget/gadget-app"),
+            "gadget-app"
         );
     }
 
@@ -162,19 +162,17 @@ mod tests {
     fn project_name_strips_the_claude_worktree_suffix() {
         assert_eq!(
             project_name(
-                "/Users/chris/Repos/sassy-dog/velovate/velovate-app/.claude/worktrees/agent-a186a09e"
+                "/Users/dev/Repos/Acme/gadget/gadget-app/.claude/worktrees/agent-a186a09e"
             ),
-            "velovate-app"
+            "gadget-app"
         );
     }
 
     #[test]
     fn project_name_strips_the_warp_worktree_suffix() {
         assert_eq!(
-            project_name(
-                "/Users/chris/Repos/sassy-dog/velovate/velovate-app/.warp-worktrees/foo-bar"
-            ),
-            "velovate-app"
+            project_name("/Users/dev/Repos/Acme/gadget/gadget-app/.warp-worktrees/foo-bar"),
+            "gadget-app"
         );
     }
 
@@ -182,17 +180,20 @@ mod tests {
     /// point of stripping the suffix.
     #[test]
     fn every_worktree_of_a_repo_attributes_to_one_project() {
-        let root = project_name("/Repos/devcanopy");
+        let root = project_name("/Repos/widget");
         assert_eq!(
-            project_name("/Repos/devcanopy/.claude/worktrees/agent-aaa"),
+            project_name("/Repos/widget/.claude/worktrees/agent-aaa"),
             root
         );
-        assert_eq!(project_name("/Repos/devcanopy/.warp-worktrees/bbb"), root);
+        assert_eq!(project_name("/Repos/widget/.warp-worktrees/bbb"), root);
     }
 
     #[test]
     fn project_name_handles_a_trailing_slash() {
-        assert_eq!(project_name("/Users/chris/Repos/qr-ninja/"), "qr-ninja");
+        assert_eq!(
+            project_name("/Users/dev/Repos/pipe-fitting/"),
+            "pipe-fitting"
+        );
     }
 
     #[test]
@@ -206,12 +207,12 @@ mod tests {
 
     #[test]
     fn parses_an_assistant_usage_record() {
-        let line = r#"{"type":"assistant","timestamp":"2026-05-29T13:18:22.932Z","requestId":"req_abc","cwd":"/Users/chris/Repos/qr-ninja","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":6,"output_tokens":475,"cache_creation_input_tokens":0,"cache_read_input_tokens":43049}}}"#;
+        let line = r#"{"type":"assistant","timestamp":"2026-05-29T13:18:22.932Z","requestId":"req_abc","cwd":"/Users/dev/Repos/pipe-fitting","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":6,"output_tokens":475,"cache_creation_input_tokens":0,"cache_read_input_tokens":43049}}}"#;
         let record = parse_line(line).expect("an assistant line with usage parses");
 
         assert_eq!(record.request_id, "req_abc");
         assert_eq!(record.model, "claude-sonnet-4-5");
-        assert_eq!(record.project, "qr-ninja");
+        assert_eq!(record.project, "pipe-fitting");
         assert_eq!(record.input_tokens, 6);
         assert_eq!(record.output_tokens, 475);
         assert_eq!(record.cache_creation_tokens, 0);

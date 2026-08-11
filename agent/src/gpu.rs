@@ -265,7 +265,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The verified `nvidia-smi` line from ubu-3xdv's RTX 3060 12GB, in the
+    /// The verified `nvidia-smi` line from ubu-01's RTX 3060 12GB, in the
     /// `nounits` form this agent queries.
     const RTX_3060_IDLE: &str = "0, 0, 12288\n";
 
@@ -365,12 +365,7 @@ mod tests {
     /// an NVIDIA driver) and produces no output to read.
     #[tokio::test]
     async fn a_missing_binary_produces_no_output() {
-        let got = capped_output(
-            "devcanopy-no-such-binary-217",
-            &["--version"],
-            PROBE_TIMEOUT,
-        )
-        .await;
+        let got = capped_output("solador-no-such-binary-217", &["--version"], PROBE_TIMEOUT).await;
         assert_eq!(got, None);
     }
 

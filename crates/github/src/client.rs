@@ -105,7 +105,7 @@ impl GitHubClient {
                 // a blanket 403, token permissions notwithstanding. reqwest
                 // sends none by default (URLSession always does, which is why
                 // the Swift port never hit this). Observed live, issue #186.
-                .user_agent(concat!("DevCanopy/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("Solador/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("reqwest client"),
         }
@@ -373,7 +373,7 @@ mod tests {
     async fn sends_the_bearer_token_and_the_api_version_headers() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/repos/Sassy-Dog/devcanopy/actions/runs"))
+            .and(path("/repos/acme/widget/actions/runs"))
             .and(header_matcher("authorization", "Bearer ghp_s3cret"))
             .and(header_matcher("accept", "application/vnd.github+json"))
             .and(header_matcher("x-github-api-version", API_VERSION))
@@ -384,7 +384,7 @@ mod tests {
             .await;
 
         let runs = GitHubClient::with_base_url(server.uri(), "ghp_s3cret")
-            .workflow_runs("Sassy-Dog/devcanopy")
+            .workflow_runs("acme/widget")
             .await
             .expect("should decode");
         assert_eq!(runs.len(), 6);
@@ -616,12 +616,12 @@ mod tests {
     #[tokio::test]
     async fn open_issues_come_from_the_repo_object() {
         let server = github_replying(
-            "/repos/Sassy-Dog/platform",
+            "/repos/acme/toolkit",
             json("{\"name\":\"platform\",\"open_issues_count\":2}"),
         )
         .await;
         let count = GitHubClient::with_base_url(server.uri(), "t")
-            .open_issues_including_prs_count("Sassy-Dog/platform")
+            .open_issues_including_prs_count("acme/toolkit")
             .await
             .expect("count");
         assert_eq!(count, 2);
@@ -771,14 +771,14 @@ mod tests {
     async fn org_runners_decode_and_map() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/orgs/Sassy-Dog/actions/runners"))
+            .and(path("/orgs/acme/actions/runners"))
             .and(query_param("per_page", RUNNERS_PER_PAGE))
             .respond_with(json(RUNNERS_FIXTURE))
             .mount(&server)
             .await;
 
         let runners = GitHubClient::with_base_url(server.uri(), "t")
-            .org_runners("Sassy-Dog")
+            .org_runners("acme")
             .await
             .expect("decode");
         assert_eq!(runners.len(), 4);
@@ -791,11 +791,8 @@ mod tests {
     /// every absence clock stays where the last successful poll left it.
     #[tokio::test]
     async fn a_failed_runner_fetch_returns_err_and_advances_nothing() {
-        let server = github_replying(
-            "/orgs/Sassy-Dog/actions/runners",
-            ResponseTemplate::new(500),
-        )
-        .await;
+        let server =
+            github_replying("/orgs/acme/actions/runners", ResponseTemplate::new(500)).await;
         let client = GitHubClient::with_base_url(server.uri(), "t");
 
         let seeded = vec![RunnerRosterEntry {
@@ -805,7 +802,7 @@ mod tests {
         }];
         let err = client
             .runner_roster(
-                "Sassy-Dog",
+                "acme",
                 &seeded,
                 now() + chrono::TimeDelta::seconds(3_600),
                 DEFAULT_GRACE_SECS,
@@ -824,7 +821,7 @@ mod tests {
     async fn a_successful_runner_fetch_learns_the_roster_and_reports_absences() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/orgs/Sassy-Dog/actions/runners"))
+            .and(path("/orgs/acme/actions/runners"))
             .respond_with(json(RUNNERS_FIXTURE))
             .mount(&server)
             .await;
@@ -836,7 +833,7 @@ mod tests {
             last_seen: now() - chrono::TimeDelta::seconds(600),
         }];
         let update = GitHubClient::with_base_url(server.uri(), "t")
-            .runner_roster("Sassy-Dog", &seeded, now(), DEFAULT_GRACE_SECS)
+            .runner_roster("acme", &seeded, now(), DEFAULT_GRACE_SECS)
             .await
             .expect("fetch");
 

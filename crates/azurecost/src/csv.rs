@@ -99,7 +99,7 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
 ///
 /// **Resource groups** are grouped by, and displayed as, the *lowercased* name:
 /// Azure resource-group names are case-insensitive and the export can report
-/// the same group as both `rg-sassydog` and `RG-SASSYDOG` across rows. Rows
+/// the same group as both `rg-acme` and `RG-ACME` across rows. Rows
 /// with no group fold into `(unassigned)`.
 ///
 /// **Resource types** keep their original casing — `meterCategory` holds
@@ -286,16 +286,16 @@ mod tests {
     fn aggregate_folds_case_variant_resource_groups_into_one() {
         let csv = [
             "resourceGroupName,costInUsd",
-            "rg-sassydog,175.45",
-            "RG-SASSYDOG,22.12", // same group, reported uppercase in some rows
-            "rg-velovate-prd,321.65",
+            "rg-acme,175.45",
+            "RG-ACME,22.12", // same group, reported uppercase in some rows
+            "rg-gadget-prd,321.65",
         ]
         .join("\n");
 
         let agg = aggregate_cost_csv(&csv).expect("cost column present");
         assert_resources(
             &agg.by_resource,
-            &[("rg-velovate-prd", 321.65), ("rg-sassydog", 197.57)],
+            &[("rg-gadget-prd", 321.65), ("rg-acme", 197.57)],
         );
     }
 

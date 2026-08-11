@@ -29,7 +29,7 @@ final class GHWorkflowsMappingTests: XCTestCase {
             status: status,
             conclusion: conclusion,
             workflowUrl: "wf",
-            htmlUrl: "https://github.com/Sassy-Dog/velovate/actions/runs/1",
+            htmlUrl: "https://github.com/acme/gadget/actions/runs/1",
             createdAt: createdAt,
             updatedAt: "2026-05-29T12:05:00Z",
             runStartedAt: runStartedAt,
@@ -43,8 +43,8 @@ final class GHWorkflowsMappingTests: XCTestCase {
     // MARK: - Short name
 
     func testRepoWorkflowHealthShortName() {
-        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: [])
-        XCTAssertEqual(h.shortName, "velovate")
+        let h = GHWorkflowsMapping.health(repo: "acme/gadget", runs: [])
+        XCTAssertEqual(h.shortName, "gadget")
         XCTAssertTrue(h.isHealthy, "no runs = not failed, reachable")
         XCTAssertTrue(h.reachable, "the mapping path means the repo was fetched")
     }
@@ -61,7 +61,7 @@ final class GHWorkflowsMappingTests: XCTestCase {
     }
 
     func testUnreachableRepoIsNeverHealthy() {
-        let h = RepoWorkflowHealth.unreachable(repo: "Sassy-Dog/platform")
+        let h = RepoWorkflowHealth.unreachable(repo: "acme/platform")
         XCTAssertFalse(h.reachable)
         XCTAssertFalse(h.isHealthy, "an unreachable repo must not count as healthy")
         XCTAssertEqual(h.shortName, "platform")
@@ -87,7 +87,7 @@ final class GHWorkflowsMappingTests: XCTestCase {
             makeCreated(dto(name: "CI", status: "completed", conclusion: "failure", branch: "main", event: "push"), "2026-05-29T11:00:00Z"), // newer
             makeCreated(dto(name: "CI", status: "completed", conclusion: "success", branch: "feat/x", event: "pull_request"), "2026-05-29T12:00:00Z")
         ]
-        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
+        let h = GHWorkflowsMapping.health(repo: "acme/gadget", runs: runs)
         XCTAssertEqual(h.main?.conclusion, .failure, "main = newest push-on-main run")
         XCTAssertEqual(h.main?.context, "main")
     }
@@ -122,7 +122,7 @@ final class GHWorkflowsMappingTests: XCTestCase {
             dto(name: "Release", status: "waiting", conclusion: nil, branch: "main", event: "push", id: 10),
             dto(name: "CI", status: "in_progress", conclusion: nil, branch: "main", event: "push", id: 11)
         ]
-        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: runs, now: Self.now)
+        let h = GHWorkflowsMapping.health(repo: "acme/gadget", runs: runs, now: Self.now)
         XCTAssertEqual(h.needsApproval.count, 1, "waiting run is a needs-approval item")
         XCTAssertEqual(h.needsApproval.first?.title, "Release")
         XCTAssertTrue(h.needsApproval.first?.needsApproval == true)
@@ -199,7 +199,7 @@ final class GHWorkflowsMappingTests: XCTestCase {
             dto(name: "CI", status: "completed", conclusion: "success", branch: "main", event: "push", id: 1),
             dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 2)
         ]
-        let h = GHWorkflowsMapping.health(repo: "Sassy-Dog/velovate", runs: runs)
+        let h = GHWorkflowsMapping.health(repo: "acme/gadget", runs: runs)
         XCTAssertTrue(h.isHealthy, "default view ignores the workflow_run failure (legacy behavior preserved)")
         XCTAssertEqual(h.main?.title, "CI")
     }
@@ -212,7 +212,7 @@ final class GHWorkflowsMappingTests: XCTestCase {
             dto(name: "Release", status: "completed", conclusion: "failure", branch: "main", event: "workflow_run", id: 2)
         ]
         let h = GHWorkflowsMapping.health(
-            repo: "Sassy-Dog/velovate",
+            repo: "acme/gadget",
             runs: runs,
             watchedWorkflows: ["release.yml"]
         )

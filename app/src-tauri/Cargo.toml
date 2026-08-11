@@ -1,5 +1,5 @@
 [package]
-name = "devcanopy-app"
+name = "solador-app"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,35 +8,35 @@ rust-version.workspace = true
 tauri-build = "2"
 
 [dependencies]
-devcanopy-wire = { path = "../../crates/wire" }
+solador-wire = { path = "../../crates/wire" }
 viewmodel = { path = "../../crates/viewmodel" }
 agentclient = { path = "../../crates/agentclient" }
 # Settings/hosts/credentials. The keyring dependency moved here with it: this
 # crate reaches the OS credential store through `store::KeyringStore`, so
 # there is one spelling of the service/account naming, not two.
-devcanopy-store = { path = "../../crates/store" }
+solador-store = { path = "../../crates/store" }
 # The Repos / GitHub Runners panels' data layer: the REST client plus the pure
 # workflow-health, runner and roster mappings. This crate is the view side.
-devcanopy-github = { path = "../../crates/github" }
+solador-github = { path = "../../crates/github" }
 # Third-party availability: the shared status vocabulary and the three
 # transports the five watched vendors publish through.
-devcanopy-servicestatus = { path = "../../crates/servicestatus" }
+solador-servicestatus = { path = "../../crates/servicestatus" }
 # `join_all` for the five status pages, which are five independent hosts and
 # have no reason to be read in sequence. Already in the lock via crates/github.
 futures-util = "0.3"
 # This machine's own metrics, for the local host card that leads the grid. The
 # Swift app collects them through HostMetricsKit; this is the portable twin.
-devcanopy-localhost = { path = "../../crates/localhost" }
+solador-localhost = { path = "../../crates/localhost" }
 # The Usage panel's three sources: Claude Code's local logs, Neon consumption,
 # Sentry event stats. This crate renders them.
-devcanopy-usage = { path = "../../crates/usage" }
+solador-usage = { path = "../../crates/usage" }
 # The Azure Cost panel's reader — the SAS blob transport, the CSV fold, and the
 # fingerprint cache that keeps an unchanged export free.
-devcanopy-azurecost = { path = "../../crates/azurecost" }
+solador-azurecost = { path = "../../crates/azurecost" }
 # The OpenClaw panel's gateway client: WS protocol v3, the Ed25519 device
 # identity, and the frame→snapshot reducer. Default features (`ws`) on, because
 # this crate is the one consumer that actually opens the socket.
-devcanopy-openclaw = { path = "../../crates/openclaw" }
+solador-openclaw = { path = "../../crates/openclaw" }
 # The GitHub clocks are `DateTime<Utc>` (run start times, roster sightings), so
 # the panel layer speaks the same type rather than converting at every call.
 # Same pin as crates/github's, so one chrono resolves for the workspace.

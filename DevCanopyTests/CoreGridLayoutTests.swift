@@ -4,7 +4,7 @@ import XCTest
 final class CoreGridLayoutTests: XCTestCase {
     /// Largest proper divisor ≤ 10 with ≥ 2 rows — divides evenly, never a single tall row.
     func testEvenDivisors() {
-        XCTAssertEqual(coreColumns(coreCount: 36), 9) // ubu-3xdv: 9 × 4
+        XCTAssertEqual(coreColumns(coreCount: 36), 9) // ubu-01: 9 × 4
         XCTAssertEqual(coreColumns(coreCount: 16), 8) // 8 × 2
         XCTAssertEqual(coreColumns(coreCount: 12), 6) // 6 × 2
         XCTAssertEqual(coreColumns(coreCount: 10), 5) // 5 × 2  (was 10 × 1)

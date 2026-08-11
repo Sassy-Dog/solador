@@ -1,18 +1,18 @@
-# DevCanopy Cross-Platform Cockpit (`app/`)
+# Solador Cross-Platform Cockpit (`app/`)
 
 An experimental cross-platform shell proving out a macOS/Windows-portable stack: a
 [Tauri v2](https://v2.tauri.app) app that renders the **whole cockpit** the SwiftUI
-app renders — the local card plus one card per configured DevCanopy
+app renders — the local card plus one card per configured Solador
 [agent](../agent/README.md), then the **Containers/VMs**, **GitHub Repos**,
 **GitHub Runners**, **Usage** (Claude + Neon + Sentry), **Azure Cost** and **OpenClaw**
 panels — reflowed into rows for the measured width, and configured from an in-app
 **Settings** surface backed by the OS credential store.
 
 It began as a walking skeleton (one host card, one command). It is not one any
-more: [#150](https://github.com/Sassy-Dog/devcanopy/issues/150) took it to panel
+more: [#150](https://github.com/cpmadrid/solador/issues/150) took it to panel
 parity across fourteen slices. What it still is not is *shipped* — the product you
-install is the SwiftUI app in [`DevCanopy/`](../DevCanopy), which stays untouched.
-Packaging, signing and updates are [#15](https://github.com/Sassy-Dog/devcanopy/issues/15)'s,
+install is the SwiftUI app in [`DevCanopy/`](../Solador), which stays untouched.
+Packaging, signing and updates are [#15](https://github.com/cpmadrid/solador/issues/15)'s,
 not this tree's.
 
 ```
@@ -235,7 +235,7 @@ Three sources feed it, all in [`src-tauri/src/containers/`](src-tauri/src/contai
   ageing everything toward a false alarm.
 
 Seeded rules match Swift's (`sassydog-ghr-ubu-*` → "ghr runners" and `api-*` →
-"workflow jobs" on `ubu-3xdv`, `ghcr.io/*` hidden) and seed **only** when the
+"workflow jobs" on `ubu-01`, `ghcr.io/*` hidden) and seed **only** when the
 store has never carried rules: a deliberately emptied list stays empty. They are
 edited under [Settings → Hosts](#settings), beside the host list whose names
 scope them.
@@ -262,10 +262,10 @@ await window.__TAURI__.core.invoke("runners");
   "availability": {"label": "Operational", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
   "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
   "rows": [{
-    "repo": "Sassy-Dog/velovate", "name": "velovate",
+    "repo": "acme/gadget", "name": "gadget",
     "dotColor": "#e05a4f", "blinking": false,
-    "url": "https://github.com/Sassy-Dog/velovate/actions",   // the row's click target
-    "linkLabel": "Open Sassy-Dog/velovate on GitHub Actions", // its accessible name
+    "url": "https://github.com/acme/gadget/actions",   // the row's click target
+    "linkLabel": "Open acme/gadget on GitHub Actions", // its accessible name
     "cells": [{"text": "18", "color": "#cfe9d8", "width": 52.0}, …]
   }],
   "health": {"text": "✓ 4/6 healthy", "color": "#33d17a"}
@@ -304,7 +304,7 @@ descend into it (otherwise this repo's own `.claude/worktrees/…` checkouts
 would each register as a second repo of the same name), then spawns
 `git for-each-ref` and `git worktree list --porcelain` per repo. The join to a
 tracked slug is `PortfolioRepos.normalize` — lowercase, letters and digits only
-— which is what lets the slug `tailored-tip` find the folder `tailoredtip`. A
+— which is what lets the slug `tailored-tip` find the folder `flywheel`. A
 git invocation that fails yields `None`, i.e. `"—"`. Swift's `localBranchCount`
 returns `0` there; that is a fabricated number and this deliberately does not
 copy it. The scan root is a parameter, so the tests drive real temporary
@@ -400,7 +400,7 @@ setting doing nothing. This is the periodic-service counterpart to
 
 **Tapping a row opens its Actions page**, the way the Swift panel's
 `onTapGesture` + `NSWorkspace.open` does
-([#187](https://github.com/Sassy-Dog/devcanopy/issues/187)). The URL is
+([#187](https://github.com/cpmadrid/solador/issues/187)). The URL is
 `github::actions_url`'s and is never composed in the webview — it is the only
 string the granted ACL scope accepts, and a second author of it would be a
 second author of the app's whole browser-opening surface. See
@@ -912,7 +912,7 @@ a flappy tailnet is a blip, not an outage.
 
 **Past that, the card goes blank.** A host we can no longer contact renders its
 name, a red border and one sentence dating the outage — not its last snapshot
-behind a badge, which is what it did until ubu-3xdv went down during the
+behind a badge, which is what it did until ubu-01 went down during the
 2026-08-06 GitHub outage and sat there showing four-minute-old numbers as if
 they were now. Every figure on a host card is a present-tense claim; at a glance
 a card *is* its figures, and the badge is the part nobody reads. This is the
@@ -939,7 +939,7 @@ The agent answers `/v1/snapshot` from a sampler running on its own clock, so a
 sampler that has stopped (or has not yet produced its first sample, where
 `empty_snapshot()` supplies zeros) is served as a perfectly successful 200. Every
 poll succeeds, the dot stays green, and the numbers are frozen — the failure mode
-[#182](https://github.com/Sassy-Dog/devcanopy/issues/182) is named after.
+[#182](https://github.com/cpmadrid/solador/issues/182) is named after.
 
 The agent already publishes the answer and nothing consumed it: `/v1/health`
 carries `samplerStale` and `sampleAgeSeconds`. So each host with a token is
@@ -972,7 +972,7 @@ Three rules make this a diagnostic rather than a second failure mode:
   defect. Recovery arrives as a health poll that lands saying `samplerStale:
   false`.
 - **Unknown is not healthy.** `None` — no health poll yet, or an agent older
-  than [#35](https://github.com/Sassy-Dog/devcanopy/issues/35) that never sends
+  than [#35](https://github.com/cpmadrid/solador/issues/35) that never sends
   the field — leaves the card exactly as the snapshot poll found it, and a
   stalled agent that reports no age gets `last update unknown` rather than a
   fabricated `0s`.
@@ -999,7 +999,7 @@ cards' do from `crates/viewmodel`.
 `WebviewWindow`, which means granting the webview
 `core:webview:allow-create-webview-window` (or `core:default`) —
 widening the one seam in this app with no automated coverage
-([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)), for a surface that
+([#123](https://github.com/cpmadrid/solador/issues/123)), for a surface that
 needs no platform capability at all. Every command below is *app-defined*, which
 Tauri's ACL permits without a grant, so none of them appears in
 `capabilities/default.json` — see [The one granted
@@ -1191,7 +1191,7 @@ Two gaps, deliberate and worth knowing:
   [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
   stored field remains only as that migration's seed.
 - **About's version is hard-coded** to the crate version, not the CalVer the
-  Swift app derives from git ([#15](https://github.com/Sassy-Dog/devcanopy/issues/15)),
+  Swift app derives from git ([#15](https://github.com/cpmadrid/solador/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
   one would navigate the cockpit's own webview away from the app, and the opener
   scope granted below deliberately does **not** reach them. They are repo roots
@@ -1251,7 +1251,7 @@ the About tab's own links, `http://` instead of `https://`, and
 
 What the test does **not** do is exercise the IPC boundary that enforces the
 scope: it reads the file, it does not invoke through it. Nothing automated does
-— that is still [#123](https://github.com/Sassy-Dog/devcanopy/issues/123), and
+— that is still [#123](https://github.com/cpmadrid/solador/issues/123), and
 it is why the checklist below grew a tap-to-open line.
 
 ## Build & run
@@ -1267,7 +1267,7 @@ entry point:
 ```
 
 That builds the same package plain cargo does and then, on macOS, re-signs the
-binary with the stable `Apple Development` identity (team `52YMXC3348`) before
+binary with the stable `Apple Development` identity (team `the maintainer's Apple team id`) before
 launching it. That step is the whole reason to prefer it: cargo stamps a *fresh
 ad-hoc* signature on every relink, and each new identity invalidates the Keychain
 ACLs on the app's stored credentials — so a bare-cargo launch re-prompts for every
@@ -1292,14 +1292,14 @@ run, a fresh checkout, a machine you are driving over SSH.
 
 | Env var                     | Default                        | Meaning                                                                                     |
 |------------------------------|--------------------------------|---------------------------------------------------------------------------------------------|
-| `DEVCANOPY_SEED_HOST`       | —                              | `"name\|address\|port\|token"`. Provisions that host **if no host with that address exists**; port defaults to 7878 and the token (when non-empty) goes to the OS credential store under the new host's id. Same parse and same no-op rule as Swift's `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()`, so it is safe to leave exported — relaunching never accumulates duplicates. |
-| `DEVCANOPY_STORE_DIR`       | platform config dir            | Where `store.json` lives. A scratch directory here keeps `store.json` — and only `store.json` — out of the real one. **Not** the keychain: the credential *service* is always the real one, so credential migration is skipped whenever this is set (see "Consolidated credential item" below); a scratch run touches no keychain item at all beyond whatever per-item reads/writes the panels themselves make. |
-| `DEVCANOPY_LEGACY_SECRETS`  | unset                          | Set to `1` to skip credential migration and force per-item keychain routing, even on macOS — the rollback switch for consolidation. See "Consolidated credential item" below. |
+| `SOLADOR_SEED_HOST`       | —                              | `"name\|address\|port\|token"`. Provisions that host **if no host with that address exists**; port defaults to 7878 and the token (when non-empty) goes to the OS credential store under the new host's id. Same parse and same no-op rule as Swift's `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()`, so it is safe to leave exported — relaunching never accumulates duplicates. |
+| `SOLADOR_STORE_DIR`       | platform config dir            | Where `store.json` lives. A scratch directory here keeps `store.json` — and only `store.json` — out of the real one. **Not** the keychain: the credential *service* is always the real one, so credential migration is skipped whenever this is set (see "Consolidated credential item" below); a scratch run touches no keychain item at all beyond whatever per-item reads/writes the panels themselves make. |
+| `SOLADOR_LEGACY_SECRETS`  | unset                          | Set to `1` to skip credential migration and force per-item keychain routing, even on macOS — the rollback switch for consolidation. See "Consolidated credential item" below. |
 
 Tokens live in the OS credential store (service `com.sassydog.devcanopy`), never
 in `store.json`. Account `host-<uuid>` is the storage key either way, but what
 that means depends on platform and migration state: pre-migration, on any
-non-macOS target, or under `DEVCANOPY_LEGACY_SECRETS=1`, it names its own
+non-macOS target, or under `SOLADOR_LEGACY_SECRETS=1`, it names its own
 keychain item; on macOS once migrated, it is one key inside the consolidated
 `secrets_v1` item (see "Consolidated credential item" below). An empty token
 never leaves the process, so it gets its own message — *"No agent token
@@ -1313,15 +1313,19 @@ and Sentry usage keys, the OpenClaw bearer token — lives
 in one keychain item: service `com.sassydog.devcanopy`, account `secrets_v1`,
 value a JSON map keyed by the same account strings each credential used to have
 its own item under. One item means one keychain ACL prompt covers every
-credential this app stores, rather than a fresh "Always Allow" per secret. Two
-exceptions keep their own items regardless of platform. The OpenClaw *device*
+credential this app stores, rather than a fresh "Always Allow" per secret. One
+exception keeps its own item regardless of platform: the OpenClaw *device*
 identity key — raw key material, not text, and an account the Swift app also
-writes to directly. And the Azure Cost SAS URL — the one credential with an
-**external writer**: the `com.sassydog.devcanopy.azurecost-sas` LaunchAgent
-re-mints it every 4 days and writes the per-item entry from outside the app, and
-a blob copy would shadow every refresh with a frozen one (it did — the panel read
-a migration-time SAS until it expired). `migrate_legacy` also scrubs a stale
-`azure_cost_sas_url` entry out of any blob written before this rule existed.
+writes to directly.
+
+There used to be a second. The Azure Cost SAS URL was written from outside this
+process by a LaunchAgent that re-minted it every four days, so a blob copy
+shadowed every refresh with a frozen one (it did — the panel read a
+migration-time SAS until it expired). That whole arrangement is gone: the app
+mints its own SAS per poll from the operator's Azure CLI session and stores
+nothing at all. `migrate_legacy` still scrubs a stale `azure_cost_sas_url`
+entry out of an upgraded install's blob, because nothing else would — see
+`RETIRED_AZURE_SAS_ACCOUNT` in `crates/store/src/secrets.rs`.
 
 The first launch after this landed, and every launch since that finds no
 `secrets_v1` item, copies every legacy per-item secret into that blob once
@@ -1347,7 +1351,7 @@ the whole map). The ACL-prompt problem consolidation exists to fix is
 macOS-specific too, so every other platform keeps the pre-consolidation
 one-item-per-secret scheme unchanged.
 
-**Escape hatch:** set `DEVCANOPY_LEGACY_SECRETS=1` to skip migration and force
+**Escape hatch:** set `SOLADOR_LEGACY_SECRETS=1` to skip migration and force
 per-item routing even on macOS — abandoning consolidation is one env var, not
 deleting a keychain item before every launch.
 
@@ -1427,7 +1431,7 @@ gitignored) — which matters for the smoke test below.
 ## Manual IPC smoke test
 
 **Nothing automated exercises the Tauri IPC boundary**
-([#123](https://github.com/Sassy-Dog/devcanopy/issues/123)). Both sides of the
+([#123](https://github.com/cpmadrid/solador/issues/123)). Both sides of the
 seam are tested and the seam itself is not: the Rust tests call
 `cockpit_view(…)`, `settings::view(…)`, `containers::view(…)`, `usage::view(…)`,
 `azure::view(…)` and `openclaw::view(…)` directly rather than through their
@@ -1457,7 +1461,7 @@ panels, and the checklist below has grown with it. The trade-off still holds —
 #150 close-out audit (#178) and left standing; the deferred register there names
 it.
 
-**And weaker again since [#187](https://github.com/Sassy-Dog/devcanopy/issues/187).**
+**And weaker again since [#187](https://github.com/cpmadrid/solador/issues/187).**
 Until then the ACL's `permissions` list was empty, so "an ACL break" could only
 mean *losing* access to app-defined commands — a failure that blanks a panel and
 is therefore loud. There is now [one granted
@@ -1479,8 +1483,8 @@ paths are the ⏱ extras at the end.
 
 ```bash
 rm -f app/ui/sample*.json                      # 1. fixtures MUST be gone
-DEVCANOPY_STORE_DIR=$(mktemp -d) \
-DEVCANOPY_SEED_HOST="smoke-$(date +%H%M%S)|100.87.202.125|7878" \
+SOLADOR_STORE_DIR=$(mktemp -d) \
+SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
   cargo run -p devcanopy-app                   # 2. scratch store, distinctive name
 ```
 
@@ -1528,7 +1532,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `openclaw_wake` | put a gateway URL under Settings → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
-| a live agent | re-run step 2 with `\|$TOKEN` appended to `DEVCANOPY_SEED_HOST` | the host card fills with live figures and a green dot |
+| a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 
 ### Procedure
 
@@ -1547,15 +1551,15 @@ and that immediacy is itself the check on the corresponding wake:
    can paint the card except a successful `invoke` round-trip.
 
 2. **Launch against a scratch store, with a distinctive host name** — a second,
-   independent discriminator, since the fixture hard-codes `ubu-3xdv` and so does
-   every seeded example. `DEVCANOPY_STORE_DIR` is what makes the run repeatable:
+   independent discriminator, since the fixture hard-codes `ubu-01` and so does
+   every seeded example. `SOLADOR_STORE_DIR` is what makes the run repeatable:
    seeding is a no-op when the address is already configured, so a smoke run
    against the *real* store would silently reuse the host from last time — and its
    name — instead of the one you just passed.
 
    ```bash
-   DEVCANOPY_STORE_DIR=$(mktemp -d) \
-   DEVCANOPY_SEED_HOST="smoke-$(date +%H%M%S)|100.87.202.125|7878|$TOKEN" \
+   SOLADOR_STORE_DIR=$(mktemp -d) \
+   SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878|$TOKEN" \
      cargo run -p devcanopy-app
    ```
 
@@ -1763,11 +1767,11 @@ and that immediacy is itself the check on the corresponding wake:
     the alert is on the transition, not on the state.
 
     Under `cargo run` on macOS the banner is attributed to **Terminal**, not to
-    DevCanopy: `notify-rust` sets the bundle id to `com.apple.Terminal` when
+    Solador: `notify-rust` sets the bundle id to `com.apple.Terminal` when
     `tauri::is_dev()`, because an unbundled binary has no identity of its own to
     notify under. That is expected, not a defect — and it means a *bundled*
     build's notification permission prompt is still unexercised
-    ([#15](https://github.com/Sassy-Dog/devcanopy/issues/15) owns packaging). If
+    ([#15](https://github.com/cpmadrid/solador/issues/15) owns packaging). If
     macOS Focus is on, or notifications are denied for Terminal, delivery is a
     silent no-op with nothing on the terminal either; check
     System Settings → Notifications before concluding the code is wrong.
@@ -1826,7 +1830,7 @@ no gateway configured passes; a missing panel does not.
 Step 10 passes when the **first** card in the grid is this machine, named after
 this machine, with a green dot. It is the one card no configuration can produce
 and no configuration can remove, so it is also the cheapest read on the whole
-procedure: a grid that leads with `ubu-3xdv` means either the local sampler never
+procedure: a grid that leads with `ubu-01` means either the local sampler never
 started or step 1 was skipped.
 
 Step 11 is the only part of this procedure whose pass condition is **outside the
@@ -1838,7 +1842,7 @@ Neither has an in-app symptom, which is exactly why they are steps rather than
 tick-boxes: nothing on screen changes if either is broken.
 
 Seeding a second host — run once more with a different address, against the same
-`DEVCANOPY_STORE_DIR` — is the multi-card version of the same check: two cards,
+`SOLADOR_STORE_DIR` — is the multi-card version of the same check: two cards,
 side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 
 ### Fail
@@ -1847,8 +1851,8 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 |-----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | The window is a red `failed to load cockpit: …` line instead of a card.                        | The first `invoke` rejected — `app.js`'s initial `catch` replaces the whole body with the error. This is the expected shape of an ACL or registration break.           |
 | The card's structure is there but every field is blank.                                       | `app.js` never ran at all — a CSP violation or a script error, so nothing ever reached the IPC boundary. Check the console before suspecting the ACL.                    |
-| A card renders with plausible numbers that never change, and the host name is `ubu-3xdv` rather than the one you passed. | You skipped step 1. That is the fixture, not the boundary. Delete `app/ui/sample*.json` and re-run.                                                                     |
-| `No hosts configured. Add one in Settings.` and no card at all.                                | A malformed `DEVCANOPY_SEED_HOST` (empty name or address) — the boundary is fine, the configuration is not. Note this still *proves* the round-trip: that sentence is `cockpit_payload`'s and has no other path to the DOM. Fix the variable and re-run to get a named card. |
+| A card renders with plausible numbers that never change, and the host name is `ubu-01` rather than the one you passed. | You skipped step 1. That is the fixture, not the boundary. Delete `app/ui/sample*.json` and re-run.                                                                     |
+| `No hosts configured. Add one in Settings.` and no card at all.                                | A malformed `SOLADOR_SEED_HOST` (empty name or address) — the boundary is fine, the configuration is not. Note this still *proves* the round-trip: that sentence is `cockpit_payload`'s and has no other path to the DOM. Fix the variable and re-run to get a named card. |
 | The window opens and stays up, but the `cockpit: first frontend request …` line never prints.  | The boundary is broken and the window is hiding it. This is the definitive terminal-side failure: `invoke` never reached Rust. Verified as a real discriminator on 2026-07-31 by renaming the command in `app.js` — the app still launched and still held a window, and the line stayed absent. |
 | The cards paint, but clicking **Settings** does nothing and `settings: first frontend request …` never prints. | The cockpit half of the boundary is fine and the settings half is not: an unregistered `settings_view`, or a script error in `settings.js` that stopped it before it wired the button. Check the webview console. |
 | Settings opens with no tabs and no controls, or the button carries no label.                   | `settings_view` answered with something that isn't a settings payload — or `app.js` painted a cockpit payload with no `settingsLabel`. Regenerate the fixtures and check the payload shape, not the ACL. |
@@ -1879,19 +1883,19 @@ found`.
 ### Recording a run
 
 The last acceptance item on
-[#123](https://github.com/Sassy-Dog/devcanopy/issues/123) is a human one: launch
+[#123](https://github.com/cpmadrid/solador/issues/123) is a human one: launch
 once per this procedure and record the result. That record is currently the only
 evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
-| 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/Sassy-Dog/devcanopy/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-3xdv), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from Swift code that has never run live — the Swift app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why Swift never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on velovate's local columns, running/failed dots per Swift), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
-| 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/Sassy-Dog/devcanopy/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `DEVCANOPY_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |
-| 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/Sassy-Dog/devcanopy/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
-| 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/Sassy-Dog/devcanopy/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
-| 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/Sassy-Dog/devcanopy/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
-| 2026-08-01 | Settings surface + `App` state restructure ([#163](https://github.com/Sassy-Dog/devcanopy/issues/163)) | **Pass.** Fixtures removed, scratch store, `DEVCANOPY_SEED_HOST="smoke-…\|100.87.202.125\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport still carry the call after `manage()` changed from `Cockpit` to `App` and the handler list grew from one command to fifteen. | **Not performed**, and neither was **step 5** — both need a click on a Mac someone else is working on. The settings half of the boundary is therefore *documented, not verified*: `settings: first frontend request …` has never been observed. Worth ten seconds from anyone who launches this next. |
-| 2026-07-31 | `snapshot` → `cockpit`, N-card grid ([#157](https://github.com/Sassy-Dog/devcanopy/issues/157)) | **Pass.** Fixtures removed, scratch store, `DEVCANOPY_SEED_HOST="smoke-233344\|100.87.202.125\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport all carried the call, and `width` arrived. App still up when the run ended. Negative control run immediately before (command renamed in `app.js`, rebuilt) printed nothing, so the signal discriminates. | **Not performed** — the Mac's screen was locked (`CGSSessionScreenIsLocked`), which makes `screencapture` return black frames, and no Accessibility grant was available to read the window's text. Worth a human glance next time someone has the screen in front of them. |
+| 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/cpmadrid/solador/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-01), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from Swift code that has never run live — the Swift app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why Swift never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on gadget's local columns, running/failed dots per Swift), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
+| 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/cpmadrid/solador/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `SOLADOR_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |
+| 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/cpmadrid/solador/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
+| 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/cpmadrid/solador/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
+| 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/cpmadrid/solador/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
+| 2026-08-01 | Settings surface + `App` state restructure ([#163](https://github.com/cpmadrid/solador/issues/163)) | **Pass.** Fixtures removed, scratch store, `SOLADOR_SEED_HOST="smoke-…\|100.100.100.100\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport still carry the call after `manage()` changed from `Cockpit` to `App` and the handler list grew from one command to fifteen. | **Not performed**, and neither was **step 5** — both need a click on a Mac someone else is working on. The settings half of the boundary is therefore *documented, not verified*: `settings: first frontend request …` has never been observed. Worth ten seconds from anyone who launches this next. |
+| 2026-07-31 | `snapshot` → `cockpit`, N-card grid ([#157](https://github.com/cpmadrid/solador/issues/157)) | **Pass.** Fixtures removed, scratch store, `SOLADOR_SEED_HOST="smoke-233344\|100.100.100.100\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport all carried the call, and `width` arrived. App still up when the run ended. Negative control run immediately before (command renamed in `app.js`, rebuilt) printed nothing, so the signal discriminates. | **Not performed** — the Mac's screen was locked (`CGSSessionScreenIsLocked`), which makes `screencapture` return black frames, and no Accessibility grant was available to read the window's text. Worth a human glance next time someone has the screen in front of them. |
 
 ## Tests
 

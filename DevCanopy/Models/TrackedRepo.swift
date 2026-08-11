@@ -7,7 +7,7 @@ import SwiftData
 /// the bare `owner/name` slug is the identity.
 @Model
 final class TrackedRepo {
-    /// `owner/name`, e.g. `Sassy-Dog/velovate`.
+    /// `owner/name`, e.g. `acme/gadget`.
     var slug: String = ""
     var enabled: Bool = true
     var createdAt: Date = Date()
@@ -28,7 +28,7 @@ final class TrackedRepo {
         createdAt = Date()
     }
 
-    /// Repo name after the slash, e.g. `velovate`.
+    /// Repo name after the slash, e.g. `gadget`.
     var name: String {
         String(slug.split(separator: "/").last ?? "")
     }

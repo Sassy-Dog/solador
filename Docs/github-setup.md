@@ -1,6 +1,6 @@
 # Setting up GitHub Integration
 
-DevCanopy's **Repos** and **GitHub Runners** panels read GitHub data using a
+Solador's **Repos** and **GitHub Runners** panels read GitHub data using a
 **fine-grained personal access token** with read-only access. There is no OAuth flow —
 you paste a token into the app and it is stored in your macOS Keychain.
 
@@ -16,10 +16,10 @@ you paste a token into the app and it is stored in your macOS Keychain.
    - **Issues** — required for the Repos panel's open-issue counts.
    - **Pull requests** — required for the Repos panel's open-PR counts.
    - **Metadata** — read-only (granted automatically alongside other permissions).
-5. Leave everything else at **No access** — DevCanopy never writes to GitHub.
+5. Leave everything else at **No access** — Solador never writes to GitHub.
 6. Generate the token and copy it (it is shown only once).
 
-## Add the token to DevCanopy
+## Add the token to Solador
 
 1. Open **Settings → GitHub Token**.
 2. Paste the token into the **Fine-grained PAT** field and click **Save**.

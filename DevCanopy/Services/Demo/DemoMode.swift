@@ -13,7 +13,7 @@ import Foundation
 /// ```bash
 /// ./dev run -- --demo
 /// ```
-/// or set the `DEVCANOPY_DEMO` environment variable to a truthy value
+/// or set the `SOLADOR_DEMO` environment variable to a truthy value
 /// (`1`/`true`/`yes`). In Xcode: Product → Scheme → Edit Scheme → Arguments → add
 /// `--demo`.
 ///
@@ -28,7 +28,7 @@ enum DemoMode {
         let args = ProcessInfo.processInfo.arguments
         if args.contains("--demo") { return true }
 
-        if let raw = ProcessInfo.processInfo.environment["DEVCANOPY_DEMO"]?.lowercased() {
+        if let raw = ProcessInfo.processInfo.environment["SOLADOR_DEMO"]?.lowercased() {
             return ["1", "true", "yes", "on"].contains(raw)
         }
         return false

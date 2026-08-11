@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# Install the DevCanopy metrics agent as a user systemd service (Linux).
+# Install the Solador metrics agent as a user systemd service (Linux).
 #
 # Usage:
 #   ./deploy/install.sh
 #
 # What it does:
 #   1. Builds the release binary (cargo build --release).
-#   2. Installs it to /opt/devcanopy-agent/ (falls back to ~/.local/bin if /opt
+#   2. Installs it to /opt/solador-agent/ (falls back to ~/.local/bin if /opt
 #      is not writable and sudo is unavailable).
-#   3. Writes the env file ~/.config/devcanopy-agent.env with the bearer token
+#   3. Writes the env file ~/.config/solador-agent.env with the bearer token
 #      (prompts for it, or reuses an existing one).
 #   4. Installs + enables the user systemd unit and starts it.
 #   5. Verifies /v1/health reports the version that was just built — a running
@@ -23,10 +23,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=agent/deploy/lib.sh
 source "$SCRIPT_DIR/lib.sh"
 CRATE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BIN_NAME="devcanopy-agent"
-ENV_FILE="$HOME/.config/devcanopy-agent.env"
+BIN_NAME="solador-agent"
+ENV_FILE="$HOME/.config/solador-agent.env"
 UNIT_SRC="$SCRIPT_DIR/${BIN_NAME}.service"
 UNIT_DST="$HOME/.config/systemd/user/${BIN_NAME}.service"
+
+# The pre-rename install. Everything below that mentions these exists to hand a
+# host over from the old agent without the operator noticing anything except a
+# version bump.
+LEGACY_BIN_NAME="devcanopy-agent"
+LEGACY_ENV_FILE="$HOME/.config/${LEGACY_BIN_NAME}.env"
+LEGACY_UNIT="$HOME/.config/systemd/user/${LEGACY_BIN_NAME}.service"
 
 # ---- preflight -------------------------------------------------------------
 command -v cargo >/dev/null 2>&1 || { echo "ERROR: cargo not found in PATH." >&2; exit 1; }
@@ -45,7 +52,7 @@ BUILT_BIN="$CRATE_DIR/target/release/$BIN_NAME"
 [ -x "$BUILT_BIN" ] || { echo "ERROR: build did not produce $BUILT_BIN" >&2; exit 1; }
 
 # ---- install binary --------------------------------------------------------
-INSTALL_DIR="/opt/devcanopy-agent"
+INSTALL_DIR="/opt/solador-agent"
 if mkdir -p "$INSTALL_DIR" 2>/dev/null && [ -w "$INSTALL_DIR" ]; then
     install -m 0755 "$BUILT_BIN" "$INSTALL_DIR/$BIN_NAME"
 elif command -v sudo >/dev/null 2>&1; then
@@ -61,11 +68,39 @@ else
 fi
 echo "==> Binary installed: $INSTALL_DIR/$BIN_NAME"
 
+# ---- hand over from the pre-rename install ---------------------------------
+# Must run BEFORE the systemd block below, and before the token is resolved.
+#
+# Without this, installing over an old agent fails in a way that looks like
+# something else entirely: the new unit binds the same tailnet address and port,
+# gets EADDRINUSE, and — with Restart=always — crash-loops every 3s, while the
+# OLD agent keeps answering /v1/health with the OLD token. verify_health then
+# reports "did not report version within timeout", naming neither the port
+# conflict nor the other unit. Monitoring keeps working throughout, so the
+# whole thing looks less broken than it is.
+if [ -f "$LEGACY_UNIT" ]; then
+    echo "==> Found a pre-rename install ($LEGACY_BIN_NAME). Handing over."
+    # Stop first: it holds the port the new unit is about to want.
+    systemctl --user stop "$LEGACY_BIN_NAME" 2>/dev/null || true
+    systemctl --user disable "$LEGACY_BIN_NAME" 2>/dev/null || true
+    echo "    stopped and disabled $LEGACY_BIN_NAME"
+fi
+
 # ---- env file (token) ------------------------------------------------------
 mkdir -p "$(dirname "$ENV_FILE")"
 EXISTING_TOKEN=""
 if [ -f "$ENV_FILE" ]; then
-    EXISTING_TOKEN="$(grep -E '^DEVCANOPY_AGENT_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+    EXISTING_TOKEN="$(grep -E '^SOLADOR_AGENT_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+fi
+# Carry the old token across. This is the part that matters: the file name AND
+# the key both changed, so the new grep above finds nothing on an old host and
+# the script would silently mint a FRESH token — leaving the cockpit's stored
+# per-host credential pointing at nothing, with no signal anywhere that the two
+# had diverged. A token the operator never sees changing is a token they cannot
+# be asked to re-enter.
+if [ -z "$EXISTING_TOKEN" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+    EXISTING_TOKEN="$(grep -E '^DEVCANOPY_AGENT_TOKEN=' "$LEGACY_ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+    [ -n "$EXISTING_TOKEN" ] && echo "==> Carried the bearer token over from $LEGACY_ENV_FILE"
 fi
 
 if [ -n "$EXISTING_TOKEN" ]; then
@@ -83,11 +118,16 @@ fi
 
 # ---- bind address ----------------------------------------------------------
 # Default to the host's Tailscale IP so the agent only listens on the tailnet,
-# never the public NIC. Honor a pre-set DEVCANOPY_AGENT_BIND (e.g. to opt into
+# never the public NIC. Honor a pre-set SOLADOR_AGENT_BIND (e.g. to opt into
 # 0.0.0.0 behind a firewall) and reuse an existing value from the env file.
 EXISTING_BIND=""
 if [ -f "$ENV_FILE" ]; then
-    EXISTING_BIND="$(grep -E '^DEVCANOPY_AGENT_BIND=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+    EXISTING_BIND="$(grep -E '^SOLADOR_AGENT_BIND=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)"
+fi
+# ...and the same carry-over, so a host that deliberately opted out of the
+# tailnet default keeps its choice instead of silently reverting to detection.
+if [ -z "$EXISTING_BIND" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+    EXISTING_BIND="$(grep -E '^DEVCANOPY_AGENT_BIND=' "$LEGACY_ENV_FILE" | head -n1 | cut -d= -f2- || true)"
 fi
 
 detect_tailscale_ip() {
@@ -102,24 +142,24 @@ detect_tailscale_ip() {
     return 1
 }
 
-BIND="${DEVCANOPY_AGENT_BIND:-$EXISTING_BIND}"
+BIND="${SOLADOR_AGENT_BIND:-$EXISTING_BIND}"
 if [ -z "$BIND" ]; then
     BIND="$(detect_tailscale_ip || true)"
 fi
 if [ -z "$BIND" ]; then
-    echo "ERROR: could not detect a Tailscale IP for DEVCANOPY_AGENT_BIND." >&2
-    echo "       Bring up Tailscale, or set DEVCANOPY_AGENT_BIND explicitly" >&2
-    echo "       (e.g. DEVCANOPY_AGENT_BIND=0.0.0.0 ./deploy/install.sh — only behind a firewall)." >&2
+    echo "ERROR: could not detect a Tailscale IP for SOLADOR_AGENT_BIND." >&2
+    echo "       Bring up Tailscale, or set SOLADOR_AGENT_BIND explicitly" >&2
+    echo "       (e.g. SOLADOR_AGENT_BIND=0.0.0.0 ./deploy/install.sh — only behind a firewall)." >&2
     exit 1
 fi
 echo "==> Binding to $BIND (tailnet interface)"
 
-PORT="${DEVCANOPY_AGENT_PORT:-7878}"
+PORT="${SOLADOR_AGENT_PORT:-7878}"
 umask 077
 cat > "$ENV_FILE" <<EOF
-DEVCANOPY_AGENT_TOKEN=$TOKEN
-DEVCANOPY_AGENT_BIND=$BIND
-DEVCANOPY_AGENT_PORT=$PORT
+SOLADOR_AGENT_TOKEN=$TOKEN
+SOLADOR_AGENT_BIND=$BIND
+SOLADOR_AGENT_PORT=$PORT
 EOF
 chmod 600 "$ENV_FILE"
 echo "==> Wrote $ENV_FILE (token + bind + port, mode 600)"
@@ -133,6 +173,10 @@ systemctl --user enable "$BIN_NAME"
 # `--now` only starts a stopped unit, it won't restart a running one.
 systemctl --user restart "$BIN_NAME"
 
+# The old binary, env file and unit file are left on disk on purpose: they cost
+# nothing, and they are the rollback path if the new agent does not come up.
+# Remove them by hand once you are satisfied.
+
 # Survive logout / start on boot.
 if command -v loginctl >/dev/null 2>&1; then
     loginctl enable-linger "$USER" 2>/dev/null || \
@@ -143,7 +187,7 @@ fi
 # `active (running)` only proves *a* binary is up. Assert the version being
 # served is the version just built, so a stale binary can't pass for a
 # successful install. The probe dials the bind address written above, so it
-# works on a tailnet-only agent (DEVCANOPY_AGENT_BIND) without hardcoding
+# works on a tailnet-only agent (SOLADOR_AGENT_BIND) without hardcoding
 # loopback.
 if ! verify_health "$ENV_FILE" "$TARGET_VERSION"; then
     echo >&2
@@ -163,8 +207,8 @@ systemctl --user --no-pager status "$BIN_NAME" || true
 echo
 echo "Verify locally (sources the token from the env file — nothing secret printed):"
 echo "  set -a; . $ENV_FILE; set +a"
-echo "  curl -s -H \"Authorization: Bearer \$DEVCANOPY_AGENT_TOKEN\" \"\$DEVCANOPY_AGENT_BIND:\$DEVCANOPY_AGENT_PORT/v1/health\""
+echo "  curl -s -H \"Authorization: Bearer \$SOLADOR_AGENT_TOKEN\" \"\$SOLADOR_AGENT_BIND:\$SOLADOR_AGENT_PORT/v1/health\""
 echo
-echo "Bearer token (give this to DevCanopy): stored in $ENV_FILE (mode 600)."
+echo "Bearer token (give this to Solador): stored in $ENV_FILE (mode 600)."
 echo "  Last 4 chars: ...${TOKEN: -4}   — read the full value with:"
-echo "  grep '^DEVCANOPY_AGENT_TOKEN=' $ENV_FILE | cut -d= -f2-"
+echo "  grep '^SOLADOR_AGENT_TOKEN=' $ENV_FILE | cut -d= -f2-"
