@@ -24,7 +24,15 @@ pub const GREEN_DIM: u32 = 0x002F_7A5C;
 pub const AMBER: u32 = 0x00E0_A03A;
 pub const RED: u32 = 0x00E0_614F;
 pub const MUTED: u32 = 0x0080_90AC;
-pub const INK: u32 = 0x00E8_E2D4;
+/// The mark's own ground (`brand/icon.svg`), borrowed back into the UI.
+///
+/// The rest of the palette went the other way — the mark was re-toned to these
+/// constants rather than these constants to the mark, because they carry
+/// meaning and it does not. This is the one value that travelled inward, and it
+/// could because ink is not semantic: no threshold reads it, so nothing about
+/// *good/warning/error* moves when it does. It reads 15.4:1 on `PANEL`, a shade
+/// better than the `#E8E2D4` it replaced.
+pub const INK: u32 = 0x00F5_E6CD;
 
 pub const CPU: u32 = 0x003F_C8D4;
 pub const MEM: u32 = 0x00A9_7CE8;
@@ -246,6 +254,26 @@ mod css_sync {
                 "{token} in app.css drifted from its Rust constant"
             );
         }
+    }
+
+    /// `app/ui/mark.svg` is a copy of `brand/mark.svg`, made by
+    /// `Scripts/generate-icons.sh`. The copy exists because the frontend's dist
+    /// root is `app/ui` and the app's CSP is `img-src 'self' data:`, so it
+    /// cannot reach out of the tree to `brand/`.
+    ///
+    /// A copy with nothing watching it is a copy that goes stale, and this one
+    /// would go stale invisibly: the page keeps rendering, just the previous
+    /// mark. This is the same guard the CSS mirror above provides, for the same
+    /// reason -- see also the six drifted hex values recorded in
+    /// `brand/README.md`, which is what an unwatched duplicate looks like.
+    #[test]
+    fn the_frontend_mark_matches_the_brand_mark() {
+        assert_eq!(
+            include_str!("../../../app/ui/mark.svg"),
+            include_str!("../../../brand/mark.svg"),
+            "app/ui/mark.svg has drifted from brand/mark.svg -- \
+             re-run ./Scripts/generate-icons.sh"
+        );
     }
 
     /// The Playwright crons suite writes four of these out as literals,

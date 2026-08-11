@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <title>Solador</title>
+<!-- Generated from brand/mark.svg by Scripts/generate-icons.sh; a viewmodel
+     test fails if the copy drifts. It cannot be referenced out of brand/
+     directly: the frontend's dist root is app/ui and the CSP is
+     `img-src 'self' data:`. Invisible in the Tauri window (no browser chrome),
+     but the frontend suite and `csp_server.py` serve this page in a real tab. -->
+<link rel="icon" href="mark.svg" />
 <link rel="stylesheet" href="app.css" />
 </head>
 <body>
@@ -11,6 +17,16 @@
        payload's `hostColumns`. -->
   <div id="cockpitView">
     <div class="topbar">
+      <!-- The mark rides the title line rather than taking a row of its own.
+           This cockpit is meant to sit full-screen on a second monitor and the
+           layout work fought for every vertical pixel, so a branding band would
+           be the one element on the page costing height while saying nothing.
+           On the title line it costs none: the h1 already sets the row height.
+
+           alt="" because it is decorative -- the heading beside it already
+           names the view, and a screen reader announcing "Solador logo" before
+           every "Hosts" is noise. -->
+      <img class="brandmark" src="mark.svg" alt="" width="18" height="18" />
       <h1 class="panel-title" id="hostsTitle"></h1>
       <!-- The host tab bar, for the "Show as tabs" overflow mode. It rides the
            title line rather than sitting on its own row below it: the overflow
@@ -177,6 +193,7 @@
        here, for the same reason the cockpit has none. -->
   <section class="settings" id="settings" hidden>
     <div class="topbar">
+      <img class="brandmark" src="mark.svg" alt="" width="18" height="18" />
       <h1 class="panel-title" id="settingsTitle"></h1>
       <span class="grow"></span>
       <span class="status" id="settingsStatus" role="status"></span>

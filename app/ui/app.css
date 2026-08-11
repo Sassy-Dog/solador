@@ -4,7 +4,7 @@
      from Rust via CSSOM — this exists for the two chrome rules that cannot
      (a border and a keyframe), and must stay equal to the Rust constant. */
   --red:#e0614f;
-  --muted:#8090ac; --ink:#e8e2d4; --read:#3fb950; --write:#e0922a;
+  --muted:#8090ac; --ink:#f5e6cd; --read:#3fb950; --write:#e0922a;
   --net:#3fc8d4; --netup:#9bd34a;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -28,6 +28,11 @@ body { padding:var(--cockpit-gap, 16px); }
    user configures more hosts than the width holds. */
 .topbar { display:flex; align-items:center; gap:8px; flex-wrap:nowrap;
   margin:0 0 var(--cockpit-gap, 16px); }
+/* `flex:none` matters: the topbar is a nowrap flex row that already has to fit
+   a host tab strip and a Settings button on a 200px-minWidth window, and a
+   shrinkable mark would be squashed to a sliver there rather than dropping the
+   thing that can actually give way (the tab strip, which scrolls). */
+.brandmark { flex:none; width:18px; height:18px; display:block; }
 /* Empty only when there is nothing to say — `hidden` is set from app.js, and
    an unstyled `[hidden]` is already display:none, so no rule is needed here. */
 .empty { color:var(--muted); margin:0 0 var(--cockpit-gap, 16px); }

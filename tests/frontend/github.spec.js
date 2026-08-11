@@ -689,7 +689,17 @@ test("repo and runner names reach the DOM as text, never as markup", async ({ pa
 
   await expect(repoRows(page).first().locator(".gh-repo-name")).toHaveText(hostile);
   await expect(runnerRows(page).first().locator(".gh-runner-name")).toHaveText(hostile);
-  await expect(page.locator("img")).toHaveCount(0);
+  // Every <img> on the page must be one the page itself put there. This used to
+  // read `toHaveCount(0)`, which was the same claim while index.html contained
+  // no images at all — the brand mark in the topbar retired that shortcut. The
+  // assertion is deliberately about *provenance* rather than about the payload:
+  // matching `img[src="x"]` would only catch the exact string this test injects
+  // and would pass for the next payload that reaches the DOM as markup.
+  const srcs = await page.locator("img").evaluateAll((els) => els.map((el) => el.getAttribute("src")));
+  // Non-vacuous on purpose: if the locator found nothing, an injected <img>
+  // would also go unseen and the check below would pass on an empty list.
+  expect(srcs.length).toBeGreaterThan(0);
+  expect([...new Set(srcs)]).toEqual(["mark.svg"]);
   expect(await page.evaluate(() => window.__PWNED__)).toBeUndefined();
 });
 
