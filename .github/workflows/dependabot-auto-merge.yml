@@ -1,0 +1,128 @@
+name: Dependabot auto-merge
+
+# Enables auto-merge on qualifying Dependabot PRs so they enter the merge queue
+# without a human press. This workflow never merges anything itself: it flips
+# the auto-merge flag, and the "main protection" ruleset's merge queue decides
+# when (and whether) the PR actually lands.
+#
+# Not generator-owned. `.github/dependabot.yml` carries no `generated-by:`
+# marker and is deliberately hand-written (see #260); this file is too, so the
+# pair stays consistent and setup-deps skips both.
+
+on: pull_request
+
+# Dependabot-triggered runs get a read-only GITHUB_TOKEN by default. These two
+# scopes are the documented way to raise it, and they are the minimum: writing
+# the auto-merge flag needs `contents: write`, addressing the PR needs
+# `pull-requests: write`.
+permissions:
+  contents: write
+  pull-requests: write
+
+# One run per PR. A force-push from Dependabot supersedes the older run rather
+# than racing it to set the same flag.
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge
+    runs-on: ubuntu-latest
+    # `github.actor` is the only trustworthy signal here. Do not match on PR
+    # title or branch prefix: any contributor can open a branch named
+    # `dependabot/...`, and this job holds write scopes.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------------------------------------------------------------------
+      # THE GATE — decides which updates merge unread.
+      #
+      # Available outputs (verified against this repo's own merged commits on
+      # 2026-08-11):
+      #
+      #   steps.meta.outputs.update-type
+      #     'version-update:semver-patch' | ':semver-minor' | ':semver-major'
+      #     *** EMPTY STRING for SHA-pinned github-actions bumps. ***
+      #     PR #255 (Swatinem/rust-cache) carried no `update-type:` trailer at
+      #     all -- its `dependency-version` was the raw SHA, because a SHA pin
+      #     has no semver to diff. The version comment did not even change
+      #     (# v2.9.1 -> # v2.9.1).
+      #
+      #   steps.meta.outputs.package-ecosystem
+      #     'cargo' | 'npm_and_yarn' | 'github_actions'
+      #     NOTE: underscores, and 'npm_and_yarn' -- these are NOT the same
+      #     strings dependabot.yml uses for `package-ecosystem:`.
+      #
+      #   steps.meta.outputs.dependency-names       comma-separated
+      #   steps.meta.outputs.directory              e.g. '/agent'
+      #
+      # Decided policy (2026-08-11): patch + minor auto-merge, majors are held
+      # for review; all four ecosystems participate, github-actions included.
+      #
+      # The gate is written FAIL-CLOSED: it names the cases that may merge, so
+      # anything it does not recognise is held rather than let through. The one
+      # exemption -- github_actions with an EMPTY update-type -- is deliberately
+      # narrow. It covers the SHA-pin case (no semver exists to classify) and
+      # nothing else. Do NOT widen it to `package-ecosystem == 'github_actions'`
+      # alone: every action here is SHA-pinned today, but a future tag-pinned
+      # `uses: foo/bar@v4` WOULD report an update-type, and the broader form
+      # would auto-merge a major Actions bump because the ecosystem test
+      # short-circuits before the type test runs.
+      #
+      # Anything falling through lands in `Explain a held PR` below, so a held
+      # PR announces itself instead of sitting quiet for a week.
+      # ---------------------------------------------------------------------
+      - name: Enable auto-merge
+        id: enable
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-patch'
+          || steps.meta.outputs.update-type == 'version-update:semver-minor'
+          || (steps.meta.outputs.package-ecosystem == 'github_actions'
+          && steps.meta.outputs.update-type == '')
+        # Merge queue rules, both load-bearing:
+        #   * `--auto` with NO method flag. Passing --squash/--merge/--rebase
+        #     sets a conflicting auto-merge method and the PR silently never
+        #     enters the queue -- it sits CLEAN with auto-merge on and
+        #     isInMergeQueue:false forever.
+        #   * No `--delete-branch`. It is rejected outright under a queue;
+        #     the repo's delete_branch_on_merge:true handles cleanup.
+        run: gh pr merge --auto "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A held PR must say so. The failure this workflow exists to prevent is
+      # a queue of green PRs nobody presses; a gate that parks something
+      # silently just reproduces that one layer down.
+      - name: Explain a held PR
+        if: steps.enable.outcome == 'skipped'
+        run: |
+          gh pr comment "$PR_URL" --body "$(cat <<EOF
+          **Held for review — auto-merge not enabled.**
+
+          | field | value |
+          | --- | --- |
+          | ecosystem | \`${ECOSYSTEM:-(empty)}\` |
+          | update type | \`${UPDATE_TYPE:-(empty)}\` |
+          | directory | \`${DIRECTORY:-(empty)}\` |
+
+          This PR did not match the auto-merge gate in
+          \`.github/workflows/dependabot-auto-merge.yml\`. Review and merge it
+          by hand with \`gh pr merge $PR_NUMBER --auto\` (no method flag — the
+          queue rejects one).
+          EOF
+          )"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DIRECTORY: ${{ steps.meta.outputs.directory }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
