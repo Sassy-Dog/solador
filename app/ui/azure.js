@@ -190,6 +190,11 @@ refresh().then((loading) => {
   if (window.__TAURI__) scheduleRefresh(loading);
 });
 
+// Brought current when Settings closes, rather than waiting out this panel's
+// own timer. Re-arms too, so a panel that turns out to be loading switches to
+// the fast cadence immediately.
+registerPanelRefresh(async () => scheduleRefresh(await refresh()));
+
 // Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`.
 window.__SOLADOR_AZURE_TEST__ = { render: renderAzure, refresh };
 

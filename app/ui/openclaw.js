@@ -235,6 +235,10 @@ if (window.__TAURI__) {
   setInterval(() => { if (!settingsOpen) refresh(); }, REFRESH_MS);
 }
 
+// Brought current when Settings closes rather than waiting out the interval
+// above — this panel's gateway URL and bearer token are both edited there.
+registerPanelRefresh(refresh);
+
 // Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
 window.__SOLADOR_OPENCLAW_TEST__ = { render: renderOpenClaw, refresh };

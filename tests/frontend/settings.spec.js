@@ -69,6 +69,37 @@ async function openSettings(page, baseURL) {
 
 const tab = (page, id) => page.locator(`.tab[data-tab="${id}"]`);
 
+/**
+ * Panels keep their own timers and skip the work while Settings is up, so a
+ * setting saved a second ago used to leave its panel displaying the setup
+ * instruction that asked for it — for a full slow-cadence tick, ten seconds on
+ * the Azure panel. `refreshCockpit` did not help: it repaints the host cards,
+ * and the panels are separate.
+ */
+test("closing Settings brings the panels current, not just the host cards", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  // Everything asked for during startup is noise for this assertion; what
+  // matters is what happens on close.
+  await page.evaluate(() => {
+    window.__CALLS__.length = 0;
+  });
+
+  await page.locator("#settingsClose").click();
+  await expect(page.locator("#settings")).toBeHidden();
+
+  // Every panel, not one: the registry exists so a single close brings them
+  // all current, and a panel that quietly stopped registering would still pass
+  // a test that only checked its neighbour.
+  for (const command of ["azure_cost", "crons", "containers", "repos", "services", "usage"]) {
+    await expect
+      .poll(async () => (await calls(page, command)).length, {
+        timeout: 3000,
+        message: `${command} was not re-requested when Settings closed`,
+      })
+      .toBeGreaterThan(0);
+  }
+});
+
 test("the Settings button, title and every tab come from Rust", async ({ page, baseURL }) => {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await openSettings(page, baseURL);

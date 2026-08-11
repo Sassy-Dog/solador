@@ -39,6 +39,21 @@ const callRust = async (command, args, fixture) => {
 let settingsOpen = false;
 let refreshCockpit = async () => {};
 
+// Panels poll on their own timers and skip the work while Settings is up, so
+// closing it used to leave every one of them stale for a full slow-cadence
+// tick. `refreshCockpit` only repaints the host cards -- the panels are
+// separate. Each registers here; `closeSettings` brings them all current at
+// once, which is what makes a setting you just saved visible immediately
+// rather than up to ten seconds later still showing its own setup
+// instruction.
+const PANEL_REFRESHERS = [];
+const registerPanelRefresh = (fn) => PANEL_REFRESHERS.push(fn);
+// allSettled, not all: one panel whose provider is down must not stop the rest
+// from repainting.
+const refreshPanels = async () => {
+  await Promise.allSettled(PANEL_REFRESHERS.map((fn) => fn()));
+};
+
 const CHARTS = new Map();
 
 // Per-paint unique gradient ids: `url(#id)` resolves document-wide, so every

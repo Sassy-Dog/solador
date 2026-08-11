@@ -909,6 +909,10 @@ async function closeSettings() {
   // Repaint at the real width now rather than up to a poll interval late: the
   // cockpit measured zero while it was hidden.
   await refreshCockpit();
+  // ...and the panels, which keep their own timers. Without this a credential
+  // or address saved a second ago leaves its panel still displaying the setup
+  // instruction that asked for it.
+  await refreshPanels();
 }
 
 $s("settingsToggle").addEventListener("click", openSettings);
