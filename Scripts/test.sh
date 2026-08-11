@@ -7,10 +7,6 @@ source "$SCRIPT_DIR/config.sh"
 
 log_info "Running tests for $APP_NAME"
 
-# The SwiftUI app is frozen and is no longer built or tested here or in CI
-# (see CLAUDE.md). Its sources and tests remain in the repo; open the Xcode
-# project with `./dev xcode` to run them by hand.
-
 # --- Rust workspace (crates/*, app/src-tauri). agent/ is a separate Cargo
 # workspace with its own CI job (agent-tests) and is deliberately not run here.
 # Skip-with-a-warning when the toolchain is absent, matching how the frontend

@@ -27,7 +27,7 @@ command_exists() {
 
 # Ensure we're in the project root
 ensure_project_root() {
-    if [[ ! -f "project.yml" && ! -d "DevCanopy.xcodeproj" ]]; then
+    if [[ ! -f "Cargo.toml" || ! -d "app/src-tauri" ]]; then
         log_error "Not in Solador project root directory"
         exit 1
     fi
@@ -48,7 +48,8 @@ get_current_branch() {
 
 # Check if on main branch
 ensure_main_branch() {
-    local current_branch=$(get_current_branch)
+    local current_branch
+    current_branch=$(get_current_branch)
     if [[ "$current_branch" != "main" ]]; then
         log_error "Not on main branch (current: $current_branch)"
         exit 1

@@ -76,6 +76,52 @@ thing it sends anywhere are the API calls you configure, with your own
 credentials, to the vendors you chose. Credentials live in your OS credential
 store, never in the settings file.
 
+## Prerequisites
+
+Solador targets **macOS and Windows**. There is no Linux build of the app (the
+[agent](agent/) is a separate Linux-friendly service).
+
+**Everywhere**
+
+- **Rust** via [rustup](https://rustup.rs). You do not need to pick a version —
+  `rust-toolchain.toml` pins one (currently 1.96.0) and rustup installs it,
+  with `rustfmt` and `clippy`, the first time you run `cargo`.
+
+**macOS**
+
+- **Xcode Command Line Tools** — `xcode-select --install`.
+
+  This is not optional and it is not about Swift: Rust links macOS binaries with
+  Apple's linker against Apple's SDK. Without it you get a `cc`/`ld` failure
+  that does not mention Xcode. It also supplies `codesign` (the dev launcher
+  re-signs the app bundle so your Keychain does not re-prompt on every run) and
+  `iconutil` (builds `icon.icns`).
+
+  Full Xcode is **not** required to build or run. It is only implicated in
+  releases: `notarytool` and `stapler` resolve through `Xcode.app` on a machine
+  where `xcode-select -p` points there. Releases are not implemented yet — see
+  [Status](#status).
+
+**Windows**
+
+- **Microsoft C++ Build Tools** (the MSVC toolchain Rust links with).
+- **WebView2 runtime** — preinstalled on Windows 11; on Windows 10 install the
+  Evergreen runtime.
+
+**Only if you run the frontend tests or regenerate screenshots**
+
+- **Node 22** — for the Playwright suite in `tests/frontend/`. Not needed to
+  build or run the app.
+
+**Optional, and only to make panels show something**
+
+- `docker`, `podman` or `tart` — the Containers panel reads whichever it finds.
+- The **Azure CLI** (`az`), signed in — the Azure Cost panel mints a short-lived
+  SAS per poll rather than storing a credential.
+
+Every one of these is absent-tolerant at runtime: a missing tool makes its panel
+say so, not crash.
+
 ## Running it
 
 There are **no binaries yet** — see [Status](#status). Build from source:
@@ -87,9 +133,6 @@ cd solador
 ./dev run --release
 ```
 
-You'll need a recent stable Rust toolchain (pinned by `rust-toolchain.toml`) and
-Node 22 for the frontend test suite.
-
 Nothing is configured on first launch: no repos, no hosts, no credentials. Each
 panel tells you what it wants. Open **Settings** and add what you care about.
 
@@ -100,18 +143,6 @@ panel tells you what it wants. Open **Settings** and add what you care about.
 | Hosts | the [agent](agent/) on each machine, and its bearer token |
 | Usage / Cost | a Neon org key, a Sentry `org:read` token, a Vercel token, an Azure Cost SAS URL |
 
-## Two apps in one repository
-
-Worth knowing before you go looking:
-
-- **`app/` + `crates/`** — the Tauri app. This is Solador, and it is what ships.
-- **`DevCanopy/`** — a complete SwiftUI application, **frozen**. It was the
-  original macOS-only version and is kept as a parity reference. It is not
-  built, tested or linted in CI, and it may not even compile. Changes land in
-  the Rust app; Swift pull requests will not be accepted.
-
-The Swift tree is large enough that finding it unexplained costs an hour.
-
 ## Layout
 
 ```
@@ -121,7 +152,7 @@ crates/          The real work: viewmodel, store, github, usage, azurecost,
                  servicestatus, openclaw, localhost, wire, agentclient
 agent/           The per-host metrics agent (its own workspace and CI job)
 tests/frontend/  Playwright suite for app/ui
-DevCanopy/       The frozen Swift app
+TestFixtures/    Wire-contract fixtures both agent/ and crates/ assert against
 ```
 
 Every string and colour a panel paints is decided in Rust and published to the

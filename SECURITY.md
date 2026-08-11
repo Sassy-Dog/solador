@@ -39,9 +39,6 @@ it talking to a host you didn't configure, that is a bug and a serious one.
 
 ## What is out of scope
 
-- The frozen SwiftUI app under `DevCanopy/`. It is not built, not tested, not
-  shipped, and known to be behind — including a hardcoded organization in its
-  runners service. It is kept as a reference, not as a product.
 - Anything requiring an attacker who already has your unlocked machine and your
   credential store.
 - Findings against a dependency with no demonstrated path through this code.

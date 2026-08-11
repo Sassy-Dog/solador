@@ -5,9 +5,7 @@ set -euo pipefail
 # `./dev lint` or automatically by the pre-push hook (.githooks/pre-push), so a
 # push never burns a CI round-trip on a formatting failure.
 #
-# Swift is not linted here or in CI: the SwiftUI app is frozen (see CLAUDE.md),
-# and the SwiftLint/SwiftFormat pins it needed lived in ci.yml, which no longer
-# carries them. `cargo fmt`/`clippy` below are what CI's rust-workspace job runs.
+# `cargo fmt`/`clippy` below are what CI's rust-workspace job runs.
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$SCRIPT_DIR/lib.sh"

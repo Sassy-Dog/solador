@@ -71,7 +71,7 @@ Notes:
     readings once on the wire, which is why they had to stop at the source
     (#183); a consumer that still needs to decode them keeps working, since
     every one of these keys is optional in both directions.
-- Memory has **no** `usagePercentage` key — the Swift side computes it.
+- Memory has **no** `usagePercentage` key — the consumer computes it.
 - `volumes` entries are `{ "mount": "/", "usedGB": 10.0, "totalGB": 100.0, "fstype": "ext4" }`.
   `fstype` is lowercased and omitted (not `null`) when unknown. Transient, remote,
   and pseudo filesystems are filtered out at the source (see `SOLADOR_AGENT_SKIP_FSTYPES`),
@@ -121,6 +121,17 @@ squashfs, overlay, overlayfs, iso9660
 
 Any `fuse.*` subtype (e.g. `fuse.sshfs`, `fuse.rclone`) is also skipped whenever
 filtering is enabled; `fuseblk` (NTFS via FUSE — a real local disk) is kept.
+
+## Prerequisites
+
+- **Rust** via [rustup](https://rustup.rs). `agent/rust-toolchain.toml` pins the
+  version (currently 1.96.0, with `rustfmt` and `clippy`); rustup installs it on
+  the first `cargo` invocation *inside this directory*.
+- Linux or macOS. There is no Windows build of the agent.
+
+`agent/` is a **separate Cargo workspace** from the repo root — its own
+`Cargo.toml`, `Cargo.lock`, toolchain pin and CI job. Run `cargo` commands from
+inside `agent/`; the repo's `./dev test` and `./dev lint` do not touch it.
 
 ## Build & run (local)
 

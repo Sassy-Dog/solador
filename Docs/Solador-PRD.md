@@ -13,7 +13,7 @@
 | **Version** | 1.0 |
 | **Date** | December 2024 |
 | **Status** | Draft |
-| **Product** | Sassy Dog |
+| **Product** | Solador |
 
 ---
 

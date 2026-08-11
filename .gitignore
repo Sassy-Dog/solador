@@ -142,15 +142,19 @@ app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/
 
-# Local agent tooling. The hooks are self-contained (shellcheck + rustfmt) and
-# useful to any contributor; everything else under .claude/ configures a plugin
-# from a marketplace that is not public, so it stays on the machine that uses
-# it. Deny-by-default on purpose: an entry naming one directory would leave the
-# next one the tooling invents equally exposed.
-.claude/*
-!.claude/hooks/
-!.claude/settings.json
+# Local agent tooling. Everything under .claude/ is per-machine assistant setup
+# -- hooks, settings, and generated config -- and none of it is shared.
+#
+# Deny-by-default with NO exceptions, on purpose. An earlier `!.claude/hooks/`
+# carve-out was justified as "self-contained and useful to any contributor":
+# true of those scripts' contents, false of their filenames and provenance
+# markers, which shipped in the repo as a result. An exception for one path
+# also leaves the next path the tooling invents equally exposed.
+.claude/
 
 # direnv: `.envrc` is committed and holds no values; the real ones live here.
 .envrc.local
 .direnv/
+
+# Assistant tooling output. Kept on the machine that produced it, not shared.
+Docs/superpowers/
