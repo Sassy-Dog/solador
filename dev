@@ -16,35 +16,23 @@ $(color_yellow "Usage:") $(color_green "$0") [command] [options]
 $(color_yellow "Commands:")
   $(color_green "run")      $(color_gray "[r]")    Build and run the app (default)
   $(color_green "build")    $(color_gray "[b]")    Build the app
-  $(color_green "test")     $(color_gray "[t]")    Run tests (Swift app + Rust workspace + frontend e2e)
+  $(color_green "test")     $(color_gray "[t]")    Run tests (Rust workspace + frontend e2e)
   $(color_green "clean")    $(color_gray "[c]")    Clean build artifacts
-  $(color_green "xcode")    $(color_gray "[x]")    Open project in Xcode
-  $(color_green "publish")  $(color_gray "[p]")    Publish a new release
-  $(color_green "lint")     $(color_gray "[l]")    Run SwiftLint/SwiftFormat + cargo fmt/clippy checks (mirrors CI)
-  $(color_green "format")   $(color_gray "[f]")    Auto-fix formatting with SwiftFormat + cargo fmt
+  $(color_green "publish")  $(color_gray "[p]")    Publish a release $(color_gray "(not implemented — see #15)")
+  $(color_green "lint")     $(color_gray "[l]")    Run cargo fmt/clippy checks (mirrors CI)
+  $(color_green "format")   $(color_gray "[f]")    Auto-fix formatting with cargo fmt
   $(color_green "help")     $(color_gray "[h]")    Show this help
 
 $(color_yellow "Build Options:")
   $(color_green "--release")        Build in release mode
-  $(color_green "--configuration") <name>  Specify build configuration
 
 $(color_yellow "Run Options:")
-  $(color_green "--clean-first")   Clean before building
-  $(color_green "--log") <mode>    Enable logging (console, file, both)
-  $(color_green "--log-level") <level>  Set log level (debug, info, warn, error)
-  $(color_green "--tauri")         Run the cross-platform Tauri app instead of the SwiftUI app
-
-$(color_yellow "Publish Options:")
-  $(color_green "--skip-tests")   Skip running tests
-  $(color_green "--skip-sentry")  Skip resolving SENTRY_DSN from Doppler (Sentry no-ops)
-  $(color_gray "(no --bump: the version is CalVer minted from git — Docs/VERSIONING.md)")
+  $(color_gray "(arguments other than --release are passed through to the app)")
 
 $(color_yellow "Examples:")
   $(color_green "$0")                    # Build and run (debug)
   $(color_green "$0 run --release")      # Build and run (release)
-  $(color_green "$0 run --tauri")        # Build and run the Tauri cockpit (debug)
   $(color_green "$0 build --release")    # Build release version
-  $(color_green "$0 publish")            # Mint CalVer tag + release build
 
 EOF
 }
@@ -59,7 +47,6 @@ case "$COMMAND" in
     b) COMMAND="build" ;;
     t) COMMAND="test" ;;
     c) COMMAND="clean" ;;
-    x) COMMAND="xcode" ;;
     p) COMMAND="publish" ;;
     l) COMMAND="lint" ;;
     f) COMMAND="format" ;;
@@ -82,9 +69,6 @@ case "$COMMAND" in
         ;;
     clean)
         exec "$SCRIPT_DIR/Scripts/clean.sh" "$@"
-        ;;
-    xcode)
-        exec "$SCRIPT_DIR/Scripts/xcode.sh" "$@"
         ;;
     publish)
         exec "$SCRIPT_DIR/Scripts/publish.sh" "$@"

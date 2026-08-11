@@ -5,6 +5,23 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.sh"
 
+# Releasing is not implemented.
+#
+# This script's CalVer minting and CI-verification pre-flight are sound and are
+# kept as the scaffold for issue #15 (notarization + Sparkle), which owns Tauri
+# packaging. What is missing is the packaging itself: `app/src-tauri/tauri.conf.json`
+# still has `bundle.active: false` and a hardcoded `version: 0.1.0`, so there is
+# no .app to sign, notarize, staple or put in an appcast.
+#
+# Refusing HERE is deliberate -- before the tag is minted. The previous flow
+# pushed a CalVer tag and only then built, which on a repo that can no longer
+# produce a bundle would leave a permanent tag advertising a release that does
+# not exist.
+log_error "Releasing is not implemented yet -- see issue #15 (notarization + Sparkle)."
+log_error "app/src-tauri/tauri.conf.json still has bundle.active: false."
+log_error "Build locally with: ./dev build --release"
+exit 1
+
 # Publish a release — the repo's §4 mode-2 LOCAL MINT (org Versioning spec
 # v1.0; Docs/VERSIONING.md). The version is CalVer derived from git by
 # Scripts/get-version-info.sh; there is no version bump, no version commit,
