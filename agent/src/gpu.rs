@@ -365,12 +365,7 @@ mod tests {
     /// an NVIDIA driver) and produces no output to read.
     #[tokio::test]
     async fn a_missing_binary_produces_no_output() {
-        let got = capped_output(
-            "solador-no-such-binary-217",
-            &["--version"],
-            PROBE_TIMEOUT,
-        )
-        .await;
+        let got = capped_output("solador-no-such-binary-217", &["--version"], PROBE_TIMEOUT).await;
         assert_eq!(got, None);
     }
 
