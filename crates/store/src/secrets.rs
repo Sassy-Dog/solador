@@ -166,6 +166,13 @@ impl SecretKey {
 /// value. `keyring`'s own `Display` is value-free for the same reason.
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
+    /// Some accounts could not be adopted from the pre-rename service.
+    ///
+    /// Carries the account *names* only — never values, and never the reason,
+    /// which belongs to the backend error already logged. Its existence is what
+    /// withholds the completion marker, so the next launch tries again.
+    #[error("could not adopt {} credential(s) from the previous service: {}", accounts.len(), accounts.join(", "))]
+    IncompleteMigration { accounts: Vec<String> },
     #[error("credential store failed for account {account}: {source}")]
     Backend {
         account: String,
@@ -382,17 +389,44 @@ fn route_migrate_service<S: ItemStore>(
     accounts.dedup();
 
     let mut copied = 0;
+    let mut failed = Vec::new();
     for account in &accounts {
         // The destination always wins, so a retry after a partial pass fills
         // the gaps instead of clobbering what already arrived -- and a
         // credential the operator set up by hand is never overwritten.
-        if current.get_item(account)?.is_some() {
-            continue;
+        match current.get_item(account) {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(_) => {
+                failed.push(account.clone());
+                continue;
+            }
         }
-        if let Some(value) = legacy.get_item(account)? {
-            current.set_item(account, &value)?;
-            copied += 1;
+        // Keep going past a failure rather than aborting the pass.
+        //
+        // Aborting looks careful and is not: accounts are copied in sorted
+        // order, so one permanently-unreadable item holds every account behind
+        // it hostage *forever*. macOS remembers a denied Keychain prompt, so
+        // "permanently unreadable" is a state one misclick produces -- and the
+        // retry then fails identically every launch, silently, never reaching
+        // the rest. Retrying an operation that fails the same way every time is
+        // not recovery.
+        match legacy.get_item(account) {
+            Ok(Some(value)) => match current.set_item(account, &value) {
+                Ok(()) => copied += 1,
+                Err(_) => failed.push(account.clone()),
+            },
+            Ok(None) => {}
+            Err(_) => failed.push(account.clone()),
         }
+    }
+
+    if !failed.is_empty() {
+        // No marker: the pass was incomplete, so the next launch retries and
+        // picks up anything that has since become readable. Account names,
+        // never values -- the module's value-free rule applies to its own
+        // diagnostics.
+        return Err(SecretError::IncompleteMigration { accounts: failed });
     }
 
     // Written only after a clean pass. Any error above propagates *without*
@@ -1001,6 +1035,60 @@ mod tests {
                 .expect("read")
                 .is_some(),
             "a clean pass marks itself done"
+        );
+    }
+
+    /// The defect this exists for, in the exact shape it shipped in.
+    ///
+    /// Accounts are copied in sorted order, and `secrets_v1` sorts *before*
+    /// `sentry_usage_token`. macOS remembers a denied Keychain prompt, so a
+    /// single misclick during the rename's one-time re-authorisation made that
+    /// blob permanently unreadable — and an abort-on-first-error copy then
+    /// failed at it on every launch, silently, never reaching the accounts
+    /// behind it. The Sentry token sat one position away for good.
+    ///
+    /// It is also the account least worth having: consolidation copies
+    /// credentials into the blob without deleting the per-item entries, so the
+    /// per-item ones already carry everything.
+    #[test]
+    fn one_unreadable_account_does_not_block_the_accounts_sorted_after_it() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        legacy
+            .set_item("github_access_token", "ghp_x")
+            .expect("seed");
+        legacy.set_item(BLOB_ACCOUNT, "{...}").expect("seed");
+        legacy
+            .set_item("sentry_usage_token", "sntryu_x")
+            .expect("seed");
+        // Not a transient failure: a remembered Deny fails the same way for
+        // ever, which is why retrying alone was never going to fix this.
+        legacy.poison_reads(BLOB_ACCOUNT);
+
+        let keys = SecretKey::static_migration_keys();
+        let result = route_migrate_service(&legacy, &current, &keys);
+
+        assert!(
+            result.is_err(),
+            "an incomplete pass must not report success"
+        );
+        assert!(
+            current
+                .get_item(SERVICE_MIGRATION_MARKER)
+                .expect("read")
+                .is_none(),
+            "and must not mark itself done, so the next launch retries"
+        );
+        // The point: everything readable came across, including the account
+        // that sorts after the poisoned one.
+        assert_eq!(
+            current.get_item("sentry_usage_token").expect("read"),
+            Some("sntryu_x".to_owned()),
+            "an account behind the failure must still be adopted"
+        );
+        assert_eq!(
+            current.get_item("github_access_token").expect("read"),
+            Some("ghp_x".to_owned())
         );
     }
 
