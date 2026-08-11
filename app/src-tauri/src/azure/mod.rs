@@ -33,7 +33,12 @@ use crate::panel::{progress_bar, status_footer, Configured};
 pub const STALE_AFTER_SECS: u64 = 5 * 60 * 60;
 
 /// The panel's zero-setup state. An instruction, not a failure.
-pub const UNCONFIGURED_MESSAGE: &str = "Add an Azure Cost SAS URL in Settings";
+///
+/// Names the storage account, not a SAS: the panel stopped storing a SAS when
+/// it learned to mint its own per poll, and this message outlived that change —
+/// telling operators to paste a credential the Settings surface no longer has a
+/// field for.
+pub const UNCONFIGURED_MESSAGE: &str = "Add an Azure storage account in Settings";
 
 /// Configured, with a read in flight and nothing to show yet.
 pub const LOADING_MESSAGE: &str = "reading export…";
@@ -140,8 +145,10 @@ pub fn month_short(at: DateTime<Utc>) -> &'static str {
 /// Everything the panel renders from, plus the cache the reader needs.
 #[derive(Debug, Default)]
 pub struct AzureState {
-    /// Whether a SAS URL is stored. [`Absent`](Configured::Absent) is the setup
-    /// state, not a failure.
+    /// Whether the export's address is configured — a storage account and a
+    /// container. [`Absent`](Configured::Absent) is the setup state, not a
+    /// failure. (Named `sas` for the credential this panel used to store; it
+    /// mints a short-lived one per poll now and keeps nothing.)
     ///
     /// Three states rather than a `bool`: this defaulted to `false`, and the
     /// ladder in [`view`] reads "not configured" before it reads `loading`, so
