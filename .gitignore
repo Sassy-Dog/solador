@@ -1,6 +1,15 @@
 # Build output
 build/
 
+# Swift Package Manager / Xcode leftovers. The SwiftUI app was deleted in #262,
+# but its build directory and generated project can still exist on disk from
+# before that. These rules used to live in a large stock Xcode template; when
+# that template was removed as dead, `.build/` and the .xcodeproj went with it
+# and `git add -A` committed 174 MB of artifacts (#266). Kept explicitly.
+.build/
+.swiftpm/
+*.xcodeproj/
+
 # macOS
 .DS_Store
 .AppleDouble
