@@ -239,7 +239,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .cont-runtime { font-size:8px; color:var(--muted); flex:none; }
 .cont-status { font-size:9px; white-space:nowrap; flex:none; }
 /* A presence row's status ("recycling 40s" / "missing 12m") is an alarm, not
-   a description, and carries the weight the Swift panel gives it. */
+   a description, and carries the weight the original panel gives it. */
 .cont-row[data-kind="absent"] .cont-status { font-weight:700; }
 
 /* ---- Repos + GitHub Runners --------------------------------------------
@@ -416,7 +416,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 
 /* ---- The shared progress bar -------------------------------------------
    `CockpitProgressBar`. The width and the fill colour both arrive from Rust
-   (`panel::progress_bar`) — the thresholds are the Swift panel's and must not
+   (`panel::progress_bar`) — the thresholds are the original panel's and must not
    be re-derived here. `min-width` mirrors its `max(2, …)`: a bar at a real 0
    still shows a sliver, so "measured zero" and "no bar at all" stay visibly
    different. */
@@ -619,7 +619,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   overflow:hidden; text-overflow:ellipsis; }
 .layout-tile-span { font-size:9px; color:var(--muted); margin-left:auto;
   white-space:nowrap; }
-/* One container group rule, laid out like the Swift editor's HStack: action,
+/* One container group rule, laid out like the original editor's HStack: action,
    pattern, then the Collapse-only label + expected count, the host scope and
    the delete. WHICH of those exist is `collapseOnly` in the payload, never a
    CSS or JS test against the action string. */

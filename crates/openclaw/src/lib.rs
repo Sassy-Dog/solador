@@ -1,7 +1,7 @@
 //! OpenClaw gateway client: WS protocol v3, Ed25519 device identity, and the
 //! frame→snapshot reducer.
 //!
-//! Rust port of `DevCanopy/Services/OpenClaw/` (itself a port of periclaw's
+//! Rust port of the original app (itself a port of periclaw's
 //! `net/openclaw.rs` + `events.rs`). This is the protocol layer only — there is
 //! no panel, no polling service, no persistence and no clock ownership here.
 //!
@@ -64,7 +64,7 @@ pub use session::{Frame, Session, SessionError, SessionEvent, Transport, Transpo
 #[cfg(feature = "ws")]
 pub use ws::WebSocketTransport;
 
-/// The stable runtime id this crate reports under, matching the Swift service.
+/// The stable runtime id this crate reports under, matching the original service.
 pub const RUNTIME_ID: &str = "openclaw";
 /// The human-facing label for the runtime.
 pub const RUNTIME_DISPLAY_NAME: &str = "OpenClaw";

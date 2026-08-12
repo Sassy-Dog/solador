@@ -1,0 +1,773 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.xctest/Contents/MacOS/HostMetricsKitPackageTests",
+      "packagePath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit",
+      "productName" : "HostMetricsKitPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.HostMetricsKit-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/sources",
+      "importPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/BatteryMonitor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/CircularBuffer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/GPUMonitor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostMetricsCollector.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostSnapshot.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/IOKitUtilities.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/Logger.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/LupitaMetricsTypes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorError.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorV2.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "HostMetricsKit",
+      "moduleOutputPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKit.swiftmodule",
+      "objects" : [
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/BatteryMonitor.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/CircularBuffer.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/GPUMonitor.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/HostMetricsCollector.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/HostSnapshot.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/IOKitUtilities.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/Logger.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/LupitaMetricsTypes.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/SystemMonitorError.swift.o",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/SystemMonitorV2.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/include/HostMetricsKit-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "hostmetricskit"
+      ],
+      "outputFileMapPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/BatteryMonitor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/CircularBuffer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/GPUMonitor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/HostMetricsCollector.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/HostSnapshot.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/IOKitUtilities.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/Logger.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/LupitaMetricsTypes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/SystemMonitorError.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/SystemMonitorV2.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKit.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/BatteryMonitor.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/CircularBuffer.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/GPUMonitor.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostMetricsCollector.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostSnapshot.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/IOKitUtilities.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/Logger.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/LupitaMetricsTypes.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorError.swift",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorV2.swift"
+      ],
+      "tempsPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.HostMetricsKitPackageTests-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/sources",
+      "importPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKitTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "HostMetricsKitPackageTests",
+      "moduleOutputPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKitPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/include/HostMetricsKitPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "hostmetricskit"
+      ],
+      "outputFileMapPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKitPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.HostMetricsKitTests-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/sources",
+      "importPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Tests/HostMetricsKitTests/HostMetricsCollectorTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKit.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "HostMetricsKitTests",
+      "moduleOutputPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKitTests.swiftmodule",
+      "objects" : [
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/HostMetricsCollectorTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "hostmetricskit"
+      ],
+      "outputFileMapPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/HostMetricsCollectorTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules/HostMetricsKitTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Tests/HostMetricsKitTests/HostMetricsCollectorTests.swift"
+      ],
+      "tempsPath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "HostMetricsKit" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "HostMetricsKit",
+      "-package-name",
+      "hostmetricskit",
+      "-c",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/BatteryMonitor.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/CircularBuffer.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/GPUMonitor.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostMetricsCollector.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostSnapshot.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/IOKitUtilities.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/Logger.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/LupitaMetricsTypes.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorError.swift",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorV2.swift",
+      "-I",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/include/HostMetricsKit-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "hostmetricskit",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "HostMetricsKitPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "HostMetricsKitPackageTests",
+      "-package-name",
+      "hostmetricskit",
+      "-c",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/include/HostMetricsKitPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "hostmetricskit",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "HostMetricsKitTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "HostMetricsKitTests",
+      "-package-name",
+      "hostmetricskit",
+      "-c",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Tests/HostMetricsKitTests/HostMetricsCollectorTests.swift",
+      "-I",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "hostmetricskit",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "HostMetricsKit" : [
+
+    ],
+    "HostMetricsKitPackageTests" : [
+      "HostMetricsKitTests",
+      "HostMetricsKit"
+    ],
+    "HostMetricsKitTests" : [
+      "HostMetricsKit"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/BatteryMonitor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/CircularBuffer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/GPUMonitor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostMetricsCollector.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostSnapshot.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/IOKitUtilities.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/Logger.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/LupitaMetricsTypes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorError.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorV2.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/sources"
+    },
+    "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/sources"
+    },
+    "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/BatteryMonitor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/CircularBuffer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/GPUMonitor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/HostMetricsCollector.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/HostSnapshot.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/IOKitUtilities.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/Logger.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/LupitaMetricsTypes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/SystemMonitorError.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKit.build/SystemMonitorV2.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/HostMetricsCollectorTests.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/Tests/HostMetricsKitTests/HostMetricsCollectorTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitTests.build/sources"
+    },
+    "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

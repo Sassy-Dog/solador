@@ -1,5 +1,5 @@
 //! GitHub REST client plus the pure mappings behind the cockpit's **Repos** and
-//! **GitHub Runners** panels. Rust port of `DevCanopy/Services/GitHub/`.
+//! **GitHub Runners** panels. Rust port of the original app.
 //!
 //! Layering, outermost first:
 //! - [`client`] — the authenticated GETs and their error classification.

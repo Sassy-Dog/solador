@@ -1,0 +1,10 @@
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/BatteryMonitor.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/CircularBuffer.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/GPUMonitor.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostMetricsCollector.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/HostSnapshot.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/IOKitUtilities.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/Logger.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/LupitaMetricsTypes.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorError.swift
+/Users/chris/Repos/sassy-dog/devcanopy/devcanopy/Packages/HostMetricsKit/Sources/HostMetricsKit/SystemMonitorV2.swift

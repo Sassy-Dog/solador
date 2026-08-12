@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# The cross-platform Tauri cockpit is the only app now; the SwiftUI app it
+# The cross-platform Tauri cockpit is the only app now; the original macOS app it
 # grew out of was deleted once panel parity landed. exec keeps the caller's
 # environment (SOLADOR_SEED_HOST, SOLADOR_STORE_DIR, ...) reaching the app.
 ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
@@ -115,7 +115,7 @@ fi
 # identity invalidates the Keychain ACLs the app's stored credentials carry —
 # so every rebuild re-prompts for every item (4+ prompts per run). Re-sign with
 # the stable Apple Development identity (the team `config.sh` resolves, the
-# same one the Swift Debug build uses) so the ACLs keep matching across
+# same one the original Debug build uses) so the ACLs keep matching across
 # rebuilds. macOS only, and silently skipped where no identity is installed
 # (CI, other machines) — an unsigned run still works, it just re-prompts.
 if [[ "$(uname -s)" == "Darwin" ]]; then

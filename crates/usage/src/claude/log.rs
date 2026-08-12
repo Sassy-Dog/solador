@@ -1,6 +1,6 @@
 //! Pure parsing of Claude Code's local JSONL log lines. Port of
-//! `DevCanopy/Services/ClaudeUsage/ClaudeUsageLog.swift` and the `UsageRecord`
-//! half of `UsageModels.swift`.
+//! `ClaudeUsageLog` and the `UsageRecord`
+//! half of `UsageModels`.
 //!
 //! Every helper here is side-effect free; file discovery lives in
 //! [`crate::claude::walk`].
@@ -70,7 +70,7 @@ pub fn project_name(cwd: &str) -> String {
     }
 
     // `filter(non-empty)` handles both a trailing slash and a run of them, the
-    // job Swift's `standardizingPath` + empty-omitting `split` does there.
+    // job the original's `standardizingPath` + empty-omitting `split` does there.
     path.split('/')
         .rfind(|component| !component.is_empty())
         .map_or_else(|| UNKNOWN_PROJECT.to_string(), str::to_string)
@@ -101,7 +101,7 @@ pub fn parse_line(line: &str) -> Option<UsageRecord> {
 
 /// ISO-8601 with or without fractional seconds — `2026-05-29T13:18:22.932Z` and
 /// `2026-05-29T13:18:22Z` both appear in the wild. `parse_from_rfc3339` accepts
-/// either, so the two Swift formatters collapse to one call here.
+/// either, so the two the original formatters collapse to one call here.
 fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
@@ -148,7 +148,7 @@ mod tests {
     use super::*;
 
     // MARK: - Project name derivation from cwd
-    // Twins of `DevCanopyTests/ClaudeUsageLogParsingTests.swift`.
+    // Twins of `ClaudeUsageLogParsingTests`.
 
     #[test]
     fn project_name_from_a_plain_repo_path() {
@@ -227,7 +227,7 @@ mod tests {
         );
     }
 
-    /// The fractional-seconds half of the Swift's two formatters.
+    /// The fractional-seconds half of the original's two formatters.
     #[test]
     fn parses_a_timestamp_without_fractional_seconds() {
         let line = r#"{"type":"assistant","timestamp":"2026-05-29T13:18:22Z","requestId":"r","cwd":"/a","message":{"model":"m","usage":{"input_tokens":1}}}"#;

@@ -1,7 +1,7 @@
 //! Status derivation — gateway wire state to a coloured dot.
 //!
 //! Rust port of `OpenClawStatusMapping` in
-//! `DevCanopy/Services/OpenClaw/OpenClawWireModels.swift`, itself ported
+//! `OpenClawWireModels`, itself ported
 //! verbatim from periclaw's `events.rs`. Kept in its own module because these
 //! four rules are the entire semantic content of the panel: everything else is
 //! plumbing, and a drift here is a wrong colour rather than a visible failure.
@@ -34,7 +34,7 @@ pub fn cron_status(state: Option<&CronState>) -> AgentStatus {
 /// connected → ok; otherwise unknown.
 ///
 /// Note the first rule tests `enabled != Some(true)`, so a channel that omits
-/// the field reads as disabled — matching Swift, and the safer reading of a
+/// the field reads as disabled — matching the original, and the safer reading of a
 /// gateway that stopped reporting a provider.
 #[must_use]
 pub fn channel_status(channel: &Channel) -> AgentStatus {
@@ -71,7 +71,7 @@ pub fn agent_id_from_session_key(key: Option<&str>) -> Option<&str> {
     if !key.starts_with("agent:") {
         return None;
     }
-    // Swift splits on ":" and drops empty components, so `agent::x` yields
+    // The original splits on ":" and drops empty components, so `agent::x` yields
     // "x". Mirrored here rather than indexing blindly.
     key.split(':').filter(|part| !part.is_empty()).nth(1)
 }

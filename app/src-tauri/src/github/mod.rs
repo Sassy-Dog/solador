@@ -2,12 +2,12 @@
 //! with its glanceable counts, and the org's self-hosted runners with the
 //! roster memory that makes an absent one visible.
 //!
-//! Port of `DevCanopy/Views/Cockpit/Panels/GHWorkflowsPanel.swift` and
-//! `GHRunnersPanel.swift`. The data layer beneath them is `crates/github`; this
+//! Port of `GHWorkflowsPanel` and
+//! `GHRunnersPanel`. The data layer beneath them is `crates/github`; this
 //! module is the view side, and it holds to the same rule as
 //! [`crate::containers`] and `crates/viewmodel`: **every string, colour, width
 //! and count the frontend paints is made here.** A threshold or a status word
-//! typed into JavaScript is one that can drift from the Swift panel with no
+//! typed into JavaScript is one that can drift from the original panel with no
 //! test noticing.
 //!
 //! Two rules run through the whole module, both inherited from `crates/github`:
@@ -90,7 +90,7 @@ pub const REPOS_LOADING_MESSAGE: &str = "loading…";
 /// `the_repos_panel_says_loading_before_it_has_looked_for_a_token` records.
 pub const NO_REPOS_MESSAGE: &str = "no repos tracked — add one in Settings → Portfolio";
 
-/// Runners, same moment. Swift words this one differently and the difference is
+/// Runners, same moment. the original words this one differently and the difference is
 /// kept: the Repos panel says what it is doing, the Runners panel says what it
 /// is fetching.
 pub const RUNNERS_LOADING_MESSAGE: &str = "loading runners…";
@@ -107,7 +107,7 @@ pub const RUNNERS_STALE_AFTER_SECS: u64 = 150;
 
 // Fixed column widths. Each is the wider of the two things it must hold — its
 // 9pt header label and its 11pt value — plus a little margin, and nothing
-// more: the Swift panel's originals were half again this size, which spread
+// more: the original panel's originals were half again this size, which spread
 // the numbers so far apart that a row read as scattered digits rather than one
 // record, and cost Repos the second column it now fits in.
 //
@@ -462,7 +462,7 @@ pub fn actions_url(slug: &str) -> String {
 /// What a screen reader announces for the row, and the only *label* the click
 /// target carries.
 ///
-/// The Swift panel has none — an `onTapGesture` on a `VStack` is invisible to
+/// The original panel has none — an `onTapGesture` on a `VStack` is invisible to
 /// VoiceOver — so this is not parity, it is the web platform's own floor: a
 /// `role="link"` whose accessible name would otherwise be the row's seven
 /// numbers read aloud in a row.
@@ -498,7 +498,7 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         None
     };
 
-    // Nothing is rendered beside a message: the Swift panel branches before
+    // Nothing is rendered beside a message: the original panel branches before
     // building the table, and a half-populated grid under "loading…" would be
     // a state it never has.
     let health: &[RepoWorkflowHealth] = if message.is_none() {
@@ -621,7 +621,7 @@ fn health_line(health: &[RepoWorkflowHealth]) -> Value {
 /// One repo's row: the dot, the short name, and the seven fixed cells.
 ///
 /// The local counts are joined by [`git::normalize`]d name, the same key the
-/// Swift panel joins on — a repo not checked out here simply has no entry, and
+/// original panel joins on — a repo not checked out here simply has no entry, and
 /// [`LocalRepoCounts::default`] is two `None`s, which is exactly "—".
 fn repo_row(
     health: &RepoWorkflowHealth,
@@ -1368,7 +1368,7 @@ mod tests {
 
     /// Character-for-character parity with `GHWorkflowsPanel.openActions(_:)`.
     #[test]
-    fn a_row_carries_the_swift_tap_target() {
+    fn a_row_carries_the_original_tap_target() {
         let state = ready(vec![health_of("acme/widget", &[], RepoCounts::default())]);
         let row = only_row(&state, now());
         assert_eq!(row["url"], "https://github.com/acme/widget/actions");
@@ -1829,7 +1829,7 @@ mod tests {
     // MARK: - Repos: shape
 
     #[test]
-    fn the_columns_are_the_swift_widths_in_the_swift_order() {
+    fn the_columns_are_the_original_widths_in_the_original_order() {
         let view = repos_view(&ready(Vec::new()), now());
         let columns = view["columns"].as_array().expect("columns");
         let labels: Vec<&str> = columns
@@ -2435,7 +2435,7 @@ mod tests {
         assert_eq!(
             records.iter().map(|r| r.os.as_str()).collect::<Vec<_>>(),
             vec!["macOS", "linux", "other"],
-            "the stored spelling is the Swift raw value, not the display label"
+            "the stored spelling is the original raw value, not the display label"
         );
         assert_eq!(roster_from_records(&records), entries);
     }

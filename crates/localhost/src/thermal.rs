@@ -2,7 +2,7 @@
 
 /// How hard the machine is thermally throttling.
 ///
-/// Mirrors `ProcessInfo.thermalState` — the source the Swift collector reads
+/// Mirrors `ProcessInfo.thermalState` — the source the original collector reads
 /// (`HostMetricsCollector.mapThermalState`) — and carries the same integer
 /// encoding the view-model decodes
 /// (`crates/viewmodel/src/color.rs::ThermalState::from_wire`), so the local card

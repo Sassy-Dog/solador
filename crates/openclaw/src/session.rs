@@ -1,6 +1,6 @@
 //! One gateway session: handshake, bootstrap, then the steady-state pump.
 //!
-//! Rust port of `DevCanopy/Services/OpenClaw/OpenClawWebSocketClient.swift`
+//! Rust port of `OpenClawWebSocketClient`
 //! (periclaw's `net/openclaw.rs` session): await `connect.challenge` → sign the
 //! nonce → send `connect` → await `hello-ok` → bootstrap RPCs → receive loop,
 //! with a 30s channel/session re-snapshot and a 20s ping keepalive.
@@ -28,7 +28,7 @@ use crate::protocol;
 use crate::rpc::Envelope;
 
 /// How long the client waits for `connect.challenge`, and again for
-/// `hello-ok`. Matches the Swift client's two 10s deadlines.
+/// `hello-ok`. Matches the original client's two 10s deadlines.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Channels aren't broadcast and session usage drifts, so both are
 /// re-snapshotted this often over the live socket.
@@ -119,7 +119,7 @@ impl From<protocol::InvalidUrl> for SessionError {
 impl SessionError {
     /// The one-line reason for the panel's connection state.
     ///
-    /// Ports `OpenClawService.humanize` plus the two pairing strings the Swift
+    /// Ports `OpenClawService.humanize` plus the two pairing strings the original
     /// reconnect loop sets directly. Never includes a token, a nonce, or a
     /// signature — the gateway's own `error.message` is the only free text, and
     /// the gateway does not echo credentials.
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn constants_match_the_swift_client() {
+    fn constants_match_the_original_client() {
         assert_eq!(HANDSHAKE_TIMEOUT, Duration::from_secs(10));
         assert_eq!(HEARTBEAT_INTERVAL, Duration::from_secs(30));
         assert_eq!(PING_INTERVAL, Duration::from_secs(20));
@@ -768,7 +768,7 @@ mod tests {
     // MARK: - Error rendering
 
     #[test]
-    fn disconnect_reasons_match_the_swift_humanizer() {
+    fn disconnect_reasons_match_the_original_humanizer() {
         assert_eq!(
             SessionError::InvalidUrl.disconnect_reason(),
             "invalid gateway URL"

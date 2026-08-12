@@ -1,5 +1,5 @@
 //! Test-only fixtures shared across the crate's module tests. Twins of the
-//! helpers and stubs at the bottom of `DevCanopyTests/AzureCostCSVTests.swift`.
+//! helpers and stubs at the bottom of `AzureCostCSVTests`.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,7 +10,7 @@ use crate::blob::BlobFetcher;
 use crate::error::AzureCostError;
 use crate::models::ResourceCost;
 
-/// A UTC instant, spelled the way the Swift tests spell one.
+/// A UTC instant, spelled the way the original tests spell one.
 pub(crate) fn utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
     let naive = NaiveDate::from_ymd_opt(year, month, day)
         .and_then(|d| d.and_hms_opt(hour, minute, 0))

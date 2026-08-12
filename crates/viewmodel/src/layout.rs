@@ -1,7 +1,7 @@
 //! Layout policy. Values, not rendering — the shell applies these via CSS.
 //!
 //! Ports `coreColumns` and the `coreRowSpan * coreRowUnit` block arithmetic
-//! from `HostMetricsPanel.swift`, and generalises the first: instead of one
+//! from `HostMetricsPanel`, and generalises the first: instead of one
 //! column count for all widths, a ladder of every count `coreColumns` would
 //! accept, so a wider container buys more columns without ever buying a
 //! layout `coreColumns` itself would refuse.
@@ -75,16 +75,16 @@ pub fn core_block_height(row_span: usize) -> f64 {
     row_span.max(1) as f64 * CORE_ROW_UNIT
 }
 
-/// The tightest core cell the SwiftUI cockpit ever renders: 36 cores at its
+/// The tightest core cell the original cockpit ever renders: 36 cores at its
 /// fixed 9 columns is 4 rows in the 2-row-span block, `core_cell_height(220,
 /// 4, 8)` = 49. Below this the label + padding consume the whole cell and the
 /// sparkline's flexed remainder hits 0 — the chart vanishes while the
 /// percentages keep rendering, which reads as working when it isn't.
 pub const CORE_CELL_MIN_H: f64 = 49.0;
 
-/// Height of the cores block on one ladder rung. Swift can hold its block
+/// Height of the cores block on one ladder rung. the original can hold its block
 /// fixed because its column count never drops below `core_columns`; the
-/// ladder's narrow rungs produce row counts Swift can't (6, 9, 12 ... rows),
+/// ladder's narrow rungs produce row counts the original can't (6, 9, 12 ... rows),
 /// where dividing the fixed block erases the plots. So: the fixed block while
 /// cells stay at or above the squeeze floor, growing only past it.
 pub fn core_rung_height(row_span: usize, rows: usize) -> f64 {
@@ -204,7 +204,7 @@ pub fn core_visual_rows(count: usize, cols: usize) -> usize {
 }
 
 /// Chooses how many columns the per-core CPU grid uses for a given core count —
-/// `coreColumns`, ported from `DevCanopy/Views/Cockpit/CoreGridLayout.swift`.
+/// `coreColumns`, ported from `CoreGridLayout`.
 /// Where [`core_column_ladder`] offers every rung so the shell can pick by
 /// width, this picks the single count for a fixed-width grid.
 ///
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn cell_height_matches_the_swift_arithmetic() {
+    fn cell_height_matches_the_original_arithmetic() {
         let h = core_block_height(2);
         assert_eq!(core_cell_height(h, 1, CORE_GAP), 220.0);
         assert_eq!(core_cell_height(h, 2, CORE_GAP), 106.0);
@@ -425,8 +425,8 @@ mod tests {
     }
 
     #[test]
-    fn rung_height_holds_the_block_through_the_swift_squeeze() {
-        // 1..=4 rows fit the 2-row block by squeezing, exactly as Swift does
+    fn rung_height_holds_the_block_through_the_original_squeeze() {
+        // 1..=4 rows fit the 2-row block by squeezing, exactly as the original does
         // (4 rows is its 36-core case): the block must not move.
         for rows in 1..=4 {
             assert_eq!(core_rung_height(2, rows), 220.0, "rows {rows}");

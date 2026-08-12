@@ -1,8 +1,8 @@
 //! The two pieces of chrome every panel shares: the refresh-health footer
-//! (`DevCanopy/Views/Cockpit/PanelStatusFooter.swift`) and the thin progress
-//! bar (`CockpitProgressBar.swift`).
+//! (`PanelStatusFooter`) and the thin progress
+//! bar (`CockpitProgressBar`).
 //!
-//! Swift passes the footer a `staleAfter` per panel — 30s for Containers, 150s
+//! The original passes the footer a `staleAfter` per panel — 30s for Containers, 150s
 //! for GitHub Runners — and the *ladder* is identical for all of them. One
 //! definition here means two panels can never disagree about whether an error
 //! outranks staleness, or about where a minute becomes an hour. Same argument
@@ -125,7 +125,7 @@ pub fn status_footer(
 
 /// One thin progress bar: how much of the track to fill, and what colour.
 ///
-/// Port of `CockpitProgressBar` (Swift), including its one subtlety — **the
+/// Port of `CockpitProgressBar` (ported), including its one subtlety — **the
 /// width is clamped and the colour is not**. An over-quota bar pins full rather
 /// than overflowing its track, but it still reads red, because a bar sitting at
 /// 100% in green would say "at budget" when the truth is "past it".
@@ -216,21 +216,21 @@ mod tests {
         );
     }
 
-    /// Every panel's staleness window, pinned against the Swift panel that
+    /// Every panel's staleness window, pinned against the original panel that
     /// owns it.
     ///
     /// The ladder above being right is worth nothing if a panel hands it the
     /// wrong window, and a drifted constant is otherwise invisible: a footer
     /// that appears an hour late looks exactly like a panel that is simply
-    /// fresh. Swift ground truth, panel for panel:
+    /// fresh. the original ground truth, panel for panel:
     ///
-    /// | panel | window | Swift |
+    /// | panel | window | the original |
     /// |---|---|---|
-    /// | Containers | 30s | `Views/Cockpit/Panels/ContainersPanel.swift:40` |
-    /// | Runners | 150s | `Views/Cockpit/Panels/GHRunnersPanel.swift:37` |
-    /// | Claude usage | 150s | `Views/Cockpit/Panels/ClaudeUsagePanel.swift:43` |
-    /// | Neon + Sentry | 5400s | `ClaudeUsagePanel.swift:60`, `:83` |
-    /// | Azure Cost | 18000s | `Views/Cockpit/Panels/AzureCostPanel.swift:27` |
+    /// | Containers | 30s | `ContainersPanel` |
+    /// | Runners | 150s | `GHRunnersPanel` |
+    /// | Claude usage | 150s | `ClaudeUsagePanel` |
+    /// | Neon + Sentry | 5400s | `ClaudeUsagePanel`, `:83` |
+    /// | Azure Cost | 18000s | `AzureCostPanel` |
     ///
     /// Hosts, Repos and OpenClaw are absent on purpose — none of the three
     /// renders a status footer on either side. Hosts carries staleness on the
@@ -238,7 +238,7 @@ mod tests {
     /// unreachable, and OpenClaw is event-driven so it has no cadence to be
     /// late against.
     #[test]
-    fn every_panels_staleness_window_matches_its_swift_panel() {
+    fn every_panels_staleness_window_matches_its_original_panel() {
         let windows: [(&str, u64, u64); 5] = [
             ("containers", crate::containers::STALE_AFTER_SECS, 30),
             ("runners", crate::github::RUNNERS_STALE_AFTER_SECS, 150),
@@ -250,8 +250,11 @@ mod tests {
             ),
             ("azure cost", crate::azure::STALE_AFTER_SECS, 5 * 60 * 60),
         ];
-        for (panel, window, swift) in windows {
-            assert_eq!(window, swift, "{panel} drifted from its Swift panel");
+        for (panel, window, expected) in windows {
+            assert_eq!(
+                window, expected,
+                "{panel} drifted from its documented window"
+            );
             // And the constant is live, not merely declared: exactly at the
             // window is still fresh, one second past it is a footer.
             assert_eq!(

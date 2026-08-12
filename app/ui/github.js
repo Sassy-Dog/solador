@@ -121,7 +121,7 @@ function repoHeader(columns) {
 function openRepo(url) {
   if (!window.__TAURI__ || !url) return;
   // A rejected scope surfaces here as a rejected promise. Swallowed on
-  // purpose: `NSWorkspace.open` is a discard in Swift too, and a cockpit panel
+  // purpose: `NSWorkspace.open` is a discard in the original too, and a cockpit panel
   // is the wrong place to report that a click went nowhere.
   window.__TAURI__.core.invoke("plugin:opener|open_url", { url }).catch(() => {});
 }
@@ -142,7 +142,7 @@ function repoRowNode(row, nameWidth) {
   for (const cell of row.cells) el.appendChild(cellNode("gh-cell", cell));
   el.appendChild(node("span", "grow"));
 
-  // The Swift panel's `onTapGesture` + `NSWorkspace.open`. A `div` is not a
+  // The original panel's `onTapGesture` + `NSWorkspace.open`. A `div` is not a
   // link, so the affordances a real one would carry are spelled out: a role
   // and a Rust-authored accessible name (the row's own text is seven numbers),
   // a tab stop, and Enter — a click-only target is a target a keyboard cannot

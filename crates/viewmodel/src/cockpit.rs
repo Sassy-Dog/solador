@@ -1,5 +1,5 @@
-//! The cockpit grid layer, ported from `DevCanopy/Views/Cockpit/`:
-//! `CockpitBreakpoints.swift` (reflow + host columns) and `CockpitPanel.swift`
+//! The cockpit grid layer, ported from the original app:
+//! `CockpitBreakpoints` (reflow + host columns) and `CockpitPanel`
 //! (the panel table and the shipped arrangement). The palette those two share
 //! lives in [`crate::color`]; [`theme`] hands it out as painted hex.
 //!
@@ -45,8 +45,8 @@ pub enum PanelKind {
 }
 
 impl PanelKind {
-    /// Every kind, in the Swift `CaseIterable` declaration order — with the
-    /// panels that have no Swift twin appended in the order they were added.
+    /// Every kind, in the original `CaseIterable` declaration order — with the
+    /// panels that have no counterpart appended in the order they were added.
     pub const ALL: [PanelKind; 9] = [
         PanelKind::Hosts,
         PanelKind::GhRunners,
@@ -59,7 +59,7 @@ impl PanelKind {
         PanelKind::SentryCrons,
     ];
 
-    /// Stable identifier — the Swift `rawValue`, so persisted layout state and
+    /// Stable identifier — the original `rawValue`, so persisted layout state and
     /// the frontend agree on one spelling.
     pub fn id(self) -> &'static str {
         match self {
@@ -369,7 +369,7 @@ impl CockpitLayout {
 /// outside the cockpit); the authored rows pass through untouched. Unlike
 /// [`host_columns`], "as authored" is the safe answer here — panel minimums are
 /// small, so an authored pair is never the unreadable option. `NaN` takes the
-/// same branch, exactly as Swift's `guard available > 0` does.
+/// same branch, exactly as the original's `guard available > 0` does.
 pub fn reflow(rows: &[Vec<Placement>], available: f64, spacing: f64) -> Vec<Vec<Placement>> {
     if available.is_nan() || available <= 0.0 {
         return rows.to_vec();
@@ -650,7 +650,7 @@ pub const PANEL_MAX_COLUMNS: usize = 2;
 
 /// Minimum height of the tabbed host container, in points.
 ///
-/// `HostsPanel.tabbedHosts`'s `.frame(minHeight: 780)` in Swift, and it carries
+/// `HostsPanel.tabbedHosts`'s `.frame(minHeight: 780)` in the original, and it carries
 /// the same intent: only one card is on screen at a time, so the container has
 /// nothing to size itself against and would otherwise collapse to the height of
 /// its tab bar.
@@ -696,7 +696,7 @@ pub fn panel_table() -> Value {
     )
 }
 
-/// `CockpitTheme` as painted hex, keyed by the Swift member names.
+/// `CockpitTheme` as painted hex, keyed by the original member names.
 pub fn theme() -> Value {
     use crate::color;
     json!({

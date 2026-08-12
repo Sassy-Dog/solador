@@ -4,7 +4,7 @@
 #
 # Deliberately small. Everything the Xcode build needed -- scheme, bundle id,
 # deployment target, derived-data paths, signing identity -- left with the
-# SwiftUI app. The Tauri build reads its own values from
+# original macOS app. The Tauri build reads its own values from
 # `app/src-tauri/tauri.conf.json`, which is the single source for the bundle's
 # identity; duplicating any of it here is how the two drift.
 

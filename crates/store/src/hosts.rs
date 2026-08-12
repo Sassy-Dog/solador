@@ -1,7 +1,7 @@
-//! Watched hosts — the Rust mirror of SwiftData's `MonitoredHost`
-//! (`DevCanopy/Models/MonitoredHost.swift`).
+//! Watched hosts — the Rust mirror of the original persistence layer's `MonitoredHost`
+//! (`MonitoredHost`).
 //!
-//! Same split as Swift: connection details are persisted here, the per-host
+//! Same split as the original: connection details are persisted here, the per-host
 //! bearer token is not. It lives in the OS credential store under
 //! [`crate::SecretKey::HostToken`], keyed by this struct's `id`.
 
@@ -39,7 +39,7 @@ pub struct Host {
 }
 
 impl Host {
-    /// A new host with the Swift initialiser's defaults: port 7878, enabled,
+    /// A new host with the original initialiser's defaults: port 7878, enabled,
     /// created now, nothing hidden.
     #[must_use]
     pub fn new(name: impl Into<String>, address: impl Into<String>) -> Self {
@@ -77,7 +77,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_uses_the_swift_defaults() {
+    fn new_uses_the_original_defaults() {
         let host = Host::new("ubu-01", "100.100.100.100");
         assert_eq!(host.port, 7878);
         assert!(host.enabled);

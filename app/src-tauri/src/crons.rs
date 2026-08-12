@@ -1,7 +1,7 @@
 //! The **Sentry Crons** panel: every cron monitor environment that is not ok,
 //! and **how long it has been broken**.
 //!
-//! No Swift twin — this panel exists only on the cross-platform cockpit. The
+//! No counterpart — this panel exists only on the cross-platform cockpit. The
 //! data layer beneath it is [`usage::sentry`]; this module is the view side and
 //! holds to the same rule as every other panel here: **every string and colour
 //! the frontend paints is made in Rust.**

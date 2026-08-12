@@ -64,9 +64,9 @@ jobs:
     # desktop to serve/build against. macos-latest provides both, and Playwright
     # installs its own chromium, so the image needs nothing bespoke.
     #
-    # Formerly the self-hosted Mac pool, alongside swift-tests/lint — both of
-    # which are gone. Hosted runners are free on public repos, including macOS,
-    # which is what removes the two-runner scarcity that froze the Swift jobs.
+    # Formerly the self-hosted Mac pool. Hosted runners are free on public
+    # repos, including macOS, which removes the two-runner scarcity that
+    # constrained the earlier job layout.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

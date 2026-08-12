@@ -1,10 +1,10 @@
-//! The scalar preferences the Swift app keeps in `@AppStorage`/UserDefaults.
+//! The scalar preferences the original app keeps in `@AppStorage`/UserDefaults.
 //!
-//! Ground truth is `DevCanopy/Views/Settings/SettingsView.swift` (plus
-//! `Models/RefreshInterval.swift`, `Views/Cockpit/CockpitBreakpoints.swift`,
-//! `Services/HostMetrics/LocalHostMetricsService.swift`). Semantics are
+//! Ground truth is `SettingsView` (plus
+//! `RefreshInterval`, `CockpitBreakpoints`,
+//! `LocalHostMetricsService`). Semantics are
 //! mirrored, not APIs: UserDefaults hands back a zero for an unset key and the
-//! Swift side launders that through `RefreshInterval(rawValue:) ?? .default`,
+//! original side launders that through `RefreshInterval(rawValue:) ?? .default`,
 //! so the same "an out-of-range stored value reads as the default" rule is
 //! enforced here on deserialize rather than at every call site.
 //!
@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// The cadences Settings offers, in seconds (`RefreshInterval` in Swift).
+/// The cadences Settings offers, in seconds (`RefreshInterval` in the original).
 pub const REFRESH_INTERVAL_CHOICES: [u32; 3] = [30, 60, 300];
 
 /// `RefreshInterval.default` — 1 minute.
@@ -27,7 +27,7 @@ pub const DEFAULT_CORE_ROW_SPAN: u8 = 2;
 
 /// What the cockpit does when host cards no longer fit side by side.
 ///
-/// Mirrors Swift's `HostOverflowMode` (`stack`/`tabs`), including its
+/// Mirrors the original's `HostOverflowMode` (`stack`/`tabs`), including its
 /// `HostOverflowMode(rawValue:) ?? .stack` tolerance: an unrecognised string
 /// reads as `Stack`, the layout that cannot be unreadable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -41,7 +41,7 @@ pub enum HostOverflowMode {
 }
 
 impl HostOverflowMode {
-    /// The persisted spelling — identical to the Swift enum's `rawValue`.
+    /// The persisted spelling — identical to the original enum's `rawValue`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -135,7 +135,7 @@ pub struct Settings {
     /// Fire an OS notification once when a tracked run transitions into the
     /// `waiting` deployment-protection gate (a human must approve it).
     ///
-    /// Swift's `WorkflowDisplayOptions.notifyOnApprovalNeeded`, which is
+    /// the original's `WorkflowDisplayOptions.notifyOnApprovalNeeded`, which is
     /// likewise default-true and likewise has **no Settings control** — the
     /// preference persists and is read on every poll pass, but nothing in
     /// either app's UI writes it. Editing the store file by hand is the only
@@ -180,7 +180,7 @@ impl Default for Settings {
 }
 
 /// `null` or a cadence Settings never offers reads as the default, the way
-/// `RefreshInterval(rawValue:) ?? .default` does in Swift.
+/// `RefreshInterval(rawValue:) ?? .default` does in the original.
 fn de_refresh_interval_secs<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let raw = Option::<u32>::deserialize(d)?;
     Ok(raw
@@ -202,7 +202,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_the_swift_app() {
+    fn defaults_match_the_original_app() {
         let s = Settings::default();
         assert_eq!(s.refresh_interval_secs, 60);
         assert_eq!(s.core_row_span, 2);
@@ -221,7 +221,7 @@ mod tests {
     }
 
     /// The two preferences with no UI on either side: a store file written
-    /// before either existed must still opt *in*, because Swift's
+    /// before either existed must still opt *in*, because the original's
     /// `WorkflowDisplayOptions()` default is `true` and an upgrade that
     /// silently disabled the alert would look exactly like the feature not
     /// working. The same argument covers the service-change alert, which nobody
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn host_overflow_mode_serialises_as_the_swift_raw_value() {
+    fn host_overflow_mode_serialises_as_the_original_raw_value() {
         let json = serde_json::to_string(&HostOverflowMode::Tabs).expect("serialize");
         assert_eq!(json, "\"tabs\"");
         assert_eq!(

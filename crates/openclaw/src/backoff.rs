@@ -1,7 +1,7 @@
 //! Reconnect pacing.
 //!
 //! Rust port of the backoff arithmetic in `OpenClawService.reconnectLoop`
-//! (`DevCanopy/Services/OpenClaw/OpenClawService.swift`). Pure and clock-free:
+//! (`OpenClawService`). Pure and clock-free:
 //! the caller reports how the session ended and gets back how long to wait, so
 //! every rule here is testable without a socket or a timer.
 //!
@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn constants_match_the_swift_reconnect_loop() {
+    fn constants_match_the_original_reconnect_loop() {
         assert_eq!(INITIAL_BACKOFF, Duration::from_millis(500));
         assert_eq!(MAX_BACKOFF, Duration::from_secs(30));
         assert_eq!(PAIRING_BACKOFF, Duration::from_secs(15));
@@ -140,7 +140,7 @@ mod tests {
         let delay = backoff.delay_after(ended(Some(Duration::from_secs(3))));
         assert_eq!(delay, Duration::from_secs(2));
 
-        // Exactly at the threshold is still not "lived a while" — the Swift
+        // Exactly at the threshold is still not "lived a while" — the original
         // comparison is strictly greater-than.
         let delay = backoff.delay_after(ended(Some(STABLE_SESSION)));
         assert_eq!(delay, Duration::from_secs(4));

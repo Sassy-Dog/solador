@@ -2,8 +2,8 @@
 //! repos — plus the credential-store wrappers for the things that must *never*
 //! land in that file.
 //!
-//! The Swift app splits storage three ways — Keychain for secrets,
-//! `@AppStorage` for scalar preferences, SwiftData for `MonitoredHost` /
+//! The original app splits storage three ways — Keychain for secrets,
+//! `@AppStorage` for scalar preferences, its persistence layer for `MonitoredHost` /
 //! `TrackedRepo`. Two of those three are non-secret and small, so this crate
 //! collapses them into one JSON file and keeps the third exactly where it was:
 //! the OS credential store ([`secrets`]). The split that matters is preserved;
@@ -441,7 +441,7 @@ impl Store {
         self.data.repos.iter_mut().find(|repo| repo.slug == slug)
     }
 
-    /// Creates or updates a repo, keyed by slug (the identity, as in Swift).
+    /// Creates or updates a repo, keyed by slug (the identity, as in the original).
     pub fn upsert_repo(&mut self, repo: TrackedRepo) {
         match self.repo_mut(&repo.slug) {
             Some(existing) => *existing = repo,

@@ -1,4 +1,4 @@
-//! Ported verbatim from the private methods on `HostMetricsPanel` (Swift).
+//! Ported verbatim from the private methods on `HostMetricsPanel` (ported).
 //! They were unreachable from tests there; here they are free functions.
 
 /// One decimal below 100, integral above.
@@ -38,7 +38,7 @@ pub fn memory_label(mb: f64) -> String {
 
 /// "12s" / "3m" / "1h" / "2d" — one unit, largest that fits.
 ///
-/// The ladder Swift spells twice: `PanelStatusFooter.relative` adds " ago" to
+/// The ladder the original spells twice: `PanelStatusFooter.relative` adds " ago" to
 /// it, `Presence.duration` uses it bare ("recycling 40s"). One definition here,
 /// so a panel footer and a presence row can never disagree about where a
 /// minute becomes an hour.
@@ -55,7 +55,7 @@ pub fn duration(secs: u64) -> String {
 }
 
 /// "12s ago" / "3m ago" / "1h ago" / "2d ago" — same bucket boundaries as
-/// `PanelStatusFooter.relative` (Swift), so a stale reading reads the same
+/// `PanelStatusFooter.relative` (ported), so a stale reading reads the same
 /// way here as it does in the shipped app.
 pub fn relative_age(secs: u64) -> String {
     format!("{} ago", duration(secs))

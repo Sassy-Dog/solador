@@ -1,5 +1,5 @@
 //! The three data sources behind the cockpit's **Usage** panel. Rust port of
-//! `DevCanopy/Services/ClaudeUsage/`, `NeonUsage/` and `SentryUsage/`.
+//! the original app, `NeonUsage/` and `SentryUsage/`.
 //!
 //! - [`claude`] — token rollups walked out of Claude Code's local JSONL logs.
 //! - [`neon`] — month-to-date Neon compute + branch storage for one org.

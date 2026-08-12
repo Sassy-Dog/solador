@@ -1,6 +1,6 @@
 //! List an export's month folder, pick the newest run, sum its partitions, and
 //! fold month-to-date plus best-effort prior-month into a summary. Port of
-//! `AzureCostReader` in `DevCanopy/Services/AzureCost/AzureCostService.swift`.
+//! `AzureCostReader` in `AzureCostService`.
 //!
 //! Everything here is generic over [`BlobFetcher`] and takes `now` as an
 //! argument, so the whole decision surface — newest-run selection, the

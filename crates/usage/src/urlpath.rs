@@ -12,7 +12,7 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
 
 /// Percent-encode everything outside RFC 3986's unreserved set.
 ///
-/// Deliberately stricter than Swift's `.urlPathAllowed`, which *permits* `/`
+/// Deliberately stricter than the original's `.urlPathAllowed`, which *permits* `/`
 /// and so leaves the retargeting above possible. Encoding the separator is the
 /// only way the segment stays one segment.
 pub(crate) const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC

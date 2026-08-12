@@ -1,6 +1,6 @@
 //! The local machine's host card — the one that leads the Hosts grid.
 //!
-//! Port of `DevCanopy/Services/HostMetrics/LocalHostMetricsService.swift` plus
+//! Port of `LocalHostMetricsService` plus
 //! the slice of `HostMetricsPanel` that renders it. The sampling itself is
 //! [`localhost::LocalSampler`]; this module is the shell around it: the poll
 //! loop's state, the display name, and the honest-unknown rendering.
@@ -34,7 +34,7 @@ use viewmodel::color;
 pub const CARD_ID: &str = "local";
 
 /// What the card is called when the platform will not say what this machine is
-/// called. Swift never hits this case (`ProcessInfo.hostName` always answers),
+/// called. the original never hits this case (`ProcessInfo.hostName` always answers),
 /// but a nameless card is worse than a generic one.
 ///
 /// Taken from the store rather than spelled again here: it is the same phrase
@@ -45,7 +45,7 @@ pub const FALLBACK_NAME: &str = store::LOCAL_HOST_SCOPE;
 /// This machine's display name: the platform host name with macOS's cosmetic
 /// `.local` suffix removed.
 ///
-/// Byte-for-byte Swift's
+/// Byte-for-byte the original's
 /// `ProcessInfo.processInfo.hostName.replacingOccurrences(of: ".local", with: "")`
 /// — `str::replace` has the same all-occurrences semantics — so the card is
 /// titled the same in both apps.
@@ -108,7 +108,7 @@ impl LocalHostState {
     ///
     /// The connection dot is **always green**: this process *is* the host, so
     /// there is no link to lose and no staleness to report. That is
-    /// `ConnectionState.local` in Swift, which shares the green of `.connected`.
+    /// `ConnectionState.local` in the original, which shares the green of `.connected`.
     #[must_use]
     pub fn card(&self) -> Value {
         match &self.latest {

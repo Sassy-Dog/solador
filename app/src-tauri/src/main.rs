@@ -38,7 +38,7 @@ use openclaw::OpenClawState;
 use settings::{SecretField, StoredSecrets};
 use usage::UsageState;
 
-/// How often each host is polled. Matches the Swift side's
+/// How often each host is polled. Matches the original side's
 /// `RemoteHostMetricsService.start(interval:)` default of 1s, which is also
 /// what the charts assume: one history sample is one fixed time slice
 /// (`PX_PER_SAMPLE`), so the cadence is part of the time axis, not a tuning
@@ -47,7 +47,7 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Consecutive failed polls before a host's card stops claiming to be current.
 ///
-/// Parity with `RemoteHostMetricsService.failureThreshold` (Swift): a single
+/// Parity with `RemoteHostMetricsService.failureThreshold` (ported): a single
 /// missed poll on a flappy tailnet must not repaint the cockpit red, and a
 /// host that is genuinely down flips on the very next tick anyway. Anything
 /// below 2 removes the debounce entirely.
@@ -341,7 +341,7 @@ fn cockpit_view(
         .map(|host| view_for(&host.lock().expect("host state poisoned")))
         .collect();
     let remote_count = remote.len();
-    // Local first, matching `HostsPanel.hosts` in Swift (`[local] + remoteHosts`).
+    // Local first, matching `HostsPanel.hosts` in the original (`[local] + remoteHosts`).
     // This machine is the one you are looking at; it leads.
     let cards: Vec<Value> = local.into_iter().chain(remote).collect();
     cockpit_payload(
@@ -599,7 +599,7 @@ fn panel_rows(layout: &CockpitLayout, available: f64) -> Value {
 /// looks identical to a hundred from inside the loop.
 ///
 /// A failure also only *publishes* once [`FAILURE_THRESHOLD`] consecutive
-/// polls have failed, mirroring the Swift service: the streak is counted from
+/// polls have failed, mirroring the original service: the streak is counted from
 /// the first failure, but the card keeps its previous badge until the streak
 /// is long enough to mean something.
 fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at: Instant) {
@@ -963,7 +963,7 @@ fn host_token<C: CredentialStore + ?Sized>(credentials: &C, id: Uuid) -> HostTok
 /// deliberately *not* a teardown-and-rebuild: an unrelated edit (adding a
 /// host, renaming one, toggling another off) must leave every surviving host's
 /// history, failure streak and last-success time exactly where they were.
-/// Mirrors `RemoteHostsCoordinator.reload()` in Swift.
+/// Mirrors `RemoteHostsCoordinator.reload()` in the original.
 fn reload_hosts(app: &App) {
     let desired: Vec<(HostKey, String)> = {
         let store = app.store.lock().expect("store poisoned");
@@ -1064,7 +1064,7 @@ async fn poll_containers(app: &Arc<App>) {
     let mut fetched: Vec<(String, Vec<wire::Container>)> = Vec::new();
     for request in requests {
         // A failed fetch is deliberately silent here and leaves the host's
-        // previous rows in place (`RemoteHostsCoordinator`, Swift): the panel
+        // previous rows in place (`RemoteHostsCoordinator`, the original): the panel
         // must not blank a section because one poll missed, and an unreachable
         // host already reports itself on its own card.
         if let Ok((name, Ok(list))) = request.await {
@@ -1415,7 +1415,7 @@ async fn poll_github(app: &Arc<App>) {
     deliver_approval_notices(app, &notices);
 }
 
-/// Swift's `content.sound = .default`, spelled the way `notify-rust` wants it.
+/// The original's `content.sound = .default`, spelled the way `notify-rust` wants it.
 ///
 /// macOS-only on purpose. The plugin's `sound()` is a platform-specific
 /// *resource name*, not a portable "make a noise" flag, and there is no
@@ -1455,7 +1455,7 @@ fn deliver_banners(app: &App, what: &str, banners: &[(&str, &str)]) {
         if let Some(sound) = NOTIFICATION_SOUND {
             builder = builder.sound(sound);
         }
-        // Logged, not surfaced: this is the same silent no-op Swift takes when
+        // Logged, not surfaced: this is the same silent no-op the original takes when
         // the user has denied notification permission, and a cockpit panel is
         // the wrong place to report that the OS declined a banner.
         if let Err(e) = builder.show() {
@@ -1624,7 +1624,7 @@ fn settings_response(app: &App, status: Option<String>) -> Value {
     json!({ "status": status, "settings": settings_payload(app) })
 }
 
-/// Persists the store, turning a failure into the status line Swift shows.
+/// Persists the store, turning a failure into the status line the original shows.
 fn save_status(store: &Store, ok: impl Into<String>) -> Option<String> {
     match store.save() {
         Ok(()) => Some(ok.into()),
@@ -1887,7 +1887,7 @@ async fn poll_usage(app: &Arc<App>, providers: bool) {
 /// Walks Claude Code's log root, returning the summary and the shell's own
 /// "the root isn't there" note.
 ///
-/// The existence check is the *shell's*, exactly as it is in Swift: the walk
+/// The existence check is the *shell's*, exactly as it is in the original: the walk
 /// itself skips what it cannot read rather than failing, so a missing root would
 /// otherwise be indistinguishable from a quiet week. An unlocatable home
 /// directory yields no summary at all — nothing was read, so there is nothing to
@@ -2829,7 +2829,7 @@ fn settings_remove_host(id: String, state: tauri::State<'_, Arc<App>>) -> Value 
 ///
 /// Deliberately does **not** call [`reload_hosts`]: a volume edit must not
 /// cost the host card its sparkline history or its volume debounce. Same
-/// distinction the Swift view draws between `applyHiddenMounts()` and
+/// distinction the original view draws between `applyHiddenMounts()` and
 /// `reload()`.
 #[tauri::command]
 fn settings_unhide_volume(
@@ -2866,7 +2866,7 @@ fn settings_unhide_volume(
 //
 // Three commands over one persisted list, and every one of them is a
 // read-modify-write of the *whole* list under the store's lock. That is the
-// port of Swift's re-read-on-access bindings: nothing here trusts a client-side
+// port of the original's re-read-on-access bindings: nothing here trusts a client-side
 // copy of the rules, so two edits in flight against the same row cannot clobber
 // each other's other fields.
 //
@@ -2909,7 +2909,7 @@ fn settings_add_container_rule(state: tauri::State<'_, Arc<App>>) -> Value {
 /// Deliberately *not* a whole-row write: the frontend sends the field that
 /// changed and nothing else, so the value in every other field of that row is
 /// whatever is on disk rather than whatever the last render happened to paint.
-/// Swift gets the same property from a `Binding` per `WritableKeyPath`.
+/// The original gets the same property from a `Binding` per `WritableKeyPath`.
 #[tauri::command]
 fn settings_set_container_rule(
     index: usize,
@@ -2943,7 +2943,7 @@ fn settings_remove_container_rule(index: usize, state: tauri::State<'_, Arc<App>
     settings_response(&state, status)
 }
 
-/// The Test button: one `/v1/health` probe, rendered as the Swift result line.
+/// The Test button: one `/v1/health` probe, rendered as the original result line.
 #[tauri::command]
 async fn settings_test_host(
     id: String,
@@ -3734,7 +3734,7 @@ struct SeedHost {
 }
 
 /// Parses `"name|address|port|token"`, byte-for-byte the same rules as
-/// `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()` in Swift: empty
+/// `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()` in the original: empty
 /// fields are kept (not skipped) when splitting, name and address are
 /// required and must be non-empty, an unparseable or absent port falls back
 /// to the agent default, and an absent token is the empty string.
@@ -3756,7 +3756,7 @@ fn parse_seed_host(raw: &str) -> Option<SeedHost> {
 }
 
 /// Provisions a host from `SOLADOR_SEED_HOST` if one with that address is
-/// not already configured — headless/first-run setup, exactly as in Swift.
+/// not already configured — headless/first-run setup, exactly as in the original.
 ///
 /// The same-address no-op is what makes this safe to leave set: relaunching
 /// with the variable still exported must not accumulate duplicate hosts, and
@@ -3764,8 +3764,8 @@ fn parse_seed_host(raw: &str) -> Option<SeedHost> {
 ///
 /// Returns the id of the host it added, or `None` when it did nothing.
 ///
-/// The Swift app skips this entirely under `DemoMode.isEnabled`
-/// (`DevCanopyApp.swift`), so a synthetic demo host is never written to real
+/// The original app skips this entirely under `DemoMode.isEnabled`
+/// (the app entry point), so a synthetic demo host is never written to real
 /// storage. This shell has no demo mode yet; when it gains one, the skip goes
 /// at this function's only call site, not inside it.
 fn seed_from_env(
@@ -3800,8 +3800,8 @@ fn seed_from_env(
 
 /// Enabled **remote** hosts in the cockpit's display order.
 ///
-/// Sorted by name, matching the Swift coordinator's `SortDescriptor(\.name)`.
-/// The local machine is not in this list and never sorts against it: the Swift
+/// Sorted by name, matching the original coordinator's `SortDescriptor(\.name)`.
+/// The local machine is not in this list and never sorts against it: the original
 /// cockpit puts it first unconditionally (`HostsPanel.hosts` is
 /// `[local] + remoteHosts.hosts`), and so does [`cockpit_view`].
 fn display_order(hosts: &[Host]) -> Vec<&Host> {
@@ -3824,10 +3824,10 @@ fn main() {
         }
     };
     // Tokens live in the OS credential store, never in the store file. The
-    // *service* string matches the Swift `KeychainHelper`
-    // (the pre-rename service, see `store::LEGACY_SERVICE`), but the *account* does not: Swift stores
+    // *service* string matches the original `KeychainHelper`
+    // (the pre-rename service, see `store::LEGACY_SERVICE`), but the *account* does not: the original stores
     // each host's token under `host_token_<UUID>`
-    // (`DevCanopy/Services/KeychainHelper.swift`), `store::SecretKey` stores
+    // (`KeychainHelper`), `store::SecretKey` stores
     // it under `host-<UUID>`. Nothing is actually reused today -- a token
     // saved by one app is invisible to the other; unifying the account scheme
     // is separate work.
@@ -4165,7 +4165,7 @@ mod tests {
 
     // MARK: cadences
 
-    /// Which clock each data source runs on, pinned against the Swift service
+    /// Which clock each data source runs on, pinned against the original service
     /// that owns it.
     ///
     /// The user-facing refresh interval governs the two GitHub panels and
@@ -4176,16 +4176,16 @@ mod tests {
     /// hour; a 1s host poll slowed to 300s is a dead chart axis, since one
     /// history sample is one fixed time slice.
     ///
-    /// | source | cadence | governed by `refresh_interval_secs`? | Swift |
+    /// | source | cadence | governed by `refresh_interval_secs`? | the original |
     /// |---|---|---|---|
-    /// | Hosts (local + remote) | 1s | no | `RemoteHostMetricsService.swift:94` |
-    /// | Containers | 10s | no | `LocalContainerService.swift:132` |
-    /// | Repos + Runners | user's | **yes** — `github_loop` | `DevCanopyApp.swift:136-137` |
-    /// | Claude usage | user's | **yes** — `usage_loop` | `DevCanopyApp.swift:134` |
-    /// | Neon + Sentry | 1h | no | `NeonUsageService.swift:81` |
-    /// | Sentry crons | 1h | no | no Swift twin — `crons_loop` |
-    /// | Azure Cost | 4h | no | `AzureCostService.swift:343` |
-    /// | OpenClaw | none — event-driven | no | `OpenClawService.swift:72` |
+    /// | Hosts (local + remote) | 1s | no | `RemoteHostMetricsService` |
+    /// | Containers | 10s | no | `LocalContainerService` |
+    /// | Repos + Runners | user's | **yes** — `github_loop` | app entry point |
+    /// | Claude usage | user's | **yes** — `usage_loop` | app entry point |
+    /// | Neon + Sentry | 1h | no | `NeonUsageService` |
+    /// | Sentry crons | 1h | no | no counterpart — `crons_loop` |
+    /// | Azure Cost | 4h | no | `AzureCostService` |
+    /// | OpenClaw | none — event-driven | no | `OpenClawService` |
     ///
     /// The "yes" rows are structural rather than constants, so they are pinned
     /// by where they read the store rather than here: `github_loop` reads
@@ -4199,7 +4199,7 @@ mod tests {
     /// invisible for up to an hour — this is a *persistence* watch, not a
     /// real-time alarm, and the daily Slack digest remains the prompt signal.
     #[test]
-    fn every_data_source_polls_on_its_swift_services_cadence() {
+    fn every_data_source_polls_on_its_original_services_cadence() {
         let cadences: [(&str, u64, u64); 4] = [
             ("hosts", POLL_INTERVAL.as_secs(), 1),
             ("containers", containers::POLL_INTERVAL_SECS, 10),
@@ -4210,8 +4210,11 @@ mod tests {
                 4 * 60 * 60,
             ),
         ];
-        for (source, cadence, swift) in cadences {
-            assert_eq!(cadence, swift, "{source} drifted from its Swift service");
+        for (source, cadence, expected) in cadences {
+            assert_eq!(
+                cadence, expected,
+                "{source} drifted from its documented cadence"
+            );
         }
 
         // The user's choices, which the two governed loops read. Pinned here
@@ -4220,7 +4223,7 @@ mod tests {
         assert_eq!(
             store::settings::REFRESH_INTERVAL_CHOICES,
             [30, 60, 300],
-            "the refresh-interval choices are Swift's RefreshInterval cases"
+            "the refresh-interval choices are the original's RefreshInterval cases"
         );
         assert_eq!(store::settings::DEFAULT_REFRESH_INTERVAL_SECS, 60);
 
@@ -4568,7 +4571,7 @@ mod tests {
     /// Parity with `RemoteHostMetricsService.failureThreshold`: one missed
     /// poll is a blip, not an outage. A card that flipped red on the first
     /// failure would strobe on any flappy link, which is exactly why the
-    /// Swift side debounces.
+    /// original side debounces.
     #[test]
     fn one_failed_poll_does_not_flip_a_live_host() {
         let mut s = state_with(None, None, None);
@@ -4621,7 +4624,7 @@ mod tests {
 
     /// A never-connected host stays "connecting" through its first failure
     /// too — the debounce applies before the first sample, exactly as the
-    /// Swift service starts in `.connecting` and only flips on the streak.
+    /// original service starts in `.connecting` and only flips on the streak.
     #[test]
     fn a_never_connected_host_stays_connecting_through_one_failure() {
         let mut s = state_with(None, None, None);
@@ -5199,7 +5202,7 @@ mod tests {
     /// 460.5, and the content columns each of those affords.
     ///
     /// Repos clears its split by 41pt (896 of 937) and only because its numeric
-    /// columns are sized to their labels; the same panel with the Swift
+    /// columns are sized to their labels; the same panel with the original
     /// originals needed 1136 and stayed single-column on this display.
     #[test]
     fn a_1890pt_cockpit_gives_every_list_panel_two_columns() {
@@ -5321,7 +5324,7 @@ mod tests {
     // MARK: SOLADOR_SEED_HOST
 
     #[test]
-    fn a_seed_string_parses_the_way_swift_parses_it() {
+    fn a_seed_string_parses_the_documented_way() {
         assert_eq!(
             parse_seed_host("ubu-01|100.100.100.100|9000|tok"),
             Some(SeedHost {
@@ -5349,7 +5352,7 @@ mod tests {
             store::DEFAULT_AGENT_PORT
         );
         // An empty port field keeps the empty token field addressable -- the
-        // Swift split does not omit empty subsequences, and neither does this.
+        // The original split does not omit empty subsequences, and neither does this.
         assert_eq!(
             parse_seed_host("ubu-01|100.100.100.100||tok")
                 .expect("seed")

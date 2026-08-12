@@ -35,7 +35,7 @@ starship-battery = "0.11"
 serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# `NSProcessInfo.thermalState` — the same source the Swift collector reads
+# `NSProcessInfo.thermalState` — the same source the original collector reads
 # (`HostMetricsCollector.mapThermalState`). Already in the workspace tree via
 # tauri, so this costs no extra build.
 objc2-foundation = { version = "0.3", default-features = false, features = [
@@ -43,7 +43,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSProcessInfo",
 ] }
 # The IOKit registry walk behind `src/gpu.rs` — the same `IOAccelerator`
-# properties `GPUMonitor.swift` reads. Chosen over `io-kit-sys`/`core-foundation`
+# properties `GPUMonitor` reads. Chosen over `io-kit-sys`/`core-foundation`
 # because both crates are already in this workspace's lock via tauri (so the
 # port adds no new package to the tree at all), they are the same objc2 family
 # as the `objc2-foundation` above, and `CFRetained` gets the reference counting

@@ -91,7 +91,7 @@ Solador targets **macOS and Windows**. There is no Linux build of the app (the
 
 - **Xcode Command Line Tools** — `xcode-select --install`.
 
-  This is not optional and it is not about Swift: Rust links macOS binaries with
+  This is not optional and it is not about the original: Rust links macOS binaries with
   Apple's linker against Apple's SDK. Without it you get a `cc`/`ld` failure
   that does not mention Xcode. It also supplies `codesign` (the dev launcher
   re-signs the app bundle so your Keychain does not re-prompt on every run) and

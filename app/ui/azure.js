@@ -4,7 +4,7 @@
 // layout, wiring, and nothing else.
 //
 // There is no currency formatting here, deliberately. `$1,234.56` is an en_US
-// `NumberFormatter` in the Swift panel and a hand-rolled twin of it in Rust; a
+// `NumberFormatter` in the original panel and a hand-rolled twin of it in Rust; a
 // `toLocaleString` in this file would be a third implementation, rendering the
 // bill in whatever locale the webview happened to inherit.
 //

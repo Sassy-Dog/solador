@@ -1,6 +1,6 @@
 //! Ed25519 device identity for OpenClaw gateway pairing.
 //!
-//! Rust port of `DevCanopy/Services/OpenClaw/OpenClawDeviceIdentity.swift`
+//! Rust port of `OpenClawDeviceIdentity`
 //! (which itself ports periclaw's `device_identity.rs`, matching OpenClaw's
 //! `buildDeviceAuthPayload` v2). The keypair is generated once and its 32-byte
 //! seed persisted through a [`DeviceKeyStore`]; the gateway operator approves
@@ -27,7 +27,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
 /// Account name the device seed is stored under in the OS credential store,
-/// identical to the Swift app's (`KeychainHelper.saveOpenClawDeviceKey`). A
+/// identical to the original app's (`KeychainHelper.saveOpenClawDeviceKey`). A
 /// [`DeviceKeyStore`] implementation that talks to the real keyring must use
 /// this, or the two apps generate separate identities and the operator has to
 /// approve the device twice.
@@ -154,7 +154,7 @@ impl DeviceIdentity {
 }
 
 /// Inputs to the OpenClaw v2 connect signature, bundled so the signing API
-/// stays one parameter (mirrors periclaw's and Swift's `SignConnectParams`).
+/// stays one parameter (mirrors periclaw's and the original's `SignConnectParams`).
 #[derive(Debug, Clone, Copy)]
 pub struct SignConnectParams<'a> {
     pub client_id: &'a str,
@@ -238,7 +238,7 @@ pub struct LoadedIdentity {
 
 /// Load the stored device key, or generate and persist a new one.
 ///
-/// Mirrors Swift's `loadOrCreate`: a read miss, a store failure, or a stored
+/// Mirrors the original's `loadOrCreate`: a read miss, a store failure, or a stored
 /// value that isn't a valid 32-byte seed all fall through to generation.
 ///
 /// # Errors
@@ -359,7 +359,7 @@ mod tests {
 
     use super::*;
 
-    /// The Swift tests' fixed seeds: `Data(repeating: <byte>, count: 32)`.
+    /// The original tests' fixed seeds: `Data(repeating: <byte>, count: 32)`.
     fn seed(byte: u8) -> DeviceSeed {
         [byte; SEED_LEN]
     }
@@ -402,7 +402,7 @@ mod tests {
     // MARK: byte-exact fixtures
     //
     // Every constant below was produced by this implementation and then
-    // independently confirmed against Apple CryptoKit — the shipped Swift app's
+    // independently confirmed against Apple CryptoKit — the shipped original app's
     // crypto — for the same seed: identical device id, identical public key,
     // and `Curve25519.Signing.PublicKey.isValidSignature` accepting the
     // ed25519-dalek signature below over the payload below (and rejecting it
@@ -410,7 +410,7 @@ mod tests {
     //
     // CryptoKit's own signing is hedged (randomized), so *signature bytes* can
     // only ever be pinned on the deterministic RFC 8032 side. That is exactly
-    // why this fixture lives here and not in the Swift twin, which can only
+    // why this fixture lives here and not in the counterpart, which can only
     // assert verification.
 
     /// SHA-256 hex of the public key for the all-zero seed.
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn signature_verifies_against_the_exact_payload() {
-        // The Swift twin's check, kept because it is the one that fails loudly
+        // The counterpart's check, kept because it is the one that fails loudly
         // if the payload format drifts *and* the fixture is regenerated to
         // match: verification is over independently-spelled expected bytes.
         let identity = DeviceIdentity::from_seed(&seed(0));
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn a_failing_store_still_yields_a_usable_identity() {
-        // Swift treats a Keychain write failure as non-fatal; so do we. The
+        // The original treats a Keychain write failure as non-fatal; so do we. The
         // device just has to be re-approved after a restart.
         let store = MemoryDeviceKeyStore::failing("keychain locked");
         let loaded = load_or_create(&store).expect("entropy");

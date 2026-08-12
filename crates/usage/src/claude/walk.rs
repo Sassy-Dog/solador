@@ -1,5 +1,5 @@
 //! Discovery and streaming of Claude Code's local JSONL logs. Port of the
-//! off-actor half of `DevCanopy/Services/ClaudeUsage/ClaudeUsageService.swift`
+//! off-actor half of `ClaudeUsageService`
 //! — the file walk and line streaming, without the polling loop or the
 //! published state, which belong to the shell.
 //!
@@ -44,7 +44,7 @@ pub fn default_projects_dir() -> Option<PathBuf> {
 /// Resilient by design: an unreadable directory, an unreadable file, or a
 /// malformed line is skipped rather than failing the walk. A missing root
 /// yields no records — the shell reports "no ~/.claude/projects" from its own
-/// existence check, the way the Swift does.
+/// existence check, the way the original does.
 #[must_use]
 pub fn collect_records(projects_dir: &Path, now: DateTime<Utc>) -> Vec<UsageRecord> {
     let cutoff = now - TimeDelta::days(FRESH_WINDOW_DAYS);
@@ -209,7 +209,7 @@ mod tests {
         assert!(records.iter().any(|r| r.project == "bravo"));
     }
 
-    /// A trailing line without a newline still counts — the Swift streams the
+    /// A trailing line without a newline still counts — the original streams the
     /// leftover buffer for exactly this reason.
     #[test]
     fn reads_a_final_line_that_has_no_trailing_newline() {

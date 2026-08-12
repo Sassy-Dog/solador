@@ -76,7 +76,7 @@ pub const STALE_INTERVALS: u32 = 3;
 // ---------------------------------------------------------------------------
 // Wire contract types: see the `solador-wire` crate, re-exported at the top
 // of this module. They used to be defined here, duplicated field-for-field
-// against the Swift decoder — which is exactly how
+// against the original decoder — which is exactly how
 // `HostMetricsError.decodeFailed` ("agent/app version skew") came to exist. One
 // definition now; a rename here is a rename everywhere, and
 // `crates/wire/tests/wire.rs` pins the JSON shape.
@@ -730,7 +730,7 @@ mod tests {
     use serde_json::{json, Value};
 
     /// The canonical wire sample: every optional key present. Decoded
-    /// byte-for-key by the Swift `Codable` type, and the lock on how a *present*
+    /// byte-for-key by the original `Codable` type, and the lock on how a *present*
     /// value serialises.
     ///
     /// It is deliberately NOT what this agent emits any more — since #183 it
@@ -953,7 +953,7 @@ mod tests {
 
     /// Load the shared cross-language battery fixture
     /// (`tests/fixtures/battery_contract.json`), decoded byte-for-key by both this
-    /// crate and the Swift wire-contract suite.
+    /// crate and the original wire-contract suite.
     fn shared_battery_fixture() -> String {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -966,7 +966,7 @@ mod tests {
     /// CONTRACT LOCK (shared fixture): the non-null battery payload both sides
     /// agree on must round-trip through the agent's `Battery` type — deserialize
     /// from the shared JSON, then re-serialize to the identical value. If the
-    /// agent's `Battery` keys drift from the fixture, this fails; the Swift
+    /// agent's `Battery` keys drift from the fixture, this fails; the original
     /// `testSharedBatteryContractFixture` fails on the same file.
     #[test]
     fn battery_round_trips_shared_contract_fixture() {
@@ -1054,7 +1054,7 @@ mod tests {
         assert!(mem["totalGB"].is_number());
         assert!(mem["swapUsedGB"].is_number());
         assert!(mem["pressure"].is_number());
-        // Swift computes this — must NOT be present on the wire.
+        // The original computes this — must NOT be present on the wire.
         assert!(!mem.contains_key("usagePercentage"));
 
         let disk = v["disk"].as_object().unwrap();

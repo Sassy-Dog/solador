@@ -2,8 +2,8 @@
 //! store, the live session state, and every string and colour the frontend
 //! paints.
 //!
-//! Port of `DevCanopy/Views/Cockpit/Panels/OpenClawPanel.swift` and
-//! `DevCanopy/Views/Settings/OpenClawSettingsView.swift`. The protocol, the
+//! Port of `OpenClawPanel` and
+//! `OpenClawSettingsView`. The protocol, the
 //! identity and the frame→snapshot reducer are [`openclaw`] (#173) — this module
 //! consumes that crate and adds nothing to it. What lives here is the *view*:
 //! the panel payload, the Settings tab's facts, and the fixtures.
@@ -41,7 +41,7 @@ use viewmodel::color;
 /// Shown when the cockpit knows of no agent runtime at all.
 ///
 /// Reachable only with an empty runtime list. This shell always registers the
-/// one OpenClaw runtime (as the Swift app always registers `OpenClawService`),
+/// one OpenClaw runtime (as the original app always registers `OpenClawService`),
 /// so it is parity for the multi-runtime future rather than a state today's
 /// build can enter — and it is rendered, and tested, so the panel cannot trap
 /// the day a runtime list becomes configurable.
@@ -53,7 +53,7 @@ pub const IDLE_HINT: &str = "add a gateway URL in Settings → OpenClaw";
 /// The connection line while the socket is being opened.
 pub const CONNECTING_REASON: &str = "connecting…";
 
-/// The cron line when no job is known. Swift only renders the CRON section
+/// The cron line when no job is known. the original only renders the CRON section
 /// once `cron.total > 0`, so this is the summary function's honest answer for a
 /// zero state rather than something the shipped panel shows — kept (and tested)
 /// because the function is the one place that decides how counts read.
@@ -64,7 +64,7 @@ pub const NO_CRON_JOBS: &str = "no jobs";
 /// Binds [`openclaw`]'s [`DeviceKeyStore`] to the app's credential store.
 ///
 /// The seed travels as **raw bytes** under [`SecretKey::OpenClawDeviceKey`],
-/// which is the same account and the same encoding the Swift app uses. That is
+/// which is the same account and the same encoding the original app uses. That is
 /// the whole point: the operator approves one device id, not one per app.
 ///
 /// A stored value of the wrong length is reported as *absent*, not as an error
@@ -200,7 +200,7 @@ impl OpenClawState {
         SettingsFacts {
             connection: self.snapshot.connection.clone(),
             pairing: self.snapshot.pairing.clone(),
-            // The pairing block's device id wins, exactly as Swift's
+            // The pairing block's device id wins, exactly as the original's
             // `service.snapshot.pairing?.deviceID ?? currentDeviceID()` does:
             // it is the id the gateway is actually waiting on.
             device_id: self
@@ -299,7 +299,7 @@ fn section_header(title: &str, count: usize) -> String {
 
 /// The cron counts as one line: `"2 ok · 1 running · 1 error"`.
 ///
-/// Only non-zero buckets appear, in Swift's fixed order — a line reading
+/// Only non-zero buckets appear, in the original's fixed order — a line reading
 /// `0 running · 0 error` would draw the eye to two numbers that mean nothing.
 #[must_use]
 pub fn cron_summary_text(cron: &CronSummary) -> String {
@@ -449,7 +449,7 @@ fn pairing_banner(pairing: &PairingState) -> Value {
     })
 }
 
-/// The first 16 characters of the device fingerprint, `prefix(16)` in Swift.
+/// The first 16 characters of the device fingerprint, `prefix(16)` in the original.
 ///
 /// Characters, not bytes: the id is lowercase hex today, but slicing a string by
 /// byte index is a panic waiting for the first non-ASCII id a gateway invents.
@@ -462,7 +462,7 @@ fn connection_line(reason: &str, dot_color: u32) -> Value {
     json!({
         "dotColor": color::hex(dot_color),
         "text": reason,
-        // Swift paints the *dot* with the state's colour and leaves the text
+        // The original paints the *dot* with the state's colour and leaves the text
         // muted; the state is the dot, and a red sentence would shout twice.
         "color": color::hex(color::MUTED),
     })
@@ -487,7 +487,7 @@ fn runtime_section(snapshot: &AgentRuntimeSnapshot, multi_runtime: bool) -> Valu
         "usage": Value::Null,
     });
 
-    // Swift's if/else-if chain, in Swift's order — exactly one of these three
+    // The original's if/else-if chain, in the original's order — exactly one of these three
     // renders, and a *connected* runtime renders none of them.
     if let Some(pairing) = snapshot.pairing.as_ref() {
         section["pairing"] = pairing_banner(pairing);
@@ -969,7 +969,7 @@ mod tests {
     // MARK: the trailing ladder
 
     #[test]
-    fn the_trailing_label_follows_the_swift_precedence() {
+    fn the_trailing_label_follows_the_original_precedence() {
         assert_eq!(trailing(&[]), "", "no runtime claims nothing");
 
         let mut idle = openclaw::idle_snapshot();
@@ -1066,7 +1066,7 @@ mod tests {
         }
     }
 
-    /// Exactly one of the three banner slots renders, matching Swift's
+    /// Exactly one of the three banner slots renders, matching the original's
     /// if/else-if chain. Two at once would stack a Settings hint under a
     /// pairing banner and read as two unrelated problems.
     #[test]

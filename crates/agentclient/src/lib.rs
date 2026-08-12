@@ -1,7 +1,7 @@
 //! Polls a Solador agent over HTTP. Replaces
-//! `Services/HostMetrics/RemoteHostMetricsService.swift`.
+//! `RemoteHostMetricsService`.
 //!
-//! The error variants mirror the Swift `failureTooltip` cases so the shell can
+//! The error variants mirror the original `failureTooltip` cases so the shell can
 //! keep giving cause-specific guidance instead of a generic failure.
 
 use std::borrow::Cow;
@@ -33,7 +33,7 @@ impl AgentError {
             AgentError::AuthFailed => {
                 "Agent rejected the bearer token (401). Check the host's token in Settings.".into()
             }
-            // Parity with the Swift this replaces
+            // Parity with the original this replaces
             // (`HostMetricsPanel.failureTooltip`): "Agent returned HTTP 503."
             AgentError::HttpStatus(code) => format!("Agent returned HTTP {code}.").into(),
             AgentError::DecodeFailed(_) => {

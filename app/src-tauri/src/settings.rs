@@ -3,9 +3,9 @@
 //!
 //! Same discipline as the cockpit — every string the frontend shows is made
 //! here, in Rust, so a label cannot drift between the two apps without a test
-//! noticing. Ground truth is `DevCanopy/Views/Settings/` (`SettingsView.swift`,
-//! `HostsSettingsView.swift`, `PortfolioSettingsView.swift`) plus
-//! `Models/RefreshInterval.swift` and `Views/Cockpit/CockpitBreakpoints.swift`
+//! noticing. Ground truth is the original app (`SettingsView`,
+//! `HostsSettingsView`, `PortfolioSettingsView`) plus
+//! `RefreshInterval` and `CockpitBreakpoints`
 //! for the two pickers' display names.
 //!
 //! Nothing in this module reads, writes, formats or returns a secret **value**.
@@ -31,7 +31,7 @@ use crate::openclaw;
 /// The app's marketing version.
 ///
 /// Hard-coded via the crate version (`app/src-tauri/Cargo.toml`, mirrored in
-/// `tauri.conf.json`) rather than derived from git the way the Swift app's is
+/// `tauri.conf.json`) rather than derived from git the way the original app's is
 /// (`scripts/get-version-info.sh`, CalVer per `docs/VERSIONING.md`). Wiring the
 /// shell into that derivation is still to do; until then this is a deliberate,
 /// documented placeholder rather than a number pretending to be a release.
@@ -122,7 +122,7 @@ impl SecretField {
     }
 }
 
-/// `RefreshInterval.displayName` (Swift).
+/// `RefreshInterval.displayName` (ported).
 #[must_use]
 pub fn refresh_interval_label(secs: u32) -> String {
     match secs {
@@ -136,7 +136,7 @@ pub fn refresh_interval_label(secs: u32) -> String {
     }
 }
 
-/// `HostOverflowMode.displayName` (Swift).
+/// `HostOverflowMode.displayName` (ported).
 #[must_use]
 pub const fn host_overflow_label(mode: HostOverflowMode) -> &'static str {
     match mode {
@@ -145,7 +145,7 @@ pub const fn host_overflow_label(mode: HostOverflowMode) -> &'static str {
     }
 }
 
-/// The Settings "Test" button's result line, byte-for-byte the Swift strings
+/// The Settings "Test" button's result line, byte-for-byte the original strings
 /// in `HostsSettingsView.test(_:)`.
 ///
 /// The five failure/success shapes are the whole diagnostic value of the
@@ -168,7 +168,7 @@ pub fn health_result(result: &Result<wire::Health, AgentError>) -> String {
     }
 }
 
-/// The Add-Host form's port field, with Swift's `Int(newPort) ?? 7878`
+/// The Add-Host form's port field, with the original's `Int(newPort) ?? 7878`
 /// tolerance: an unparseable port is the default, not a rejected form.
 #[must_use]
 pub fn parse_port(raw: &str) -> u16 {
@@ -218,7 +218,7 @@ pub fn workflows_text(repo: &TrackedRepo) -> String {
         .join(", ")
 }
 
-/// `ContainerRuleAction`'s picker labels (Swift's
+/// `ContainerRuleAction`'s picker labels (the original's
 /// `ContainerGroupRulesSection.ruleRow`).
 #[must_use]
 pub const fn rule_action_label(action: ContainerRuleAction) -> &'static str {
@@ -230,7 +230,7 @@ pub const fn rule_action_label(action: ContainerRuleAction) -> &'static str {
 }
 
 /// One editable field of a container group rule — the Rust counterpart of the
-/// `WritableKeyPath`s Swift's bindings are built over.
+/// `WritableKeyPath`s the original's bindings are built over.
 ///
 /// A closed set, mapped from the identifier the frontend sends, so an unknown
 /// field is a rejected command rather than a silently-ignored edit. Same rule
@@ -277,12 +277,12 @@ impl RuleField {
 
 /// The expected-count field's `String -> Option<u32>` shim.
 ///
-/// Swift's `expectedCountBinding` in one expression, and the rule it encodes is
+/// The original's `expectedCountBinding` in one expression, and the rule it encodes is
 /// the point: **empty, non-numeric, zero or negative input clears the
 /// expectation** rather than coercing to `0`. An expectation of zero is no
 /// expectation, and the panel must not render `×0/0` — a fabricated number the
 /// operator never typed. (`parse::<u32>` rejects `-1` and an overflowing
-/// figure outright, where Swift's `Int` parses them and the `> 0` guard then
+/// figure outright, where the original's `Int` parses them and the `> 0` guard then
 /// clears them; both arrive at `None`.)
 #[must_use]
 pub fn parse_expected_count(raw: &str) -> Option<u32> {
@@ -291,7 +291,7 @@ pub fn parse_expected_count(raw: &str) -> Option<u32> {
 
 /// A blank rule, as **Add Rule** appends it.
 ///
-/// `Collapse` with an empty pattern and label, matching Swift's
+/// `Collapse` with an empty pattern and label, matching the original's
 /// `ContainerGroupRule(pattern: "", label: "")` — an empty pattern matches only
 /// the empty name, so a half-filled row cannot start hiding containers before
 /// the operator has finished typing.
@@ -304,14 +304,14 @@ pub fn new_rule() -> ContainerGroupRule {
 ///
 /// The pure half of the concurrent-edit guard: the caller re-reads the
 /// persisted list, this writes **one** field into it, and the caller writes the
-/// whole list back. That is Swift's per-`keyPath` binding, which re-reads
+/// whole list back. That is the original's per-`keyPath` binding, which re-reads
 /// `groupRulesData` on every access precisely so editing a rule's label cannot
 /// clobber the pattern someone changed a moment earlier — a whole-row write
 /// from a captured snapshot would.
 ///
 /// Returns `false` when the edit addressed nothing (an index no longer in the
 /// list, or an action string no picker can produce), and leaves `rules`
-/// untouched — the counterpart of Swift's `guard let index … else { return }`.
+/// untouched — the counterpart of the original's `guard let index … else { return }`.
 #[must_use]
 pub fn apply_rule_edit(
     rules: &mut [ContainerGroupRule],
@@ -390,7 +390,7 @@ pub fn view(
         "title": OPEN_LABEL,
         "openLabel": OPEN_LABEL,
         "closeLabel": "Done",
-        // The Swift window's tab order, plus Layout — which the Swift app has
+        // The original window's tab order, plus Layout — which the original app has
         // no counterpart for — beside the other cockpit-shaping preferences.
         "tabs": [
             { "id": "general", "title": "General" },
@@ -428,7 +428,7 @@ fn general_tab(settings: &Settings) -> Value {
             // Honest about the gap rather than silent: the shell polls every
             // host once a second because one history sample is one fixed time
             // slice (see POLL_INTERVAL), and it has none of the periodic
-            // services this cadence governs in the Swift app. The preference
+            // services this cadence governs in the original app. The preference
             // is stored for parity; nothing here reads it yet.
             "help": "Cadence for the periodic services. Host metrics poll every second regardless — that cadence is the charts' time axis.",
         },
@@ -893,7 +893,7 @@ fn preview_rows(layout: &CockpitLayout) -> Vec<Value> {
 /// That last case is `hostScopeOptions(current:)`'s whole reason to exist: a
 /// picker whose selection is absent from its options renders **blank**, so a
 /// rule scoped to a host you removed would read as unscoped while still
-/// matching nothing. Ordered by name, matching the Swift view's
+/// matching nothing. Ordered by name, matching the original view's
 /// `@Query(sort: \MonitoredHost.name)`.
 fn rule_host_options(hosts: &[Host], current: Option<&str>) -> Vec<Value> {
     let mut names: Vec<String> = hosts.iter().map(|host| host.name.clone()).collect();
@@ -939,7 +939,7 @@ fn rules_section(rules: &[ContainerGroupRule], hosts: &[Host]) -> Value {
         "labelPrompt": "group label",
         "expectedLabel": "Expected count",
         "expectedPrompt": "expected ×",
-        // The separator Swift draws as an `arrow.right` SF Symbol between the
+        // The separator the original draws as an `arrow.right` SF Symbol between the
         // pattern and what it collapses into. A glyph the frontend picked would
         // be a string this file did not make.
         "arrow": "→",
@@ -995,7 +995,7 @@ fn hosts_tab(
             }))
             .collect::<Vec<_>>(),
         // Rendered only when it has entries. This shell has no local-machine
-        // collector (HostMetricsKit is Swift-only), so nothing here can *add*
+        // collector (HostMetricsKit is the original-only), so nothing here can *add*
         // a mount — the section exists so a list written by a future local
         // collector, or by hand, can still be undone.
         "localHidden": {
@@ -1012,7 +1012,7 @@ fn hosts_tab(
             "buttonLabel": "Add Host",
             "help": "The agent serves metrics on the host's tailnet address. The token is stored in your OS credential store, never in the settings file.",
         },
-        // Same tab as Swift's, and for the same reason: the rules are scoped by
+        // Same tab as the original's, and for the same reason: the rules are scoped by
         // host, so the picker that names one belongs beside the list that
         // defines them.
         "rules": rules_section(rules, hosts),
@@ -1132,7 +1132,7 @@ fn openclaw_tab(
         "heading": "OpenClaw Gateway",
         "gateway": {
             "label": "Gateway URL",
-            // The Swift field's placeholder, which doubles as the format hint.
+            // The original field's placeholder, which doubles as the format hint.
             "placeholder": "ws://host:7878  or  wss://host",
             "value": settings.openclaw_gateway_url,
             "saveLabel": "Save",
@@ -1307,7 +1307,7 @@ mod tests {
             Some(vec!["release.yml".to_owned(), "deploy.yml".to_owned()])
         );
         // Blank clears it back to the default push+PR view -- `Some(vec![])`
-        // would persist an "empty list" the Swift model spells as `nil`.
+        // would persist an "empty list" the original model spells as `nil`.
         for raw in ["", "   ", ",,", "\n"] {
             assert_eq!(parse_workflows(raw), None, "raw {raw:?}");
         }
@@ -1343,7 +1343,7 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_labels_match_the_swift_display_names() {
+    fn the_picker_labels_match_the_original_display_names() {
         assert_eq!(refresh_interval_label(30), "30 seconds");
         assert_eq!(refresh_interval_label(60), "1 minute");
         assert_eq!(refresh_interval_label(300), "5 minutes");
@@ -2113,7 +2113,7 @@ mod tests {
         assert_eq!(RuleField::parse("expectedCount"), None);
     }
 
-    /// One field at a time, into a freshly-read list — the port of Swift's
+    /// One field at a time, into a freshly-read list — the port of the original's
     /// per-`keyPath` bindings. Editing the label must leave the pattern,
     /// action, scope and count exactly as they were on disk.
     #[test]
@@ -2155,7 +2155,7 @@ mod tests {
         assert!(list[0].applies_to(LOCAL_HOST_SCOPE));
     }
 
-    /// Swift's `Int(newValue) .flatMap { $0 > 0 ? $0 : nil }`, case for case:
+    /// The original's `Int(newValue) .flatMap { $0 > 0 ? $0 : nil }`, case for case:
     /// anything that is not a positive whole number **clears** the expectation.
     #[test]
     fn a_blank_or_nonsensical_expected_count_clears_the_expectation() {
@@ -2172,7 +2172,7 @@ mod tests {
     }
 
     /// An index that no longer names a rule, or an action no picker can
-    /// produce, must change nothing — Swift's `guard let index … else
+    /// produce, must change nothing — the original's `guard let index … else
     /// { return }`, and the reason an unknown action is rejected here where the
     /// *file* decoder tolerates one.
     #[test]

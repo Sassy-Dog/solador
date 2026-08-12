@@ -1,12 +1,12 @@
 //! Wire shapes for the OpenClaw gateway WS protocol.
 //!
-//! Rust port of `DevCanopy/Services/OpenClaw/OpenClawWireModels.swift` (itself a
+//! Rust port of `OpenClawWireModels` (itself a
 //! port of periclaw's `net/rpc.rs`). Intentionally loose — **every** field is
 //! optional and unknown keys are ignored — because OpenClaw ships frequent
 //! gateway updates and tolerating drift beats hard-failing a frame parse and
 //! blanking the panel.
 //!
-//! Where Swift needed a hand-rolled `OCJSON` to capture a payload before knowing
+//! Where the original needed a hand-rolled `OCJSON` to capture a payload before knowing
 //! its type, this uses [`serde_json::Value`]: same "decode lazily, re-decode
 //! once routed by `id`/`event`" strategy, no bespoke enum.
 
@@ -166,7 +166,7 @@ pub struct AgentsListResponse {
 /// `sessions.list` spells the identifier `key`; `session.message` spells the
 /// same thing `sessionKey`. A serde `alias` would reject a payload carrying
 /// both, so this goes through [`SessionInfoRaw`] and prefers `key`, matching
-/// Swift's `decodeIfPresent(.key) ?? decodeIfPresent(.sessionKey) ?? ""`.
+/// The original's `decodeIfPresent(.key) ?? decodeIfPresent(.sessionKey) ?? ""`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(from = "SessionInfoRaw")]
 pub struct SessionInfo {
@@ -343,7 +343,7 @@ mod tests {
             serde_json::from_str(r#"{"key":"k1","sessionKey":"k2"}"#).expect("session");
         assert_eq!(both.key, "k1");
 
-        // Neither present is tolerated, same as Swift's `?? ""`.
+        // Neither present is tolerated, same as the original's `?? ""`.
         let neither: SessionInfo = serde_json::from_str(r#"{"totalTokens":1}"#).expect("session");
         assert_eq!(neither.key, "");
     }

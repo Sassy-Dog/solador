@@ -31,7 +31,7 @@ fi
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
 # Needs BOTH npm and cargo: the suite's `pretest` shells out to
 # `cargo run -p solador-app -- --dump` to generate its fixtures, so npm alone
-# is not enough. Checking only npm let the Swift-only runner get as far as
+# is not enough. Checking only npm let the original-only runner get as far as
 # downloading 94 MB of Chromium before dying on `cargo: command not found`.
 if command_exists npm && command_exists cargo; then
     if [[ ! -d "tests/frontend/node_modules" ]]; then

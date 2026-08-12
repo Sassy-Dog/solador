@@ -6,7 +6,7 @@
 //! **unknown**, never `0.0`.
 //!
 //! That line is drawn the same way in `ProcessDiskIOSampler.bytesPerSecond`
-//! (`Packages/HostMetricsKit/Sources/HostMetricsKit/ProcessDiskIOSampler.swift`):
+//! (`ProcessDiskIOSampler`):
 //! a counter that did not move is a *measured* zero and honest to publish; a
 //! counter with nothing to diff against is not a zero at all.
 

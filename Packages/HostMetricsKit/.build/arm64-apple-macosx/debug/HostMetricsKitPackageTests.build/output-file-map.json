@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/primary.swiftdeps"
+  },
+  "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner.d",
+    "object": "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/dev/Repos/acme/devcanopy/devcanopy/Packages/HostMetricsKit/.build/arm64-apple-macosx/debug/HostMetricsKitPackageTests.build/runner.dia"
+  }
+}

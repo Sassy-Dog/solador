@@ -20,11 +20,11 @@ It has three parts:
 `app/README.md` is the reference doc for the app itself and is far more
 detailed than this file.
 
-> **History:** Solador began as a SwiftUI macOS app. The Tauri app reached
-> panel parity with it, and the SwiftUI app was deleted.
+> **History:** Solador began as a the original macOS app. The Tauri app reached
+> panel parity with it, and the original macOS app was deleted.
 >
 > Roughly 380 comments across the Rust and JS sources — plus ~23 test names
-> like `defaults_match_the_swift_app` — still cite the Swift originals they
+> like `defaults_match_the_original_app` — still cite the originals they
 > were ported from. **Those files are not in this repo.** Treat the references
 > as provenance: they record which decision was ported, and, more usefully,
 > where this app deliberately diverged. The assertions themselves still guard

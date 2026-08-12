@@ -1,7 +1,7 @@
 //! Recording what a poll saw — the write side of presence memory.
 //!
 //! Port of `ContainerPresenceStore.note(...)`
-//! (`DevCanopy/Services/Containers/ContainerPresenceStore.swift`), over the
+//! (`ContainerPresenceStore`), over the
 //! records `crates/store` persists.
 //!
 //! **Clock discipline is the whole point of this file.** A record's `last_seen`

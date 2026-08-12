@@ -1,7 +1,7 @@
 //! The Solador agent's JSON contract.
 //!
 //! One definition, serialised by the agent and deserialised by the app. That
-//! is the point: the Swift app defines these types a second time, which is
+//! is the point: the original app defines these types a second time, which is
 //! why `HostMetricsError.decodeFailed` exists ("agent/app version skew").
 //! Field names mirror the agent sources exactly — `agent/src/metrics.rs` for
 //! [`Snapshot`], `agent/src/containers.rs` for [`Container`], and the `json!`
@@ -227,8 +227,8 @@ pub struct Process {
 /// One container or VM from `GET /v1/containers`.
 ///
 /// Keys are copied from the `#[serde(rename)]` attributes on
-/// `agent/src/containers.rs::Container` and match the Swift `ContainerInfo`
-/// decoder (`DevCanopy/Services/Containers/ContainerInfo.swift`) key for key.
+/// `agent/src/containers.rs::Container` and match the original `ContainerInfo`
+/// decoder (`ContainerInfo`) key for key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Container {
     pub name: String,
@@ -255,8 +255,8 @@ pub struct Container {
 /// The `GET /v1/health` payload — the Settings "Test" probe.
 ///
 /// Keys are copied from the `json!` literal in
-/// `agent/src/server.rs::health_handler` and match the Swift `HealthInfo`
-/// decoder (`DevCanopy/Services/HostMetrics/RemoteHostMetricsService.swift`).
+/// `agent/src/server.rs::health_handler` and match the original `HealthInfo`
+/// decoder (`RemoteHostMetricsService`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Health {
     /// `"ok"`, or `"degraded"` when the agent's sampler has gone stale and is
@@ -265,7 +265,7 @@ pub struct Health {
     pub hostname: String,
     pub version: String,
     /// Optional because agents older than #35 don't send it — same tolerance
-    /// the Swift decoder gives it (`let sampleAgeSeconds: Int?`). An older
+    /// The original decoder gives it (`let sampleAgeSeconds: Int?`). An older
     /// agent must decode, not fail.
     #[serde(default, rename = "sampleAgeSeconds")]
     pub sample_age_seconds: Option<u64>,

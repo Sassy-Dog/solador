@@ -9,8 +9,8 @@ width, and configured from an in-app **Settings** surface backed by the OS
 credential store.
 
 It began as a walking skeleton (one host card, one command) beside a macOS-only
-SwiftUI app. [#150](https://github.com/cpmadrid/solador/issues/150) took it to
-panel parity across fourteen slices, and the SwiftUI app was subsequently
+original macOS app. [#150](https://github.com/cpmadrid/solador/issues/150) took it to
+panel parity across fourteen slices, and the original macOS app was subsequently
 deleted — this is the app.
 
 What it is not yet is *packaged*. `src-tauri/tauri.conf.json` still carries
@@ -20,9 +20,9 @@ notarization and updates are
 rather than deferred. Until it lands there is no installable artifact —
 `./dev run` from source is the only way to run this.
 
-> Notes below that compare a behaviour to "the Swift panel" or "Swift's
+> Notes below that compare a behaviour to "the original panel" or "the original's
 > `X`" are **provenance**: they record which decision was ported and why,
-> including where this app deliberately diverged. The Swift sources are no
+> including where this app deliberately diverged. The original sources are no
 > longer in the repository, so treat them as history rather than as something
 > to go and read.
 
@@ -179,7 +179,7 @@ space inside its card rather than leaving a ragged edge in the row.
 **Where a warning goes.** A panel's `footer` — `panel::status_footer`'s
 `{text, color}`, the amber `⚠ couldn't read runners … · last ok 2m ago` line —
 is painted **in the panel header, beside the title** (`.panel-stale`), not under
-the body where the Swift original puts it. It used to be a `<p>` after
+the body where the original puts it. It used to be a `<p>` after
 `.panel-body`, and that made the card a line taller the moment the panel
 degraded; combined with the equal-height rule above, every other card in the row
 grew with it. So a token quietly losing a scope moved half the cockpit. The
@@ -217,7 +217,7 @@ await window.__TAURI__.core.invoke("containers");
     "empty": null,                   // "no container runtimes" vs "no containers"
     "rows": [{
       "kind": "present",             // present | absent | aggregate
-      "name": "devcanopy-db", "runtime": "docker",
+      "name": "acme-db", "runtime": "docker",
       "dotColor": "#33d17a",
       "status": "Up 3 hours", "statusColor": "#33d17a"
     }]
@@ -322,7 +322,7 @@ would each register as a second repo of the same name), then spawns
 `git for-each-ref` and `git worktree list --porcelain` per repo. The join to a
 tracked slug is `PortfolioRepos.normalize` — lowercase, letters and digits only
 — which is what lets the slug `tailored-tip` find the folder `flywheel`. A
-git invocation that fails yields `None`, i.e. `"—"`. Swift's `localBranchCount`
+git invocation that fails yields `None`, i.e. `"—"`. the original's `localBranchCount`
 returns `0` there; that is a fabricated number and this deliberately does not
 copy it. The scan root is a parameter, so the tests drive real temporary
 repositories rather than a mock.
@@ -399,7 +399,7 @@ otherwise blank.
 **The runner roster is the memory that makes an absence visible.** The org's
 ephemeral runners de-register between jobs, so GitHub's registered list can
 never say "mac-s2 *should* exist". Every name it has shown us is remembered in
-`store.json`'s new `runner_roster` field (the Rust counterpart of the Swift
+`store.json`'s new `runner_roster` field (the Rust counterpart of the original
 app's `ghRunnerRoster` UserDefaults blob), with a 24h age-out for rotated
 names. An absent name renders amber `recycling 40s` inside the 300s grace and
 red `missing 12m` past it — and those clocks are folded forward **only by a
@@ -415,7 +415,7 @@ and then waiting five minutes for it to take is indistinguishable from the
 setting doing nothing. This is the periodic-service counterpart to
 `reload_hosts`, which reconciles tasks instead.
 
-**Tapping a row opens its Actions page**, the way the Swift panel's
+**Tapping a row opens its Actions page**, the way the original panel's
 `onTapGesture` + `NSWorkspace.open` does
 ([#187](https://github.com/cpmadrid/solador/issues/187)). The URL is
 `github::actions_url`'s and is never composed in the webview — it is the only
@@ -426,7 +426,7 @@ second author of the app's whole browser-opening surface. See
 The row is a `div`, not an `<a>`, so github.js spells out what a real link would
 carry for free: `role="link"`, Rust's `linkLabel` as the accessible name (the
 row's own text is seven numbers), a tab stop and an Enter handler. That is
-*more* than the Swift panel, whose `onTapGesture` on a `VStack` is invisible to
+*more* than the original panel, whose `onTapGesture` on a `VStack` is invisible to
 VoiceOver and unreachable from a keyboard — parity with a gap is not a reason to
 reproduce the gap.
 
@@ -443,12 +443,12 @@ centre anywhere near it:
   becomes noise.
 - **The first pass only seeds.** Launching must not alert for gates that were
   already open. The first `observe` records the baseline and returns nothing.
-- **The baseline advances even when the preference is off.** Swift updates
+- **The baseline advances even when the preference is off.** the original updates
   `knownApprovalRunIDs` in a `defer` outside its preference guard; skipping that
   would make re-enabling the alert fire a backlog for everything that parked
   while it was off.
 - **The preference is `notify_on_approval_needed`, default true, and has no
-  UI** — exactly as in Swift, where `WorkflowDisplayOptions.notifyOnApprovalNeeded`
+  UI** — exactly as in the original, where `WorkflowDisplayOptions.notifyOnApprovalNeeded`
   likewise persists with no control anywhere in Settings. It is re-read on every
   pass, so editing the store file applies without a relaunch.
 
@@ -487,9 +487,9 @@ Both notifiers deliver through one `deliver_banners` (`main.rs`), which is why
 the ACL still grants `tauri-plugin-notification` nothing: the webview is never
 in the path.
 
-Two honest gaps against Swift, both platform, neither hidden:
+Two honest gaps against the original, both platform, neither hidden:
 
-- **The banner is not tappable.** Swift attaches the run's `htmlURL` to the
+- **The banner is not tappable.** the original attaches the run's `htmlURL` to the
   notification's `userInfo` and opens it from the delegate;
   `tauri-plugin-notification`'s desktop path is fire-and-forget through
   `notify-rust`, with no action callback to hang that on. So `ApprovalNotice`
@@ -630,7 +630,7 @@ perfectly good configuration *and* discard the fingerprint cache, so the next
 successful read re-downloads every partition. Instead the panel keeps its figures
 and the footer says `couldn't read the credential store`. A provider that was
 never configured stays silent — a hiccup must not conjure a section for something
-nobody set up. This is a deliberate divergence from Swift, whose `KeychainHelper`
+nobody set up. This is a deliberate divergence from the original, whose `KeychainHelper`
 collapses a read failure into `nil`.
 
 **Every credential read obeys that rule** — the GitHub token and the per-host
@@ -652,14 +652,14 @@ store that recovers is picked up on the next hosts reload, not the next tick.
 `PRIOR MONTH` renders `$0.00` when the prior-month export is missing, because
 `azurecost::CostSummary::spend_prior_month` is a bare `f64` the crate documents
 as best-effort ("a missing prior-month export leaves this 0 rather than failing
-the whole read") and Swift's `AzureCostService` does the same. It is the one
+the whole read") and the original's `AzureCostService` does the same. It is the one
 figure on either panel that cannot tell "we spent nothing" from "we could not
 look" — the Usage panel solved exactly this shape with `Unmeasured` enums, and
 lifting `spend_prior_month` to an `Option` is the same fix, in `crates/azurecost`
 rather than here.
 
 Two things the Claude half deliberately does not have. There is **no progress bar
-on the 5H / WEEK rows** — Swift's `fiveHourTokenLimit` and `weeklyTokenLimit` are
+on the 5H / WEEK rows** — the original's `fiveHourTokenLimit` and `weeklyTokenLimit` are
 both `nil`, a subscription publishes no ceiling, and a bar against an invented
 one is a percentage of a number nobody set. And **no USD**: `crates/usage` prices
 every record and the figure is unit-tested, but the account is subscription-based
@@ -793,7 +793,7 @@ await window.__TAURI__.core.invoke("openclaw");
   "runtimes": [{
     "id": "openclaw",
     "heading": null,            // "OPENCLAW" once a SECOND runtime exists
-    // At most one of the next three, mirroring the Swift panel's if/else chain:
+    // At most one of the next three, mirroring the original panel's if/else chain:
     "pairing": null,            // {title, command, device, blinking, …}
     "connection": null,         // {"text": "connecting…", "dotColor": …}
     "hint": null,               // {"text": "add a gateway URL in Settings → OpenClaw"}
@@ -845,7 +845,7 @@ The gateway authenticates this install by an Ed25519 key it mints on first
 connect and stores as **32 raw bytes** in the OS credential store, under account
 `openclaw_device_key` — 32 raw bytes, deliberately **not** base64-encoded.
 
-That encoding is not an arbitrary choice: it matched what the SwiftUI app wrote
+That encoding is not an arbitrary choice: it matched what the original macOS app wrote
 to the same account, so the operator approved one device id rather than one per
 app, and neither app read the other's entry as corrupt and replaced it. That app
 is gone, but the format is now simply what is on disk in existing installs —
@@ -892,11 +892,11 @@ file under the platform config dir), and their bearer tokens from the OS
 credential store, never from that file. Each **enabled** host gets its own poll
 task, its own `AgentClient` and its own history buffers, so an unreachable host
 shows its own error card while every other card stays live; cards are ordered by
-name, mirroring the Swift coordinator's `SortDescriptor(\.name)`.
+name, mirroring the original coordinator's `SortDescriptor(\.name)`.
 
 ### This machine leads
 
-The first card is the local machine, matching `HostsPanel.hosts` in Swift
+The first card is the local machine, matching `HostsPanel.hosts` in the original
 (`[local] + remoteHosts`). It is sampled in-process by
 [`crates/localhost`](../crates/localhost) on the same 1s cadence, and its
 connection dot is **always green**: this process *is* the host, so there is no
@@ -915,7 +915,7 @@ muted em dash afterwards — driven by matching on the `Option` itself, never by
 testing the lowered number for zero. An idle disk really does read `0.0 MB/s`,
 and hiding that would be the mirror-image bug.
 
-On macOS today that means memory pressure (no portable source: the Swift
+On macOS today that means memory pressure (no portable source: the original
 collector reaches into mach for wired and compressed page counts) and the GPU (no
 dependency-free read on either platform) render `—` permanently, and the disk and
 network rates render `—` for exactly one tick at startup, before there are two
@@ -1002,7 +1002,7 @@ more proximate cause and the fresher fact (`samplerStale` is by then up to a
 health cadence old), and naming the sampler would send someone to restart a
 daemon they cannot reach.
 
-The SwiftUI app carried the same gap and was deliberately left alone rather than
+The original macOS app carried the same gap and was deliberately left alone rather than
 fixed twice: it decoded `samplerStale`/`sampleAgeSeconds` and used them only for
 the Settings → Test result line, so its cards also showed a stalled agent as
 live. The gap is now this app's alone to close.
@@ -1010,8 +1010,8 @@ live. The gap is now this app's alone to close.
 ## Settings
 
 The **Settings** button opens an in-app view over the cockpit: General, Layout,
-GitHub, Portfolio, Hosts, Azure Cost, Usage, OpenClaw and About — the Swift
-window's tabs plus **Layout**, which has no Swift counterpart. Every label, help
+GitHub, Portfolio, Hosts, Azure Cost, Usage, OpenClaw and About — the original
+window's tabs plus **Layout**, which has no the original counterpart. Every label, help
 string and result line it paints comes from `src/settings.rs`, exactly as the
 cards' do from `crates/viewmodel`.
 
@@ -1035,7 +1035,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it |
 | `settings_unhide_volume` | one mount, on a host or on the local list |
 | `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
-| `settings_test_host` | one `/v1/health` probe → the Swift result line |
+| `settings_test_host` | one `/v1/health` probe → the original result line |
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio |
 | `settings_save_openclaw` | the OpenClaw gateway URL |
 | `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
@@ -1166,7 +1166,7 @@ implementation of the packer, free to promise an arrangement the cockpit then
 does not render.
 
 **The rules editor writes one field per call, and that is the whole of its
-concurrency story.** Swift builds a `Binding` per `WritableKeyPath` that
+concurrency story.** the original builds a `Binding` per `WritableKeyPath` that
 re-reads the persisted list on *every* access, precisely so editing a rule's
 label cannot clobber the pattern someone changed a moment earlier. The port is
 `settings_set_container_rule(index, field, value)`: the frontend sends the field
@@ -1193,7 +1193,7 @@ the store file, or a log line can carry a value.
 poll set in place: tasks are *reconciled*, not torn down, so every host that did
 not change keeps its own task — and therefore its sparkline history, its failure
 streak and its last-success time. Unhiding a volume deliberately skips that
-reload entirely, mirroring the Swift view's `applyHiddenMounts()` vs `reload()`.
+reload entirely, mirroring the original view's `applyHiddenMounts()` vs `reload()`.
 
 Two gaps, deliberate and worth knowing:
 
@@ -1206,7 +1206,7 @@ Two gaps, deliberate and worth knowing:
   than a preference, and Neon, Sentry and the Azure export publish on the order
   of hours or days, so each keeps its own fixed cadence. The **core row span**
   is still read by `viewmodel`'s card functions from their own constant; it
-  persists (same file, same key, same laundering rules as Swift) and nothing
+  persists (same file, same key, same laundering rules as the original) and nothing
   reads the stored value yet. `host_overflow_mode` left this tab for the
   [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
   stored field remains only as that migration's seed.
@@ -1313,7 +1313,7 @@ run, a fresh checkout, a machine you are driving over SSH.
 
 | Env var                     | Default                        | Meaning                                                                                     |
 |------------------------------|--------------------------------|---------------------------------------------------------------------------------------------|
-| `SOLADOR_SEED_HOST`       | —                              | `"name\|address\|port\|token"`. Provisions that host **if no host with that address exists**; port defaults to 7878 and the token (when non-empty) goes to the OS credential store under the new host's id. Same parse and same no-op rule as Swift's `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()`, so it is safe to leave exported — relaunching never accumulates duplicates. |
+| `SOLADOR_SEED_HOST`       | —                              | `"name\|address\|port\|token"`. Provisions that host **if no host with that address exists**; port defaults to 7878 and the token (when non-empty) goes to the OS credential store under the new host's id. Same parse and same no-op rule as the original's `RemoteHostsCoordinator.seedFromEnvironmentIfNeeded()`, so it is safe to leave exported — relaunching never accumulates duplicates. |
 | `SOLADOR_STORE_DIR`       | platform config dir            | Where `store.json` lives. A scratch directory here keeps `store.json` — and only `store.json` — out of the real one. **Not** the keychain: the credential *service* is always the real one, so credential migration is skipped whenever this is set (see "Consolidated credential item" below); a scratch run touches no keychain item at all beyond whatever per-item reads/writes the panels themselves make. |
 | `SOLADOR_LEGACY_SECRETS`  | unset                          | Set to `1` to skip credential migration and force per-item keychain routing, even on macOS — the rollback switch for consolidation. See "Consolidated credential item" below. |
 
@@ -1336,7 +1336,7 @@ value a JSON map keyed by the same account strings each credential used to have
 its own item under. One item means one keychain ACL prompt covers every
 credential this app stores, rather than a fresh "Always Allow" per secret. One
 exception keeps its own item regardless of platform: the OpenClaw *device*
-identity key — raw key material rather than text, and an account the SwiftUI app
+identity key — raw key material rather than text, and an account the original macOS app
 wrote to directly while it existed.
 
 There used to be a second. The Azure Cost SAS URL was written from outside this
@@ -1892,7 +1892,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. Note that `Pressure: —` and `VRAM: —` are permanent and correct on macOS — see [This machine leads](#this-machine-leads). |
 | Clicking a repo row does nothing, and the console says `opener.open_url not allowed`. | The **permission** is missing: `opener:allow-open-url` is not in `capabilities/default.json`, or the plugin is not registered on the builder. Not a scope problem — the command was rejected before any URL was looked at. |
 | Clicking a repo row does nothing, and the console names a `Forbidden URL`. | The permission is there and its **scope** rejected the URL. Either the glob was narrowed, or something other than `github::actions_url` composed the string — the two live one line apart in `capabilities/default.json` and `src/github/mod.rs`, and only they may disagree. |
-| The rows render but none of them is clickable, and no console error appears. | Neither: `row.url` is absent from the payload, so github.js never wires a handler. A Rust-side regression, and `a_row_carries_the_swift_tap_target` should have caught it — check the fixtures are not stale first (step 1). |
+| The rows render but none of them is clickable, and no console error appears. | Neither: `row.url` is absent from the payload, so github.js never wires a handler. A Rust-side regression, and `a_row_carries_the_original_tap_target` should have caught it — check the fixtures are not stale first (step 1). |
 | No needs-approval banner for a run that is definitely parked at a gate. | Four ordinary causes before suspecting the code: it was the **seeding** pass (the first pass after launch never alerts — see step 11b for how to force a real transition); the run was already parked on the previous pass, so this one is not a transition; `notify_on_approval_needed` is `false` in the store file; or macOS Focus / denied notifications for **Terminal** (the id an unbundled dev build notifies under) is swallowing it silently. |
 | A needs-approval banner repeats every poll pass. | A real failure, and the one this feature exists to avoid: the baseline is not being retained across passes. `ApprovalWatch` lives on `App`, so a per-pass instance would produce exactly this. |
 
@@ -1910,7 +1910,7 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
-| 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/cpmadrid/solador/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-01), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from Swift code that has never run live — the Swift app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why Swift never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on gadget's local columns, running/failed dots per Swift), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
+| 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/cpmadrid/solador/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-01), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from original code that has never run live — the original app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why the original never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on gadget's local columns, running/failed dots per the original), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
 | 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/cpmadrid/solador/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `SOLADOR_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |
 | 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/cpmadrid/solador/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
 | 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/cpmadrid/solador/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |

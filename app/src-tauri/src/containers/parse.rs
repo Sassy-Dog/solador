@@ -2,7 +2,7 @@
 //! container discovery.
 //!
 //! Ports `ContainerParsing` and `LocalContainerMerge` from
-//! `DevCanopy/Services/Containers/`. No I/O here; spawning lives in
+//! The original app. No I/O here; spawning lives in
 //! [`super::local`].
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,7 +21,7 @@ pub enum LocalRuntime {
 }
 
 impl LocalRuntime {
-    /// Every runtime, in the Swift `CaseIterable` declaration order — which is
+    /// Every runtime, in the original `CaseIterable` declaration order — which is
     /// also the order they are polled and therefore the order an error string
     /// names them in.
     pub const ALL: [LocalRuntime; 3] = [
@@ -31,7 +31,7 @@ impl LocalRuntime {
     ];
 
     /// The executable name, the wire `runtime` value and the display label all
-    /// at once: Swift's `rawValue`, `toolName` and
+    /// at once: the original's `rawValue`, `toolName` and
     /// `displayName.lowercased()` are the same string for all three runtimes,
     /// and keeping them one value is what stops the panel labelling a
     /// container with a runtime no `ps` invocation could have produced.
@@ -130,7 +130,7 @@ pub struct MergeOutcome {
 
 impl MergeOutcome {
     /// The footer's error line, or `None` when every attempted runtime
-    /// answered. Swift: `"couldn't read \(errored.joined(separator: ", "))"`.
+    /// answered. the original: `"couldn't read \(errored.joined(separator: ", "))"`.
     pub fn error_message(&self) -> Option<String> {
         (!self.errored.is_empty()).then(|| format!("couldn't read {}", self.errored.join(", ")))
     }

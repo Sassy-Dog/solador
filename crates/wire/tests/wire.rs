@@ -107,7 +107,7 @@ fn an_omitted_disk_network_or_gpu_object_decodes_as_unknown() {
 
 /// The mirror of [`Volume::fstype`]'s rule, applied to every field #191 lifted:
 /// an unknown is OMITTED, never emitted as `"pressure": null`. A consumer that
-/// only tolerates a missing key (the Swift decoder's `Double?` does both, but
+/// only tolerates a missing key (the original decoder's `Double?` does both, but
 /// a stricter one may not) must not start seeing nulls because this side
 /// dropped a `skip_serializing_if`.
 #[test]
@@ -474,7 +474,7 @@ fn deserialises_the_agents_health_payload() {
 
 /// `sampleAgeSeconds`/`samplerStale` arrived in #35; an agent that predates the
 /// redeploy omits them. Decoding must yield `None` — the same tolerance the
-/// Swift `HealthInfo` gives them (`Int?`/`Bool?`) — never a decode failure and
+/// The original `HealthInfo` gives them (`Int?`/`Bool?`) — never a decode failure and
 /// never a fabricated `0`/`false`, which would read as a healthy fresh sampler.
 #[test]
 fn health_from_a_pre_35_agent_decodes_with_none_sampler_fields() {
