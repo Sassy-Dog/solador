@@ -60,7 +60,7 @@ pub(crate) const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
 /// Refresh interval for the background sampler. Disk/network rates are computed
 /// as (delta bytes over this interval) / (interval seconds).
-const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
+pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Re-enumerate processes every N ticks (~1 min at the 1s sample interval).
 const PROCESS_SAMPLE_TICKS: u64 = 60;
@@ -435,11 +435,21 @@ impl MetricsState {
 
     /// Force the recorded last-sample time `age` into the past — for tests that
     /// exercise the stale-sampler path without sleeping a real interval.
+    ///
+    /// **Keep `age` just past the staleness threshold, not an arbitrary hour.**
+    /// `Instant` has no fixed epoch and is anchored differently per platform —
+    /// on Windows it sits near boot, so on a freshly-started CI runner
+    /// `checked_sub` of a large age underflows and returns `None`. A 3600s
+    /// backdate against a 3s threshold passed on Linux and macOS for exactly as
+    /// long as the agent's tests never ran on Windows.
     #[cfg(test)]
     pub fn set_sample_age_for_test(&self, age: Duration) {
-        let backdated = Instant::now()
-            .checked_sub(age)
-            .expect("backdate within Instant range");
+        let backdated = Instant::now().checked_sub(age).unwrap_or_else(|| {
+            panic!(
+                "cannot backdate {age:?}: this platform's Instant is not that old. \
+                 Use an age just past SAMPLE_INTERVAL * STALE_INTERVALS instead."
+            )
+        });
         *self.last_sample.lock().expect("last_sample mutex poisoned") = backdated;
     }
 }

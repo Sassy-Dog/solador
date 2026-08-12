@@ -184,9 +184,12 @@ mod tests {
             version: "0.0.0-test",
         };
         // Force the sampler stale, as if the background task had died.
-        state
-            .metrics
-            .set_sample_age_for_test(std::time::Duration::from_secs(3600));
+        // Derived from the threshold rather than a magic number: one interval
+        // past stale is enough to trip it, and it stays correct if the threshold
+        // moves. A large fixed age underflows Instant on Windows.
+        state.metrics.set_sample_age_for_test(
+            crate::metrics::SAMPLE_INTERVAL * (crate::metrics::STALE_INTERVALS + 1),
+        );
         let router = build_router(state);
 
         let request = Request::builder()
