@@ -1,6 +1,6 @@
 //! UTC calendar arithmetic the export's folder layout and the spend projection
 //! need. Port of the date helpers in
-//! `DevCanopy/Services/AzureCost/AzureCostCSV.swift`.
+//! `AzureCostCSV`.
 //!
 //! Everything here takes `now` as an argument. Nothing reads the wall clock, so
 //! the projection is a pure function of (spend, instant) and its tests pin real
@@ -12,7 +12,7 @@ use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
 /// Number of days in the given UTC calendar month.
 ///
 /// `None` only for a year outside chrono's range, which no export folder can
-/// name; callers mirror the Swift fallbacks rather than panicking on it.
+/// name; callers mirror the original fallbacks rather than panicking on it.
 #[must_use]
 pub fn days_in_month(year: i32, month: u32) -> Option<u32> {
     let (next_year, next_month) = if month == 12 {

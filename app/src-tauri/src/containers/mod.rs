@@ -2,13 +2,13 @@
 //! `/v1/containers`, grouped by host, with a standing presence row for the
 //! ephemeral entities that recycle out of discovery between jobs.
 //!
-//! Port of `DevCanopy/Views/Cockpit/Panels/ContainersPanel.swift` and the
+//! Port of `ContainersPanel` and the
 //! services beneath it. Same discipline as `crate::settings` and
 //! `crates/viewmodel`: **every string and colour the panel paints is made
 //! here**, so the frontend only lays them out and cannot invent a label the
-//! Swift app never had.
+//! original app never had.
 //!
-//! The rules-editing UI is deliberately *not* in this slice (Swift keeps it in
+//! The rules-editing UI is deliberately *not* in this slice (the original keeps it in
 //! Settings → Hosts): the engine and its seeds ship now, editing follows.
 
 pub mod group;
@@ -30,10 +30,10 @@ use group::{DisplayRow, Partition};
 use parse::{LocalRuntime, MergeOutcome};
 
 /// How long without a successful local poll before the footer says so.
-/// `PanelStatusFooter(..., staleAfter: 30)` in Swift.
+/// `PanelStatusFooter(..., staleAfter: 30)` in the original.
 pub const STALE_AFTER_SECS: u64 = 30;
 
-/// Poll cadence for containers, local and remote alike — Swift's
+/// Poll cadence for containers, local and remote alike — the original's
 /// `LocalContainerService.start(interval: 10)` and the remote container task's
 /// own 10s loop. Deliberately slower than the 1s metrics tick: a container
 /// list changes on human timescales, and `docker ps` is a process spawn.
@@ -80,10 +80,10 @@ pub struct ContainersState {
     local_error: Option<String>,
     /// Remote sections, keyed by host name and only ever written on a
     /// *successful* fetch — a failed poll leaves the previous list in place
-    /// rather than emptying the section (`RemoteHostsCoordinator`, Swift).
+    /// rather than emptying the section (`RemoteHostsCoordinator`, the original).
     remote: BTreeMap<String, Vec<wire::Container>>,
     /// Per-section last **successful** poll. In-memory only, exactly as in
-    /// Swift: after a relaunch no absent row appears until we have actually
+    /// The original: after a relaunch no absent row appears until we have actually
     /// looked at that host again, so a restart cannot manufacture an alarm.
     last_success: BTreeMap<String, u64>,
 }
@@ -206,7 +206,7 @@ pub fn view(
             (true, true) => json!({ "message": "no containers detected" }),
             (true, false) => Value::Null,
         },
-        // Sections are dropped entirely in the empty case, matching the Swift
+        // Sections are dropped entirely in the empty case, matching the original
         // panel: one sentence, not a stack of empty host headings.
         "sections": if empty || !looked { json!([]) } else { json!(rendered) },
         "footer": footer(state.local_last_success, state.local_error.as_deref(), now),
@@ -320,7 +320,7 @@ fn row_value(
 
 /// The runtime tag under a row's name.
 ///
-/// Lower-cased rather than mapped through an enum: Swift renders
+/// Lower-cased rather than mapped through an enum: the original renders
 /// `displayName.lowercased()`, which for docker/podman/tart is the raw value —
 /// and a runtime this build has never heard of (an agent taught a new one)
 /// must render as itself rather than disappear.
@@ -357,7 +357,7 @@ fn trailing_label(state: &ContainersState, missing: usize) -> String {
 /// The ladder itself is [`crate::panel::status_footer`], shared with the
 /// GitHub Runners panel; all this adds is *this* panel's staleness window.
 ///
-/// Local-only, matching Swift: the Swift panel footer watches
+/// Local-only, matching the original: the original panel footer watches
 /// `LocalContainerService`, and a remote host's reachability is the Hosts
 /// panel's story to tell, told there with its own error card.
 fn footer(last_updated: Option<u64>, error: Option<&str>, now: u64) -> Value {

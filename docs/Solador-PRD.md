@@ -58,7 +58,7 @@ A persistent, glanceable dashboard that answers: "Is my stack healthy right now?
 
 - **Glanceable:** Status visible at arm's length on a second monitor
 - **Actionable:** Click to open terminal, browser, or Claude Code in the right context
-- **Native:** macOS-native look and feel using Swift/SwiftUI
+- **Native:** macOS-native look and feel using the original/the original
 - **Minimal:** Problems surface to the top; healthy resources stay quiet
 
 ---
@@ -153,9 +153,9 @@ Automatically suggest connections between local repos and cloud services.
 | Component | Technology |
 |---|---|
 | Platform | macOS (native) |
-| Language | Swift |
-| UI Framework | SwiftUI |
-| Data Persistence | SwiftData |
+| Language | the original |
+| UI Framework | the original |
+| Data Persistence | the original persistence layer |
 | Credential Storage | macOS Keychain |
 | File Monitoring | FSEvents |
 | OAuth Flow | ASWebAuthenticationSession |
@@ -171,7 +171,7 @@ Automatically suggest connections between local repos and cloud services.
 
 ### Data Model
 
-**Persisted (SwiftData)**
+**Persisted (the original persistence layer)**
 
 - **TrackedRepository:** path, name, linked GitHub/Vercel IDs
 - **ServiceConnection:** service type, account identifier, validation timestamp

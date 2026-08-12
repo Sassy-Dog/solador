@@ -61,7 +61,7 @@ test("the panel paints Rust's headline, caption, trailing label and stat rows", 
 
   await expect(page.locator("#azureBody .az-headline .value")).toHaveText(azure.headline.value);
   await expect(page.locator("#azureBody .az-headline .caption")).toHaveText(azure.headline.caption);
-  // The currency formatting is Rust's en_US twin of the Swift NumberFormatter —
+  // The currency formatting is Rust's en_US twin of the original NumberFormatter —
   // a `toLocaleString` here would render the bill in the webview's locale.
   expect(azure.headline.value).toMatch(/^\$[\d,]+\.\d{2}$/);
 

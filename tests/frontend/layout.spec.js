@@ -130,7 +130,7 @@ test("cores block keeps the 2-row height until cells hit the squeeze floor, then
   expect(actualProp, "--core-block-h custom property").toBe(expectedPx);
 
   // 16 cores: rungs of 8/4 columns give 2/4 rows, which fit the fixed
-  // 220px block at or above the Swift squeeze floor (49px cells — the
+  // 220px block at or above the original squeeze floor (49px cells — the
   // 4-row case of core_cell_height). The 2- and 1-column rungs would need
   // 8 and 16 rows, where 220px leaves the plots literally 0px — there the
   // block grows to rows*49 + (rows-1)*8 instead of erasing the charts.
@@ -152,7 +152,7 @@ test("a many-core host keeps its core sparklines visible at narrow rungs", async
   // fixed 220px block gave each tile ~30px, which padding and the label
   // consumed whole: the plot flexed to 0 and the charts silently vanished
   // (the bug this guards). Past the squeeze floor the block must grow so
-  // every tile keeps at least the tightest cell Swift itself renders
+  // every tile keeps at least the tightest cell the original itself renders
   // (49px: HostMetricsPanel's 36-core, 9-column, 4-row case).
   const vm = JSON.parse(readFileSync("../../app/ui/sample.json", "utf8"));
   const host = vm.hosts[0];
@@ -216,11 +216,11 @@ test("charts widen their time window instead of stretching", async ({ page }) =>
   expect(Math.abs(wide.px - narrow.px)).toBeLessThan(0.5);
 });
 
-test("sparklines carry the Swift gradient fade under the line", async ({ page }) => {
-  // Swift parity (Sparkline.swift:27-30): the area under the line fades from
+test("sparklines carry the original gradient fade under the line", async ({ page }) => {
+  // Parity with the original (Sparkline:27-30): the area under the line fades from
   // 0.28 of the series colour at the top to transparent at the bottom, over
   // the FULL chart height. userSpaceOnUse is the load-bearing detail:
-  // SwiftUI's LinearGradient spans the view frame, so an idle-flat line must
+  // The original's LinearGradient spans the view frame, so an idle-flat line must
   // not compress the fade into its own bounding box and paint a solid band.
   await gotoApp(page);
   const got = await page.evaluate(async () => {
@@ -256,7 +256,7 @@ test("sparklines carry the Swift gradient fade under the line", async ({ page })
 });
 
 test("a filling history hugs the right edge at fixed density, never stretching", async ({ page }) => {
-  // Swift parity (Sparkline.swift:54-59): the newest sample is pinned at the
+  // Parity with the original (Sparkline:54-59): the newest sample is pinned at the
   // right edge and points step left by a FIXED step, so a history that is
   // still filling occupies only the right side of the chart. Stretching the
   // few present points across the full width — then switching to sliding at

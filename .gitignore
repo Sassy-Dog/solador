@@ -1,63 +1,5 @@
-# Xcode
-#
-# gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
-
-## User settings
-xcuserdata/
-
-## Xcode 8 and earlier
-*.xcscmblueprint
-*.xccheckout
-
-## Xcode build artifacts
+# Build output
 build/
-DerivedData/
-*.xcworkspace/xcshareddata/
-
-## Various settings
-*.pbxuser
-!default.pbxuser
-*.mode1v3
-!default.mode1v3
-*.mode2v3
-!default.mode2v3
-*.perspectivev3
-!default.perspectivev3
-
-## Other
-*.moved-aside
-*.xcuserstate
-
-## Obj-C/Swift specific
-*.hmap
-*.ipa
-*.dSYM.zip
-*.dSYM
-
-## Playgrounds
-timeline.xctimeline
-playground.xcworkspace
-
-# Swift Package Manager
-.build/
-.swiftpm/
-# Package.resolved is intentionally NOT ignored — it pins transitive SPM deps for reproducible CI builds.
-
-# CocoaPods
-Pods/
-*.xcworkspace
-
-# Carthage
-Carthage/Build/
-
-# fastlane
-fastlane/report.xml
-fastlane/Preview.html
-fastlane/screenshots/**/*.png
-fastlane/test_output
-
-# Code Injection
-iOSInjectionProject/
 
 # macOS
 .DS_Store
@@ -87,7 +29,6 @@ Temporary Items
 .apdisk
 
 # Project specific
-DevCanopy.xcodeproj/
 .superpowers/
 scripts/config.local.sh
 *.log

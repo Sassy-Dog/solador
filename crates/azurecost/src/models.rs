@@ -1,6 +1,6 @@
 //! The values a cost read produces. Port of
-//! `DevCanopy/Services/AzureCost/AzureCostModels.swift`, plus the two cache
-//! types from `AzureCostService.swift` (`ExportFingerprint`,
+//! `AzureCostModels`, plus the two cache
+//! types from `AzureCostService` (`ExportFingerprint`,
 //! `AzureCostFetchResult`).
 
 use chrono::{DateTime, Utc};
@@ -40,8 +40,8 @@ pub struct CostSummary {
     /// Best-effort: a missing or unreadable prior-month export leaves this
     /// `None` rather than failing the whole read.
     ///
-    /// `Option` rather than the bare `f64` Swift carries
-    /// (`AzureCostModels.swift`, which folds a missing export to 0): a real
+    /// `Option` rather than the bare `f64` the original carries
+    /// (`AzureCostModels`, which folds a missing export to 0): a real
     /// $0.00 month and "we could not read last month" are different facts, and
     /// the no-fake-numbers rule says the panel must be able to tell them apart.
     /// The renderer paints `None` as an em dash — see

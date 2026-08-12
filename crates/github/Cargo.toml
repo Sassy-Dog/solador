@@ -15,7 +15,7 @@ serde_json = { workspace = true }
 # Same HTTP stack (and feature set) as crates/agentclient, so the workspace
 # resolves one reqwest and one TLS backend.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# `join3` for the per-repo side counts the Swift fires with `async let`.
+# `join3` for the per-repo side counts the original fires with `async let`.
 # Already in the lock via reqwest/tauri — a new edge, not a new package.
 futures-util = "0.3"
 # GitHub timestamps are RFC 3339 strings and the stuck/presence clocks are

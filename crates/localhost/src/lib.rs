@@ -1,6 +1,6 @@
 //! Sampling the machine this process is running on.
 //!
-//! The Swift app renders the local machine as the first host card, collected
+//! The original app renders the local machine as the first host card, collected
 //! in-process by HostMetricsKit through IOKit and mach — macOS-only. This crate
 //! is the cross-platform counterpart: the same *rendered* metrics on macOS and
 //! Windows, built on `sysinfo` rather than the same syscalls. Parity is what the
@@ -57,7 +57,7 @@ pub use thermal::ThermalState;
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
-/// How long between full process enumerations. Matches the Swift collector's
+/// How long between full process enumerations. Matches the original collector's
 /// `processSampleInterval`: enumerating every process is expensive, and the
 /// question it answers ("what has been hogging this machine?") is a
 /// ~minute-scale one, not a per-second one.
@@ -126,7 +126,7 @@ pub struct LocalMemory {
     /// Memory pressure 0–100, as the host card's "Pressure: N%" line.
     ///
     /// `None` on every platform: macOS derives it from wired and compressed page
-    /// counts that sysinfo does not expose (the Swift collector reaches into
+    /// counts that sysinfo does not expose (the original collector reaches into
     /// mach for them), and Windows has no equivalent figure at all. A defaulted
     /// `0` here would paint a permanently green pressure badge, which is exactly
     /// the fabricated number this crate refuses to publish.
@@ -232,7 +232,7 @@ impl LocalSampler {
     /// Takes one sample of the local machine.
     ///
     /// GPU is read from IOKit's `IOAccelerator` registry on macOS, the same
-    /// source `GPUMonitor.swift` reads (#205). Windows has no equally cheap
+    /// source `GPUMonitor` reads (#205). Windows has no equally cheap
     /// equivalent — DXGI reports adapter memory but not utilisation — and stays
     /// a named non-goal, as does any Mac that matches no accelerator at all
     /// (a VM, which is what CI's macOS runners are). Both report

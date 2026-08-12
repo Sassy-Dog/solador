@@ -358,7 +358,7 @@ pub fn host_card(
         )
             .into_iter().map(|(w, c)| json!({
                 "minWidth": w, "cols": c,
-                // Per-rung block height: fixed while cells clear the Swift
+                // Per-rung block height: fixed while cells clear the original
                 // squeeze floor, grown past it so plots never flex to 0.
                 "height": core_rung_height(
                     CORE_ROW_SPAN_DEFAULT,

@@ -39,8 +39,8 @@ literal zeros pre-#183 agents send) stays the backward-compatibility case.
 
   **The copy is guarded by
   `the_local_unknowns_fixture_is_byte_identical_to_the_shared_one`.** That guard
-  is new, and it exists because the previous one was a Swift test that left CI
-  when the Swift app was frozen (2026-08-04) and vanished when it was deleted.
+  is new, and it exists because the previous one was a original test that left CI
+  when the original app was frozen (2026-08-04) and vanished when it was deleted.
   In the gap the two files did drift — the rename updated this file's
   `solador-agent` process name and left the copy on `devcanopy-agent`, and
   nothing failed, because nothing was still checking. Folding the two onto one

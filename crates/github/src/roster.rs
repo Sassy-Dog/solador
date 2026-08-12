@@ -1,5 +1,5 @@
 //! The auto-learned runner roster. Port of
-//! `DevCanopy/Services/GitHub/GHRunnerRoster.swift`.
+//! `GHRunnerRoster`.
 //!
 //! The org's ephemeral runners de-register between jobs, so GitHub's registered
 //! list alone can never say "mac-s2 *should* exist" — it only ever says what is
@@ -110,7 +110,7 @@ pub fn updated(
     registered: &[GhRunner],
     now: DateTime<Utc>,
 ) -> Vec<RunnerRosterEntry> {
-    // A BTreeMap both de-duplicates by name (last wins, as the Swift
+    // A BTreeMap both de-duplicates by name (last wins, as the original
     // `uniquingKeysWith` does) and yields the by-name ordering for free.
     let mut by_name: BTreeMap<String, RunnerRosterEntry> = roster
         .iter()
@@ -189,7 +189,7 @@ pub fn display_rows(
     rows
 }
 
-/// Digit-aware name ordering — the stand-in for Swift's
+/// Digit-aware name ordering — the stand-in for the original's
 /// `localizedStandardCompare`, which is what keeps `mac-s2` ahead of `mac-s10`
 /// instead of sorting them as the strings "2" and "10".
 ///

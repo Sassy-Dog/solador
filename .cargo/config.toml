@@ -8,7 +8,7 @@
 # the same floor as `bundle.macOS.minimumSystemVersion` for the eventual
 # `tauri build`, so the two can't drift.
 #
-# 14.0 matches the sibling SwiftUI app's floor (`project.yml`). The frontend's
+# 14.0 matches the sibling original macOS app's floor (`project.yml`). The frontend's
 # real requirement is lower (macOS 13.3+ for `adoptedStyleSheets`), so 14.0
 # comfortably covers it. This is ignored when targeting non-Apple platforms, so
 # the Windows workspace job is unaffected.

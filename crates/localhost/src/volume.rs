@@ -6,7 +6,7 @@
 //! * **Filesystem type** — the agent's skip list
 //!   (`agent/src/metrics.rs::DEFAULT_SKIP_FSTYPES`): transient, remote, or
 //!   pseudo filesystems that flap or aren't host storage.
-//! * **Mount path** — the Swift collector's `.skipHiddenVolumes` +
+//! * **Mount path** — the original collector's `.skipHiddenVolumes` +
 //!   `volumeIsBrowsable` pair (`HostMetricsCollector.collectVolumes`). macOS
 //!   mounts a dozen synthetic APFS volumes under `/System/Volumes` — `Preboot`,
 //!   `VM`, `Update`, `xarts` — each reporting the *container's* capacity on its

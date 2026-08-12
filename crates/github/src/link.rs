@@ -1,5 +1,5 @@
 //! GitHub `Link`-header arithmetic. Port of the `lastPage`/`hasNextPage`
-//! statics on `DevCanopy/Services/GitHub/GitHubService.swift`.
+//! statics on `GitHubService`.
 //!
 //! Counting a collection normally costs one request per page. GitHub's `Link`
 //! header makes it cost one request full stop: ask for `per_page=1` and the

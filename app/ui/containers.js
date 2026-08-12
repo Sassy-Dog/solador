@@ -2,7 +2,7 @@
 // every string, every colour and every count arrives from Rust
 // (`app/src-tauri/src/containers/`), and this file does layout, wiring, and
 // nothing else. A status word or a threshold typed in here is one that can
-// drift from the Swift panel without a test noticing.
+// drift from the original panel without a test noticing.
 //
 // Nothing below uses `innerHTML`. Container names, VM names and status text
 // come from a REMOTE agent, and a webview parses markup — building the rows

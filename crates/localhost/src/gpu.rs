@@ -1,6 +1,6 @@
 //! GPU sampling.
 //!
-//! A port of HostMetricsKit's `GPUMonitor.swift`: macOS publishes GPU
+//! A port of HostMetricsKit's `GPUMonitor`: macOS publishes GPU
 //! utilisation and memory occupancy as ordinary properties on the IOKit
 //! registry entry of every `IOAccelerator`, so reading them is a registry walk
 //! rather than a vendor SDK. Windows has no equivalent cheap read — DXGI or
@@ -9,7 +9,7 @@
 //!
 //! # What is *not* ported
 //!
-//! The Swift monitor ends in a ladder of guesses whenever IOKit declines: an
+//! The original monitor ends in a ladder of guesses whenever IOKit declines: an
 //! Apple Silicon VRAM capacity of `physicalMemory / 2`, a fallback capacity of
 //! a flat `8.0` GB, and a floor that reports "0.5 GB in use" when nothing was
 //! measured at all. Those are the fabricated numbers this crate exists to not
@@ -49,7 +49,7 @@ pub(crate) struct Accelerator {
     pub(crate) performance_statistics: BTreeMap<String, f64>,
 }
 
-/// Utilisation keys, in the Swift monitor's order — vendors disagree about the
+/// Utilisation keys, in the original monitor's order — vendors disagree about the
 /// spelling and each accelerator publishes exactly one of them. Apple Silicon
 /// answers `Device Utilization %`.
 const USAGE_KEYS: &[&str] = &[
@@ -93,7 +93,7 @@ pub(crate) const PERFORMANCE_STATISTICS_KEYS: &[&str] = &[
 
 /// A discrete adapter's VRAM capacity, paired with what takes each key to
 /// bytes. `VRAM,totalMB` is mebibytes despite the name — the same reading the
-/// Swift monitor takes of it.
+/// original monitor takes of it.
 pub(crate) const CAPACITY_KEYS: &[(&str, f64)] = &[
     ("VRAM,totalMB", BYTES_PER_MIB),
     ("VRAM,totalsize", 1.0),
@@ -230,7 +230,7 @@ mod macos {
     /// `IOProviderClass`, which IOKit resolves with a kind-of test rather than
     /// an exact-name one, so `IOAccelerator` also matches the
     /// `AGXAcceleratorG13X` of an Apple Silicon Mac and the `IntelAccelerator`
-    /// or `AMDRadeonX…` of an Intel one. The Swift monitor lists all of those
+    /// or `AMDRadeonX…` of an Intel one. The original monitor lists all of those
     /// spellings explicitly and never reaches past the first.
     const ACCELERATOR_CLASS: &str = "IOAccelerator";
 
@@ -481,7 +481,7 @@ mod tests {
     }
 
     /// A discrete adapter that reports occupancy but no capacity gets no
-    /// capacity — the Swift monitor's flat `8.0` GB fallback is exactly the
+    /// capacity — the original monitor's flat `8.0` GB fallback is exactly the
     /// invented number that does not cross.
     #[test]
     fn a_discrete_adapter_without_a_capacity_key_gets_no_invented_capacity() {
@@ -508,7 +508,7 @@ mod tests {
     }
 
     /// Earlier keys win, so an accelerator publishing both a device and a
-    /// renderer figure reports the device one — the Swift monitor's order, kept
+    /// renderer figure reports the device one — the original monitor's order, kept
     /// so the two apps agree on which number they are showing.
     #[test]
     fn the_first_spelling_present_wins() {

@@ -25,7 +25,7 @@ solador-servicestatus = { path = "../../crates/servicestatus" }
 # have no reason to be read in sequence. Already in the lock via crates/github.
 futures-util = "0.3"
 # This machine's own metrics, for the local host card that leads the grid. The
-# Swift app collects them through HostMetricsKit; this is the portable twin.
+# original app collects them through HostMetricsKit; this is the portable twin.
 solador-localhost = { path = "../../crates/localhost" }
 # The Usage panel's three sources: Claude Code's local logs, Neon consumption,
 # Sentry event stats. This crate renders them.

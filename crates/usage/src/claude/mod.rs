@@ -1,5 +1,5 @@
 //! Token rollups from Claude Code's local JSONL logs. Rust port of
-//! `DevCanopy/Services/ClaudeUsage/`.
+//! the original app.
 //!
 //! Layering, outermost first:
 //! - [`walk`] — file discovery and line streaming under a log root.

@@ -2,7 +2,7 @@
 //! discovery that touches the machine.
 //!
 //! Port of the I/O half of `LocalContainerService`
-//! (`DevCanopy/Services/Containers/LocalContainerService.swift`). Everything it
+//! (`LocalContainerService`). Everything it
 //! produces is parsed by [`super::parse`], which is where the tested logic
 //! lives.
 
@@ -22,7 +22,7 @@ const PS_ARGS: [&str; 4] = ["ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.I
 /// **Absolute paths, not `PATH`**, and that is deliberate on macOS: a GUI app
 /// inherits a minimal environment from `launchd`, so `PATH` there routinely
 /// lacks `/opt/homebrew/bin` and every Homebrew-installed tool would read as
-/// "not installed". Same list as the Swift service's.
+/// "not installed". Same list as the original service's.
 #[cfg(not(windows))]
 fn search_dirs() -> Vec<PathBuf> {
     ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]

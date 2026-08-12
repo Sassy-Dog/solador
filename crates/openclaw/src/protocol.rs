@@ -2,7 +2,7 @@
 //! request, the signed `connect` frame, the `Origin` derivation, and the
 //! pairing-required classifier.
 //!
-//! Rust port of `DevCanopy/Services/OpenClaw/OpenClawProtocol.swift` (periclaw's
+//! Rust port of `OpenClawProtocol` (periclaw's
 //! `net/openclaw.rs`). Everything here is deliberately socket-free: these are
 //! the parts that silently make or break the handshake against a real gateway,
 //! so they are unit-testable without one.
@@ -31,7 +31,7 @@ pub const SCOPES: [&str; 3] = ["operator.read", "operator.approvals", "operator.
 /// UI-mode operator client to cover v4 (`maxProtocol >= 4 && minProtocol <= 4`
 /// in its connect gate — v3 tolerance exists only for probe/node modes), and
 /// rejects v3-only clients with `PROTOCOL_MISMATCH`. Observed live against
-/// OpenClaw 2026.7.1-2 (issue #186); the Swift port's v3 predates that gate
+/// OpenClaw 2026.7.1-2 (issue #186); the original port's v3 predates that gate
 /// and was never live-verified.
 pub const PROTOCOL_VERSION: u8 = 4;
 /// The fixed id used for the connect request, matching the gateway reference
@@ -66,7 +66,7 @@ pub const HEARTBEAT_METHODS: [&str; 2] = ["channels.status", "sessions.list"];
 
 /// The `client.platform` string for the host this build runs on.
 ///
-/// Swift hardcodes `"macos"` because it only ever runs there. This crate is the
+/// The original hardcodes `"macos"` because it only ever runs there. This crate is the
 /// cross-platform half, so it reports the truth — the gateway logs it, and a
 /// Windows install claiming to be a Mac makes operator-side triage a guess.
 #[must_use]
@@ -271,7 +271,7 @@ mod tests {
 
     use super::*;
 
-    /// The Swift twin's fixed key: `Data(repeating: 9, count: 32)`.
+    /// The counterpart's fixed key: `Data(repeating: 9, count: 32)`.
     fn identity() -> DeviceIdentity {
         DeviceIdentity::from_seed(&[9u8; 32])
     }

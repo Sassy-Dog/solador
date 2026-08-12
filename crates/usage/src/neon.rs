@@ -1,5 +1,5 @@
 //! Month-to-date Neon consumption (compute + branch storage) for one
-//! organization. Rust port of `DevCanopy/Services/NeonUsage/`.
+//! organization. Rust port of the original app.
 //!
 //! The API key is an *organization* key, scoped to the org's projects rather
 //! than to a user account. It travels only in an `Authorization: Bearer`
@@ -255,7 +255,7 @@ pub enum NeonUsageError {
     Http { status: u16 },
     #[error("Couldn't read the Neon response ({0})")]
     DecodingFailed(String),
-    /// No Swift twin: `URLSession` folds transport failures into a generic
+    /// No counterpart: `URLSession` folds transport failures into a generic
     /// `Error` the service reports via `localizedDescription`.
     #[error("Couldn't reach the Neon API ({0})")]
     Unreachable(String),
@@ -303,7 +303,7 @@ pub fn month_to_date_window(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>
             .map(|day| DateTime::from_naive_utc_and_offset(day.and_time(NaiveTime::MIN), Utc))
     };
     // Unreachable fallbacks: every valid date's month has a first day, as does
-    // the month after it. Mirrors the Swift's own `?? now`.
+    // the month after it. Mirrors the original's own `?? now`.
     let start = first_of(now.year(), now.month()).unwrap_or(now);
     let end = if now.month() == 12 {
         first_of(now.year() + 1, 1)
@@ -540,7 +540,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // MARK: - Fixtures
-    // Twins of `DevCanopyTests/NeonUsageMappingTests.swift`.
+    // Twins of `NeonUsageMappingTests`.
 
     const TWO_PROJECTS: &str = r#"
     {
@@ -731,7 +731,7 @@ mod tests {
     /// The footer text for a successful-but-empty read, carried over verbatim
     /// so the panel keeps saying why it shows `—` rather than a 0.
     #[test]
-    fn the_no_consumption_message_matches_the_swift_verbatim() {
+    fn the_no_consumption_message_matches_the_original_verbatim() {
         assert_eq!(
             NO_CONSUMPTION_MESSAGE,
             "no Neon consumption reported — check the org ID, or the plan may not include consumption history"

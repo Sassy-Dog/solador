@@ -1,6 +1,6 @@
 //! Persistence for the auto-learned self-hosted runner roster — the Rust
-//! mirror of the `ghRunnerRoster` UserDefaults blob the Swift app writes
-//! (`DevCanopy/Services/GitHub/GHRunnerRoster.swift`).
+//! mirror of the `ghRunnerRoster` UserDefaults blob the original app writes
+//! (`GHRunnerRoster`).
 //!
 //! Only the *record* lives here. Every rule about it — learning a sighting,
 //! the 24h age-out, the absence clocks — is `github::roster`'s, and this crate
@@ -27,7 +27,7 @@ pub struct RunnerRosterRecord {
     /// gets a fresh numeric id on every re-registration.
     pub name: String,
     /// `"macOS"` / `"linux"` / `"other"` — `github::RunnerOs::as_raw`, which is
-    /// also the Swift `RunnerOS` raw value. Stored as a string so this crate
+    /// also the original `RunnerOS` raw value. Stored as a string so this crate
     /// stays free of the GitHub crate; an unrecognised value reads as `other`
     /// on the way back rather than failing the roster.
     pub os: String,

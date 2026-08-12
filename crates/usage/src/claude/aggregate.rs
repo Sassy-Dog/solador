@@ -1,6 +1,6 @@
 //! Pure aggregation of [`UsageRecord`]s into a [`UsageSummary`]. Port of
-//! `DevCanopy/Services/ClaudeUsage/ClaudeUsageAggregator.swift` plus the
-//! totals/breakdown half of `UsageModels.swift`.
+//! `ClaudeUsageAggregator` plus the
+//! totals/breakdown half of `UsageModels`.
 //!
 //! No file I/O and no clock access: `now` is an argument, so results are
 //! deterministic and testable — the same rule `crates/github` runs on.
@@ -106,7 +106,7 @@ pub fn summarize(records: &[UsageRecord], now: DateTime<Utc>, offset: FixedOffse
 
     // First-wins dedup. Note this keys on the *raw* `request_id`, so records
     // that carried none share the empty key and collapse into one — matching
-    // the Swift, where an absent id is simply not a distinguishing id.
+    // The original, where an absent id is simply not a distinguishing id.
     let mut seen: HashSet<&str> = HashSet::new();
 
     for record in records {
@@ -171,8 +171,8 @@ fn sorted_breakdowns(map: HashMap<&str, UsageTotals>) -> Vec<UsageBreakdown> {
 mod tests {
     use super::*;
 
-    /// The fixed reference "now" the Swift twins use — the same epoch second,
-    /// which is 2026-05-30T12:00:00Z. (The Swift's comment says the 29th; every
+    /// The fixed reference "now" the original twins use — the same epoch second,
+    /// which is 2026-05-30T12:00:00Z. (The original's comment says the 29th; every
     /// assertion there is relative, so the slip never showed up. The absolute
     /// assertions below would catch it, so the value is named correctly here.)
     fn now() -> DateTime<Utc> {
@@ -183,7 +183,7 @@ mod tests {
         FixedOffset::east_opt(0).expect("UTC is a valid offset")
     }
 
-    /// Mirrors the Swift test helper: everything defaulted, offset in hours
+    /// Mirrors the original test helper: everything defaulted, offset in hours
     /// *back* from `now`.
     struct Rec {
         offset_hours: f64,
@@ -287,7 +287,7 @@ mod tests {
     }
 
     /// Records with no `requestId` share the empty key, so they collapse the
-    /// same way the Swift collapses them. Pinned so a change here is a decision
+    /// same way the original collapses them. Pinned so a change here is a decision
     /// rather than a drift.
     #[test]
     fn records_without_a_request_id_collapse_into_one() {

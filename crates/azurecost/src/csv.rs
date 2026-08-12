@@ -1,6 +1,6 @@
 //! Network-free parsing and aggregation of the platform-owned Azure Cost
 //! Management export. Port of
-//! `DevCanopy/Services/AzureCost/AzureCostCSV.swift`, which is itself a port of
+//! `AzureCostCSV`, which is itself a port of
 //! mission-control's `azure-cost/query.ts` — three consumers, one reading of
 //! the same file.
 //!
@@ -38,8 +38,8 @@ fn num(value: &str) -> f64 {
 /// embeds quoted JSON with commas, and a quoted field may in principle contain
 /// newlines. A leading UTF-8 BOM is stripped (the export's header carries one).
 ///
-/// The Swift original had to scan Unicode *scalars* rather than `Character`s,
-/// because Swift folds a CRLF into a single grapheme cluster that equals
+/// The original had to scan Unicode *scalars* rather than `Character`s,
+/// because the original folds a CRLF into a single grapheme cluster that equals
 /// neither `"\r"` nor `"\n"` — which once collapsed a whole CRLF export into
 /// one row and summed the month to $0. Rust's `char` is already a scalar, so
 /// the same scan is correct here by construction; the CRLF test below is the

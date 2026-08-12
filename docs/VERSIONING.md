@@ -28,7 +28,7 @@ non-tier:
 Consumers — version is **never** computed anywhere else:
 
 - **No build consumer yet.** The Xcode build that injected these as
-  `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` went with the SwiftUI app.
+  `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` went with the original macOS app.
   `app/src-tauri/tauri.conf.json` still carries a hand-written `version: 0.1.0`,
   which contradicts this document and is inert only while `bundle.active` is
   `false`. Wiring the minted version into the Tauri bundle is part of **#15**;
@@ -70,7 +70,7 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
 Single-tier repo: umbrella `v*` only, no tier tags, no tier-vs-tag change
 detection (nothing to path-scope). Declared stance: **no channel tags yet** —
 builds are unsigned/un-notarized and local-only until
-[devcanopy#15](https://github.com/cpmadrid/solador/issues/15) (signing /
+[#15](https://github.com/cpmadrid/solador/issues/15) (signing /
 notarization / Sparkle) lands; at first external distribution, add
 `mac-direct/<version>-<build>-<UTCts>` per submission, and map Sparkle keys
 per the §7 macOS row (`sparkle:version` = **build number**,
@@ -113,7 +113,7 @@ coming back.
 ## Tests (§3, mandatory)
 
 > **These scripts currently have NO test coverage.** Their only tests were
-> `DevCanopyTests/VersioningScriptTests.swift`, which ran hermetic bare-origin
+> `VersioningScriptTests`, which ran hermetic bare-origin
 > git fixtures (real `ls-remote` probes) over: patch floor, month-roll reset,
 > §2 idempotency, the §4 collision replay (prior-month-commit release →
 > first-commit-of-month release → two distinct versions), same-commit mint
@@ -121,7 +121,7 @@ coming back.
 > `--at <ref>` / pin / fail-closed, and the §6 CalVer-exceeds-`v0.1.1`
 > monotonicity vector.
 >
-> That file was deleted with the SwiftUI app. The scripts it covered survive
+> That file was deleted with the original macOS app. The scripts it covered survive
 > because **#15** needs them, so the coverage has to be rebuilt — as a shell
 > or Rust integration test — before the minting logic is trusted to stamp a
 > real release. Restoring it is part of #15's scope.

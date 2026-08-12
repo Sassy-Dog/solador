@@ -1,7 +1,7 @@
 //! PAT-authenticated GitHub REST client. Port of
-//! `DevCanopy/Services/GitHub/GitHubService.swift`, plus the per-repo and
-//! per-org fetch orchestration from `GHWorkflowsService.swift` /
-//! `GHRunnersService.swift`.
+//! `GitHubService`, plus the per-repo and
+//! per-org fetch orchestration from `GHWorkflowsService` /
+//! `GHRunnersService`.
 //!
 //! Read-only GETs only. The token is a fine-grained PAT and travels in an
 //! `Authorization: Bearer` header — never in a URL, which is what keeps it out
@@ -104,7 +104,7 @@ impl GitHubClient {
                 // GitHub's REST API rejects requests without a User-Agent with
                 // a blanket 403, token permissions notwithstanding. reqwest
                 // sends none by default (URLSession always does, which is why
-                // the Swift port never hit this). Observed live, issue #186.
+                // The original port never hit this). Observed live, issue #186.
                 .user_agent(concat!("Solador/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("reqwest client"),

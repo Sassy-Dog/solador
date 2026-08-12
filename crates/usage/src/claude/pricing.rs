@@ -1,5 +1,5 @@
 //! Per-model token prices. Port of
-//! `DevCanopy/Services/ClaudeUsage/ModelPricing.swift`.
+//! `ModelPricing`.
 //!
 //! Cost is **computed and tested but never displayed**: the account is
 //! subscription-based, so a dollar figure on the panel would be a number that

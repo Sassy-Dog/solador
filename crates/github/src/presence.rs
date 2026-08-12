@@ -1,5 +1,5 @@
 //! Presence of an entity the user expects to exist. Port of
-//! `DevCanopy/Services/Presence/PresenceState.swift`.
+//! `PresenceState`.
 //!
 //! Pure evaluation: no I/O, no wall clock. Callers pass `now` as the owning
 //! source's last **successful** poll time, never render time, so absence clocks

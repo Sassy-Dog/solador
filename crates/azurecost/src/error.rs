@@ -1,10 +1,10 @@
 //! Failures from reading the Azure cost export, and the operator-facing strings
 //! they turn into. Port of `AzureCostError` +
 //! `AzureCostService.friendlyMessage(for:)` in
-//! `DevCanopy/Services/AzureCost/AzureCostService.swift`.
+//! `AzureCostService`.
 //!
-//! The `Display` strings are the Swift `errorDescription`s verbatim, and
-//! [`AzureCostError::user_message`] is the Swift `friendlyMessage` — the panel
+//! The `Display` strings are the original `errorDescription`s verbatim, and
+//! [`AzureCostError::user_message`] is the original `friendlyMessage` — the panel
 //! shows these, so a drift here is a visible drift.
 
 /// Column the aggregation cannot do without; named here so the error and the
@@ -27,7 +27,7 @@ pub enum AzureCostError {
     Http { status: u16, body: Option<String> },
     /// The request never completed (DNS, TLS, timeout, connection reset).
     ///
-    /// Swift's `.invalidResponse` — a `URLSession`-shaped case for "the
+    /// The original's `.invalidResponse` — a `URLSession`-shaped case for "the
     /// response was not an `HTTPURLResponse`" — has no reqwest counterpart;
     /// transport failure arrives here instead.
     ///

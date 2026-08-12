@@ -149,7 +149,7 @@ function renderUsage(payload) {
   $u("usageBody").replaceChildren(...children);
 
   // Claude's own warning goes in the header, not below the provider sections
-  // where the Swift panel puts it: a line under the body makes the card taller
+  // where the original panel puts it: a line under the body makes the card taller
   // and `.panel-row` stretches its neighbours to match, so a stale rollup would
   // move OpenClaw beside it. The per-provider `.pv-footer` lines stay in the
   // body — they belong to a section, and a section has no header to move to.

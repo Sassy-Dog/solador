@@ -1,7 +1,7 @@
 //! The two Blob REST operations a cost read needs, and the SAS-URL transport
 //! that performs them. Port of `BlobFetching` / `URLSessionBlobFetcher` /
 //! `parseBlobListXML` in
-//! `DevCanopy/Services/AzureCost/AzureCostService.swift`.
+//! `AzureCostService`.
 //!
 //! There is no Azure SDK and no OAuth here. The container-scoped, read+list
 //! user-delegation SAS *is* the credential: the URL splits into a container
@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use crate::error::AzureCostError;
 
-/// Matches the Swift `URLRequest.timeoutInterval`.
+/// Matches the original `URLRequest.timeoutInterval`.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The blob surface a cost read depends on, abstracted so the

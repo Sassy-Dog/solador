@@ -90,7 +90,7 @@ function paint(el) {
     if (all.length < 2) continue;
     const win = all.slice(Math.max(0, all.length - visible));
     const span = Math.max(hi - lo, 1e-4);
-    // Swift parity (Sparkline.swift): the newest sample is pinned at the
+    // Parity with the original (Sparkline): the newest sample is pinned at the
     // right edge and points step left by a FIXED step derived from the
     // window this width can show — a filling history grows in from the
     // right at constant density instead of stretching across the full
@@ -102,9 +102,9 @@ function paint(el) {
       const x = w - (win.length - 1 - i) * step;
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     }).join(" ");
-    // Swift parity (Sparkline.swift): a 0.28 -> 0 fade of the series colour
+    // Parity with the original (Sparkline): a 0.28 -> 0 fade of the series colour
     // under the line. userSpaceOnUse over the full 0..100 viewBox height,
-    // because SwiftUI's LinearGradient spans the whole chart frame — the
+    // because the original's LinearGradient spans the whole chart frame — the
     // default objectBoundingBox would compress the fade into a flat line's
     // own few-pixel extent and paint it as a solid band.
     const gid = `spark-fade-${gradSeq++}`;
@@ -532,7 +532,7 @@ function applyHostTabs(spec, grid) {
  * The whole page, from one `cockpit` payload.
  *
  * The grid's column count is applied, never computed: `hostColumns` is
- * `viewmodel::cockpit::host_columns` — the same breakpoint math the SwiftUI
+ * `viewmodel::cockpit::host_columns` — the same breakpoint math the original
  * cockpit uses — and re-deriving it here from `hostCardMinWidth` would be a
  * second implementation free to disagree with the tested one.
  */

@@ -1,6 +1,6 @@
 //! Workflow-run DTOs and the pure mapping to per-repo health. Port of
-//! `DevCanopy/Models/WorkflowRunModels.swift` (the status/conclusion enums) and
-//! `DevCanopy/Services/GitHub/GHWorkflowsMapping.swift`.
+//! `WorkflowRunModels` (the status/conclusion enums) and
+//! `GHWorkflowsMapping`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

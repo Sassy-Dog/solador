@@ -1,7 +1,7 @@
 // The Settings surface. Same discipline as the cockpit: every string here
 // arrives from Rust (`app/src-tauri/src/settings.rs`) and this file does
 // layout, wiring, and nothing else. A label typed into this file is a label
-// that can drift from the Swift app without a test noticing.
+// that can drift from the original app without a test noticing.
 //
 // Nothing below uses `innerHTML`: the whole surface is built with
 // createElement + textContent, so host names, mount paths and repo slugs (all
@@ -525,7 +525,7 @@ function hostsTab(t) {
  *
  * Every control writes ONE field, through `settings_set_container_rule`, and
  * the surface then re-renders from the `{status, settings}` it gets back. That
- * is the port of Swift's re-read-on-access bindings: this file never assembles
+ * is the port of the original's re-read-on-access bindings: this file never assembles
  * a whole rule out of what its own inputs happen to hold, so editing the label
  * cannot clobber a pattern that changed a moment earlier. The row is addressed
  * by its index in the persisted list, which is also the order the rule engine
@@ -637,7 +637,7 @@ function portfolioTab(t) {
   const slug = textInput("");
   add.appendChild(field("repo-slug", t.add.slugLabel, slug));
   const submit = button(t.add.buttonLabel, "add");
-  // Swift disables Add until the slug at least looks like `owner/name`; Rust
+  // The original disables Add until the slug at least looks like `owner/name`; Rust
   // re-checks it (and rejects duplicates) either way -- this is a hint, not
   // the validation.
   const syncAdd = () => {
@@ -719,7 +719,7 @@ function azureTab(t) {
 
 function usageTab(t) {
   // One group per provider, each carrying its own non-secret fields *and* its
-  // credential -- the Swift tab's shape, where adding a provider is adding a
+  // credential -- the original tab's shape, where adding a provider is adding a
   // section.
   const neon = group(t.neon.heading);
   const orgId = textInput(t.neon.orgId);

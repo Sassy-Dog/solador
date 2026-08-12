@@ -1,13 +1,13 @@
 //! Container grouping rules and presence memory — the persisted half of the
 //! Containers/VMs panel.
 //!
-//! Port of `DevCanopy/Services/Containers/ContainerGrouping.swift` (the rule
+//! Port of `ContainerGrouping` (the rule
 //! model, its glob matcher and the seeded defaults) and the persisted half of
-//! `ContainerPresenceStore.swift`. The *evaluation* of those rules lives with
+//! `ContainerPresenceStore`. The *evaluation* of those rules lives with
 //! the panel (`app/src-tauri/src/containers/`); what lives here is only what
 //! survives a relaunch, exactly as `Host` and `TrackedRepo` do.
 //!
-//! Swift keeps both in `UserDefaults` under their own keys, which is why its
+//! The original keeps both in `UserDefaults` under their own keys, which is why its
 //! loader has to answer "what does undecodable mean?". The answer is carried
 //! over verbatim, because it is a real user-facing decision and not an
 //! artifact of `UserDefaults`: **absent or unreadable rules mean "never
@@ -21,13 +21,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 /// The panel's section key for the machine the app itself runs on. Shared with
 /// the rule model so a host-scoped rule can name it (`ContainerGroupRule.
-/// localHostScope` in Swift).
+/// localHostScope` in the original).
 pub const LOCAL_HOST_SCOPE: &str = "this machine";
 
 /// Absence grace before an expected-but-absent container escalates from
 /// "recycling" (amber, normal churn) to "missing" (red, alarm), in seconds.
 ///
-/// Same 300s as `Presence.defaultGrace` (Swift) and
+/// Same 300s as `Presence.defaultGrace` (ported) and
 /// `github::presence::DEFAULT_GRACE_SECS`: the mac runner slots recycle in 1–4
 /// minutes, so five minutes of absence means wedged.
 pub const DEFAULT_GRACE_SECS: u64 = 300;
@@ -49,7 +49,7 @@ pub enum ContainerRuleAction {
 }
 
 impl ContainerRuleAction {
-    /// Every action, in the order the Swift picker offers them.
+    /// Every action, in the order the original picker offers them.
     pub const ALL: [ContainerRuleAction; 3] = [
         ContainerRuleAction::Collapse,
         ContainerRuleAction::Hide,
@@ -86,7 +86,7 @@ impl ContainerRuleAction {
 /// Unknown action strings degrade to [`ContainerRuleAction::Collapse`] rather
 /// than failing the decode.
 ///
-/// Straight from the Swift decoder's note: a rule written by a *newer* build
+/// Straight from the original decoder's note: a rule written by a *newer* build
 /// must not throw here, because the throw would be caught one level up and
 /// silently reset the user's entire rule list to the seeded defaults. Losing
 /// one rule's action is recoverable; losing every rule is not.
@@ -106,7 +106,7 @@ impl<'de> Deserialize<'de> for ContainerRuleAction {
 
 /// A user-editable rule over container/VM names.
 ///
-/// Edited from Settings → Hosts, exactly as Swift's
+/// Edited from Settings → Hosts, exactly as the original's
 /// `ContainerGroupRulesSection` does; what lives here is the model, its glob
 /// matcher and the seeds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,13 +176,13 @@ impl ContainerGroupRule {
 
 /// Whether `name` matches `pattern`.
 ///
-/// The contract is the Swift one, and each half of it is load-bearing: the
+/// The contract is the original one, and each half of it is load-bearing: the
 /// **whole** name must match (anchored, not substring), `*` matches any run of
 /// characters including none, every other character is **literal** — a `.` in
 /// `ghcr.io/*` must not quietly become "any character" — and matching is
 /// case-sensitive.
 ///
-/// Swift gets this by escaping the pattern into an `NSRegularExpression`;
+/// The original gets this by escaping the pattern into an `NSRegularExpression`;
 /// doing the same here would mean a regex dependency to express a two-token
 /// language, so the glob is matched directly. That is also why the literal
 /// halves are compared with `starts_with`/`ends_with`/`find` rather than
@@ -256,7 +256,7 @@ pub struct ContainerPresenceRecord {
 /// The presence map's key: `"<host>|<name>"`.
 ///
 /// Container/VM names cannot contain `|` and host names realistically don't,
-/// so this is injective in practice — the same assumption Swift's store makes.
+/// so this is injective in practice — the same assumption the original's store makes.
 #[must_use]
 pub fn presence_key(host: &str, name: &str) -> String {
     format!("{host}|{name}")

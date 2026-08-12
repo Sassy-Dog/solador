@@ -1,5 +1,5 @@
 //! Reads Azure spend from the platform-owned daily Cost Management export.
-//! Rust port of `DevCanopy/Services/AzureCost/`.
+//! Rust port of the original app.
 //!
 //! The export is a CSV dropped into blob storage once a day. There is no Azure
 //! SDK here and no OAuth: a container-scoped, read+list SAS URL *is* the

@@ -2,8 +2,8 @@
 //! evaluating presence for the ones that should be there and aren't.
 //!
 //! Port of `ContainerGrouping.partition`/`displayRows` and
-//! `Presence.state`/`label` (`DevCanopy/Services/Containers/`,
-//! `DevCanopy/Services/Presence/`). Pure: no I/O, no wall clock — `now` is
+//! `Presence.state`/`label` (the original app,
+//! The original app). Pure: no I/O, no wall clock — `now` is
 //! always the section's last **successful** poll, so a failing source freezes
 //! its absence clocks instead of ageing entities toward a false alarm.
 
@@ -153,7 +153,7 @@ impl Partition {
 /// Splits one host section's containers into individually-rendered rows, one
 /// aggregate per applicable collapse rule, and the expected-but-absent rows.
 ///
-/// The rules that matter, all inherited from Swift:
+/// The rules that matter, all inherited from the original:
 /// - Only rules scoped to `host` (or unscoped) apply — for matching **and**
 ///   rendering, so a scoped collapse rule's standing `×0` row appears on its
 ///   own host only.

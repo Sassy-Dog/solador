@@ -2,7 +2,7 @@
 //! worktrees each tracked repo has *on this machine*.
 //!
 //! Port of the discovery + counting half of
-//! `DevCanopy/Services/GitMonitor/GitWorktreeService.swift`. The Swift service
+//! `GitWorktreeService`. The original service
 //! also parses per-worktree ahead/behind/dirty state for a panel that no longer
 //! exists (the Git Worktrees panel folded into Repos); only the two counts the
 //! Repos panel actually renders are ported.
@@ -12,7 +12,7 @@
 //! this module can modify a repository.
 //!
 //! **Unknown is not zero.** Both counts are `Option<u32>` and a git invocation
-//! that fails yields `None`, which the panel renders as "—". Swift's
+//! that fails yields `None`, which the panel renders as "—". the original's
 //! `localBranchCount` returns `0` on a git error; that is a fabricated number
 //! and this deliberately does not copy it. `Some(0)` still means what it says:
 //! a repo genuinely holding no local branches.
@@ -65,7 +65,7 @@ pub fn default_roots() -> Vec<PathBuf> {
 /// Every repo found under `roots`, keyed by [`normalize`]d directory name.
 ///
 /// A duplicate name (the same repo checked out under two roots) keeps the
-/// first, matching the Swift dictionary's `uniquingKeysWith: { first, _ in
+/// first, matching the original dictionary's `uniquingKeysWith: { first, _ in
 /// first }`.
 ///
 /// Blocking: this walks the filesystem and spawns `git` once or twice per repo.
@@ -197,7 +197,7 @@ fn git(repo: &Path, args: &[&str]) -> Option<String> {
 /// An absolute path on Unix for the same reason `containers::local` resolves
 /// docker absolutely: a macOS GUI app inherits a `launchd` environment, and its
 /// `PATH` is not the shell's. `/usr/bin/git` is the Command Line Tools shim and
-/// is present on every Mac that can build this repo — Swift's
+/// is present on every Mac that can build this repo — the original's
 /// `GitWorktreeService` hard-codes exactly this path.
 #[cfg(not(windows))]
 const GIT: &str = "/usr/bin/git";

@@ -1,7 +1,7 @@
 //! Which processes make the cut — and which table rows are processes at all.
 //!
 //! Mirrors `ProcessRanking.top`
-//! (`Packages/HostMetricsKit/Sources/HostMetricsKit/HostSnapshot.swift`) and the
+//! (`HostSnapshot`) and the
 //! agent's `top_processes` (`agent/src/metrics.rs`): the **union** of the top-N
 //! by CPU and the top-N by memory, deduped by pid and re-sorted by CPU
 //! descending, so one list backs both a "Top CPU" and a "Top RAM" view.
@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use sysinfo::{ProcessRefreshKind, ThreadKind, UpdateKind};
 use wire::Process;
 
-/// How many to keep from each ranking. Same 5 the Swift collector and the agent
+/// How many to keep from each ranking. Same 5 the original collector and the agent
 /// use, so a local card and a remote card show comparably sized lists.
 pub(crate) const TOP_LIMIT: usize = 5;
 

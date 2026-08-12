@@ -1,7 +1,7 @@
 //! The **Usage** panel: Claude Code token rollups, plus a Neon and a Sentry
 //! section when those providers are configured.
 //!
-//! Port of `DevCanopy/Views/Cockpit/Panels/ClaudeUsagePanel.swift`. The data
+//! Port of `ClaudeUsagePanel`. The data
 //! layer beneath it is [`usage`]; this module is the view side, and it holds to
 //! the same rule as [`crate::github`] and [`crate::containers`]: **every string
 //! and colour the frontend paints is made here.**
@@ -70,7 +70,7 @@ pub const NO_DATA_MESSAGE: &str = "no usage data";
 /// Distinct from [`NO_DATA_MESSAGE`]: this one is a measurement.
 pub const EMPTY_MESSAGE: &str = "no Claude usage in the last 7 days";
 
-/// What the footer says when `~/.claude/projects` is not there at all. Swift
+/// What the footer says when `~/.claude/projects` is not there at all. the original
 /// reports this from its own existence check, which is why it is the shell's
 /// string and not the crate's.
 pub const NO_LOG_ROOT_MESSAGE: &str = "no ~/.claude/projects";
@@ -341,7 +341,7 @@ fn state_message(text: &str) -> Value {
 
 /// One Claude window row (`5H`, `WEEK`).
 ///
-/// **No progress bar, deliberately.** Swift's `fiveHourTokenLimit` and
+/// **No progress bar, deliberately.** the original's `fiveHourTokenLimit` and
 /// `weeklyTokenLimit` are both `nil`, and its `windowRow` draws a bar only
 /// `if let limit, limit > 0`. A bar needs a ceiling, the subscription publishes
 /// none, and a bar against an invented ceiling would be a percentage of a number
@@ -502,7 +502,7 @@ fn vercel_section(state: &ProviderState<VercelUsageSummary>, now: u64) -> Value 
 pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value {
     let kind = PanelKind::ClaudeUsage;
 
-    // Three states, in Swift's own order: no summary at all (loading, or a log
+    // Three states, in the original's own order: no summary at all (loading, or a log
     // root we could not locate), a summary that measured nothing, and content.
     let (message, windows, projects) = match &state.claude {
         None => {
@@ -523,7 +523,7 @@ pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value
                 window_row("5H", &summary.last_5h),
                 window_row("WEEK", &summary.last_7d),
             ]);
-            // Absent, not empty: Swift renders the divider and the heading only
+            // Absent, not empty: the original renders the divider and the heading only
             // `if !summary.projectsLast7d.isEmpty`.
             let projects = if summary.projects_last_7d.is_empty() {
                 Value::Null
@@ -547,7 +547,7 @@ pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value
     };
 
     // "" rather than a fabricated 0: with no summary there is no claim to make
-    // about today, and Swift's `trailingLabel` returns the empty string there.
+    // about today, and the original's `trailingLabel` returns the empty string there.
     let trailing = state.claude.as_ref().map_or_else(String::new, |summary| {
         format!("{} today", tokens(summary.today.total_tokens()))
     });
@@ -733,7 +733,7 @@ mod tests {
     // MARK: formatting
 
     #[test]
-    fn token_counts_abbreviate_the_way_the_swift_panel_does() {
+    fn token_counts_abbreviate_the_way_the_original_panel_does() {
         assert_eq!(tokens(0), "0");
         assert_eq!(tokens(999), "999");
         assert_eq!(tokens(1_000), "1k");

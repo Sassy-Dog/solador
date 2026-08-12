@@ -1,7 +1,7 @@
 //! Two reads for one Sentry organization: accepted error events over a rolling
 //! window, and the cron monitors that are not ok. Rust port of
-//! `DevCanopy/Services/SentryUsage/`, plus the cron-monitor read that has no
-//! Swift twin.
+//! the original app, plus the cron-monitor read that has no
+//! counterpart.
 //!
 //! Distinct from the app's own crash-reporting bootstrap: nothing here touches
 //! a Sentry SDK. The token carries only the read-only `org:read` scope and
@@ -160,7 +160,7 @@ pub enum SentryUsageError {
     Http { status: u16 },
     #[error("Couldn't read the Sentry response ({0})")]
     DecodingFailed(String),
-    /// No Swift twin: `URLSession` folds transport failures into a generic
+    /// No counterpart: `URLSession` folds transport failures into a generic
     /// `Error` the service reports via `localizedDescription`.
     #[error("Couldn't reach the Sentry API ({0})")]
     Unreachable(String),
@@ -932,7 +932,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // MARK: - Fixtures
-    // Twins of `DevCanopyTests/SentryUsageMappingTests.swift`.
+    // Twins of `SentryUsageMappingTests`.
 
     const OUTCOMES: &str = r#"
     {
@@ -1084,7 +1084,7 @@ mod tests {
     /// The footer text for a successful-but-empty read, carried over verbatim
     /// so the panel keeps saying why it shows `—` rather than a 0.
     #[test]
-    fn the_no_stats_message_matches_the_swift_verbatim() {
+    fn the_no_stats_message_matches_the_original_verbatim() {
         assert_eq!(
             NO_STATS_MESSAGE,
             "no Sentry event stats reported — check the org slug in Settings"

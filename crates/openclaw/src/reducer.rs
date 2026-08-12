@@ -1,9 +1,9 @@
 //! Pure state machine folding gateway frames into the data sections of an
 //! [`AgentRuntimeSnapshot`].
 //!
-//! Rust port of `DevCanopy/Services/OpenClaw/OpenClawSnapshotReducer.swift`
+//! Rust port of `OpenClawSnapshotReducer`
 //! (periclaw's frame dispatch). Extracted from the session for the same reason
-//! Swift extracted it from the socket actor: this is where every visible
+//! The original extracted it from the socket actor: this is where every visible
 //! behaviour lives, and it must be testable without networking.
 //!
 //! Two properties are load-bearing:
@@ -35,7 +35,7 @@ use crate::status;
 ///
 /// Cron jobs and channels live in [`BTreeMap`]s rather than hash maps so every
 /// derived section — including which error wins [`CronSummary::last_error`] —
-/// is deterministic. The Swift original iterates a `Dictionary`, so its choice
+/// is deterministic. The original iterates a `Dictionary`, so its choice
 /// of surviving error is whatever the hash order happened to be.
 #[derive(Debug, Default)]
 pub struct SnapshotReducer {
@@ -228,7 +228,7 @@ impl SnapshotReducer {
         self.usage
     }
 
-    /// Copy every data section into `snapshot` — the port of Swift's
+    /// Copy every data section into `snapshot` — the port of the original's
     /// `rebuildSnapshot`.
     ///
     /// Deliberately leaves `connection`, `pairing` and `last_updated_ms` alone:
@@ -274,7 +274,7 @@ pub fn decode_channels(payload: &Value) -> Vec<Channel> {
 
 /// `agents.list` arrives as `{agents:[…]}` or a bare array.
 ///
-/// Distinct from the others in returning `None` for "no list found": Swift only
+/// Distinct from the others in returning `None` for "no list found": the original only
 /// replaces the roster when the payload actually carried one, so a shape it
 /// cannot read leaves the previous agents on screen rather than emptying the
 /// section.

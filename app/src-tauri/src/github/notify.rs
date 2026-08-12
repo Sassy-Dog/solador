@@ -2,9 +2,9 @@
 //! deployment-protection gate, and the two sentences that describe them.
 //!
 //! Port of the transition half of
-//! `DevCanopy/Services/GitHub/GHWorkflowsService.swift`
+//! `GHWorkflowsService`
 //! (`notifyApprovalTransitions(in:)`) and the wording half of
-//! `DevCanopy/Services/Notifications/WorkflowNotificationService.swift`
+//! `WorkflowNotificationService`
 //! (`notifyNeedsApproval(repo:title:context:htmlURL:)`).
 //!
 //! Everything here is pure: [`ApprovalWatch::observe`] takes a completed Repos
@@ -13,7 +13,7 @@
 //! `main.rs`, so the rule that decides *whether* to alert is testable without a
 //! notification centre.
 //!
-//! Three rules, all of them Swift's:
+//! Three rules, all of them the original's:
 //!
 //! **Transition, not state.** A run parked at a gate stays parked for as long
 //! as a human takes to notice it, which is many poll passes. The alert fires on
@@ -24,7 +24,7 @@
 //! gate that was already open before it started. The first `observe` records
 //! the baseline and returns nothing.
 //!
-//! **The baseline advances even when the preference is off.** Swift updates
+//! **The baseline advances even when the preference is off.** the original updates
 //! `knownApprovalRunIDs` in a `defer`, *outside* the `notifyOnApprovalNeeded`
 //! guard, so turning the alert off and back on does not fire a backlog for
 //! everything that parked in between. Same here — see
@@ -35,7 +35,7 @@ use std::collections::HashSet;
 
 /// One needs-approval notification, already worded.
 ///
-/// Two fields, not three: Swift also carries the run's `htmlURL` so tapping the
+/// Two fields, not three: the original also carries the run's `htmlURL` so tapping the
 /// banner opens the run, and `tauri-plugin-notification`'s desktop path has no
 /// tap callback at all to hang that on (it is fire-and-forget through
 /// `notify-rust`). A URL nothing can act on would be a field that reads as a
@@ -50,7 +50,7 @@ pub struct ApprovalNotice {
 }
 
 impl ApprovalNotice {
-    /// `repo` is the **short** name (`short_name()`), matching Swift's
+    /// `repo` is the **short** name (`short_name()`), matching the original's
     /// `h.shortName` — the banner is glanced at, and `acme/` on every line
     /// is the part that is always the same.
     fn new(repo: &str, run: &RunRef) -> Self {
@@ -93,7 +93,7 @@ impl ApprovalWatch {
     ///
     /// A repo that went unreachable this pass reports no gates at all, so its
     /// parked run drops out of the baseline and re-alerts when the repo comes
-    /// back. That is Swift's behaviour too (`needsApproval` is empty on an
+    /// back. That is the original's behaviour too (`needsApproval` is empty on an
     /// unreachable health), and it is the safe direction to be wrong in: an
     /// extra banner for a gate that is genuinely still open beats silence.
     pub fn observe(&mut self, health: &[RepoWorkflowHealth], enabled: bool) -> Vec<ApprovalNotice> {
@@ -165,9 +165,9 @@ mod tests {
         assert_eq!(watch.observe(&pass, true), Vec::new());
     }
 
-    /// The transition itself, with the exact strings Swift builds.
+    /// The transition itself, with the exact strings the original builds.
     #[test]
-    fn a_run_entering_the_gate_alerts_once_with_the_swift_wording() {
+    fn a_run_entering_the_gate_alerts_once_with_the_original_wording() {
         let mut watch = ApprovalWatch::new();
         watch.observe(
             &[health("acme/widget", &[run(1, "CI", "main", "completed")])],
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(watch.observe(&parked, true).len(), 1);
     }
 
-    /// Off means silent, **and** it means the baseline keeps moving. Swift
+    /// Off means silent, **and** it means the baseline keeps moving. the original
     /// updates `knownApprovalRunIDs` in a `defer` outside the preference guard;
     /// skipping that here would make re-enabling the alert fire a backlog for
     /// every gate that opened while it was off.
@@ -317,7 +317,7 @@ mod tests {
 
     /// An unreachable repo reports no gates, so a parked run drops out of the
     /// baseline and re-alerts when the fetch recovers. Documented rather than
-    /// fixed: it is Swift's behaviour, and an extra banner for a gate that is
+    /// fixed: it is the original's behaviour, and an extra banner for a gate that is
     /// genuinely still open is the right direction to be wrong in.
     #[test]
     fn a_repo_going_unreachable_re_alerts_when_it_returns() {

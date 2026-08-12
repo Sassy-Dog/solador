@@ -2,8 +2,8 @@
 //!
 //! Azulejo-derived: a cobalt ground, glaze-cream ink and terracotta warmth —
 //! the tilework a *solador* lays. Ported from
-//! `DevCanopy/Views/Cockpit/CockpitTheme.swift` (a phosphor-green CRT scheme)
-//! and re-toned here; the frozen Swift app still carries the original.
+//! `CockpitTheme` (a phosphor-green CRT scheme)
+//! and re-toned here; the original app still carries the original.
 //!
 //! Two constants left blue behind: `CPU` and `NET` moved to turquoise because
 //! a cobalt ground claims blue for itself, and a metric series the colour of

@@ -8,7 +8,7 @@ use std::process::Command;
 
 use serde::Serialize;
 
-/// One container or VM, in the exact wire shape the Swift decoder expects.
+/// One container or VM, in the exact wire shape the original decoder expects.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Container {
     pub name: String,

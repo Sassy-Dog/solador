@@ -21,7 +21,7 @@
 #
 # Year/month come from `date -u` (UTC) everywhere — never the local clock.
 #
-# MIGRATION (§6): devcanopy previously shipped semver (last tag v0.1.1).
+# MIGRATION (§6): this repo previously shipped semver (last tag v0.1.1).
 # semver → CalVer needs NO cutover gate: 2026.M.P strictly exceeds 0.1.1, so
 # the switch is monotonic-safe mid-month. There is no legacy branch to
 # preserve — this script is pure §2.

@@ -1,4 +1,4 @@
-//! Credential-store access. Mirrors `DevCanopy/Services/KeychainHelper.swift`:
+//! Credential-store access. Mirrors `KeychainHelper`:
 //! every credential lives in the OS store (macOS Keychain / Windows Credential
 //! Manager), *never* in the JSON file [`crate::Store`] writes.
 //!
@@ -25,7 +25,7 @@ use std::sync::Mutex;
 
 use uuid::Uuid;
 
-/// Keychain/Credential-Manager service name, identical to the Swift app's
+/// Keychain/Credential-Manager service name, identical to the original app's
 /// (`KeychainHelper.serviceName`).
 pub const SERVICE: &str = "app.solador.desktop";
 
@@ -56,7 +56,7 @@ pub enum SecretKey {
     /// A host's agent bearer token, keyed by [`crate::Host::id`].
     ///
     /// The account is `host-{uuid}`, matching what the Tauri shell already
-    /// reads (`app/src-tauri/src/main.rs`). The Swift app spells the same
+    /// reads (`app/src-tauri/src/main.rs`). The original app spells the same
     /// credential `host_token_{UUID}` under the same service, so a token saved
     /// by one app is not visible to the other; unifying that is separate work
     /// and this crate deliberately does not fork a third spelling.
@@ -76,7 +76,7 @@ pub enum SecretKey {
     /// The only credential that is **not** text: it is raw key material, read
     /// and written through [`CredentialStore::secret_bytes`] /
     /// [`CredentialStore::set_secret_bytes`]. The account below is byte-for-byte
-    /// the Swift app's (`KeychainHelper.saveOpenClawDeviceKey`) *and* the one
+    /// the original app's (`KeychainHelper.saveOpenClawDeviceKey`) *and* the one
     /// `openclaw::identity::DEVICE_KEY_ACCOUNT` names, which is deliberate: both
     /// apps store the same 32 raw bytes under the same account, so the operator
     /// approves one device id rather than one per app. Storing it base64-encoded
@@ -198,7 +198,7 @@ pub trait CredentialStore {
     ///
     /// # Errors
     /// Returns [`SecretError::Backend`] when the store itself fails. A missing
-    /// entry is `Ok(None)`, matching Swift's `try? loadString(for:)`.
+    /// entry is `Ok(None)`, matching the original's `try? loadString(for:)`.
     fn secret(&self, key: SecretKey) -> Result<Option<String>, SecretError>;
 
     /// Stores (or replaces) the value for `key`.
@@ -208,7 +208,7 @@ pub trait CredentialStore {
     fn set_secret(&self, key: SecretKey, value: &str) -> Result<(), SecretError>;
 
     /// Removes the value for `key`. Deleting a key that is not stored succeeds,
-    /// matching Swift's `errSecItemNotFound` tolerance.
+    /// matching the original's `errSecItemNotFound` tolerance.
     ///
     /// # Errors
     /// Returns [`SecretError::Backend`] when the store rejects the delete.
@@ -218,7 +218,7 @@ pub trait CredentialStore {
     /// material rather than text ([`SecretKey::OpenClawDeviceKey`]).
     ///
     /// Separate methods rather than base64 over the string API on purpose: the
-    /// Swift app writes those 32 bytes raw under the same account, and an
+    /// the original app writes those 32 bytes raw under the same account, and an
     /// encoding this side would make each app read the other's entry as
     /// unusable and replace it.
     ///
@@ -238,7 +238,7 @@ pub trait CredentialStore {
     ///
     /// Returns how many values were copied. The blob is written even when
     /// empty — that is what marks migration done and stops re-runs. Legacy
-    /// items are never modified or deleted: they keep the Swift app alive
+    /// items are never modified or deleted: they keep the original app alive
     /// through the transition and are the rebuild source if the blob is ever
     /// corrupted.
     ///
@@ -838,7 +838,7 @@ mod tests {
     /// this app has. Pinned in a test so moving it is always a deliberate act
     /// with a migration attached — which is exactly how it moved last time.
     ///
-    /// It used to have to match the frozen Swift app's keychain helper, and no
+    /// It used to have to match the original app's keychain helper, and no
     /// longer does. That app is frozen, still reads the old service, and will
     /// keep finding its own credentials there because this migration *copies*
     /// rather than moves.
@@ -1157,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_accounts_match_the_swift_keys() {
+    fn provider_accounts_match_the_original_keys() {
         assert_eq!(
             SecretKey::GitHubAccessToken.account(),
             "github_access_token"
@@ -1170,7 +1170,7 @@ mod tests {
         );
     }
 
-    /// The device seed's account is shared with the Swift app on purpose: both
+    /// The device seed's account is shared with the original app on purpose: both
     /// write the same raw 32 bytes there, so one device id gets approved rather
     /// than one per app. A rename here silently splits the identity in two.
     #[test]

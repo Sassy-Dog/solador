@@ -1,5 +1,5 @@
 //! Self-hosted runner DTOs and the idle/busy/offline mapping the Runners panel
-//! renders. Port of `DevCanopy/Services/GitHub/GHRunner.swift`.
+//! renders. Port of `GHRunner`.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ pub struct RunnerLabel {
     pub name: String,
 }
 
-/// The serialised names match the Swift `RunnerOS` raw values, so a roster
+/// The serialised names match the original `RunnerOS` raw values, so a roster
 /// written by either side reads on the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunnerOs {
@@ -52,7 +52,7 @@ impl RunnerOs {
         }
     }
 
-    /// The **persisted** spelling — the Swift `RunnerOS` raw value, and what
+    /// The **persisted** spelling — the original `RunnerOS` raw value, and what
     /// the `Serialize`/`Deserialize` impls above write.
     ///
     /// Deliberately not [`RunnerOs::label`]: that is display text (`"Linux"`,
@@ -315,9 +315,9 @@ mod tests {
     }
 
     /// The roster is persisted, so the OS raw values are a stored format — they
-    /// must stay byte-identical to the Swift `RunnerOS` raw values.
+    /// must stay byte-identical to the original `RunnerOS` raw values.
     #[test]
-    fn os_serialises_with_the_swift_raw_values() {
+    fn os_serialises_with_the_original_raw_values() {
         assert_eq!(
             serde_json::to_string(&RunnerOs::MacOs).expect("encode"),
             "\"macOS\""

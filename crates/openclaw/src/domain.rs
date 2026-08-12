@@ -1,6 +1,6 @@
 //! Runtime-agnostic value types describing a monitored AI-agent runtime.
 //!
-//! Rust port of `DevCanopy/Models/AgentRuntime/AgentRuntimeModels.swift`. The
+//! Rust port of `AgentRuntimeModels`. The
 //! cockpit reads **only** [`AgentRuntimeSnapshot`]; no gateway wire type from
 //! [`crate::rpc`] ever crosses this boundary, so adding a second runtime is
 //! "produce the same snapshot from a different protocol" rather than a panel
@@ -27,7 +27,7 @@ pub enum AgentStatus {
 }
 
 impl AgentStatus {
-    /// The Swift enum's raw value, which is what the frontend keys colours on.
+    /// The original enum's raw value, which is what the frontend keys colours on.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -222,7 +222,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_raw_values_match_the_swift_enum() {
+    fn status_raw_values_match_the_original_enum() {
         assert_eq!(AgentStatus::Running.as_str(), "running");
         assert_eq!(AgentStatus::Ok.as_str(), "ok");
         assert_eq!(AgentStatus::Error.as_str(), "error");

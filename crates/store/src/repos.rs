@@ -1,4 +1,4 @@
-//! The tracked repo portfolio — the Rust mirror of SwiftData's `TrackedRepo`.
+//! The tracked repo portfolio — the Rust mirror of the original persistence layer's `TrackedRepo`.
 //!
 //! There is no seed. A portfolio is per-operator by nature, so there is no
 //! defensible default: shipping one author's repositories meant every other
@@ -17,7 +17,7 @@ pub struct TrackedRepo {
     pub enabled: bool,
     /// Extra workflows (beyond the default `ci.yml` push+PR view) whose
     /// failures should turn this repo red. `None`/empty keeps the legacy
-    /// behaviour — kept optional, exactly as the Swift model is, so a store
+    /// behaviour — kept optional, exactly as the original model is, so a store
     /// written before the field existed still opens.
     #[serde(default)]
     pub watched_workflows: Option<Vec<String>>,

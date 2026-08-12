@@ -2,7 +2,7 @@
 //! a projection against an optional budget, and the top resource groups and
 //! types.
 //!
-//! Port of `DevCanopy/Views/Cockpit/Panels/AzureCostPanel.swift`. The data layer
+//! Port of `AzureCostPanel`. The data layer
 //! beneath it is [`azurecost`] — including the fingerprint cache that makes an
 //! unchanged export cost one blob listing and no partition downloads — and this
 //! module is the view side, holding to the same rule as every other panel here:
@@ -44,7 +44,7 @@ pub const UNCONFIGURED_MESSAGE: &str = "Add an Azure storage account in Settings
 pub const LOADING_MESSAGE: &str = "reading export…";
 
 /// Configured, not loading, no summary and no error — the state that should
-/// never last, kept because Swift keeps it and a blank card would be worse.
+/// never last, kept because the original keeps it and a blank card would be worse.
 pub const NO_DATA_MESSAGE: &str = "no cost data";
 
 /// Amber at 90% of budget, red at budget. Same thresholds as the Usage panel's
@@ -64,7 +64,7 @@ const UNKNOWN: &str = "—";
 
 /// USD with a thousands separator and cents, e.g. `$1,234.56`.
 ///
-/// Swift builds this with a `NumberFormatter` pinned to `en_US`, so the grouping
+/// the original builds this with a `NumberFormatter` pinned to `en_US`, so the grouping
 /// and the symbol are fixed rather than the viewer's locale — the export is
 /// billed in USD and a card that said `1.234,56 €` would be wrong twice. This is
 /// that formatter, hand-rolled: the shell has no ICU and does not want one for
@@ -80,7 +80,7 @@ pub fn usd(amount: f64) -> String {
     }
     // `{:.2}` rather than `(x * 100.0).round()`: Rust's float formatting rounds
     // half to **even**, which is `NumberFormatter`'s default and therefore what
-    // the Swift panel shows. `f64::round` is half-away-from-zero and would
+    // the original panel shows. `f64::round` is half-away-from-zero and would
     // disagree by a cent on every exact half-cent. Only the integer part is
     // regrouped below; the two decimals come out of the formatter already.
     let rendered = format!("{:.2}", amount.abs());
@@ -103,7 +103,7 @@ fn group_thousands(digits: &str) -> String {
     out
 }
 
-/// Month names in UTC and English, matching the Swift formatter's
+/// Month names in UTC and English, matching the original formatter's
 /// `TimeZone(identifier: "UTC")` + `Locale(identifier: "en_US")`.
 ///
 /// A table rather than a `strftime` directive because the export's month math is
@@ -232,8 +232,8 @@ impl AzureState {
 
 /// A `LABEL … $value` row (PRIOR MONTH, PROJECTED).
 ///
-/// `None` is the em dash, not `$0.00`. Swift's panel renders a missing
-/// prior-month export as a real-looking `$0.00` (`AzureCostPanel.swift:59` over
+/// `None` is the em dash, not `$0.00`. the original's panel renders a missing
+/// prior-month export as a real-looking `$0.00` (`AzureCostPanel` over
 /// a non-optional `spendPriorMonth`); the port diverges deliberately because the
 /// no-fake-numbers rule outranks bug-for-bug parity — a month that genuinely
 /// cost nothing and a month nobody could read must not print the same string.
@@ -286,7 +286,7 @@ pub fn view(state: &AzureState, budget: f64, now: u64) -> Value {
         "loading": state.sas.is_unknown() || (state.loading && state.last_error.is_none()),
     });
 
-    // Swift's ladder, in Swift's order. The unconfigured branch comes first so a
+    // the original's ladder, in the original's order. The unconfigured branch comes first so a
     // machine with no SAS never reports an error it has no way to have had —
     // but only `Absent` may take it. `Unknown` is the frame before any pass has
     // read the store, and it used to fall in here and tell an operator whose
@@ -499,9 +499,9 @@ mod tests {
 
     /// `NumberFormatter` rounds half to **even** by default, so `$0.125` is
     /// `$0.12` and `$0.135` is `$0.14`. `f64::round` would give `$0.13` for the
-    /// first — a cent's disagreement with the Swift panel on the same export.
+    /// first — a cent's disagreement with the original panel on the same export.
     #[test]
-    fn cents_round_half_to_even_like_the_swift_formatter() {
+    fn cents_round_half_to_even_like_the_original_formatter() {
         assert_eq!(usd(0.125), "$0.12");
         assert_eq!(usd(0.135), "$0.14");
         assert_eq!(usd(2.675), "$2.67", "the classic binary-float half-cent");
