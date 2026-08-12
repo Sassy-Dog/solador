@@ -16,8 +16,8 @@ ensure_project_root
 status=0
 
 # --- Rust workspace (crates/*, app/src-tauri). Mirrors CI's rust-workspace job
-# (fmt --check + clippy -D warnings). agent/ has its own CI job (agent-tests)
-# and is deliberately not linted here.
+# (fmt --check + clippy -D warnings). The agent is a workspace member, so
+# --workspace/--all lint it here as well.
 if command_exists cargo; then
     log_info "cargo fmt --all -- --check…"
     if cargo fmt --all -- --check; then

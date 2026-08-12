@@ -87,7 +87,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     if [[ -f "$ICNS" ]]; then
         cp "$ICNS" "$APP_BUNDLE/Contents/Resources/icon.icns"
     else
-        log_warning "app/src-tauri/icons/icon.icns missing — run ./Scripts/generate-icons.sh"
+        log_warning "app/src-tauri/icons/icon.icns missing — run ./scripts/generate-icons.sh"
     fi
 
     cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST

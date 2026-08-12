@@ -14,7 +14,7 @@ It has three parts:
   vendor clients. The shell is thin on purpose; panels are testable without a UI.
 - **Agent** (`agent/`) — Rust (axum) HTTP service exposing host metrics +
   container list as JSON behind a bearer token, reached over Tailscale. It is a
-  **separate Cargo workspace** with its own lockfile, toolchain pin and CI job.
+  member of the root workspace and has its own CI job (`agent-tests`, on Linux).
   See `agent/README.md`.
 
 `app/README.md` is the reference doc for the app itself and is far more
@@ -87,11 +87,13 @@ carries a five-minute manual smoke checklist that is the only thing covering it
 - `./dev publish` — **Not implemented.** Refuses before minting a tag; see #15.
 
 > `./dev lint` is the local mirror of CI's Rust lint gates, which live inside the
-> `rust-workspace` and `agent-tests` jobs. `./Scripts/install-hooks.sh`
+> `rust-workspace` and `agent-tests` jobs. `./scripts/install-hooks.sh`
 > (one-time) wires it to a pre-push hook so lint failures never reach CI.
 >
-> `agent/` has its own `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` and its
-> own CI job; it is **not** run by `./dev test`/`./dev lint`.
+> `agent/` is a workspace member, so `./dev test` and `./dev lint` cover it.
+> Its CI job (`agent-tests`) runs on Linux and is scoped `-p solador-agent`:
+> a bare `cargo build` there would resolve the whole workspace, including
+> `app/src-tauri`, which needs webkit2gtk libraries the runner does not have.
 
 ### Releasing
 
@@ -99,14 +101,14 @@ There is currently **no release path**. `app/src-tauri/tauri.conf.json` has
 `bundle.active: false` and a hardcoded `version: 0.1.0`, so nothing can be
 signed, notarized or put in an update appcast. Issue **#15** owns that work and
 is gating: until it lands, this repo builds a binary and ships nothing.
-`Scripts/publish.sh` keeps the CalVer minting and CI-verification pre-flight as
+`scripts/publish.sh` keeps the CalVer minting and CI-verification pre-flight as
 the scaffold #15 will complete, and refuses *before* minting a tag.
 
 ### Project Structure
 ```
 ├── dev                     # Development entry point
 ├── prd                     # ./dev build --release
-├── Scripts/                # Build and development scripts
+├── scripts/                # Build and development scripts
 │   ├── lib.sh              # Common functions
 │   ├── config.sh           # App configuration (deliberately small)
 │   └── *.sh                # Implementation scripts
@@ -133,11 +135,11 @@ the scaffold #15 will complete, and refuses *before* minting a tag.
 │   │                       #   `repos`/`runners`, `usage`, `azure_cost`,
 │   │                       #   `crons`, `openclaw` + `settings_*` (src/settings.rs)
 │   └── ui/                 # Frontend: plain HTML/CSS/JS, no bundler
-├── agent/                  # Per-host metrics agent — its own Cargo workspace
-├── TestFixtures/           # Wire-contract fixtures shared by agent/ + crates/
+├── agent/                  # Per-host metrics agent (workspace member, Linux CI)
+├── tests/fixtures/           # Wire-contract fixtures shared by agent/ + crates/
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
 ├── brand/                  # Brand assets
-└── Docs/                   # Versioning, secrets, PRD
+└── docs/                   # Versioning, secrets, PRD
 ```
 
 ## Technology Stack
@@ -280,13 +282,13 @@ the scaffold #15 will complete, and refuses *before* minting a tag.
 Runs `cargo test --locked --workspace` (`crates/*`, `app/src-tauri`) and the
 `tests/frontend` Playwright suite. Agent tests run via `cargo test` in `agent/`.
 
-## Versioning (`Docs/VERSIONING.md`)
+## Versioning (`docs/VERSIONING.md`)
 
 Two decoupled numbers, both derived from git — never hand-maintained:
 - **Marketing version**: CalVer `YYYY.M.<commits-this-month>` (UTC, non-padded
-  month, floored at 1) — `Scripts/get-version-info.sh --version`.
+  month, floored at 1) — `scripts/get-version-info.sh --version`.
 - **Build number**: total commit count, monotonic forever —
-  `Scripts/get-build-number.sh [--at <ref>]`.
+  `scripts/get-build-number.sh [--at <ref>]`.
 
 Never compute a version anywhere else. `app/src-tauri/tauri.conf.json`'s
 hardcoded `0.1.0` contradicts this and is inert only while `bundle.active` is

@@ -4,12 +4,12 @@
 # ===========================================
 # Emits the CFBundleVersion (CURRENT_PROJECT_VERSION) — the org Versioning
 # spec's (v1.0, §1) machine-facing number. This script is the §3 build-number
-# capability owner for this repo: every consumer (Scripts/build.sh via
+# capability owner for this repo: every consumer (scripts/build.sh via
 # xcodebuild's CURRENT_PROJECT_VERSION, any future CI job) reads it from here;
 # the count is never inlined anywhere else.
 #
 # DESIGN: the build number is DECOUPLED from the marketing version
-# (Scripts/get-version-info.sh) and is a single, globally-monotonic integer
+# (scripts/get-version-info.sh) and is a single, globally-monotonic integer
 # that NEVER resets and is never date-gated. It is the total git commit count
 # on the current branch — monotonic because main is merge-only.
 #
@@ -22,8 +22,8 @@
 #      monotonic sequence the moment git works again.
 #
 # Usage:
-#   BUILD_NUM=$(bash Scripts/get-build-number.sh)
-#   BUILD_NUM=$(bash Scripts/get-build-number.sh --at v2026.7.3)  # count at a ref
+#   BUILD_NUM=$(bash scripts/get-build-number.sh)
+#   BUILD_NUM=$(bash scripts/get-build-number.sh --at v2026.7.3)  # count at a ref
 #
 # --at <ref> (§3 capability): historical rebuilds read the commit count AT a
 # tag/ref from this SSOT instead of inlining `git rev-list --count $TAG`.

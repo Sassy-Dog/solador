@@ -56,10 +56,10 @@ ensure_main_branch() {
     fi
 }
 
-# Versioning lives in dedicated single-source scripts (Docs/VERSIONING.md, org
+# Versioning lives in dedicated single-source scripts (docs/VERSIONING.md, org
 # Versioning spec §3) — NOT here:
-#   Scripts/get-version-info.sh   marketing CalVer + the §4 release mint (--tag)
-#   Scripts/get-build-number.sh   build number (total commit count, --at <ref>)
+#   scripts/get-version-info.sh   marketing CalVer + the §4 release mint (--tag)
+#   scripts/get-build-number.sh   build number (total commit count, --at <ref>)
 # The old semver helpers (parse_version / increment_version) and the inline
 # build-number counter were removed with the CalVer adoption (issue #98).
 

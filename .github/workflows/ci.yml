@@ -25,36 +25,37 @@ jobs:
     name: Rust agent
     # GitHub-hosted, and it must stay that way: on a public repo a self-hosted
     # runner executes any fork's pull request on our own machines. Nothing here
-    # needed the fleet — dtolnay/rust-toolchain installs into $HOME and honors
-    # agent/rust-toolchain.toml, so the job carries its own toolchain.
+    # needs the fleet — dtolnay/rust-toolchain installs into $HOME and honors
+    # the root rust-toolchain.toml.
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Toolchain version is pinned in agent/rust-toolchain.toml; this action
-      # honors it. Pinned to the stable-channel action at a fixed commit.
+      # Toolchain version is pinned in rust-toolchain.toml; this action honors
+      # it. Pinned to the stable-channel action at a fixed commit.
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
-        with:
-          workspaces: agent
 
+      # `-p solador-agent` is load-bearing, not tidiness. The agent joined the
+      # root workspace, so a bare `cargo build` here resolves the whole
+      # workspace — including app/src-tauri, which needs webkit2gtk system
+      # libraries this runner does not have and this job has no reason to
+      # install. Scoping to the package keeps the Linux job building only what
+      # actually deploys to Linux.
       - name: Format check
-        run: cargo fmt --check
+        run: cargo fmt -p solador-agent --check
 
       - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked -p solador-agent --all-targets -- -D warnings
 
       - name: Build
-        run: cargo build --locked --verbose
+        run: cargo build --locked -p solador-agent --verbose
 
       - name: Test
-        run: cargo test --locked --verbose
+        run: cargo test --locked -p solador-agent --verbose
 
   rust-workspace:
     name: Rust workspace + frontend e2e
@@ -70,9 +71,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Toolchain version is pinned in the workspace-root rust-toolchain.toml
-      # (matching agent/rust-toolchain.toml's convention); this action honors
-      # it the same way it honors agent's on the agent-tests job above.
+      # Toolchain version is pinned in the workspace-root rust-toolchain.toml;
+      # this action honors it. One pin now covers every job, the agent included.
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt, clippy

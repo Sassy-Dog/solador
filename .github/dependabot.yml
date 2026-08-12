@@ -1,19 +1,10 @@
 version: 2
 updates:
-  # Rust agent crates (98 locked deps in agent/Cargo.lock).
-  - package-ecosystem: cargo
-    directory: /agent
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: chore
-      include: scope
-
-  # Root Rust workspace: crates/{wire,viewmodel,agentclient} + app/src-tauri
-  # (473 locked deps -- ring, rustls, reqwest, tauri, keyring among them).
-  # Separate entry from /agent: distinct Cargo.lock, distinct toolchain pin
-  # (rust-toolchain.toml).
+  # The whole Rust workspace: crates/*, app/src-tauri and agent, against one
+  # Cargo.lock. This was two entries -- /agent kept its own lockfile and
+  # toolchain pin -- until the agent joined the root workspace. One lockfile
+  # means one entry; a second pointing at /agent would now find no manifest of
+  # its own to resolve.
   - package-ecosystem: cargo
     directory: /
     schedule:

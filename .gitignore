@@ -89,7 +89,7 @@ Temporary Items
 # Project specific
 DevCanopy.xcodeproj/
 .superpowers/
-Scripts/config.local.sh
+scripts/config.local.sh
 *.log
 .env
 .env.local
@@ -157,4 +157,4 @@ tests/frontend/test-results/
 .direnv/
 
 # Assistant tooling output. Kept on the machine that produced it, not shared.
-Docs/superpowers/
+docs/superpowers/

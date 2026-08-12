@@ -15,9 +15,9 @@ export TAURI_PACKAGE="solador-app"
 
 # Version is NOT configured here (org Versioning spec §3/§10: no hand-maintained
 # version fields). Both numbers derive from git via their single-source scripts:
-#   marketing version → Scripts/get-version-info.sh   (CalVer YYYY.M.<commits-this-month>)
-#   build number      → Scripts/get-build-number.sh   (total commit count, monotonic)
-# See Docs/VERSIONING.md.
+#   marketing version → scripts/get-version-info.sh   (CalVer YYYY.M.<commits-this-month>)
+#   build number      → scripts/get-build-number.sh   (total commit count, monotonic)
+# See docs/VERSIONING.md.
 
 # Directories
 export BUILD_DIR="build"
@@ -34,6 +34,6 @@ export BUILD_DIR="build"
 export DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
 
 # Load local overrides if they exist
-if [[ -f "Scripts/config.local.sh" ]]; then
-    source "Scripts/config.local.sh"
+if [[ -f "scripts/config.local.sh" ]]; then
+    source "scripts/config.local.sh"
 fi

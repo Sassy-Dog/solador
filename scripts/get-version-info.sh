@@ -4,9 +4,9 @@
 # ==============================================
 # This repo's §3 interface-contract owner per the org Versioning spec (v1.0):
 # the CalVer algorithm exists exactly once, here; every consumer
-# (Scripts/build.sh's MARKETING_VERSION build setting, Scripts/publish.sh's
+# (scripts/build.sh's MARKETING_VERSION build setting, scripts/publish.sh's
 # release mint) delegates or reads this script's output. Version is never
-# computed anywhere else. See Docs/VERSIONING.md for this repo's instance.
+# computed anywhere else. See docs/VERSIONING.md for this repo's instance.
 #
 # TWO DECOUPLED NUMBERS — do not conflate them:
 #
@@ -14,7 +14,7 @@
 #       Format: YYYY.M.<commits-this-month>  (non-padded month; e.g. 2026.7.3)
 #       Patch = commits on main since the 1st of the current month (UTC), so
 #       it resets to 1 on the 1st. Floored at 1 — never X.Y.0.
-#   * Build number (Scripts/get-build-number.sh, --build): the TOTAL commit
+#   * Build number (scripts/get-build-number.sh, --build): the TOTAL commit
 #       count — globally MONOTONIC, never resets, never date-gated. It is the
 #       CFBundleVersion; a monthly-resetting counter there breaks strict
 #       within-train increase (the org 2026-06-01 incident).
@@ -41,17 +41,17 @@
 #   Output contract: one resolved (version, tag, action) triple on stdout.
 #   `--tag` alone is a read-only dry run; `--tag --push` also creates the
 #   annotated tag and pushes it. Exactly one mint site exists in this repo:
-#   Scripts/publish.sh invoking `--tag --push` (§4 mode 2, local mint — the
+#   scripts/publish.sh invoking `--tag --push` (§4 mode 2, local mint — the
 #   CI-green pre-check lives in publish.sh).
 #
 # Usage:
-#   bash Scripts/get-version-info.sh                # JSON with all fields
-#   bash Scripts/get-version-info.sh --version      # 2026.7.3
-#   bash Scripts/get-version-info.sh --build        # 152  (total commits)
-#   bash Scripts/get-version-info.sh --commit       # 007b474
-#   bash Scripts/get-version-info.sh --full-with-sha
-#   bash Scripts/get-version-info.sh --tag          # §4 mint, DRY RUN
-#   bash Scripts/get-version-info.sh --tag --push   # §4 mint: create + push tag
+#   bash scripts/get-version-info.sh                # JSON with all fields
+#   bash scripts/get-version-info.sh --version      # 2026.7.3
+#   bash scripts/get-version-info.sh --build        # 152  (total commits)
+#   bash scripts/get-version-info.sh --commit       # 007b474
+#   bash scripts/get-version-info.sh --full-with-sha
+#   bash scripts/get-version-info.sh --tag          # §4 mint, DRY RUN
+#   bash scripts/get-version-info.sh --tag --push   # §4 mint: create + push tag
 #
 # Replay pins / test seams (org-canonical names, §3):
 #   MARKETING_VERSION=2026.7.9   → emitted verbatim (no recomputation). A pin

@@ -4,11 +4,8 @@
 // No build step: the frontend is static.
 import path from "node:path";
 
-// Org-wide port allocation (root CLAUDE.md, "Local Development Environment"):
-// local dev/test stacks derive a stable port from a hash of the worktree path
-// within the shared 3000-3999 range instead of pinning one -- a sibling project's
-// `derive_worktree_ports` (docs/PORT-ALLOCATION.md) is the reference shell
-// implementation this is a small JS equivalent of. A hardcoded 4173 here
+// Port allocation: derive a stable port from a hash of the worktree path,
+// within the 3000-3999 range, instead of pinning one. A hardcoded 4173 here
 // meant two concurrent PR runs on the shared self-hosted Mac could serve or
 // reuse *each other's* app/ui and silently test the wrong worktree; hashing
 // the checkout path below gives each worktree its own port instead.

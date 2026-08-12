@@ -22,8 +22,8 @@ non-tier:
 
 | Number | Owner (single source) | Value |
 |---|---|---|
-| Marketing version | `Scripts/get-version-info.sh --version` | CalVer `YYYY.M.<commits-this-month>` (UTC, non-padded month, floored at 1) |
-| Build number | `Scripts/get-build-number.sh [--at <ref>]` | `git rev-list --count` — total commits, monotonic forever, never date-gated |
+| Marketing version | `scripts/get-version-info.sh --version` | CalVer `YYYY.M.<commits-this-month>` (UTC, non-padded month, floored at 1) |
+| Build number | `scripts/get-build-number.sh [--at <ref>]` | `git rev-list --count` — total commits, monotonic forever, never date-gated |
 
 Consumers — version is **never** computed anywhere else:
 
@@ -32,9 +32,9 @@ Consumers — version is **never** computed anywhere else:
   `app/src-tauri/tauri.conf.json` still carries a hand-written `version: 0.1.0`,
   which contradicts this document and is inert only while `bundle.active` is
   `false`. Wiring the minted version into the Tauri bundle is part of **#15**;
-  until then nothing consumes the mint except `Scripts/publish.sh`, which
+  until then nothing consumes the mint except `scripts/publish.sh`, which
   refuses to run.
-- `Scripts/publish.sh` consumes the mint's output contract (below) and pins
+- `scripts/publish.sh` consumes the mint's output contract (below) and pins
   the build via `MARKETING_VERSION=<minted>` so the artifact is stamped with
   exactly the tagged version.
 - In-app displays (Settings footer, Sentry release, OpenClaw client version)
@@ -48,14 +48,14 @@ are test seams.
 
 ## Mint (§4, mode 2 — local)
 
-Exactly one mint site: `Scripts/publish.sh` (→ `./dev publish`) invoking
-`Scripts/get-version-info.sh --tag --push`:
+Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
+`scripts/get-version-info.sh --tag --push`:
 
 1. Pre-flight: clean tree, on `main`, local `main` == `origin/main`.
 2. **CI-green check** (mode-2 requirement): a completed, successful `CI`
    workflow run must exist for HEAD (`gh run list --commit`); fails closed
    without `gh` or without a verdict.
-3. Tests (`Scripts/test.sh`, skippable with `--skip-tests`).
+3. Tests (`scripts/test.sh`, skippable with `--skip-tests`).
 4. **Mint**: probe `git ls-remote --tags origin` (remote-visible, never
    locally-cached tags; annotated tags peeled via `^{}`), then the ladder —
    tag exists at HEAD → **reuse** (idempotent re-run); exists elsewhere →
@@ -84,11 +84,11 @@ hand-edited).
   monotonic-safe mid-month; the first CalVer tag goes through the §4 mint
   like every other.
 - **Build number unchanged**: `rev-list --count` was already the scheme
-  (previously inline in `Scripts/lib.sh`, now owned by
-  `Scripts/get-build-number.sh`), so no §6 offset is needed — the count only
+  (previously inline in `scripts/lib.sh`, now owned by
+  `scripts/get-build-number.sh`), so no §6 offset is needed — the count only
   grows.
 - Retired at adoption (§10 verified-in-sync-duplicate ban + adoption audit):
-  `Scripts/config.sh` `VERSION`, the hand-bumped `project.yml`
+  `scripts/config.sh` `VERSION`, the hand-bumped `project.yml`
   `MARKETING_VERSION`, publish.sh's equality gate + `--bump` semver flow, and
   `lib.sh`'s `parse_version` / `increment_version` helpers.
 

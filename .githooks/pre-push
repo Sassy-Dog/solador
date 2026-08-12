@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Pre-push gate: mirror CI's Lint job locally so a lint/format failure is caught
-# here, not after a full CI round-trip. Install with: ./Scripts/install-hooks.sh
+# here, not after a full CI round-trip. Install with: ./scripts/install-hooks.sh
 # Bypass a single push with: git push --no-verify
 
 REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
