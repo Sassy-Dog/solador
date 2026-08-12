@@ -1,5 +1,5 @@
 /**
- * Rasterises `brand/icon.svg` into the icon set `Scripts/generate-icons.sh`
+ * Rasterises `brand/icon.svg` into the icon set `scripts/generate-icons.sh`
  * assembles. Driven by that script; not meant to be run directly.
  *
  * Chromium rather than ImageMagick, for a specific reason. IM's configured
@@ -27,7 +27,7 @@ if (!svgPath || !outDir || !spec || !nodeModules) {
 
 // Resolved from the frontend suite's install rather than imported by bare
 // specifier. ESM resolves a bare import from the *importing file's* directory,
-// and this file lives in Scripts/ where there is no node_modules -- so a plain
+// and this file lives in scripts/ where there is no node_modules -- so a plain
 // `import 'playwright'` fails no matter what the caller's cwd is.
 const { chromium } = createRequire(
   path.resolve(nodeModules, '..', 'package.json') // createRequire rejects a relative path

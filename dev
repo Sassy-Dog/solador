@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Source library and config
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$SCRIPT_DIR/Scripts/lib.sh"
-source "$SCRIPT_DIR/Scripts/config.sh"
+source "$SCRIPT_DIR/scripts/lib.sh"
+source "$SCRIPT_DIR/scripts/config.sh"
 
 # Show help
 show_help() {
@@ -59,25 +59,25 @@ ensure_project_root
 # Route to appropriate script
 case "$COMMAND" in
     run)
-        exec "$SCRIPT_DIR/Scripts/run.sh" "$@"
+        exec "$SCRIPT_DIR/scripts/run.sh" "$@"
         ;;
     build)
-        exec "$SCRIPT_DIR/Scripts/build.sh" "$@"
+        exec "$SCRIPT_DIR/scripts/build.sh" "$@"
         ;;
     test)
-        exec "$SCRIPT_DIR/Scripts/test.sh" "$@"
+        exec "$SCRIPT_DIR/scripts/test.sh" "$@"
         ;;
     clean)
-        exec "$SCRIPT_DIR/Scripts/clean.sh" "$@"
+        exec "$SCRIPT_DIR/scripts/clean.sh" "$@"
         ;;
     publish)
-        exec "$SCRIPT_DIR/Scripts/publish.sh" "$@"
+        exec "$SCRIPT_DIR/scripts/publish.sh" "$@"
         ;;
     lint)
-        exec "$SCRIPT_DIR/Scripts/lint.sh" "$@"
+        exec "$SCRIPT_DIR/scripts/lint.sh" "$@"
         ;;
     format)
-        exec "$SCRIPT_DIR/Scripts/format.sh" "$@"
+        exec "$SCRIPT_DIR/scripts/format.sh" "$@"
         ;;
     help)
         show_help

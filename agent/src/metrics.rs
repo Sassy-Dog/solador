@@ -942,12 +942,12 @@ mod tests {
     }
 
     /// Load the shared cross-language battery fixture
-    /// (`TestFixtures/battery_contract.json`), decoded byte-for-key by both this
+    /// (`tests/fixtures/battery_contract.json`), decoded byte-for-key by both this
     /// crate and the Swift wire-contract suite.
     fn shared_battery_fixture() -> String {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../TestFixtures/battery_contract.json"
+            "/../tests/fixtures/battery_contract.json"
         );
         std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("read shared battery fixture {path}: {e}"))

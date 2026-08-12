@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/config.sh"
 
 log_info "Running tests for $APP_NAME"
 
-# --- Rust workspace (crates/*, app/src-tauri). agent/ is a separate Cargo
-# workspace with its own CI job (agent-tests) and is deliberately not run here.
+# --- Rust workspace (crates/*, app/src-tauri, agent). One workspace, so
+# --workspace covers the agent too.
 # Skip-with-a-warning when the toolchain is absent, matching how the frontend
 # suite below handles a missing npm. This script is a convenience aggregator;
 # CI gates each stack in its own job (rust-workspace, agent-tests), so a

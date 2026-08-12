@@ -23,7 +23,7 @@ Line Tools are what's missing.
 ./dev test        # cargo test --locked --workspace + the Playwright suite
 ./dev lint        # cargo fmt --check + clippy -D warnings — exactly what CI runs
 ./dev format      # fix formatting
-./Scripts/install-hooks.sh   # one-time: run lint before every push
+./scripts/install-hooks.sh   # one-time: run lint before every push
 ```
 
 CI is three jobs, and their names are load-bearing (a branch ruleset requires
@@ -35,9 +35,11 @@ them by string):
 | `Rust workspace + frontend e2e` | the root workspace, then Playwright |
 | `Windows workspace tests` | the workspace on `windows-latest` |
 
-`agent/` is a **separate Cargo workspace** with its own lockfile, toolchain and
-CI job. `./dev test` does not touch it — run `cargo test` inside `agent/` if you
-change it, and redeploy it to the host running it.
+`agent/` is a workspace member, so `./dev test` and `./dev lint` cover it. It
+still has its own CI job because it is the only piece that builds and deploys to
+Linux; that job is scoped `-p solador-agent`, since a bare `cargo build` there
+would pull in `app/src-tauri` and its webkit2gtk system dependencies. Changing
+the agent means redeploying it to the hosts running it.
 
 ## What the code expects of you
 

@@ -6,7 +6,7 @@
 # Nothing in app/src-tauri/icons/ or app/ui/mark.svg should be edited by hand --
 # they are outputs. `brand/` is the source. Run this after changing either.
 #
-#   ./Scripts/generate-icons.sh
+#   ./scripts/generate-icons.sh
 #
 # Two mirror tests fail if the outputs drift from brand/, so a forgotten run is
 # caught by `./dev test` rather than by someone noticing a stale icon.

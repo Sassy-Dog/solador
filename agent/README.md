@@ -124,14 +124,19 @@ filtering is enabled; `fuseblk` (NTFS via FUSE — a real local disk) is kept.
 
 ## Prerequisites
 
-- **Rust** via [rustup](https://rustup.rs). `agent/rust-toolchain.toml` pins the
-  version (currently 1.96.0, with `rustfmt` and `clippy`); rustup installs it on
-  the first `cargo` invocation *inside this directory*.
+- **Rust** via [rustup](https://rustup.rs). The repo-root `rust-toolchain.toml`
+  pins the version (currently 1.96.0, with `rustfmt` and `clippy`); rustup
+  installs it on the first `cargo` invocation.
 - Linux or macOS. There is no Windows build of the agent.
 
-`agent/` is a **separate Cargo workspace** from the repo root — its own
-`Cargo.toml`, `Cargo.lock`, toolchain pin and CI job. Run `cargo` commands from
-inside `agent/`; the repo's `./dev test` and `./dev lint` do not touch it.
+`agent/` is a member of the root Cargo workspace: one `Cargo.lock`, one
+toolchain pin. Run `cargo` from anywhere in the repo, and the repo's `./dev test`
+and `./dev lint` cover the agent too.
+
+It keeps its own CI job (`agent-tests`) because it is the only piece that builds
+and deploys to Linux. That job is scoped `-p solador-agent` deliberately — a
+bare `cargo build` on the Linux runner would resolve the whole workspace,
+including `app/src-tauri` and its webkit2gtk system dependencies.
 
 ## Build & run (local)
 

@@ -249,40 +249,46 @@ fn volume_without_fstype_deserialises_to_none() {
 }
 
 /// The crate-local `fixtures/snapshot-unknowns.json` is a copy of the shared
-/// `TestFixtures/snapshot_unknowns.json` — this crate's tests `include_str!`
+/// `tests/fixtures/snapshot_unknowns.json` — this crate's tests `include_str!`
 /// fixtures from inside their own crate, so the copy has to exist.
 ///
-/// A Swift test used to assert the two decoded to the same snapshot. That test
-/// left CI on 2026-08-04 when the Swift app was frozen, and the app itself was
-/// later deleted — and in the gap the copies **did** drift: the rename updated
-/// the shared file's `solador-agent` process name and left the copy on
-/// `devcanopy-agent`. Nothing failed, because nothing was still checking.
+/// A test in the original macOS app used to assert the two decoded to the same
+/// snapshot. It left CI on 2026-08-04 when that app was frozen, and went with it
+/// when the app was deleted — and in the gap the copies **did** drift: the
+/// rename updated this crate's copy to `solador-agent` and left the shared file
+/// on `devcanopy-agent`. Nothing failed, because nothing was still checking.
 ///
 /// So this is byte-identity, not decode-equivalence. It is the cheaper
 /// assertion and the stricter one, and unlike its predecessor it runs.
+///
+/// Note the direction: when this guard was added the two were reconciled onto
+/// the *stale* name by mistake, and the guard passed — byte-identity is a
+/// statement about agreement, never about which side is right. If they diverge
+/// again, check which one the rename actually touched before copying either
+/// over the other.
 #[test]
 fn the_local_unknowns_fixture_is_byte_identical_to_the_shared_one() {
     let shared_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../TestFixtures/snapshot_unknowns.json"
+        "/../../tests/fixtures/snapshot_unknowns.json"
     );
     let shared = std::fs::read_to_string(shared_path)
         .unwrap_or_else(|e| panic!("read shared unknowns fixture {shared_path}: {e}"));
     assert_eq!(
         shared, UNKNOWNS_FIXTURE,
         "crates/wire/tests/fixtures/snapshot-unknowns.json has drifted from \
-         TestFixtures/snapshot_unknowns.json — copy the shared one over it"
+         tests/fixtures/snapshot_unknowns.json — copy the shared one over it"
     );
 }
 
 /// Non-null battery deserialization using the shared cross-language contract fixture.
-/// The agent and this crate both decode TestFixtures/battery_contract.json, so a
+/// The agent and this crate both decode tests/fixtures/battery_contract.json, so a
 /// change to the contract fails on both sides rather than silently on neither.
 #[test]
 fn battery_deserialises_from_shared_contract_fixture() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../TestFixtures/battery_contract.json"
+        "/../../tests/fixtures/battery_contract.json"
     );
     let raw = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("read shared battery fixture {path}: {e}"));

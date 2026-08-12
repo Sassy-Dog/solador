@@ -62,8 +62,7 @@ else. That split is why the panels are testable without a webview at all: a pane
 is a function returning JSON, and the offline fixtures below are that same JSON
 dumped to disk.
 
-The shell sits at the top of the root Cargo workspace — distinct from `agent/`,
-which pins its own toolchain and has its own CI job:
+The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 
 | crate | what it owns |
 |---|---|
@@ -1212,7 +1211,7 @@ Two gaps, deliberate and worth knowing:
   [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
   stored field remains only as that migration's seed.
 - **About's version is hard-coded** to the crate version, not the CalVer
-  `Docs/VERSIONING.md` requires and `Scripts/get-version-info.sh` mints
+  `docs/VERSIONING.md` requires and `scripts/get-version-info.sh` mints
   ([#15](https://github.com/cpmadrid/solador/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
   one would navigate the cockpit's own webview away from the app, and the opener

@@ -32,7 +32,7 @@ use crate::openclaw;
 ///
 /// Hard-coded via the crate version (`app/src-tauri/Cargo.toml`, mirrored in
 /// `tauri.conf.json`) rather than derived from git the way the Swift app's is
-/// (`Scripts/get-version-info.sh`, CalVer per `Docs/VERSIONING.md`). Wiring the
+/// (`scripts/get-version-info.sh`, CalVer per `docs/VERSIONING.md`). Wiring the
 /// shell into that derivation is still to do; until then this is a deliberate,
 /// documented placeholder rather than a number pretending to be a release.
 ///

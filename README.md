@@ -6,7 +6,7 @@ vendor status, agents — read at a glance from a second monitor.
 *Solador* is Spanish for **tiler**: the tradesperson who lays tiles. The cockpit
 is a grid of tiles; this is what arranges them.
 
-![The Solador cockpit](Docs/assets/screenshots/cockpit.png)
+![The Solador cockpit](docs/assets/screenshots/cockpit.png)
 
 Runs on **macOS and Windows**.
 
@@ -42,13 +42,13 @@ what fits on screen, no retention, no server. It is a window you leave open.
 
 | | |
 |:--:|:--:|
-| ![Repos](Docs/assets/screenshots/panel-repos.png) | ![Runners](Docs/assets/screenshots/panel-runners.png) |
-| ![Containers](Docs/assets/screenshots/panel-containers.png) | ![Usage](Docs/assets/screenshots/panel-usage.png) |
-| ![Sentry Crons](Docs/assets/screenshots/panel-crons.png) | ![Services](Docs/assets/screenshots/panel-services.png) |
+| ![Repos](docs/assets/screenshots/panel-repos.png) | ![Runners](docs/assets/screenshots/panel-runners.png) |
+| ![Containers](docs/assets/screenshots/panel-containers.png) | ![Usage](docs/assets/screenshots/panel-usage.png) |
+| ![Sentry Crons](docs/assets/screenshots/panel-crons.png) | ![Services](docs/assets/screenshots/panel-services.png) |
 
 At a narrower width the layout reflows rather than scrolling:
 
-![Narrow](Docs/assets/screenshots/cockpit-narrow.png)
+![Narrow](docs/assets/screenshots/cockpit-narrow.png)
 
 </details>
 
@@ -150,9 +150,9 @@ app/src-tauri/   Tauri shell: one poll task per panel, plus the settings surface
 app/ui/          Frontend — plain HTML/CSS/JS, no bundler
 crates/          The real work: viewmodel, store, github, usage, azurecost,
                  servicestatus, openclaw, localhost, wire, agentclient
-agent/           The per-host metrics agent (its own workspace and CI job)
+agent/           The per-host metrics agent (workspace member, Linux CI job)
 tests/frontend/  Playwright suite for app/ui
-TestFixtures/    Wire-contract fixtures both agent/ and crates/ assert against
+tests/fixtures/    Wire-contract fixtures both agent/ and crates/ assert against
 ```
 
 Every string and colour a panel paints is decided in Rust and published to the
@@ -166,7 +166,7 @@ frontend. The frontend lays out; it does not invent labels.
 ./dev format      # fix formatting
 ```
 
-`./Scripts/install-hooks.sh` wires lint to a pre-push hook.
+`./scripts/install-hooks.sh` wires lint to a pre-push hook.
 
 Screenshots in this README are generated, not captured:
 

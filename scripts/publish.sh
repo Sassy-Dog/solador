@@ -23,8 +23,8 @@ log_error "Build locally with: ./dev build --release"
 exit 1
 
 # Publish a release — the repo's §4 mode-2 LOCAL MINT (org Versioning spec
-# v1.0; Docs/VERSIONING.md). The version is CalVer derived from git by
-# Scripts/get-version-info.sh; there is no version bump, no version commit,
+# v1.0; docs/VERSIONING.md). The version is CalVer derived from git by
+# scripts/get-version-info.sh; there is no version bump, no version commit,
 # and nothing to keep in sync — the old semver --bump flow and the
 # config.sh/project.yml verified-in-sync duplicate pair are gone (issue #98).
 #
@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --bump)
-            log_error "--bump is gone: versions are CalVer minted from git (Docs/VERSIONING.md)."
+            log_error "--bump is gone: versions are CalVer minted from git (docs/VERSIONING.md)."
             exit 1
             ;;
         *)

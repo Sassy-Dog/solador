@@ -257,7 +257,7 @@ mod css_sync {
     }
 
     /// `app/ui/mark.svg` is a copy of `brand/mark.svg`, made by
-    /// `Scripts/generate-icons.sh`. The copy exists because the frontend's dist
+    /// `scripts/generate-icons.sh`. The copy exists because the frontend's dist
     /// root is `app/ui` and the app's CSP is `img-src 'self' data:`, so it
     /// cannot reach out of the tree to `brand/`.
     ///
@@ -272,7 +272,7 @@ mod css_sync {
             include_str!("../../../app/ui/mark.svg"),
             include_str!("../../../brand/mark.svg"),
             "app/ui/mark.svg has drifted from brand/mark.svg -- \
-             re-run ./Scripts/generate-icons.sh"
+             re-run ./scripts/generate-icons.sh"
         );
     }
 
