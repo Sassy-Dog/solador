@@ -1,19 +1,30 @@
 # Solador Cross-Platform Cockpit (`app/`)
 
-An experimental cross-platform shell proving out a macOS/Windows-portable stack: a
-[Tauri v2](https://v2.tauri.app) app that renders the **whole cockpit** the SwiftUI
-app renders — the local card plus one card per configured Solador
-[agent](../agent/README.md), then the **Containers/VMs**, **GitHub Repos**,
-**GitHub Runners**, **Usage** (Claude + Neon + Sentry), **Azure Cost** and **OpenClaw**
-panels — reflowed into rows for the measured width, and configured from an in-app
-**Settings** surface backed by the OS credential store.
+The macOS/Windows cockpit: a [Tauri v2](https://v2.tauri.app) app rendering the
+local card plus one card per configured Solador [agent](../agent/README.md),
+then the **Containers/VMs**, **GitHub Repos**, **GitHub Runners**, **Usage**
+(Claude + Neon + Sentry + Vercel), **Azure Cost**, **Sentry Crons**,
+**Services** and **OpenClaw** panels — reflowed into rows for the measured
+width, and configured from an in-app **Settings** surface backed by the OS
+credential store.
 
-It began as a walking skeleton (one host card, one command). It is not one any
-more: [#150](https://github.com/cpmadrid/solador/issues/150) took it to panel
-parity across fourteen slices. What it still is not is *shipped* — the product you
-install is the SwiftUI app in [`DevCanopy/`](../Solador), which stays untouched.
-Packaging, signing and updates are [#15](https://github.com/cpmadrid/solador/issues/15)'s,
-not this tree's.
+It began as a walking skeleton (one host card, one command) beside a macOS-only
+SwiftUI app. [#150](https://github.com/cpmadrid/solador/issues/150) took it to
+panel parity across fourteen slices, and the SwiftUI app was subsequently
+deleted — this is the app.
+
+What it is not yet is *packaged*. `src-tauri/tauri.conf.json` still carries
+`bundle.active: false` and a hardcoded `version: 0.1.0`; bundling, signing,
+notarization and updates are
+[#15](https://github.com/cpmadrid/solador/issues/15)'s, which is now gating
+rather than deferred. Until it lands there is no installable artifact —
+`./dev run` from source is the only way to run this.
+
+> Notes below that compare a behaviour to "the Swift panel" or "Swift's
+> `X`" are **provenance**: they record which decision was ported and why,
+> including where this app deliberately diverged. The Swift sources are no
+> longer in the repository, so treat them as history rather than as something
+> to go and read.
 
 ```
 app/
@@ -833,10 +844,13 @@ together would hide a live session behind the rendering for an absent one.
 
 The gateway authenticates this install by an Ed25519 key it mints on first
 connect and stores as **32 raw bytes** in the OS credential store, under account
-`openclaw_device_key` — byte-for-byte what the Swift app writes, under the same
-account, on purpose: the operator approves one device id rather than one per app.
-That is also why the seed is not base64-encoded here. Each app would then read
-the other's entry as corrupt and replace it, and the pairing would never settle.
+`openclaw_device_key` — 32 raw bytes, deliberately **not** base64-encoded.
+
+That encoding is not an arbitrary choice: it matched what the SwiftUI app wrote
+to the same account, so the operator approved one device id rather than one per
+app, and neither app read the other's entry as corrupt and replaced it. That app
+is gone, but the format is now simply what is on disk in existing installs —
+changing it re-pairs every one of them.
 
 Until the operator approves it, every connect is rejected with `PAIRING_REQUIRED`
 and the panel shows the banner — a pulsing amber dot, which kind of approval is
@@ -989,10 +1003,10 @@ more proximate cause and the fresher fact (`samplerStale` is by then up to a
 health cadence old), and naming the sampler would send someone to restart a
 daemon they cannot reach.
 
-**The Swift app has the same gap and is deliberately untouched here** —
-`RemoteHostMetricsService` decodes `samplerStale`/`sampleAgeSeconds` into
-`HealthInfo` and uses them only for the Settings → Test result line, so its cards
-still show a stalled agent as live.
+The SwiftUI app carried the same gap and was deliberately left alone rather than
+fixed twice: it decoded `samplerStale`/`sampleAgeSeconds` and used them only for
+the Settings → Test result line, so its cards also showed a stalled agent as
+live. The gap is now this app's alone to close.
 
 ## Settings
 
@@ -1197,8 +1211,9 @@ Two gaps, deliberate and worth knowing:
   reads the stored value yet. `host_overflow_mode` left this tab for the
   [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
   stored field remains only as that migration's seed.
-- **About's version is hard-coded** to the crate version, not the CalVer the
-  Swift app derives from git ([#15](https://github.com/cpmadrid/solador/issues/15)),
+- **About's version is hard-coded** to the crate version, not the CalVer
+  `Docs/VERSIONING.md` requires and `Scripts/get-version-info.sh` mints
+  ([#15](https://github.com/cpmadrid/solador/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
   one would navigate the cockpit's own webview away from the app, and the opener
   scope granted below deliberately does **not** reach them. They are repo roots
@@ -1322,8 +1337,8 @@ value a JSON map keyed by the same account strings each credential used to have
 its own item under. One item means one keychain ACL prompt covers every
 credential this app stores, rather than a fresh "Always Allow" per secret. One
 exception keeps its own item regardless of platform: the OpenClaw *device*
-identity key — raw key material, not text, and an account the Swift app also
-writes to directly.
+identity key — raw key material rather than text, and an account the SwiftUI app
+wrote to directly while it existed.
 
 There used to be a second. The Azure Cost SAS URL was written from outside this
 process by a LaunchAgent that re-minted it every four days, so a blob copy
