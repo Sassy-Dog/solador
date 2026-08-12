@@ -134,9 +134,8 @@ do_deploy() {
     [ -n "$target_version" ] || { echo "ERROR: could not read the [package] version from Cargo.toml." >&2; exit 1; }
 
     echo "==> Building release binary (target version $target_version)..."
-    ( cd "$CRATE_DIR" && cargo build --release )
-    local built_bin="$CRATE_DIR/target/release/$BIN_NAME"
-    [ -x "$built_bin" ] || { echo "ERROR: build did not produce $built_bin" >&2; exit 1; }
+    local built_bin
+    built_bin="$(build_release_binary "$CRATE_DIR" "$BIN_NAME")" || exit 1
 
     # Preserve the currently-installed binary as .prev (one-command rollback).
     if [ -e "$INSTALL_PATH" ]; then

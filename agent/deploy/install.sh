@@ -47,9 +47,7 @@ TARGET_VERSION="$(crate_version "$CRATE_DIR/Cargo.toml")"
 [ -n "$TARGET_VERSION" ] || { echo "ERROR: could not read the [package] version from $CRATE_DIR/Cargo.toml." >&2; exit 1; }
 
 echo "==> Building release binary (target version $TARGET_VERSION)..."
-( cd "$CRATE_DIR" && cargo build --release )
-BUILT_BIN="$CRATE_DIR/target/release/$BIN_NAME"
-[ -x "$BUILT_BIN" ] || { echo "ERROR: build did not produce $BUILT_BIN" >&2; exit 1; }
+BUILT_BIN="$(build_release_binary "$CRATE_DIR" "$BIN_NAME")" || exit 1
 
 # ---- install binary --------------------------------------------------------
 INSTALL_DIR="/opt/solador-agent"

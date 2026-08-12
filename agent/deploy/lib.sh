@@ -35,6 +35,53 @@ crate_version() {
     ' "$manifest"
 }
 
+# ---- build ------------------------------------------------------------------
+# Print the directory cargo writes build output to.
+#
+# Emphatically NOT "$CRATE_DIR/target". Since agent/ became a member of the root
+# workspace (#264) cargo writes to the *workspace* target dir, while the
+# crate-local agent/target/ left over from the standalone days sits there still
+# holding a binary of the same name from the last pre-#264 build. So the two
+# plausible guesses are "the path that no longer receives builds" and "the path
+# that contains a stale binary which would install and run perfectly well" —
+# which is why this asks cargo instead of guessing, and why the caller must
+# treat a failure here as fatal rather than falling back to a search.
+target_dir() {
+    local crate_dir="$1" ws_manifest
+    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+        printf '%s\n' "$CARGO_TARGET_DIR"
+        return 0
+    fi
+    ws_manifest="$(cd "$crate_dir" && cargo locate-project --workspace --message-format plain 2>/dev/null || true)"
+    [ -n "$ws_manifest" ] || return 1
+    printf '%s/target\n' "$(dirname "$ws_manifest")"
+}
+
+# Build the agent in release mode; print the path to the binary on success.
+#
+# Scoped with -p deliberately: a bare `cargo build` from inside the workspace
+# resolves every member including app/src-tauri, which needs webkit2gtk
+# libraries a headless metrics host has no reason to carry.
+#
+# cargo's own output goes to stderr so stdout carries only the path.
+build_release_binary() {
+    local crate_dir="$1" bin_name="$2" td built
+    ( cd "$crate_dir" && cargo build --release -p "$bin_name" >&2 ) || return 1
+
+    if ! td="$(target_dir "$crate_dir")"; then
+        echo "ERROR: could not locate cargo's target directory for $crate_dir." >&2
+        echo "       Is this still inside a cargo workspace?" >&2
+        return 1
+    fi
+
+    built="$td/release/$bin_name"
+    if [ ! -x "$built" ]; then
+        echo "ERROR: build reported success but produced no binary at $built" >&2
+        return 1
+    fi
+    printf '%s\n' "$built"
+}
+
 # ---- health endpoint --------------------------------------------------------
 # Build the URL to probe from the agent's configured bind address.
 #
