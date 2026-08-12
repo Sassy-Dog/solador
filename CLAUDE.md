@@ -21,10 +21,14 @@ It has three parts:
 detailed than this file.
 
 > **History:** Solador began as a SwiftUI macOS app. The Tauri app reached
-> panel parity with it, and the SwiftUI app was deleted. Doc comments in
-> `crates/localhost/` still cite the Swift originals they were ported from
-> (`GPUMonitor.swift`, `HostSnapshot.swift`) as provenance — those files are
-> not in this repo.
+> panel parity with it, and the SwiftUI app was deleted.
+>
+> Roughly 380 comments across the Rust and JS sources — plus ~23 test names
+> like `defaults_match_the_swift_app` — still cite the Swift originals they
+> were ported from. **Those files are not in this repo.** Treat the references
+> as provenance: they record which decision was ported, and, more usefully,
+> where this app deliberately diverged. The assertions themselves still guard
+> real values; only the names point at something gone.
 
 ### The panels
 
