@@ -1178,9 +1178,9 @@ fn about_tab() -> Value {
         "version": format!("Version {VERSION}"),
         "tagline": "Everything around your code, at a glance",
         "links": [
-            { "label": "GitHub Repository", "url": "https://github.com/cpmadrid/solador" },
-            { "label": "Report an Issue", "url": "https://github.com/cpmadrid/solador/issues" },
-            { "label": "Documentation", "url": "https://github.com/cpmadrid/solador#readme" },
+            { "label": "GitHub Repository", "url": "https://github.com/Sassy-Dog/solador" },
+            { "label": "Report an Issue", "url": "https://github.com/Sassy-Dog/solador/issues" },
+            { "label": "Documentation", "url": "https://github.com/Sassy-Dog/solador#readme" },
         ],
         "copyright": "© 2026 Chris Madrid · Apache-2.0",
     })

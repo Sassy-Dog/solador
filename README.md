@@ -127,7 +127,7 @@ say so, not crash.
 There are **no binaries yet** — see [Status](#status). Build from source:
 
 ```bash
-git clone https://github.com/cpmadrid/solador
+git clone https://github.com/Sassy-Dog/solador
 cd solador
 ./dev            # build and run (debug)
 ./dev run --release

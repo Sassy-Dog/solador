@@ -9,14 +9,14 @@ width, and configured from an in-app **Settings** surface backed by the OS
 credential store.
 
 It began as a walking skeleton (one host card, one command) beside a macOS-only
-original macOS app. [#150](https://github.com/cpmadrid/solador/issues/150) took it to
+original macOS app. [#150](https://github.com/Sassy-Dog/solador/issues/150) took it to
 panel parity across fourteen slices, and the original macOS app was subsequently
 deleted — this is the app.
 
 What it is not yet is *packaged*. `src-tauri/tauri.conf.json` still carries
 `bundle.active: false` and a hardcoded `version: 0.1.0`; bundling, signing,
 notarization and updates are
-[#15](https://github.com/cpmadrid/solador/issues/15)'s, which is now gating
+[#15](https://github.com/Sassy-Dog/solador/issues/15)'s, which is now gating
 rather than deferred. Until it lands there is no installable artifact —
 `./dev run` from source is the only way to run this.
 
@@ -417,7 +417,7 @@ setting doing nothing. This is the periodic-service counterpart to
 
 **Tapping a row opens its Actions page**, the way the original panel's
 `onTapGesture` + `NSWorkspace.open` does
-([#187](https://github.com/cpmadrid/solador/issues/187)). The URL is
+([#187](https://github.com/Sassy-Dog/solador/issues/187)). The URL is
 `github::actions_url`'s and is never composed in the webview — it is the only
 string the granted ACL scope accepts, and a second author of it would be a
 second author of the app's whole browser-opening surface. See
@@ -959,7 +959,7 @@ The agent answers `/v1/snapshot` from a sampler running on its own clock, so a
 sampler that has stopped (or has not yet produced its first sample, where
 `empty_snapshot()` supplies zeros) is served as a perfectly successful 200. Every
 poll succeeds, the dot stays green, and the numbers are frozen — the failure mode
-[#182](https://github.com/cpmadrid/solador/issues/182) is named after.
+[#182](https://github.com/Sassy-Dog/solador/issues/182) is named after.
 
 The agent already publishes the answer and nothing consumed it: `/v1/health`
 carries `samplerStale` and `sampleAgeSeconds`. So each host with a token is
@@ -992,7 +992,7 @@ Three rules make this a diagnostic rather than a second failure mode:
   defect. Recovery arrives as a health poll that lands saying `samplerStale:
   false`.
 - **Unknown is not healthy.** `None` — no health poll yet, or an agent older
-  than [#35](https://github.com/cpmadrid/solador/issues/35) that never sends
+  than [#35](https://github.com/Sassy-Dog/solador/issues/35) that never sends
   the field — leaves the card exactly as the snapshot poll found it, and a
   stalled agent that reports no age gets `last update unknown` rather than a
   fabricated `0s`.
@@ -1019,7 +1019,7 @@ cards' do from `crates/viewmodel`.
 `WebviewWindow`, which means granting the webview
 `core:webview:allow-create-webview-window` (or `core:default`) —
 widening the one seam in this app with no automated coverage
-([#123](https://github.com/cpmadrid/solador/issues/123)), for a surface that
+([#123](https://github.com/Sassy-Dog/solador/issues/123)), for a surface that
 needs no platform capability at all. Every command below is *app-defined*, which
 Tauri's ACL permits without a grant, so none of them appears in
 `capabilities/default.json` — see [The one granted
@@ -1212,7 +1212,7 @@ Two gaps, deliberate and worth knowing:
   stored field remains only as that migration's seed.
 - **About's version is hard-coded** to the crate version, not the CalVer
   `docs/VERSIONING.md` requires and `scripts/get-version-info.sh` mints
-  ([#15](https://github.com/cpmadrid/solador/issues/15)),
+  ([#15](https://github.com/Sassy-Dog/solador/issues/15)),
   and the About links render as selectable URLs rather than anchors — following
   one would navigate the cockpit's own webview away from the app, and the opener
   scope granted below deliberately does **not** reach them. They are repo roots
@@ -1272,7 +1272,7 @@ the About tab's own links, `http://` instead of `https://`, and
 
 What the test does **not** do is exercise the IPC boundary that enforces the
 scope: it reads the file, it does not invoke through it. Nothing automated does
-— that is still [#123](https://github.com/cpmadrid/solador/issues/123), and
+— that is still [#123](https://github.com/Sassy-Dog/solador/issues/123), and
 it is why the checklist below grew a tap-to-open line.
 
 ## Build & run
@@ -1452,7 +1452,7 @@ gitignored) — which matters for the smoke test below.
 ## Manual IPC smoke test
 
 **Nothing automated exercises the Tauri IPC boundary**
-([#123](https://github.com/cpmadrid/solador/issues/123)). Both sides of the
+([#123](https://github.com/Sassy-Dog/solador/issues/123)). Both sides of the
 seam are tested and the seam itself is not: the Rust tests call
 `cockpit_view(…)`, `settings::view(…)`, `containers::view(…)`, `usage::view(…)`,
 `azure::view(…)` and `openclaw::view(…)` directly rather than through their
@@ -1482,7 +1482,7 @@ panels, and the checklist below has grown with it. The trade-off still holds —
 #150 close-out audit (#178) and left standing; the deferred register there names
 it.
 
-**And weaker again since [#187](https://github.com/cpmadrid/solador/issues/187).**
+**And weaker again since [#187](https://github.com/Sassy-Dog/solador/issues/187).**
 Until then the ACL's `permissions` list was empty, so "an ACL break" could only
 mean *losing* access to app-defined commands — a failure that blanks a panel and
 is therefore loud. There is now [one granted
@@ -1792,7 +1792,7 @@ and that immediacy is itself the check on the corresponding wake:
     `tauri::is_dev()`, because an unbundled binary has no identity of its own to
     notify under. That is expected, not a defect — and it means a *bundled*
     build's notification permission prompt is still unexercised
-    ([#15](https://github.com/cpmadrid/solador/issues/15) owns packaging). If
+    ([#15](https://github.com/Sassy-Dog/solador/issues/15) owns packaging). If
     macOS Focus is on, or notifications are denied for Terminal, delivery is a
     silent no-op with nothing on the terminal either; check
     System Settings → Notifications before concluding the code is wrong.
@@ -1904,19 +1904,19 @@ found`.
 ### Recording a run
 
 The last acceptance item on
-[#123](https://github.com/cpmadrid/solador/issues/123) is a human one: launch
+[#123](https://github.com/Sassy-Dog/solador/issues/123) is a human one: launch
 once per this procedure and record the result. That record is currently the only
 evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
-| 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/cpmadrid/solador/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-01), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from original code that has never run live — the original app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why the original never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on gadget's local columns, running/failed dots per the original), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
-| 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/cpmadrid/solador/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `SOLADOR_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |
-| 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/cpmadrid/solador/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
-| 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/cpmadrid/solador/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
-| 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/cpmadrid/solador/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
-| 2026-08-01 | Settings surface + `App` state restructure ([#163](https://github.com/cpmadrid/solador/issues/163)) | **Pass.** Fixtures removed, scratch store, `SOLADOR_SEED_HOST="smoke-…\|100.100.100.100\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport still carry the call after `manage()` changed from `Cockpit` to `App` and the handler list grew from one command to fifteen. | **Not performed**, and neither was **step 5** — both need a click on a Mac someone else is working on. The settings half of the boundary is therefore *documented, not verified*: `settings: first frontend request …` has never been observed. Worth ten seconds from anyone who launches this next. |
-| 2026-07-31 | `snapshot` → `cockpit`, N-card grid ([#157](https://github.com/cpmadrid/solador/issues/157)) | **Pass.** Fixtures removed, scratch store, `SOLADOR_SEED_HOST="smoke-233344\|100.100.100.100\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport all carried the call, and `width` arrived. App still up when the run ended. Negative control run immediately before (command renamed in `app.js`, rebuilt) printed nothing, so the signal discriminates. | **Not performed** — the Mac's screen was locked (`CGSSessionScreenIsLocked`), which makes `screencapture` return black frames, and no Accessibility grant was available to read the window's text. Worth a human glance next time someone has the screen in front of them. |
+| 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/Sassy-Dog/solador/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-01), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from original code that has never run live — the original app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why the original never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on gadget's local columns, running/failed dots per the original), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
+| 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/Sassy-Dog/solador/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `SOLADOR_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |
+| 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/Sassy-Dog/solador/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
+| 2026-08-01 | Usage + Azure Cost panels and the local host card ([#175](https://github.com/Sassy-Dog/solador/issues/175)) | **Not performed.** The two new commands (`usage`, `azure_cost`) and their **step 8**, plus the local card's **step 9**, are therefore *documented, not verified* — no `usage: first frontend request …` line has ever been observed, and neither has the local card on a screen. What was verified instead is everything below the boundary: every payload was dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `usage.js`, `azure.js`, the panel-row layout and the CSSOM colour path but stubs the IPC transport exactly as the rest of the suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
+| 2026-08-01 | Repos + GitHub Runners panels ([#172](https://github.com/Sassy-Dog/solador/issues/172)) | **Not performed.** The two new commands (`repos`, `runners`) and their **step 7** are therefore *documented, not verified* — no `repos: first frontend request …` line has ever been observed. What was verified instead is everything below the boundary: the payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), which exercises `github.js`, the CSSOM colour path and the column-width math, but stubs the IPC transport exactly as the Playwright suite does. The ACL is untouched (`permissions` still `[]`, both commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
+| 2026-08-01 | Settings surface + `App` state restructure ([#163](https://github.com/Sassy-Dog/solador/issues/163)) | **Pass.** Fixtures removed, scratch store, `SOLADOR_SEED_HOST="smoke-…\|100.100.100.100\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport still carry the call after `manage()` changed from `Cockpit` to `App` and the handler list grew from one command to fifteen. | **Not performed**, and neither was **step 5** — both need a click on a Mac someone else is working on. The settings half of the boundary is therefore *documented, not verified*: `settings: first frontend request …` has never been observed. Worth ten seconds from anyone who launches this next. |
+| 2026-07-31 | `snapshot` → `cockpit`, N-card grid ([#157](https://github.com/Sassy-Dog/solador/issues/157)) | **Pass.** Fixtures removed, scratch store, `SOLADOR_SEED_HOST="smoke-233344\|100.100.100.100\|7878\|"` (no token). Terminal: `cockpit: first frontend request (1 host(s), 968pt)` — so the ACL, the handler registration and the transport all carried the call, and `width` arrived. App still up when the run ended. Negative control run immediately before (command renamed in `app.js`, rebuilt) printed nothing, so the signal discriminates. | **Not performed** — the Mac's screen was locked (`CGSSessionScreenIsLocked`), which makes `screencapture` return black frames, and no Accessibility grant was available to read the window's text. Worth a human glance next time someone has the screen in front of them. |
 
 ## Tests
 

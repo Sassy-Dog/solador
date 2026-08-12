@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Use GitHub's **[private vulnerability reporting](https://github.com/cpmadrid/solador/security/advisories/new)**
+Use GitHub's **[private vulnerability reporting](https://github.com/Sassy-Dog/solador/security/advisories/new)**
 for anything exploitable. Please don't open a public issue for it first.
 
 Expect an acknowledgement within a week. This is a personal project, not a

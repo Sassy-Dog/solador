@@ -70,7 +70,7 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
 Single-tier repo: umbrella `v*` only, no tier tags, no tier-vs-tag change
 detection (nothing to path-scope). Declared stance: **no channel tags yet** —
 builds are unsigned/un-notarized and local-only until
-[#15](https://github.com/cpmadrid/solador/issues/15) (signing /
+[#15](https://github.com/Sassy-Dog/solador/issues/15) (signing /
 notarization / Sparkle) lands; at first external distribution, add
 `mac-direct/<version>-<build>-<UTCts>` per submission, and map Sparkle keys
 per the §7 macOS row (`sparkle:version` = **build number**,
