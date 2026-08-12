@@ -87,13 +87,47 @@ jobs:
           || (steps.meta.outputs.package-ecosystem == 'github_actions'
           && steps.meta.outputs.update-type == '')
         # Merge queue rules, both load-bearing:
-        #   * `--auto` with NO method flag. Passing --squash/--merge/--rebase
-        #     sets a conflicting auto-merge method and the PR silently never
-        #     enters the queue -- it sits CLEAN with auto-merge on and
-        #     isInMergeQueue:false forever.
+        #   * The auto-merge method must EQUAL the queue's own merge method.
+        #     The "main protection" ruleset sets `merge_method: SQUASH`, so
+        #     that is what goes here.
+        #
+        #     Omitting the flag does NOT mean "no method". GitHub fills in the
+        #     repo's default -- MERGE, since allow_merge_commit is on -- and a
+        #     MERGE auto-merge against a SQUASH queue is the same silent park
+        #     as passing the wrong flag explicitly: `gh pr merge` exits 0, the
+        #     job goes green, and the PR sits CLEAN with auto-merge enabled and
+        #     isInMergeQueue:false forever. #265 was this workflow's first live
+        #     subject and parked exactly that way for 13 hours.
         #   * No `--delete-branch`. It is rejected outright under a queue;
         #     the repo's delete_branch_on_merge:true handles cleanup.
-        run: gh pr merge --auto "$PR_URL"
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Assert the flag took. The bug this replaces was silent by construction:
+      # the enable step succeeds either way, so its exit code carries no
+      # information about whether the PR can ever actually merge.
+      #
+      # This compares the *enabled* method against the one we asked for, which
+      # is the only check available at this point -- the PR cannot be in the
+      # queue yet, because its required checks have not run. Reading the
+      # method back also catches the inverse drift: if the ruleset's
+      # merge_method is ever changed away from SQUASH, this goes red with both
+      # values named instead of quietly parking every Dependabot PR again.
+      - name: Verify auto-merge will be honoured by the queue
+        if: steps.enable.outcome == 'success'
+        run: |
+          method="$(gh pr view "$PR_URL" --json autoMergeRequest \
+            --jq '.autoMergeRequest.mergeMethod // "none"')"
+          echo "auto-merge method on this PR: $method"
+          if [ "$method" != "SQUASH" ]; then
+            echo "::error::Auto-merge is set to '$method', but the merge queue merges with SQUASH." \
+                 "This PR will sit green and never enter the queue." \
+                 "Check the 'main protection' ruleset's merge_method against the --squash flag above."
+            exit 1
+          fi
+          echo "OK: matches the queue's merge_method."
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
