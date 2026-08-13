@@ -106,13 +106,24 @@ if [[ "${CI_GREEN_COUNT:-0}" -lt 1 ]]; then
 fi
 log_success "CI is green for HEAD"
 
-# Resolve the Sentry DSN (issue #75). #18's integration reads the DSN from the
-# SENTRY_DSN build setting (→ SentryDSN Info.plist key) and no-ops when it is
-# empty; local and CI builds leave it empty on purpose, but a *release* that
-# silently never reports is the bug this guards. The environment is the source
-# of truth. Checked here — in pre-flight, not right before build.sh — so
-# a missing DSN fails before the tag is minted and pushed, not after.
-# Never log the value; log only that resolution happened.
+# Resolve the Sentry DSN (issue #75).
+#
+# UNREACHABLE TODAY, and the consumer it was written for is gone. This script
+# hard-exits above ("Releasing is not implemented"), so nothing below runs; and
+# #18's integration — which is what read this DSN — lived in the macOS app that
+# was deleted. It took the value from a SENTRY_DSN *build setting* forwarded by
+# xcodebuild into a SentryDSN Info.plist key. This repo builds with plain cargo
+# and has no Sentry SDK at all (no `sentry` crate in any manifest, no panic
+# hook), so today this block reads an environment variable that reaches nothing.
+#
+# Kept, not deleted, because #15 owns the release path and must decide: either
+# re-implement opt-in reporting for Tauri (#18's decision, and CLAUDE.md commits
+# to "no telemetry or analytics by default"), or drop this gate. Do not read the
+# guard below as evidence that releases currently report crashes.
+#
+# The shape is still the one #15 should keep: the environment is the source of
+# truth, and it is checked here — in pre-flight — so a missing DSN fails before
+# the tag is minted and pushed, not after. Never log the value.
 if [[ $SKIP_SENTRY -eq 1 ]]; then
     SENTRY_DSN=""
     log_warning "--skip-sentry: releasing without a DSN (Sentry will no-op in this build)."
@@ -125,7 +136,9 @@ else
     log_error "Or pass --skip-sentry to release deliberately without one."
     exit 1
 fi
-# build.sh reads SENTRY_DSN from the environment and forwards it to xcodebuild.
+# Exported for whatever #15's release build ends up being. `scripts/build.sh`
+# does NOT read it today — it is a plain `cargo build` and references neither
+# SENTRY_DSN nor xcodebuild.
 export SENTRY_DSN
 
 # Run tests unless skipped
