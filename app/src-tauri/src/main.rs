@@ -1415,6 +1415,78 @@ async fn poll_github(app: &Arc<App>) {
     deliver_approval_notices(app, &notices);
 }
 
+/// Claim the notification application identity before the plugin can take it.
+///
+/// **`tauri-plugin-notification` posts every banner as `com.apple.Terminal`
+/// here, in release builds too.** Its desktop `show()` does:
+///
+/// ```ignore
+/// let _ = notify_rust::set_application(if tauri::is_dev() {
+///     "com.apple.Terminal"
+/// } else {
+///     &self.identifier
+/// });
+/// ```
+///
+/// and `tauri::is_dev()` is `!cfg!(feature = "custom-protocol")`. That feature
+/// is enabled by the **Tauri CLI**, which this repo deliberately does not have
+/// (`app/README.md`: "There is no Tauri CLI in this repo") — `scripts/run.sh`
+/// and `scripts/build.sh` are both plain `cargo build`. So the branch is never
+/// taken and the identity is *always* Terminal's, `./prd` included. The
+/// "unbundled dev build notifies as Terminal" note this repo carried was
+/// therefore wrong about the cause and about the scope: packaging (#15) would
+/// not have fixed it.
+///
+/// **That is a dropped notification, not a cosmetic attribution bug.** macOS
+/// authorises delivery against the *posting* bundle, so the banner inherits
+/// whatever Terminal.app was granted — and on a machine whose operator uses a
+/// different terminal, Terminal.app has been granted nothing and never appears
+/// in Notification settings to grant. Measured 2026-08-13 on this machine, same
+/// title and body, same bundle, one process each: posted as
+/// `app.solador.desktop` the banner renders in full; posted as
+/// `com.apple.Terminal` **it does not appear at all**. It also means the
+/// operator's own per-app "Solador" notification settings never governed the
+/// app, because the app never posted under that identity.
+///
+/// The fix is one call, and it works *with* the library rather than around it:
+/// `set_application` is `call_once`, so the **first** caller wins and every
+/// later one gets `AlreadySet` — which the plugin discards with `let _ =`.
+/// Claiming ours here makes the plugin's Terminal call a no-op, with nothing
+/// patched or vendored.
+///
+/// Ordering is guaranteed, not hoped for: `deliver_banners` drops every notice
+/// until `app.handle` is set, and this runs in the same `setup` hook
+/// immediately before that. No banner can be delivered ahead of it.
+///
+/// The identifier is read from the Tauri config rather than written out, so it
+/// cannot drift from `tauri.conf.json`.
+///
+/// > Enabling `custom-protocol` would also flip `is_dev()`, but that feature
+/// > additionally switches asset loading to the embedded-protocol path this
+/// > app does not use (`frontendDist` points at a static directory). This is
+/// > the surgical half.
+///
+/// **A failed claim is not a neutral outcome, which is why it is logged.**
+/// `call_once` fires whether or not the underlying `setApplication` succeeded,
+/// so an unresolvable identifier consumes the `Once` *and* leaves the library
+/// on its own fallback — which `mac-notification-sys` spells, in the error
+/// text for that very case, as `com.apple.Terminal`. Failing here therefore
+/// reproduces exactly the bug this function exists to remove, silently. The
+/// identifier resolves via LaunchServices, so the case to watch is a build
+/// whose `.app` wrapper was never created (`scripts/run.sh` and
+/// `scripts/build.sh` both build one on macOS).
+#[cfg(target_os = "macos")]
+fn claim_notification_identity(identifier: &str) {
+    match mac_notification_sys::set_application(identifier) {
+        Ok(()) => {}
+        // Logged rather than surfaced, and never fatal: a cockpit panel is the
+        // wrong place to report this, and the app is fully usable without
+        // banners. It is logged at all because a silent failure here is
+        // indistinguishable from "no notifications happened to fire".
+        Err(e) => eprintln!("could not claim the notification identity {identifier}: {e}"),
+    }
+}
+
 /// The original's `content.sound = .default`, spelled the way `notify-rust` wants it.
 ///
 /// macOS-only on purpose. The plugin's `sound()` is a platform-specific
@@ -3969,6 +4041,13 @@ fn main() {
         .setup({
             let app = Arc::clone(&app);
             move |shell| {
+                // Before the handle, deliberately: `deliver_banners` drops
+                // every notice until the handle exists, so claiming the
+                // notification identity here is provably ahead of the first
+                // banner — and therefore ahead of the plugin's own
+                // `set_application`, which only runs on the first `show()`.
+                #[cfg(target_os = "macos")]
+                claim_notification_identity(&shell.config().identifier);
                 // The poll loops are already running; this is the moment they
                 // gain a way to reach the OS.
                 let _ = app.handle.set(shell.handle().clone());
@@ -4024,6 +4103,37 @@ fn main() {
 mod tests {
     use super::*;
     use store::{MemoryCredentialStore, SecretError};
+
+    /// The fix itself, asserted against the real `call_once` rather than a
+    /// mock of it: our claim must land first, and the plugin's own call must
+    /// then be refused.
+    ///
+    /// What this pins is the *mechanism*, which is the only part a test can
+    /// reach. Whether macOS then renders the banner is not observable from
+    /// here — that is the manual smoke step in `app/README.md`, and the
+    /// measurement that motivated this fix is recorded there.
+    ///
+    /// **This is the only test in this binary that may call
+    /// `set_application`.** It is a process-global `Once` with no reset, and
+    /// cargo runs a crate's tests as threads in ONE process — so a second test
+    /// touching it would silently make both meaningless, in whichever order
+    /// they happened to run.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_plugin_cannot_claim_terminal_after_us() {
+        // Exactly what the `setup` hook does.
+        claim_notification_identity("app.solador.desktop");
+
+        // And now the plugin's line, verbatim from `tauri-plugin-notification`'s
+        // desktop `show()`, on the `is_dev()` branch this repo always takes.
+        let refused = mac_notification_sys::set_application("com.apple.Terminal")
+            .expect_err("the plugin must not be able to set the identity after our claim");
+
+        assert!(
+            refused.to_string().contains("can only be set once"),
+            "expected the AlreadySet refusal that makes our claim stick, got: {refused}"
+        );
+    }
 
     /// [`cockpit_view`] / [`cockpit_payload`] / [`dump_cockpit`] with the
     /// **default** (stacking) overflow preference and the **shipped** layout —

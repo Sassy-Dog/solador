@@ -1787,15 +1787,36 @@ and that immediacy is itself the check on the corresponding wake:
     go by (a minute at the default interval) and confirm **no second banner** —
     the alert is on the transition, not on the state.
 
-    Under `cargo run` on macOS the banner is attributed to **Terminal**, not to
-    Solador: `notify-rust` sets the bundle id to `com.apple.Terminal` when
-    `tauri::is_dev()`, because an unbundled binary has no identity of its own to
-    notify under. That is expected, not a defect — and it means a *bundled*
-    build's notification permission prompt is still unexercised
-    ([#15](https://github.com/Sassy-Dog/solador/issues/15) owns packaging). If
-    macOS Focus is on, or notifications are denied for Terminal, delivery is a
-    silent no-op with nothing on the terminal either; check
-    System Settings → Notifications before concluding the code is wrong.
+    The banner is attributed to **Solador**, and it is the app that claims that
+    identity — not the plugin. `tauri-plugin-notification`'s desktop path calls
+    `notify_rust::set_application("com.apple.Terminal")` whenever
+    `tauri::is_dev()`, and `is_dev()` is `!cfg!(feature = "custom-protocol")` —
+    a feature the **Tauri CLI** enables and this repo does not have, so it is
+    true in `./prd` too. `claim_notification_identity` (`main.rs`) therefore
+    takes the identity first, in the `setup` hook ahead of the app handle;
+    `set_application` is `call_once`, so the plugin's later call is refused and
+    discarded.
+
+    > **This was a dropped notification, not an attribution nit** — corrected
+    > 2026-08-13 after the operator reported banners arriving with no message.
+    > macOS authorises delivery against the *posting* bundle, so the banner
+    > inherited whatever Terminal.app had been granted; on a machine whose
+    > operator uses a different terminal, that is nothing, and Terminal.app
+    > never appears in Notification settings to grant it. Measured on that
+    > machine, same title/body/bundle, one process each: posted as
+    > `app.solador.desktop` the banner rendered in full, posted as
+    > `com.apple.Terminal` **it did not appear at all**. It also meant the
+    > operator's own per-app "Solador" notification settings never governed the
+    > app. The previous text here called this expected and pointed at
+    > [#15](https://github.com/Sassy-Dog/solador/issues/15); packaging would not
+    > have fixed it.
+
+    If macOS Focus is on, or notifications are denied for **Solador**, delivery
+    is a silent no-op with nothing on the terminal either; check
+    System Settings → Notifications before concluding the code is wrong. A
+    failed claim is logged (`could not claim the notification identity …`) —
+    and is not benign, because `call_once` fires either way and leaves the
+    library on its own `com.apple.Terminal` fallback.
 
 ### Pass
 
@@ -1893,7 +1914,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | Clicking a repo row does nothing, and the console says `opener.open_url not allowed`. | The **permission** is missing: `opener:allow-open-url` is not in `capabilities/default.json`, or the plugin is not registered on the builder. Not a scope problem — the command was rejected before any URL was looked at. |
 | Clicking a repo row does nothing, and the console names a `Forbidden URL`. | The permission is there and its **scope** rejected the URL. Either the glob was narrowed, or something other than `github::actions_url` composed the string — the two live one line apart in `capabilities/default.json` and `src/github/mod.rs`, and only they may disagree. |
 | The rows render but none of them is clickable, and no console error appears. | Neither: `row.url` is absent from the payload, so github.js never wires a handler. A Rust-side regression, and `a_row_carries_the_original_tap_target` should have caught it — check the fixtures are not stale first (step 1). |
-| No needs-approval banner for a run that is definitely parked at a gate. | Four ordinary causes before suspecting the code: it was the **seeding** pass (the first pass after launch never alerts — see step 11b for how to force a real transition); the run was already parked on the previous pass, so this one is not a transition; `notify_on_approval_needed` is `false` in the store file; or macOS Focus / denied notifications for **Terminal** (the id an unbundled dev build notifies under) is swallowing it silently. |
+| No needs-approval banner for a run that is definitely parked at a gate. | Four ordinary causes before suspecting the code: it was the **seeding** pass (the first pass after launch never alerts — see step 11b for how to force a real transition); the run was already parked on the previous pass, so this one is not a transition; `notify_on_approval_needed` is `false` in the store file; or macOS Focus / denied notifications for **Solador** is swallowing it silently. (Before 2026-08-13 the id was `com.apple.Terminal` and the banner was dropped outright on a machine that does not use Terminal.app — if you are on an older build, that is the cause.) |
 | A needs-approval banner repeats every poll pass. | A real failure, and the one this feature exists to avoid: the baseline is not being retained across passes. `ApprovalWatch` lives on `App`, so a per-pass instance would produce exactly this. |
 
 For the underlying error, open the webview console: right-click in the window →
@@ -1910,6 +1931,7 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
+| 2026-08-13 | **Step 11, both halves — the first time either has been observed.** Operator at the Mac, real portfolio and PAT. Prompted by the notification-identity fix (`claim_notification_identity`). | **Pass.** All nine `first frontend request …` lines printed on the fixed build (`cockpit … (1 host(s), 968pt)`, `containers … (2 section(s))`, `repos`, `runners`, `usage`, `azure_cost`, `services … (all clear)`, `crons … (2 not ok)`, `openclaw … (trailing: "1 agent")`), and **no** `could not claim the notification identity` line — so the claim succeeded against LaunchServices. Unrelated pre-existing line seen and left alone: `secrets: could not adopt pre-rename credentials … openclaw_device_key`. | **Pass — and it closes the oldest gap in this table.** **11a (tap-to-open):** operator confirms clicking a Repos row opens the run's Actions page. `open_url` has now crossed the IPC boundary, which means **the granted `opener:allow-open-url` scope is enforced at runtime, not merely written** — the check [#123](https://github.com/Sassy-Dog/solador/issues/123) named as the only one that could establish that. **11b (banner):** observed, and it is what exposed the bug — banners were arriving with the content replaced by the placeholder text `notification`, and under `com.apple.Terminal` were dropped entirely. After the fix a banner renders in full with the Solador icon, title `widget · needs approval` and body `Release · main is parked at an approval gate.` Operator also set Solador → Alert Style *Persistent* and Show previews *Always*; previews had been *Default*, which was necessary but not sufficient — it configures the Solador entry, which the app never posted under. |
 | 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/Sassy-Dog/solador/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-01), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from original code that has never run live — the original app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why the original never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on gadget's local columns, running/failed dots per the original), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
 | 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/Sassy-Dog/solador/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `SOLADOR_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |
 | 2026-08-01 | OpenClaw panel + Settings tab ([#177](https://github.com/Sassy-Dog/solador/issues/177)) | **Not performed.** The three new commands (`openclaw`, `settings_save_openclaw`, `settings_openclaw_retry`) and their **step 9** are therefore *documented, not verified* — no `openclaw: first frontend request …` line has ever been observed, and no live gateway was reached. What was verified instead is everything below the boundary: all five payloads were dumped from the real binary and rendered in a browser under the app's own CSP (`tests/frontend/csp_server.py`), exercising `openclaw.js`, the Settings tab, the pairing banner and the dot-opacity path while stubbing the IPC transport exactly as the rest of the suite does. **Also unexercised against a real gateway:** the WebSocket handshake, the signed connect payload, the pairing round-trip and the keyring seed persistence — those are covered by `crates/openclaw`'s own tests over a scripted transport (#173) and by this crate's `MemoryCredentialStore` round-trip, not by a socket. The ACL is untouched (`permissions` still `[]`, all three commands app-defined), which is the only reason to expect this to be uneventful — not evidence that it is. | **Not performed** (see left). |
