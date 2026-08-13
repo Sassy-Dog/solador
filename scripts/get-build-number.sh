@@ -4,9 +4,15 @@
 # ===========================================
 # Emits the CFBundleVersion (CURRENT_PROJECT_VERSION) — the org Versioning
 # spec's (v1.0, §1) machine-facing number. This script is the §3 build-number
-# capability owner for this repo: every consumer (scripts/build.sh via
-# xcodebuild's CURRENT_PROJECT_VERSION, any future CI job) reads it from here;
-# the count is never inlined anywhere else.
+# capability owner for this repo: every consumer reads it from here and the
+# count is never inlined anywhere else.
+#
+# NOTE: it currently has no build-time consumer. The xcodebuild
+# CURRENT_PROJECT_VERSION path this was written for went away with the macOS
+# app; `scripts/build.sh` is a plain `cargo build` and does not stamp a build
+# number, because `tauri.conf.json` still hardcodes `version: 0.1.0` with
+# `bundle.active: false` (#15 owns resolving that). The script stays the single
+# source of truth for when a release path exists to consume it.
 #
 # DESIGN: the build number is DECOUPLED from the marketing version
 # (scripts/get-version-info.sh) and is a single, globally-monotonic integer

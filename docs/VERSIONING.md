@@ -37,9 +37,11 @@ Consumers — version is **never** computed anywhere else:
 - `scripts/publish.sh` consumes the mint's output contract (below) and pins
   the build via `MARKETING_VERSION=<minted>` so the artifact is stamped with
   exactly the tagged version.
-- In-app displays (Settings footer, Sentry release, OpenClaw client version)
-  read `CFBundleShortVersionString` from the stamped bundle — downstream of
-  the scripts, compliant.
+- In-app displays (Settings footer, OpenClaw client version) read
+  `CFBundleShortVersionString` from the stamped bundle — downstream of the
+  scripts, compliant. (A "Sentry release" was listed here until #277: the app
+  has no Sentry SDK, so nothing sets one. If #15 adds opt-in reporting, its
+  release name belongs in this list.)
 
 **Replay pins / test seams** (org-canonical, §3): `MARKETING_VERSION` and
 `BUILD_NUMBER` pin verbatim (a pin is never auto-bumped — a mint collision

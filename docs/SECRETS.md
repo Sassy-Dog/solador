@@ -42,11 +42,22 @@ script knows where they come from, and no contributor needs to.
 
 | Variable | Needed for | Without it |
 |---|---|---|
-| `SENTRY_DSN` | `./dev publish` only | Pass `--skip-sentry` to release without crash reporting. Every non-release build already leaves it empty, so the no-op path is the common one. |
+| `SENTRY_DSN` | nothing today — see below | No effect. The app has no Sentry SDK, and `./dev publish` refuses before reaching this value. |
 | `DEVELOPMENT_TEAM` | picking a specific Apple signing team | `codesign` falls back to an ad-hoc signature. `./dev build` works either way. |
 
 Nothing in the day-to-day loop needs either: `./dev`, `./dev test`, `./dev lint`
 and `./dev build` all work on a clean clone with neither set.
+
+> **`SENTRY_DSN` is inert.** This app does not report its own errors to Sentry:
+> there is no `sentry` crate in any manifest and no panic hook. The integration
+> that consumed a DSN (#18, opt-in) lived in the macOS app that was deleted, and
+> the Tauri port never re-added it — it read the value from an xcodebuild build
+> setting and a `SentryDSN` Info.plist key, neither of which this repo has. On
+> top of that, its only would-be reader is `scripts/publish.sh`, which refuses
+> before it gets there because there is no release path (**#15**). Set it if you
+> like; nothing reads it. Do not confuse this with `crates/usage/src/sentry.rs`,
+> which *reads* Sentry's API for the Usage and Crons panels — that uses the
+> `org:read` auth token in the table above, not a DSN.
 
 ### Locally — direnv
 
