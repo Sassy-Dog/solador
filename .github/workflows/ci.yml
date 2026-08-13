@@ -57,6 +57,28 @@ jobs:
       - name: Test
         run: cargo test --locked -p solador-agent --verbose
 
+      # agent/deploy/ is the agent's only path onto a host, and until #269
+      # nothing in CI executed it — not even a syntax check. #268 broke every
+      # deploy for as long as it took someone to try one, behind three green
+      # required checks, `./dev lint` and `./dev test`.
+      #
+      # No install step for shellcheck: the ubuntu-latest image ships it. If a
+      # future image stops doing so this step goes red, which is the correct
+      # outcome — a lint gate that silently skips itself is what got us here.
+      - name: Shell syntax check (agent/deploy)
+        run: bash -n agent/deploy/*.sh
+
+      - name: ShellCheck (agent/deploy)
+        run: |
+          shellcheck --version
+          shellcheck -S warning agent/deploy/*.sh
+
+      # Sits after the Rust steps because one of its target_dir cases runs the
+      # real `cargo locate-project` against a scratch workspace; everything
+      # else stubs cargo/curl/sleep and touches no host.
+      - name: Deploy helper tests (agent/deploy/lib.sh)
+        run: bash agent/deploy/lib_test.sh
+
   rust-workspace:
     name: Rust workspace + frontend e2e
     # macOS is required, not preferred: app/src-tauri only builds on
