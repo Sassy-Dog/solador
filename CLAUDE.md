@@ -80,8 +80,10 @@ carries a five-minute manual smoke checklist that is the only thing covering it
 - `./dev run --release` — Run release build
 - `./dev build` — Build the cockpit binary (`./prd` = `./dev build --release`)
 - `./dev test` — Root Rust workspace (`cargo test --locked --workspace` —
-  `crates/*`, `app/src-tauri`) plus the `tests/frontend` Playwright e2e suite
-- `./dev lint` — `cargo fmt --check` + `cargo clippy`, mirrors CI
+  `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, plus the
+  `tests/frontend` Playwright e2e suite
+- `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
+  `shellcheck -S warning` over `agent/deploy/*.sh`; mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — Clean build artifacts
 - `./dev publish` — **Not implemented.** Refuses before minting a tag; see #15.
@@ -279,8 +281,9 @@ the scaffold #15 will complete, and refuses *before* minting a tag.
 ./dev test
 ```
 
-Runs `cargo test --locked --workspace` (`crates/*`, `app/src-tauri`) and the
-`tests/frontend` Playwright suite. Agent tests run via `cargo test` in `agent/`.
+Runs `cargo test --locked --workspace` (`crates/*`, `app/src-tauri`),
+`agent/deploy/lib_test.sh`, and the `tests/frontend` Playwright suite. Agent
+tests run via `cargo test` in `agent/`.
 
 ## Versioning (`docs/VERSIONING.md`)
 
@@ -306,6 +309,14 @@ false; #15 owns resolving it.
 ### Working on the Agent
 - Rust source in `agent/src/` (`server.rs`, `metrics.rs`, `containers.rs`).
 - Deploy via `agent/deploy`; see `agent/README.md` for endpoints and rollout.
+- **`agent/deploy/` is gated too, as of #269**: `agent/deploy/lib_test.sh`
+  (dependency-free bash, stubs cargo/curl/sleep) plus `shellcheck`/`bash -n`,
+  all three in the `agent-tests` job. Before that the deploy path was the one
+  place where "all green" carried no information — #268 broke every deploy and
+  nothing could have caught it. The load-bearing assertion is that
+  `build_release_binary` *fails* when the workspace target dir is empty: a
+  lenient fallback finds the stale pre-#264 binary in `agent/target/release/`
+  and deploys it, reporting success.
 
 ## Debugging
 

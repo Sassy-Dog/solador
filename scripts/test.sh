@@ -27,6 +27,17 @@ else
     log_warning "cargo not found — skipping Rust workspace tests (crates/*, app/src-tauri)"
 fi
 
+# --- agent/deploy helper tests. Mirrors CI's agent-tests job (#269). Needs
+# nothing but bash: cargo, curl and sleep are stubbed, and the two cases that
+# use the real cargo report themselves as skipped when it is absent.
+log_info "Running agent deploy helper tests (agent/deploy/lib_test.sh)…"
+if bash agent/deploy/lib_test.sh; then
+    log_success "Agent deploy helper tests passed"
+else
+    log_error "Agent deploy helper tests failed"
+    exit 1
+fi
+
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
 # Needs BOTH npm and cargo: the suite's `pretest` shells out to

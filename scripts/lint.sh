@@ -39,6 +39,33 @@ else
     status=1
 fi
 
+# --- agent/deploy/*.sh. Mirrors the two shell gates added to CI's agent-tests
+# job by #269. These scripts are the agent's only path onto a host and were the
+# least-exercised code in the repo: #268 broke every deploy while `bash -n` and
+# shellcheck were clean — because nothing ran them.
+log_info "bash -n agent/deploy/*.sh…"
+if bash -n agent/deploy/*.sh; then
+    log_success "agent/deploy shell syntax clean"
+else
+    log_error "agent/deploy has a shell syntax error"
+    status=1
+fi
+
+# shellcheck is not a repo dependency, so a machine without it gets a loud skip
+# rather than a red run — the same rule scripts/test.sh applies to a missing
+# toolchain (PR #126). CI runs it unconditionally, so the gate itself never skips.
+if command_exists shellcheck; then
+    log_info "shellcheck -S warning agent/deploy/*.sh…"
+    if shellcheck -S warning agent/deploy/*.sh; then
+        log_success "shellcheck clean"
+    else
+        log_error "shellcheck found problems in agent/deploy"
+        status=1
+    fi
+else
+    log_warning "shellcheck not found — skipping agent/deploy lint (CI still runs it; brew install shellcheck)"
+fi
+
 if [[ $status -eq 0 ]]; then
     log_success "Lint passed (mirrors CI)"
 else

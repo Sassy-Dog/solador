@@ -138,6 +138,38 @@ and deploys to Linux. That job is scoped `-p solador-agent` deliberately — a
 bare `cargo build` on the Linux runner would resolve the whole workspace,
 including `app/src-tauri` and its webkit2gtk system dependencies.
 
+### Testing `deploy/`
+
+`agent-tests` also gates the deploy scripts, which are the agent's only path
+onto a host:
+
+```bash
+bash agent/deploy/lib_test.sh          # the helpers in deploy/lib.sh
+shellcheck -S warning agent/deploy/*.sh
+bash -n agent/deploy/*.sh
+```
+
+`./dev test` runs the first, `./dev lint` the other two (skipping shellcheck
+with a warning if it isn't installed). All three run unconditionally in CI.
+
+`lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
+already need, no bats and no jq — and stubs `cargo`, `curl` and `sleep`, so it
+touches no host and takes well under a second. It covers `crate_version`
+(section-awareness), `health_url` (wildcard → loopback, IPv6 bracketing),
+`health_version`, `target_dir`, `verify_health` against a stubbed endpoint, and
+three source-level invariants no runtime test can reach: the pre-rename
+`devcanopy-agent` handover, the order the legacy unit is stopped in, and
+`redeploy.sh` taking `.prev` before the swap.
+
+The load-bearing case is `build_release_binary` **failing** when the workspace
+target dir holds no binary, rather than falling back to a search. Until #268
+both deploy scripts looked in `agent/target/release/`, which #264 had stopped
+writing to — while still holding a stale binary from the last standalone build
+on every already-installed host. A lenient implementation finds that one,
+installs it, and reports a successful deploy of code several releases old.
+End-to-end install against a real host stays out of scope; `verify_health`
+covers that at runtime by asserting the *served* version.
+
 ## Build & run (local)
 
 ```bash
