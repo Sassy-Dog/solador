@@ -296,6 +296,21 @@ trait ItemStore {
     fn get_item(&self, account: &str) -> Result<Option<String>, SecretError>;
     fn set_item(&self, account: &str, value: &str) -> Result<(), SecretError>;
     fn delete_item(&self, account: &str) -> Result<(), SecretError>;
+
+    /// The same item as [`ItemStore::get_item`], **without decoding it**.
+    ///
+    /// Service migration moves items it must not interpret:
+    /// [`SecretKey::OpenClawDeviceKey`] is raw key material, deliberately
+    /// unencoded so this app and the original share one device identity. Read
+    /// through the string API it is not "absent" and not "corrupt" — `keyring`
+    /// answers `Err(BadEncoding)`, which
+    /// [`route_migrate_service`] would otherwise record as a failed
+    /// credential. Text round-trips through bytes losslessly, so the byte pair
+    /// is what the migration uses for *every* account rather than special-casing
+    /// one.
+    fn get_item_bytes(&self, account: &str) -> Result<Option<Vec<u8>>, SecretError>;
+    /// See [`ItemStore::get_item_bytes`].
+    fn set_item_bytes(&self, account: &str, value: &[u8]) -> Result<(), SecretError>;
 }
 
 /// Reads and parses the consolidated blob item via any [`ItemStore`].
@@ -394,7 +409,17 @@ fn route_migrate_service<S: ItemStore>(
         // The destination always wins, so a retry after a partial pass fills
         // the gaps instead of clobbering what already arrived -- and a
         // credential the operator set up by hand is never overwritten.
-        match current.get_item(account) {
+        //
+        // BYTES, not `get_item`. This probe only asks "is it already here?",
+        // and asking it through the string API answered `Err(BadEncoding)` for
+        // the one account that is not text -- so `openclaw_device_key`, sitting
+        // safely in the destination, was recorded as a FAILED credential on
+        // every launch. That kept the marker down permanently, and with the
+        // marker down adoption re-runs forever: the warning was cosmetic, but
+        // re-running is not, because it re-adopts a credential the operator
+        // deliberately cleared in Settings (the resurrection the marker exists
+        // to prevent). See issue #281.
+        match current.get_item_bytes(account) {
             Ok(Some(_)) => continue,
             Ok(None) => {}
             Err(_) => {
@@ -411,8 +436,11 @@ fn route_migrate_service<S: ItemStore>(
         // retry then fails identically every launch, silently, never reaching
         // the rest. Retrying an operation that fails the same way every time is
         // not recovery.
-        match legacy.get_item(account) {
-            Ok(Some(value)) => match current.set_item(account, &value) {
+        // Bytes on both halves, for the same reason as the probe above: the
+        // copy must move the device key without interpreting it, and text is
+        // carried by bytes losslessly so nothing here needs a special case.
+        match legacy.get_item_bytes(account) {
+            Ok(Some(value)) => match current.set_item_bytes(account, &value) {
                 Ok(()) => copied += 1,
                 Err(_) => failed.push(account.clone()),
             },
@@ -683,6 +711,26 @@ impl ItemStore for KeyringStore {
                 source,
             }),
         }
+    }
+
+    fn get_item_bytes(&self, account: &str) -> Result<Option<Vec<u8>>, SecretError> {
+        match self.entry(account)?.get_secret() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(source) => Err(SecretError::Backend {
+                account: account.to_owned(),
+                source,
+            }),
+        }
+    }
+
+    fn set_item_bytes(&self, account: &str, value: &[u8]) -> Result<(), SecretError> {
+        self.entry(account)?
+            .set_secret(value)
+            .map_err(|source| SecretError::Backend {
+                account: account.to_owned(),
+                source,
+            })
     }
 }
 
@@ -1454,9 +1502,14 @@ mod tests {
     /// and migration are testable without touching the OS — this module's
     /// convention (see the module doc) is that no test exercises the real
     /// keychain.
+    /// **Byte-backed on purpose.** It held `HashMap<String, String>` until
+    /// issue #281, which made the one value that matters — raw
+    /// `openclaw_device_key` material — *unrepresentable in the tests*, so the
+    /// bug that shipped could not be written down here. A fake whose type
+    /// system cannot express the failing case will always be green.
     #[derive(Default)]
     struct FakeItemStore {
-        items: Mutex<HashMap<String, String>>,
+        items: Mutex<HashMap<String, Vec<u8>>>,
         /// Accounts whose reads fail, simulating e.g. a locked keychain — for
         /// the migration-failure test.
         poisoned: Mutex<HashSet<String>>,
@@ -1493,20 +1546,31 @@ mod tests {
                     ))),
                 });
             }
-            Ok(self
+            // `keyring`'s answer for a non-UTF-8 value, not a kinder one.
+            // `MemoryCredentialStore` reports absent here and the real backend
+            // reports `BadEncoding`; a fake that picks the forgiving reading
+            // is what let #281 ship green, so this one matches the backend the
+            // app actually runs against.
+            match self
                 .items
                 .lock()
                 .expect("fake item store poisoned")
                 .get(account)
-                .cloned())
+                .cloned()
+            {
+                None => Ok(None),
+                Some(bytes) => match String::from_utf8(bytes) {
+                    Ok(text) => Ok(Some(text)),
+                    Err(e) => Err(SecretError::Backend {
+                        account: account.to_owned(),
+                        source: keyring::Error::BadEncoding(e.into_bytes()),
+                    }),
+                },
+            }
         }
 
         fn set_item(&self, account: &str, value: &str) -> Result<(), SecretError> {
-            self.items
-                .lock()
-                .expect("fake item store poisoned")
-                .insert(account.to_owned(), value.to_owned());
-            Ok(())
+            self.set_item_bytes(account, value.as_bytes())
         }
 
         fn delete_item(&self, account: &str) -> Result<(), SecretError> {
@@ -1516,6 +1580,112 @@ mod tests {
                 .remove(account);
             Ok(())
         }
+
+        fn get_item_bytes(&self, account: &str) -> Result<Option<Vec<u8>>, SecretError> {
+            if self
+                .poisoned
+                .lock()
+                .expect("poison set poisoned")
+                .contains(account)
+            {
+                return Err(SecretError::Backend {
+                    account: account.to_owned(),
+                    source: keyring::Error::NoStorageAccess(Box::new(std::io::Error::other(
+                        "simulated locked keychain",
+                    ))),
+                });
+            }
+            Ok(self
+                .items
+                .lock()
+                .expect("fake item store poisoned")
+                .get(account)
+                .cloned())
+        }
+
+        fn set_item_bytes(&self, account: &str, value: &[u8]) -> Result<(), SecretError> {
+            self.items
+                .lock()
+                .expect("fake item store poisoned")
+                .insert(account.to_owned(), value.to_vec());
+            Ok(())
+        }
+    }
+
+    /// 32 bytes that are deliberately not valid UTF-8 — the shape of the real
+    /// Ed25519 device key.
+    fn device_key_material() -> Vec<u8> {
+        let seed: Vec<u8> = (0u8..32)
+            .map(|i| i.wrapping_mul(7).wrapping_add(200))
+            .collect();
+        assert!(
+            String::from_utf8(seed.clone()).is_err(),
+            "the fixture must not accidentally be valid UTF-8"
+        );
+        seed
+    }
+
+    /// **The #281 regression.** A device key already sitting in the destination
+    /// is *migrated*, and must be reported as such.
+    ///
+    /// Before the fix the destination-wins probe went through the string API,
+    /// which answers `Err(BadEncoding)` for raw key material — so a credential
+    /// that was safely in place was recorded as a FAILED adoption, on every
+    /// launch, forever. This asserts the two consequences that actually hurt:
+    /// no error, and **the marker goes down**, because it is the marker that
+    /// stops adoption re-running and resurrecting credentials the operator
+    /// cleared in Settings.
+    #[test]
+    fn a_binary_device_key_already_in_the_destination_is_not_a_failed_adoption() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        let account = SecretKey::OpenClawDeviceKey.account();
+
+        // Both sides hold it, which is the real machine's state after a
+        // previous pass copied it.
+        legacy
+            .set_item_bytes(&account, &device_key_material())
+            .expect("seed legacy");
+        current
+            .set_item_bytes(&account, &device_key_material())
+            .expect("seed destination");
+
+        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("a device key already in place must not fail the pass");
+
+        assert_eq!(copied, 0, "it was already there, so nothing was copied");
+        assert!(
+            current
+                .get_item(SERVICE_MIGRATION_MARKER)
+                .expect("marker read")
+                .is_some(),
+            "a clean pass must write the marker — without it adoption re-runs \
+             every launch and re-adopts cleared credentials"
+        );
+    }
+
+    /// The other half: when the destination does **not** have it, the copy
+    /// itself must carry raw bytes through unchanged. Reading the legacy item
+    /// as a string would have failed here for the same reason.
+    #[test]
+    fn the_device_key_is_copied_byte_for_byte_when_the_destination_lacks_it() {
+        let legacy = FakeItemStore::default();
+        let current = FakeItemStore::default();
+        let account = SecretKey::OpenClawDeviceKey.account();
+        legacy
+            .set_item_bytes(&account, &device_key_material())
+            .expect("seed legacy");
+
+        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
+            .expect("the copy must carry key material");
+
+        assert_eq!(copied, 1);
+        assert_eq!(
+            current.get_item_bytes(&account).expect("read back"),
+            Some(device_key_material()),
+            "the device key must survive the move byte for byte — a lossy \
+             transcription re-pairs the OpenClaw identity from scratch"
+        );
     }
 
     #[test]
