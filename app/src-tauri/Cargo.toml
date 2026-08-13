@@ -67,6 +67,14 @@ serde_json = { workspace = true }
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-notification = "2.3.3"
 
+# macOS only, and only to call `set_application` BEFORE the notification plugin
+# does — see `claim_notification_identity` in `src/main.rs` for why that one
+# call is the whole fix. Same pin the plugin resolves through `notify-rust`, so
+# cargo unifies them to ONE crate and therefore one `INIT_APPLICATION_SET`
+# static; a second copy would have its own `call_once` and claim nothing.
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6.15"
+
 [dev-dependencies]
 # Seed/store tests write a real store file in a throwaway directory rather
 # than mocking the filesystem — same as crates/store's own tests.

@@ -3878,6 +3878,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "glob",
+ "mac-notification-sys",
  "serde",
  "serde_json",
  "solador-azurecost",
