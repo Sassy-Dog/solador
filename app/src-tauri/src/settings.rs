@@ -1710,7 +1710,11 @@ fn about_tab() -> Value {
             { "label": "Report an Issue", "url": "https://github.com/Sassy-Dog/solador/issues" },
             { "label": "Documentation", "url": "https://github.com/Sassy-Dog/solador#readme" },
         ],
-        "copyright": "© 2026 Chris Madrid · Apache-2.0",
+        // The holder is the LLC, and `NOTICE` at the repo root is where that is
+        // authoritative — this string had named an individual since before the
+        // entity existed. `the_about_copyright_names_the_holder_in_notice`
+        // pins the two together so they cannot drift apart again in silence.
+        "copyright": "© 2026 Sassy Dog Enterprises LLC · Apache-2.0",
     })
 }
 
@@ -3206,6 +3210,36 @@ mod tests {
     #[test]
     fn a_derived_version_is_rendered_verbatim() {
         assert_eq!(label_for(Some("2026.8.105")), "Version 2026.8.105");
+    }
+
+    #[test]
+    fn the_about_copyright_names_the_holder_in_notice() {
+        // `NOTICE` is the authoritative attribution and it named the LLC while
+        // this string named an individual — a disagreement nothing was checking,
+        // in the one place a user actually reads it. Comparing against the file
+        // rather than a second literal is the point: a transcribed copy would
+        // agree with itself and keep passing after the holder changed.
+        const NOTICE: &str = include_str!("../../../NOTICE");
+        let holder = NOTICE
+            .lines()
+            .find_map(|l| l.strip_prefix("Copyright "))
+            .expect("NOTICE carries a `Copyright <year> <holder>` line")
+            .trim();
+        // Drop the leading year; what has to match is who owns it.
+        let holder = holder
+            .split_once(' ')
+            .map_or(holder, |(_year, rest)| rest)
+            .trim();
+        assert!(!holder.is_empty(), "NOTICE names no holder");
+
+        let shown = about_tab()["copyright"]
+            .as_str()
+            .expect("copyright is a string")
+            .to_owned();
+        assert!(
+            shown.contains(holder),
+            "About shows {shown:?}, which does not name NOTICE's holder {holder:?}"
+        );
     }
 
     #[test]
