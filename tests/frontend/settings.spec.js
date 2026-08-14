@@ -577,8 +577,10 @@ test("Portfolio adds, toggles and edits watched workflows", async ({ page, baseU
 
   const first = settings.portfolio.rows[0].slug;
   const row = page.locator(`.repo-row[data-repo="${first}"]`);
-  await row.locator(".input").fill("release.yml, deploy.yml");
-  await row.locator(".input").blur();
+  // `input.input`, not `.input`: the row also carries the account picker,
+  // which is a `<select>` sharing the class.
+  await row.locator("input.input").fill("release.yml, deploy.yml");
+  await row.locator("input.input").blur();
   expect(await calls(page, "settings_set_repo_workflows")).toEqual([
     {
       command: "settings_set_repo_workflows",
@@ -594,6 +596,55 @@ test("Portfolio adds, toggles and edits watched workflows", async ({ page, baseU
   expect(await calls(page, "settings_set_repo_enabled")).toEqual([
     { command: "settings_set_repo_enabled", args: { slug: first, enabled: false } },
   ]);
+});
+
+/**
+ * The picker half of #292.
+ *
+ * A repo added while exactly one account exists is attributed to it in Rust
+ * and never reaches this control as a question. A repo added with two arrives
+ * *unattributed*, and the picker is what resolves it — showing that state
+ * honestly rather than pre-selecting the first account, which is the guess the
+ * whole change exists to refuse.
+ */
+test("Portfolio shows each repo's account and offers the unattributed state", async ({
+  page,
+  baseURL,
+}) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "portfolio").click();
+
+  const t = settings.portfolio;
+  const attributed = t.rows.find((repo) => repo.accountId);
+  const unattributed = t.rows.find((repo) => !repo.accountId);
+  expect(attributed, "the fixture has no attributed repo").toBeTruthy();
+  expect(unattributed, "the fixture has no unattributed repo").toBeTruthy();
+
+  const picker = (repo) => page.locator(`.repo-row[data-repo="${repo.slug}"] select.input`);
+  await expect(picker(attributed)).toHaveValue(attributed.accountId);
+  await expect(
+    picker(unattributed),
+    "an unattributed repo shows the unattributed option, not the first account"
+  ).toHaveValue("");
+  // Every account, plus that option.
+  await expect(picker(unattributed).locator("option")).toHaveCount(t.accountOptions.length);
+
+  const chosen = t.accountOptions.find((option) => option.value);
+  await picker(unattributed).selectOption(chosen.value);
+  expect(await calls(page, "settings_set_repo_account")).toEqual([
+    {
+      command: "settings_set_repo_account",
+      args: { slug: unattributed.slug, accountId: chosen.value },
+    },
+  ]);
+
+  // …and back the other way: the empty option is `null` on the wire, which is
+  // Rust's "unattributed" rather than an id of no characters.
+  await picker(attributed).selectOption("");
+  expect(await calls(page, "settings_set_repo_account")).toContainEqual({
+    command: "settings_set_repo_account",
+    args: { slug: attributed.slug, accountId: null },
+  });
 });
 
 /** The two accounts the fixture carries: one with a token and repos depending

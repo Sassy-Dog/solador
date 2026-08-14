@@ -209,6 +209,36 @@ pub fn validated_slug(raw: &str, existing: &[TrackedRepo]) -> Option<String> {
     Some(slug.to_owned())
 }
 
+/// A newly tracked repo, attributed **only when the answer is forced**.
+///
+/// With exactly one account there is no other account it could belong to, so
+/// storing that is a deduction rather than a guess and the picker opens
+/// pre-selected. With two or more there is no correct default — not the first,
+/// not the most recently added, not the one that happens to be enabled — so the
+/// repo is stored unattributed and the Portfolio row's picker is what resolves
+/// it. Inventing an owner here is the fabrication rule applied to
+/// configuration ([`TrackedRepo::account_id`]), and it would quietly undo the
+/// property the per-account pass exists for: a repo is only ever fetched with
+/// its own account's token.
+///
+/// With **no** account this returns `None` too, which is the v1 store's shape:
+/// `plan_github_pass` reads a portfolio that names no account, in a store that
+/// has none, as the single GitHub credential's.
+///
+/// `enabled` is deliberately not a filter. Disabling an account pauses its
+/// polling; it does not stop it owning repos, so narrowing to the enabled ones
+/// would turn an ambiguous store into a confident wrong answer.
+#[must_use]
+pub fn new_repo(slug: impl Into<String>, accounts: &[VendorAccount]) -> TrackedRepo {
+    TrackedRepo {
+        account_id: match accounts {
+            [only] => Some(only.id),
+            _ => None,
+        },
+        ..TrackedRepo::new(slug)
+    }
+}
+
 /// The comma-separated watched-workflow field, parsed the way
 /// `PortfolioSettingsView.watchedBinding` parses it: split on commas and
 /// newlines, trim, drop blanks. An empty result is `None` (the default
@@ -454,7 +484,7 @@ pub fn view(
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "github": github_tab(settings, stored),
         "accounts": accounts_tab(accounts, repos, stored),
-        "portfolio": portfolio_tab(repos),
+        "portfolio": portfolio_tab(repos, accounts),
         "hosts": hosts_tab(settings, hosts, rules, stored),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
@@ -532,25 +562,62 @@ fn github_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
     })
 }
 
-fn portfolio_tab(repos: &[TrackedRepo]) -> Value {
+/// What the account picker calls the state a repo is in before anyone has
+/// answered. Named rather than inlined because it is an *option* the operator
+/// can pick deliberately, not the absence of one.
+const UNATTRIBUTED_LABEL: &str = "Unattributed";
+
+fn portfolio_tab(repos: &[TrackedRepo], accounts: &[VendorAccount]) -> Value {
+    // Empty when there are no accounts: a picker whose only option is
+    // "Unattributed" is a control that cannot be right, and in a v1 store
+    // every repo is already the single GitHub credential's.
+    let options: Vec<Value> =
+        if accounts.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(json!({ "value": "", "label": UNATTRIBUTED_LABEL }))
+                .chain(accounts.iter().map(
+                    |account| json!({ "value": account.id.to_string(), "label": account.label }),
+                ))
+                .collect()
+        };
     json!({
         "heading": "Tracked Repos",
         "empty": "No tracked repos yet. Add one below as owner/name.",
         "workflowsLabel": "Watched workflows (comma-separated, e.g. release.yml)",
+        "accountLabel": "Fetched by",
+        "accountOptions": options,
+        // The row's own sentence for an id nothing answers to. Said out loud
+        // rather than folded into "Unattributed": the operator did configure
+        // this repo's account once, and a row that silently forgets that reads
+        // as a bug in the app rather than a consequence of the removal.
+        "missingAccountLabel": "Account removed — pick one",
         "deleteLabel": "Delete",
         "rows": repos
             .iter()
-            .map(|repo| json!({
-                "slug": repo.slug,
-                "enabled": repo.enabled,
-                "workflows": workflows_text(repo),
-            }))
+            .map(|repo| {
+                // Resolved against the accounts that actually exist. A stale id
+                // is reported as stale (below) rather than sent to a picker
+                // that has no option for it — a `<select>` handed an unknown
+                // value falls back to its first entry, which would paint
+                // "Unattributed" over a row the store says otherwise about.
+                let named = repo
+                    .account_id
+                    .filter(|id| accounts.iter().any(|account| account.id == *id));
+                json!({
+                    "slug": repo.slug,
+                    "enabled": repo.enabled,
+                    "workflows": workflows_text(repo),
+                    "accountId": named.map(|id| id.to_string()),
+                    "accountMissing": repo.account_id.is_some() && named.is_none(),
+                })
+            })
             .collect::<Vec<_>>(),
         "add": {
             "heading": "Add Repo",
             "slugLabel": "owner/name (e.g. acme/gadget)",
             "buttonLabel": "Add",
-            "help": "Drives the Repos and GitHub Runners panels. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive.",
+            "help": "Drives the Repos and GitHub Runners panels. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive. A repo added while exactly one account exists is attributed to it; with more than one there is no correct default, so it arrives unattributed and Fetched by is the answer.",
         },
     })
 }
@@ -2631,6 +2698,133 @@ mod tests {
         assert_eq!(rows[0]["workflows"], "release.yml");
         assert_eq!(rows[1]["enabled"], false);
         assert_eq!(rows[1]["workflows"], "");
+    }
+
+    // MARK: - the Portfolio tab's account picker
+
+    /// [`view`]'s Portfolio tab over a given portfolio and account list.
+    fn portfolio_view(accounts: &[VendorAccount], repos: &[TrackedRepo]) -> Value {
+        let (settings, _, _, stored) = sample();
+        view(
+            StoreSections {
+                accounts,
+                ..sections(&settings, &[], repos)
+            },
+            &stored,
+            &facts(),
+        )["portfolio"]
+            .clone()
+    }
+
+    /// A newly tracked repo takes the only account there is. One option is not
+    /// a choice — it is the answer, and asking for it is a dialog with one
+    /// button.
+    #[test]
+    fn a_new_repo_is_attributed_automatically_when_there_is_only_one_account() {
+        let only = account("work");
+        let repo = new_repo("acme/new", std::slice::from_ref(&only));
+        assert_eq!(repo.slug, "acme/new");
+        assert_eq!(repo.account_id, Some(only.id));
+    }
+
+    /// The load-bearing one. Two accounts and no correct default: not the
+    /// first, not the most recently added, not the enabled one. An invented
+    /// owner is the fabrication rule applied to configuration, and it would
+    /// undo the property #290 shipped — that a repo is only ever fetched with
+    /// its own account's token.
+    #[test]
+    fn a_new_repo_with_two_accounts_is_not_guessed() {
+        let accounts = [account("work"), account("personal")];
+        assert_eq!(new_repo("acme/new", &accounts).account_id, None);
+    }
+
+    /// Disabling an account pauses its polling; it does not stop the account
+    /// owning repos. Two accounts with one switched off is still two possible
+    /// owners, so it is still a question.
+    #[test]
+    fn a_disabled_second_account_still_makes_the_answer_ambiguous() {
+        let paused = VendorAccount {
+            enabled: false,
+            ..account("personal")
+        };
+        let accounts = [account("work"), paused];
+        assert_eq!(new_repo("acme/new", &accounts).account_id, None);
+
+        // …and one account that happens to be paused is still the only one it
+        // could belong to.
+        let only = VendorAccount {
+            enabled: false,
+            ..account("work")
+        };
+        assert_eq!(
+            new_repo("acme/new", std::slice::from_ref(&only)).account_id,
+            Some(only.id)
+        );
+    }
+
+    /// No accounts at all is the v1 store, where every repo is the single
+    /// GitHub token's. There is nothing to attribute to, and `None` is what
+    /// that pass reads.
+    #[test]
+    fn a_store_with_no_accounts_attributes_nothing_and_offers_no_picker() {
+        let repos = [TrackedRepo::new("acme/new")];
+        assert_eq!(new_repo("acme/new", &[]).account_id, None);
+
+        let tab = portfolio_view(&[], &repos);
+        assert_eq!(
+            tab["accountOptions"],
+            json!([]),
+            "a picker over nothing is a control that can only be wrong"
+        );
+        assert_eq!(tab["rows"][0]["accountId"], Value::Null);
+    }
+
+    /// The row names the account that fetches it, and the picker offers every
+    /// account plus the unattributed state it starts in at N > 1.
+    #[test]
+    fn a_portfolio_row_names_the_account_that_fetches_it() {
+        let work = account("work");
+        let personal = account("personal");
+        let repos = [owned_by(&work, "acme/widget"), TrackedRepo::new("acme/new")];
+
+        let tab = portfolio_view(&[work.clone(), personal.clone()], &repos);
+        let rows = tab["rows"].as_array().expect("rows");
+        assert_eq!(rows[0]["accountId"], json!(work.id.to_string()));
+        assert_eq!(
+            rows[1]["accountId"],
+            Value::Null,
+            "an unattributed repo says so rather than showing the first account"
+        );
+
+        assert_eq!(
+            tab["accountOptions"],
+            json!([
+                { "value": "", "label": UNATTRIBUTED_LABEL },
+                { "value": work.id.to_string(), "label": "work" },
+                { "value": personal.id.to_string(), "label": "personal" },
+            ]),
+            "the unattributed state is an option, not an absence"
+        );
+    }
+
+    /// A repo pointing at an account that has since been removed is neither
+    /// silently re-homed nor quietly rendered as a deliberate "unattributed":
+    /// the row says the account is gone, which is what makes picking a new one
+    /// an obvious next step rather than a mystery.
+    #[test]
+    fn a_row_naming_a_removed_account_says_so_rather_than_reading_as_unattributed() {
+        let work = account("work");
+        let removed = account("personal");
+        let repos = [owned_by(&removed, "acme/orphan")];
+
+        let tab = portfolio_view(std::slice::from_ref(&work), &repos);
+        let row = &tab["rows"][0];
+        assert_eq!(row["accountId"], Value::Null);
+        assert_eq!(row["accountMissing"], json!(true));
+
+        // …and an honestly unattributed row is not accused of it.
+        let tab = portfolio_view(std::slice::from_ref(&work), &[TrackedRepo::new("acme/new")]);
+        assert_eq!(tab["rows"][0]["accountMissing"], json!(false));
     }
 
     #[test]
