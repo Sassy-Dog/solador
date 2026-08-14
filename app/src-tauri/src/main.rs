@@ -2877,7 +2877,14 @@ async fn openclaw_loop(app: Arc<App>) {
                 &url,
                 token,
                 device,
-                settings::VERSION,
+                // The gateway's `version` is a WIRE field with a required
+                // string, so an underivable version becomes the literal
+                // "unknown" rather than an omitted key. Making it optional is a
+                // protocol change, and this repo lands wire changes on their
+                // own — a UI version fix is not the place. "unknown" is at
+                // least an honest claim; `0.1.0`, which this sent until now,
+                // was not.
+                settings::VERSION.unwrap_or("unknown"),
             ) => outcome,
             () = app.openclaw_wake.notified() => continue,
         };

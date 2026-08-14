@@ -45,12 +45,20 @@ Consumers — version is **never** computed anywhere else:
 - In-app displays (Settings footer, OpenClaw client version) read
   `CFBundleShortVersionString` from the stamped bundle — downstream of the
   scripts, compliant.
-- The **Sentry release name** on an opt-in crash report (#309) is
-  `settings::VERSION` — `app/src-tauri`'s `CARGO_PKG_VERSION`, i.e. the same
-  `0.1.0` the About string shows, **not** the CalVer. That is a known gap and
-  the same one About has: wiring either to the derived version is still not
-  done. Nothing here computes a version of its own, which is the rule that
-  matters; when About is wired up, this rides along with it.
+- The **About string** and the **Sentry release name** on an opt-in crash
+  report (#309) both read `settings::VERSION`, which is now the derived CalVer:
+  `app/src-tauri/build.rs` runs `get-version-info.sh --version` and publishes it
+  as `SOLADOR_MARKETING_VERSION`. It computes nothing of its own, and an
+  explicit `MARKETING_VERSION` in the environment wins over deriving — the same
+  pin `publish.sh` sets so the artifact carries the version the *tag* carries
+  rather than a fresh re-derive.
+- `settings::VERSION` is an `Option<&str>`, and the `None` arm is load-bearing.
+  A **shallow clone cannot be asked** how many commits landed this month: it
+  answers `1` rather than failing, which is why the bundle job pins
+  `fetch-depth: 0`. On a shallow checkout the build script emits nothing, About
+  renders `Version —`, and the crash report carries **no release** rather than a
+  stand-in — Sentry groups and regresses by release, so one shared placeholder
+  release would make a fixed crash read as regressed on the next build.
 
 **Replay pins / test seams** (org-canonical, §3): `MARKETING_VERSION` and
 `BUILD_NUMBER` pin verbatim (a pin is never auto-bumped — a mint collision

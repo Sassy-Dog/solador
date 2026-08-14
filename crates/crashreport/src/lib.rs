@@ -161,8 +161,15 @@ pub struct Config<'a> {
     /// The DSN this build carries — [`BUILD_DSN`] in the app, an explicit value
     /// in tests. Never read from the runtime environment.
     pub dsn: Option<&'a str>,
-    /// The version this build reports itself as.
-    pub release: &'a str,
+    /// The version this build reports itself as, or `None` when it could not be
+    /// derived (a shallow clone, or no git at all — see `app/src-tauri/build.rs`).
+    ///
+    /// `None` attaches **no** release to the event rather than a placeholder.
+    /// Sentry groups and regresses issues by release, so a stand-in string does
+    /// not degrade gracefully here: every build that could not name itself
+    /// would share one release, and a crash fixed in one would read as
+    /// regressed by the next.
+    pub release: Option<&'a str>,
     /// `debug` or `release`; never a hostname, a user or a machine name.
     pub environment: &'a str,
 }
@@ -291,7 +298,7 @@ pub fn start_with_transport(
     // move under us.
     let mut options = ClientOptions::default();
     options.dsn = Some((**dsn).clone());
-    options.release = Some(config.release.to_owned().into());
+    options.release = config.release.map(|r| r.to_owned().into());
     options.environment = Some(config.environment.to_owned().into());
     // Belt and braces around the scrubber: nothing should be collecting PII in
     // the first place, and the structural allow-list drops it anyway.
@@ -388,7 +395,7 @@ mod tests {
         let reporting = start(Config {
             opt_in: OptIn::Declined,
             dsn: Some(TEST_DSN),
-            release: "test",
+            release: Some("test"),
             environment: "test",
         });
         assert!(!reporting.is_active());
@@ -407,7 +414,7 @@ mod tests {
         let reporting = start(Config {
             opt_in: OptIn::Granted,
             dsn: None,
-            release: "test",
+            release: Some("test"),
             environment: "test",
         });
         assert_eq!(

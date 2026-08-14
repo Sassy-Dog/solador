@@ -31,17 +31,41 @@ use viewmodel::color;
 
 use crate::openclaw;
 
-/// The app's marketing version.
+/// The app's marketing version — the git-derived CalVer, or `None`.
 ///
-/// Hard-coded via the crate version (`app/src-tauri/Cargo.toml`, mirrored in
-/// `tauri.conf.json`) rather than derived from git the way the original app's is
-/// (`scripts/get-version-info.sh`, CalVer per `docs/VERSIONING.md`). Wiring the
-/// shell into that derivation is still to do; until then this is a deliberate,
-/// documented placeholder rather than a number pretending to be a release.
+/// `build.rs` publishes `SOLADOR_MARKETING_VERSION` from
+/// `scripts/get-version-info.sh` (the CalVer algorithm's single owner, per
+/// `docs/VERSIONING.md`) and publishes **nothing** when it cannot derive one
+/// honestly — a shallow clone, or a source tree with no git at all.
+/// `option_env!` is what makes that absence representable here instead of
+/// arriving as a plausible-looking number.
 ///
-/// The tracking issue lived in the pre-publication repository, which is now an
-/// archive, so the reason is stated here instead of linked.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// This used to be `env!("CARGO_PKG_VERSION")`, i.e. `Cargo.toml`'s unpublished
+/// `0.1.0`. It rendered as `Version 0.1.0` in About and, after #309, as the
+/// Sentry release name on every crash report — a number that has never been a
+/// release, shown with exactly the confidence of one that had. An absent
+/// version now renders `—`, which is the weaker and true claim.
+pub const VERSION: Option<&str> = option_env!("SOLADOR_MARKETING_VERSION");
+
+/// What About shows for the version, unknown included.
+///
+/// Kept beside `VERSION` rather than inlined at the call site so the `—` and
+/// the number are chosen in one place; the frontend paints this string.
+pub fn version_label() -> String {
+    label_for(VERSION)
+}
+
+/// The rendering, split from the constant so both branches are reachable in a
+/// test. `VERSION` is fixed at compile time, so a test that only reads it can
+/// exercise whichever branch that build happens to be in — and the `None`
+/// branch is the one that appears exactly where nobody is looking: a shallow
+/// CI checkout, where the alternative would be a fabricated `<year>.<month>.1`.
+fn label_for(version: Option<&str>) -> String {
+    match version {
+        Some(v) => format!("Version {v}"),
+        None => "Version —".to_string(),
+    }
+}
 
 /// The label on the button that opens this surface.
 ///
@@ -1679,7 +1703,7 @@ fn openclaw_tab(
 fn about_tab() -> Value {
     json!({
         "name": "Solador",
-        "version": format!("Version {VERSION}"),
+        "version": version_label(),
         "tagline": "Everything around your code, at a glance",
         "links": [
             { "label": "GitHub Repository", "url": "https://github.com/Sassy-Dog/solador" },
@@ -3145,11 +3169,51 @@ mod tests {
     }
 
     #[test]
+    fn an_underivable_version_renders_an_em_dash_not_a_number() {
+        // The branch a shallow CI checkout takes. Before build.rs, this build
+        // reported `Version 0.1.0` — Cargo.toml's unpublished placeholder,
+        // shown with the confidence of a release that existed.
+        assert_eq!(label_for(None), "Version —");
+        assert!(!label_for(None).contains("0.1.0"));
+    }
+
+    #[test]
+    fn the_wired_version_is_calver_or_absent_never_the_cargo_placeholder() {
+        // The regression guard. Reverting build.rs to `env!("CARGO_PKG_VERSION")`
+        // compiles, renders "Version 0.1.0", and passes every other test here —
+        // this is the one that notices. `None` is allowed because a shallow
+        // checkout must refuse to derive rather than invent a count.
+        if let Some(v) = VERSION {
+            assert_ne!(
+                v,
+                env!("CARGO_PKG_VERSION"),
+                "About is back on the Cargo placeholder"
+            );
+            let parts: Vec<&str> = v.split('.').collect();
+            assert_eq!(parts.len(), 3, "not CalVer: {v}");
+            for p in &parts {
+                assert!(
+                    p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty(),
+                    "not CalVer: {v}"
+                );
+            }
+            assert!(parts[0].len() == 4, "year is not four digits: {v}");
+            assert!(!parts[1].starts_with('0'), "month must be non-padded: {v}");
+            assert_ne!(parts[2], "0", "patch is floored at 1: {v}");
+        }
+    }
+
+    #[test]
+    fn a_derived_version_is_rendered_verbatim() {
+        assert_eq!(label_for(Some("2026.8.105")), "Version 2026.8.105");
+    }
+
+    #[test]
     fn the_about_tab_names_the_app_and_its_version() {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         assert_eq!(vm["about"]["name"], "Solador");
-        assert_eq!(vm["about"]["version"], format!("Version {VERSION}"));
+        assert_eq!(vm["about"]["version"], version_label());
         assert_eq!(vm["about"]["links"].as_array().expect("links").len(), 3);
     }
 

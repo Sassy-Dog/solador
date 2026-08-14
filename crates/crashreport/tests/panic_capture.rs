@@ -62,7 +62,7 @@ fn start_recording(opt_in: OptIn, dsn: Option<&str>) -> (Reporting, Arc<Recorder
         Config {
             opt_in,
             dsn,
-            release: "solador-test",
+            release: Some("solador-test"),
             environment: "test",
         },
         // `Arc<T: Transport>` is itself a `TransportFactory` that hands back the

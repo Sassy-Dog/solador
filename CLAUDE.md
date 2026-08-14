@@ -346,8 +346,20 @@ Never compute a version anywhere else. `app/src-tauri/tauri.conf.json` no
 longer authors a `version` key at all (#303) — the bundle's two plist numbers
 come from those two scripts and are asserted back out of the artifact.
 `app/src-tauri/Cargo.toml`'s `0.1.0` is unpublished package metadata, like the
-nine sibling crates', and is still what the in-app About string reads through
-`settings::VERSION`; wiring that display to the derived version is not done.
+nine sibling crates', and nothing reads it any more: `app/src-tauri/build.rs`
+publishes the derived CalVer as `SOLADOR_MARKETING_VERSION`, and
+`settings::VERSION` is an `Option<&str>` over it. **The build script derives
+nothing itself** — it shells out to `get-version-info.sh`, honouring an explicit
+`MARKETING_VERSION` pin ahead of it, because the algorithm has exactly one home.
+
+**A shallow clone refuses rather than counts.** CalVer's patch is commits this
+month, and a `fetch-depth: 1` checkout answers that question with `1` instead of
+failing — CI's bundle job already pins `fetch-depth: 0` for exactly this reason,
+and the other three jobs are still shallow. So the build script checks
+`--is-shallow-repository` and emits *no* version there; About renders `Version —`
+and the Sentry release is omitted entirely. Sentry groups and regresses by
+release, so a placeholder is worse than nothing: every un-nameable build would
+share one release and a fixed crash would read as regressed.
 
 ## Common Tasks
 
