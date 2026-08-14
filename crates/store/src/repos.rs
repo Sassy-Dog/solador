@@ -6,6 +6,7 @@
 //! read. The Repos panel asks for a repo instead (`NO_REPOS_MESSAGE`).
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// One repo in the tracked portfolio. The `owner/name` slug is the identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,16 +22,27 @@ pub struct TrackedRepo {
     /// written before the field existed still opens.
     #[serde(default)]
     pub watched_workflows: Option<Vec<String>>,
+    /// Which [`crate::VendorAccount`] fetches this repo. `None` means
+    /// unattributed — a store written before v2 with no GitHub token, or an
+    /// account since removed. **Never** defaulted to "the first account":
+    /// inventing an owner is this crate's fabrication rule applied to
+    /// configuration, and a defaulted state is as much a fabrication as a
+    /// defaulted number.
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
 }
 
 impl TrackedRepo {
-    /// A newly tracked repo: enabled, no extra watched workflows.
+    /// A newly tracked repo: enabled, no extra watched workflows, and
+    /// **unattributed**. The caller names the account, because only the caller
+    /// knows which one added it.
     #[must_use]
     pub fn new(slug: impl Into<String>) -> Self {
         TrackedRepo {
             slug: slug.into(),
             enabled: true,
             watched_workflows: None,
+            account_id: None,
         }
     }
 
@@ -79,6 +91,7 @@ mod tests {
             slug: "acme/gadget".into(),
             enabled: false,
             watched_workflows: Some(vec!["Release".into(), "deploy.yml".into()]),
+            account_id: Some(Uuid::new_v4()),
         };
         let json = serde_json::to_string(&repo).expect("serialize");
         assert_eq!(
@@ -93,5 +106,18 @@ mod tests {
             serde_json::from_str(r#"{"slug":"acme/toolkit"}"#).expect("deserialize");
         assert!(repo.enabled);
         assert!(repo.watched_workflows.is_none());
+    }
+
+    /// A repo entry written before v2 carries no `account_id`, and reads as
+    /// unattributed rather than as "belongs to whichever account is first".
+    #[test]
+    fn a_repo_written_before_v2_is_unattributed_rather_than_guessed_at() {
+        let repo: TrackedRepo =
+            serde_json::from_str(r#"{"slug":"acme/toolkit","enabled":true}"#).expect("deserialize");
+        assert_eq!(
+            repo.account_id, None,
+            "an absent account_id is unknown ownership, never an invented owner"
+        );
+        assert_eq!(TrackedRepo::new("acme/toolkit").account_id, None);
     }
 }
