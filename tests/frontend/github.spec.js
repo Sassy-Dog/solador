@@ -184,6 +184,50 @@ test("the loading state replaces the table rather than showing an empty one", as
   await expect(page.locator("#reposBody .gh-head")).toHaveCount(0);
 });
 
+test("a Repos panel with every account answering shows no warning", async ({ page, baseURL }) => {
+  const { repos } = await gotoWithFixtures(page, baseURL);
+  expect(repos.footer).toBeNull();
+  await expect(page.locator("#reposStale")).toBeHidden();
+});
+
+/**
+ * One account failing is that account's failure (#290). Every row the other
+ * accounts fetched stays on screen, the failing account's own repos hold their
+ * slots as unreadable rows, and the header says which account and why — the
+ * same contract, and the same header slot, as the Runners panel's warning.
+ */
+test("a per-account failure names the account in the header without blanking the panel", async ({ page, baseURL }) => {
+  const good = await fixture(baseURL, "sample-repos.json");
+  await gotoWithFixtures(page, baseURL, { repos: good });
+  const healthy = await page.locator("#reposPanel").boundingBox();
+
+  const failing = {
+    ...good,
+    footer: {
+      text: "⚠ work: no token saved — add one in Settings · last ok 4m ago",
+      color: "#e09a26",
+    },
+  };
+  await gotoWithFixtures(page, baseURL, { repos: failing });
+
+  await expect(repoRows(page)).toHaveCount(good.rows.length);
+  const stale = page.locator("#reposStale");
+  await expect(stale).toBeVisible();
+  await expect(stale).toHaveText(failing.footer.text);
+  await expect(stale).toHaveCSS("color", rgb(failing.footer.color));
+  // Ellipsised rather than wrapped in a narrow panel, so the whole message has
+  // to stay reachable somewhere.
+  await expect(stale).toHaveAttribute("title", failing.footer.text);
+  await expect(page.locator("#reposBody .gh-message")).toHaveCount(0);
+
+  // In the header for the reason the Runners warning is: a line under the body
+  // makes the card taller, and `.panel-row` stretches its neighbours to match —
+  // so one expired token would move half the cockpit.
+  const degraded = await page.locator("#reposPanel").boundingBox();
+  expect(degraded.height).toBeCloseTo(healthy.height, 1);
+  await expect(page.locator("#reposTitle")).toHaveText("GitHub Repos");
+});
+
 // MARK: - Repos: tap to open
 
 test("clicking a repo row asks the opener plugin for Rust's URL, unmodified", async ({ page, baseURL }) => {
