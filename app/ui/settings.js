@@ -31,6 +31,14 @@ const S = {
   /** Which Layout breakpoint the editor is showing, by its `minWidth`. `null`
    *  means "the first one" — see `selectedBand`. */
   band: null,
+  /** The last `settings_probe_status_vendor` answer, or `null` before anything
+   *  has been probed. Held here like `tests` is: which host you last probed is
+   *  a *view* state, not something the store remembers.
+   *
+   *  Rust's shape, unchanged — `{baseUrl, components, reason}`, where
+   *  `components` is a non-empty list or `null` and `reason` is the finding or
+   *  `null`. This file never fills either in. */
+  probe: null,
 };
 
 const $s = (id) => document.getElementById(id);
@@ -773,6 +781,150 @@ function usageTab(t) {
   return [neon, sentry, vercel, actionRow(apply)];
 }
 
+/** One watched status page: its name, its address, the component it is watched
+ *  through, and the two controls that pause or remove it. */
+function vendorRow(t, vendor) {
+  const row = node("div", "vendor-row");
+  row.dataset.vendor = vendor.id;
+
+  const head = node("div", "row");
+  const names = node("div", "stack");
+  names.append(node("span", "host-name", vendor.label), node("span", "dim", vendor.baseUrl));
+  const component = node("div", "row");
+  // The component's name as it was when it was picked, beside its own label --
+  // assembled as two nodes rather than one string, because a template literal
+  // here is this file writing a sentence Rust did not.
+  component.append(node("span", "result", t.componentLabel), node("span", "result", vendor.component));
+  names.appendChild(component);
+  head.append(names, node("span", "grow"));
+
+  const enabled = checkbox(vendor.enabled);
+  enabled.addEventListener("change", () =>
+    mutate("settings_set_status_vendor_enabled", { id: vendor.id, enabled: enabled.checked })
+  );
+  const remove = button(t.deleteLabel, "delete");
+  remove.addEventListener("click", () =>
+    mutate("settings_remove_status_vendor", { id: vendor.id })
+  );
+  head.append(enabled, remove);
+
+  row.appendChild(head);
+  return row;
+}
+
+/**
+ * The Services tab: the status pages this cockpit watches, and the two-step
+ * form that adds another.
+ *
+ * Two steps because a vendor is not a URL — it is a URL plus the one component
+ * this stack depends on, and those ids are opaque (`k8w3r06qmzrp`) and
+ * published nowhere a person would look. Step one asks the host; step two is a
+ * picker over what it answered.
+ *
+ * Step two is built from `S.probe` and from nothing else, so it is reachable
+ * only after a probe came back with components. A failed probe renders Rust's
+ * sentence for what it found and leaves no picker at all: an empty picker would
+ * be this file turning "we could not look" into "this page has no components",
+ * which are different facts with different fixes.
+ */
+function servicesTab(t) {
+  const list = group(t.heading);
+  if (t.rows.length === 0) list.appendChild(help(t.empty));
+  for (const vendor of t.rows) list.appendChild(vendorRow(t, vendor));
+
+  const add = group(t.add.heading);
+  // Refilled from the answer rather than from a copy this file keeps:
+  // normalised when the probe validated it, exactly as typed when it did not,
+  // so a rejected address is still on screen to be corrected.
+  const url = textInput(S.probe ? S.probe.baseUrl : "");
+  url.autocapitalize = "off";
+  url.spellcheck = false;
+  add.appendChild(field("vendor-url", t.add.urlLabel, url));
+
+  const probe = button(t.add.probeLabel, "probe");
+  const probing = node("p", "help", "");
+  // Everything the probe produced, in one container so it can be dropped
+  // without a re-render (see the `input` listener below).
+  const found = node("div", "stack");
+
+  const runProbe = async () => {
+    probe.disabled = true;
+    probing.textContent = t.add.probingLabel;
+    const answer = await callRust("settings_probe_status_vendor", { baseUrl: url.value });
+    // Null is the offline path (no Tauri and no fixture for this command).
+    // Leave the form as it was rather than clearing what was typed.
+    if (!answer) {
+      probe.disabled = false;
+      probing.textContent = "";
+      return;
+    }
+    S.probe = answer;
+    render();
+  };
+  probe.addEventListener("click", runProbe);
+  url.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runProbe();
+  });
+  url.addEventListener("input", () => {
+    if (!S.probe || url.value.trim() === S.probe.baseUrl) return;
+    // A component list belongs to the address it was read from. Editing the
+    // address after an answer would otherwise let the old host's component be
+    // stored against the new host's URL — a row polling something nobody
+    // chose. Dropped in place rather than by re-rendering, which would rebuild
+    // the field under the caret and eat the rest of the word.
+    S.probe = null;
+    found.replaceChildren();
+  });
+  add.append(actionRow(probe), probing, help(t.add.help), found);
+
+  // Rust's own sentence for what it found, verbatim and never merged with
+  // another: "couldn't reach that host" and "that page is JSON but lists no
+  // components" send an operator to two different fixes.
+  if (S.probe && S.probe.reason) found.appendChild(node("p", "reason", S.probe.reason));
+
+  if (S.probe && S.probe.components) {
+    const options = S.probe.components.map((c) => ({ value: c.id, label: c.name }));
+    const picker = select(options, options[0].value);
+    const name = textInput("");
+    found.append(
+      field("vendor-component", t.add.componentSelectLabel, picker),
+      help(t.add.componentHelp),
+      field("vendor-name", t.add.nameLabel, name)
+    );
+
+    const save = button(t.add.saveLabel, "add");
+    // A hint, not the validation: Rust re-checks all four fields and refuses
+    // the save with its own reason.
+    const syncSave = () => {
+      save.disabled = name.value.trim() === "";
+    };
+    name.addEventListener("input", syncSave);
+    syncSave();
+    save.addEventListener("click", () => {
+      const chosen = S.probe.components.find((c) => c.id === picker.value);
+      const args = {
+        // The address the components were actually read from, not the field --
+        // the two are kept equal by the `input` listener above, and this is the
+        // one that is true by construction.
+        baseUrl: S.probe.baseUrl,
+        label: name.value,
+        // Both halves of the component or neither. A missing pair is sent as
+        // empty strings and refused by Rust, rather than invented here.
+        componentId: chosen ? chosen.id : "",
+        componentLabel: chosen ? chosen.name : "",
+      };
+      // Reset at submit, like the Add Host form: a submitted field must not
+      // ride the re-render as an unapplied edit.
+      name.value = "";
+      S.probe = null;
+      mutate("settings_save_status_vendor", args);
+    });
+    found.appendChild(actionRow(save));
+  }
+
+  return [list, add];
+}
+
 /**
  * The OpenClaw tab: the gateway URL, the optional bearer token, and the device
  * pairing block.
@@ -873,6 +1025,7 @@ function renderBody() {
     hosts: hostsTab,
     azure: azureTab,
     usage: usageTab,
+    services: servicesTab,
     openclaw: openclawTab,
     about: aboutTab,
   }[S.tab];
@@ -896,6 +1049,10 @@ async function openSettings() {
   if (!view) return;
   S.view = view;
   S.status = "";
+  // A probe answer must not outlive the session that ran it: reopening
+  // Settings would otherwise show a component picker for an address nobody
+  // just typed.
+  S.probe = null;
   settingsOpen = true;
   $s("cockpitView").hidden = true;
   $s("settings").hidden = false;

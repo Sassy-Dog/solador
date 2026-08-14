@@ -585,9 +585,13 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .dim { color:var(--muted); }
 .badge-ok { font-size:10px; font-weight:700; color:var(--green); }
 .badge-dim { font-size:10px; font-weight:700; color:var(--muted); }
-.host-row, .repo-row { display:flex; flex-direction:column; gap:6px;
+.host-row, .repo-row, .vendor-row { display:flex; flex-direction:column; gap:6px;
   padding:8px 0; border-top:1px solid var(--line); }
-.host-row:first-of-type, .repo-row:first-of-type { border-top:0; }
+.host-row:first-of-type, .repo-row:first-of-type, .vendor-row:first-of-type { border-top:0; }
+/* A probe's finding, shown beside the address that produced it. Red because it
+   is the reason nothing was added — not a hint, and not a status line that
+   scrolls away with the next mutation. */
+.reason { font-size:11px; color:var(--red); margin:0; max-width:640px; }
 .host-name, .slug { font-size:13px; font-weight:700; }
 .result { font-size:10px; color:var(--muted); }
 .hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }

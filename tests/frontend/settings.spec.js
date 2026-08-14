@@ -32,9 +32,9 @@ const TEST_RESULT = "✓ ubu-01 · agent v0.4.0";
  * (`{status, settings}`), so the frontend's "re-render from what was
  * persisted" contract is exercised rather than mocked away.
  */
-async function stubIpc(page, cockpit, settings) {
+async function stubIpc(page, cockpit, settings, probe) {
   await page.addInitScript(
-    ({ cockpit, settings, testResult }) => {
+    ({ cockpit, settings, testResult, probe }) => {
       window.__CALLS__ = [];
       window.__TAURI__ = {
         core: {
@@ -43,12 +43,15 @@ async function stubIpc(page, cockpit, settings) {
             if (command === "cockpit") return cockpit;
             if (command === "settings_view") return settings;
             if (command === "settings_test_host") return { id: args.id, result: testResult };
+            // The probe answers in its own shape, not `{status, settings}`: a
+            // finding is not a mutation, and the tab renders it without one.
+            if (command === "settings_probe_status_vendor") return probe;
             return { status: "Saved.", settings };
           },
         },
       };
     },
-    { cockpit, settings, testResult: TEST_RESULT }
+    { cockpit, settings, testResult: TEST_RESULT, probe: probe || null }
   );
 }
 
@@ -56,10 +59,10 @@ const calls = (page, command) =>
   page.evaluate((c) => window.__CALLS__.filter((call) => call.command === c), command);
 
 /** Loads the app with the IPC stub installed and opens Settings. */
-async function openSettings(page, baseURL) {
+async function openSettings(page, baseURL, probe) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
-  await stubIpc(page, cockpit, settings);
+  await stubIpc(page, cockpit, settings, probe);
   await page.goto("/index.html");
   await expect(page.locator("#settingsToggle")).toBeVisible();
   await page.locator("#settingsToggle").click();
@@ -668,6 +671,126 @@ test("a typed org ID survives saving that provider's key", async ({ page, baseUR
   await page.locator(".btn.apply").click();
   const saved = await calls(page, "settings_save_providers");
   expect(saved.at(-1).args.prefs.neonOrgId).toBe("org-fond-sea-12345678");
+});
+
+test("Services lists every watched status page with the component it watches", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "services").click();
+
+  const t = settings.services;
+  await expect(page.locator(".vendor-row")).toHaveCount(t.rows.length);
+  const first = page.locator(`.vendor-row[data-vendor="${t.rows[0].id}"]`);
+  await expect(first.locator(".host-name")).toHaveText(t.rows[0].label);
+  await expect(first.locator(".dim")).toHaveText(t.rows[0].baseUrl);
+  // The component's own name, beside the id that is actually polled: the
+  // pairing is what makes a vendor's later rename visible.
+  await expect(first).toContainText(t.rows[0].component);
+  await expect(first.locator(".toggle")).toBeChecked({ checked: t.rows[0].enabled });
+
+  await first.locator(".btn.delete").click();
+  expect(await calls(page, "settings_remove_status_vendor")).toEqual([
+    { command: "settings_remove_status_vendor", args: { id: t.rows[0].id } },
+  ]);
+});
+
+/**
+ * The whole reason the probe reports findings rather than a boolean.
+ *
+ * A failure renders the sentence Rust produced and offers no component picker
+ * at all — an empty picker would turn "we could not look" into "this page has
+ * no components", which is a different fact with a different fix.
+ */
+test("a failed probe shows its reason inline and offers nothing to pick", async ({ page, baseURL }) => {
+  const reason = "that page is JSON but lists no components, so it isn't a Statuspage";
+  await openSettings(page, baseURL, {
+    baseUrl: "https://neonstatus.com",
+    components: null,
+    reason,
+  });
+  await tab(page, "services").click();
+
+  await page.locator("#vendor-url").fill("https://neonstatus.com");
+  await page.locator(".btn.probe").click();
+
+  await expect(page.locator(".reason")).toHaveText(reason);
+  await expect(page.locator("#vendor-component")).toHaveCount(0);
+  await expect(page.locator("#vendor-name")).toHaveCount(0);
+  // The address that was rejected is still on screen, or it cannot be corrected.
+  await expect(page.locator("#vendor-url")).toHaveValue("https://neonstatus.com");
+});
+
+test("a probe that finds components adds a vendor in two steps", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, {
+    baseUrl: "https://status.example.org",
+    components: [
+      { id: "k8w3r06qmzrp", name: "API" },
+      { id: "3f2p8q1x7z0d", name: "Dashboard" },
+    ],
+    reason: null,
+  });
+  await tab(page, "services").click();
+
+  await page.locator("#vendor-url").fill("https://status.example.org/");
+  await page.locator(".btn.probe").click();
+  expect(await calls(page, "settings_probe_status_vendor")).toEqual([
+    {
+      command: "settings_probe_status_vendor",
+      args: { baseUrl: "https://status.example.org/" },
+    },
+  ]);
+
+  // Step two exists only now, and carries every component the host named.
+  await expect(page.locator(".reason")).toHaveCount(0);
+  await expect(page.locator("#vendor-component option")).toHaveText(["API", "Dashboard"]);
+  // Refilled from the answer, so the field shows the address that was actually
+  // read rather than the raw text.
+  await expect(page.locator("#vendor-url")).toHaveValue("https://status.example.org");
+
+  // Nothing to add until it has a name -- a hint, and Rust re-checks it.
+  const save = page.locator(".btn.add");
+  await expect(save).toBeDisabled();
+  await page.locator("#vendor-name").fill("Example");
+  await page.locator("#vendor-component").selectOption("3f2p8q1x7z0d");
+  await save.click();
+
+  expect(await calls(page, "settings_save_status_vendor")).toEqual([
+    {
+      command: "settings_save_status_vendor",
+      args: {
+        baseUrl: "https://status.example.org",
+        label: "Example",
+        // Both halves of the component, stored together.
+        componentId: "3f2p8q1x7z0d",
+        componentLabel: "Dashboard",
+      },
+    },
+  ]);
+});
+
+/**
+ * A component list belongs to the address it was read from. Editing the
+ * address after an answer must retract the picker, or the previous host's
+ * component would be stored against the new host's URL — a row polling
+ * something nobody chose.
+ */
+test("editing the address after a probe retracts the component picker", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL, {
+    baseUrl: "https://status.example.org",
+    components: [{ id: "k8w3r06qmzrp", name: "API" }],
+    reason: null,
+  });
+  await tab(page, "services").click();
+
+  await page.locator("#vendor-url").fill("https://status.example.org");
+  await page.locator(".btn.probe").click();
+  await expect(page.locator("#vendor-component")).toHaveCount(1);
+
+  await page.locator("#vendor-url").fill("https://status.other.example");
+  await expect(page.locator("#vendor-component")).toHaveCount(0);
+  await expect(page.locator("#vendor-name")).toHaveCount(0);
+  // The typed address survives, because retracting the picker must not rebuild
+  // the field under the caret.
+  await expect(page.locator("#vendor-url")).toHaveValue("https://status.other.example");
 });
 
 test("About names the app, its version and its links", async ({ page, baseURL }) => {
