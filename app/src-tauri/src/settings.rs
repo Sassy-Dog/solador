@@ -23,7 +23,7 @@ use servicestatus::discover::{self, Component, ProbeError};
 use store::settings::{CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES};
 use store::{
     ContainerGroupRule, ContainerRuleAction, Host, HostOverflowMode, SecretKey, Settings,
-    StatusVendor, TrackedRepo, DEFAULT_AGENT_PORT, LOCAL_HOST_SCOPE,
+    StatusVendor, TrackedRepo, VendorAccount, VendorKind, DEFAULT_AGENT_PORT, LOCAL_HOST_SCOPE,
 };
 use uuid::Uuid;
 use viewmodel::cockpit::{CockpitLayout, PanelKind, PanelSpan};
@@ -66,6 +66,17 @@ pub struct StoredSecrets {
     pub openclaw: bool,
     /// Host ids with a non-empty agent token.
     pub hosts: HashSet<Uuid>,
+    /// Vendor-account ids with a non-empty token, read from the credential item
+    /// [`VendorAccount::secret_account`] names.
+    ///
+    /// Same shape as [`Self::hosts`], and with the same limit: an account whose
+    /// stored item name this build cannot resolve is simply absent from the
+    /// set, so its badge reads "No token". That is the weaker of the two claims
+    /// and deliberately so — the *distinct* fact ("unrecognised credential
+    /// item") is already reported where it costs something, on the Repos
+    /// panel's per-account footer, and re-saving the account's token from this
+    /// tab is what repairs it.
+    pub accounts: HashSet<Uuid>,
 }
 
 /// The credentials the Settings surface can write, as the frontend names them.
@@ -391,6 +402,10 @@ pub struct StoreSections<'a> {
     /// is empty.
     pub layout: Option<&'a [store::LayoutProfile]>,
     pub vendors: &'a [StatusVendor],
+    /// The vendor accounts, in user-visible order. Empty is a real state and
+    /// not a missing one: a store that has never had a GitHub token has no
+    /// account, and the v1 credential is what the GitHub tab still holds.
+    pub accounts: &'a [VendorAccount],
 }
 
 /// The whole Settings payload.
@@ -411,6 +426,7 @@ pub fn view(
         rules,
         layout,
         vendors,
+        accounts,
     } = store;
     json!({
         "title": OPEN_LABEL,
@@ -422,6 +438,10 @@ pub fn view(
             { "id": "general", "title": "General" },
             { "id": "layout", "title": "Layout" },
             { "id": "github", "title": "GitHub" },
+            // Between the credential it supersedes and the portfolio it
+            // attributes: an account is read left-to-right as "the token, then
+            // whose token, then which repos it fetches".
+            { "id": "accounts", "title": "Accounts" },
             { "id": "portfolio", "title": "Portfolio" },
             { "id": "hosts", "title": "Hosts" },
             { "id": "azure", "title": "Azure Cost" },
@@ -433,6 +453,7 @@ pub fn view(
         "general": general_tab(settings),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "github": github_tab(settings, stored),
+        "accounts": accounts_tab(accounts, repos, stored),
         "portfolio": portfolio_tab(repos),
         "hosts": hosts_tab(settings, hosts, rules, stored),
         "azure": azure_tab(settings),
@@ -530,6 +551,205 @@ fn portfolio_tab(repos: &[TrackedRepo]) -> Value {
             "slugLabel": "owner/name (e.g. acme/gadget)",
             "buttonLabel": "Add",
             "help": "Drives the Repos and GitHub Runners panels. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive.",
+        },
+    })
+}
+
+// MARK: - vendor accounts
+
+/// Every vendor an account can be created for in this build.
+///
+/// One today. The list exists rather than a bare literal because the picker,
+/// the parser and the payload all read from it, so adding the next vendor is
+/// one line and cannot leave one of the three behind.
+const VENDOR_KINDS: [VendorKind; 1] = [VendorKind::GitHub];
+
+/// The vendor an account authenticates against, as the payload spells it.
+///
+/// Deliberately the same spelling [`VendorKind`] serialises to, and asserted
+/// against it in the tests: a second vocabulary here is how a picker starts
+/// offering a value the store then refuses to load.
+#[must_use]
+pub const fn vendor_id(kind: VendorKind) -> &'static str {
+    match kind {
+        VendorKind::GitHub => "github",
+    }
+}
+
+/// What the picker calls it.
+#[must_use]
+pub const fn vendor_label(kind: VendorKind) -> &'static str {
+    match kind {
+        VendorKind::GitHub => "GitHub",
+    }
+}
+
+/// Parses the vendor the frontend sent.
+///
+/// Unknown is refused rather than defaulted, for [`VendorKind`]'s own reason:
+/// reading an unrecognised vendor as GitHub would point a credential at an API
+/// it does not belong to.
+#[must_use]
+pub fn parse_vendor(raw: &str) -> Option<VendorKind> {
+    VENDOR_KINDS
+        .into_iter()
+        .find(|kind| vendor_id(*kind) == raw)
+}
+
+/// The repos that removing this account would leave unattributed, by slug.
+///
+/// Takes the repo section rather than the whole `Store`, for the reason [`view`]
+/// does: nothing on this surface needs a store file or a keychain to answer a
+/// question that is pure. `Store::repos()` is what the caller passes.
+///
+/// `store::Store::remove_account` deliberately does **not** rewrite these rows,
+/// and nothing downstream does either: a repo whose account is gone renders
+/// *unattributed* rather than being silently re-homed onto whichever account
+/// survives — the invented owner [`TrackedRepo::account_id`] exists to prevent.
+/// So this list is the whole of what a removal costs, which is why it is
+/// reported **before** it happens: the row carries it (`removePrompt`) and the
+/// receipt repeats it ([`account_removed_status`]).
+#[must_use]
+pub fn account_removal_impact(repos: &[TrackedRepo], id: Uuid) -> Vec<String> {
+    repos
+        .iter()
+        .filter(|repo| repo.account_id == Some(id))
+        .map(|repo| repo.slug.clone())
+        .collect()
+}
+
+/// What the Delete button turns into, or `None` when nothing depends on this
+/// account.
+///
+/// `None` is not an empty warning: an account no repo names is removed the way
+/// a host is, in one click. A confirmation step over no consequence is what
+/// teaches an operator to click through the one that has a consequence.
+fn account_removal_prompt(label: &str, orphaned: &[String]) -> Option<String> {
+    let slugs = orphaned.join(", ");
+    match orphaned.len() {
+        0 => None,
+        1 => Some(format!(
+            "Remove {label}? 1 tracked repo becomes unattributed: {slugs}."
+        )),
+        n => Some(format!(
+            "Remove {label}? {n} tracked repos become unattributed: {slugs}."
+        )),
+    }
+}
+
+/// The receipt a completed removal leaves in the status line.
+///
+/// Names the same slugs the prompt did. The row said it beforehand; this is
+/// what the operator is left holding after, so the two are worded from one
+/// place and cannot disagree about how many repos just lost their account.
+#[must_use]
+pub fn account_removed_status(label: &str, orphaned: &[String]) -> String {
+    let slugs = orphaned.join(", ");
+    match orphaned.len() {
+        0 => format!("Removed {label}."),
+        1 => format!("Removed {label}. 1 tracked repo is now unattributed: {slugs}."),
+        n => format!("Removed {label}. {n} tracked repos are now unattributed: {slugs}."),
+    }
+}
+
+/// The add form's two fields as an account, or the status line saying what is
+/// wrong.
+///
+/// Shaped like [`validated_vendor`], and refusing a duplicate label for the
+/// reason [`validated_slug`] refuses a duplicate slug: the label is what every
+/// per-account line on the Repos panel names, and two rows sharing one make
+/// those lines say nothing.
+///
+/// The account is minted pointing at **its own** `vendor-<uuid>` credential
+/// item — never another account's, and never the v1 `github_access_token` item.
+/// The account `store::migrate_v1_to_v2` creates is the only one that may name
+/// that, because it was already the token its repos were being fetched with.
+///
+/// # Errors
+/// The status line to show, already worded as one.
+pub fn validated_account(
+    vendor: &str,
+    label: &str,
+    existing: &[VendorAccount],
+) -> Result<VendorAccount, String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Err("Skipped — a name is required.".to_owned());
+    }
+    let Some(vendor) = parse_vendor(vendor) else {
+        return Err("Skipped — unknown vendor.".to_owned());
+    };
+    if existing
+        .iter()
+        .any(|account| account.label.eq_ignore_ascii_case(label))
+    {
+        return Err("Skipped — an account with that name already exists.".to_owned());
+    }
+    let account = VendorAccount::new(vendor, label, "");
+    Ok(VendorAccount {
+        secret_account: SecretKey::VendorToken(account.id).account(),
+        ..account
+    })
+}
+
+/// The Accounts tab: one credential per *account*, not per vendor, and what
+/// each one fetches.
+///
+/// Every row carries the repos attributed to it, so the consequence of removing
+/// it is on screen before the button is ever pressed — see
+/// [`account_removal_impact`].
+fn accounts_tab(
+    accounts: &[VendorAccount],
+    repos: &[TrackedRepo],
+    stored: &StoredSecrets,
+) -> Value {
+    json!({
+        "heading": "Vendor Accounts",
+        // Said out loud, like the Services tab's: with no accounts the GitHub
+        // tab's single token is still what fetches the portfolio, and an
+        // operator who cannot see that stated reads the empty list as broken.
+        "empty": "No vendor accounts yet. Until one exists, the GitHub tab's single token fetches every tracked repo.",
+        "tokenStoredLabel": "Token stored",
+        "noTokenLabel": "No token",
+        "nameLabel": "Name",
+        "tokenLabel": "Replace token",
+        "saveLabel": "Save",
+        "deleteLabel": "Delete",
+        "cancelLabel": "Cancel",
+        "reposLabel": "Fetches",
+        "noReposLabel": "No repos attributed yet",
+        "rows": accounts
+            .iter()
+            .map(|account| {
+                let orphaned = account_removal_impact(repos, account.id);
+                json!({
+                    "id": account.id.to_string(),
+                    "vendor": vendor_id(account.vendor),
+                    "vendorLabel": vendor_label(account.vendor),
+                    "label": account.label,
+                    "enabled": account.enabled,
+                    "stored": stored.accounts.contains(&account.id),
+                    // The slugs, not a count: a number names nothing, and the
+                    // operator deciding whether to remove this account is
+                    // deciding about these repos specifically.
+                    "repos": orphaned,
+                    // Null when the removal costs nothing.
+                    "removePrompt": account_removal_prompt(&account.label, &orphaned),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "help": "Each tracked repo is fetched by the account it belongs to. Removing an account leaves its repos tracked but unattributed — nothing re-homes them onto another account, because an invented owner is worse than none.",
+        "add": {
+            "heading": "Add Account",
+            "vendorLabel": "Vendor",
+            "vendorOptions": VENDOR_KINDS
+                .iter()
+                .map(|kind| json!({ "value": vendor_id(*kind), "label": vendor_label(*kind) }))
+                .collect::<Vec<_>>(),
+            "nameLabel": "Name (e.g. work)",
+            "tokenLabel": "Fine-grained PAT",
+            "buttonLabel": "Add Account",
+            "help": "The token is stored in your OS credential store under this account's own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests. You can add the account now and its token later.",
         },
     })
 }
@@ -1546,6 +1766,9 @@ mod tests {
             vercel: false,
             openclaw: false,
             hosts: [host.id].into_iter().collect(),
+            // The Accounts tab's own tests name their accounts (see
+            // `accounts_view`); every other test's store has none.
+            accounts: HashSet::new(),
         };
         // Explicit, not `seeded_repos()`: nothing is seeded any more, and a
         // fixture built from an empty seed would leave every portfolio
@@ -1596,6 +1819,7 @@ mod tests {
             rules: &[],
             layout: None,
             vendors: &[],
+            accounts: &[],
         }
     }
 
@@ -1642,6 +1866,7 @@ mod tests {
                 "general",
                 "layout",
                 "github",
+                "accounts",
                 "portfolio",
                 "hosts",
                 "azure",
@@ -2825,5 +3050,219 @@ mod tests {
             .as_str()
             .expect("an empty line")
             .contains("No status pages"));
+    }
+
+    // MARK: - the Accounts tab
+
+    /// One GitHub account pointing at its own credential item — what
+    /// [`validated_account`] mints, spelled out here so the fixture does not
+    /// depend on the function under test.
+    fn account(label: &str) -> VendorAccount {
+        let account = VendorAccount::new(VendorKind::GitHub, label, "");
+        VendorAccount {
+            secret_account: SecretKey::VendorToken(account.id).account(),
+            ..account
+        }
+    }
+
+    fn owned_by(account: &VendorAccount, slug: &str) -> TrackedRepo {
+        TrackedRepo {
+            account_id: Some(account.id),
+            ..TrackedRepo::new(slug)
+        }
+    }
+
+    /// The issue's fixture: one account and the two repos it fetches.
+    fn one_account_and_two_repos() -> (VendorAccount, Vec<TrackedRepo>) {
+        let account = account("work");
+        let repos = vec![
+            owned_by(&account, "acme/widget"),
+            owned_by(&account, "acme/gadget"),
+        ];
+        (account, repos)
+    }
+
+    /// [`view`] over one account list — every Accounts-tab test's shape.
+    fn accounts_view(
+        accounts: &[VendorAccount],
+        repos: &[TrackedRepo],
+        stored: &StoredSecrets,
+    ) -> Value {
+        let settings = sample().0;
+        view(
+            StoreSections {
+                accounts,
+                ..sections(&settings, &[], repos)
+            },
+            stored,
+            &facts(),
+        )
+    }
+
+    fn account_rows(vm: &Value) -> Vec<Value> {
+        vm["accounts"]["rows"].as_array().expect("rows").clone()
+    }
+
+    /// The reason this function exists at all: a repo whose account is removed
+    /// is unattributed, and the operator is owed that list *before* the removal
+    /// rather than after.
+    #[test]
+    fn removing_an_account_reports_the_repos_it_orphans() {
+        let (account, repos) = one_account_and_two_repos();
+        assert_eq!(
+            account_removal_impact(&repos, account.id),
+            vec!["acme/widget".to_owned(), "acme/gadget".to_owned()]
+        );
+    }
+
+    /// Only the repos this account actually fetches. An unattributed repo is
+    /// already unattributed — counting it would overstate the damage — and one
+    /// belonging to another account is not this removal's business.
+    #[test]
+    fn the_impact_counts_only_the_repos_this_account_fetches() {
+        let (work, mut repos) = one_account_and_two_repos();
+        let personal = account("personal");
+        repos.push(owned_by(&personal, "acme/pipe-fitting"));
+        repos.push(TrackedRepo::new("acme/orphan"));
+
+        assert_eq!(
+            account_removal_impact(&repos, personal.id),
+            vec!["acme/pipe-fitting".to_owned()]
+        );
+        assert_eq!(account_removal_impact(&repos, work.id).len(), 2);
+        assert!(account_removal_impact(&repos, Uuid::from_u128(999)).is_empty());
+    }
+
+    /// `stored` is the credential badge and is never defaulted: an account with
+    /// no token yet is `false`, not a row missing the key.
+    #[test]
+    fn the_settings_view_reports_whether_each_account_has_a_credential() {
+        let (account, repos) = one_account_and_two_repos();
+        let one = std::slice::from_ref(&account);
+
+        let vm = accounts_view(one, &repos, &StoredSecrets::default());
+        let rows = account_rows(&vm);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], json!(account.id.to_string()));
+        assert_eq!(rows[0]["label"], "work");
+        assert_eq!(rows[0]["vendor"], "github");
+        assert_eq!(rows[0]["enabled"], json!(true));
+        assert_eq!(
+            rows[0]["stored"],
+            json!(false),
+            "an account with no token yet is false, not absent from the payload"
+        );
+
+        let stored = StoredSecrets {
+            accounts: [account.id].into_iter().collect(),
+            ..StoredSecrets::default()
+        };
+        let rows = account_rows(&accounts_view(one, &repos, &stored));
+        assert_eq!(rows[0]["stored"], json!(true));
+    }
+
+    /// The row carries the consequence before anything is clicked, so the
+    /// operator decides knowingly rather than discovering it afterwards.
+    #[test]
+    fn an_account_row_names_the_repos_its_removal_would_orphan() {
+        let (account, repos) = one_account_and_two_repos();
+        let rows = account_rows(&accounts_view(
+            std::slice::from_ref(&account),
+            &repos,
+            &StoredSecrets::default(),
+        ));
+        assert_eq!(
+            rows[0]["repos"],
+            json!(["acme/widget", "acme/gadget"]),
+            "the slugs themselves, not just a count — a number names nothing"
+        );
+        let prompt = rows[0]["removePrompt"].as_str().expect("a prompt");
+        assert!(prompt.contains("acme/widget"), "{prompt}");
+        assert!(prompt.contains("acme/gadget"), "{prompt}");
+    }
+
+    /// Null, not an empty warning: an account nothing depends on is removed the
+    /// way a host is, and a confirmation step over no consequence is noise that
+    /// teaches the operator to click through the one that matters.
+    #[test]
+    fn an_account_with_no_repos_has_nothing_to_warn_about() {
+        let account = account("spare");
+        let rows = account_rows(&accounts_view(
+            std::slice::from_ref(&account),
+            &[],
+            &StoredSecrets::default(),
+        ));
+        assert_eq!(rows[0]["repos"], json!([]));
+        assert_eq!(rows[0]["removePrompt"], Value::Null);
+    }
+
+    /// The removal's own receipt names them too. The row said it beforehand;
+    /// this is what the operator is left holding after.
+    #[test]
+    fn the_removal_status_names_what_was_left_unattributed() {
+        let line = account_removed_status("work", &[]);
+        assert_eq!(line, "Removed work.");
+
+        let line = account_removed_status("work", &["acme/widget".to_owned()]);
+        assert!(line.starts_with("Removed work."), "{line}");
+        assert!(line.contains("acme/widget"), "{line}");
+        assert!(line.contains("unattributed"), "{line}");
+    }
+
+    /// A store with no accounts says so rather than rendering a heading over
+    /// nothing.
+    #[test]
+    fn a_store_with_no_accounts_says_so_rather_than_showing_nothing() {
+        let vm = accounts_view(&[], &[], &StoredSecrets::default());
+        assert!(account_rows(&vm).is_empty());
+        assert!(vm["accounts"]["empty"]
+            .as_str()
+            .expect("an empty line")
+            .contains("No vendor accounts"));
+    }
+
+    /// The vendor id on the wire is the store's own spelling. Two copies of it
+    /// is how the picker starts offering a value `VendorKind` refuses.
+    #[test]
+    fn the_vendor_id_is_the_one_the_store_serialises() {
+        assert_eq!(
+            serde_json::to_value(VendorKind::GitHub).expect("serialize"),
+            json!(vendor_id(VendorKind::GitHub))
+        );
+        assert_eq!(parse_vendor("github"), Some(VendorKind::GitHub));
+        assert_eq!(
+            parse_vendor("gitlab"),
+            None,
+            "a vendor this build does not know must be refused, not read as GitHub"
+        );
+    }
+
+    /// The add form's rules, in the shape [`validated_vendor`] set: the
+    /// sentence to show, or the account to store.
+    #[test]
+    fn an_account_needs_a_name_and_a_vendor_this_build_knows() {
+        let existing = [];
+        let account = validated_account("github", "  work  ", &existing).expect("a valid account");
+        assert_eq!(account.label, "work");
+        assert_eq!(account.vendor, VendorKind::GitHub);
+        assert_eq!(
+            account.secret_account,
+            SecretKey::VendorToken(account.id).account(),
+            "a new account gets its own credential item, never another's"
+        );
+
+        assert!(validated_account("github", "   ", &existing).is_err());
+        assert!(validated_account("gitlab", "work", &existing).is_err());
+    }
+
+    /// Duplicate labels are refused for the reason duplicate slugs are: the
+    /// label is what every per-account failure line names, and two rows sharing
+    /// one make those lines say nothing.
+    #[test]
+    fn a_duplicate_account_label_is_rejected_whatever_its_case() {
+        let existing = [account("work")];
+        assert!(validated_account("github", "work", &existing).is_err());
+        assert!(validated_account("github", "WORK", &existing).is_err());
+        assert!(validated_account("github", "personal", &existing).is_ok());
     }
 }

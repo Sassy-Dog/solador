@@ -596,6 +596,125 @@ test("Portfolio adds, toggles and edits watched workflows", async ({ page, baseU
   ]);
 });
 
+/** The two accounts the fixture carries: one with a token and repos depending
+ *  on it, one with neither. Named by what they are *for* rather than by index,
+ *  so a fixture reordering fails loudly here instead of quietly asserting the
+ *  wrong row. */
+const accountsOf = (settings) => {
+  const rows = settings.accounts.rows;
+  const owning = rows.find((row) => row.repos.length > 0);
+  const spare = rows.find((row) => row.repos.length === 0);
+  expect(owning, "the fixture has no account with repos attributed").toBeTruthy();
+  expect(spare, "the fixture has no account with nothing attributed").toBeTruthy();
+  return { owning, spare };
+};
+
+test("Accounts lists every account with its credential badge and what it fetches", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "accounts").click();
+
+  const t = settings.accounts;
+  await expect(page.locator(".account-row")).toHaveCount(t.rows.length);
+  const { owning, spare } = accountsOf(settings);
+
+  const first = page.locator(`.account-row[data-account="${owning.id}"]`);
+  await expect(first.locator(".host-name")).toHaveText(owning.label);
+  await expect(first.locator(".dim")).toHaveText(owning.vendorLabel);
+  // The slugs themselves, on the row that removes them.
+  for (const slug of owning.repos) await expect(first).toContainText(slug);
+  await expect(first.locator(".badge-ok")).toHaveText(t.tokenStoredLabel);
+
+  // An account with no token yet says so — `stored: false` is a fact the
+  // payload carries, not a key it omits.
+  const second = page.locator(`.account-row[data-account="${spare.id}"]`);
+  await expect(second.locator(".badge-dim")).toHaveText(t.noTokenLabel);
+  await expect(second).toContainText(t.noReposLabel);
+});
+
+/**
+ * The whole point of `account_removal_impact`.
+ *
+ * Removing an account leaves its repos tracked but unattributed, so the repos
+ * are named *before* the removal rather than discovered after it. Nothing is
+ * sent until the operator confirms.
+ */
+test("removing an account that repos depend on names them and waits", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "accounts").click();
+  const { owning } = accountsOf(settings);
+
+  const row = page.locator(`.account-row[data-account="${owning.id}"]`);
+  const confirm = row.locator('[data-confirm="remove"]');
+  await expect(confirm).toBeHidden();
+
+  await row.locator(".btn.delete").first().click();
+  await expect(confirm).toBeVisible();
+  // Rust's sentence, verbatim — this file writes none of it.
+  await expect(confirm.locator(".confirm")).toHaveText(owning.removePrompt);
+  expect(
+    await calls(page, "settings_remove_account"),
+    "nothing may be removed before the operator has answered"
+  ).toEqual([]);
+
+  await confirm.locator(".btn.cancel").click();
+  await expect(confirm).toBeHidden();
+  expect(await calls(page, "settings_remove_account")).toEqual([]);
+
+  await row.locator(".btn.delete").first().click();
+  await confirm.locator(".btn.delete").click();
+  expect(await calls(page, "settings_remove_account")).toEqual([
+    { command: "settings_remove_account", args: { id: owning.id } },
+  ]);
+});
+
+/** An account nothing depends on removes in one click, like a host: a
+ *  confirmation over no consequence teaches an operator to click through the
+ *  one that has a consequence. */
+test("an account nothing depends on removes without a confirmation", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "accounts").click();
+  const { spare } = accountsOf(settings);
+
+  const row = page.locator(`.account-row[data-account="${spare.id}"]`);
+  await row.locator(".btn.delete").first().click();
+  expect(await calls(page, "settings_remove_account")).toEqual([
+    { command: "settings_remove_account", args: { id: spare.id } },
+  ]);
+});
+
+test("an account is added with its vendor, and re-saved without exposing its token", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "accounts").click();
+  const { owning } = accountsOf(settings);
+
+  const add = page.locator(".btn.add");
+  await expect(add, "an account needs a name").toBeDisabled();
+  await page.locator("#account-name").fill("personal-2");
+  await page.locator("#account-token").fill("ghp_secret");
+  await expect(add).toBeEnabled();
+  await add.click();
+  expect(await calls(page, "settings_save_account")).toEqual([
+    {
+      command: "settings_save_account",
+      // `id: null` is what makes this a create rather than a second row on
+      // somebody else's credential.
+      args: { id: null, vendor: "github", label: "personal-2", token: "ghp_secret" },
+    },
+  ]);
+  // Handed to Rust and dropped, never carried across the re-render.
+  await expect(page.locator("#account-token")).toHaveValue("");
+
+  const row = page.locator(`.account-row[data-account="${owning.id}"]`);
+  await row.locator(`#account-token-${owning.id}`).fill("ghp_replacement");
+  await row.locator(".btn.save").click();
+  const saves = await calls(page, "settings_save_account");
+  expect(saves[1]).toEqual({
+    command: "settings_save_account",
+    args: { id: owning.id, vendor: owning.vendor, label: owning.label, token: "ghp_replacement" },
+  });
+  await expect(row.locator(`#account-token-${owning.id}`)).toHaveValue("");
+});
+
 test("Usage and Azure write every provider preference together", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "usage").click();

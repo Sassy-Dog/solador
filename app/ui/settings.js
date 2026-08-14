@@ -668,6 +668,149 @@ function portfolioTab(t) {
   return [list, add];
 }
 
+/**
+ * One vendor account: what it fetches, whether a token is stored, and the
+ * controls that rename, pause or remove it.
+ *
+ * Delete is two-step exactly when Rust sent a `removePrompt` — that is, when
+ * tracked repos depend on this account. The prompt is Rust's sentence, shown
+ * verbatim; this file decides only *when* it appears, never what it says. An
+ * account nothing depends on deletes in one click like a host does: a
+ * confirmation over no consequence is what teaches an operator to click through
+ * the one that has one.
+ */
+function accountRow(t, account) {
+  const row = node("div", "account-row");
+  row.dataset.account = account.id;
+
+  const head = node("div", "row");
+  const names = node("div", "stack");
+  names.append(node("span", "host-name", account.label), node("span", "dim", account.vendorLabel));
+
+  // What this account fetches, on the row that removes it. Two nodes rather
+  // than one string: a template literal here is this file writing a sentence
+  // Rust did not.
+  const repos = node("div", "row");
+  if (account.repos.length === 0) {
+    repos.appendChild(node("span", "result", t.noReposLabel));
+  } else {
+    repos.append(node("span", "result", t.reposLabel), node("span", "result", account.repos.join(", ")));
+  }
+  names.appendChild(repos);
+  head.append(names, node("span", "grow"));
+  head.appendChild(
+    node("span", account.stored ? "badge-ok" : "badge-dim",
+      account.stored ? t.tokenStoredLabel : t.noTokenLabel)
+  );
+
+  const enabled = checkbox(account.enabled);
+  enabled.addEventListener("change", () =>
+    mutate("settings_set_account_enabled", { id: account.id, enabled: enabled.checked })
+  );
+
+  // Built before the button that reveals it, and empty until then.
+  const confirm = node("div", "stack");
+  confirm.dataset.confirm = "remove";
+  confirm.hidden = true;
+
+  const remove = button(t.deleteLabel, "delete");
+  const removeNow = () => mutate("settings_remove_account", { id: account.id });
+  remove.addEventListener("click", () => {
+    if (!account.removePrompt) {
+      removeNow();
+      return;
+    }
+    remove.disabled = true;
+    confirm.hidden = false;
+  });
+
+  const proceed = button(t.deleteLabel, "delete");
+  proceed.addEventListener("click", removeNow);
+  const cancel = button(t.cancelLabel, "cancel");
+  cancel.addEventListener("click", () => {
+    confirm.hidden = true;
+    remove.disabled = false;
+  });
+  confirm.append(node("p", "confirm", account.removePrompt || ""), actionRow(proceed, cancel));
+
+  head.append(enabled, remove);
+
+  // The name and the token travel together through `settings_save_account`,
+  // which is one command for create and update alike. An empty token field
+  // leaves the stored credential alone -- that is Rust's rule, and this file
+  // does not re-state it by disabling anything.
+  const name = textInput(account.label);
+  const token = textInput("", "password");
+  const save = button(t.saveLabel, "save");
+  save.addEventListener("click", () => {
+    const args = {
+      id: account.id,
+      vendor: account.vendor,
+      label: name.value,
+      token: token.value,
+    };
+    // Dropped before the round-trip, like the Add Host form: the token has no
+    // reason to outlive the call, and a rejected save must not leave it in the
+    // DOM.
+    token.value = "";
+    mutate("settings_save_account", args);
+  });
+
+  row.append(
+    head,
+    confirm,
+    field(`account-name-${account.id}`, t.nameLabel, name),
+    field(`account-token-${account.id}`, t.tokenLabel, token),
+    actionRow(save)
+  );
+  return row;
+}
+
+/**
+ * The Accounts tab: one credential per account, not per vendor.
+ *
+ * Every row carries the repos attributed to it, so what removing an account
+ * costs is on screen before the button is pressed. Nothing here re-homes an
+ * orphaned repo onto a surviving account — that would be this file inventing an
+ * owner, and Rust refuses to do it for the same reason.
+ */
+function accountsTab(t) {
+  const list = group(t.heading);
+  if (t.rows.length === 0) list.appendChild(help(t.empty));
+  for (const account of t.rows) list.appendChild(accountRow(t, account));
+  list.appendChild(help(t.help));
+
+  const add = group(t.add.heading);
+  const vendor = select(t.add.vendorOptions, t.add.vendorOptions[0].value);
+  const name = textInput("");
+  const token = textInput("", "password");
+  add.append(
+    field("account-vendor", t.add.vendorLabel, vendor),
+    field("account-name", t.add.nameLabel, name),
+    field("account-token", t.add.tokenLabel, token)
+  );
+
+  const submit = button(t.add.buttonLabel, "add");
+  // A hint, not the validation: Rust re-checks the name and the vendor and
+  // refuses the save in its own words.
+  const syncAdd = () => {
+    submit.disabled = name.value.trim() === "";
+  };
+  name.addEventListener("input", syncAdd);
+  syncAdd();
+  submit.addEventListener("click", () => {
+    // `id: null` is what makes this a create. An update carries the row's id
+    // (see `accountRow`), and the two paths are one command so an update can
+    // never land as a second row on the same credential.
+    const args = { id: null, vendor: vendor.value, label: name.value, token: token.value };
+    token.value = "";
+    name.value = "";
+    mutate("settings_save_account", args);
+  });
+  add.append(actionRow(submit), help(t.add.help));
+  return [list, add];
+}
+
 function githubTab(t) {
   const org = group(t.org.heading);
   const input = textInput(t.org.value);
@@ -1021,6 +1164,7 @@ function renderBody() {
     general: generalTab,
     layout: layoutTab,
     github: githubTab,
+    accounts: accountsTab,
     portfolio: portfolioTab,
     hosts: hostsTab,
     azure: azureTab,
