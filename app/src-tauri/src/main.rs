@@ -1248,8 +1248,9 @@ impl GitHubIdentity {
 /// fallback picked for convenience: a v1 store held exactly one GitHub token,
 /// so every repo in it provably belongs to that one — the same proof
 /// `store::migrate_v1_to_v2` relies on, and the state the app is in between a
-/// first launch with no token and the relaunch that migrates (saving a token in
-/// Settings creates no account until #291).
+/// first launch with no token and the relaunch that migrates — the GitHub tab
+/// still writes that one credential and mints no account for it. Settings →
+/// **Accounts** is where an account is created.
 ///
 /// Non-GitHub accounts are filtered out rather than polled: a credential minted
 /// for another vendor's API must never be sent to GitHub's.
@@ -1906,7 +1907,11 @@ fn runners(state: tauri::State<'_, Arc<App>>) -> Value {
 /// Which credentials currently hold a value — the "stored" badges, and nothing
 /// else. A read failure reads as "not stored": the badge is a hint, and an
 /// unreadable keychain must not take the Settings window down with it.
-fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSecrets {
+fn stored_secrets(
+    credentials: &dyn CredentialStore,
+    hosts: &[Host],
+    accounts: &[VendorAccount],
+) -> StoredSecrets {
     let present = |key: SecretKey| {
         credentials
             .secret(key)
@@ -1929,6 +1934,17 @@ fn stored_secrets(credentials: &dyn CredentialStore, hosts: &[Host]) -> StoredSe
             .filter(|host| present(SecretKey::HostToken(host.id)))
             .map(|host| host.id)
             .collect(),
+        // Through `account_secret_key`, so the badge reads the item the account
+        // actually names -- the migrated account still points at the v1
+        // `github_access_token` item, and probing `vendor-<uuid>` for it would
+        // report "No token" over a token that is right there. An account whose
+        // stored item name this build cannot resolve reads as not-stored; the
+        // Repos panel is where that distinct finding is reported.
+        accounts: accounts
+            .iter()
+            .filter(|account| account_secret_key(account).is_some_and(present))
+            .map(|account| account.id)
+            .collect(),
     }
 }
 
@@ -1939,7 +1955,7 @@ fn settings_payload(app: &App) -> Value {
     // ordering between the two and no way to invert it here.
     let facts = openclaw_settings_facts(app);
     let store = app.store.lock().expect("store poisoned");
-    let stored = stored_secrets(app.credentials.as_ref(), store.hosts());
+    let stored = stored_secrets(app.credentials.as_ref(), store.hosts(), store.accounts());
     settings::view(
         settings::StoreSections {
             settings: store.settings(),
@@ -1948,6 +1964,7 @@ fn settings_payload(app: &App) -> Value {
             rules: store.container_rules(),
             layout: store.layout(),
             vendors: store.status_vendors(),
+            accounts: store.accounts(),
         },
         &stored,
         &facts,
@@ -3401,6 +3418,206 @@ fn settings_set_repo_workflows(
     settings_response(&state, status)
 }
 
+// MARK: - vendor accounts
+
+/// What a command answers when the webview names an account this store has no
+/// row for — a stale id from a window left open across a removal.
+const UNKNOWN_ACCOUNT_MESSAGE: &str = "Skipped — unknown account.";
+
+/// Creates an account, or saves changes to one that already exists.
+///
+/// One command for both, as `Store::upsert_account` is one entry point for
+/// both: an update that arrived as a create would mint a second row on the same
+/// credential, which is the cardinality bug this epic exists to remove.
+///
+/// The vendor is read on the create path only. Repointing an existing account
+/// at another vendor would aim a credential minted for one API at a different
+/// one — the same refusal `account_secret_key` makes about item names, applied
+/// to the account itself.
+#[tauri::command]
+fn settings_save_account(
+    id: Option<String>,
+    vendor: String,
+    label: String,
+    token: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status = match id.as_deref() {
+        Some(id) => update_account(id, &label, &token, &state),
+        None => add_account(&vendor, &label, &token, &state),
+    };
+    // Accounts ARE the GitHub pass's identities, so a save that does not reach
+    // the loop leaves the panel fetching with the previous set for a full
+    // refresh interval.
+    wake_github(&state);
+    settings_response(&state, status)
+}
+
+fn add_account(vendor: &str, label: &str, token: &str, app: &App) -> Option<String> {
+    let mut store = app.store.lock().expect("store poisoned");
+    let account = match settings::validated_account(vendor, label, store.accounts()) {
+        Ok(account) => account,
+        Err(reason) => return Some(reason),
+    };
+    let name = account.label.clone();
+    // Its own item, minted with the account and never shared: `validated_account`
+    // is what decides that, and this only has to agree with it.
+    let key = SecretKey::VendorToken(account.id);
+    store.upsert_account(account);
+    let status = save_status(&store, format!("Added {name}."));
+
+    // An account with no token yet is a legitimate state -- the row says "No
+    // token" and the operator adds one later -- so an empty field is not a
+    // failure.
+    if token.is_empty() {
+        return status;
+    }
+    match app.credentials.set_secret(key, token) {
+        Ok(()) => status,
+        // Said out loud rather than logged alone. The row is saved either way
+        // (losing it as well would be the worse outcome, as with a host), but
+        // an operator who is not told will read the "No token" badge as this
+        // window not having refreshed yet.
+        Err(e) => {
+            eprintln!("could not store the new account's token: {e}");
+            Some(format!(
+                "Added {name} — but the credential store rejected the token. Save it again."
+            ))
+        }
+    }
+}
+
+/// Relabels an account and, when one was typed, replaces its token.
+///
+/// An empty token field leaves the stored credential alone: it is the field's
+/// resting state on a row whose token is already saved, and clearing a
+/// credential by leaving a box untouched is not a decision anyone makes on
+/// purpose. Removing the account is what deletes it.
+fn update_account(raw_id: &str, label: &str, token: &str, app: &App) -> Option<String> {
+    let Ok(id) = Uuid::parse_str(raw_id) else {
+        return Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned());
+    };
+    let mut store = app.store.lock().expect("store poisoned");
+    let Some(account) = store.account(id) else {
+        return Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned());
+    };
+    let label = label.trim();
+    if label.is_empty() {
+        return Some("Skipped — a name is required.".to_owned());
+    }
+    // Against every OTHER account: an account keeping its own name is not a
+    // duplicate of itself.
+    if store
+        .accounts()
+        .iter()
+        .any(|other| other.id != id && other.label.eq_ignore_ascii_case(label))
+    {
+        return Some("Skipped — an account with that name already exists.".to_owned());
+    }
+
+    // Where this token belongs, decided from what the account *currently*
+    // names. A migrated account still points at the v1 `github_access_token`
+    // item and keeps doing so, so a re-save lands where the pass will read it.
+    let named = account_secret_key(account);
+    // ...and an account whose stored item name nothing recognises is repaired
+    // here rather than left unusable: it adopts its own `vendor-<uuid>` item,
+    // which is exactly what ACCOUNT_CREDENTIAL_UNKNOWN_MESSAGE tells the
+    // operator to come and do. Only when a token was actually typed -- moving
+    // the name without writing the value would trade an unreadable credential
+    // for a missing one.
+    let key = named.unwrap_or(SecretKey::VendorToken(id));
+    let adopting = named.is_none() && !token.is_empty();
+
+    let row = store.account_mut(id).expect("read a moment ago");
+    row.label = label.to_owned();
+    if adopting {
+        row.secret_account = key.account();
+    }
+    let status = save_status(&store, "Saved.");
+
+    if token.is_empty() {
+        return status;
+    }
+    match app.credentials.set_secret(key, token) {
+        Ok(()) => status,
+        Err(e) => {
+            eprintln!("could not store the account's token: {e}");
+            Some("Failed to save the token — the credential store rejected the write.".to_owned())
+        }
+    }
+}
+
+#[tauri::command]
+fn settings_set_account_enabled(
+    id: String,
+    enabled: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.account_mut(id) {
+            Some(account) => {
+                account.enabled = enabled;
+                save_status(&store, "Saved.")
+            }
+            None => Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned()),
+        }
+    };
+    wake_github(&state);
+    settings_response(&state, status)
+}
+
+/// Removes an account, its credential, and nothing else.
+///
+/// The repos it fetched are **not** rewritten — they stay tracked and become
+/// unattributed, because re-homing them onto whichever account survives would
+/// invent an owner (`TrackedRepo::account_id`). What the removal costs is read
+/// *before* it happens and reported back: the Accounts row already carries the
+/// same list as a confirmation prompt, so this is a receipt rather than a
+/// surprise.
+#[tauri::command]
+fn settings_remove_account(id: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        // Read while the attribution still exists: after `remove_account` the
+        // rows are indistinguishable from repos that never had an account.
+        let orphaned = settings::account_removal_impact(store.repos(), id);
+        match store.remove_account(id) {
+            Some(account) => {
+                // The store deliberately leaves the credential store alone, so
+                // deleting the token is this layer's job -- and only the item
+                // the account actually named. An unresolvable name is left in
+                // place rather than guessed at: deleting the wrong item is not
+                // undoable, and orphaned is better than someone else's
+                // credential deleted.
+                match account_secret_key(&account) {
+                    Some(key) => {
+                        if let Err(e) = state.credentials.delete_secret(key) {
+                            eprintln!("could not delete the account's token: {e}");
+                        }
+                    }
+                    None => eprintln!(
+                        "left an unrecognised credential item in place: nothing here can name it"
+                    ),
+                }
+                save_status(
+                    &store,
+                    settings::account_removed_status(&account.label, &orphaned),
+                )
+            }
+            None => Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned()),
+        }
+    };
+    wake_github(&state);
+    settings_response(&state, status)
+}
+
 /// The OpenClaw gateway URL. Validation is deliberately the *session's*, not
 /// this command's: `upgrade_request` is the one place that decides what a usable
 /// `ws(s)://` address is, and a second rule here could reject a URL the client
@@ -3823,6 +4040,11 @@ fn dump_settings() -> Value {
     spare.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0002);
     spare.enabled = false;
 
+    // Two accounts and, between them, every rendering the row has: one with a
+    // token and two repos depending on it (so the removal prompt exists), one
+    // disabled with no token and nothing attributed (so the "No token" badge
+    // and the *absent* prompt are covered too).
+    let accounts = dump_accounts();
     let stored = StoredSecrets {
         github: true,
         neon: false,
@@ -3830,6 +4052,7 @@ fn dump_settings() -> Value {
         vercel: true,
         openclaw: false,
         hosts: [live.id].into_iter().collect(),
+        accounts: [accounts[0].id].into_iter().collect(),
     };
     // A gateway configured *and* waiting on approval, so the fixture carries the
     // pairing block — the one part of this tab that only exists in a live
@@ -3880,17 +4103,45 @@ fn dump_settings() -> Value {
             // Explicit, not `seeded_repos()`: nothing is seeded any more, and
             // this fixture is what the Playwright suite renders the Portfolio
             // tab from — an empty list would silently stop covering it.
+            //
+            // Both attributed to the first account, which is what gives the
+            // Accounts tab a row whose removal actually costs something.
             repos: &[
-                store::TrackedRepo::new("acme/widget"),
-                store::TrackedRepo::new("acme/gadget"),
+                store::TrackedRepo {
+                    account_id: Some(accounts[0].id),
+                    ..store::TrackedRepo::new("acme/widget")
+                },
+                store::TrackedRepo {
+                    account_id: Some(accounts[0].id),
+                    ..store::TrackedRepo::new("acme/gadget")
+                },
             ],
             rules: &dump_container_rules(),
             layout: Some(&layout),
             vendors: &vendors,
+            accounts: &accounts,
         },
         &stored,
         &facts,
     )
+}
+
+/// The vendor accounts the Settings fixture carries.
+///
+/// Fixed uuids for the reason the hosts have them: a fixture that changes on
+/// every dump is one no test can assert an id against. `secret_account` is
+/// spelled out rather than left to `VendorAccount::new`, because what the store
+/// holds is the *item name* and a fixture that skipped it would render a row
+/// this build could not resolve a credential for.
+fn dump_accounts() -> Vec<VendorAccount> {
+    let mut work = VendorAccount::new(VendorKind::GitHub, "work", "");
+    work.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0021);
+    work.secret_account = SecretKey::VendorToken(work.id).account();
+    let mut personal = VendorAccount::new(VendorKind::GitHub, "personal", "");
+    personal.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0022);
+    personal.secret_account = SecretKey::VendorToken(personal.id).account();
+    personal.enabled = false;
+    vec![work, personal]
 }
 
 /// The status vendors the Settings fixture carries.
@@ -4510,6 +4761,9 @@ fn main() {
             settings_remove_repo,
             settings_set_repo_enabled,
             settings_set_repo_workflows,
+            settings_save_account,
+            settings_set_account_enabled,
+            settings_remove_account,
             settings_save_openclaw,
             settings_openclaw_retry,
             settings_probe_status_vendor,
@@ -6769,6 +7023,74 @@ mod tests {
                 "{row}"
             );
         }
+    }
+
+    /// The Playwright suite renders the Accounts tab from this fixture, so it
+    /// has to carry both sides of the credential badge *and* both sides of the
+    /// removal prompt — a fixture where every account looks alike leaves half
+    /// the tab covered by nothing.
+    #[test]
+    fn the_settings_fixture_covers_both_states_of_an_account_row() {
+        let rows = dump_settings()["accounts"]["rows"]
+            .as_array()
+            .expect("account rows")
+            .clone();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter().any(|row| row["stored"] == true),
+            "no account with a token in the fixture"
+        );
+        assert!(
+            rows.iter().any(|row| row["stored"] == false),
+            "no account without a token in the fixture"
+        );
+        assert!(
+            rows.iter().any(|row| row["removePrompt"].is_string()),
+            "no account whose removal would orphan a repo"
+        );
+        assert!(
+            rows.iter().any(|row| row["removePrompt"].is_null()),
+            "no account whose removal costs nothing"
+        );
+    }
+
+    /// The badge reads the item the account *names*, not the one its id would
+    /// derive. The account `migrate_v1_to_v2` mints still points at the v1
+    /// `github_access_token` item, and probing `vendor-<uuid>` for it would
+    /// report "No token" over a token sitting right there.
+    #[test]
+    fn the_account_badge_reads_the_credential_item_the_account_names() {
+        let migrated = VendorAccount::new(
+            VendorKind::GitHub,
+            "migrated",
+            SecretKey::GitHubAccessToken.account(),
+        );
+        let own = VendorAccount {
+            secret_account: SecretKey::VendorToken(Uuid::from_u128(7)).account(),
+            id: Uuid::from_u128(7),
+            ..VendorAccount::new(VendorKind::GitHub, "own", "")
+        };
+        let stranger = VendorAccount::new(VendorKind::GitHub, "stranger", "vendor-somebody-else");
+
+        let credentials = MemoryCredentialStore::default();
+        credentials
+            .set_secret(SecretKey::GitHubAccessToken, "ghp_legacy")
+            .expect("store the legacy token");
+        credentials
+            .set_secret(SecretKey::VendorToken(own.id), "ghp_own")
+            .expect("store the account's own token");
+
+        let stored = stored_secrets(
+            &credentials,
+            &[],
+            &[migrated.clone(), own.clone(), stranger.clone()],
+        );
+        assert!(stored.accounts.contains(&migrated.id));
+        assert!(stored.accounts.contains(&own.id));
+        assert!(
+            !stored.accounts.contains(&stranger.id),
+            "an item name this build cannot resolve must not read as a stored token"
+        );
     }
 
     #[test]
