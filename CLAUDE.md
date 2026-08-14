@@ -214,6 +214,20 @@ the scaffold #15 will complete, and refuses *before* minting a tag.
 - **Repos / GitHub Runners**: a fine-grained PAT with read-only access to
   **Actions**, **Contents**, **Issues**, and **Pull requests**.
 - **Remote hosts**: per-host bearer token.
+- **Usage → Claude**: no credential — and **no account either**. The rollups
+  are a walk of `~/.claude/projects`, and those logs record what was consumed,
+  never who paid for it: a full key survey of a real session file — 50+
+  top-level fields including `cwd`, `gitBranch`, `sessionId`, `version`,
+  `userType`, `requestId`, `messageId` — carries no `account`, `organization`,
+  `email`, `plan`, `tier` or API-key field of any kind. So the panel's numbers
+  are **one machine-local aggregate**, and two subscriptions used on one machine
+  are *inherently* unseparable from this source — impossible, not
+  unimplemented; per-subscription attribution needs a source that knows who
+  paid. Anthropic **API keys** are `VendorAccount`s when that integration lands
+  (#283) and their usage *is* attributable. **A subscription is not an account
+  and must not be modelled as one**: an account id on these rollups would be an
+  attribution invented to fill a gap — the unknown-as-zero error in another
+  costume. If a number cannot be attributed, say so rather than attributing it.
 - **Usage → Neon**: an *organization* API key. The non-secret `org_id` is a
   normal preference, not a credential-store item.
 - **Usage → Sentry** and **Sentry Crons**: the *same* read-only `org:read`

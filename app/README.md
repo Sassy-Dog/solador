@@ -665,6 +665,24 @@ one is a percentage of a number nobody set. And **no USD**: `crates/usage` price
 every record and the figure is unit-tested, but the account is subscription-based
 so it is never displayed.
 
+**And what it does have is one machine-local aggregate, not a per-subscription
+figure.** The walk of `~/.claude/projects` reads logs that record what was
+consumed and never who paid for it: a full key survey of a real session file —
+50+ top-level fields including `cwd`, `gitBranch`, `sessionId`, `version`,
+`userType`, `requestId`, `messageId` — carries no `account`, `organization`,
+`email`, `plan`, `tier` or API-key field of any kind. Two subscriptions used on
+one machine therefore land in the same windows and the same `TOP PROJECTS` rows
+with nothing in the data to tell them apart, and that is *inherent to the
+source* rather than a feature nobody wrote — separating them needs a source that
+knows who paid, and this one does not. Read every figure on the Claude half as
+"this machine", never as "this subscription". When the Anthropic **API-key**
+integration lands under the vendor-accounts epic
+([#283](https://github.com/Sassy-Dog/solador/issues/283)) those keys are
+`VendorAccount`s and their usage *is* attributable; the subscription is not one
+and must not be modelled as one, because an account id hung on these rollups
+would be an attribution invented to fill a gap — the same unknown-as-zero error
+the `Unmeasured` enums above exist to prevent, wearing a different costume.
+
 **Applied without a restart**, like the GitHub panels: saving or clearing a Neon
 key, a Sentry token, an org id or a slug wakes the usage loop *and* forces its
 hourly half to run on that pass, so a newly-saved key fills its section in
