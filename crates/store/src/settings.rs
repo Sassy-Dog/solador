@@ -12,6 +12,7 @@
 //! (`crate::secrets`), never in this struct or the file it serialises into.
 
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 
 /// The cadences Settings offers, in seconds (`RefreshInterval` in the original).
 pub const REFRESH_INTERVAL_CHOICES: [u32; 3] = [30, 60, 300];
@@ -63,6 +64,163 @@ impl From<String> for HostOverflowMode {
 impl From<HostOverflowMode> for String {
     fn from(mode: HostOverflowMode) -> Self {
         mode.as_str().to_owned()
+    }
+}
+
+/// A panel whose poll cadence the operator may set.
+///
+/// **There is deliberately no `Hosts` variant.** The 1 Hz host poll feeds the
+/// history buffers behind the sparklines, and a setting there is an invitation
+/// to stretch it until those charts stop meaning anything. It stays a constant
+/// in the shell (`POLL_INTERVAL` in `app/src-tauri/src/main.rs`) precisely so it
+/// cannot be reached from Settings. Agent health (10s) is out for the same
+/// reason: it is liveness, not a panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PanelInterval {
+    /// Containers/VMs — local docker/podman/tart plus every host's agent.
+    Containers,
+    /// The Usage panel's metered providers: Neon, Sentry and Vercel.
+    UsageProviders,
+    /// The Azure Cost panel's daily export read.
+    AzureCost,
+    /// The Sentry Crons panel.
+    Crons,
+}
+
+/// Everything that is true of one [`PanelInterval`], in one place.
+///
+/// The key, the default and the floor travel together on purpose. Three
+/// parallel tables — or one array indexed by variant order — is exactly the
+/// shape that lets a newly added metered source pick up a neighbour's floor by
+/// position and bill for it, and no test would notice. Here the compiler's
+/// exhaustiveness check on [`PanelInterval::spec`] refuses to build until a new
+/// variant has stated all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntervalSpec {
+    /// The `panel_intervals` map key. Part of the on-disk format — renaming one
+    /// silently discards the operator's setting for that panel.
+    pub key: &'static str,
+    /// Today's hardcoded cadence, so an unconfigured store behaves as it does now.
+    pub default_secs: u32,
+    /// The shortest cadence this source may be asked for. See
+    /// [`PanelInterval::spec`] for why each one is what it is.
+    pub floor_secs: u32,
+}
+
+impl PanelInterval {
+    /// Every panel that has a settable cadence, in a stable order for UI.
+    pub const ALL: [PanelInterval; 4] = [
+        PanelInterval::Containers,
+        PanelInterval::UsageProviders,
+        PanelInterval::AzureCost,
+        PanelInterval::Crons,
+    ];
+
+    /// The key, default and floor for this panel.
+    ///
+    /// **The floor is stated beside the source it protects**, not gathered into
+    /// a central table of numbers, so that whoever adds a metered source sets
+    /// its floor in the same edit that introduces the request. The literal form
+    /// of that instruction — a `MIN_POLL_INTERVAL` const in each source's own
+    /// module — is not available in this direction: three of these four sources
+    /// live in `app/src-tauri`, which depends on this crate, so importing their
+    /// constants here would invert the dependency. What is available, and what
+    /// this is, is one self-contained arm per source carrying all three facts
+    /// and citing the constant it mirrors.
+    ///
+    /// Each default is today's constant, verified against the tree:
+    ///
+    /// | panel | default | today's constant |
+    /// |---|---|---|
+    /// | Containers | 10s | `containers::POLL_INTERVAL_SECS` |
+    /// | `UsageProviders` | 1h | `usage::PROVIDER_POLL_INTERVAL_SECS` |
+    /// | `AzureCost` | 4h | `azurecost::POLL_INTERVAL` |
+    /// | Crons | 1h | *shares* `usage::PROVIDER_POLL_INTERVAL_SECS` |
+    #[must_use]
+    pub const fn spec(self) -> IntervalSpec {
+        match self {
+            // `app/src-tauri/src/containers/mod.rs`'s `POLL_INTERVAL_SECS = 10`.
+            // Floor 5s: the cost here is not money but a process spawn — every
+            // pass shells out to `docker ps` — and a container list changes on
+            // human timescales. 5s is the point below which the spawns cost
+            // more than the freshness is worth.
+            PanelInterval::Containers => IntervalSpec {
+                key: "containers",
+                default_secs: 10,
+                floor_secs: 5,
+            },
+            // `app/src-tauri/src/usage.rs`'s `PROVIDER_POLL_INTERVAL_SECS = 60 * 60`.
+            // Floor 300s: three vendor APIs (Neon, Sentry, Vercel) on one pass,
+            // each with a rate-limit budget. Consumption figures move on the
+            // order of hours, so anything under 5 minutes spends quota to learn
+            // nothing — the reasoning already written on that constant.
+            PanelInterval::UsageProviders => IntervalSpec {
+                key: "usage_providers",
+                default_secs: 60 * 60,
+                floor_secs: 300,
+            },
+            // `crates/azurecost/src/lib.rs`'s `POLL_INTERVAL = 4 * 60 * 60`.
+            // Floor 3600s, and this is the floor that exists to stop a spend
+            // decision. The export is published roughly once a day; each poll
+            // mints a SAS and may pull the blob, so a short cadence buys nothing
+            // and moves real egress. It is also the pattern the metered-source
+            // floors to come (Cost Explorer bills $0.01/request) will follow.
+            PanelInterval::AzureCost => IntervalSpec {
+                key: "azure_cost",
+                default_secs: 4 * 60 * 60,
+                floor_secs: 3600,
+            },
+            // Crons has **no constant of its own today**: `crons_loop` in
+            // `app/src-tauri/src/main.rs` sleeps on `usage`'s
+            // `PROVIDER_POLL_INTERVAL_SECS`, and the note there says two
+            // constants "would be free to drift". Giving it a variant is what
+            // separates them — deliberately, since the epic's premise is that a
+            // panel's cadence is the operator's. The defaults stay equal, so an
+            // unconfigured store keeps the shared hour; only an explicit edit
+            // parts them. Same API and same rate-limit budget as the Sentry
+            // read, hence the same 300s floor.
+            PanelInterval::Crons => IntervalSpec {
+                key: "crons",
+                default_secs: 60 * 60,
+                floor_secs: 300,
+            },
+        }
+    }
+}
+
+/// What became of a requested cadence.
+///
+/// A setter that returned a bare `u32` would let a floored value read back as a
+/// chosen one — the same fabrication as a defaulted number rendered like a
+/// measured one. `Clamped` carries both halves so a caller can say *"4h is the
+/// shortest this panel allows"* rather than silently showing a number nobody
+/// asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClampOutcome {
+    /// The request was at or above the floor and was stored as asked.
+    Applied(u32),
+    /// The request was below the floor; `applied` was stored instead.
+    Clamped {
+        /// What the caller asked for.
+        asked: u32,
+        /// What was actually stored — the panel's floor.
+        applied: u32,
+    },
+}
+
+impl ClampOutcome {
+    /// The cadence now in effect, either way.
+    #[must_use]
+    pub const fn applied(self) -> u32 {
+        match self {
+            ClampOutcome::Applied(secs) | ClampOutcome::Clamped { applied: secs, .. } => secs,
+        }
+    }
+
+    /// Whether the request was moved.
+    #[must_use]
+    pub const fn was_clamped(self) -> bool {
+        matches!(self, ClampOutcome::Clamped { .. })
     }
 }
 
@@ -153,6 +311,63 @@ pub struct Settings {
     /// Mount paths hidden from the *local* machine's Volumes section. Remote
     /// hosts carry their own list on [`crate::Host`].
     pub local_hidden_volume_mounts: Vec<String>,
+    /// Per-panel poll cadences, keyed by [`IntervalSpec::key`]. **Overrides
+    /// only** — an absent key means "this panel has never been configured", not
+    /// zero, and reads as its default. Empty is the unconfigured state, which is
+    /// why the defaults are not written in here at construction: a stored copy
+    /// of today's constant would be indistinguishable from a deliberate choice,
+    /// and would pin the panel to that number the day the constant moves.
+    ///
+    /// Read it through [`Settings::panel_interval_secs`], never directly — that
+    /// is where the floor is enforced, and a value hand-edited into this file
+    /// gets no say in it. Unrecognised keys are ignored and preserved, so a
+    /// store written by a newer build survives a round-trip through an older one.
+    #[serde(default)]
+    pub panel_intervals: BTreeMap<String, u32>,
+}
+
+impl Settings {
+    /// This panel's cadence in seconds: the operator's override if there is one,
+    /// otherwise today's constant.
+    ///
+    /// **The floor is applied here, on read.** Enforcing it only in
+    /// [`Settings::set_panel_interval_secs`] would leave it bypassable by
+    /// editing `store.json` — and this is the one setting where a bypass costs
+    /// money rather than tidiness. Clamping at the single point of consumption
+    /// means no path reaches a below-floor cadence.
+    #[must_use]
+    pub fn panel_interval_secs(&self, panel: PanelInterval) -> u32 {
+        let spec = panel.spec();
+        self.panel_intervals
+            .get(spec.key)
+            .map_or(spec.default_secs, |&secs| secs.max(spec.floor_secs))
+    }
+
+    /// Set this panel's cadence, reporting whether the floor moved it.
+    ///
+    /// Returns [`ClampOutcome`] rather than a bare `u32` so the caller cannot
+    /// show a floored value as though it were the one requested.
+    pub fn set_panel_interval_secs(&mut self, panel: PanelInterval, secs: u32) -> ClampOutcome {
+        let spec = panel.spec();
+        let applied = secs.max(spec.floor_secs);
+        self.panel_intervals.insert(spec.key.to_owned(), applied);
+        if applied == secs {
+            ClampOutcome::Applied(applied)
+        } else {
+            ClampOutcome::Clamped {
+                asked: secs,
+                applied,
+            }
+        }
+    }
+
+    /// Drop this panel's override, returning it to today's constant.
+    ///
+    /// Distinct from setting it *to* the default: this restores "never
+    /// configured", so the panel follows the constant if it later moves.
+    pub fn clear_panel_interval(&mut self, panel: PanelInterval) {
+        self.panel_intervals.remove(panel.spec().key);
+    }
 }
 
 impl Default for Settings {
@@ -175,6 +390,8 @@ impl Default for Settings {
             notify_on_approval_needed: true,
             notify_on_service_change: true,
             local_hidden_volume_mounts: Vec::new(),
+            // Empty, not pre-filled with the defaults — see the field's note.
+            panel_intervals: BTreeMap::new(),
         }
     }
 }
@@ -266,6 +483,10 @@ mod tests {
             notify_on_approval_needed: false,
             notify_on_service_change: false,
             local_hidden_volume_mounts: vec!["/Volumes/Backup".into()],
+            panel_intervals: BTreeMap::from([
+                ("containers".to_owned(), 30),
+                ("azure_cost".to_owned(), 6 * 3600),
+            ]),
         };
         let json = serde_json::to_string(&s).expect("serialize");
         assert_eq!(
@@ -352,5 +573,168 @@ mod tests {
             serde_json::from_str(r#"{"neon_org_id":"org-abc"}"#).expect("deserialize");
         assert_eq!(s.neon_usd_per_cu_hour, 0.0);
         assert_eq!(s.neon_usd_per_gib_month, 0.0);
+    }
+
+    #[test]
+    fn defaults_match_todays_constants() {
+        let s = Settings::default();
+        assert_eq!(s.panel_interval_secs(PanelInterval::UsageProviders), 3600);
+        assert_eq!(s.panel_interval_secs(PanelInterval::AzureCost), 4 * 3600);
+    }
+
+    #[test]
+    fn a_below_floor_interval_is_clamped_and_the_clamp_is_reported() {
+        let mut s = Settings::default();
+        assert_eq!(
+            s.set_panel_interval_secs(PanelInterval::AzureCost, 30),
+            ClampOutcome::Clamped {
+                asked: 30,
+                applied: 3600
+            }
+        );
+        assert_eq!(s.panel_interval_secs(PanelInterval::AzureCost), 3600);
+    }
+
+    #[test]
+    fn a_value_at_or_above_the_floor_is_applied_unchanged() {
+        let mut s = Settings::default();
+        assert_eq!(
+            s.set_panel_interval_secs(PanelInterval::UsageProviders, 7200),
+            ClampOutcome::Applied(7200)
+        );
+    }
+
+    /// The other two defaults, which the issue's test does not cover. Each is
+    /// today's constant: `containers::POLL_INTERVAL_SECS` and the hour
+    /// `crons_loop` borrows from `usage::PROVIDER_POLL_INTERVAL_SECS`.
+    #[test]
+    fn every_panels_default_is_todays_constant() {
+        let s = Settings::default();
+        assert_eq!(s.panel_interval_secs(PanelInterval::Containers), 10);
+        assert_eq!(s.panel_interval_secs(PanelInterval::Crons), 3600);
+        // An unconfigured store stores nothing at all — the defaults are not
+        // written in, so they are free to follow their constants.
+        assert!(s.panel_intervals.is_empty());
+    }
+
+    /// **The load-bearing back-compat assertion.** Built by hand rather than by
+    /// round-tripping the current serializer, which always emits the key and so
+    /// could never catch its absence.
+    #[test]
+    fn a_store_written_before_panel_intervals_existed_loads_as_defaults() {
+        let s: Settings = serde_json::from_str(
+            r#"{"refresh_interval_secs":30,"core_row_span":3,"neon_org_id":"org-abc"}"#,
+        )
+        .expect("a store.json with no panel_intervals key must still load");
+        assert!(s.panel_intervals.is_empty());
+        for panel in PanelInterval::ALL {
+            assert_eq!(
+                s.panel_interval_secs(panel),
+                panel.spec().default_secs,
+                "{panel:?} must behave exactly as it does today"
+            );
+        }
+        // The rest of the file still parsed.
+        assert_eq!(s.refresh_interval_secs, 30);
+        assert_eq!(s.core_row_span, 3);
+    }
+
+    /// The floor holds on *read*, so hand-editing the file cannot buy a cadence
+    /// the setter refuses. This is the path that would otherwise cost money.
+    #[test]
+    fn a_hand_edited_below_floor_value_is_still_floored_on_read() {
+        let s: Settings =
+            serde_json::from_str(r#"{"panel_intervals":{"azure_cost":1,"containers":0}}"#)
+                .expect("deserialize");
+        assert_eq!(s.panel_interval_secs(PanelInterval::AzureCost), 3600);
+        assert_eq!(s.panel_interval_secs(PanelInterval::Containers), 5);
+    }
+
+    /// A key from a build that knows a panel this one does not must survive the
+    /// round-trip rather than being dropped on the next save.
+    #[test]
+    fn an_unknown_panel_key_is_ignored_but_preserved() {
+        let s: Settings =
+            serde_json::from_str(r#"{"panel_intervals":{"a_panel_from_a_newer_build":42}}"#)
+                .expect("deserialize");
+        assert_eq!(s.panel_interval_secs(PanelInterval::Containers), 10);
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("a_panel_from_a_newer_build"), "{json}");
+    }
+
+    #[test]
+    fn clearing_an_override_restores_todays_constant() {
+        let mut s = Settings::default();
+        s.set_panel_interval_secs(PanelInterval::Containers, 60);
+        assert_eq!(s.panel_interval_secs(PanelInterval::Containers), 60);
+        s.clear_panel_interval(PanelInterval::Containers);
+        assert!(
+            s.panel_intervals.is_empty(),
+            "not merely set to the default"
+        );
+        assert_eq!(s.panel_interval_secs(PanelInterval::Containers), 10);
+    }
+
+    /// Exactly at the floor is a choice, not a clamp.
+    #[test]
+    fn a_value_exactly_at_the_floor_is_applied_not_clamped() {
+        let mut s = Settings::default();
+        for panel in PanelInterval::ALL {
+            let floor = panel.spec().floor_secs;
+            let outcome = s.set_panel_interval_secs(panel, floor);
+            assert_eq!(outcome, ClampOutcome::Applied(floor), "{panel:?}");
+            assert!(!outcome.was_clamped(), "{panel:?}");
+            assert_eq!(outcome.applied(), floor);
+        }
+    }
+
+    /// Both halves of a clamp are carried, and `applied()` reads either variant.
+    #[test]
+    fn a_clamp_reports_what_was_asked_as_well_as_what_was_applied() {
+        let mut s = Settings::default();
+        for panel in PanelInterval::ALL {
+            let floor = panel.spec().floor_secs;
+            let outcome = s.set_panel_interval_secs(panel, floor - 1);
+            assert_eq!(
+                outcome,
+                ClampOutcome::Clamped {
+                    asked: floor - 1,
+                    applied: floor,
+                },
+                "{panel:?}"
+            );
+            assert!(outcome.was_clamped());
+            assert_eq!(outcome.applied(), floor);
+            assert_eq!(s.panel_interval_secs(panel), floor, "{panel:?}");
+        }
+    }
+
+    /// No floor may exceed its own default, or the shipped cadence would be
+    /// illegal to re-select after any edit.
+    #[test]
+    fn every_floor_is_at_or_below_its_default() {
+        for panel in PanelInterval::ALL {
+            let spec = panel.spec();
+            assert!(
+                spec.floor_secs <= spec.default_secs,
+                "{panel:?}: floor {} exceeds default {}",
+                spec.floor_secs,
+                spec.default_secs
+            );
+            assert!(spec.floor_secs > 0, "{panel:?}: a zero floor is no floor");
+        }
+    }
+
+    /// Keys are the on-disk format and are distinct per panel; a collision would
+    /// silently make two panels share one setting.
+    #[test]
+    fn panel_keys_are_unique_and_stable() {
+        let keys: Vec<&str> = PanelInterval::ALL.iter().map(|p| p.spec().key).collect();
+        assert_eq!(
+            keys,
+            ["containers", "usage_providers", "azure_cost", "crons"]
+        );
+        let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
+        assert_eq!(unique.len(), keys.len(), "duplicate panel_intervals key");
     }
 }
