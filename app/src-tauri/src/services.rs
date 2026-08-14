@@ -171,6 +171,9 @@ impl StatusNotice {
 /// it. That matters once more than one vendor is watched, because they are added
 /// to the map at whatever pass each one first answers — a global flag would let
 /// the second vendor's very first reading fire a banner.
+///
+/// The key set follows the pass, so it holds a baseline only for the vendors
+/// currently being watched. See [`observe`](Self::observe).
 #[derive(Debug, Default)]
 pub struct StatusWatch {
     seen: BTreeMap<ServiceId, ComponentStatus>,
@@ -188,7 +191,24 @@ impl StatusWatch {
     /// `enabled` is the store's `notify_on_service_change`, re-read every pass so
     /// a change applies without a relaunch. It suppresses the *notices*, never
     /// the bookkeeping.
+    ///
+    /// A vendor **absent from `readings`** is one this watch is no longer
+    /// watching — the vendor list is the operator's (#284), so it shrinks when
+    /// they remove one — and its baseline is dropped with it. Adding that
+    /// vendor back seeds afresh, because what its page said while nobody was
+    /// looking is *unknown*, not the last value we happened to hold: alerting
+    /// off a stale baseline announces a transition nobody had, for a state
+    /// that was true before the vendor was added.
+    ///
+    /// Membership is **presence in the pass, not the reading in it**. A vendor
+    /// whose page could not be read is still watched: it arrives with
+    /// `status: None`, keeps its baseline, and the next successful read is
+    /// compared against the last thing we actually knew. Forgetting on an
+    /// unreadable pass instead would swallow the recovery that follows it.
     pub fn observe(&mut self, readings: &[Reading<'_>], enabled: bool) -> Vec<StatusNotice> {
+        self.seen
+            .retain(|service, _| readings.iter().any(|r| r.service == *service));
+
         let mut notices = Vec::new();
         for reading in readings {
             // An unreadable page leaves the baseline untouched, so the next
@@ -457,10 +477,16 @@ pub struct HostReading<'a> {
 /// The last known reachability of each monitored host.
 ///
 /// A separate watch from [`StatusWatch`] rather than another `ServiceId`
-/// variant: hosts come and go with Settings, and a key set that changes at
-/// runtime needs [`observe`](Self::observe)'s `retain` — which would be wrong
-/// for the vendor list, where a service missing from a pass means the poll
-/// failed, not that it was deleted.
+/// variant: a host answers with [`Reachability`] rather than a
+/// [`ComponentStatus`], and the two are worded apart to the last sentence.
+/// Both key sets change at runtime and both forget what leaves the pass, for
+/// the same reason — removal in Settings is not an outage.
+///
+/// They differ in what an *unsettled* entry means. This watch drops a host
+/// whose verdict is `None`, because that is a host whose first poll has not
+/// landed and there is nothing to keep; [`StatusWatch`] keeps a vendor whose
+/// page it could not read, because that vendor has a baseline worth comparing
+/// the next successful read against.
 #[derive(Debug, Default)]
 pub struct HostWatch {
     seen: BTreeMap<String, Reachability>,
@@ -637,6 +663,60 @@ mod tests {
                 .is_empty(),
             "the first status we actually know is still a seed"
         );
+    }
+
+    /// Adding a vendor whose page is already amber must not fire a
+    /// notification for a state that was true before it was added — the same
+    /// seeding rule [`crate::github::notify::ApprovalWatch`] follows for
+    /// approval gates.
+    ///
+    /// The vendor here is one the watch has held a baseline for before, which
+    /// is what a vendor removed in Settings and later re-added is. Its state
+    /// while nobody was watching is **unknown**, not the last thing we saw, so
+    /// the pass that brings it back is a seed.
+    #[test]
+    fn a_newly_added_vendors_first_reading_seeds_and_does_not_alert() {
+        let mut watch = StatusWatch::new();
+        // Watched, then removed in Settings…
+        watch.observe(&[reading(Some(ComponentStatus::Operational))], true);
+        assert!(
+            watch.observe(&[], true).is_empty(),
+            "removing a vendor is not an event"
+        );
+
+        // …and added back while its page is already amber.
+        let first = watch.observe(&[reading(Some(ComponentStatus::DegradedPerformance))], true);
+        assert!(
+            first.is_empty(),
+            "first sight of a vendor is a baseline, not an event: {first:?}"
+        );
+
+        let second = watch.observe(&[reading(Some(ComponentStatus::MajorOutage))], true);
+        assert_eq!(
+            second.len(),
+            1,
+            "a real change after the baseline does alert"
+        );
+    }
+
+    /// The boundary the rule above must not cross. Membership is presence in
+    /// the pass; the reading in it is a separate question. A vendor whose page
+    /// could not be read is still being watched, so its baseline stays put and
+    /// the recovery that follows is still announced — dropping it here would
+    /// swallow exactly the banner this module exists for.
+    #[test]
+    fn a_vendor_present_but_unreadable_keeps_its_baseline() {
+        let mut watch = StatusWatch::new();
+        watch.observe(&[reading(Some(ComponentStatus::MajorOutage))], true);
+        assert!(watch.observe(&[reading(None)], true).is_empty());
+
+        let notices = watch.observe(&[reading(Some(ComponentStatus::Operational))], true);
+        assert_eq!(
+            notices.len(),
+            1,
+            "an unreadable pass is not a removal, so the recovery still fires"
+        );
+        assert_eq!(notices[0].title, "GitHub · recovered");
     }
 
     /// Turning notifications off must not queue a backlog: the baseline keeps
