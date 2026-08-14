@@ -11,7 +11,10 @@
 //!
 //! ```no_run
 //! # fn main() -> Result<(), store::StoreError> {
-//! let mut store = store::Store::open()?;
+//! // Whether the pre-existing GitHub credential holds a token is the caller's
+//! // to answer — this crate reads the OS credential store for nobody.
+//! let github_token_present = false;
+//! let mut store = store::Store::open(github_token_present)?;
 //! store.upsert_host(store::Host::new("ubu-01", "100.100.100.100"));
 //! store.save()?;
 //! # Ok(()) }
@@ -54,10 +57,18 @@ pub use statusvendors::StatusVendor;
 
 /// Schema version stamped into every file this crate writes.
 ///
-/// The envelope exists so a future migration has something to branch on. A
-/// file declaring a *higher* version is refused rather than downgraded — see
+/// The envelope exists so a migration has something to branch on. A file
+/// declaring a *higher* version is refused rather than downgraded — see
 /// [`StoreError::UnsupportedVersion`].
-pub const STORE_VERSION: u32 = 1;
+///
+/// - **1** — the original envelope. Exactly one GitHub credential, named by
+///   [`SecretKey::GitHubAccessToken`], implicitly owning every tracked repo.
+/// - **2** — [`StoreData::accounts`] plus [`TrackedRepo::account_id`], so a
+///   repo names the account that fetches it (#283). Reaching 2 is **one-way**:
+///   a build that reads 1 refuses a file stamped 2 outright, by the same
+///   fail-closed rule that makes this constant worth having. See
+///   `migrate_v1_to_v2`.
+pub const STORE_VERSION: u32 = 2;
 
 /// Directory under the platform config dir, named for the app's bundle id:
 /// `~/Library/Application Support/app.solador.desktop` on macOS,
@@ -143,6 +154,16 @@ pub struct StoreData {
     pub hosts: Vec<Host>,
     /// Tracked repo portfolio, in user-visible order.
     pub repos: Vec<TrackedRepo>,
+    /// Vendor accounts, in user-visible order — one credential per *account*,
+    /// which is what makes "this repo belongs to my other GitHub login"
+    /// representable (#283).
+    ///
+    /// `#[serde(default)]` so a v1 file still opens; an absent section is what
+    /// `migrate_v1_to_v2` fills in, and it is deliberately allowed to stay
+    /// empty. There is nothing to seed: an account names a credential, and
+    /// this crate never invents one.
+    #[serde(default)]
+    pub accounts: Vec<VendorAccount>,
     /// Operator-added status vendors, in user-visible order.
     ///
     /// `#[serde(default)]` so a `store.json` written before this key existed
@@ -207,6 +228,7 @@ impl Default for StoreData {
             settings: Settings::default(),
             hosts: Vec::new(),
             repos: Vec::new(),
+            accounts: Vec::new(),
             status_vendors: Vec::new(),
             container_rules: None,
             container_presence: BTreeMap::new(),
@@ -242,9 +264,13 @@ impl Store {
 
     /// Opens (or first-run creates) the store at its platform default path.
     ///
+    /// `github_token_present` is the caller's answer about the *pre-existing*
+    /// [`SecretKey::GitHubAccessToken`] item — see [`Store::open_in`], which
+    /// this forwards to. This crate never reads the credential store itself.
+    ///
     /// # Errors
     /// [`StoreError::NoConfigDir`], plus anything [`Store::open_in`] returns.
-    pub fn open() -> Result<Self, StoreError> {
+    pub fn open(github_token_present: bool) -> Result<Self, StoreError> {
         let dir = Store::default_dir()?;
         if let Some(config) = dirs::config_dir() {
             // Fatal on purpose, and this was the other way round until a review
@@ -257,7 +283,7 @@ impl Store {
             // Refusing to start is recoverable; silently starting empty is not.
             Store::adopt_legacy_dir(&config.join(LEGACY_APP_DIR_NAME), &dir)?;
         }
-        Store::open_in(dir)
+        Store::open_in(dir, github_token_present)
     }
 
     /// Moves a pre-rename store file into `dir`, once.
@@ -308,11 +334,20 @@ impl Store {
     /// truth, and a later build that reintroduces a seed must never retro-edit
     /// a store that already exists.
     ///
+    /// **`github_token_present`** is the one input `migrate_v1_to_v2` needs
+    /// and the one thing this crate refuses to find out for itself: it is the
+    /// caller's answer to "does the pre-existing
+    /// [`SecretKey::GitHubAccessToken`] item hold a token?". Keeping the
+    /// keychain read on the caller's side is what lets the migration be unit
+    /// tested at all — [`secrets::KeyringStore`] is deliberately never
+    /// exercised by tests, because hitting the login keychain prompts locally
+    /// and fails on CI.
+    ///
     /// # Errors
     /// [`StoreError::Parse`] if the file is not JSON this crate understands,
     /// [`StoreError::UnsupportedVersion`] if a newer build wrote it, or
     /// [`StoreError::Io`] on any filesystem failure.
-    pub fn open_in(dir: impl AsRef<Path>) -> Result<Self, StoreError> {
+    pub fn open_in(dir: impl AsRef<Path>, github_token_present: bool) -> Result<Self, StoreError> {
         let path = dir.as_ref().join(STORE_FILE_NAME);
         match fs::read_to_string(&path) {
             Ok(text) => {
@@ -328,10 +363,19 @@ impl Store {
                         expected: STORE_VERSION,
                     });
                 }
-                // Older-or-equal files are read as-is and re-stamped, so the
-                // next save writes this build's version. There is only one
-                // version today; this is where a migration would hook in.
-                data.version = STORE_VERSION;
+                // The version is re-stamped only once every migration between
+                // the file's version and this build's has actually run. A
+                // migration that could not complete leaves the stamp alone, so
+                // the next launch tries again rather than recording a schema
+                // the file never reached — the same "the marker is what stops
+                // the retry" discipline `secrets::SERVICE_MIGRATION_MARKER`
+                // uses, and for the same reason: a partial pass must be
+                // retryable, not permanent.
+                if data.version >= STORE_VERSION
+                    || migrate_v1_to_v2(&mut data, github_token_present)
+                {
+                    data.version = STORE_VERSION;
+                }
                 Ok(Store { path, data })
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -469,6 +513,57 @@ impl Store {
         Some(self.data.repos.remove(index))
     }
 
+    /// Every vendor account, in user-visible order.
+    #[must_use]
+    pub fn accounts(&self) -> &[VendorAccount] {
+        &self.data.accounts
+    }
+
+    /// One account by id.
+    #[must_use]
+    pub fn account(&self, id: Uuid) -> Option<&VendorAccount> {
+        self.data.accounts.iter().find(|account| account.id == id)
+    }
+
+    /// One account by id, mutable. Call [`Store::save`] to persist.
+    pub fn account_mut(&mut self, id: Uuid) -> Option<&mut VendorAccount> {
+        self.data
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == id)
+    }
+
+    /// Creates or updates an account, keyed by [`VendorAccount::id`].
+    ///
+    /// One entry point for both, as with [`Store::upsert_host`]: two rows
+    /// sharing an id would be two accounts on one credential. An update keeps
+    /// the account's position in the list.
+    pub fn upsert_account(&mut self, account: VendorAccount) {
+        match self.account_mut(account.id) {
+            Some(existing) => *existing = account,
+            None => self.data.accounts.push(account),
+        }
+    }
+
+    /// Removes an account, returning it.
+    ///
+    /// Does **not** touch the credential store, and does **not** rewrite the
+    /// repos that named it — for the same reason [`Store::remove_host`] leaves
+    /// the keychain alone: a repo whose account is gone is *unattributed*, and
+    /// silently reassigning it to whatever account remains is exactly the
+    /// invented owner [`TrackedRepo::account_id`] exists to prevent. The
+    /// caller owns deleting [`SecretKey::VendorToken`] — or, for the account
+    /// `migrate_v1_to_v2` minted, whichever item
+    /// [`VendorAccount::secret_account`] actually names.
+    pub fn remove_account(&mut self, id: Uuid) -> Option<VendorAccount> {
+        let index = self
+            .data
+            .accounts
+            .iter()
+            .position(|account| account.id == id)?;
+        Some(self.data.accounts.remove(index))
+    }
+
     /// Every operator-added status vendor, in user-visible order.
     #[must_use]
     pub fn status_vendors(&self) -> &[StatusVendor] {
@@ -589,6 +684,57 @@ impl Store {
     }
 }
 
+/// Schema 1 → 2: mint the account the single v1 GitHub credential *was*, and
+/// attribute every tracked repo to it. Returns whether the migration finished
+/// — the caller stamps [`STORE_VERSION`] only then.
+///
+/// **The answer is only unambiguous while v1 exists**, which is why this lands
+/// early in #283 rather than after the Settings surface: a v1 store held
+/// exactly one GitHub token ([`SecretKey::GitHubAccessToken`]), so every repo
+/// in it provably belongs to that one. Once a second account can be added
+/// there is no such proof, and no later pass can reconstruct it.
+///
+/// Three rules it must not break:
+///
+/// 1. **No token, no account.** A v1 store with nothing in the credential
+///    store gets no account and leaves every `account_id` at `None`. Attaching
+///    the repos to "the first account" — or minting an account for a
+///    credential that does not exist — is the fabrication rule applied to
+///    configuration: a defaulted state is as much a fabrication as a defaulted
+///    number, and an invented owner is *harder* to spot than an empty one,
+///    because the panel looks configured.
+/// 2. **No keychain write, ever.** The minted account points at the
+///    *pre-existing* `github_access_token` item. Renaming it to the
+///    `vendor-<uuid>` spelling a freshly created account would use is the
+///    `LEGACY_SERVICE` hazard in miniature — orphaned is worse than deleted.
+/// 3. **Nothing to do when accounts already exist.** Belt and braces beside
+///    the caller's version check: a store that has any account has been
+///    through here (or through Settings), and a second pass would mint a
+///    duplicate pointing at the same item.
+///
+/// Returning `false` — the caller was not able to say a token is there — is
+/// deliberately *not* recorded as a completed migration, so a launch that
+/// could not read the credential store retries on the next one instead of
+/// freezing an unattributed portfolio behind a v2 stamp.
+fn migrate_v1_to_v2(data: &mut StoreData, github_token_present: bool) -> bool {
+    if !data.accounts.is_empty() {
+        return true;
+    }
+    if !github_token_present {
+        return false;
+    }
+    let account = VendorAccount::new(
+        VendorKind::GitHub,
+        "GitHub",
+        SecretKey::GitHubAccessToken.account(),
+    );
+    for repo in &mut data.repos {
+        repo.account_id = Some(account.id);
+    }
+    data.accounts.push(account);
+    true
+}
+
 /// Monotonic per-write suffix, so two saves racing in one directory cannot
 /// pick the same temp file and truncate each other's payload.
 static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -678,14 +824,14 @@ mod tests {
         let legacy = root.path().join(LEGACY_APP_DIR_NAME);
         let current = root.path().join(APP_DIR_NAME);
 
-        let mut old = Store::open_in(&legacy).expect("seed the old store");
+        let mut old = Store::open_in(&legacy, false).expect("seed the old store");
         old.upsert_repo(TrackedRepo::new("acme/widget"));
         old.upsert_host(Host::new("ubu-01", "100.100.100.100"));
         old.save().expect("save");
 
         assert!(Store::adopt_legacy_dir(&legacy, &current).expect("adopt"));
 
-        let adopted = Store::open_in(&current).expect("open");
+        let adopted = Store::open_in(&current, false).expect("open");
         assert_eq!(
             adopted
                 .repos()
@@ -703,7 +849,7 @@ mod tests {
         let root = temp_dir();
         let legacy = root.path().join(LEGACY_APP_DIR_NAME);
         let current = root.path().join(APP_DIR_NAME);
-        Store::open_in(&legacy).expect("seed");
+        Store::open_in(&legacy, false).expect("seed");
 
         Store::adopt_legacy_dir(&legacy, &current).expect("adopt");
 
@@ -718,17 +864,17 @@ mod tests {
         let legacy = root.path().join(LEGACY_APP_DIR_NAME);
         let current = root.path().join(APP_DIR_NAME);
 
-        let mut old = Store::open_in(&legacy).expect("seed old");
+        let mut old = Store::open_in(&legacy, false).expect("seed old");
         old.upsert_repo(TrackedRepo::new("acme/from-the-past"));
         old.save().expect("save");
 
-        let mut live = Store::open_in(&current).expect("seed current");
+        let mut live = Store::open_in(&current, false).expect("seed current");
         live.upsert_repo(TrackedRepo::new("acme/current"));
         live.save().expect("save");
 
         assert!(!Store::adopt_legacy_dir(&legacy, &current).expect("adopt"));
 
-        let reopened = Store::open_in(&current).expect("reopen");
+        let reopened = Store::open_in(&current, false).expect("reopen");
         let slugs: Vec<&str> = reopened.repos().iter().map(|r| r.slug.as_str()).collect();
         assert_eq!(slugs, vec!["acme/current"]);
     }
@@ -741,7 +887,7 @@ mod tests {
         let root = temp_dir();
         let legacy = root.path().join(LEGACY_APP_DIR_NAME);
         let current = root.path().join(APP_DIR_NAME);
-        let mut old = Store::open_in(&legacy).expect("seed");
+        let mut old = Store::open_in(&legacy, false).expect("seed");
         old.upsert_repo(TrackedRepo::new("acme/widget"));
         old.save().expect("save");
 
@@ -749,7 +895,7 @@ mod tests {
 
         assert_eq!(entries(&current), vec![STORE_FILE_NAME.to_owned()]);
         assert!(
-            Store::open_in(&current).is_ok(),
+            Store::open_in(&current, false).is_ok(),
             "the adopted file must parse"
         );
     }
@@ -763,13 +909,16 @@ mod tests {
             !Store::adopt_legacy_dir(&root.path().join(LEGACY_APP_DIR_NAME), &current)
                 .expect("adopt")
         );
-        assert!(Store::open_in(&current).expect("open").repos().is_empty());
+        assert!(Store::open_in(&current, false)
+            .expect("open")
+            .repos()
+            .is_empty());
     }
 
     #[test]
     fn first_open_writes_the_file_and_tracks_nothing() {
         let dir = temp_dir();
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
 
         assert!(
             store.repos().is_empty(),
@@ -807,18 +956,18 @@ mod tests {
             ),
         ];
 
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         assert_eq!(store.layout(), None, "a fresh store carries no layout");
         store.set_layout(profiles.clone());
         store.save().expect("save");
 
-        let mut reopened = Store::open_in(dir.path()).expect("reopen");
+        let mut reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.layout(), Some(profiles.as_slice()));
 
         reopened.clear_layout();
         reopened.save().expect("save");
         assert_eq!(
-            Store::open_in(dir.path()).expect("reopen").layout(),
+            Store::open_in(dir.path(), false).expect("reopen").layout(),
             None,
             "reset must forget the arrangement, not pin the current default"
         );
@@ -839,7 +988,7 @@ mod tests {
         )
         .expect("write legacy store");
 
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         let profiles = store.layout().expect("a migrated layout");
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].min_width, 0.0, "it applied at every width");
@@ -864,12 +1013,12 @@ mod tests {
     fn an_existing_store_is_never_re_seeded() {
         let dir = temp_dir();
 
-        let mut store = Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path(), false).expect("first open");
         assert!(store.repos().is_empty(), "nothing is seeded");
         store.upsert_repo(TrackedRepo::new("acme/widget"));
         store.save().expect("save");
 
-        let reopened = Store::open_in(dir.path()).expect("reopen");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(
             reopened
                 .repos()
@@ -884,17 +1033,17 @@ mod tests {
     #[test]
     fn a_store_that_exists_with_edits_keeps_them() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path(), false).expect("first open");
         store.upsert_repo(TrackedRepo::new("acme/widget"));
         store.upsert_repo(TrackedRepo::new("acme/gadget"));
         store.save().expect("save");
 
-        let mut store = Store::open_in(dir.path()).expect("reopen");
+        let mut store = Store::open_in(dir.path(), false).expect("reopen");
         store.remove_repo("acme/widget").expect("remove");
         store.upsert_repo(TrackedRepo::new("acme/sprocket"));
         store.save().expect("save");
 
-        let reopened = Store::open_in(dir.path()).expect("reopen");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
         let slugs: Vec<&str> = reopened.repos().iter().map(|r| r.slug.as_str()).collect();
         assert!(!slugs.contains(&"acme/widget"));
         assert!(slugs.contains(&"acme/sprocket"));
@@ -904,7 +1053,7 @@ mod tests {
     #[test]
     fn settings_hosts_and_repos_round_trip_through_the_file() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
 
         store.set_settings(Settings {
             refresh_interval_secs: 300,
@@ -944,7 +1093,7 @@ mod tests {
 
         store.save().expect("save");
 
-        let reopened = Store::open_in(dir.path()).expect("reopen");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.data(), store.data());
         assert_eq!(reopened.settings().refresh_interval_secs, 300);
         assert!(!reopened.settings().notify_on_approval_needed);
@@ -966,7 +1115,7 @@ mod tests {
     #[test]
     fn the_file_carries_the_version_envelope() {
         let dir = temp_dir();
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         let raw = fs::read_to_string(store.path()).expect("read");
         let json: serde_json::Value = serde_json::from_str(&raw).expect("parse");
 
@@ -986,7 +1135,7 @@ mod tests {
         )
         .expect("write");
 
-        let err = Store::open_in(dir.path()).expect_err("must refuse a newer file");
+        let err = Store::open_in(dir.path(), false).expect_err("must refuse a newer file");
         assert!(
             matches!(
                 err,
@@ -1006,13 +1155,195 @@ mod tests {
         );
     }
 
+    // MARK: - Schema 1 → 2: accounts, and the repos that name one
+    //
+    // Every fixture below is a raw JSON literal on purpose. This build can no
+    // longer *emit* a v1 document, so a compatibility test fed only values the
+    // current serializer produces would prove nothing about the files actually
+    // sitting on operators' disks — the same discipline the Sentry fixtures
+    // are held to.
+
+    /// v1 held exactly one GitHub token, so every repo in a v1 file provably
+    /// belongs to it. This is the only moment that inference is sound.
+    #[test]
+    fn a_v1_store_with_a_github_token_attributes_every_repo_to_one_account() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":1,"settings":{},"hosts":[],"repos":[{"slug":"acme/one"},{"slug":"acme/two"}]}"#,
+        )
+        .expect("write");
+
+        let store = Store::open_in(dir.path(), true).expect("open");
+        assert_eq!(store.accounts().len(), 1);
+        let account = &store.accounts()[0];
+        assert_eq!(account.vendor, VendorKind::GitHub);
+        assert_eq!(
+            account.secret_account,
+            SecretKey::GitHubAccessToken.account(),
+            "the migration must NOT rename the keychain item"
+        );
+        assert_eq!(
+            account.secret_account, "github_access_token",
+            "spelled out, because the account name is what a keychain lookup \
+             actually matches on"
+        );
+        for repo in store.repos() {
+            assert_eq!(repo.account_id, Some(account.id), "repo {}", repo.slug);
+        }
+        assert_eq!(
+            store.data().version,
+            STORE_VERSION,
+            "a completed migration is what earns the new stamp"
+        );
+
+        // And it is a migration, not a derivation: the attribution survives a
+        // save and a reopen that is told nothing about any token.
+        store.save().expect("save");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
+        assert_eq!(reopened.accounts(), store.accounts());
+        assert_eq!(reopened.repos()[0].account_id, Some(account.id));
+    }
+
+    /// The one that matters most. No token means no account, and every repo
+    /// stays unattributed — never "the first account", which would be an owner
+    /// invented to fill a gap.
+    #[test]
+    fn a_v1_store_with_no_github_token_creates_no_account_and_attributes_nothing() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":1,"settings":{},"hosts":[],"repos":[{"slug":"acme/one"}]}"#,
+        )
+        .expect("write");
+
+        let store = Store::open_in(dir.path(), false).expect("open");
+        assert!(
+            store.accounts().is_empty(),
+            "an account names a credential; there is no credential to name"
+        );
+        assert_eq!(store.repos()[0].account_id, None);
+    }
+
+    /// `false` is "the caller could not say a token is there" — which covers
+    /// an unreadable keychain, and a pre-rename install whose credential has
+    /// not been adopted yet. Recording that as a finished migration would
+    /// freeze an unattributed portfolio behind a v2 stamp forever, so the
+    /// version is left alone and the next launch tries again.
+    #[test]
+    fn a_migration_that_found_no_token_is_retried_rather_than_stamped_done() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":1,"settings":{},"hosts":[],"repos":[{"slug":"acme/one"}]}"#,
+        )
+        .expect("write");
+
+        let unmigrated = Store::open_in(dir.path(), false).expect("open");
+        assert_eq!(
+            unmigrated.data().version,
+            1,
+            "an unfinished migration must not claim the new schema"
+        );
+        // ...and saving in that state keeps the file readable by the build
+        // that wrote it, because it never became a v2 file.
+        unmigrated.save().expect("save");
+
+        let migrated = Store::open_in(dir.path(), true).expect("reopen");
+        assert_eq!(migrated.accounts().len(), 1);
+        assert_eq!(
+            migrated.repos()[0].account_id,
+            Some(migrated.accounts()[0].id)
+        );
+        assert_eq!(migrated.data().version, STORE_VERSION);
+    }
+
+    /// A v2 file is never migrated again, however empty its account list is.
+    /// An operator who deleted their last account must not find it back on the
+    /// next launch just because the old keychain item is still lying around.
+    #[test]
+    fn a_v2_store_with_no_accounts_is_left_exactly_as_the_operator_left_it() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":2,"settings":{},"hosts":[],"repos":[{"slug":"acme/one"}],"accounts":[]}"#,
+        )
+        .expect("write");
+
+        let store = Store::open_in(dir.path(), true).expect("open");
+        assert!(
+            store.accounts().is_empty(),
+            "a removed account must not be resurrected by a re-run migration"
+        );
+        assert_eq!(store.repos()[0].account_id, None);
+    }
+
+    #[test]
+    fn account_crud_round_trips_through_the_file() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        assert!(store.accounts().is_empty(), "a fresh store ships none");
+
+        let account = VendorAccount::new(VendorKind::GitHub, "cpmadrid", "vendor-abc");
+        let id = account.id;
+        store.upsert_account(account.clone());
+        store.save().expect("save");
+
+        let mut reopened = Store::open_in(dir.path(), false).expect("reopen");
+        assert_eq!(reopened.accounts(), std::slice::from_ref(&account));
+        assert_eq!(reopened.account(id), Some(&account));
+
+        // Upserting the same id updates in place rather than landing a second
+        // row on one credential.
+        reopened.account_mut(id).expect("update").enabled = false;
+        assert!(!reopened.account(id).expect("read back").enabled);
+        let renamed = VendorAccount {
+            label: "cpmadrid (work)".into(),
+            ..account
+        };
+        reopened.upsert_account(renamed.clone());
+        assert_eq!(reopened.accounts(), std::slice::from_ref(&renamed));
+
+        assert_eq!(reopened.remove_account(id), Some(renamed));
+        assert!(reopened.accounts().is_empty());
+        assert!(
+            reopened.remove_account(id).is_none(),
+            "deleting twice is a no-op"
+        );
+    }
+
+    /// Removing an account leaves the repos that named it *unattributed*, not
+    /// reassigned. Silently moving them to whichever account survives is the
+    /// invented owner this whole field exists to prevent.
+    #[test]
+    fn removing_an_account_does_not_reattribute_its_repos() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        let mine = VendorAccount::new(VendorKind::GitHub, "mine", "vendor-mine");
+        let other = VendorAccount::new(VendorKind::GitHub, "other", "vendor-other");
+        let mut repo = TrackedRepo::new("acme/one");
+        repo.account_id = Some(mine.id);
+        store.upsert_account(mine.clone());
+        store.upsert_account(other.clone());
+        store.upsert_repo(repo);
+
+        store.remove_account(mine.id).expect("remove");
+        assert_eq!(
+            store.repos()[0].account_id,
+            Some(mine.id),
+            "a repo pointing at a removed account is dangling, which is \
+             visible; silently pointing it at {} would not be",
+            other.label
+        );
+    }
+
     #[test]
     fn a_malformed_file_is_an_error_not_a_silent_reset() {
         let dir = temp_dir();
         let path = dir.path().join(STORE_FILE_NAME);
         fs::write(&path, "{ this is not json").expect("write");
 
-        let err = Store::open_in(dir.path()).expect_err("must not swallow a broken file");
+        let err = Store::open_in(dir.path(), false).expect_err("must not swallow a broken file");
         assert!(matches!(err, StoreError::Parse { .. }), "got {err}");
         assert_eq!(
             fs::read_to_string(&path).expect("read"),
@@ -1031,7 +1362,7 @@ mod tests {
         )
         .expect("write");
 
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         assert_eq!(store.settings(), &Settings::default());
         assert!(store.hosts().is_empty());
         assert!(
@@ -1053,7 +1384,7 @@ mod tests {
             r#"{"version":1,"settings":{},"hosts":[],"repos":[]}"#,
         )
         .expect("write");
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         assert!(
             store.status_vendors().is_empty(),
             "an absent section is an install that never added a vendor, not a parse failure"
@@ -1063,7 +1394,7 @@ mod tests {
     #[test]
     fn status_vendors_round_trip_and_are_keyed_by_id() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         assert!(
             store.status_vendors().is_empty(),
             "a fresh store ships none"
@@ -1074,7 +1405,7 @@ mod tests {
         store.upsert_status_vendor(vendor.clone());
         store.save().expect("save");
 
-        let mut reopened = Store::open_in(dir.path()).expect("reopen");
+        let mut reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.status_vendors(), std::slice::from_ref(&vendor));
         assert_eq!(reopened.status_vendor(id), Some(&vendor));
 
@@ -1100,14 +1431,14 @@ mod tests {
             r#"{"hosts":[],"repos":[]}"#,
         )
         .expect("write");
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         assert_eq!(store.data().version, STORE_VERSION);
     }
 
     #[test]
     fn save_leaves_no_temp_file_behind() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         for index in 0..25 {
             store.upsert_host(Host::new(
                 format!("host-{index}"),
@@ -1125,7 +1456,10 @@ mod tests {
             serde_json::from_str::<StoreData>(&raw).expect("every save must leave valid JSON");
         }
         assert_eq!(
-            Store::open_in(dir.path()).expect("reopen").hosts().len(),
+            Store::open_in(dir.path(), false)
+                .expect("reopen")
+                .hosts()
+                .len(),
             25
         );
     }
@@ -1133,7 +1467,7 @@ mod tests {
     #[test]
     fn a_concurrent_reader_never_sees_a_torn_file() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         // Big enough that a non-atomic write is torn for a meaningful stretch:
         // a plain `fs::write` truncates the target and then streams into it,
         // and everything in between is a document no reader can use.
@@ -1187,7 +1521,7 @@ mod tests {
         );
         // And the final state is still a real store, not just well-shaped bytes.
         assert_eq!(
-            Store::open_in(dir.path())
+            Store::open_in(dir.path(), false)
                 .expect("reopen")
                 .settings()
                 .neon_org_id,
@@ -1199,15 +1533,18 @@ mod tests {
     fn save_creates_missing_directories() {
         let dir = temp_dir();
         let nested = dir.path().join("Application Support").join(APP_DIR_NAME);
-        let store = Store::open_in(&nested).expect("open");
+        let store = Store::open_in(&nested, false).expect("open");
         assert!(store.path().exists());
-        assert!(Store::open_in(&nested).expect("reopen").repos().is_empty());
+        assert!(Store::open_in(&nested, false)
+            .expect("reopen")
+            .repos()
+            .is_empty());
     }
 
     #[test]
     fn host_crud_round_trips() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         assert!(store.hosts().is_empty());
 
         let host = Host::new("ubu-01", "100.100.100.100");
@@ -1236,7 +1573,7 @@ mod tests {
     #[test]
     fn repo_crud_round_trips() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         let seeded = store.repos().len();
 
         store.upsert_repo(TrackedRepo::new("acme/lathe"));
@@ -1260,7 +1597,7 @@ mod tests {
     #[test]
     fn the_file_holds_no_secret_material() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         let host = Host::new("ubu-01", "100.100.100.100");
         let host_id = host.id;
         store.upsert_host(host);
@@ -1350,7 +1687,7 @@ mod tests {
         // safe — this pins that by asserting the credential wrapper is not
         // reachable from it.
         let dir = temp_dir();
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         let rendered = format!("{store:?}");
         assert!(rendered.contains("Store"));
         assert!(!rendered.to_lowercase().contains("token"));
@@ -1359,7 +1696,7 @@ mod tests {
     #[test]
     fn a_store_with_no_rules_reads_as_the_seeded_defaults() {
         let dir = temp_dir();
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         assert_eq!(store.container_rules(), containers::seeded_rules());
         assert!(store.container_presence().is_empty());
     }
@@ -1367,20 +1704,20 @@ mod tests {
     #[test]
     fn cleared_rules_stay_cleared_instead_of_re_seeding() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         // The user deletes every rule. That is a decision, not an unconfigured
         // store — re-seeding here would resurrect them on the next launch.
         store.set_container_rules(Vec::new());
         store.save().expect("save");
 
-        let reopened = Store::open_in(dir.path()).expect("reopen");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert!(reopened.container_rules().is_empty());
     }
 
     #[test]
     fn unreadable_rules_fall_back_to_the_seeds_without_failing_the_open() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path(), false).expect("first open");
         // A repo of our own, so the "untouched" assertion below is a real
         // claim. Against an empty seed, a length check would pass whether or
         // not the bad value had taken the rest of the store with it.
@@ -1392,7 +1729,8 @@ mod tests {
         data["container_rules"] = serde_json::json!("not a rule list");
         fs::write(&path, data.to_string()).expect("write");
 
-        let reopened = Store::open_in(dir.path()).expect("a bad rules value must still open");
+        let reopened =
+            Store::open_in(dir.path(), false).expect("a bad rules value must still open");
         assert_eq!(reopened.container_rules(), containers::seeded_rules());
         // ...and the rest of the store is untouched by it.
         assert_eq!(
@@ -1408,7 +1746,7 @@ mod tests {
     #[test]
     fn rules_and_presence_round_trip_through_the_file() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
 
         let mut rule = ContainerGroupRule::new("vm-*", "vms", ContainerRuleAction::Expect)
             .on_host(LOCAL_HOST_SCOPE);
@@ -1431,7 +1769,7 @@ mod tests {
         );
         store.save().expect("save");
 
-        let reopened = Store::open_in(dir.path()).expect("reopen");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.container_rules(), [rule]);
         assert_eq!(reopened.container_presence(), &presence);
     }
@@ -1439,7 +1777,7 @@ mod tests {
     #[test]
     fn the_runner_roster_round_trips_through_the_file() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("open");
+        let mut store = Store::open_in(dir.path(), false).expect("open");
         assert!(
             store.runner_roster().is_empty(),
             "a fresh store remembers no runners"
@@ -1465,7 +1803,7 @@ mod tests {
         );
         store.save().expect("save");
 
-        let reopened = Store::open_in(dir.path()).expect("reopen");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.runner_roster(), roster);
     }
 
@@ -1474,7 +1812,7 @@ mod tests {
     #[test]
     fn a_store_file_without_a_runner_roster_still_opens() {
         let dir = temp_dir();
-        let mut store = Store::open_in(dir.path()).expect("first open");
+        let mut store = Store::open_in(dir.path(), false).expect("first open");
         // As above: something to preserve, so "the rest still opens" is a
         // claim an empty portfolio cannot satisfy for free.
         store.upsert_repo(TrackedRepo::new("acme/widget"));
@@ -1488,7 +1826,7 @@ mod tests {
             .expect("the field was written");
         fs::write(&path, data.to_string()).expect("write");
 
-        let reopened = Store::open_in(dir.path()).expect("an older file must still open");
+        let reopened = Store::open_in(dir.path(), false).expect("an older file must still open");
         assert!(reopened.runner_roster().is_empty());
         assert_eq!(
             reopened

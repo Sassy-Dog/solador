@@ -3789,10 +3789,16 @@ fn run_dump(args: &[String]) -> bool {
 /// Where the store lives. `SOLADOR_STORE_DIR` overrides the platform default
 /// so a smoke run or a throwaway experiment can seed a scratch store instead
 /// of editing the real one (see the manual IPC smoke test in `app/README.md`).
-fn open_store() -> Result<Store, StoreError> {
+///
+/// `github_token_present` is the store's v1 → v2 migration input: `crates/store`
+/// never reads the credential store itself, so this side of the boundary owns
+/// looking. Only [`Credential::Present`] counts — an unreadable keychain is not
+/// evidence of an absent token, and the store treats a `false` as "ask again
+/// next launch" rather than as a finished migration.
+fn open_store(github_token_present: bool) -> Result<Store, StoreError> {
     match std::env::var_os("SOLADOR_STORE_DIR") {
-        Some(dir) => Store::open_in(dir),
-        None => Store::open(),
+        Some(dir) => Store::open_in(dir, github_token_present),
+        None => Store::open(github_token_present),
     }
 }
 
@@ -3888,13 +3894,6 @@ fn main() {
         return;
     }
 
-    let mut store = match open_store() {
-        Ok(store) => store,
-        Err(e) => {
-            eprintln!("could not open the Solador store: {e}");
-            std::process::exit(1);
-        }
-    };
     // Tokens live in the OS credential store, never in the store file. The
     // *service* string matches the original `KeychainHelper`
     // (the pre-rename service, see `store::LEGACY_SERVICE`), but the *account* does not: the original stores
@@ -3904,6 +3903,27 @@ fn main() {
     // saved by one app is invisible to the other; unifying the account scheme
     // is separate work.
     let credentials = KeyringStore::new();
+
+    // Read before the store opens, because the store's v1 -> v2 migration
+    // needs the answer and `crates/store` deliberately cannot get it itself.
+    // It has to happen before the two credential migrations below, which need
+    // `store.hosts()` and so cannot run first -- so on the one launch that
+    // still adopts the pre-rename service, this read finds nothing and the
+    // store leaves itself at v1 rather than stamping v2 over an unattributed
+    // portfolio. The next launch, with the credential where this build looks,
+    // migrates. Unreadable is not absent, and neither is "not adopted yet".
+    let github_token_present = matches!(
+        read_credential(&credentials, SecretKey::GitHubAccessToken),
+        Credential::Present(_)
+    );
+
+    let mut store = match open_store(github_token_present) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("could not open the Solador store: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // One-shot: copy legacy per-item secrets into the consolidated blob
     // (secrets_v1) so steady state reads exactly one keychain item. Must run
@@ -5480,7 +5500,7 @@ mod tests {
 
     fn scratch_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let store = Store::open_in(dir.path()).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         (dir, store)
     }
 
@@ -5585,10 +5605,10 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let credentials = MemoryCredentialStore::new();
         {
-            let mut store = Store::open_in(dir.path()).expect("open");
+            let mut store = Store::open_in(dir.path(), false).expect("open");
             seed_from_env(&mut store, &credentials, Some("ubu-01|100.100.100.100")).expect("seed");
         }
-        let reopened = Store::open_in(dir.path()).expect("reopen");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.hosts().len(), 1);
         assert_eq!(reopened.hosts()[0].name, "ubu-01");
     }
