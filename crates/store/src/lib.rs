@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod accounts;
 pub mod containers;
 pub mod hosts;
 pub mod layout;
@@ -37,6 +38,7 @@ pub mod runners;
 pub mod secrets;
 pub mod settings;
 
+pub use accounts::{VendorAccount, VendorKind};
 pub use containers::{
     matches_glob, presence_key, records_for_host, seeded_rules, ContainerGroupRule,
     ContainerPresenceRecord, ContainerRuleAction, DEFAULT_GRACE_SECS, LOCAL_HOST_SCOPE,
