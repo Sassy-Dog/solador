@@ -1085,10 +1085,15 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_move_panel` / `settings_set_panel_span` / `settings_set_breakpoint_overflow` | the [cockpit layout](#the-layout-tab), inside one breakpoint named by `minWidth`: one panel a place along the order, one panel's width, or that band's host-overflow mode |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` / `settings_reset_layout` | add a width band (seeded from the one it splits), drop one (never the last), or forget the arrangement entirely |
 | `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |
+| `settings_save_github` | the GitHub organization the Runners panel queries. One field, one command — `ProviderPrefs` above is sent *whole* by two tabs, and the GitHub tab shows none of its fields, so folding this in would blank them |
+| `settings_save_azure` | where the cost export lives: storage account + container. Its own command for the same reason, and it **wakes the Azure poll** — that loop runs on a four-hour rhythm, so without the nudge an operator who just fixed a typo waits until teatime to learn whether it worked |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it |
 | `settings_unhide_volume` | one mount, on a host or on the local list |
 | `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
 | `settings_test_host` | one `/v1/health` probe → the original result line |
+| `settings_save_account` | create or edit a [vendor account](#the-accounts-tab) — `id: null` adds, an id edits. The token is minted as **its own** credential-store item (`SecretKey::VendorToken`), never shared with another account. An empty token is a legitimate save, not a failure: the row reads **No token** and the operator fills it in later. Wakes the GitHub loop, because accounts *are* that pass's identities |
+| `settings_set_account_enabled` | one account in or out of the GitHub pass, without deleting it or its token |
+| `settings_remove_account` | delete the account and the one credential item it named. **Its repos are not re-homed** — they stay tracked and become unattributed, because moving them onto whichever account survived would invent an owner. Returns a receipt naming the same repos the confirmation prompt did |
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio. **Add attributes the repo to an account only when the store holds exactly one** (`settings::new_repo`) — with two or more there is no correct default, so it lands unattributed and the row's picker asks |
 | `settings_set_repo_account` | that picker: which account fetches this repo. `accountId: null` is the unattributed state, which is a legitimate answer rather than a cleared field; an id no account carries is refused, because a stale id on screen is indistinguishable from a deliberate *Unattributed* |
 | `settings_save_openclaw` | the OpenClaw gateway URL |
@@ -1285,6 +1290,48 @@ Two gaps, deliberate and worth knowing:
   scope granted below deliberately does **not** reach them. They are repo roots
   and issue pages; the grant admits `/{owner}/{repo}/actions` and nothing else,
   so making those links openable would be a second widening, argued separately.
+
+### The Accounts tab
+
+One vendor credential per **account** — a label, a token, and an enabled flag —
+instead of the single GitHub token that came before it. It sits between the
+**GitHub** tab and **Portfolio** on purpose: read left to right, the three tabs
+are *the token*, *whose token*, and *which repos it fetches*.
+
+Each account's token is **its own item** in the OS credential store
+(`SecretKey::VendorToken`, keyed by the account's id) and is never shared with
+another account. That is what makes removal safe to reason about, and it is why
+`settings_remove_account` deletes only the item the account actually named — an
+id it cannot resolve is **left in place** rather than guessed at, because
+deleting the wrong credential is not undoable and an orphaned item is the better
+failure.
+
+**An account with no token is a real state, not a broken one.** The row badges
+it **No token** and nothing else changes; the operator adds one when they have
+it. Reporting "No token" over a token that is sitting right there would be the
+worse error, so the badge tracks the credential store rather than a cached
+guess.
+
+**Removing an account does not re-home its repos.** They stay tracked and become
+*unattributed* — the same state a repo lands in when the store holds two or more
+accounts and there is no correct default (see `settings_set_repo_account`).
+Rewriting them onto whichever account happened to survive would invent an owner.
+What the removal costs is read **before** it happens and shown twice, worded
+from one place so the two cannot disagree:
+
+- the Delete button becomes a prompt — *"Remove `<label>`? 2 tracked repos become
+  unattributed: `owner/a`, `owner/b`."*
+- the status line afterwards is the receipt — *"Removed `<label>`. 2 tracked repos
+  are now unattributed: `owner/a`, `owner/b`."*
+
+An account **no repo names** skips the prompt and deletes in one click. That
+asymmetry is deliberate: a confirmation step over no consequence is what teaches
+an operator to click through the one that has a consequence.
+
+Saving, toggling, or removing an account wakes the GitHub poll immediately
+rather than waiting out a refresh interval — accounts are the identities that
+pass fetches with, so a change that does not reach the loop leaves the panel
+fetching with the previous set.
 
 ### The Services tab
 
