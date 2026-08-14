@@ -173,6 +173,47 @@ test("a narrow card stacks the breakdowns under the costs, divider and all", asy
   await expect(page.locator("#azureBody > .pv-divider")).toBeVisible();
 });
 
+test("a stale reading is dimmed and dated, on its own line beside the footer", async ({ page, baseURL }) => {
+  // The two clocks, side by side and answering different questions:
+  // `#azureFreshness` dates the figure ("as of 23h ago"), `#azureStale` is the
+  // status footer warning that the poller is late. Both fixtures carry the same
+  // dollars, so the only difference a reader sees is the claim being made about
+  // them — which is the whole point of marking staleness rather than rendering
+  // a day-old number as a current one.
+  const live = await gotoWithAzure(page, baseURL);
+  expect(live.freshness.state).toBe("live");
+  expect(live.freshness.text, "a current reading is painted as it always was").toBeNull();
+  await expect(page.locator("#azureFreshness")).toBeHidden();
+
+  const stale = await gotoWithAzure(page, baseURL, "sample-azure-stale.json");
+  expect(stale.freshness.state).toBe("stale");
+  expect(stale.freshness.measured_secs_ago).toBeGreaterThan(0);
+  await expect(page.locator("#azureFreshness")).toHaveText(stale.freshness.text);
+  await expect(page.locator("#azureFreshness")).toHaveCSS(
+    "color",
+    rgb(stale.freshness.color)
+  );
+
+  // Not folded into the footer: two elements, two strings, both visible.
+  await expect(page.locator("#azureStale")).toHaveText(stale.footer.text);
+  expect(stale.footer.text).not.toBe(stale.freshness.text);
+
+  // Same money, dimmer green — the mark itself.
+  expect(stale.headline.value).toBe(live.headline.value);
+  expect(stale.headline.valueColor).not.toBe(live.headline.valueColor);
+  await expect(page.locator("#azureBody .az-headline .value")).toHaveCSS(
+    "color",
+    rgb(stale.headline.valueColor)
+  );
+});
+
+test("a panel with no reading publishes no age rather than a fresh-looking zero", async ({ page, baseURL }) => {
+  const unconfigured = await gotoWithAzure(page, baseURL, "sample-azure-empty.json");
+  expect(unconfigured.freshness.state).toBe("unknown");
+  expect(unconfigured.freshness.measured_secs_ago).toBeNull();
+  await expect(page.locator("#azureFreshness")).toBeHidden();
+});
+
 test("a missing SAS URL reads as setup and a failed read reads as a failure", async ({ page, baseURL }) => {
   // The two states this panel must never conflate, and the discriminator is a
   // colour Rust chose: rendering "add a SAS URL" in red would send an operator

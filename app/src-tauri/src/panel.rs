@@ -12,6 +12,7 @@
 use serde_json::{json, Value};
 use viewmodel::color;
 use viewmodel::format::relative_age;
+use viewmodel::freshness::Freshness;
 
 /// What the app knows about a panel's credential.
 ///
@@ -121,6 +122,52 @@ pub fn status_footer(
         Some(text) => json!({ "text": text, "color": color::hex(color::AMBER) }),
         None => Value::Null,
     }
+}
+
+/// How old the figure a panel is painting is, as the frontend receives it.
+///
+/// **This is not [`status_footer`], and must not be folded into it.** They are
+/// two clocks answering two questions: the footer asks *"did the last attempt
+/// fail, or is the poller late"*, this asks *"how old is the number on screen
+/// right now"*. A reading stops being live the moment one cadence has passed;
+/// a poller is not worth warning about until it is later than that. In between,
+/// a panel renders a dated, dimmed figure and **no** warning — which is
+/// precisely the state neither field can express alone.
+///
+/// The shape is `{state, measured_secs_ago, text, color}`:
+///
+/// - `state` is `"live"` / `"stale"` / `"unknown"`, already decided by
+///   [`Freshness::classify`]. The frontend branches on this string and never
+///   compares an age to a cadence itself — the threshold lives in `viewmodel`,
+///   where a test can see it.
+/// - `measured_secs_ago` is `null` for [`Freshness::Unknown`] **and only
+///   there**: nothing has ever been read, so there is no age. A `0` would paint
+///   the never-read panel as the freshest thing in the cockpit.
+/// - `text` is non-null only when the reading is stale, because that is the
+///   only state with something to add: live is painted as it always was, and
+///   unknown has no figure to qualify. It is built here rather than in JS for
+///   the reason every other string is — [`relative_age`] is one definition, and
+///   a second one in the frontend would be free to disagree about where a
+///   minute becomes an hour.
+#[must_use]
+pub fn freshness_payload(freshness: Freshness) -> Value {
+    // `stale_age` is deliberately not `measured_secs_ago` filtered after the
+    // fact: the line and the age are two different questions, and one match
+    // arm per variant is what makes "live carries an age but paints nothing"
+    // legible rather than an omission a later edit would helpfully "fix".
+    let (state, measured_secs_ago, stale_age) = match freshness {
+        Freshness::Live { measured_secs_ago } => ("live", Some(measured_secs_ago), None),
+        Freshness::Stale { measured_secs_ago } => {
+            ("stale", Some(measured_secs_ago), Some(measured_secs_ago))
+        }
+        Freshness::Unknown => ("unknown", None, None),
+    };
+    json!({
+        "state": state,
+        "measured_secs_ago": measured_secs_ago,
+        "text": stale_age.map(|secs| format!("as of {}", relative_age(secs))),
+        "color": stale_age.map(|_| color::hex(color::AMBER)),
+    })
 }
 
 /// One thin progress bar: how much of the track to fill, and what colour.
@@ -248,7 +295,18 @@ mod tests {
                 crate::usage::PROVIDER_STALE_AFTER_SECS,
                 90 * 60,
             ),
-            ("azure cost", crate::azure::STALE_AFTER_SECS, 5 * 60 * 60),
+            // Azure Cost's window is derived from the operator's cadence
+            // (#302), so what is pinned here is the *default* cadence still
+            // producing the 5h the original panel passed.
+            (
+                "azure cost",
+                crate::azure::stale_after_secs(u64::from(
+                    store::settings::PanelInterval::AzureCost
+                        .spec()
+                        .default_secs,
+                )),
+                5 * 60 * 60,
+            ),
         ];
         for (panel, window, expected) in windows {
             assert_eq!(
@@ -274,6 +332,37 @@ mod tests {
     fn the_footer_is_always_amber() {
         let footer = status_footer(Some(NOW - 900), None, NOW, 150);
         assert_eq!(footer["color"], color::hex(color::AMBER));
+    }
+
+    // MARK: freshness_payload
+
+    #[test]
+    fn a_live_reading_publishes_its_age_and_nothing_to_paint() {
+        let payload = freshness_payload(Freshness::classify(Some(600), 4 * 3600));
+        assert_eq!(payload["state"], "live");
+        assert_eq!(payload["measured_secs_ago"], 600);
+        assert!(payload["text"].is_null(), "live renders as it always did");
+        assert!(payload["color"].is_null());
+    }
+
+    #[test]
+    fn a_stale_reading_publishes_the_state_the_age_and_the_as_of_line() {
+        let payload = freshness_payload(Freshness::classify(Some(23 * 3600), 4 * 3600));
+        assert_eq!(payload["state"], "stale");
+        assert_eq!(payload["measured_secs_ago"], 23 * 3600);
+        assert_eq!(payload["text"], "as of 23h ago");
+        assert_eq!(payload["color"], color::hex(color::AMBER));
+    }
+
+    /// The failure this shape exists to prevent: never-measured degrading into
+    /// an age of zero, which would publish as the freshest reading on the panel.
+    #[test]
+    fn a_never_measured_reading_publishes_no_age_at_all() {
+        let payload = freshness_payload(Freshness::Unknown);
+        assert_eq!(payload["state"], "unknown");
+        assert!(payload["measured_secs_ago"].is_null());
+        assert_ne!(payload["measured_secs_ago"], 0);
+        assert!(payload["text"].is_null(), "there is no figure to qualify");
     }
 
     // MARK: progress_bar

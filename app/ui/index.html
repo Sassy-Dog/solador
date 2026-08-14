@@ -130,6 +130,14 @@
     <section class="panel" id="azurePanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="azureTitle"></h2>
+        <!-- Two spans, two clocks, and they are NOT the same question.
+             `#azureFreshness` dates the figure in the headline ("as of 23h
+             ago"); `#azureStale` below it is the status footer, which says the
+             last attempt failed or the poller is late. A reading goes stale one
+             cadence late and the footer only warns an hour past that, so there
+             is a window where the first speaks and the second is silent —
+             which is the whole reason they are two elements. -->
+        <span class="panel-asof" id="azureFreshness" hidden></span>
         <span class="panel-stale" id="azureStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="azureTrailing"></span>
