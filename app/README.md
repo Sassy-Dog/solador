@@ -199,8 +199,10 @@ configured" wrong forever.
 
 ## The `containers` command
 
-The Containers/VMs panel, on its own 10s cadence — the cockpit's 1s tick is a
-metrics cadence, and `docker ps` is a process spawn:
+The Containers/VMs panel, on its own cadence — 10s by default, the operator's
+since [#301](https://github.com/Sassy-Dog/solador/issues/301), and never the
+cockpit's 1s tick, which is a metrics cadence, where `docker ps` is a process
+spawn:
 
 ```js
 await window.__TAURI__.core.invoke("containers");
@@ -566,9 +568,10 @@ a walk of `~/.claude/projects` on the store's `refresh_interval_secs`
 (`staleAfter` 150s). Neon consumption and Sentry event stats are hourly API reads
 inside the same loop (`staleAfter` 90m — above their own cadence, so a warning
 means a stuck poller and not the gap between polls). Azure cost is its own loop
-on `azurecost::POLL_INTERVAL` (4h), because the export is published about once a
-day and the crate's fingerprint cache makes an unchanged cycle cost one blob
-listing and zero partition bodies.
+on 4h (`azurecost::POLL_INTERVAL`, its default since the cadence became the
+operator's in [#301](https://github.com/Sassy-Dog/solador/issues/301)), because
+the export is published about once a day and the crate's fingerprint cache makes
+an unchanged cycle cost one blob listing and zero partition bodies.
 
 **Unknown is not zero, again — and this time it also suppresses a bar.**
 `crates/usage` models Neon's and Sentry's summaries as enums whose *unmeasured*
@@ -772,10 +775,13 @@ There is deliberately **no** "suspiciously few monitors" guard: the wire carries
 no expected count, and a threshold shipped in the binary would be a number nobody
 set, warning a fresh org about a list that is simply short.
 
-**Hourly, and a persistence watch rather than an alarm.** `crons_loop` shares
-`usage::PROVIDER_POLL_INTERVAL_SECS` with the Sentry read inside `usage_loop` —
-same API, same rhythm, one constant — so a newly-red monitor can be invisible for
-up to an hour. That is accepted: the outage that motivated the work ran seven
+**Hourly, and a persistence watch rather than an alarm.** `crons_loop` ran on
+`usage::PROVIDER_POLL_INTERVAL_SECS`, the same constant as the Sentry read
+inside `usage_loop` — same API, same rhythm — and since
+[#300](https://github.com/Sassy-Dog/solador/issues/300) it has a cadence of its
+own whose *default* is that hour, so an unconfigured store still behaves as one
+constant and only an explicit edit parts them. Either way a newly-red monitor
+can be invisible for up to an hour. That is accepted: the outage that motivated the work ran seven
 days, and the daily Slack digest remains the prompt signal. Saving or clearing the
 Sentry token, or editing the org slug, wakes both loops; a first read that failed
 retries after a minute rather than waiting out the hour. The monitor list is
@@ -1084,11 +1090,14 @@ a portfolio fetch on a credential it has no use for.
 
 #### Waking up with the machine
 
-**A resume is the one caller allowed to wake all four at once**, and it is not a
-mutation. Closing a laptop suspends every poll task, so the four slow loops —
-GitHub, usage (1h), Azure (4h), OpenClaw — otherwise resume on their own
-schedule and the cockpit paints last night's data for up to a full interval
-after the lid opens. The rule above holds for *edits* because an edit changes
+**A resume is the one caller allowed to wake every loop at once**, and it is not
+a mutation. Closing a laptop suspends every poll task, so the slow loops —
+GitHub, usage (1h), Azure (4h), containers, OpenClaw — otherwise resume on their
+own schedule and the cockpit paints last night's data for up to a full interval
+after the lid opens. Containers is in that list as of
+[#301](https://github.com/Sassy-Dog/solador/issues/301): a 10s tick was too
+short to be worth waking, but its cadence is a setting now, and one stretched to
+ten minutes has exactly this problem. The rule above holds for *edits* because an edit changes
 one source; a resume is every source at once becoming untrustworthy, so
 `resume_loop` ([`src/resume.rs`](src-tauri/src/resume.rs)) fires the lot.
 
@@ -1103,8 +1112,9 @@ platform code, so Windows gets it for free. A wall clock corrected forward by
 NTP reads as a resume too; the cost of that is one extra poll of each source,
 which is the harmless direction to be wrong in.
 
-The 1s and 10s loops need nothing — they self-heal within a tick, and
-`poll_loop` is spawned without an `Arc<App>` to be woken through anyway. But the
+The 1s host loops and the 10s health poll need nothing — they self-heal within
+a tick, and `poll_loop` is spawned without an `Arc<App>` to be woken through
+anyway. But the
 host **watch** is re-seeded first (`HostWatch::reset`): the tailnet takes a few
 seconds to come back, so without it every lid-open would banner an
 "unreachable" and then a "back online" for every host. `StatusWatch` is
@@ -1229,7 +1239,14 @@ Two gaps, deliberate and worth knowing:
   because one history sample is one fixed time slice
   (`PX_PER_SAMPLE`), so that cadence is part of the charts' time axis rather
   than a preference, and Neon, Sentry and the Azure export publish on the order
-  of hours or days, so each keeps its own fixed cadence. The **core row span**
+  of hours or days, so each keeps a cadence of its own. Those per-panel cadences
+  — containers, the metered providers, Azure cost and Sentry crons — are the
+  store's `panel_intervals`, each clamped to a floor stated beside the source it
+  protects ([#300](https://github.com/Sassy-Dog/solador/issues/300)) and re-read
+  by its loop every pass ([#301](https://github.com/Sassy-Dog/solador/issues/301)),
+  so a change applies on the next tick. **There is no Settings control for them
+  yet** — editing `store.json` is the only way in, which is also why no wake
+  channel fires on a cadence edit. The **core row span**
   is still read by `viewmodel`'s card functions from their own constant; it
   persists (same file, same key, same laundering rules as the original) and nothing
   reads the stored value yet. `host_overflow_mode` left this tab for the

@@ -5,6 +5,7 @@ use agentclient::{AgentClient, AgentError};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use store::settings::PanelInterval;
 use store::{
     ContainerGroupRule, CredentialStore, Host, HostOverflowMode, KeyringStore, SecretKey, Store,
     StoreError, TrackedRepo, VendorAccount, VendorKind,
@@ -62,6 +63,35 @@ const FAILURE_THRESHOLD: u32 = 2;
 /// for the same reason — fast enough that a stalled sampler is caught within one
 /// glance, slow enough to be free.
 const HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long one panel's loop waits before its next pass, read from the store
+/// **now** rather than captured when the task was spawned.
+///
+/// Every call site is in a loop body, after the pass, and that placement is the
+/// whole point. An interval baked into a `tokio::time::interval` when the task
+/// starts keeps handing out the number that was configured *then*, so choosing
+/// a new cadence in Settings takes up to one full interval to have any visible
+/// effect — four hours, on the Azure row — which is indistinguishable from the
+/// setting doing nothing at all. `github_loop` has re-read
+/// `refresh_interval_secs` every pass for exactly this reason since it was
+/// written; this is that same discipline for the four panels whose cadence
+/// became a setting in #300.
+///
+/// [`store::settings::Settings::panel_interval_secs`] applies the panel's floor
+/// on read, so what comes back here is already the enforced value — callers
+/// must not clamp it again, and a hand-edited `store.json` gets no say in it.
+///
+/// [`POLL_INTERVAL`] and [`HEALTH_POLL_INTERVAL`] are deliberately out of
+/// reach: there is no [`PanelInterval`] variant that names either, because the
+/// 1 Hz host poll is the time axis of the sparklines and agent health is
+/// liveness rather than a panel.
+fn panel_interval(store: &Mutex<Store>, panel: PanelInterval) -> std::time::Duration {
+    let secs = {
+        let store = store.lock().expect("store poisoned");
+        u64::from(store.settings().panel_interval_secs(panel))
+    };
+    std::time::Duration::from_secs(secs)
+}
 
 /// The mutable half of one watched host. The `AgentClient` is immutable and is
 /// held separately so the poll loop never locks across an await.
@@ -160,6 +190,13 @@ struct App {
     /// takes them one at a time, in sequence, so there is no order to get
     /// wrong between them.
     containers: Mutex<ContainersState>,
+    /// Cuts the containers loop's sleep short.
+    ///
+    /// It had no need of one while it ticked every ten seconds: waiting out a
+    /// cadence that short is not something anyone can see. Its cadence is the
+    /// operator's now, so "it comes round again immediately anyway" stopped
+    /// being true, and the resume path is the caller that noticed first.
+    containers_wake: tokio::sync::Notify,
     /// The Repos + GitHub Runners panels' state, on the store's
     /// `refresh_interval_secs` cadence.
     ///
@@ -764,17 +801,22 @@ async fn poll_loop(
 
 /// Notices the machine waking from sleep and refreshes everything at once.
 ///
-/// The five `tokio::time::interval` loops need no help: hosts and the local
-/// card tick at 1s, containers and health at 10s, and none of them is reachable
-/// from here anyway — `poll_loop` is spawned without an `Arc<App>`. What this
-/// exists for is the four *slow* loops, which would otherwise show the previous
-/// night's data for up to a full interval after the lid opens.
+/// The remaining `tokio::time::interval` loops need no help: hosts and the
+/// local card tick at 1s and health at 10s, and none of them is reachable from
+/// here anyway — `poll_loop` is spawned without an `Arc<App>`. What this exists
+/// for is the *slow* loops, which would otherwise show the previous night's
+/// data for up to a full interval after the lid opens.
+///
+/// **Containers joined them in #301.** It used to be in the paragraph above, on
+/// the strength of a 10s tick nobody could see themselves waiting out — but its
+/// cadence is a setting now, and an operator who stretched it to ten minutes
+/// has exactly the problem this loop exists to solve.
 ///
 /// **This deliberately breaks the rule the wake channels were built for.**
 /// `app/README.md` records that every mutation wakes exactly the loop its data
 /// feeds and no other, because a wake spends a whole poll pass. A resume is not
 /// an edit to one source: it is every source at once becoming untrustworthy, so
-/// it is the one caller entitled to fire all four.
+/// it is the one caller entitled to fire all of them.
 async fn resume_loop(app: Arc<App>) {
     let mut tick = tokio::time::interval(resume::TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -804,6 +846,7 @@ async fn resume_loop(app: Arc<App>) {
         wake_github(&app);
         wake_usage(&app, true);
         app.azure_wake.notify_one();
+        app.containers_wake.notify_one();
         wake_openclaw(&app);
     }
 }
@@ -1126,18 +1169,25 @@ async fn poll_containers(app: &Arc<App>) {
     }
 }
 
-/// The containers panel's poll loop: tick, poll every source, record.
+/// The containers panel's poll loop: poll every source, record, then wait out
+/// the operator's cadence for this panel.
+///
+/// Sleeping *after* the pass rather than ticking a `tokio::time::interval` is
+/// also what retired the `MissedTickBehavior::Delay` this loop used to need:
+/// there are no missed ticks to queue up when the next wait does not begin
+/// until this pass has returned, so one slow pass can no longer be followed by
+/// a back-to-back spawn storm of `docker ps` invocations.
 async fn containers_loop(app: Arc<App>) {
-    let mut tick = tokio::time::interval(std::time::Duration::from_secs(
-        containers::POLL_INTERVAL_SECS,
-    ));
-    // Same reason as the metrics loop: `Burst` would fire every missed tick
-    // back-to-back after one slow pass, turning a 10s cadence into a spawn
-    // storm of `docker ps` invocations.
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        tick.tick().await;
         poll_containers(&app).await;
+        let wait = panel_interval(&app.store, PanelInterval::Containers);
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            // `notify_one`, not `notify_waiters`: a wake that lands while a
+            // pass is still running stores a permit and fires the moment this
+            // sleep begins, instead of being dropped for having no listener.
+            () = app.containers_wake.notified() => {}
+        }
     }
 }
 
@@ -2289,15 +2339,31 @@ fn read_claude_usage() -> (Option<usage::UsageSummary>, Option<String>) {
     )
 }
 
-/// The Usage panel's poll loop.
+/// The Usage panel's poll loop, on **two** clocks.
+///
+/// The loop itself turns on the store's `refresh_interval_secs`, because that
+/// is the Claude rollup's cadence — a local walk of `~/.claude/projects` that
+/// costs nobody anything. The metered providers inside it (Neon, Sentry,
+/// Vercel) are three vendor APIs on a rate-limit budget and run on their own,
+/// much slower [`PanelInterval::UsageProviders`] cadence, which is why `due` is
+/// computed rather than assumed: a pass can refresh the tokens without spending
+/// a provider request.
+///
+/// Both are re-read every pass — the outer one at the bottom of the loop, the
+/// provider one at the top — so either can be changed in Settings without
+/// waiting out the old value. See [`panel_interval`].
 async fn usage_loop(app: Arc<App>) {
     use std::sync::atomic::Ordering;
 
     let mut providers_last = None::<std::time::Instant>;
     loop {
+        // Read before the `||`, not inside the right-hand side: short-circuit
+        // evaluation would skip it on every pass a Settings edit had already
+        // forced, and "the cadence is read every pass" is the property this
+        // whole shape exists for.
+        let providers_every = panel_interval(&app.store, PanelInterval::UsageProviders);
         let due = app.usage_providers_due.swap(false, Ordering::SeqCst)
-            || providers_last
-                .is_none_or(|at| at.elapsed().as_secs() >= usage::PROVIDER_POLL_INTERVAL_SECS);
+            || providers_last.is_none_or(|at| at.elapsed() >= providers_every);
         poll_usage(&app, due).await;
         if due {
             providers_last = Some(std::time::Instant::now());
@@ -2379,7 +2445,8 @@ async fn poll_crons(app: &Arc<App>) {
 /// hour.
 const CRONS_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The Sentry Crons panel's poll loop.
+/// The Sentry Crons panel's poll loop, on the operator's cadence for this panel
+/// once it has something to show, and a short retry until then.
 async fn crons_loop(app: Arc<App>) {
     loop {
         poll_crons(&app).await;
@@ -2389,7 +2456,7 @@ async fn crons_loop(app: Arc<App>) {
             .expect("crons state poisoned")
             .has_succeeded();
         let wait = if settled {
-            std::time::Duration::from_secs(usage::PROVIDER_POLL_INTERVAL_SECS)
+            panel_interval(&app.store, PanelInterval::Crons)
         } else {
             CRONS_FIRST_READ_RETRY
         };
@@ -2561,8 +2628,8 @@ async fn poll_azure(app: &Arc<App>) {
 /// long enough that a genuinely broken SAS is not hammered.
 const AZURE_FIRST_READ_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The Azure Cost panel's poll loop, on the reader's own fixed 4h cadence once
-/// it has something to show, and a short retry until then.
+/// The Azure Cost panel's poll loop, on the operator's cadence for this panel
+/// once it has something to show, and a short retry until then.
 async fn azure_loop(app: Arc<App>) {
     loop {
         poll_azure(&app).await;
@@ -2572,7 +2639,7 @@ async fn azure_loop(app: Arc<App>) {
             .expect("azure state poisoned")
             .has_succeeded();
         let wait = if settled {
-            azurecost::POLL_INTERVAL
+            panel_interval(&app.store, PanelInterval::AzureCost)
         } else {
             AZURE_FIRST_READ_RETRY
         };
@@ -4711,6 +4778,7 @@ fn main() {
         hosts: Mutex::new(Vec::new()),
         local: Arc::new(Mutex::new(LocalHostState::new())),
         containers: Mutex::new(ContainersState::new()),
+        containers_wake: tokio::sync::Notify::new(),
         github: Mutex::new(GitHubState::new()),
         github_wake: tokio::sync::Notify::new(),
         usage: Mutex::new(UsageState::new()),
@@ -4843,6 +4911,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use store::settings::ClampOutcome;
     use store::{MemoryCredentialStore, SecretError};
 
     /// The fix itself, asserted against the real `call_once` rather than a
@@ -5020,35 +5089,46 @@ mod tests {
     /// that owns it.
     ///
     /// The user-facing refresh interval governs the two GitHub panels and
-    /// Claude usage **and nothing else** — every other source has a fixed
-    /// cadence chosen by what it is polling, and wiring one of them to the
-    /// user's setting would be a real bug that no other test would catch. A
-    /// 4h Azure export polled every 30s is 480 pointless blob listings an
-    /// hour; a 1s host poll slowed to 300s is a dead chart axis, since one
-    /// history sample is one fixed time slice.
+    /// Claude usage **and nothing else** — every other source runs on a cadence
+    /// chosen by what it is polling, and wiring one of them to the user's
+    /// setting would be a real bug that no other test would catch. A 4h Azure
+    /// export polled every 30s is 480 pointless blob listings an hour; a 1s
+    /// host poll slowed to 300s is a dead chart axis, since one history sample
+    /// is one fixed time slice.
+    ///
+    /// Four of those cadences are the *operator's* since #300/#301, but the
+    /// constants below remain what an unconfigured store polls on: this test
+    /// pins the constants, and
+    /// `each_panels_default_cadence_is_the_constant_this_crate_declares` pins
+    /// that the store still hands them back.
     ///
     /// | source | cadence | governed by `refresh_interval_secs`? | the original |
     /// |---|---|---|---|
     /// | Hosts (local + remote) | 1s | no | `RemoteHostMetricsService` |
-    /// | Containers | 10s | no | `LocalContainerService` |
+    /// | Containers | 10s default | no — the operator's | `LocalContainerService` |
     /// | Repos + Runners | user's | **yes** — `github_loop` | app entry point |
     /// | Claude usage | user's | **yes** — `usage_loop` | app entry point |
-    /// | Neon + Sentry | 1h | no | `NeonUsageService` |
-    /// | Sentry crons | 1h | no | no counterpart — `crons_loop` |
-    /// | Azure Cost | 4h | no | `AzureCostService` |
+    /// | Neon + Sentry | 1h default | no — the operator's | `NeonUsageService` |
+    /// | Sentry crons | 1h default | no — the operator's | no counterpart — `crons_loop` |
+    /// | Azure Cost | 4h default | no — the operator's | `AzureCostService` |
     /// | OpenClaw | none — event-driven | no | `OpenClawService` |
     ///
     /// The "yes" rows are structural rather than constants, so they are pinned
     /// by where they read the store rather than here: `github_loop` reads
     /// `refresh_interval_secs` at its top and `usage_loop` at its own, and no
-    /// other loop in this file reads it at all.
+    /// other loop in this file reads it at all. The four "the operator's" rows
+    /// read [`PanelInterval`] through [`panel_interval`] instead, which is a
+    /// different setting and a different floor per row — the distinction this
+    /// test exists to keep.
     ///
-    /// The crons row shares `PROVIDER_POLL_INTERVAL_SECS` with the Sentry read
-    /// inside `usage_loop` rather than declaring a second hour of its own: it is
-    /// the same API on the same rhythm, and two constants would be free to
-    /// drift. The consequence to accept is that a newly-red monitor can be
-    /// invisible for up to an hour — this is a *persistence* watch, not a
-    /// real-time alarm, and the daily Slack digest remains the prompt signal.
+    /// The crons row shared `PROVIDER_POLL_INTERVAL_SECS` with the Sentry read
+    /// inside `usage_loop` rather than declaring a second hour of its own — same
+    /// API, same rhythm, and two constants would have been free to drift. #300
+    /// gave it a setting of its own whose default is still that hour, so they
+    /// part only on an explicit edit. The consequence to accept either way is
+    /// that a newly-red monitor can be invisible for up to an hour — this is a
+    /// *persistence* watch, not a real-time alarm, and the daily Slack digest
+    /// remains the prompt signal.
     #[test]
     fn every_data_source_polls_on_its_original_services_cadence() {
         let cadences: [(&str, u64, u64); 4] = [
@@ -5086,6 +5166,120 @@ mod tests {
                 cadence,
                 u64::from(store::settings::DEFAULT_REFRESH_INTERVAL_SECS),
                 "{source}'s fixed cadence must not be confusable with the default refresh interval"
+            );
+        }
+    }
+
+    /// An unconfigured store still polls on the constants above.
+    ///
+    /// `crates/store` states each default as a literal beside its floor and
+    /// tests it there, but it cannot import these constants — it is the
+    /// dependency, not the dependent. This is the only place the two halves can
+    /// be compared, so it is the only thing that would notice
+    /// `containers::POLL_INTERVAL_SECS` moving to 15 while the store kept
+    /// handing every loop the old 10.
+    #[test]
+    fn each_panels_default_cadence_is_the_constant_this_crate_declares() {
+        let (_dir, store) = scratch_store();
+        let store = Mutex::new(store);
+        let defaults: [(&str, PanelInterval, u64); 4] = [
+            (
+                "containers",
+                PanelInterval::Containers,
+                containers::POLL_INTERVAL_SECS,
+            ),
+            (
+                "neon + sentry",
+                PanelInterval::UsageProviders,
+                usage::PROVIDER_POLL_INTERVAL_SECS,
+            ),
+            (
+                "azure cost",
+                PanelInterval::AzureCost,
+                azurecost::POLL_INTERVAL.as_secs(),
+            ),
+            // Crons has no constant of its own: it shared the Sentry read's
+            // hour before it had a setting, and its default still is that hour.
+            (
+                "sentry crons",
+                PanelInterval::Crons,
+                usage::PROVIDER_POLL_INTERVAL_SECS,
+            ),
+        ];
+        for (panel, kind, constant) in defaults {
+            assert_eq!(
+                panel_interval(&store, kind),
+                std::time::Duration::from_secs(constant),
+                "{panel}: an unconfigured store must poll on this crate's constant"
+            );
+        }
+    }
+
+    /// The whole of #301: the cadence is read from the store on the pass that
+    /// is about to sleep, so an edit applies on the next tick.
+    ///
+    /// Asserting only the first read would pass against the bug this fixes — a
+    /// `tokio::time::interval` built once at spawn returns the right number
+    /// too, and then goes on returning it for up to four hours after the
+    /// operator changed it. So every panel is read, changed, and read again.
+    #[test]
+    fn a_changed_panel_interval_is_picked_up_on_the_next_pass() {
+        let (_dir, store) = scratch_store();
+        let store = Mutex::new(store);
+
+        for panel in PanelInterval::ALL {
+            let before = panel_interval(&store, panel);
+            // Default plus floor: above the floor and above the default, for
+            // every panel, by construction — so neither a clamp nor a loop that
+            // ignored the store could produce this number by accident. (Twice
+            // the floor is not enough: on Containers that is exactly the 10s
+            // default, and the assertion below would hold against the bug.)
+            let spec = panel.spec();
+            let asked = spec.default_secs + spec.floor_secs;
+            assert_ne!(
+                before,
+                std::time::Duration::from_secs(u64::from(asked)),
+                "{panel:?}: the new cadence must differ from the old one for this to prove anything"
+            );
+
+            let outcome = store
+                .lock()
+                .expect("store poisoned")
+                .settings_mut()
+                .set_panel_interval_secs(panel, asked);
+            assert_eq!(outcome, ClampOutcome::Applied(asked), "{panel:?}");
+
+            assert_eq!(
+                panel_interval(&store, panel),
+                std::time::Duration::from_secs(u64::from(asked)),
+                "{panel:?}: read from the store each pass, never captured at spawn"
+            );
+        }
+    }
+
+    /// The floor is enforced where the loop reads it, not only where Settings
+    /// writes it.
+    ///
+    /// `panel_intervals` is a plain map in `store.json`, so a hand-edited `1`
+    /// reaches the loop without going through the setter at all — and on the
+    /// Azure row a bypassed floor is a spend decision, not a tidiness one. This
+    /// pins that what the loop sleeps on has been through the clamp.
+    #[test]
+    fn a_hand_edited_sub_floor_cadence_is_floored_where_the_loop_reads_it() {
+        let (_dir, store) = scratch_store();
+        let store = Mutex::new(store);
+
+        for panel in PanelInterval::ALL {
+            store
+                .lock()
+                .expect("store poisoned")
+                .settings_mut()
+                .panel_intervals
+                .insert(panel.spec().key.to_owned(), 1);
+            assert_eq!(
+                panel_interval(&store, panel),
+                std::time::Duration::from_secs(u64::from(panel.spec().floor_secs)),
+                "{panel:?}: a below-floor store value must not reach the loop"
             );
         }
     }
