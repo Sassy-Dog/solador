@@ -1028,8 +1028,9 @@ live. The gap is now this app's alone to close.
 ## Settings
 
 The **Settings** button opens an in-app view over the cockpit: General, Layout,
-GitHub, Portfolio, Hosts, Azure Cost, Usage, OpenClaw and About — the original
-window's tabs plus **Layout**, which has no the original counterpart. Every label, help
+GitHub, Portfolio, Hosts, Azure Cost, Usage, Services, OpenClaw and About — the
+original window's tabs plus **Layout** and **Services**, which have no
+the original counterpart. Every label, help
 string and result line it paints comes from `src/settings.rs`, exactly as the
 cards' do from `crates/viewmodel`.
 
@@ -1057,6 +1058,8 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio |
 | `settings_save_openclaw` | the OpenClaw gateway URL |
 | `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
+| `settings_probe_status_vendor` | step one of [adding a status page](#the-services-tab): one GET of `{base}/api/v2/summary.json` → its components, **or** the finding that stopped it. Deliberately not a `Result` — a failed probe found something, and the finding is the product |
+| `settings_save_status_vendor` / `settings_set_status_vendor_enabled` / `settings_remove_status_vendor` | step two, and the list it lands in |
 | `settings_save_secret` / `settings_clear_secret` | one credential, by key (`github`/`neon`/`sentry`/`azure`/`openclaw`) |
 
 **Every mutation wakes exactly the loop its data feeds, and no other.** A wake
@@ -1236,6 +1239,47 @@ Two gaps, deliberate and worth knowing:
   scope granted below deliberately does **not** reach them. They are repo roots
   and issue pages; the grant admits `/{owner}/{repo}/actions` and nothing else,
   so making those links openable would be a second widening, argued separately.
+
+### The Services tab
+
+Operator-added status pages, persisted as `store.json`'s `status_vendors`
+(`store::StatusVendor`). Part of
+[#284](https://github.com/Sassy-Dog/solador/issues/284), which moves the Services
+panel's vendor list out of code — with releases blocked by
+[#15](https://github.com/Sassy-Dog/solador/issues/15), "you need a rebuild to
+watch Railway" means "you cannot".
+
+**Adding one is a probe, not a form.** A vendor is not a URL: it is a URL plus
+the one component this stack depends on, and Statuspage component ids are opaque
+(`k8w3r06qmzrp`) and published nowhere a person would look. So step one asks the
+host — `settings_probe_status_vendor` → `crates/servicestatus`'s
+`discover::probe` → one GET of `{base}/api/v2/summary.json` — and step two is a
+picker over what it answered. That single request also confirms the host really
+*is* an Atlassian Statuspage, which among the five vendors shipped today would
+have caught one (`neonstatus.com` looks like one and is status.io).
+
+**A failed probe renders its reason inline, and the reasons are the product.**
+`ProbeError` has six variants and
+[`ProbeError::user_message`](../crates/servicestatus/src/discover.rs) is their
+one and only wording — the tab paints that string verbatim. "couldn't reach that
+host" and "that page is JSON but lists no components, so it isn't a Statuspage"
+are different findings with different fixes, and flattening them to "probe
+failed" is the whole failure this flow exists to remove.
+
+**A failure is never an empty list.** `probe_answer` answers with a *non-empty*
+`components` array or with a `reason`, never both and never neither, and the
+frontend builds the picker from `components` alone. An empty picker would be the
+UI turning "we could not look" into "this page has nothing to watch".
+
+The component is stored as **both** halves — `component_id` is what gets polled,
+`component_label` is what the operator recognises — so a vendor renaming a
+component shows up as a disagreement instead of being resolved by guesswork.
+Editing the address after a probe retracts the picker in place, because a
+component list belongs to the host it was read from.
+
+No credential is involved at any point: a Statuspage summary is public, which is
+what gives this tier no onboarding ceiling and why removing a vendor has nothing
+to clean up beside it.
 
 ## The one granted capability
 
@@ -1438,7 +1482,11 @@ alone never reaches — an Expect rule (whose Collapse-only fields must therefor
 be absent) and a scope naming a host that is not configured (the case the host
 picker grows an extra option for, and the one where it renders blank if it
 doesn't) — all asserted by
-`the_settings_fixture_covers_every_rule_rendering_the_editor_has`.
+`the_settings_fixture_covers_every_rule_rendering_the_editor_has`. Its
+**status vendors** are two invented pages, one enabled and one not, so the
+Services tab's row renders in both states — invented rather than real, because
+the panel ships no vendor list and a fixture naming one operator's dependencies
+would be the shipped-example problem in a different file.
 `--dump-containers` is the same idea one panel over: a hand-made state at a
 **fixed** timestamp (a relative age like "recycling 40s" would otherwise drift
 on every dump and no test could assert one), covering a present container, a

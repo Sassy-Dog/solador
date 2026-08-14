@@ -17,10 +17,13 @@ use std::collections::HashSet;
 
 use agentclient::AgentError;
 use serde_json::{json, Value};
+// The probe behind the Services tab's two-step add flow. The logic is the
+// crate's; this module only decides how its findings are painted.
+use servicestatus::discover::{self, Component, ProbeError};
 use store::settings::{CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES};
 use store::{
     ContainerGroupRule, ContainerRuleAction, Host, HostOverflowMode, SecretKey, Settings,
-    TrackedRepo, DEFAULT_AGENT_PORT, LOCAL_HOST_SCOPE,
+    StatusVendor, TrackedRepo, DEFAULT_AGENT_PORT, LOCAL_HOST_SCOPE,
 };
 use uuid::Uuid;
 use viewmodel::cockpit::{CockpitLayout, PanelKind, PanelSpan};
@@ -371,21 +374,44 @@ pub fn normalized_general(refresh_interval_secs: u32, core_row_span: u8) -> Sett
     }
 }
 
+/// Everything [`view`] reads out of `store.json`, borrowed under one lock.
+///
+/// A struct rather than one parameter per section, because the list only grows
+/// — every tab this surface gains is another section — and the two inputs that
+/// are *not* store sections stay separate arguments precisely so that
+/// distinction remains visible: [`StoredSecrets`] comes from the OS credential
+/// store, and the OpenClaw facts are live session state that no file holds.
+#[derive(Debug, Clone, Copy)]
+pub struct StoreSections<'a> {
+    pub settings: &'a Settings,
+    pub hosts: &'a [Host],
+    pub repos: &'a [TrackedRepo],
+    pub rules: &'a [ContainerGroupRule],
+    /// `None` means the cockpit layout has never been configured — not that it
+    /// is empty.
+    pub layout: Option<&'a [store::LayoutProfile]>,
+    pub vendors: &'a [StatusVendor],
+}
+
 /// The whole Settings payload.
 ///
-/// A pure function of the store's three sections plus the credential badges —
-/// no `Store`, no keyring, no I/O — so it is unit-testable and dumpable as a
+/// A pure function of the store's sections plus the credential badges — no
+/// `Store`, no keyring, no I/O — so it is unit-testable and dumpable as a
 /// fixture (`--dump-settings`) without a store file or a keychain prompt.
 #[must_use]
 pub fn view(
-    settings: &Settings,
-    hosts: &[Host],
-    repos: &[TrackedRepo],
-    rules: &[ContainerGroupRule],
-    layout: Option<&[store::LayoutProfile]>,
+    store: StoreSections<'_>,
     stored: &StoredSecrets,
     openclaw: &openclaw::SettingsFacts,
 ) -> Value {
+    let StoreSections {
+        settings,
+        hosts,
+        repos,
+        rules,
+        layout,
+        vendors,
+    } = store;
     json!({
         "title": OPEN_LABEL,
         "openLabel": OPEN_LABEL,
@@ -400,6 +426,7 @@ pub fn view(
             { "id": "hosts", "title": "Hosts" },
             { "id": "azure", "title": "Azure Cost" },
             { "id": "usage", "title": "Usage" },
+            { "id": "services", "title": "Services" },
             { "id": "openclaw", "title": "OpenClaw" },
             { "id": "about", "title": "About" },
         ],
@@ -410,6 +437,7 @@ pub fn view(
         "hosts": hosts_tab(settings, hosts, rules, stored),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
+        "services": services_tab(vendors),
         "openclaw": openclaw_tab(settings, stored, openclaw),
         "about": about_tab(),
     })
@@ -1096,6 +1124,138 @@ fn usage_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
     })
 }
 
+// MARK: - operator-added status vendors
+
+/// One probe's answer, in the two shapes the Services tab can paint.
+///
+/// `components` is a **non-empty** list, or `reason` is the finding that
+/// stopped it — never both, and never neither. That exclusivity is the whole
+/// point: an empty list and a failed read are different facts, and rendering a
+/// failure as "this page lists no components" sends someone hunting for a
+/// second status page when the real problem was DNS.
+///
+/// The reason is [`ProbeError::user_message`] and nothing else. Six findings,
+/// six sentences, one source — a second copy of them here is how the two start
+/// disagreeing about what "not JSON" means.
+///
+/// `baseUrl` is echoed so the field can be refilled from the answer: normalised
+/// when it validated, and exactly what was typed when it did not, because a
+/// rejected URL the operator can no longer see is one they cannot correct.
+#[must_use]
+pub fn probe_answer(base_url: &str, outcome: &Result<Vec<Component>, ProbeError>) -> Value {
+    let echoed =
+        discover::validate_base_url(base_url).unwrap_or_else(|_| base_url.trim().to_owned());
+
+    // An empty `Ok` is unreachable through `discover::probe` — `parse_components`
+    // already refuses one — and it is refused again here rather than trusted,
+    // because the shape it would produce (a list with nothing in it and no
+    // reason beside it) is the one this flow exists to prevent.
+    let found = match outcome {
+        Ok(components) if !components.is_empty() => components,
+        Ok(_) => return probe_failed(echoed, &ProbeError::NoComponents),
+        Err(e) => return probe_failed(echoed, e),
+    };
+
+    json!({
+        "baseUrl": echoed,
+        "components": found
+            .iter()
+            .map(|c| json!({ "id": c.id, "name": c.name }))
+            .collect::<Vec<_>>(),
+        "reason": Value::Null,
+    })
+}
+
+fn probe_failed(base_url: String, error: &ProbeError) -> Value {
+    json!({
+        "baseUrl": base_url,
+        // Null, not `[]`: nothing was read, so there is no list to be empty.
+        "components": Value::Null,
+        "reason": error.user_message(),
+    })
+}
+
+/// The add form's four fields as a vendor, or the status line saying what is
+/// missing.
+///
+/// The URL is re-validated here rather than carried over from the probe: the
+/// field stays editable after an answer lands, so what was probed and what is
+/// about to be stored are not necessarily the same string. It is refused in the
+/// probe's own words for the same reason those words are single-sourced.
+///
+/// Both halves of the component are required. A stored id with no label hides
+/// the vendor's next rename; a stored label with no id polls nothing at all.
+///
+/// # Errors
+/// The status line to show, already worded as one.
+pub fn validated_vendor(
+    label: &str,
+    base_url: &str,
+    component_id: &str,
+    component_label: &str,
+) -> Result<StatusVendor, String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Err("Skipped — a name is required.".to_owned());
+    }
+    let component_id = component_id.trim();
+    let component_label = component_label.trim();
+    if component_id.is_empty() || component_label.is_empty() {
+        return Err("Skipped — pick a component first.".to_owned());
+    }
+    let base_url = discover::validate_base_url(base_url)
+        .map_err(|e| format!("Skipped — {}.", e.user_message()))?;
+
+    Ok(StatusVendor::new(
+        label,
+        base_url,
+        component_id,
+        component_label,
+    ))
+}
+
+/// The Services tab: the status pages this cockpit watches, and the two-step
+/// form that adds another.
+///
+/// Two steps because a vendor is not a URL — it is a URL plus the one component
+/// this stack actually depends on, and those ids are opaque (`k8w3r06qmzrp`)
+/// and published nowhere a person would look. A form asking for one would not
+/// be used, so the host is asked instead.
+fn services_tab(vendors: &[StatusVendor]) -> Value {
+    json!({
+        "heading": "Watched Status Pages",
+        // Said out loud rather than left as a bare heading over nothing: an
+        // empty list and a list that failed to load look identical otherwise.
+        "empty": "No status pages added yet. Add one below by its address.",
+        "componentLabel": "Watching",
+        "deleteLabel": "Delete",
+        "rows": vendors
+            .iter()
+            .map(|vendor| json!({
+                "id": vendor.id,
+                "label": vendor.label,
+                "baseUrl": vendor.base_url,
+                // The component's name as it was when the operator picked it,
+                // beside the id that is actually polled. When the two stop
+                // agreeing, the disagreement is what shows.
+                "component": vendor.component_label,
+                "enabled": vendor.enabled,
+            }))
+            .collect::<Vec<_>>(),
+        "add": {
+            "heading": "Add a Status Page",
+            "urlLabel": "Status page address (e.g. https://status.railway.app)",
+            "probeLabel": "Find components",
+            "probingLabel": "Looking…",
+            "componentSelectLabel": "Component to watch",
+            "nameLabel": "Name (e.g. Railway)",
+            "saveLabel": "Add",
+            "help": "Reads the page's public summary to list what it publishes — no credential needed. https only.",
+            "componentHelp": "Pick the component this stack depends on, not the vendor's headline status: an API can be down while the marketing site is fine. The component is stored by id, so renaming it at the vendor does not silently repoint this row.",
+        },
+    })
+}
+
 /// The Device Pairing block's status row: one word for the connection, plus the
 /// colour that word is worth.
 ///
@@ -1403,9 +1563,12 @@ mod tests {
         openclaw::SettingsFacts::default()
     }
 
-    /// [`view`] over the seeded container rules — what every test that is not
-    /// *about* the rules wants. The rules tests below call `view` directly with
-    /// a list of their own.
+    /// [`view`] over an otherwise empty store — what every test that is not
+    /// *about* one section wants. The rules, layout and vendor tests below name
+    /// the section they are about (see [`sections`]).
+    ///
+    /// Empty rules rather than `store::seeded_rules()`, which is the same list:
+    /// nothing is seeded any more, deliberately.
     fn view_of(
         settings: &Settings,
         hosts: &[Host],
@@ -1413,14 +1576,53 @@ mod tests {
         stored: &StoredSecrets,
         openclaw: &openclaw::SettingsFacts,
     ) -> Value {
-        view(
+        view(sections(settings, hosts, repos), stored, openclaw)
+    }
+
+    /// The store's sections with everything the caller did not name left empty.
+    ///
+    /// Tests that care about one of those sections put it back with struct
+    /// update syntax — `StoreSections { rules: &mine, ..sections(..) }` — which
+    /// keeps each test naming only the section it is about.
+    fn sections<'a>(
+        settings: &'a Settings,
+        hosts: &'a [Host],
+        repos: &'a [TrackedRepo],
+    ) -> StoreSections<'a> {
+        StoreSections {
             settings,
             hosts,
             repos,
-            &store::seeded_rules(),
-            None,
-            stored,
-            openclaw,
+            rules: &[],
+            layout: None,
+            vendors: &[],
+        }
+    }
+
+    /// [`view`] over one container-rule list — every rules test's shape.
+    fn rules_view(rules: &[ContainerGroupRule]) -> Value {
+        let (settings, hosts, repos, stored) = sample();
+        view(
+            StoreSections {
+                rules,
+                ..sections(&settings, &hosts, &repos)
+            },
+            &stored,
+            &facts(),
+        )
+    }
+
+    /// [`view`] over one stored layout — every Layout-tab test's shape. No
+    /// hosts and no repos: the bands are decided by the profiles alone.
+    fn layout_view(stored: &[store::LayoutProfile]) -> Value {
+        let settings = sample().0;
+        view(
+            StoreSections {
+                layout: Some(stored),
+                ..sections(&settings, &[], &[])
+            },
+            &StoredSecrets::default(),
+            &facts(),
         )
     }
 
@@ -1444,6 +1646,7 @@ mod tests {
                 "hosts",
                 "azure",
                 "usage",
+                "services",
                 "openclaw",
                 "about"
             ]
@@ -1672,15 +1875,7 @@ mod tests {
     #[test]
     fn the_layout_tab_carries_each_band_its_widths_and_its_bounds() {
         let stored = profiles(&[(0.0, "stack", layout_slots(&CockpitLayout::DEFAULT_ORDER))]);
-        let vm = view(
-            &sample().0,
-            &[],
-            &[],
-            &store::seeded_rules(),
-            Some(&stored),
-            &StoredSecrets::default(),
-            &facts(),
-        );
+        let vm = layout_view(&stored);
         let tab = &vm["layout"];
         let bands = tab["breakpoints"].as_array().expect("breakpoints");
         assert_eq!(bands.len(), 1);
@@ -1730,15 +1925,7 @@ mod tests {
             (0.0, "tabs", slots(&[("claudeUsage", "full")])),
             (1816.0, "stack", layout_slots(&CockpitLayout::DEFAULT_ORDER)),
         ]);
-        let vm = view(
-            &sample().0,
-            &[],
-            &[],
-            &store::seeded_rules(),
-            Some(&stored),
-            &StoredSecrets::default(),
-            &facts(),
-        );
+        let vm = layout_view(&stored);
         let bands = vm["layout"]["breakpoints"].as_array().expect("bands");
         assert_eq!(bands.len(), 2);
         assert_eq!(bands[0]["label"], "Any width");
@@ -1764,15 +1951,7 @@ mod tests {
                 (PanelKind::OpenclawAgents, PanelSpan::Quarter),
             ]),
         )]);
-        let vm = view(
-            &sample().0,
-            &[],
-            &[],
-            &store::seeded_rules(),
-            Some(&stored),
-            &StoredSecrets::default(),
-            &facts(),
-        );
+        let vm = layout_view(&stored);
         let preview = vm["layout"]["breakpoints"][0]["preview"]["rows"]
             .as_array()
             .expect("preview");
@@ -1994,8 +2173,7 @@ mod tests {
 
     #[test]
     fn the_rules_editor_shows_every_persisted_field_of_every_rule() {
-        let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &rules(), None, &stored, &facts());
+        let vm = rules_view(&rules());
         let rows = rules_of(&vm)["rows"].as_array().expect("rule rows");
         assert_eq!(rows.len(), 3);
 
@@ -2041,8 +2219,7 @@ mod tests {
     /// `Option<u32>` exists to refuse.
     #[test]
     fn an_unset_expected_count_is_empty_not_zero() {
-        let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &rules(), None, &stored, &facts());
+        let vm = rules_view(&rules());
         let rows = rules_of(&vm)["rows"].as_array().expect("rule rows");
         assert_eq!(rows[0]["expected"], "4");
         assert_eq!(rows[1]["expected"], "");
@@ -2057,11 +2234,10 @@ mod tests {
     /// unscoped while still matching nothing on every host.
     #[test]
     fn the_host_picker_keeps_a_scope_whose_host_no_longer_exists() {
-        let (settings, hosts, repos, stored) = sample();
         let orphan = vec![
             ContainerGroupRule::new("legacy-*", "legacy", Action::Collapse).on_host("retired-box"),
         ];
-        let vm = view(&settings, &hosts, &repos, &orphan, None, &stored, &facts());
+        let vm = rules_view(&orphan);
         let options: Vec<&str> = rules_of(&vm)["rows"][0]["hostOptions"]
             .as_array()
             .expect("host options")
@@ -2081,7 +2257,7 @@ mod tests {
         // A scope that *does* exist is not duplicated into the list.
         let scoped =
             vec![ContainerGroupRule::new("api-*", "jobs", Action::Collapse).on_host("ubu-01")];
-        let vm = view(&settings, &hosts, &repos, &scoped, None, &stored, &facts());
+        let vm = rules_view(&scoped);
         let options = rules_of(&vm)["rows"][0]["hostOptions"]
             .as_array()
             .expect("host options")
@@ -2091,8 +2267,7 @@ mod tests {
 
     #[test]
     fn an_empty_rule_list_renders_the_editor_with_no_rows() {
-        let (settings, hosts, repos, stored) = sample();
-        let vm = view(&settings, &hosts, &repos, &[], None, &stored, &facts());
+        let vm = rules_view(&[]);
         assert!(rules_of(&vm)["rows"]
             .as_array()
             .expect("rule rows")
@@ -2429,5 +2604,226 @@ mod tests {
         accounts.sort();
         accounts.dedup();
         assert_eq!(accounts.len(), fields.len(), "two fields share one key");
+    }
+
+    // MARK: - adding a status vendor by probing it
+
+    fn api() -> Component {
+        Component {
+            id: "k8w3r06qmzrp".to_owned(),
+            name: "API".to_owned(),
+        }
+    }
+
+    /// Every finding crosses the IPC boundary as its own sentence.
+    ///
+    /// `discover`'s own tests hold the two *shape* failures apart at the
+    /// source; this one holds all six apart where the operator actually reads
+    /// them, because a payload that flattened them to "probe failed" would pass
+    /// every test in that crate. The strings are asserted verbatim rather than
+    /// merely for distinctness — a second source of these sentences here is how
+    /// the two copies start disagreeing, which is why
+    /// [`ProbeError::user_message`] is the only one.
+    #[test]
+    fn every_probe_failure_reaches_the_ui_as_its_own_reason() {
+        let reasons: Vec<String> = [
+            ProbeError::Malformed,
+            ProbeError::Insecure,
+            ProbeError::Unreachable("dns error: no record".to_owned()),
+            ProbeError::Http(503),
+            ProbeError::NotJson,
+            ProbeError::NoComponents,
+        ]
+        .into_iter()
+        .map(|e| {
+            probe_answer("https://status.example.com", &Err(e))["reason"]
+                .as_str()
+                .expect("a reason")
+                .to_owned()
+        })
+        .collect();
+
+        assert_eq!(
+            reasons,
+            vec![
+                "that isn't a URL — try something like https://status.example.com",
+                "only https URLs can be probed",
+                "couldn't reach that host",
+                "that host returned HTTP 503",
+                "that host answered, but not with JSON",
+                "that page is JSON but lists no components, so it isn't a Statuspage",
+            ]
+        );
+
+        let distinct: HashSet<&String> = reasons.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            reasons.len(),
+            "two findings would read identically to the operator: {reasons:?}"
+        );
+    }
+
+    /// The transport detail inside `Unreachable` can carry the operator's own
+    /// URL. It is diagnostic noise for this line and must not ride it.
+    #[test]
+    fn a_reason_never_carries_the_transport_detail() {
+        let reason = probe_answer(
+            "https://status.example.com",
+            &Err(ProbeError::Unreachable(
+                "dns error: no record found for status.internal.example".to_owned(),
+            )),
+        )["reason"]
+            .as_str()
+            .expect("a reason")
+            .to_owned();
+        assert_eq!(reason, "couldn't reach that host");
+    }
+
+    /// A failure and an empty list are different facts, and only one of them is
+    /// "this page has nothing worth watching". The payload carries a non-empty
+    /// list **or** a reason — never both, and never neither.
+    #[test]
+    fn a_failed_probe_never_arrives_as_an_empty_component_list() {
+        let failed = probe_answer(
+            "https://status.example.com",
+            &Err(ProbeError::Unreachable("dns".to_owned())),
+        );
+        assert!(
+            failed["components"].is_null(),
+            "a page nothing could read has no list, not an empty one"
+        );
+        assert!(failed["reason"].is_string());
+
+        let found = probe_answer("https://status.example.com", &Ok(vec![api()]));
+        assert!(found["reason"].is_null());
+        assert_eq!(
+            found["components"],
+            json!([{ "id": "k8w3r06qmzrp", "name": "API" }])
+        );
+    }
+
+    /// The second lock on the same shape. `parse_components` already refuses an
+    /// empty success, so this is unreachable through `probe` — and an empty
+    /// list with no reason beside it is exactly the rendering this flow exists
+    /// to prevent, so it is refused here too rather than trusted upstream.
+    #[test]
+    fn an_empty_success_is_reported_as_the_finding_it_is() {
+        let answer = probe_answer("https://status.example.com", &Ok(Vec::new()));
+        assert!(answer["components"].is_null());
+        assert_eq!(
+            answer["reason"],
+            json!(ProbeError::NoComponents.user_message())
+        );
+    }
+
+    /// The field is refilled from the answer, so what comes back has to be
+    /// what was probed: normalised when it validated, and exactly what was
+    /// typed when it did not — a rejected URL the operator can no longer see
+    /// is a URL they cannot correct.
+    #[test]
+    fn the_answer_echoes_what_was_probed() {
+        assert_eq!(
+            probe_answer("  https://status.example.com/  ", &Ok(vec![api()]))["baseUrl"],
+            json!("https://status.example.com")
+        );
+        assert_eq!(
+            probe_answer("  status.example.com  ", &Err(ProbeError::Malformed))["baseUrl"],
+            json!("status.example.com")
+        );
+    }
+
+    #[test]
+    fn a_vendor_needs_a_name_a_component_and_an_https_url() {
+        let vendor = validated_vendor(
+            "  Railway ",
+            " https://status.railway.app/ ",
+            "abc123",
+            "API",
+        )
+        .expect("a complete form");
+        assert_eq!(vendor.label, "Railway");
+        assert_eq!(
+            vendor.base_url, "https://status.railway.app",
+            "stored normalised, so the adapter's own path is never doubled"
+        );
+        assert_eq!(vendor.component_id, "abc123");
+        assert_eq!(vendor.component_label, "API");
+        assert!(vendor.enabled);
+
+        assert_eq!(
+            validated_vendor("  ", "https://status.railway.app", "abc123", "API"),
+            Err("Skipped — a name is required.".to_owned())
+        );
+        // Both halves, because a stored id with no label hides a later rename
+        // and a stored label with no id polls nothing.
+        assert_eq!(
+            validated_vendor("Railway", "https://status.railway.app", "", "API"),
+            Err("Skipped — pick a component first.".to_owned())
+        );
+        assert_eq!(
+            validated_vendor("Railway", "https://status.railway.app", "abc123", ""),
+            Err("Skipped — pick a component first.".to_owned())
+        );
+    }
+
+    /// The URL is re-checked at save, and says the same thing it said at probe:
+    /// the field stays editable after an answer lands, so what was probed and
+    /// what is about to be stored are not necessarily the same string.
+    #[test]
+    fn a_rejected_url_is_refused_at_save_in_the_probes_own_words() {
+        assert_eq!(
+            validated_vendor("Railway", "http://status.railway.app", "abc123", "API"),
+            Err(format!(
+                "Skipped — {}.",
+                ProbeError::Insecure.user_message()
+            ))
+        );
+        assert_eq!(
+            validated_vendor("Railway", "status.railway.app", "abc123", "API"),
+            Err(format!(
+                "Skipped — {}.",
+                ProbeError::Malformed.user_message()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_services_tab_lists_every_configured_vendor() {
+        let (settings, hosts, repos, stored) = sample();
+        let mut vendor =
+            StatusVendor::new("Railway", "https://status.railway.app", "abc123", "API");
+        vendor.enabled = false;
+        let vm = view(
+            StoreSections {
+                vendors: std::slice::from_ref(&vendor),
+                ..sections(&settings, &hosts, &repos)
+            },
+            &stored,
+            &facts(),
+        );
+        let rows = vm["services"]["rows"].as_array().expect("rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], json!(vendor.id.to_string()));
+        assert_eq!(rows[0]["label"], "Railway");
+        assert_eq!(rows[0]["baseUrl"], "https://status.railway.app");
+        assert_eq!(
+            rows[0]["component"], "API",
+            "the component's name at the moment it was picked, so a vendor's \
+             later rename is visible rather than resolved by guesswork"
+        );
+        assert_eq!(rows[0]["enabled"], json!(false));
+    }
+
+    /// A store with no vendors says so — it does not render an empty list under
+    /// a heading and leave the operator to infer whether anything is watched.
+    #[test]
+    fn a_store_with_no_vendors_says_so_rather_than_showing_nothing() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        assert_eq!(vm["services"]["rows"].as_array().expect("rows").len(), 0);
+        assert!(vm["services"]["empty"]
+            .as_str()
+            .expect("an empty line")
+            .contains("No status pages"));
     }
 }

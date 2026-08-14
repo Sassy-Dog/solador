@@ -1655,11 +1655,14 @@ fn settings_payload(app: &App) -> Value {
     let store = app.store.lock().expect("store poisoned");
     let stored = stored_secrets(app.credentials.as_ref(), store.hosts());
     settings::view(
-        store.settings(),
-        store.hosts(),
-        store.repos(),
-        store.container_rules(),
-        store.layout(),
+        settings::StoreSections {
+            settings: store.settings(),
+            hosts: store.hosts(),
+            repos: store.repos(),
+            rules: store.container_rules(),
+            layout: store.layout(),
+            vendors: store.status_vendors(),
+        },
         &stored,
         &facts,
     )
@@ -3142,6 +3145,88 @@ fn settings_openclaw_retry(state: tauri::State<'_, Arc<App>>) -> Value {
     settings_response(&state, Some("Reconnecting…".to_owned()))
 }
 
+/// Step one of adding a status vendor: ask a host what components it publishes.
+///
+/// Deliberately **not** a `Result`: a probe that fails has *found something*,
+/// and the finding is the product (`ProbeError::user_message`). Reporting it as
+/// a rejected command would collapse six distinct corrections — "add https://",
+/// "that host is unreachable", "that page is not a Statuspage" — into one
+/// undifferentiated failure at the boundary, which is the exact flattening
+/// `crates/servicestatus::discover` is built to prevent.
+///
+/// The transport, the https-only policy and the classification are all that
+/// crate's; this wrapper adds no rules of its own.
+#[tauri::command]
+async fn settings_probe_status_vendor(base_url: String) -> Value {
+    let outcome = servicestatus::discover::probe(&base_url).await;
+    settings::probe_answer(&base_url, &outcome)
+}
+
+/// Step two: store the vendor the operator picked a component from.
+///
+/// The four fields are re-validated here rather than trusted from the probe —
+/// every one of them is still editable after an answer lands.
+#[tauri::command]
+fn settings_save_status_vendor(
+    label: String,
+    base_url: String,
+    component_id: String,
+    component_label: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let status =
+        match settings::validated_vendor(&label, &base_url, &component_id, &component_label) {
+            Ok(vendor) => {
+                let mut store = state.store.lock().expect("store poisoned");
+                let name = vendor.label.clone();
+                store.upsert_status_vendor(vendor);
+                save_status(&store, format!("Added {name}."))
+            }
+            Err(reason) => Some(reason),
+        };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_set_status_vendor_enabled(
+    id: String,
+    enabled: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some("Skipped — unknown status page.".into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.status_vendor_mut(id) {
+            Some(vendor) => {
+                vendor.enabled = enabled;
+                save_status(&store, "Saved.")
+            }
+            None => Some("Skipped — unknown status page.".to_owned()),
+        }
+    };
+    settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_remove_status_vendor(id: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some("Skipped — unknown status page.".into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        match store.remove_status_vendor(id) {
+            // No credential to clean up beside it, unlike a host: a Statuspage
+            // summary is public, which is the whole reason this tier has no
+            // onboarding ceiling.
+            Some(vendor) => save_status(&store, format!("Removed {}.", vendor.label)),
+            None => Some("Skipped — unknown status page.".to_owned()),
+        }
+    };
+    settings_response(&state, status)
+}
+
 #[tauri::command]
 fn settings_save_secret(key: String, value: String, state: tauri::State<'_, Arc<App>>) -> Value {
     let Some(field) = SecretField::parse(&key) else {
@@ -3497,21 +3582,53 @@ fn dump_settings() -> Value {
             settings::layout_slots(&CockpitLayout::DEFAULT_ORDER),
         ),
     ];
+    // Two, and one of them disabled, so the Services tab's row renders in both
+    // of its states. Fixed uuids for the same reason the hosts have them: a
+    // fixture that changes on every dump is one no test can assert an id
+    // against.
+    let vendors = dump_status_vendors();
     settings::view(
-        &settings,
-        &[live, spare],
-        // Explicit, not `seeded_repos()`: nothing is seeded any more, and this
-        // fixture is what the Playwright suite renders the Portfolio tab from
-        // — an empty list would silently stop covering it.
-        &[
-            store::TrackedRepo::new("acme/widget"),
-            store::TrackedRepo::new("acme/gadget"),
-        ],
-        &dump_container_rules(),
-        Some(&layout),
+        settings::StoreSections {
+            settings: &settings,
+            hosts: &[live, spare],
+            // Explicit, not `seeded_repos()`: nothing is seeded any more, and
+            // this fixture is what the Playwright suite renders the Portfolio
+            // tab from — an empty list would silently stop covering it.
+            repos: &[
+                store::TrackedRepo::new("acme/widget"),
+                store::TrackedRepo::new("acme/gadget"),
+            ],
+            rules: &dump_container_rules(),
+            layout: Some(&layout),
+            vendors: &vendors,
+        },
         &stored,
         &facts,
     )
+}
+
+/// The status vendors the Settings fixture carries.
+///
+/// Deliberately not real vendors of this stack: the panel ships no list (#284),
+/// and a fixture naming one operator's dependencies is the shipped-example
+/// problem in a different file.
+fn dump_status_vendors() -> Vec<store::StatusVendor> {
+    let mut watched = store::StatusVendor::new(
+        "Example Cloud",
+        "https://status.example.com",
+        "k8w3r06qmzrp",
+        "API",
+    );
+    watched.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0011);
+    let mut paused = store::StatusVendor::new(
+        "Example Mail",
+        "https://status.mail.example.com",
+        "3f2p8q1x7z0d",
+        "Outbound sending",
+    );
+    paused.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0012);
+    paused.enabled = false;
+    vec![watched, paused]
 }
 
 /// The rules the Settings fixture carries — the seeded three, plus the two
@@ -4109,6 +4226,10 @@ fn main() {
             settings_set_repo_workflows,
             settings_save_openclaw,
             settings_openclaw_retry,
+            settings_probe_status_vendor,
+            settings_save_status_vendor,
+            settings_set_status_vendor_enabled,
+            settings_remove_status_vendor,
             settings_save_secret,
             settings_clear_secret,
         ])
@@ -6035,6 +6156,35 @@ mod tests {
             options.contains(&"retired-box"),
             "the orphaned scope is missing from its own picker: {options:?}"
         );
+    }
+
+    /// The Playwright suite renders the Services tab from this fixture, so a
+    /// fixture that quietly lost one of the row's two states would leave that
+    /// half of the tab covered by nothing at all.
+    #[test]
+    fn the_settings_fixture_covers_both_states_of_a_status_vendor_row() {
+        let rows = dump_settings()["services"]["rows"]
+            .as_array()
+            .expect("vendor rows")
+            .clone();
+        assert!(
+            rows.iter().any(|row| row["enabled"] == true),
+            "no watched vendor in the fixture"
+        );
+        assert!(
+            rows.iter().any(|row| row["enabled"] == false),
+            "no paused vendor in the fixture"
+        );
+        for row in &rows {
+            // Both halves of the component reach the row: the id it is polled
+            // by is the identity the delete button addresses, and the label is
+            // what the operator recognises.
+            assert!(row["id"].as_str().is_some_and(|id| !id.is_empty()), "{row}");
+            assert!(
+                row["component"].as_str().is_some_and(|c| !c.is_empty()),
+                "{row}"
+            );
+        }
     }
 
     #[test]
