@@ -25,12 +25,20 @@
 //!
 //! **Nothing here reads the wall clock**, and nothing here polls. Adapters are
 //! clients plus pure decoders; cadence and retained state live in the app.
+//!
+//! [`discover`] is the one module that is not an adapter: it probes a
+//! *user-supplied* host for the components it publishes, so a vendor this build
+//! has never heard of can be added without a rebuild. It reports what it found
+//! and never guesses — including telling a `neonstatus.com` apart from a
+//! Statuspage, which is the trap [`statusio`] documents.
 
 pub mod azurefeed;
+pub mod discover;
 pub mod statusio;
 pub mod statuspage;
 
 pub use azurefeed::AzureFeedClient;
+pub use discover::{Component, ProbeError};
 pub use statusio::StatusIoClient;
 pub use statuspage::StatusPageClient;
 
@@ -164,15 +172,20 @@ pub(crate) async fn get_text(http: &reqwest::Client, url: &str) -> Result<String
         .map_err(|e| StatusError::Unreachable(e.without_url().to_string()))
 }
 
-/// The shared `reqwest` client every adapter builds.
-///
 /// Eight seconds, shorter than the REST clients' fifteen: this is an annotation
 /// on panels that render fine without it, so it must never be what makes a poll
 /// pass slow.
+///
+/// Named rather than inlined because [`discover`] builds its own client — it
+/// needs a redirect policy the adapters do not — and a probe drifting to a
+/// different budget than the poll it is configuring would be its own surprise.
+pub(crate) const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// The shared `reqwest` client every adapter builds.
 #[must_use]
 pub(crate) fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
+        .timeout(HTTP_TIMEOUT)
         .user_agent(concat!("Solador/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("reqwest client")
