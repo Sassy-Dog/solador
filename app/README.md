@@ -78,6 +78,12 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats |
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
+| [`crashreport`](../crates/crashreport) | the opt-in crash reporter: the consent gate, the payload allow-list, the Sentry SDK |
+
+`crashreport` is the **only** crate carrying the Sentry SDK, and only this shell
+depends on it — `agent/`'s CI job is scoped `-p solador-agent` and must not
+resolve any of it. It is unrelated to `usage`'s Sentry client, which *reads*
+Sentry's API for two panels and reports nothing.
 
 ## The `cockpit` command
 
@@ -1075,6 +1081,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
 | `settings_save_general` | refresh interval, core-row span |
+| `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
 | `settings_move_panel` / `settings_set_panel_span` / `settings_set_breakpoint_overflow` | the [cockpit layout](#the-layout-tab), inside one breakpoint named by `minWidth`: one panel a place along the order, one panel's width, or that band's host-overflow mode |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` / `settings_reset_layout` | add a width band (seeded from the one it splits), drop one (never the last), or forget the arrangement entirely |
 | `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |

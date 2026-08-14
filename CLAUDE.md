@@ -151,8 +151,12 @@ the bundle's floor.
 │   │                       #   platform can decline is an Option, never a 0
 │   ├── usage/              # Claude Code log rollups + Neon + Sentry + Vercel
 │   ├── azurecost/          # Azure Cost Management export reader (SAS blob + CSV)
-│   └── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
-│                           #   device identity, the frame→snapshot reducer
+│   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
+│   │                       #   device identity, the frame→snapshot reducer
+│   └── crashreport/        # opt-in crash reporting: the consent gate, the
+│                           #   payload allow-list, the Sentry SDK. The ONLY
+│                           #   crate carrying the SDK, and only app/src-tauri
+│                           #   depends on it — agent/ must never resolve it
 ├── app/
 │   ├── src-tauri/          # Tauri v2 shell: one poll task per host plus this
 │   │                       #   machine (src/local.rs); `cockpit`, `containers`,
@@ -385,4 +389,12 @@ nine sibling crates', and is still what the in-app About string reads through
 - Use the OS credential store for all sensitive data; never persist tokens in
   `store.json`.
 - Request minimal token scopes (fine-grained, read-only where possible).
-- No telemetry or analytics by default.
+- No telemetry or analytics by default. Crash reporting (`crates/crashreport`,
+  #309) is the one thing that can leave the machine unasked, and it **cannot**:
+  it is off in a fresh store, the Settings toggle is the only opt-in, and a
+  compiled-in DSN is not consent and never becomes consent. With it off no
+  client is created and no panic hook is installed. What a report may carry is
+  an **allow-list** — the event is rebuilt from named fields rather than edited,
+  so a field a later SDK adds is dropped for never having been listed. Never
+  turn that into a blocklist, and never add a field to it without asking what
+  an operator's infrastructure would look like inside it.

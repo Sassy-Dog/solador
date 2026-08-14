@@ -71,10 +71,16 @@ idea from this repository, take that one.
 
 ## No telemetry
 
-The app carries **no crash-reporting or analytics SDK of any kind**. The only
-thing it sends anywhere are the API calls you configure, with your own
-credentials, to the vendors you chose. Credentials live in your OS credential
-store, never in the settings file.
+The app carries **no analytics of any kind**, and nothing is collected about how
+you use it. Apart from the API calls you configure — with your own credentials,
+to the vendors you chose — the only thing it can ever send is a crash report,
+and that is **off until you switch it on** in Settings → General. Off is the
+default in a fresh store and in every store that predates the feature; with it
+off there is no client, no panic hook and no network path at all. Switch it on
+and a panic is scrubbed to an allow-list first: host addresses, host names,
+tokens, absolute paths, source lines and local variables never leave the
+machine. Credentials live in your OS credential store, never in the settings
+file, and no crash report has ever been able to reach one.
 
 ## Prerequisites
 

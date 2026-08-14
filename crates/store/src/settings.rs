@@ -308,6 +308,33 @@ pub struct Settings {
     /// cockpit's availability chip is only true while someone is looking at it,
     /// and the point of a multi-hour outage is to stop looking.
     pub notify_on_service_change: bool,
+    /// Send a scrubbed report when this app panics.
+    ///
+    /// **Off, and off is the commitment** — `CLAUDE.md`'s "No telemetry or
+    /// analytics by default", and #18's opt-in policy. The Settings toggle is
+    /// the opt-in and nothing else is: not a DSN being present, not a build
+    /// profile, not an inference from any other preference.
+    ///
+    /// `false` here is a *decision*, not an absence. A store file written
+    /// before this key existed reads as off — asserted in
+    /// [`a_store_file_without_the_crash_key_stays_opted_out`] rather than left
+    /// to `#[serde(default)]`'s behaviour on a `bool` happening to be right,
+    /// because "the default did the right thing" is not a property anyone
+    /// notices breaking.
+    ///
+    /// The three-state read (`Unknown` when this could not be loaded at all)
+    /// lives in `crashreport::OptIn`, where it can refuse; a `bool` here has no
+    /// way to say "we could not look".
+    ///
+    /// **No field-level `#[serde(default)]`**, deliberately, unlike several of
+    /// its neighbours. That attribute would default a missing key to
+    /// `bool::default()` — which is `false`, and so happens to be right today —
+    /// but it would decouple the on-disk default from [`Settings::default`], and
+    /// this is the one preference where the default *is* the promise. The
+    /// container's `#[serde(default)]` already fills a missing key from
+    /// `Settings::default()`, so there is exactly one place the answer lives and
+    /// exactly one place to break.
+    pub crash_reporting_enabled: bool,
     /// Mount paths hidden from the *local* machine's Volumes section. Remote
     /// hosts carry their own list on [`crate::Host`].
     pub local_hidden_volume_mounts: Vec<String>,
@@ -389,6 +416,8 @@ impl Default for Settings {
             openclaw_gateway_url: String::new(),
             notify_on_approval_needed: true,
             notify_on_service_change: true,
+            // The one preference here that defaults *off*. See the field.
+            crash_reporting_enabled: false,
             local_hidden_volume_mounts: Vec::new(),
             // Empty, not pre-filled with the defaults — see the field's note.
             panel_intervals: BTreeMap::new(),
@@ -434,7 +463,41 @@ mod tests {
         assert!(s.sentry_org_slug.is_empty());
         assert!(s.openclaw_gateway_url.is_empty());
         assert!(s.notify_on_approval_needed);
+        assert!(
+            !s.crash_reporting_enabled,
+            "crash reporting is off by default and the toggle is the only opt-in"
+        );
         assert!(s.local_hidden_volume_mounts.is_empty());
+    }
+
+    /// A store file written before crash reporting existed — which is every
+    /// store file in the wild — must read as opted **out**.
+    ///
+    /// Asserted rather than assumed. `#[serde(default)]` on a `bool` does give
+    /// `false`, and `false` is the commitment; but "the language default
+    /// happened to match the policy" is not something anyone would notice
+    /// changing, and the whole point of this feature is that the default is the
+    /// promise. The neighbouring notify keys default the *other* way, so this
+    /// file already proves that a default here is a choice, not a convention.
+    #[test]
+    fn a_store_file_without_the_crash_key_stays_opted_out() {
+        for stored in [
+            r#"{}"#,
+            r#"{"core_row_span":3}"#,
+            // The shape of a real pre-feature store: several keys, none of them
+            // this one.
+            r#"{"refresh_interval_secs":300,"github_org":"acme","notify_on_service_change":false}"#,
+        ] {
+            let s: Settings = serde_json::from_str(stored).expect("deserialize");
+            assert!(
+                !s.crash_reporting_enabled,
+                "an upgrade must not opt anyone in: {stored}"
+            );
+        }
+        // And an explicit yes is still honoured, or the toggle does nothing.
+        let opted_in: Settings =
+            serde_json::from_str(r#"{"crash_reporting_enabled":true}"#).expect("deserialize");
+        assert!(opted_in.crash_reporting_enabled);
     }
 
     /// The two preferences with no UI on either side: a store file written
@@ -482,6 +545,7 @@ mod tests {
             openclaw_gateway_url: "https://gateway.example".into(),
             notify_on_approval_needed: false,
             notify_on_service_change: false,
+            crash_reporting_enabled: true,
             local_hidden_volume_mounts: vec!["/Volumes/Backup".into()],
             panel_intervals: BTreeMap::from([
                 ("containers".to_owned(), 30),
