@@ -61,6 +61,19 @@ pub enum SecretKey {
     /// by one app is not visible to the other; unifying that is separate work
     /// and this crate deliberately does not fork a third spelling.
     HostToken(Uuid),
+    /// A vendor account's token, keyed by [`crate::VendorAccount::id`].
+    ///
+    /// Parameterized for the reason `HostToken` is: the credential's
+    /// cardinality is one per *account*, not one per vendor, so there is no
+    /// fixed name to spell (#283).
+    ///
+    /// The account is `vendor-{uuid}`, the spelling
+    /// [`crate::VendorAccount::secret_account`] documents. That field is
+    /// **stored, not derived**, so this variant names only what a *newly
+    /// created* account gets: the account the v1 → v2 migration mints keeps
+    /// pointing at the pre-existing `github_access_token` item, so no keychain
+    /// item is ever renamed — the `LEGACY_SERVICE` hazard in miniature.
+    VendorToken(Uuid),
     /// Fine-grained GitHub PAT behind the Repos / GitHub Runners panels.
     GitHubAccessToken,
     /// Neon *organization* API key behind the Usage panel.
@@ -91,6 +104,7 @@ impl SecretKey {
     pub fn account(&self) -> String {
         match self {
             SecretKey::HostToken(id) => format!("host-{id}"),
+            SecretKey::VendorToken(id) => format!("vendor-{id}"),
             SecretKey::GitHubAccessToken => "github_access_token".to_owned(),
             SecretKey::NeonApiKey => "neon_api_key".to_owned(),
             SecretKey::SentryUsageToken => "sentry_usage_token".to_owned(),
@@ -119,6 +133,7 @@ impl SecretKey {
     pub fn consolidatable(&self) -> bool {
         match self {
             SecretKey::HostToken(_)
+            | SecretKey::VendorToken(_)
             | SecretKey::GitHubAccessToken
             | SecretKey::NeonApiKey
             | SecretKey::SentryUsageToken
@@ -131,7 +146,8 @@ impl SecretKey {
     /// Every credential with a fixed identity that migration should always
     /// consider, alongside whatever per-host [`SecretKey::HostToken`]s the
     /// caller appends. Excludes `HostToken` (one per configured host — there
-    /// is no fixed set of ids to name here) and
+    /// is no fixed set of ids to name here), [`SecretKey::VendorToken`] (the
+    /// same, one per vendor account) and
     /// [`SecretKey::OpenClawDeviceKey`] (never enters the blob;
     /// [`CredentialStore::migrate_legacy`] skips it defensively too).
     /// `is_static`'s match has no wildcard arm, so adding a `SecretKey`
@@ -147,7 +163,9 @@ impl SecretKey {
                 | SecretKey::SentryUsageToken
                 | SecretKey::VercelApiToken
                 | SecretKey::OpenClawBearerToken => true,
-                SecretKey::HostToken(_) | SecretKey::OpenClawDeviceKey => false,
+                SecretKey::HostToken(_)
+                | SecretKey::VendorToken(_)
+                | SecretKey::OpenClawDeviceKey => false,
             }
         }
         let keys = [
@@ -336,9 +354,10 @@ fn write_blob<S: ItemStore>(
 /// Accounts the blob must never hold: every fixed-account key
 /// [`SecretKey::consolidatable`] refuses. This is what the existing-blob
 /// scrub in [`route_migrate_legacy`] removes — healing installs whose blob
-/// was written before the external-writer rule existed. `HostToken` is
-/// absent because it is consolidatable; the `debug_assert` keeps this list
-/// honest against the predicate rather than trusting hand maintenance.
+/// was written before the external-writer rule existed. `HostToken` and
+/// `VendorToken` are absent because they are consolidatable; the
+/// `debug_assert` keeps this list honest against the predicate rather than
+/// trusting hand maintenance.
 fn non_consolidatable_accounts() -> Vec<String> {
     let keys = [SecretKey::OpenClawDeviceKey];
     debug_assert!(keys.iter().all(|key| !key.consolidatable()));
@@ -1231,9 +1250,15 @@ mod tests {
 
     #[test]
     fn every_account_is_distinct() {
+        // The two parameterized keys are given the *same* id deliberately:
+        // what keeps them apart is the prefix, not the uuid, and nothing stops
+        // a host and a vendor account being minted with equal ids.
+        let shared = Uuid::new_v4();
         let keys = [
             SecretKey::HostToken(Uuid::new_v4()),
-            SecretKey::HostToken(Uuid::new_v4()),
+            SecretKey::HostToken(shared),
+            SecretKey::VendorToken(shared),
+            SecretKey::VendorToken(Uuid::new_v4()),
             SecretKey::GitHubAccessToken,
             SecretKey::NeonApiKey,
             SecretKey::SentryUsageToken,
@@ -1257,8 +1282,8 @@ mod tests {
     /// `debug_assert` only checks that its hand-written list is *sound*
     /// (every listed key really is non-consolidatable) — not that the list is
     /// *complete*. This test checks completeness directly against the
-    /// predicate, over every fixed-account key (`HostToken` excluded: it has
-    /// no fixed account to enumerate): a variant reclassified
+    /// predicate, over every fixed-account key (`HostToken` and `VendorToken`
+    /// excluded: they have no fixed account to enumerate): a variant reclassified
     /// non-consolidatable but left out of the scrub list fails here, not
     /// silently at scrub time.
     #[test]
@@ -1321,6 +1346,27 @@ mod tests {
         );
         assert!(!keys.iter().any(|k| matches!(k, SecretKey::HostToken(_))));
         assert!(!keys.contains(&SecretKey::OpenClawDeviceKey));
+    }
+
+    /// `VendorToken` is `HostToken`'s shape, and must stay out of the static
+    /// list for `HostToken`'s reason: a uuid-parameterized account cannot be
+    /// enumerated at compile time. That list is also what the pre-rename
+    /// adoption walks, so this asserts `github_access_token` is still in it —
+    /// the account the v1 → v2 migration keeps pointing at. Since #281 writes
+    /// the completion marker on a clean pass, adoption does not run twice to
+    /// catch anything dropped from the list.
+    #[test]
+    fn vendor_tokens_are_parameterized_consolidatable_and_not_static() {
+        let id = Uuid::new_v4();
+        assert_eq!(SecretKey::VendorToken(id).account(), format!("vendor-{id}"));
+        assert!(SecretKey::VendorToken(id).consolidatable());
+
+        let accounts: Vec<String> = SecretKey::static_migration_keys()
+            .iter()
+            .map(SecretKey::account)
+            .collect();
+        assert!(accounts.contains(&"github_access_token".to_owned()));
+        assert!(!accounts.iter().any(|a| a.starts_with("vendor-")));
     }
 
     #[test]
