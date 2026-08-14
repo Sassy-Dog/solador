@@ -1058,7 +1058,8 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_unhide_volume` | one mount, on a host or on the local list |
 | `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
 | `settings_test_host` | one `/v1/health` probe → the original result line |
-| `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio |
+| `settings_add_repo` / `settings_remove_repo` / `settings_set_repo_enabled` / `settings_set_repo_workflows` | the tracked-repo portfolio. **Add attributes the repo to an account only when the store holds exactly one** (`settings::new_repo`) — with two or more there is no correct default, so it lands unattributed and the row's picker asks |
+| `settings_set_repo_account` | that picker: which account fetches this repo. `accountId: null` is the unattributed state, which is a legitimate answer rather than a cleared field; an id no account carries is refused, because a stale id on screen is indistinguishable from a deliberate *Unattributed* |
 | `settings_save_openclaw` | the OpenClaw gateway URL |
 | `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
 | `settings_probe_status_vendor` | step one of [adding a status page](#the-services-tab): one GET of `{base}/api/v2/summary.json` → its components, **or** the finding that stopped it. Deliberately not a `Result` — a failed probe found something, and the finding is the product |

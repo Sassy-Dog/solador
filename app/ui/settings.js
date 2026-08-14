@@ -620,7 +620,12 @@ function portfolioTab(t) {
     row.dataset.repo = repo.slug;
 
     const head = node("div", "row");
-    head.append(node("span", "slug", repo.slug), node("span", "grow"));
+    head.append(node("span", "slug", repo.slug));
+    // Rust's sentence for a repo naming an account that no longer exists.
+    // Shown beside the slug rather than folded into the picker: the picker's
+    // "Unattributed" is a state the operator chose, and this one is not.
+    if (repo.accountMissing) head.appendChild(node("span", "badge-dim", t.missingAccountLabel));
+    head.appendChild(node("span", "grow"));
 
     const enabled = checkbox(repo.enabled);
     enabled.addEventListener("change", () =>
@@ -638,6 +643,24 @@ function portfolioTab(t) {
       mutate("settings_set_repo_workflows", { slug: repo.slug, workflows: workflows.value })
     );
     row.append(head, field(`repo-workflows-${repo.slug}`, t.workflowsLabel, workflows));
+
+    // Which account fetches this repo. Rust sends no options at all in a store
+    // with no accounts, and this file renders no control rather than deciding
+    // for itself when one is worth showing. `accountId` is null for an
+    // unattributed repo, which is the picker's own first option -- never the
+    // first account, which is the guess the whole change exists to refuse.
+    if (t.accountOptions.length > 0) {
+      const account = select(t.accountOptions, repo.accountId || "");
+      account.addEventListener("change", () =>
+        // Empty back to null: the option's value is a string, and "" is the
+        // unattributed state rather than an id of no characters.
+        mutate("settings_set_repo_account", {
+          slug: repo.slug,
+          accountId: account.value || null,
+        })
+      );
+      row.appendChild(field(`repo-account-${repo.slug}`, t.accountLabel, account));
+    }
     list.appendChild(row);
   }
 

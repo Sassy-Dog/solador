@@ -1347,8 +1347,10 @@ fn plan_github_pass<C: CredentialStore + ?Sized>(
 
     for identity in &identities {
         // In a store with no account, the repos that name none are the v1
-        // credential's. In a store with accounts, they belong to nobody until
-        // #292 attributes them — and "the first account" is not an answer.
+        // credential's. In a store with accounts they belong to nobody, and
+        // stay that way: attribution is decided once, when the repo is added
+        // (`settings::new_repo`) or when the Portfolio row's picker is used.
+        // A pass adopting one would be "the first account" by another name.
         let owned: Vec<&&TrackedRepo> = tracked
             .iter()
             .filter(|repo| {
@@ -3353,7 +3355,14 @@ fn settings_add_repo(slug: String, state: tauri::State<'_, Arc<App>>) -> Value {
         let mut store = state.store.lock().expect("store poisoned");
         match settings::validated_slug(&slug, store.repos()) {
             Some(slug) => {
-                store.upsert_repo(TrackedRepo::new(&slug));
+                // Attributed here, at the one moment the answer can be
+                // deduced: with exactly one account there is nothing to ask,
+                // and with more than one `new_repo` leaves it unattributed for
+                // the row's picker rather than guessing. The *pass* never
+                // adopts an unattributed repo — that asymmetry is the whole
+                // point, and `plan_github_pass` has its own test for it.
+                let repo = settings::new_repo(&slug, store.accounts());
+                store.upsert_repo(repo);
                 save_status(&store, format!("Added {slug}."))
             }
             None => Some("Skipped — invalid or already tracked.".to_owned()),
@@ -3414,6 +3423,52 @@ fn settings_set_repo_workflows(
             None => Some("Skipped — not tracked.".to_owned()),
         }
     };
+    wake_github(&state);
+    settings_response(&state, status)
+}
+
+/// The Portfolio row's "Fetched by" picker: which account polls this repo.
+///
+/// `None` — the picker's own `Unattributed` option — is a legitimate answer,
+/// not a cleared field: it is the state every repo added while more than one
+/// account existed starts in, and the Repos panel reports it rather than
+/// fetching the repo with somebody else's token.
+///
+/// An id no account carries is **refused** rather than stored. A written-down
+/// id that resolves to nothing is indistinguishable on screen from a
+/// deliberate `Unattributed`, so accepting one would turn a stale window into
+/// a silent misconfiguration.
+#[tauri::command]
+fn settings_set_repo_account(
+    slug: String,
+    account_id: Option<String>,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    // Parsed before the lock: an unparseable id is not a question for the store.
+    let account = match account_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(raw) => match Uuid::parse_str(raw) {
+            Ok(id) => Some(id),
+            Err(_) => return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into())),
+        },
+        None => None,
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        if account.is_some_and(|id| store.account(id).is_none()) {
+            Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned())
+        } else {
+            match store.repo_mut(&slug) {
+                Some(repo) => {
+                    repo.account_id = account;
+                    save_status(&store, "Saved.")
+                }
+                None => Some("Skipped — not tracked.".to_owned()),
+            }
+        }
+    };
+    // Attribution decides which token fetches this repo, so an edit that does
+    // not reach the loop leaves the panel a full refresh interval behind on
+    // whose credential it is using.
     wake_github(&state);
     settings_response(&state, status)
 }
@@ -4104,8 +4159,11 @@ fn dump_settings() -> Value {
             // this fixture is what the Playwright suite renders the Portfolio
             // tab from — an empty list would silently stop covering it.
             //
-            // Both attributed to the first account, which is what gives the
-            // Accounts tab a row whose removal actually costs something.
+            // The first two are attributed to the first account, which is what
+            // gives the Accounts tab a row whose removal actually costs
+            // something. The third is unattributed — the state a repo added
+            // while two accounts exist arrives in — so the Portfolio tab's
+            // "Fetched by" picker is covered in both of its readings.
             repos: &[
                 store::TrackedRepo {
                     account_id: Some(accounts[0].id),
@@ -4115,6 +4173,7 @@ fn dump_settings() -> Value {
                     account_id: Some(accounts[0].id),
                     ..store::TrackedRepo::new("acme/gadget")
                 },
+                store::TrackedRepo::new("acme/pipe-fitting"),
             ],
             rules: &dump_container_rules(),
             layout: Some(&layout),
@@ -4761,6 +4820,7 @@ fn main() {
             settings_remove_repo,
             settings_set_repo_enabled,
             settings_set_repo_workflows,
+            settings_set_repo_account,
             settings_save_account,
             settings_set_account_enabled,
             settings_remove_account,
@@ -6274,6 +6334,83 @@ mod tests {
         assert_eq!(reopened.hosts()[0].name, "ubu-01");
     }
 
+    // MARK: - attributing a newly tracked repo
+    //
+    // `settings_add_repo` is a Tauri command and cannot be called from a test,
+    // so these exercise the two lines it is made of — `settings::new_repo`
+    // followed by `Store::upsert_repo` — against a real store file.
+
+    /// A scratch store carrying `count` GitHub accounts, each pointing at its
+    /// own credential item exactly as `settings::validated_account` mints them.
+    fn store_with_accounts(count: usize) -> (tempfile::TempDir, Store) {
+        let (dir, mut store) = scratch_store();
+        for n in 0..count {
+            let account = VendorAccount::new(VendorKind::GitHub, format!("account-{n}"), "");
+            store.upsert_account(VendorAccount {
+                secret_account: SecretKey::VendorToken(account.id).account(),
+                ..account
+            });
+        }
+        (dir, store)
+    }
+
+    /// `settings_add_repo`'s body, minus the lock and the status line.
+    fn add_repo(store: &mut Store, slug: &str) {
+        // Read before the mutable borrow, which is also why the command holds
+        // one lock rather than two.
+        let repo = settings::new_repo(slug, store.accounts());
+        store.upsert_repo(repo);
+    }
+
+    /// With one account there is nothing to ask: the repo provably belongs to
+    /// it, and a picker with a single option is a question with one answer.
+    #[test]
+    fn a_new_repo_is_attributed_automatically_when_there_is_only_one_account() {
+        let (_dir, mut store) = store_with_accounts(1);
+        let only = store.accounts()[0].id;
+        add_repo(&mut store, "acme/new");
+        assert_eq!(store.repos().last().expect("a repo").account_id, Some(only));
+    }
+
+    /// The load-bearing one. With two accounts there is no correct default —
+    /// not the first, not the most recently added, not the enabled one — so the
+    /// repo is stored unattributed and the Portfolio row's picker asks.
+    /// Inventing an owner here would silently undo #290, which is what keeps a
+    /// repo from being fetched with somebody else's token.
+    #[test]
+    fn a_new_repo_with_two_accounts_is_not_guessed() {
+        let (_dir, mut store) = store_with_accounts(2);
+        add_repo(&mut store, "acme/new");
+        assert_eq!(store.repos().last().expect("a repo").account_id, None);
+    }
+
+    /// A store with no account at all is the v1 shape, and `None` is what
+    /// `plan_github_pass` reads as "the v1 credential's". Attributing here
+    /// would have nothing to attribute to.
+    #[test]
+    fn a_new_repo_in_a_store_with_no_accounts_stays_unattributed() {
+        let (_dir, mut store) = store_with_accounts(0);
+        add_repo(&mut store, "acme/new");
+        assert_eq!(store.repos().last().expect("a repo").account_id, None);
+    }
+
+    /// …and it survives the round-trip: attribution is a decision recorded in
+    /// the file at add time, not one re-derived on every launch from however
+    /// many accounts happen to exist then.
+    #[test]
+    fn an_automatic_attribution_is_persisted_rather_than_re_derived() {
+        let (dir, mut store) = store_with_accounts(1);
+        let only = store.accounts()[0].id;
+        add_repo(&mut store, "acme/new");
+        store.save().expect("save");
+
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
+        assert_eq!(
+            reopened.repos().last().expect("a repo").account_id,
+            Some(only)
+        );
+    }
+
     // MARK: what a credential read learned, and what each answer is allowed to
     // claim
     //
@@ -6687,6 +6824,43 @@ mod tests {
         }));
     }
 
+    /// The two halves of #292 meeting the pass. Added under one account the
+    /// repo is fetched by it without anyone being asked; added under two it is
+    /// reported instead of being handed to either token.
+    #[test]
+    fn what_the_add_form_attributed_is_what_the_pass_fetches() {
+        let (work, _) = account_owning("work", &[]);
+        let (personal, _) = account_owning("personal", &[]);
+        let credentials = MemoryCredentialStore::new();
+        for account in [&work, &personal] {
+            credentials
+                .set_secret(SecretKey::VendorToken(account.id), "ghp_token")
+                .expect("write");
+        }
+
+        let one = [work.clone()];
+        let pass = plan_github_pass(&credentials, &one, &[settings::new_repo("acme/new", &one)]);
+        assert_eq!(
+            pass.fetches[0]
+                .repos
+                .iter()
+                .map(|(slug, _)| slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/new"],
+        );
+        assert!(pass.reports.is_empty(), "{pass:?}");
+
+        let two = [work, personal];
+        let pass = plan_github_pass(&credentials, &two, &[settings::new_repo("acme/new", &two)]);
+        assert!(
+            pass.fetches.iter().all(|fetch| fetch.repos.is_empty()),
+            "neither token may fetch a repo nobody has attributed: {pass:?}"
+        );
+        assert!(pass.reports.contains(&github::AccountResult::Unattributed {
+            slugs: vec!["acme/new".to_owned()],
+        }));
+    }
+
     /// A keychain that would not answer for one account is never "there is no
     /// token" for the panels — unreadable outranks absent, exactly as it does
     /// for the single credential.
@@ -6925,10 +7099,21 @@ mod tests {
 
         assert_eq!(vm["github"]["secret"]["stored"], true);
         assert!(vm["azure"]["secret"].is_null(), "no Azure credential");
-        assert!(!vm["portfolio"]["rows"]
-            .as_array()
-            .expect("repo rows")
-            .is_empty());
+
+        // Both readings of the account picker, for the reason the rules
+        // fixture below carries every action: the Playwright suite must not be
+        // able to pass against a payload that quietly lost one of them.
+        let repos = vm["portfolio"]["rows"].as_array().expect("repo rows");
+        assert!(repos.iter().any(|repo| repo["accountId"].is_string()));
+        assert!(repos.iter().any(|repo| repo["accountId"].is_null()));
+        assert_eq!(
+            vm["portfolio"]["accountOptions"]
+                .as_array()
+                .expect("picker options")
+                .len(),
+            dump_accounts().len() + 1,
+            "every account, plus the unattributed state"
+        );
     }
 
     /// The rules half of the same fixture, and for the same reason: the
