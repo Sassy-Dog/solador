@@ -77,12 +77,53 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
 Single-tier repo: umbrella `v*` only, no tier tags, no tier-vs-tag change
 detection (nothing to path-scope). Declared stance: **no channel tags yet** —
 builds are unsigned/un-notarized and local-only until
-[#15](https://github.com/Sassy-Dog/solador/issues/15) (signing /
-notarization / Sparkle) lands; at first external distribution, add
-`mac-direct/<version>-<build>-<UTCts>` per submission, and map Sparkle keys
-per the §7 macOS row (`sparkle:version` = **build number**,
-`sparkle:shortVersionString` = marketing version, appcast generated — never
-hand-edited).
+[#15](https://github.com/Sassy-Dog/solador/issues/15) (signing and
+notarization, [#306](https://github.com/Sassy-Dog/solador/issues/306); the
+update feed, [#308](https://github.com/Sassy-Dog/solador/issues/308)) lands;
+at first external distribution, add `mac-direct/<version>-<build>-<UTCts>` per
+submission.
+
+### Mapping onto the update feed
+
+The update mechanism is **`tauri-plugin-updater`**, settled in
+[#304](https://github.com/Sassy-Dog/solador/issues/304). Its manifest carries
+**exactly one `version` field**, and the default comparison is
+`update.version > current` against the running app's configured version
+([v2 docs](https://v2.tauri.app/plugin/updater)). So the two numbers land
+asymmetrically:
+
+- **Marketing version — the sole comparison key.** It reaches the bundle as
+  `tauri.conf.json`'s `version` via the `--config` overlay (see Consumers,
+  above) and therefore as `CFBundleShortVersionString`, and the same string is
+  the manifest's one `version`. The manifest is generated from the mint's
+  output — never hand-edited.
+- **Build number — artifact only.** It is stamped over `CFBundleVersion`
+  (#303) and it is what the `mac-direct/<version>-<build>-<UTCts>` channel tag
+  above consumes. It has **no update-feed consumer**: one manifest field means
+  one number carries the comparison, and it is not this one. Say it that
+  narrowly — "no consumer" would be false, and the artifact half is asserted
+  by `build.sh` on every bundle.
+
+**Why one key is safe: CalVer is monotonic under semver ordering.** The
+plugin compares as semver, and `YYYY.M.<commits-this-month>` compares
+field-by-field the same way: `2026.8.40` < `2026.9.1` < `2027.1.1`. Every
+reset of a lower field is paired with an increase in the field above it (the
+patch resets only as the month advances, the month only as the year does), and
+within a month the commit count only grows — so of any two versions the mint
+derives, the later one sorts higher. The **non-padded** month is part of this
+and not cosmetic: semver forbids leading zeroes in numeric identifiers, so
+`2026.08.1` would not parse as a version at all. None of this mattered under
+the superseded two-key mapping below, whose comparison key was a plain
+monotonic integer — which is why the property was written down nowhere until
+the comparison came to rest on this number.
+
+**Superseded:** this section previously mapped Sparkle's two keys per the §7
+macOS row — `sparkle:version` = build number (the comparison key),
+`sparkle:shortVersionString` = marketing version (display only), appcast
+generated. Sparkle is macOS-only and was inherited from the deleted SwiftUI
+app rather than chosen here; #304 replaced it. The substantive change is not
+the key names but the build number's demotion from comparison key to
+artifact-only.
 
 ## Migration record (§6)
 
