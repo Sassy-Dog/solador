@@ -215,6 +215,17 @@ function renderRepos(payload) {
   }
   $g("reposBody").replaceChildren(...children);
 
+  // Which accounts contributed nothing this pass, and which repos no account
+  // claims. Same element and same rules as the Runners panel's: in the header
+  // so a degraded panel does not grow taller and drag its row-mates with it,
+  // ellipsised in a narrow card with the whole message on `title`, and absent
+  // entirely when there is nothing wrong.
+  const stale = $g("reposStale");
+  stale.textContent = payload.footer ? payload.footer.text : "";
+  stale.title = payload.footer ? payload.footer.text : "";
+  stale.style.color = payload.footer ? payload.footer.color : "";
+  stale.hidden = !payload.footer;
+
   // The reassurance line, and only once there is something to be reassured
   // about: no token means no claim about anyone's health.
   const health = $g("reposHealth");

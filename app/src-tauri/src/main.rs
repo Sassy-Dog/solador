@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use store::{
     ContainerGroupRule, CredentialStore, Host, HostOverflowMode, KeyringStore, SecretKey, Store,
-    StoreError, TrackedRepo,
+    StoreError, TrackedRepo, VendorAccount, VendorKind,
 };
 use tauri_plugin_notification::NotificationExt;
 use uuid::Uuid;
@@ -1177,33 +1177,289 @@ fn containers(state: tauri::State<'_, Arc<App>>) -> Value {
 // This is the shell's **first consumer of `refresh_interval_secs`** — until
 // now that preference persisted and nothing read it.
 
-/// Applies one GitHub credential read to the panel state, returning the token
-/// the pass should go on to poll with. `None` ends the pass.
+/// Why a disabled account fetched nothing. Not an error — the operator turned
+/// it off — but still reported, because the repos it owns are still tracked
+/// and their rows going blank with no explanation is the surprising half.
+const ACCOUNT_DISABLED_MESSAGE: &str = "disabled in Settings";
+
+/// Why an enabled account with an empty credential fetched nothing.
+const ACCOUNT_TOKEN_MISSING_MESSAGE: &str = "no token saved — add one in Settings";
+
+/// Why an account whose [`VendorAccount::secret_account`] this build cannot
+/// resolve fetched nothing. See [`account_secret_key`] for the refusal.
+const ACCOUNT_CREDENTIAL_UNKNOWN_MESSAGE: &str =
+    "unrecognised credential item — re-save this account's token in Settings";
+
+/// The credential-store item one vendor account's token lives in, or `None`
+/// when this build cannot resolve the name the account carries.
+///
+/// [`VendorAccount::secret_account`] is a **stored string**, not a derivation,
+/// so exactly two spellings are legitimate: the pre-existing
+/// [`SecretKey::GitHubAccessToken`] item the account `store::migrate_v1_to_v2`
+/// mints keeps pointing at, and the `vendor-<uuid>` item a freshly created
+/// account gets. Anything else is refused rather than resolved — an account
+/// naming *another* account's item is precisely the "a row fetched with
+/// somebody else's token" this epic exists to make impossible, and a name
+/// nothing recognises is a misconfiguration to report, not to guess at.
+///
+/// Fail-closed on purpose: the caller turns `None` into a named failure the
+/// operator can see, never into a silent fallback to whatever credential is
+/// nearest.
+fn account_secret_key(account: &VendorAccount) -> Option<SecretKey> {
+    let own = SecretKey::VendorToken(account.id);
+    if account.secret_account == own.account() {
+        return Some(own);
+    }
+    if account.secret_account == SecretKey::GitHubAccessToken.account() {
+        return Some(SecretKey::GitHubAccessToken);
+    }
+    None
+}
+
+/// One identity a GitHub pass polls with: an account from the store, or the v1
+/// credential when the store has no account at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubIdentity {
+    /// The account's id, or `None` for the v1 credential. See
+    /// [`github::AccountResult::Ok`] for why that one needs none.
+    account: Option<Uuid>,
+    label: String,
+    enabled: bool,
+    /// Where this identity's token lives, or `None` when the stored item name
+    /// is unresolvable ([`account_secret_key`]).
+    key: Option<SecretKey>,
+}
+
+impl GitHubIdentity {
+    /// Whether this identity is the v1 credential rather than an account.
+    ///
+    /// It is the one identity whose failure is **not** a per-account footer
+    /// line: with no account configured there is no account to name, and
+    /// "connect a GitHub token in Settings" is the whole of what a first launch
+    /// has to say. Its three states are the panel's, via [`PassCredential`].
+    fn is_legacy(&self) -> bool {
+        self.account.is_none()
+    }
+}
+
+/// The identities one pass polls, in store order.
+///
+/// A store with no GitHub account yields the v1 credential alone. That is not a
+/// fallback picked for convenience: a v1 store held exactly one GitHub token,
+/// so every repo in it provably belongs to that one — the same proof
+/// `store::migrate_v1_to_v2` relies on, and the state the app is in between a
+/// first launch with no token and the relaunch that migrates (saving a token in
+/// Settings creates no account until #291).
+///
+/// Non-GitHub accounts are filtered out rather than polled: a credential minted
+/// for another vendor's API must never be sent to GitHub's.
+fn github_identities(accounts: &[VendorAccount]) -> Vec<GitHubIdentity> {
+    let identities: Vec<GitHubIdentity> = accounts
+        .iter()
+        .filter(|account| account.vendor == VendorKind::GitHub)
+        .map(|account| GitHubIdentity {
+            account: Some(account.id),
+            label: account.label.clone(),
+            enabled: account.enabled,
+            key: account_secret_key(account),
+        })
+        .collect();
+    if identities.is_empty() {
+        return vec![GitHubIdentity {
+            account: None,
+            label: String::new(),
+            enabled: true,
+            key: Some(SecretKey::GitHubAccessToken),
+        }];
+    }
+    identities
+}
+
+/// What one pass learned about the panels' credentials **as a whole** — the
+/// claim both panels' setup lines are made of.
+///
+/// The first three are the branches the single-credential
+/// read has always had. [`Unlooked`](PassCredential::Unlooked) is the fourth a
+/// multi-account pass can be in: every account disabled, or every one of them
+/// naming a credential item this build cannot resolve, so nothing was read at
+/// all. Neither "there is no token" nor "we could not ask" is true then, and a
+/// defaulted state is as much a fabrication as a defaulted number — so it says
+/// nothing, and the per-account footer carries the story.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassCredential {
+    Present,
+    Absent,
+    Unreadable,
+    Unlooked,
+}
+
+/// One identity that has a token, and the repos it owns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubFetch {
+    account: Option<Uuid>,
+    label: String,
+    token: String,
+    /// `(slug, watched workflows)`, in portfolio order.
+    repos: Vec<(String, Option<Vec<String>>)>,
+}
+
+/// Everything a pass can decide before its first request: who to poll with, who
+/// already cannot be polled with, and what the panels should say about the
+/// credential store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubPass {
+    fetches: Vec<GitHubFetch>,
+    /// The results already known — blocked accounts and unattributed repos.
+    /// The fetches' results are appended to these.
+    reports: Vec<github::AccountResult>,
+    credential: PassCredential,
+}
+
+/// Plans one GitHub pass: reads every enabled identity's credential and
+/// attributes every enabled repo to one of them.
+///
+/// **Every credential read happens here, before the first request** — the same
+/// discipline `apply_token_present` exists for, once per account rather than
+/// once per pass: a panel that waits for a fetch to finish before admitting it
+/// has a token spends the whole first pass telling the operator to connect one.
+///
+/// A repo whose `account_id` names nothing this pass knows about is
+/// **unattributed**, never reassigned. That is the security half of this
+/// function: the only token a repo is ever fetched with is the one its own
+/// account names.
+///
+/// Takes the whole portfolio and filters it: a *disabled* repo is not fetched
+/// and must not be reported as unattributed either — it is not on the board at
+/// all, so there is nothing missing from it to explain.
+fn plan_github_pass<C: CredentialStore + ?Sized>(
+    credentials: &C,
+    accounts: &[VendorAccount],
+    repos: &[TrackedRepo],
+) -> GitHubPass {
+    let identities = github_identities(accounts);
+    let legacy = identities.iter().all(GitHubIdentity::is_legacy);
+    let tracked: Vec<&TrackedRepo> = repos.iter().filter(|repo| repo.enabled).collect();
+
+    let mut fetches = Vec::new();
+    let mut reports = Vec::new();
+    let (mut present, mut unreadable, mut absent) = (false, false, false);
+
+    for identity in &identities {
+        // In a store with no account, the repos that name none are the v1
+        // credential's. In a store with accounts, they belong to nobody until
+        // #292 attributes them — and "the first account" is not an answer.
+        let owned: Vec<&&TrackedRepo> = tracked
+            .iter()
+            .filter(|repo| {
+                repo.account_id == identity.account || (legacy && repo.account_id.is_none())
+            })
+            .collect();
+
+        let blocked = if !identity.enabled {
+            Some(ACCOUNT_DISABLED_MESSAGE.to_owned())
+        } else {
+            match identity.key {
+                None => Some(ACCOUNT_CREDENTIAL_UNKNOWN_MESSAGE.to_owned()),
+                Some(key) => match read_credential(credentials, key) {
+                    Credential::Present(token) => {
+                        present = true;
+                        fetches.push(GitHubFetch {
+                            account: identity.account,
+                            label: identity.label.clone(),
+                            token,
+                            repos: owned
+                                .iter()
+                                .map(|repo| (repo.slug.clone(), repo.watched_workflows.clone()))
+                                .collect(),
+                        });
+                        None
+                    }
+                    Credential::Absent => {
+                        absent = true;
+                        Some(ACCOUNT_TOKEN_MISSING_MESSAGE.to_owned())
+                    }
+                    Credential::Unreadable => {
+                        unreadable = true;
+                        Some(CREDENTIAL_UNREADABLE_MESSAGE.to_owned())
+                    }
+                },
+            }
+        };
+
+        // A disabled account with nothing tracked is not news: switching one
+        // off is a deliberate act, and the footer is for what it took with it.
+        // An *enabled* one that cannot authenticate is reported either way.
+        let worth_reporting = identity.enabled || !owned.is_empty();
+        if let Some(reason) = blocked {
+            if !identity.is_legacy() && worth_reporting {
+                reports.push(github::AccountResult::Failed {
+                    account: identity.account,
+                    label: identity.label.clone(),
+                    reason,
+                    slugs: owned.iter().map(|repo| repo.slug.clone()).collect(),
+                });
+            }
+        }
+    }
+
+    // Whatever no identity claimed. Reported last so the footer reads
+    // accounts-then-orphans, and reported at all because a tracked repo that
+    // quietly stops being fetched is the failure this replaces.
+    let claimed: Vec<Option<Uuid>> = identities.iter().map(|i| i.account).collect();
+    let unattributed: Vec<String> = tracked
+        .iter()
+        .filter(|repo| !claimed.contains(&repo.account_id))
+        .map(|repo| repo.slug.clone())
+        .collect();
+    if !unattributed.is_empty() {
+        reports.push(github::AccountResult::Unattributed {
+            slugs: unattributed,
+        });
+    }
+
+    GitHubPass {
+        fetches,
+        reports,
+        // The best news any identity brought, and `Unreadable` outranks
+        // `Absent`: one account holding a good token means the panels *are*
+        // configured whatever the others are doing, and a keychain that would
+        // not answer for one of them is never "there is no token" — that claim
+        // belongs to a pass that asked and was told nothing is stored.
+        credential: if present {
+            PassCredential::Present
+        } else if unreadable {
+            PassCredential::Unreadable
+        } else if absent {
+            PassCredential::Absent
+        } else {
+            PassCredential::Unlooked
+        },
+    }
+}
+
+/// Applies one pass's credential verdict to the panel state.
 ///
 /// A function of its own, over `&mut GitHubState`, because the whole of this
-/// decision is which of three states two panels enter — and every one of them
-/// is testable here without a token, a keychain or a network.
-fn github_token(credential: Credential, state: &mut GitHubState) -> Option<String> {
+/// decision is which state two panels enter — and every one of them is testable
+/// here without a token, a keychain or a network.
+///
+/// [`PassCredential::Present`] is recorded **before a single request goes
+/// out**. That arm used to write nothing until a fetch completed, so the panels
+/// went on claiming there was no credential for the whole of the pass that was
+/// holding one — several seconds of "connect a GitHub token in Settings" on
+/// every launch, at a machine where the token was fine.
+fn apply_pass_credential(credential: PassCredential, state: &mut GitHubState) {
     match credential {
-        // Recorded here, before a single request goes out. This arm used to
-        // return the token and write nothing, so the panels went on claiming
-        // there was no credential for the whole of the pass that was holding
-        // one — several seconds of "connect a GitHub token in Settings" on
-        // every launch, at a machine where the token was fine.
-        Credential::Present(token) => {
-            state.apply_token_present();
-            Some(token)
-        }
+        PassCredential::Present => state.apply_token_present(),
         // The only branch that may claim nobody configured this: we asked, and
         // the store said there is nothing stored.
-        Credential::Absent => {
-            state.apply_unauthenticated();
-            None
+        PassCredential::Absent => state.apply_unauthenticated(),
+        PassCredential::Unreadable => {
+            state.apply_credential_unreadable(CREDENTIAL_UNREADABLE_MESSAGE)
         }
-        Credential::Unreadable => {
-            state.apply_credential_unreadable(CREDENTIAL_UNREADABLE_MESSAGE);
-            None
-        }
+        // Nothing was read, so there is nothing to report — and no claim about
+        // a credential store this pass never opened.
+        PassCredential::Unlooked => {}
     }
 }
 
@@ -1271,8 +1527,14 @@ async fn poll_service_status(app: &Arc<App>) {
     deliver_status_notices(app, &notices);
 }
 
-/// One pass over every GitHub source: each enabled repo's health, this
-/// machine's git checkouts, and the org's self-hosted runners.
+/// One pass over every GitHub source: each enabled repo's health **fetched by
+/// the account that owns it**, this machine's git checkouts, and the org's
+/// self-hosted runners.
+///
+/// The credential is one per account (#283), so the repos half of this pass is
+/// N fetches with N tokens, merged by [`github::merged_health`] and reported
+/// per account. One account failing costs that account's rows and nothing else;
+/// [`plan_github_pass`] decides all of it before the first request goes out.
 ///
 /// No lock is ever held across an `await`; each is taken, used and dropped, in
 /// sequence, exactly as [`poll_containers`] does.
@@ -1286,39 +1548,41 @@ async fn poll_github(app: &Arc<App>) {
 
     // Re-read every pass rather than captured at startup: that is what makes a
     // Save or Clear in Settings apply without a relaunch.
-    let credential = read_credential(&*app.credentials, SecretKey::GitHubAccessToken);
-    let token = {
-        let mut state = app.github.lock().expect("github state poisoned");
-        github_token(credential, &mut state)
+    let (accounts, repos, org, roster) = {
+        let store = app.store.lock().expect("store poisoned");
+        (
+            store.accounts().to_vec(),
+            store.repos().to_vec(),
+            store.settings().github_org.trim().to_owned(),
+            github::roster_from_records(store.runner_roster()),
+        )
     };
-    let Some(token) = token else { return };
-
-    // Re-read every pass alongside the token, and for the same reason: a Save
-    // in Settings must apply on the next pass rather than the next launch.
     // Two blocks, not one — taking the store and panel-state locks together
     // here would be the only place in this pass that holds both at once.
-    let org = {
-        let store = app.store.lock().expect("store poisoned");
-        store.settings().github_org.trim().to_owned()
-    };
     {
         let mut state = app.github.lock().expect("github state poisoned");
         state.apply_org(&org);
     }
 
-    let repos: Vec<(String, Option<Vec<String>>)> = {
-        let store = app.store.lock().expect("store poisoned");
-        store
-            .repos()
-            .iter()
-            .filter(|repo| repo.enabled)
-            .map(|repo| (repo.slug.clone(), repo.watched_workflows.clone()))
-            .collect()
-    };
-    let roster = {
-        let store = app.store.lock().expect("store poisoned");
-        github::roster_from_records(store.runner_roster())
-    };
+    // One credential read per account, every one of them before the first
+    // request.
+    let pass = plan_github_pass(&*app.credentials, &accounts, &repos);
+    let mut results = pass.reports;
+    {
+        let mut state = app.github.lock().expect("github state poisoned");
+        apply_pass_credential(pass.credential, &mut state);
+    }
+    // Nothing to poll with. The pass still records what it knows — which
+    // accounts are blocked, and which repos no account claims — because that
+    // is the whole of what this pass found out, and dropping it would leave
+    // two panels with no explanation for rows that are not there.
+    if pass.fetches.is_empty() {
+        let mut state = app.github.lock().expect("github state poisoned");
+        if !results.is_empty() {
+            state.apply_repo_accounts(&results, panel::now_unix());
+        }
+        return;
+    }
 
     // Walking `~/Repos` and spawning `git` twice per repo blocks; keep it off
     // the async executor, exactly as `docker ps` is.
@@ -1329,16 +1593,30 @@ async fn poll_github(app: &Arc<App>) {
     .map_err(|e| eprintln!("local git scan failed: {e}"))
     .ok();
 
-    let client = github::GitHubClient::new(token);
     let now = github::now_utc();
+    // One client per account, each holding that account's own token — the
+    // whole point of #290. A repo is only ever fetched by the account that
+    // owns it, so a private repo can never be read with a credential its
+    // operator never pointed at it.
+    //
     // Sequential per repo, matching `GHWorkflowsService.refresh()`: each
     // `repo_health` already fires its three side counts concurrently, so a
     // six-repo portfolio is 24 requests either way — doing them all at once
-    // would only spend the rate-limit budget faster.
-    let mut health = Vec::with_capacity(repos.len());
-    for (slug, watched) in &repos {
-        health.push(client.repo_health(slug, watched.as_deref(), now).await);
+    // would only spend the rate-limit budget faster. Sequential per *account*
+    // for the same reason.
+    for fetch in &pass.fetches {
+        let client = github::GitHubClient::new(fetch.token.clone());
+        let mut health = Vec::with_capacity(fetch.repos.len());
+        for (slug, watched) in &fetch.repos {
+            health.push(client.repo_health(slug, watched.as_deref(), now).await);
+        }
+        results.push(github::AccountResult::Ok {
+            account: fetch.account,
+            label: fetch.label.clone(),
+            health,
+        });
     }
+
     // The roster is only ever advanced by this call, and it only returns `Ok`
     // on a successful fetch — so a failing GitHub leaves every absence clock
     // frozen at the last successful poll instead of ageing a healthy runner
@@ -1351,14 +1629,20 @@ async fn poll_github(app: &Arc<App>) {
     //
     // The repos half of the pass continues either way — repos are tracked by
     // full `owner/name` slug and need no organization.
-    let update = if org.is_empty() {
-        None
-    } else {
-        Some(
-            client
+    //
+    // It polls with the **first** account that had a token. There is exactly
+    // one `github_org` — a single global setting with no account of its own —
+    // so this half of the pass has no per-account cardinality to honour and no
+    // basis for choosing between tokens beyond store order. An account that
+    // cannot see the configured org fails the way any bad credential does, in
+    // the Runners footer.
+    let update = match (org.is_empty(), pass.fetches.first()) {
+        (false, Some(fetch)) => Some(
+            github::GitHubClient::new(fetch.token.clone())
                 .runner_roster(&org, &roster, now, github::RUNNER_GRACE_SECS)
                 .await,
-        )
+        ),
+        _ => None,
     };
 
     // Re-read like the token, so switching the preference off applies on the
@@ -1367,17 +1651,19 @@ async fn poll_github(app: &Arc<App>) {
         let store = app.store.lock().expect("store poisoned");
         store.settings().notify_on_approval_needed
     };
-    // Diffed before `health` is handed to the panel state, because the diff
-    // needs the *previous* pass and `apply_repos` replaces it wholesale. Its
-    // own lock: this is delivery memory, not anything either panel renders.
+    // Diffed before the results are handed to the panel state, because the diff
+    // needs the *previous* pass and `apply_repo_accounts` replaces it
+    // wholesale. Its own lock: this is delivery memory, not anything either
+    // panel renders. `merged_health` rather than a second fold of the same
+    // results, so what the watch diffs and what the panel shows cannot drift.
     let notices = {
         let mut watch = app.approvals.lock().expect("approval watch poisoned");
-        watch.observe(&health, notify_approvals)
+        watch.observe(&github::merged_health(&results), notify_approvals)
     };
 
     {
         let mut state = app.github.lock().expect("github state poisoned");
-        state.apply_repos(health);
+        state.apply_repo_accounts(&results, panel::now_unix());
         if let Some(local) = local {
             state.apply_local(local);
         }
@@ -5825,20 +6111,54 @@ mod tests {
         github::fixture_state(github::now_utc())
     }
 
+    /// A v1 store: a portfolio and no account at all.
+    fn v1_repos() -> Vec<TrackedRepo> {
+        vec![TrackedRepo::new("acme/widget")]
+    }
+
+    /// One GitHub account owning the repos it is handed.
+    fn account_owning(label: &str, slugs: &[&str]) -> (VendorAccount, Vec<TrackedRepo>) {
+        let account = VendorAccount::new(
+            VendorKind::GitHub,
+            label,
+            // Every account created after the v1 migration reads its own
+            // `vendor-<uuid>` item; this is that spelling.
+            String::new(),
+        );
+        let account = VendorAccount {
+            secret_account: SecretKey::VendorToken(account.id).account(),
+            ..account
+        };
+        let repos = slugs
+            .iter()
+            .map(|slug| TrackedRepo {
+                account_id: Some(account.id),
+                ..TrackedRepo::new(*slug)
+            })
+            .collect();
+        (account, repos)
+    }
+
     #[test]
     fn a_github_token_the_store_hands_over_polls_on_with_the_panels_untouched() {
         let mut state = populated_github_state();
         let (repos_before, runners_before) = github_views(&state);
 
-        let token = github_token(
-            read_credential(
-                &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
-                SecretKey::GitHubAccessToken,
-            ),
-            &mut state,
+        let pass = plan_github_pass(
+            &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
+            &[],
+            &v1_repos(),
         );
+        apply_pass_credential(pass.credential, &mut state);
 
-        assert_eq!(token.as_deref(), Some("ghp_stored"));
+        assert_eq!(pass.credential, PassCredential::Present);
+        assert_eq!(
+            pass.fetches
+                .iter()
+                .map(|fetch| fetch.token.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ghp_stored"]
+        );
         let (repos_after, runners_after) = github_views(&state);
         assert_eq!(repos_after, repos_before, "a good read changes nothing");
         assert_eq!(runners_after, runners_before);
@@ -5847,12 +6167,14 @@ mod tests {
     #[test]
     fn no_stored_github_token_clears_the_panels_and_asks_for_one() {
         let mut state = populated_github_state();
-        let token = github_token(
-            read_credential(&MemoryCredentialStore::new(), SecretKey::GitHubAccessToken),
-            &mut state,
-        );
+        let pass = plan_github_pass(&MemoryCredentialStore::new(), &[], &v1_repos());
+        apply_pass_credential(pass.credential, &mut state);
 
-        assert!(token.is_none(), "there is nothing to poll with");
+        assert!(pass.fetches.is_empty(), "there is nothing to poll with");
+        assert!(
+            pass.reports.is_empty(),
+            "a v1 store has no account to blame — the panel's own setup line is the whole story"
+        );
         let (repos, runners) = github_views(&state);
         assert_eq!(repos["message"]["text"], github::UNAUTHENTICATED_MESSAGE);
         assert_eq!(runners["message"]["text"], github::UNAUTHENTICATED_MESSAGE);
@@ -5867,12 +6189,10 @@ mod tests {
         let mut state = populated_github_state();
         let (_, runners_before) = github_views(&state);
 
-        let token = github_token(
-            read_credential(&UnreadableCredentialStore, SecretKey::GitHubAccessToken),
-            &mut state,
-        );
+        let pass = plan_github_pass(&UnreadableCredentialStore, &[], &v1_repos());
+        apply_pass_credential(pass.credential, &mut state);
 
-        assert!(token.is_none(), "there is nothing to poll with");
+        assert!(pass.fetches.is_empty(), "there is nothing to poll with");
         let (repos, runners) = github_views(&state);
         assert_eq!(repos["message"]["text"], CREDENTIAL_UNREADABLE_MESSAGE);
         assert_eq!(runners["message"]["text"], CREDENTIAL_UNREADABLE_MESSAGE);
@@ -5882,6 +6202,270 @@ mod tests {
             "a read that never happened is not news about the runners"
         );
         assert_eq!(runners["stats"], runners_before["stats"]);
+    }
+
+    // MARK: one credential per account (#290)
+
+    /// The migrated account keeps reading the pre-existing item rather than a
+    /// `vendor-<uuid>` one — no keychain item is ever renamed, which is the
+    /// `LEGACY_SERVICE` hazard in miniature.
+    #[test]
+    fn the_migrated_account_reads_the_item_the_v1_store_already_had() {
+        let account = VendorAccount::new(
+            VendorKind::GitHub,
+            "GitHub",
+            SecretKey::GitHubAccessToken.account(),
+        );
+        let repos = vec![TrackedRepo {
+            account_id: Some(account.id),
+            ..TrackedRepo::new("acme/widget")
+        }];
+        let pass = plan_github_pass(
+            &store_holding(SecretKey::GitHubAccessToken, "ghp_migrated"),
+            &[account],
+            &repos,
+        );
+        assert_eq!(pass.credential, PassCredential::Present);
+        assert_eq!(pass.fetches.len(), 1);
+        assert_eq!(pass.fetches[0].token, "ghp_migrated");
+        assert_eq!(pass.fetches[0].repos.len(), 1);
+    }
+
+    /// Each account fetches with **its own** token, and a repo is only ever in
+    /// the fetch list of the account that owns it.
+    #[test]
+    fn every_account_fetches_its_own_repos_with_its_own_token() {
+        let (work, work_repos) = account_owning("work", &["work/one"]);
+        let (personal, personal_repos) = account_owning("personal", &["personal/two"]);
+        let credentials = MemoryCredentialStore::new();
+        credentials
+            .set_secret(SecretKey::VendorToken(work.id), "ghp_work")
+            .expect("write");
+        credentials
+            .set_secret(SecretKey::VendorToken(personal.id), "ghp_personal")
+            .expect("write");
+        let repos = [work_repos, personal_repos].concat();
+
+        let pass = plan_github_pass(&credentials, &[work, personal], &repos);
+
+        let fetched: Vec<(&str, Vec<&str>)> = pass
+            .fetches
+            .iter()
+            .map(|fetch| {
+                (
+                    fetch.token.as_str(),
+                    fetch.repos.iter().map(|(slug, _)| slug.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            fetched,
+            vec![
+                ("ghp_work", vec!["work/one"]),
+                ("ghp_personal", vec!["personal/two"]),
+            ],
+            "no repo is ever fetched with another account's token"
+        );
+        assert!(pass.reports.is_empty(), "nothing to report: {pass:?}");
+    }
+
+    /// One account's missing credential is that account's failure. The other
+    /// still fetches, and the panel still renders its rows.
+    #[test]
+    fn one_account_without_a_token_does_not_stop_the_others() {
+        let (work, work_repos) = account_owning("work", &["work/one"]);
+        let (personal, personal_repos) = account_owning("personal", &["personal/two"]);
+        let personal_id = personal.id;
+        let credentials = store_holding(SecretKey::VendorToken(work.id), "ghp_work");
+        let repos = [work_repos, personal_repos].concat();
+
+        let pass = plan_github_pass(&credentials, &[work, personal], &repos);
+
+        assert_eq!(
+            pass.credential,
+            PassCredential::Present,
+            "one good token is enough"
+        );
+        assert_eq!(pass.fetches.len(), 1);
+        assert_eq!(pass.fetches[0].label, "work");
+        assert!(
+            matches!(
+                pass.reports.as_slice(),
+                [github::AccountResult::Failed { account, label, reason, slugs }]
+                    if *account == Some(personal_id)
+                        && label == "personal"
+                        && reason == ACCOUNT_TOKEN_MISSING_MESSAGE
+                        && slugs == &["personal/two"]
+            ),
+            "{pass:?}"
+        );
+    }
+
+    /// A disabled account is not polled — and its repos are still named, so
+    /// they do not simply vanish off the panel.
+    #[test]
+    fn a_disabled_accounts_repos_are_reported_rather_than_dropped() {
+        let (account, repos) = account_owning("work", &["work/one"]);
+        let account = VendorAccount {
+            enabled: false,
+            ..account
+        };
+        let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
+
+        let pass = plan_github_pass(&credentials, &[account], &repos);
+
+        assert!(pass.fetches.is_empty(), "a disabled account is not polled");
+        assert_eq!(
+            pass.credential,
+            PassCredential::Unlooked,
+            "nothing was read, so the panels claim nothing"
+        );
+        assert!(matches!(
+            pass.reports.as_slice(),
+            [github::AccountResult::Failed { label, reason, slugs, .. }]
+                if label == "work" && reason == ACCOUNT_DISABLED_MESSAGE && slugs == &["work/one"]
+        ));
+    }
+
+    /// An account naming a credential item this build cannot resolve is
+    /// refused, not resolved to whatever is nearest. Reading the *other*
+    /// account's item is the "somebody else's token" this whole change exists
+    /// to make impossible.
+    #[test]
+    fn an_account_pointing_at_an_unknown_credential_item_is_refused() {
+        let (other, _) = account_owning("other", &[]);
+        let (account, repos) = account_owning("work", &["work/one"]);
+        // Hand-edited to point at another account's keychain item.
+        let account = VendorAccount {
+            secret_account: SecretKey::VendorToken(other.id).account(),
+            ..account
+        };
+        let credentials = store_holding(SecretKey::VendorToken(other.id), "ghp_other");
+
+        assert_eq!(account_secret_key(&account), None);
+        let pass = plan_github_pass(&credentials, &[account], &repos);
+        assert!(pass.fetches.is_empty(), "no token is borrowed: {pass:?}");
+        assert!(matches!(
+            pass.reports.as_slice(),
+            [github::AccountResult::Failed { reason, .. }]
+                if reason == ACCOUNT_CREDENTIAL_UNKNOWN_MESSAGE
+        ));
+    }
+
+    /// A repo naming an account that no longer exists is reported, never
+    /// re-homed on whichever account happens to remain.
+    #[test]
+    fn a_repo_naming_a_removed_account_is_unattributed() {
+        let (account, repos) = account_owning("work", &["work/one"]);
+        let orphan = TrackedRepo {
+            account_id: Some(Uuid::from_u128(999)),
+            ..TrackedRepo::new("gone/orphan")
+        };
+        let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
+
+        let pass = plan_github_pass(&credentials, &[account], &[repos, vec![orphan]].concat());
+
+        assert_eq!(
+            pass.fetches[0]
+                .repos
+                .iter()
+                .map(|(slug, _)| slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["work/one"],
+            "the orphan is not swept into the surviving account's fetch"
+        );
+        assert!(pass.reports.contains(&github::AccountResult::Unattributed {
+            slugs: vec!["gone/orphan".to_owned()],
+        }));
+    }
+
+    /// A disabled *repo* is not on the board, so it is neither fetched nor
+    /// reported as missing an account.
+    #[test]
+    fn a_disabled_repo_is_not_reported_as_unattributed() {
+        let (account, _) = account_owning("work", &[]);
+        let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
+        let repos = vec![TrackedRepo {
+            enabled: false,
+            ..TrackedRepo::new("acme/retired")
+        }];
+        let pass = plan_github_pass(&credentials, &[account], &repos);
+        assert!(pass.reports.is_empty(), "{pass:?}");
+    }
+
+    /// With no account configured, the v1 credential is the one identity there
+    /// is and every repo naming no account belongs to it — the same proof the
+    /// store's own v1 → v2 migration relies on.
+    #[test]
+    fn a_store_with_no_accounts_polls_the_v1_credential_for_every_repo() {
+        let pass = plan_github_pass(
+            &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
+            &[],
+            &v1_repos(),
+        );
+        assert_eq!(pass.fetches.len(), 1);
+        assert_eq!(pass.fetches[0].account, None);
+        assert_eq!(
+            pass.fetches[0]
+                .repos
+                .iter()
+                .map(|(slug, _)| slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
+        assert!(pass.reports.is_empty());
+    }
+
+    /// …and once an account exists, a repo that names none is **not** quietly
+    /// handed to it. An invented owner is the fabrication rule applied to
+    /// configuration; #292 is what asks the operator instead.
+    #[test]
+    fn an_unattributed_repo_is_not_adopted_by_the_only_account() {
+        let (account, repos) = account_owning("work", &["work/one"]);
+        let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
+        let repos = [repos, vec![TrackedRepo::new("acme/added-today")]].concat();
+
+        let pass = plan_github_pass(&credentials, &[account], &repos);
+
+        assert_eq!(pass.fetches[0].repos.len(), 1, "{pass:?}");
+        assert!(pass.reports.contains(&github::AccountResult::Unattributed {
+            slugs: vec!["acme/added-today".to_owned()],
+        }));
+    }
+
+    /// A keychain that would not answer for one account is never "there is no
+    /// token" for the panels — unreadable outranks absent, exactly as it does
+    /// for the single credential.
+    #[test]
+    fn an_unreadable_account_credential_outranks_a_missing_one() {
+        let (work, work_repos) = account_owning("work", &["work/one"]);
+        let (personal, personal_repos) = account_owning("personal", &["personal/two"]);
+        let repos = [work_repos, personal_repos].concat();
+        // `UnreadableCredentialStore` refuses every read, so `work` reads as
+        // unreadable and `personal` never gets the chance to read as absent.
+        let pass = plan_github_pass(&UnreadableCredentialStore, &[work, personal], &repos);
+        assert_eq!(pass.credential, PassCredential::Unreadable);
+
+        let mut state = GitHubState::new();
+        apply_pass_credential(pass.credential, &mut state);
+        state.apply_repo_accounts(&pass.reports, panel::now_unix());
+        let (repos_view, _) = github_views(&state);
+        assert_eq!(repos_view["message"]["text"], CREDENTIAL_UNREADABLE_MESSAGE);
+    }
+
+    /// A non-GitHub account is never handed to the GitHub client. There is one
+    /// vendor today, so this guards the filter rather than an existing bug.
+    #[test]
+    fn only_github_accounts_are_polled_for_github() {
+        let github = VendorAccount::new(VendorKind::GitHub, "work", "vendor-x");
+        let identities = github_identities(std::slice::from_ref(&github));
+        assert_eq!(identities.len(), 1);
+        assert!(identities.iter().all(|identity| !identity.is_legacy()));
+        assert_eq!(
+            github_identities(&[]).len(),
+            1,
+            "a store with no account still has the v1 credential"
+        );
     }
 
     // MARK: a host's token, same three branches

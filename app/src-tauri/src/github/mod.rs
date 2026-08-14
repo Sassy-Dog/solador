@@ -36,6 +36,7 @@ use github::workflows::RunRef;
 use github::{GhRunnerAbsence, GhRunnerDisplayRow, PresenceState, RepoWorkflowHealth};
 use serde_json::{json, Value};
 use store::RunnerRosterRecord;
+use uuid::Uuid;
 
 use crate::panel::Configured;
 use viewmodel::cockpit::PanelKind;
@@ -157,6 +158,100 @@ const COLUMNS: [(&str, Option<f64>); 8] = [
     ("LONGEST", Some(LONGEST_W)),
 ];
 
+/// One identity's contribution to the Repos panel: the rows it fetched, or the
+/// reason it fetched none.
+///
+/// The credential is one per **account**, not one per vendor (#283), so a pass
+/// is N fetches with N tokens and this is what one of them produced. Merging
+/// them is [`merged_health`]; the failures are the panel's footer.
+///
+/// Three variants because a pass has three ways to end up with no rows for a
+/// repo, and they are not the same sentence: an account that answered, an
+/// account that could not, and a repo no account claims at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountResult {
+    /// One account's repos, fetched with **that account's** token.
+    Ok {
+        /// The account that fetched these. `None` is the v1 credential —
+        /// a store with no [`store::VendorAccount`] at all still has the one
+        /// [`store::SecretKey::GitHubAccessToken`] the v1 schema named, and
+        /// every repo naming no account provably belongs to it (the proof
+        /// `store::migrate_v1_to_v2` relies on). It needs no id: it cannot
+        /// fail *as an account* — a missing v1 credential is the panel's own
+        /// "connect a GitHub token in Settings", not one account's footer —
+        /// so nothing ever consults its clock.
+        account: Option<Uuid>,
+        /// The operator's own name for the account, for the footer.
+        label: String,
+        health: Vec<RepoWorkflowHealth>,
+    },
+    /// One account contributed nothing this pass, and why.
+    ///
+    /// `slugs` is what it *would* have fetched, and they are not dropped:
+    /// [`merged_health`] gives each one an unreachable row. A tracked repo
+    /// silently vanishing because its account's token expired is the failure
+    /// this variant exists to remove.
+    Failed {
+        account: Option<Uuid>,
+        label: String,
+        reason: String,
+        slugs: Vec<String>,
+    },
+    /// Repos naming no account, or an account that no longer exists.
+    ///
+    /// Never quietly reassigned to whichever account remains: an invented
+    /// owner is the fabrication rule applied to configuration, and it would
+    /// fetch a private repo with a token its operator never pointed at it.
+    Unattributed { slugs: Vec<String> },
+}
+
+/// Every row a pass's results contribute, in the order the accounts were
+/// polled. The panel sorts them; this only decides what exists.
+///
+/// A `Failed` or `Unattributed` account contributes its repos as
+/// **unreachable** rows rather than as nothing at all. The panel already has a
+/// rendering for "we could not read this repo" — a muted dot and seven em
+/// dashes — and it is the honest one here: dropping the rows would take a
+/// tracked repo off the board with only a footer line to say so, and a row
+/// that is *present and blank* is much harder to miss than a row that is gone.
+#[must_use]
+pub fn merged_health(results: &[AccountResult]) -> Vec<RepoWorkflowHealth> {
+    results
+        .iter()
+        .flat_map(|result| match result {
+            AccountResult::Ok { health, .. } => health.clone(),
+            AccountResult::Failed { slugs, .. } | AccountResult::Unattributed { slugs } => slugs
+                .iter()
+                .map(|slug| RepoWorkflowHealth::unreachable(slug.as_str()))
+                .collect(),
+        })
+        .collect()
+}
+
+/// One account's failure as the footer renders it: the operator's label, the
+/// reason, and **that account's own** last success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AccountFailure {
+    label: String,
+    reason: String,
+    /// When this account last fetched something, or `None` if it never has.
+    /// Resolved from [`GitHubState::account_success`] at the moment the failure
+    /// is recorded — the pass's clock would be a different, false claim.
+    last_ok: Option<u64>,
+}
+
+/// The phrase the footer uses for repos no account claims, named so the test
+/// that guards it cannot drift from the string the panel paints.
+const NO_ACCOUNT_FOOTER: &str = "no account";
+
+/// The `stale_after` the per-account footer segments pass, and never read:
+/// every one of them carries an error, and
+/// [`crate::panel::status_footer`]'s error arm outranks staleness. There is
+/// deliberately no per-account *staleness* line — the Repos panel has never had
+/// one, and one appearing only for multi-account stores would be a second
+/// staleness vocabulary beside the Runners panel's.
+const ACCOUNT_FOOTER_STALE_AFTER: u64 = 0;
+
 /// Everything both panels render from, and the memory that survives one bad
 /// poll.
 ///
@@ -184,6 +279,25 @@ pub struct GitHubState {
     /// tracked repo (unreachable ones included). `None` until the first pass
     /// finishes, which is what "loading…" means.
     health: Option<Vec<RepoWorkflowHealth>>,
+    /// Which accounts contributed nothing to the last pass, and why. One entry
+    /// per failing account, because one account failing is *that account's*
+    /// failure — the others' rows are still on screen and still current.
+    account_failures: Vec<AccountFailure>,
+    /// Tracked repos the last pass could not attribute to any account, by slug.
+    unattributed: Vec<String>,
+    /// When each account last **fetched something**, keyed by account id
+    /// (`None` being the v1 credential — see [`AccountResult::Ok`]).
+    ///
+    /// The footer's `last ok {age}` clock, and it is per account on purpose:
+    /// with N accounts a single pass-wide clock would tell an account that has
+    /// been failing for a day that it last succeeded thirty seconds ago,
+    /// because a *different* account did. Only a fetch that returned rows
+    /// advances an entry.
+    ///
+    /// Not cleared by [`Self::apply_unauthenticated`], for the same reason the
+    /// runner roster is not: it is memory of something that really happened,
+    /// and it is still true after a token is removed and put back.
+    account_success: BTreeMap<Option<Uuid>, u64>,
     /// Local branch/worktree counts, keyed by [`git::normalize`]d repo name.
     local: BTreeMap<String, LocalRepoCounts>,
     /// Runners, from the last **successful** fetch. Retained through a failing
@@ -236,6 +350,10 @@ impl GitHubState {
         self.absent.clear();
         self.runners_error = None;
         self.credential_error = None;
+        // The per-account report goes with the rows it explains. What each
+        // account last *succeeded* at does not: see `account_success`.
+        self.account_failures.clear();
+        self.unattributed.clear();
     }
 
     /// The credential store refused to answer, so we do not know whether a
@@ -252,13 +370,83 @@ impl GitHubState {
         self.credential_error = Some(message.into());
     }
 
-    /// Records one completed Repos pass. Wholesale, never merged: the row set
-    /// is the enabled-repo list, so a repo removed in Settings must lose its
-    /// row on the next pass rather than linger as a stale one.
+    /// Records one completed Repos pass from a single identity — the fixtures'
+    /// and the tests' form of [`Self::apply_repo_accounts`].
+    ///
+    /// Wholesale, never merged: the row set is the enabled-repo list, so a repo
+    /// removed in Settings must lose its row on the next pass rather than
+    /// linger as a stale one.
+    ///
+    /// Records no per-account clock, because it names no account.
     pub fn apply_repos(&mut self, health: Vec<RepoWorkflowHealth>) {
         self.token = Configured::Present;
         self.credential_error = None;
         self.health = Some(health);
+        self.account_failures.clear();
+        self.unattributed.clear();
+    }
+
+    /// Records one completed Repos pass, one entry per identity it polled.
+    ///
+    /// Merging is [`merged_health`]'s, so what the panel shows and what the
+    /// approval watch diffs cannot disagree about which rows a pass produced.
+    ///
+    /// **The panel-level credential state is the pass's to set, not this
+    /// function's.** A pass where every account is blocked has read no
+    /// credential, and claiming [`Configured::Present`] on its behalf would be
+    /// the defaulted state this repo treats as a fabrication — the caller has
+    /// already said which of the four things it observed
+    /// (`apply_token_present` / `apply_unauthenticated` /
+    /// `apply_credential_unreadable` / nothing at all). An `Ok` result is the
+    /// one thing this *can* prove, since fetching took a token to do.
+    pub fn apply_repo_accounts(&mut self, results: &[AccountResult], now: u64) {
+        let mut failures = Vec::new();
+        let mut unattributed = Vec::new();
+        for result in results {
+            match result {
+                AccountResult::Ok {
+                    account, health, ..
+                } => {
+                    self.token = Configured::Present;
+                    self.credential_error = None;
+                    // Only a fetch that returned rows advances the clock the
+                    // footer renders as `last ok`. An account with nothing to
+                    // fetch performed no fetch, and a "last ok" for it would be
+                    // a reassurance about a reading that never existed — the
+                    // same error `status_footer`'s last-success rule exists to
+                    // prevent, one cardinality up.
+                    if !health.is_empty() {
+                        self.account_success.insert(*account, now);
+                    }
+                }
+                AccountResult::Failed {
+                    account,
+                    label,
+                    reason,
+                    ..
+                } => failures.push(AccountFailure {
+                    label: label.clone(),
+                    reason: reason.clone(),
+                    last_ok: self.account_success.get(account).copied(),
+                }),
+                AccountResult::Unattributed { slugs } => {
+                    unattributed.extend(slugs.iter().cloned());
+                }
+            }
+        }
+        self.health = Some(merged_health(results));
+        self.account_failures = failures;
+        self.unattributed = unattributed;
+    }
+
+    /// Whether the last pass has anything to say about individual accounts.
+    ///
+    /// What holds the panel-wide "connect a GitHub token in Settings" back: a
+    /// pass that can name *which* accounts are missing a credential must say
+    /// that instead, because the blanket instruction would send an operator to
+    /// re-paste a token for the account that is working.
+    fn has_account_reports(&self) -> bool {
+        !self.account_failures.is_empty() || !self.unattributed.is_empty()
     }
 
     /// Records one local git scan.
@@ -482,9 +670,13 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
     // "loading…" are each a claim about a credential this pass never saw.
     let message = if let Some(reason) = state.credential_error.as_deref() {
         Some(reason)
-    } else if state.token.is_absent() {
+    } else if state.token.is_absent() && !state.has_account_reports() {
         // Only a pass that looked and found nothing may say this. `Unknown`
         // falls through to "loading…" below, which is what the first frame is.
+        //
+        // And only a pass with nothing more specific to say: once it can name
+        // *which* accounts are missing a token, the footer says so beside the
+        // rows they own, and this blanket instruction would talk over it.
         Some(UNAUTHENTICATED_MESSAGE)
     } else if state.health.is_none() {
         Some(REPOS_LOADING_MESSAGE)
@@ -510,6 +702,11 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
     let mut sorted: Vec<&RepoWorkflowHealth> = health.iter().collect();
     sorted.sort_by_cached_key(|h| h.short_name().to_lowercase());
 
+    // The chip and the footer want the same clock the Runners panel's footer
+    // uses, which is unix seconds; `now` is a `DateTime` here for the LONGEST
+    // column's arithmetic.
+    let now_secs = u64::try_from(now.timestamp()).unwrap_or(0);
+
     json!({
         "id": PanelKind::GhWorkflows.id(),
         "title": PanelKind::GhWorkflows.title(),
@@ -522,16 +719,82 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         // On both panels, not one shared element: `reflow` splits Repos and
         // Runners onto separate rows below ~896pt, so a single chip would be
         // orphaned from one of them at exactly the widths this cockpit runs at.
-        // `now` is a `DateTime` here and unix seconds in `runners_view`;
-        // the chip wants the same clock both panels' footers use.
-        "availability": availability_chip(state, u64::try_from(now.timestamp()).unwrap_or(0)),
+        "availability": availability_chip(state, now_secs),
         "columns": columns(),
         "rows": sorted
             .iter()
             .map(|h| repo_row(h, &state.local, now))
             .collect::<Vec<_>>(),
         "health": if message.is_none() { health_line(health) } else { Value::Null },
+        // Rendered whatever the message ladder decided: which accounts failed
+        // is a different fact from what the panel could not show, and the one
+        // state that carries both — no credential anywhere, several accounts to
+        // blame — is exactly the one where suppressing it would hurt.
+        "footer": repos_footer(state, now_secs),
     })
+}
+
+/// The Repos panel's footer: every account that contributed nothing this pass,
+/// and every repo no account claims. `Null` when there is nothing wrong, which
+/// is what keeps the cockpit glanceable.
+///
+/// **One segment per account, each with its own clock.** The text comes from
+/// [`crate::panel::status_footer`], so the `⚠ … · last ok {age}` vocabulary has
+/// one definition; calling it once per failing account is what keeps the
+/// last-success promise honest when there are several — a single call could
+/// only ever name one clock, and with N accounts there are N.
+fn repos_footer(state: &GitHubState, now: u64) -> Value {
+    let mut parts: Vec<Value> = state
+        .account_failures
+        .iter()
+        .map(|failure| {
+            crate::panel::status_footer(
+                failure.last_ok,
+                Some(&format!("{}: {}", failure.label, failure.reason)),
+                now,
+                ACCOUNT_FOOTER_STALE_AFTER,
+            )
+        })
+        .collect();
+    if !state.unattributed.is_empty() {
+        // No clock at all, and none invented: there is no account here to have
+        // succeeded. `None` is what `status_footer` renders as "no last ok to
+        // name" rather than guessing one.
+        parts.push(crate::panel::status_footer(
+            None,
+            Some(&unattributed_label(&state.unattributed)),
+            now,
+            ACCOUNT_FOOTER_STALE_AFTER,
+        ));
+    }
+
+    let text = parts
+        .iter()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    match parts.first() {
+        // The colour is `status_footer`'s, taken from a segment rather than
+        // decided again here — one warning colour, one place it is chosen.
+        Some(first) if !text.is_empty() => json!({ "text": text, "color": first["color"] }),
+        _ => Value::Null,
+    }
+}
+
+/// `"1 repo has no account: acme/orphan"`.
+///
+/// Every slug, never a count on its own: "3 repos have no account" is a fact
+/// the operator cannot act on, and the whole point of surfacing these is that
+/// they name the rows sitting blank on the panel. The footer ellipsises in a
+/// narrow card and keeps the full text in its `title`.
+fn unattributed_label(slugs: &[String]) -> String {
+    let verb = if slugs.len() == 1 { "has" } else { "have" };
+    let noun = if slugs.len() == 1 { "repo" } else { "repos" };
+    format!(
+        "{} {noun} {verb} {NO_ACCOUNT_FOOTER}: {}",
+        slugs.len(),
+        slugs.join(", ")
+    )
 }
 
 /// Whether the Repos panel is still waiting on the answer to its first pass.
@@ -1943,6 +2206,215 @@ mod tests {
         assert_eq!(
             row_names(&repos_view(&state, now())),
             vec!["apple", "Gadget", "widget"]
+        );
+    }
+
+    // MARK: - Repos: per-account results
+
+    fn account_id(byte: u8) -> Uuid {
+        Uuid::from_bytes([byte; 16])
+    }
+
+    /// One account that fetched cleanly, one repo each.
+    fn fetched(id: u8, label: &str, slug: &str) -> AccountResult {
+        AccountResult::Ok {
+            account: Some(account_id(id)),
+            label: label.to_owned(),
+            health: vec![health_of(
+                slug,
+                &[run("completed", Some("success"), 5)],
+                RepoCounts::default(),
+            )],
+        }
+    }
+
+    fn failed(id: u8, label: &str, reason: &str, slugs: &[&str]) -> AccountResult {
+        AccountResult::Failed {
+            account: Some(account_id(id)),
+            label: label.to_owned(),
+            reason: reason.to_owned(),
+            slugs: slugs.iter().map(|slug| (*slug).to_owned()).collect(),
+        }
+    }
+
+    fn footer_text(view: &Value) -> String {
+        view["footer"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a footer: {}", view["footer"]))
+            .to_owned()
+    }
+
+    /// The house rule this issue exists for: one account's failure is that
+    /// account's failure. The others still render every row they fetched.
+    ///
+    /// The failing account's own repos do **not** disappear either — they hold
+    /// their rows as *unreachable*, which is the state the panel already has
+    /// for "we could not read this repo", and the footer says whose credential
+    /// is behind it.
+    #[test]
+    fn one_failing_account_does_not_blank_the_other_accounts_repos() {
+        let mut state = GitHubState::new();
+        state.apply_repo_accounts(
+            &[
+                fetched(1, "personal", "acme/one"),
+                failed(2, "work", "HTTP 401", &["other/two"]),
+            ],
+            now_unix(),
+        );
+        let view = repos_view(&state, now());
+
+        assert_eq!(
+            row_names(&view),
+            vec!["one", "two"],
+            "the working account keeps its rows and the failing one keeps its slots"
+        );
+        assert_eq!(
+            rows(&view)[0]["dotColor"],
+            color::hex(color::GREEN),
+            "the account that answered is unaffected"
+        );
+        assert_eq!(
+            rows(&view)[1]["dotColor"],
+            color::hex(color::MUTED),
+            "we know nothing about the failing account's repo — not that it is broken"
+        );
+
+        let footer = footer_text(&view);
+        assert!(
+            footer.contains("work"),
+            "the footer names the account: {footer}"
+        );
+        assert!(footer.contains("HTTP 401"), "…and the reason: {footer}");
+        assert!(
+            !footer.contains("personal"),
+            "…and blames nobody else: {footer}"
+        );
+    }
+
+    /// A repo naming an account that is gone — or naming none at all — is an
+    /// honest error. Never a silent drop, and never a row fetched with some
+    /// other account's token.
+    #[test]
+    fn a_repo_with_no_resolvable_account_reports_rather_than_disappearing() {
+        let mut state = GitHubState::new();
+        state.apply_repo_accounts(
+            &[AccountResult::Unattributed {
+                slugs: vec!["acme/orphan".to_owned()],
+            }],
+            now_unix(),
+        );
+        let view = repos_view(&state, now());
+
+        assert_eq!(row_names(&view), vec!["orphan"], "the row survives");
+        let footer = footer_text(&view);
+        assert!(
+            footer.contains("orphan") || footer.contains(NO_ACCOUNT_FOOTER),
+            "the footer surfaces it: {footer}"
+        );
+    }
+
+    /// The clock in `⚠ … · last ok {age}` is **that account's** last success,
+    /// not the pass's. Two accounts, one that succeeded five minutes ago and
+    /// one that never has, and neither borrows the other's clock.
+    #[test]
+    fn a_failing_accounts_footer_names_its_own_last_success() {
+        let mut state = GitHubState::new();
+        state.apply_repo_accounts(
+            &[
+                fetched(1, "personal", "acme/one"),
+                fetched(2, "work", "acme/two"),
+            ],
+            now_unix() - 300,
+        );
+        // `personal` keeps answering; `work` stops, and a third account that
+        // has never once answered joins the pass.
+        state.apply_repo_accounts(
+            &[
+                fetched(1, "personal", "acme/one"),
+                failed(2, "work", "HTTP 401", &["acme/two"]),
+                failed(3, "school", "no token saved", &["acme/three"]),
+            ],
+            now_unix(),
+        );
+        let footer = footer_text(&repos_view(&state, now()));
+
+        assert!(
+            footer.contains("work: HTTP 401 · last ok 5m ago"),
+            "work's own clock, from when work last answered: {footer}"
+        );
+        assert!(
+            footer.contains("school: no token saved")
+                && !footer.contains("school: no token saved · last ok"),
+            "an account that never succeeded has no last-ok to name: {footer}"
+        );
+    }
+
+    /// A successful account never advances a *failing* one's clock, and a pass
+    /// with nothing to fetch advances nothing at all — "last ok" is a promise
+    /// about a fetch that happened.
+    #[test]
+    fn an_account_that_fetched_nothing_does_not_claim_a_success() {
+        let mut state = GitHubState::new();
+        state.apply_repo_accounts(
+            &[AccountResult::Ok {
+                account: Some(account_id(1)),
+                label: "personal".to_owned(),
+                health: Vec::new(),
+            }],
+            now_unix() - 300,
+        );
+        state.apply_repo_accounts(
+            &[failed(1, "personal", "HTTP 500", &["acme/one"])],
+            now_unix(),
+        );
+        let footer = footer_text(&repos_view(&state, now()));
+        assert!(
+            !footer.contains("last ok"),
+            "no repo was ever fetched for this account: {footer}"
+        );
+    }
+
+    /// A healthy multi-account pass renders no footer at all — the cockpit
+    /// stays glanceable, and a warning line means something because it is
+    /// absent the rest of the time.
+    #[test]
+    fn every_account_answering_renders_no_footer() {
+        let mut state = GitHubState::new();
+        state.apply_repo_accounts(
+            &[
+                fetched(1, "personal", "acme/one"),
+                fetched(2, "work", "acme/two"),
+            ],
+            now_unix(),
+        );
+        assert!(repos_view(&state, now())["footer"].is_null());
+    }
+
+    /// A pass that found no credential anywhere still reports *which* accounts
+    /// are missing one, rather than falling back to the panel-wide setup line
+    /// that would hide them.
+    #[test]
+    fn accounts_with_no_credential_are_named_instead_of_one_blanket_message() {
+        let mut state = GitHubState::new();
+        state.apply_unauthenticated();
+        state.apply_repo_accounts(
+            &[
+                failed(1, "personal", "no token saved", &["acme/one"]),
+                failed(2, "work", "no token saved", &["acme/two"]),
+            ],
+            now_unix(),
+        );
+        let view = repos_view(&state, now());
+        assert!(
+            view["message"].is_null(),
+            "the per-account report outranks the blanket instruction: {}",
+            view["message"]
+        );
+        assert_eq!(row_names(&view), vec!["one", "two"]);
+        let footer = footer_text(&view);
+        assert!(
+            footer.contains("personal") && footer.contains("work"),
+            "{footer}"
         );
     }
 
