@@ -78,7 +78,9 @@ carries a five-minute manual smoke checklist that is the only thing covering it
 ### Quick Commands
 - `./dev` — Build and run (debug)
 - `./dev run --release` — Run release build
-- `./dev build` — Build the cockpit binary (`./prd` = `./dev build --release`)
+- `./dev build` — Compile the cockpit binary (plain cargo, no bundle).
+  `./dev build --bundle` and `./dev build --release` (= `./prd`) go through
+  `cargo tauri build` and produce `Solador.app`; see **Releasing** below
 - `./dev test` — Root Rust workspace (`cargo test --locked --workspace` —
   `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, plus the
   `tests/frontend` Playwright e2e suite
@@ -99,12 +101,32 @@ carries a five-minute manual smoke checklist that is the only thing covering it
 
 ### Releasing
 
-There is currently **no release path**. `app/src-tauri/tauri.conf.json` has
-`bundle.active: false` and a hardcoded `version: 0.1.0`, so nothing can be
-signed, notarized or put in an update appcast. Issue **#15** owns that work and
-is gating: until it lands, this repo builds a binary and ships nothing.
-`scripts/publish.sh` keeps the CalVer minting and CI-verification pre-flight as
-the scaffold #15 will complete, and refuses *before* minting a tag.
+There is a **bundle** but still no release path.
+
+`./dev build --release` produces `target/release/bundle/macos/Solador.app`
+through `cargo tauri build` (#303). The bundler is not in `tauri-build` — that
+build.rs helper reads `bundle.*` and assembles nothing — so it comes from
+`tauri-cli`, pinned by `TAURI_CLI_VERSION` in `scripts/config.sh` and installed
+on demand by `build.sh`. Both version numbers are **derived from git**:
+`tauri.conf.json` authors no `version` at all, the CalVer arrives as a
+`--config` overlay and lands as `CFBundleShortVersionString`, the build number
+is stamped over `CFBundleVersion`, and the build asserts all of it back out of
+the Info.plist rather than trusting that it worked. CI runs the same path at
+the debug profile on every PR (`./dev build --bundle`, job **macOS bundle
+(unsigned)**), so bundling cannot break unnoticed the way the agent deploy did
+in #269.
+
+The bundle is **unsigned and unnotarized**, so Gatekeeper refuses it anywhere
+it was not built. Signing is **#306**, updates are **#308**, and the release
+train is **#15**, which is still gating. `scripts/publish.sh` keeps the CalVer
+minting and CI-verification pre-flight as the scaffold #15 will complete, and
+refuses *before* minting a tag.
+
+Under `cargo tauri build`, `.cargo/config.toml`'s `MACOSX_DEPLOYMENT_TARGET` is
+**shadowed**: the CLI exports the floor from `bundle.macOS.minimumSystemVersion`
+into cargo's environment, and `[env]` yields to an inherited value. Both
+declare 14.0; keep them equal, and do not assume editing the cargo config moves
+the bundle's floor.
 
 ### Project Structure
 ```
@@ -307,9 +329,12 @@ Two decoupled numbers, both derived from git — never hand-maintained:
 - **Build number**: total commit count, monotonic forever —
   `scripts/get-build-number.sh [--at <ref>]`.
 
-Never compute a version anywhere else. `app/src-tauri/tauri.conf.json`'s
-hardcoded `0.1.0` contradicts this and is inert only while `bundle.active` is
-false; #15 owns resolving it.
+Never compute a version anywhere else. `app/src-tauri/tauri.conf.json` no
+longer authors a `version` key at all (#303) — the bundle's two plist numbers
+come from those two scripts and are asserted back out of the artifact.
+`app/src-tauri/Cargo.toml`'s `0.1.0` is unpublished package metadata, like the
+nine sibling crates', and is still what the in-app About string reads through
+`settings::VERSION`; wiring that display to the derived version is not done.
 
 ## Common Tasks
 

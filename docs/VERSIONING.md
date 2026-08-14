@@ -27,13 +27,18 @@ non-tier:
 
 Consumers — version is **never** computed anywhere else:
 
-- **No build consumer yet.** The Xcode build that injected these as
-  `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` went with the original macOS app.
-  `app/src-tauri/tauri.conf.json` still carries a hand-written `version: 0.1.0`,
-  which contradicts this document and is inert only while `bundle.active` is
-  `false`. Wiring the minted version into the Tauri bundle is part of **#15**;
-  until then nothing consumes the mint except `scripts/publish.sh`, which
-  refuses to run.
+- **`scripts/build.sh`'s bundle path** (`./dev build --release`, and
+  `--bundle` for the CI shape) — the build-time consumer, as of **#303**. The
+  marketing version reaches `cargo tauri build` as a `--config
+  '{"version":…}'` overlay and lands as `CFBundleShortVersionString`; the build
+  number is stamped over `CFBundleVersion` afterwards, because Tauri's config
+  has exactly ONE version field and would otherwise write the marketing version
+  into both keys. `app/src-tauri/tauri.conf.json` now authors **no** `version`
+  at all — the number is derived, not written down — and the build asserts both
+  plist keys back out of the artifact, so a silent fall back to a package
+  version is a red build rather than a quiet lie. The Xcode build that injected
+  these as `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` went with the
+  original macOS app.
 - `scripts/publish.sh` consumes the mint's output contract (below) and pins
   the build via `MARKETING_VERSION=<minted>` so the artifact is stamped with
   exactly the tagged version.
