@@ -281,6 +281,15 @@ struct App {
     /// runtime itself stays owned by `main`, so it can never be dropped from
     /// inside a command (dropping a runtime from an async context panics).
     runtime: tokio::runtime::Handle,
+    /// The crash reporter, live or deliberately dead.
+    ///
+    /// Held here because holding it is what keeps the Sentry client alive for
+    /// the process — and because the Settings command has to reach it to
+    /// withdraw consent, which takes effect immediately rather than on the next
+    /// launch. On a store that has never opted in this holds no client at all,
+    /// which is the state a fresh install is in and the state it stays in until
+    /// somebody ticks the box.
+    crash_reporting: crashreport::Reporting,
 }
 
 /// The whole `(latest, error)` -> view-model decision, pulled out of the
@@ -2020,7 +2029,22 @@ fn settings_payload(app: &App) -> Value {
         },
         &stored,
         &facts,
+        crash_facts(app),
     )
+}
+
+/// The live half of the crash-reporting section: the store holds the toggle,
+/// and these three are what no file can know.
+///
+/// Kept out of `StoreSections` for the reason the OpenClaw facts are: none of
+/// it is in a file. Whether this build carries a DSN is a property of how it
+/// was compiled; the other two are properties of this session.
+fn crash_facts(app: &App) -> settings::CrashFacts {
+    settings::CrashFacts {
+        build_has_dsn: crashreport::BUILD_DSN.is_some(),
+        active: app.crash_reporting.is_active(),
+        needs_restart: app.crash_reporting.needs_restart(),
+    }
 }
 
 /// The live half of the OpenClaw tab.
@@ -2944,6 +2968,43 @@ fn settings_save_general(
     // forced here: nothing about a cadence change alters what Neon returns.
     wake_github(&state);
     wake_usage(&state, false);
+    settings_response(&state, status)
+}
+
+/// The crash-reporting opt-in. Its own command, and it saves immediately.
+///
+/// **Off is applied before the save and regardless of it.** Withdrawing consent
+/// is the one instruction here that must not depend on a disk write succeeding;
+/// a full disk is not a reason to keep reporting. Opting *in* is the other way
+/// round — the consent is recorded only if it persisted, so a failed save
+/// cannot leave this session reporting on the strength of a preference the next
+/// launch will not find.
+///
+/// Turning it on still needs a relaunch to do anything, because `sentry::init`
+/// binds its client to the calling thread's hub and this runs on a worker
+/// thread. The Settings payload says so out loud rather than implying the
+/// toggle did more than it did — see `crashreport::Reporting::needs_restart`.
+#[tauri::command]
+fn settings_set_crash_reporting(enabled: bool, state: tauri::State<'_, Arc<App>>) -> Value {
+    if !enabled {
+        state.crash_reporting.set_consent(false);
+    }
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        store.settings_mut().crash_reporting_enabled = enabled;
+        save_status(
+            &store,
+            if enabled {
+                "Crash reporting on. It starts with the next launch."
+            } else {
+                "Crash reporting off."
+            },
+        )
+    };
+    let persisted = status.as_deref().is_some_and(|s| !s.starts_with("Failed"));
+    if enabled && persisted {
+        state.crash_reporting.set_consent(true);
+    }
     settings_response(&state, status)
 }
 
@@ -4202,6 +4263,11 @@ fn dump_settings() -> Value {
         // Populated so the frontend suite sees the GitHub org field in its
         // filled state; its empty state is covered by the Rust view tests.
         github_org: "acme".into(),
+        // On in the fixture, off in `Settings::default()` — the checked
+        // rendering of the toggle is the one a default fixture would never
+        // show. The default itself is asserted in `crates/store`, where it
+        // belongs, and again in the view tests below.
+        crash_reporting_enabled: true,
         ..settings
     };
     let facts = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
@@ -4266,6 +4332,16 @@ fn dump_settings() -> Value {
         },
         &stored,
         &facts,
+        // The state a contributor's own build is in: opted in (so the toggle is
+        // covered in its *checked* rendering, which the default would not be)
+        // on a build with no DSN compiled in. That combination is exactly the
+        // one whose explanatory line matters, so the Playwright suite sees the
+        // line rather than only the checkbox.
+        settings::CrashFacts {
+            build_has_dsn: false,
+            active: false,
+            needs_restart: true,
+        },
     )
 }
 
@@ -4686,6 +4762,55 @@ fn display_order(hosts: &[Host]) -> Vec<&Host> {
     enabled
 }
 
+/// Read the operator's answer out of the store and start reporting only if it
+/// is yes.
+///
+/// The store is already open by the time this runs, so the answer is genuinely
+/// known here and `OptIn` is `Granted` or `Declined` — never `Unknown`. That
+/// third state is the *default* of the enum precisely so that a caller who has
+/// not looked cannot accidentally read as consent; refusing is what an unread
+/// preference has to mean.
+///
+/// The DSN is [`crashreport::BUILD_DSN`], compiled in. On a clean clone there
+/// is none and this is a silent no-op — the common case, and not a failure.
+/// Nothing is printed for the ordinary "off" state either: a line every launch
+/// saying a disabled feature is disabled is noise. The three lines below are
+/// each about something an operator would otherwise be misled by.
+fn start_crash_reporting(store: &Store) -> crashreport::Reporting {
+    let opt_in = if store.settings().crash_reporting_enabled {
+        crashreport::OptIn::Granted
+    } else {
+        crashreport::OptIn::Declined
+    };
+    let reporting = crashreport::start(crashreport::Config {
+        opt_in,
+        dsn: crashreport::BUILD_DSN,
+        release: settings::VERSION,
+        // Never a machine name, a user or a host — this is a build profile and
+        // nothing else. Sentry stamps it on every event.
+        environment: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    });
+    match reporting.decision() {
+        // The common case, and the default. Silence.
+        crashreport::Decision::Disabled(crashreport::DisabledReason::OptedOut) => {}
+        // Turned on and going nowhere. Silent as far as the *user* is concerned
+        // — no dialog, no error, nothing fails — but saying so once on the
+        // terminal is the difference between "this build cannot report" and
+        // "the toggle does nothing", which look identical from the UI.
+        crashreport::Decision::Disabled(reason) => {
+            eprintln!("crash reporting: {}", reason.user_message());
+        }
+        crashreport::Decision::Enabled(_) => {
+            eprintln!("crash reporting: on (opted in); panics are scrubbed before they are sent");
+        }
+    }
+    reporting
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if run_dump(&args) {
@@ -4789,6 +4914,14 @@ fn main() {
         eprintln!("could not seed a host from SOLADOR_SEED_HOST: {e}");
     }
 
+    // Crash reporting, as early as the operator's answer can be known — which
+    // is here, and not one line sooner: the answer lives in the store, so
+    // anything that panics while the store is opening or while the credential
+    // migrations run is deliberately not reported. Asking permission first is
+    // the whole feature; a report from before permission was read would be the
+    // one thing this must never send.
+    let reporting = start_crash_reporting(&store);
+
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let app = Arc::new(App {
         store: Mutex::new(store),
@@ -4814,6 +4947,7 @@ fn main() {
         host_reachability: Mutex::new(services::HostWatch::new()),
         handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
+        crash_reporting: reporting,
     });
     // One task per host: an unreachable host's 5s client timeout must not hold
     // up any other host's tick. Startup is the same code path a settings edit
@@ -4885,6 +5019,7 @@ fn main() {
             openclaw,
             settings_view,
             settings_save_general,
+            settings_set_crash_reporting,
             settings_move_panel,
             settings_set_panel_span,
             settings_set_breakpoint_overflow,

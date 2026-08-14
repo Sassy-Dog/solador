@@ -34,8 +34,18 @@ Playwright suite serves it under the same policy. Panel content — repository
 names, container names, incident text — reaches the DOM as text, never as
 markup. An injection through any of those is in scope.
 
-**No telemetry.** The app ships no analytics or crash-reporting SDK. If you find
-it talking to a host you didn't configure, that is a bug and a serious one.
+**No telemetry, and crash reporting is opt-in.** The app ships no analytics of
+any kind. It does carry a crash reporter (`crates/crashreport`), and it is
+**off** until you turn it on in Settings → General — a fresh store, and every
+store written before the feature existed, reports nothing. With it off no client
+is created, no panic hook is installed and no network code is reachable. With it
+on, a panic is rebuilt from an allow-list of fields before it is sent:
+`server_name`, user, request, breadcrumbs, tags, extra, contexts, module list,
+absolute paths, source lines and local variables are dropped by construction,
+and the free text that remains is redacted down to a positive word rule. No
+credential is ever collected — tokens live only in your OS credential store.
+A scrubbing miss is in scope and we want to hear about it. If you find the app
+talking to a host you didn't configure, that is a bug and a serious one.
 
 ## What is out of scope
 

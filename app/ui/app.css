@@ -587,6 +587,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .stack { display:flex; flex-direction:column; gap:2px; min-width:0; }
 .help { font-size:10px; color:var(--muted); margin:0; max-width:640px; }
+/* What crash reporting is doing right now, as opposed to the standing
+   explanation below it. Brighter than `.help` because it is the sentence that
+   changes, and the one an operator checks. */
+.crash-status { color:var(--ink); font-weight:600; }
 .dim { color:var(--muted); }
 .badge-ok { font-size:10px; font-weight:700; color:var(--green); }
 .badge-dim { font-size:10px; font-weight:700; color:var(--muted); }

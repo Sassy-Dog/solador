@@ -37,6 +37,11 @@ solador-azurecost = { path = "../../crates/azurecost" }
 # identity, and the frame→snapshot reducer. Default features (`ws`) on, because
 # this crate is the one consumer that actually opens the socket.
 solador-openclaw = { path = "../../crates/openclaw" }
+# Opt-in crash reporting: the gate, the scrubber and the Sentry SDK. This is the
+# only edge in the workspace that reaches the SDK, and it is deliberately here
+# rather than in `crates/store` — `agent/`'s CI job is scoped `-p solador-agent`
+# and must not resolve any of this.
+solador-crashreport = { path = "../../crates/crashreport" }
 # The GitHub clocks are `DateTime<Utc>` (run start times, roster sightings), so
 # the panel layer speaks the same type rather than converting at every call.
 # Same pin as crates/github's, so one chrono resolves for the workspace.

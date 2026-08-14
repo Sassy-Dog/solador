@@ -42,22 +42,49 @@ script knows where they come from, and no contributor needs to.
 
 | Variable | Needed for | Without it |
 |---|---|---|
-| `SENTRY_DSN` | nothing today — see below | No effect. The app has no Sentry SDK, and `./dev publish` refuses before reaching this value. |
+| `SENTRY_DSN` | where opt-in crash reports go — see below | The crash reporter is a silent no-op: nothing is sent, nothing errors. This is the normal state of any build you compile yourself. |
 | `DEVELOPMENT_TEAM` | picking a specific Apple signing team | `codesign` falls back to an ad-hoc signature. `./dev build` works either way. |
 
 Nothing in the day-to-day loop needs either: `./dev`, `./dev test`, `./dev lint`
 and `./dev build` all work on a clean clone with neither set.
 
-> **`SENTRY_DSN` is inert.** This app does not report its own errors to Sentry:
-> there is no `sentry` crate in any manifest and no panic hook. The integration
-> that consumed a DSN (#18, opt-in) lived in the macOS app that was deleted, and
-> the Tauri port never re-added it — it read the value from an xcodebuild build
-> setting and a `SentryDSN` Info.plist key, neither of which this repo has. On
-> top of that, its only would-be reader is `scripts/publish.sh`, which refuses
-> before it gets there because there is no release path (**#15**). Set it if you
-> like; nothing reads it. Do not confuse this with `crates/usage/src/sentry.rs`,
-> which *reads* Sentry's API for the Usage and Crons panels — that uses the
-> `org:read` auth token in the table above, not a DSN.
+### Crash reporting is opt-in and off by default
+
+`crates/crashreport` (#309) carries the Sentry SDK and installs a panic hook —
+but **only** when both of these are true, checked in this order:
+
+1. The operator has ticked **Settings → General → Crash Reporting**. It is off
+   in a fresh store and off in every store written before the feature existed.
+   The toggle is the *only* opt-in: a DSN being compiled in is not consent, a
+   release build is not consent, and neither ever becomes consent.
+2. This build was compiled with `SENTRY_DSN`.
+
+Anything else — including "the setting could not be read" — starts no client,
+installs no panic hook, and reaches no network code. Turning the toggle **off**
+takes effect immediately; turning it **on** takes effect at the next launch, and
+the Settings tab says which of those states it is in rather than implying the
+switch did more than it did.
+
+`SENTRY_DSN` is read at **compile** time, and a `SENTRY_DSN` in your shell at
+*run* time is deliberately ignored — an environment variable that could redirect
+someone's crash reports to a third party is not a thing to leave lying around.
+Wiring it into the release build is **#307**; `scripts/publish.sh` belongs to
+**#15** and still refuses before it reaches this value.
+
+**What a report may contain** is an allow-list, not a blocklist — see
+`crates/crashreport/src/scrub.rs`. The event is rebuilt from a fixed set of
+fields rather than edited, so `server_name` (the machine's hostname), `user`,
+`request`, breadcrumbs, tags, extra, contexts, loaded modules, absolute paths,
+source lines and local variables are gone by construction; the free text that
+does survive (the panic message, symbol and file names) is then held to a
+positive word rule that redacts addresses, URLs, host names, paths and
+token-shaped strings. **No credential is ever collected in the first place** —
+tokens live only in the OS credential store, and nothing puts one on an event.
+
+> Do not confuse any of this with `crates/usage/src/sentry.rs`, which shares
+> only a vendor name: that one *reads* Sentry's REST API for the Usage and
+> Sentry Crons panels using the `org:read` token in the table above. It reports
+> nothing, and it has no DSN.
 
 ### Locally — direnv
 

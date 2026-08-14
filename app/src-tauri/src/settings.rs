@@ -438,6 +438,25 @@ pub struct StoreSections<'a> {
     pub accounts: &'a [VendorAccount],
 }
 
+/// What the crash-reporting section needs to say beyond the stored toggle.
+///
+/// Live facts, not a store section — none of this is in a file. It is the
+/// difference between a toggle that claims to be doing something and one that
+/// says what is actually true: on a build with no DSN, "on" sends nothing, and
+/// the operator is entitled to be told that rather than left to infer it from
+/// an absence of crash reports.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CrashFacts {
+    /// Whether this build was compiled with a reporting destination at all.
+    /// `false` on every local build that has not exported `SENTRY_DSN`.
+    pub build_has_dsn: bool,
+    /// Whether a report would actually be sent right now.
+    pub active: bool,
+    /// Whether the operator has said yes in a session that started with no —
+    /// the one case where the toggle needs a relaunch.
+    pub needs_restart: bool,
+}
+
 /// The whole Settings payload.
 ///
 /// A pure function of the store's sections plus the credential badges — no
@@ -448,6 +467,7 @@ pub fn view(
     store: StoreSections<'_>,
     stored: &StoredSecrets,
     openclaw: &openclaw::SettingsFacts,
+    crash: CrashFacts,
 ) -> Value {
     let StoreSections {
         settings,
@@ -480,7 +500,7 @@ pub fn view(
             { "id": "openclaw", "title": "OpenClaw" },
             { "id": "about", "title": "About" },
         ],
-        "general": general_tab(settings),
+        "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "github": github_tab(settings, stored),
         "accounts": accounts_tab(accounts, repos, stored),
@@ -494,7 +514,7 @@ pub fn view(
     })
 }
 
-fn general_tab(settings: &Settings) -> Value {
+fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
     json!({
         "heading": "General Settings",
         "refreshInterval": {
@@ -522,6 +542,43 @@ fn general_tab(settings: &Settings) -> Value {
         // decision now (Settings → Layout), because one global switch could not
         // say "tabs in a narrow column, side by side when wide".
         "saveLabel": "Apply",
+        "crashReporting": crash_reporting_section(settings, crash),
+    })
+}
+
+/// The crash-reporting opt-in, and one line saying what it is currently doing.
+///
+/// Its own group rather than a third field beside the two Apply-gated ones,
+/// and it saves on the spot like every other checkbox in this surface. Consent
+/// is not a draft: an operator who unticks this box and closes the window has
+/// withdrawn permission, and an unpressed Apply button is not a defensible
+/// reason to keep reporting.
+fn crash_reporting_section(settings: &Settings, crash: CrashFacts) -> Value {
+    let enabled = settings.crash_reporting_enabled;
+    // Four states, said plainly. The temptation is to render only the toggle
+    // and let "on" imply "reporting" — but on a build with no DSN that is
+    // false, and the operator would have no way to find out except by never
+    // seeing a crash report, which is also what success looks like.
+    let status = if !enabled {
+        "Off. Nothing is sent."
+    } else if !crash.build_has_dsn {
+        "On — but this build carries no reporting destination, so nothing is sent. That is normal for a build you compiled yourself."
+    } else if crash.needs_restart {
+        "On. It starts reporting when you next launch Solador."
+    } else if crash.active {
+        "On. Panics are scrubbed and sent."
+    } else {
+        // Enabled in the store, a DSN present, not active and not waiting on a
+        // restart: something refused it — an unparseable DSN, or a save that
+        // did not persist. Say the true thing rather than the flattering one.
+        "On in your settings, but not running in this session. Nothing is being sent."
+    };
+    json!({
+        "heading": "Crash Reporting",
+        "label": "Send crash reports",
+        "value": enabled,
+        "status": status,
+        "help": "Off by default. When on, a panic is reported with its stack trace after scrubbing: host addresses, host names, tokens, absolute paths and local variables are removed before anything leaves this machine. No usage or analytics data is ever sent.",
     })
 }
 
@@ -1866,7 +1923,12 @@ mod tests {
         stored: &StoredSecrets,
         openclaw: &openclaw::SettingsFacts,
     ) -> Value {
-        view(sections(settings, hosts, repos), stored, openclaw)
+        view(
+            sections(settings, hosts, repos),
+            stored,
+            openclaw,
+            CrashFacts::default(),
+        )
     }
 
     /// The store's sections with everything the caller did not name left empty.
@@ -1900,6 +1962,7 @@ mod tests {
             },
             &stored,
             &facts(),
+            CrashFacts::default(),
         )
     }
 
@@ -1914,6 +1977,7 @@ mod tests {
             },
             &StoredSecrets::default(),
             &facts(),
+            CrashFacts::default(),
         )
     }
 
@@ -1970,6 +2034,91 @@ mod tests {
         assert_eq!(labels, vec!["30 seconds", "1 minute", "5 minutes"]);
         assert_eq!(general["coreRowSpan"]["min"], 1);
         assert_eq!(general["coreRowSpan"]["max"], 4);
+    }
+
+    // MARK: - crash reporting
+
+    /// The General tab's crash section, for one combination of stored toggle
+    /// and live facts.
+    fn crash_section(enabled: bool, crash: CrashFacts) -> Value {
+        let settings = Settings {
+            crash_reporting_enabled: enabled,
+            ..Settings::default()
+        };
+        view(
+            sections(&settings, &[], &[]),
+            &StoredSecrets::default(),
+            &facts(),
+            crash,
+        )["general"]["crashReporting"]
+            .clone()
+    }
+
+    #[test]
+    fn crash_reporting_renders_off_on_a_default_store() {
+        // The acceptance item as the operator meets it: a store nobody has
+        // touched shows the box unticked and says nothing is sent.
+        let section = crash_section(false, CrashFacts::default());
+        assert_eq!(section["value"], false);
+        assert_eq!(section["status"], "Off. Nothing is sent.");
+        // And a DSN in the build changes none of that. The DSN is not consent.
+        let with_dsn = crash_section(
+            false,
+            CrashFacts {
+                build_has_dsn: true,
+                ..CrashFacts::default()
+            },
+        );
+        assert_eq!(with_dsn["value"], false);
+        assert_eq!(with_dsn["status"], "Off. Nothing is sent.");
+    }
+
+    #[test]
+    fn crash_reporting_says_when_it_is_on_but_going_nowhere() {
+        // The common local build: opted in, no DSN compiled in. "On" without
+        // this sentence would be a claim the build cannot keep.
+        let section = crash_section(true, CrashFacts::default());
+        assert_eq!(section["value"], true);
+        let status = section["status"].as_str().expect("status");
+        assert!(status.contains("no reporting destination"), "{status}");
+        assert!(status.contains("nothing is sent"), "{status}");
+    }
+
+    #[test]
+    fn crash_reporting_distinguishes_running_from_waiting_for_a_relaunch() {
+        let waiting = crash_section(
+            true,
+            CrashFacts {
+                build_has_dsn: true,
+                active: false,
+                needs_restart: true,
+            },
+        );
+        let status = waiting["status"].as_str().expect("status");
+        assert!(status.contains("next launch"), "{status}");
+
+        let running = crash_section(
+            true,
+            CrashFacts {
+                build_has_dsn: true,
+                active: true,
+                needs_restart: false,
+            },
+        );
+        assert_eq!(running["status"], "On. Panics are scrubbed and sent.");
+
+        // Stored yes, DSN present, and yet nothing is running and nothing is
+        // pending a relaunch. Somebody's DSN did not parse. Say the true thing.
+        let refused = crash_section(
+            true,
+            CrashFacts {
+                build_has_dsn: true,
+                active: false,
+                needs_restart: false,
+            },
+        );
+        let status = refused["status"].as_str().expect("status");
+        assert!(status.contains("not running in this session"), "{status}");
     }
 
     // MARK: - the Layout tab
@@ -2712,6 +2861,7 @@ mod tests {
             },
             &stored,
             &facts(),
+            CrashFacts::default(),
         )["portfolio"]
             .clone()
     }
@@ -3219,6 +3369,7 @@ mod tests {
             },
             &stored,
             &facts(),
+            CrashFacts::default(),
         );
         let rows = vm["services"]["rows"].as_array().expect("rows");
         assert_eq!(rows.len(), 1);
@@ -3290,6 +3441,7 @@ mod tests {
             },
             stored,
             &facts(),
+            CrashFacts::default(),
         )
     }
 

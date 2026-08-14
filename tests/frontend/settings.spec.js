@@ -149,6 +149,35 @@ test("General shows the stored values and applies them in one command", async ({
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
 });
 
+test("the crash-reporting toggle saves on the spot and paints Rust's sentence", async ({
+  page,
+  baseURL,
+}) => {
+  const settings = await openSettings(page, baseURL);
+  const c = settings.general.crashReporting;
+
+  const toggle = page.locator("#general-crash-reporting");
+  await expect(toggle).toBeChecked({ checked: c.value });
+  // The status line is Rust's, verbatim. "On" and "actually reporting" are
+  // different facts and only Rust knows the second, so the frontend must not
+  // be composing this sentence.
+  await expect(page.locator(".crash-status")).toHaveText(c.status);
+
+  // No Apply: consent is not a draft, so ticking the box *is* the save. One
+  // `click`, not `setChecked` — the tab re-renders from what Rust persisted, so
+  // the stub's unchanging fixture paints the box straight back and a
+  // "make it end up unchecked" helper would retry until it timed out. Which is
+  // the contract working: what the box shows is Rust's answer, never the click.
+  await toggle.click();
+  expect(await calls(page, "settings_set_crash_reporting")).toEqual([
+    {
+      command: "settings_set_crash_reporting",
+      args: { enabled: !c.value },
+    },
+  ]);
+  await expect(toggle).toBeChecked({ checked: c.value });
+});
+
 /** The Layout tab, showing the band the editor has selected. */
 async function openLayout(page, baseURL) {
   const settings = await openSettings(page, baseURL);

@@ -44,9 +44,13 @@ Consumers — version is **never** computed anywhere else:
   exactly the tagged version.
 - In-app displays (Settings footer, OpenClaw client version) read
   `CFBundleShortVersionString` from the stamped bundle — downstream of the
-  scripts, compliant. (A "Sentry release" was listed here until #277: the app
-  has no Sentry SDK, so nothing sets one. If #15 adds opt-in reporting, its
-  release name belongs in this list.)
+  scripts, compliant.
+- The **Sentry release name** on an opt-in crash report (#309) is
+  `settings::VERSION` — `app/src-tauri`'s `CARGO_PKG_VERSION`, i.e. the same
+  `0.1.0` the About string shows, **not** the CalVer. That is a known gap and
+  the same one About has: wiring either to the derived version is still not
+  done. Nothing here computes a version of its own, which is the rule that
+  matters; when About is wired up, this rides along with it.
 
 **Replay pins / test seams** (org-canonical, §3): `MARKETING_VERSION` and
 `BUILD_NUMBER` pin verbatim (a pin is never auto-bumped — a mint collision

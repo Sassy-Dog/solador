@@ -1,0 +1,48 @@
+[package]
+# Prefixed like the other members to stay clear of a popular crates.io name.
+# The lib below keeps the short import name.
+name = "solador-crashreport"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "crashreport"
+
+[dependencies]
+# The only place in the workspace that carries the Sentry SDK. Deliberately
+# NOT a dependency of `crates/store`, `crates/wire` or anything `agent/`
+# reaches: the agent's CI job is scoped `-p solador-agent` and this crate must
+# stay out of that tree.
+#
+# `default-features = false` is a security decision before it is a size one.
+# The default set includes `contexts`, which is what populates `server_name`
+# from the machine's hostname, and `debug-images`, which lists on-disk image
+# paths. Neither is enabled here, so neither is ever *collected* — the
+# scrubber's structural allow-list would drop them either way, but not
+# collecting is the stronger of the two guarantees.
+#
+# **No transport feature either**, which is the load-bearing omission.
+# `sentry/transport` wants reqwest **0.13**, a whole second HTTP stack beside
+# the workspace's 0.12 — and its `rustls` feature resolves reqwest's, which
+# means the `aws-lc-rs`/`aws-lc-sys` provider and therefore a cmake + C build.
+# A crash reporter is not worth a second TLS implementation, so `transport.rs`
+# supplies one over the reqwest this workspace already resolves. It also means
+# the bytes that leave this process are assembled by code in this repo.
+sentry = { version = "0.49", default-features = false, features = [
+  "backtrace",
+  "panic",
+] }
+# Same pin and the same TLS backend as crates/github and crates/agentclient, so
+# the workspace resolves one reqwest and one rustls. `blocking` is on because
+# the transport owns a plain worker thread rather than borrowing the app's
+# tokio runtime — a panic hook must not depend on an executor still being alive.
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "blocking",
+] }
+
+[dev-dependencies]
+# The capture test asserts against the envelope the transport was handed, which
+# means reading the serialized event rather than the in-memory struct.
+serde_json = { workspace = true }

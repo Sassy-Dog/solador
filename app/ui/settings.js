@@ -247,7 +247,31 @@ function generalTab(g) {
     })
   );
   box.appendChild(actionRow(apply));
-  return [box];
+  return [box, crashReportingGroup(g.crashReporting)];
+}
+
+/** The crash-reporting opt-in.
+ *
+ *  Its own group, and it saves on `change` rather than waiting for the Apply
+ *  button above — like the Portfolio and Hosts checkboxes, and for a stronger
+ *  reason than either: consent is not a draft. Someone who unticks this box and
+ *  closes the window has withdrawn permission, and an unpressed Apply is not a
+ *  defensible reason to keep reporting. (Checkboxes are excluded from
+ *  `unappliedEdits` for exactly this reason — there is no such thing as an
+ *  unapplied one.)
+ *
+ *  The status line is Rust's sentence, not a string built here: "on" and "is
+ *  actually reporting" are different facts, and only Rust knows the second. */
+function crashReportingGroup(c) {
+  const box = group(c.heading);
+  const toggle = checkbox(c.value);
+  toggle.addEventListener("change", () =>
+    mutate("settings_set_crash_reporting", { enabled: toggle.checked })
+  );
+  box.appendChild(field("general-crash-reporting", c.label, toggle));
+  box.appendChild(node("p", "help crash-status", c.status));
+  box.appendChild(help(c.help));
+  return box;
 }
 
 /** One panel's row in the Layout editor: its title, a width picker, and the
