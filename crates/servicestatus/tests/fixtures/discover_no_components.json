@@ -1,0 +1,15 @@
+{
+  "page": {
+    "id": "7t1cbz53qkdn",
+    "name": "Example Service",
+    "url": "https://status.example.com",
+    "time_zone": "Etc/UTC",
+    "updated_at": "2026-08-13T09:41:02.118Z"
+  },
+  "status": {
+    "indicator": "none",
+    "description": "All Systems Operational"
+  },
+  "incidents": [],
+  "scheduled_maintenances": []
+}

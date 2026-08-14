@@ -1,0 +1,65 @@
+{
+  "page": {
+    "id": "9k2mnq4v7xbt",
+    "name": "Example Service",
+    "url": "https://status.example.com",
+    "time_zone": "Etc/UTC",
+    "updated_at": "2026-08-13T09:41:02.118Z"
+  },
+  "status": {
+    "indicator": "minor",
+    "description": "Partially Degraded Service"
+  },
+  "components": [
+    {
+      "id": "k8w3r06qmzrp",
+      "name": "API",
+      "status": "operational",
+      "description": "REST and streaming endpoints",
+      "position": 1,
+      "showcase": true,
+      "group_id": null,
+      "page_id": "9k2mnq4v7xbt",
+      "group": false,
+      "only_show_if_degraded": false
+    },
+    {
+      "id": "3xv9d1ptw4hk",
+      "name": "Dashboard",
+      "status": "degraded_performance",
+      "description": null,
+      "position": 2,
+      "showcase": true,
+      "group_id": null,
+      "page_id": "9k2mnq4v7xbt",
+      "group": false,
+      "only_show_if_degraded": false
+    },
+    {
+      "id": "qz7l5b2ncf80",
+      "name": "Webhooks",
+      "status": "operational",
+      "description": null,
+      "position": 3,
+      "showcase": true,
+      "group_id": null,
+      "page_id": "9k2mnq4v7xbt",
+      "group": false,
+      "only_show_if_degraded": false
+    },
+    {
+      "id": "v40hsj18tgbw",
+      "name": "Visit status.example.com for more information",
+      "status": "operational",
+      "description": null,
+      "position": 4,
+      "showcase": false,
+      "group_id": null,
+      "page_id": "9k2mnq4v7xbt",
+      "group": false,
+      "only_show_if_degraded": false
+    }
+  ],
+  "incidents": [],
+  "scheduled_maintenances": []
+}
