@@ -1075,6 +1075,13 @@ mod tests {
             notify_on_approval_needed: false,
             notify_on_service_change: false,
             local_hidden_volume_mounts: vec!["/Volumes/Time Machine".into()],
+            // Same argument as the two notify flags above: an override the file
+            // has to carry, so the round trip proves it persisted rather than
+            // reappearing from the panel's default.
+            panel_intervals: std::collections::BTreeMap::from([(
+                "azure_cost".to_owned(),
+                6 * 3600,
+            )]),
         });
 
         let mut host = Host::new("ubu-01", "100.100.100.100");
