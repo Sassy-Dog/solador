@@ -15,3 +15,12 @@ required_checks:
     satisfies: [lint, unit, e2e]
   - context: "Windows workspace tests"
     satisfies: [unit]
+  # Added by #303. The bundle path is the one place where "all green" carried
+  # no information until this job existed — it is the #269 shape, and it is
+  # only a gate if the ruleset actually requires it.
+  #
+  # ORDER MATTERS on adoption: add this context to the ruleset only AFTER this
+  # lands on main. A required context that no job reports blocks every PR whose
+  # base predates the job, and the queue waits forever rather than failing.
+  - context: "macOS bundle (unsigned)"
+    satisfies: [bundle]

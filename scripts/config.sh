@@ -13,6 +13,24 @@ export APP_NAME="Solador"
 # The cargo package for the cockpit binary, in the root workspace.
 export TAURI_PACKAGE="solador-app"
 
+# The Tauri CLI the release path bundles with (#303).
+#
+# The bundler is NOT in `tauri-build`: that build.rs helper reads `bundle.*`
+# (deployment floor, embedded Info.plist) but assembles no `.app` — no
+# Contents/MacOS, no hdiutil. Bundling lives in the CLI, which is a separate
+# crate on a separate release train, so it has to be named and pinned here.
+#
+# 2.11.4, NOT 2.11.5. `Cargo.lock` resolves `tauri` to 2.11.5 and `tauri-build`
+# to 2.6.3, and matching the CLI to the runtime is the point of pinning — but
+# `tauri-cli` publishes its own patch numbers and **2.11.5 does not exist**
+# (`https://index.crates.io/ta/ur/tauri-cli` tops out at 2.11.4). Same 2.11
+# train is the tightest match available; the CLI errors on a real
+# runtime/CLI mismatch by itself, and `--ignore-version-mismatches` is
+# deliberately never passed so that check keeps its teeth.
+#
+# Bump this and `Cargo.lock`'s `tauri` together, never one alone.
+export TAURI_CLI_VERSION="2.11.4"
+
 # Version is NOT configured here (org Versioning spec §3/§10: no hand-maintained
 # version fields). Both numbers derive from git via their single-source scripts:
 #   marketing version → scripts/get-version-info.sh   (CalVer YYYY.M.<commits-this-month>)

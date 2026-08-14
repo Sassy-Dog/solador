@@ -141,6 +141,91 @@ jobs:
         working-directory: tests/frontend
         run: npm test
 
+  macos-bundle:
+    name: macOS bundle (unsigned)
+    # The bundle path used to run nowhere. That is the #269 shape exactly: a
+    # path only exercised at release time is a path where "all green" carries
+    # no information, and #268 broke every agent deploy behind three green
+    # required checks. This job is the fix — every PR assembles a real
+    # Solador.app, so a break in bundling is a red check, not a discovery made
+    # on release day.
+    #
+    # UNSIGNED, deliberately. No certificate, no notarization credential, no
+    # secret of any kind: signing is #306. That is also what keeps this job
+    # runnable on fork pull requests like every other job here, and keeps the
+    # count of secret references in this whole file at zero — a security
+    # property of a public repo, not an accident. Grep it and see.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The bundle's two version numbers are DERIVED from git history, not
+          # authored: scripts/get-version-info.sh counts this month's commits,
+          # scripts/get-build-number.sh counts all of them. checkout's default
+          # fetch-depth of 1 makes both count 1 — the build would still pass
+          # its own assertions, because both sides read the same script, while
+          # exercising none of the derivation. Full history is what makes the
+          # numbers this job checks real ones.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # Also caches ~/.cargo/bin, which is where scripts/build.sh installs the
+      # pinned cargo-tauri — so the CLI compiles once and is restored after.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        with:
+          workspaces: .
+
+      # `./dev build --bundle` is the release path (`./dev build --release`)
+      # with exactly one thing swapped: the cargo profile. It provisions the
+      # pinned Tauri CLI, derives both version numbers from git, runs
+      # `cargo tauri build`, stamps CFBundleVersion, and then asserts each of
+      # those claims back out of the artifact it produced.
+      #
+      # Debug rather than release, and that is a duration decision, not a
+      # shortcut: [profile.release] is opt-level "z" + lto = true +
+      # codegen-units = 1, which on a hosted runner is tens of minutes of
+      # optimizer work this job is not checking. The bundler code path — the
+      # .app layout, the Info.plist, the icon, the version overlay — is
+      # identical between the two profiles.
+      - name: Build unsigned bundle
+        run: ./dev build --bundle
+
+      # A second, independent read of the artifact. build.sh already asserts
+      # the version keys and fails closed; this checks what it cannot check
+      # about itself — that the bundle is really on disk with an executable and
+      # an icon inside it, that the specific number this issue removed has not
+      # crept back, and that tauri.conf.json still authors no version at all.
+      # It also prints the plist, so the log carries the evidence.
+      - name: Verify the bundle
+        run: |
+          set -euo pipefail
+          APP="target/debug/bundle/macos/Solador.app"
+          test -d "$APP"
+          test -x "$APP/Contents/MacOS/solador-app"
+          test -f "$APP/Contents/Resources/icon.icns"
+          plutil -p "$APP/Contents/Info.plist"
+
+          short="$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          build="$(plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist")"
+          test "$short" = "$(bash scripts/get-version-info.sh --version)"
+          test "$build" = "$(bash scripts/get-build-number.sh)"
+          test "$short" != "0.1.0"
+
+          if grep -q '"version"' app/src-tauri/tauri.conf.json; then
+            echo "::error::tauri.conf.json authors a version again — it is derived from git (docs/VERSIONING.md)"
+            exit 1
+          fi
+
+      # The Tauri CLI edits tracked source: it normalizes app/src-tauri's
+      # `tauri`/`tauri-build` dependency entries into table form to keep their
+      # feature list in sync with tauri.conf.json. That normalization is
+      # committed, so a build is now a no-op on the tree — and this step is
+      # what tells us if a future CLI version starts writing something else,
+      # rather than letting a build quietly rewrite the repo it was built from.
+      - name: Build left the tree clean
+        run: git diff --exit-code
+
   windows-tests:
     name: Windows workspace tests
     # GitHub-hosted, deliberately not self-hosted: the former self-hosted fleet was

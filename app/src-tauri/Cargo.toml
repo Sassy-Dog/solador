@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [build-dependencies]
-tauri-build = "2"
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 solador-wire = { path = "../../crates/wire" }
@@ -59,7 +59,7 @@ dirs = { workspace = true }
 # resolves for the workspace.
 uuid = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
-tauri = "2"
+tauri = { version = "2", features = [] }
 # `derive` for the one command argument that is a struct rather than a
 # positional list (`ProviderPrefs`).
 serde = { workspace = true }

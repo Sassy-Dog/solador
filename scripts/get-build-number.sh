@@ -7,12 +7,13 @@
 # capability owner for this repo: every consumer reads it from here and the
 # count is never inlined anywhere else.
 #
-# NOTE: it currently has no build-time consumer. The xcodebuild
-# CURRENT_PROJECT_VERSION path this was written for went away with the macOS
-# app; `scripts/build.sh` is a plain `cargo build` and does not stamp a build
-# number, because `tauri.conf.json` still hardcodes `version: 0.1.0` with
-# `bundle.active: false` (#15 owns resolving that). The script stays the single
-# source of truth for when a release path exists to consume it.
+# CONSUMER (#303): `scripts/build.sh`'s bundle path stamps this value over the
+# .app's `CFBundleVersion` and then asserts it back out of the Info.plist. The
+# stamp is needed because Tauri's config carries exactly ONE version field, so
+# the bundler writes the marketing version into both plist keys; these are two
+# decoupled numbers and CFBundleVersion is this one's. The xcodebuild
+# CURRENT_PROJECT_VERSION path this was originally written for went away with
+# the macOS app.
 #
 # DESIGN: the build number is DECOUPLED from the marketing version
 # (scripts/get-version-info.sh) and is a single, globally-monotonic integer

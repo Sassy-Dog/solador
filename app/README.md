@@ -13,12 +13,15 @@ original macOS app. [#150](https://github.com/Sassy-Dog/solador/issues/150) took
 panel parity across fourteen slices, and the original macOS app was subsequently
 deleted — this is the app.
 
-What it is not yet is *packaged*. `src-tauri/tauri.conf.json` still carries
-`bundle.active: false` and a hardcoded `version: 0.1.0`; bundling, signing,
-notarization and updates are
-[#15](https://github.com/Sassy-Dog/solador/issues/15)'s, which is now gating
-rather than deferred. Until it lands there is no installable artifact —
-`./dev run` from source is the only way to run this.
+What it is not yet is *distributable*. `./dev build --release` does now produce
+a real `Solador.app` — `cargo tauri build`, stamped with the CalVer and build
+number derived from git ([#303](https://github.com/Sassy-Dog/solador/issues/303))
+— but it is **unsigned and unnotarized**, so Gatekeeper refuses it on any
+machine that did not build it. Signing is
+[#306](https://github.com/Sassy-Dog/solador/issues/306), updates are
+[#308](https://github.com/Sassy-Dog/solador/issues/308), and the release train
+is [#15](https://github.com/Sassy-Dog/solador/issues/15), which is still gating.
+Until those land, `./dev run` from source remains the way to run this.
 
 > Notes below that compare a behaviour to "the original panel" or "the original's
 > `X`" are **provenance**: they record which decision was ported and why,

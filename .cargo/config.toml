@@ -5,8 +5,19 @@
 # `cargo build` / `cargo test` / `cargo clippy` — which is how `./dev test`,
 # `./dev lint` and CI's "Rust workspace + frontend e2e" job build the workspace;
 # they never go through the Tauri CLI. `app/src-tauri/tauri.conf.json` declares
-# the same floor as `bundle.macOS.minimumSystemVersion` for the eventual
-# `tauri build`, so the two can't drift.
+# the same floor as `bundle.macOS.minimumSystemVersion` for `tauri build`, so
+# the two can't drift.
+#
+# Which of the two is in force is not a matter of taste, and #303 measured it
+# rather than assuming: under `cargo tauri build` this table is SHADOWED. The
+# CLI exports MACOSX_DEPLOYMENT_TARGET from `minimumSystemVersion` into the
+# environment cargo inherits (tauri-cli 2.11.4 src/build.rs:110), and `[env]`
+# yields to an inherited value unless it says `force = true`. Set this to 15.0
+# and a CLI build still produces 14.0 binaries; a plain `cargo build` of the
+# same crate produces 15.0. Keep the two numbers equal — do not assume editing
+# this one moves the bundle's floor. `scripts/build.sh` reads the floor back
+# out of the built Mach-O and fails the build if it is not what the config
+# claims.
 #
 # 14.0 matches the sibling original macOS app's floor (`project.yml`). The frontend's
 # real requirement is lower (macOS 13.3+ for `adoptedStyleSheets`), so 14.0

@@ -24,7 +24,8 @@ $(color_yellow "Commands:")
   $(color_green "help")     $(color_gray "[h]")    Show this help
 
 $(color_yellow "Build Options:")
-  $(color_green "--release")        Build in release mode
+  $(color_green "--release")        Build in release mode $(color_gray "(bundles Solador.app via the Tauri CLI)")
+  $(color_green "--bundle")         Bundle Solador.app at the debug profile $(color_gray "(what CI runs)")
 
 $(color_yellow "Run Options:")
   $(color_gray "(arguments other than --release are passed through to the app)")
@@ -32,7 +33,8 @@ $(color_yellow "Run Options:")
 $(color_yellow "Examples:")
   $(color_green "$0")                    # Build and run (debug)
   $(color_green "$0 run --release")      # Build and run (release)
-  $(color_green "$0 build --release")    # Build release version
+  $(color_green "$0 build")              # Compile only (plain cargo, no bundle)
+  $(color_green "$0 build --release")    # Build + bundle Solador.app (the release path)
 
 EOF
 }

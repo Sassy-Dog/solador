@@ -8,18 +8,22 @@ source "$SCRIPT_DIR/config.sh"
 # Releasing is not implemented.
 #
 # This script's CalVer minting and CI-verification pre-flight are sound and are
-# kept as the scaffold for issue #15 (notarization + Sparkle), which owns Tauri
-# packaging. What is missing is the packaging itself: `app/src-tauri/tauri.conf.json`
-# still has `bundle.active: false` and a hardcoded `version: 0.1.0`, so there is
-# no .app to sign, notarize, staple or put in an appcast.
+# kept as the scaffold for issue #15, which owns the release train.
+#
+# What EXISTS as of #303: `./dev build --release` produces a real
+# `Solador.app` through `cargo tauri build`, stamped with the derived CalVer
+# and build number. What is still missing is everything that makes a bundle
+# distributable -- code signing and notarization (#306) and the update
+# mechanism (#308). An unsigned, unnotarized .app is not a release; Gatekeeper
+# refuses it on every machine that did not build it.
 #
 # Refusing HERE is deliberate -- before the tag is minted. The previous flow
-# pushed a CalVer tag and only then built, which on a repo that can no longer
-# produce a bundle would leave a permanent tag advertising a release that does
-# not exist.
-log_error "Releasing is not implemented yet -- see issue #15 (notarization + Sparkle)."
-log_error "app/src-tauri/tauri.conf.json still has bundle.active: false."
-log_error "Build locally with: ./dev build --release"
+# pushed a CalVer tag and only then built, which on a repo that cannot yet
+# produce a *distributable* bundle would leave a permanent tag advertising a
+# release that does not exist.
+log_error "Releasing is not implemented yet -- see issue #15."
+log_error "Bundling landed in #303, but signing/notarization (#306) and updates (#308) have not."
+log_error "Build an unsigned bundle locally with: ./dev build --release"
 exit 1
 
 # Publish a release — the repo's §4 mode-2 LOCAL MINT (org Versioning spec
