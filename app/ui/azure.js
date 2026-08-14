@@ -155,6 +155,25 @@ function renderAzure(payload) {
   stale.style.color = payload.footer ? payload.footer.color : "";
   stale.hidden = !payload.footer;
 
+  // How old the headline is — a DIFFERENT question from the warning above, and
+  // deliberately a different element. `payload.footer` says the poller failed
+  // or is late; `payload.freshness` says the dollars on screen were measured
+  // 23h ago. Rust classifies the age against this panel's cadence
+  // (`Freshness::classify`) and hands over the finished line, so nothing here
+  // compares an age to a threshold — a second rule in this file could disagree
+  // with the one the Rust tests guard.
+  //
+  // `live` and `unknown` carry no text and paint nothing: a current reading
+  // reads as it always did, and a panel that has never read has no figure to
+  // date. Dimming the stale headline is Rust's too, arriving as the
+  // `headline.valueColor` applied above.
+  const asOf = payload.freshness && payload.freshness.text;
+  const fresh = $a("azureFreshness");
+  fresh.textContent = asOf || "";
+  fresh.title = asOf || "";
+  fresh.style.color = (payload.freshness && payload.freshness.color) || "";
+  fresh.hidden = !asOf;
+
   $a("azurePanel").hidden = false;
 }
 

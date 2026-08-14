@@ -200,8 +200,13 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    rule verbatim ate "GitHub Runners" down to nothing at half width. Both
    ellipsise rather than wrap: a second header line would be the growth this
    rule exists to stop. */
-.panel-stale { font-size:9px; font-weight:700; white-space:nowrap; min-width:0;
-  overflow:hidden; text-overflow:ellipsis; flex-shrink:100; }
+/* `.panel-asof` is the Azure Cost panel's freshness line ("as of 23h ago"),
+   which shares this typography and nothing else: it dates the figure on the
+   card, where `.panel-stale` warns about the poller. Same treatment because it
+   has the same job in the header -- variable-length, ellipsising, and it must
+   never become a second line. Its colour is Rust's, like the warning's. */
+.panel-stale, .panel-asof { font-size:9px; font-weight:700; white-space:nowrap;
+  min-width:0; overflow:hidden; text-overflow:ellipsis; flex-shrink:100; }
 /* GitHub's availability folded with our fleet -- the "is it us?" verdict, on
    both the Repos and Runners headers. `flex:none` because it is short, fixed
    and the whole point: the staleness message beside it is already the

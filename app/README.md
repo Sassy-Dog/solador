@@ -559,7 +559,12 @@ await window.__TAURI__.core.invoke("azure_cost");
   "stats": [{"label": "PRIOR MONTH", "value": "$2,011.40"}, …],
   "budget": {"label": "PROJECTED VS BUDGET", "value": "$1,942.18 / $2,000.00", "bar": …},
   "breakdowns": [{"title": "TOP RESOURCE GROUPS", "rows": […]}, …],
-  "footer": null                         // staleAfter 5h
+  "footer": null,                        // staleAfter = cadence + 1h (5h by default)
+  "freshness": {"state": "live", "measured_secs_ago": 600, "text": null, "color": null}
+  //   ^ how old the HEADLINE is, which is not what the footer answers. "stale"
+  //     past one cadence, carrying {"text": "as of 23h ago"} to paint and a
+  //     dimmed `headline.valueColor`; "unknown" (and a null age, never a 0)
+  //     when nothing has ever been read.
 }
 ```
 
@@ -572,6 +577,19 @@ on 4h (`azurecost::POLL_INTERVAL`, its default since the cadence became the
 operator's in [#301](https://github.com/Sassy-Dog/solador/issues/301)), because
 the export is published about once a day and the crate's fingerprint cache makes
 an unchanged cycle cost one blob listing and zero partition bodies.
+
+**Azure Cost carries two staleness clocks, and they are not the same question**
+([#302](https://github.com/Sassy-Dog/solador/issues/302)). `freshness` is
+`viewmodel::freshness::Freshness` over the age of the last **success**: past one
+whole cadence the reading stops being live, the headline is painted in the
+dimmer green and the header gains an `as of 23h ago` line beside — never inside
+— the footer. `footer` is `status_footer` and answers something else entirely:
+*is the poller stuck*. Its window is therefore one grace hour **past** the
+cadence (`azure::stale_after_secs`, the flat `5 * 60 * 60` the panel used to
+hardcode, now derived so an operator who changes the interval does not get a
+warning on every healthy read). Between the two edges the card shows a dated,
+dimmed figure and no warning at all — the state neither field can express
+alone, and the reason they were not folded into one.
 
 **Unknown is not zero, again — and this time it also suppresses a bar.**
 `crates/usage` models Neon's and Sentry's summaries as enums whose *unmeasured*
@@ -1486,7 +1504,9 @@ cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage p
 #   `--empty` (no summary, no provider configured).
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
-#   `--error` (red, an expired SAS) and `--empty` (no SAS URL at all).
+#   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and
+#   `--stale` (the same good read, dated 23h back: a dimmed headline, an "as of
+#   23h ago" line, and the footer's separate warning beside it).
 cargo run -p solador-app -- --dump-openclaw sample-openclaw.json   # the OpenClaw panel
 #   …plus `--pairing` (the banner with the approve command), `--error` (a
 #   rejected handshake, red), `--idle` (no gateway URL: the muted Settings

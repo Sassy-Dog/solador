@@ -2706,9 +2706,14 @@ fn azure_cost(state: tauri::State<'_, Arc<App>>) -> Value {
         let store = state.store.lock().expect("store poisoned");
         store.settings().azure_monthly_budget_usd
     };
+    // The operator's cadence for this panel, read at render time like the budget
+    // above and for the same reason: it is what both staleness judgements are
+    // measured against, and a shortened interval must re-date the card now
+    // rather than on the next four-hour cycle.
+    let cadence_secs = panel_interval(&state.store, PanelInterval::AzureCost).as_secs();
     let payload = {
         let panel = state.azure.lock().expect("azure state poisoned");
-        azure::view(&panel, budget, panel::now_unix())
+        azure::view(&panel, budget, cadence_secs, panel::now_unix())
     };
     FIRST_AZURE_REQUEST.call_once(|| {
         // A headline exists only once a read has landed, so this separates "the
@@ -4122,9 +4127,21 @@ fn dump_usage(kind: usage::Fixture) -> Value {
     )
 }
 
-fn dump_azure(kind: azure::Fixture) -> Value {
+/// `stale` dates the last successful read most of a day back, which is the one
+/// rendering the panel's clock produces rather than its state: a real figure,
+/// dimmed, with its age beside the footer's separate warning about the poller.
+/// A fixture has no store, so the cadence it is classified against is the one an
+/// unconfigured store polls at.
+fn dump_azure(kind: azure::Fixture, stale: bool) -> Value {
     const NOW: u64 = 1_700_000_000;
-    azure::view(&azure::fixture_state(kind, NOW), 2_000.0, NOW)
+    let cadence_secs = u64::from(PanelInterval::AzureCost.spec().default_secs);
+    let read_at = if stale { NOW - 23 * 3_600 } else { NOW };
+    azure::view(
+        &azure::fixture_state(kind, read_at),
+        2_000.0,
+        cadence_secs,
+        NOW,
+    )
 }
 
 /// The Sentry Crons panel as a fixture.
@@ -4524,7 +4541,8 @@ fn run_dump(args: &[String]) -> bool {
         } else {
             azure::Fixture::Measured
         };
-        write_json(&path, &dump_azure(kind));
+        let stale = args.iter().any(|arg| arg == "--stale");
+        write_json(&path, &dump_azure(kind, stale));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-services", "sample-services.json") {

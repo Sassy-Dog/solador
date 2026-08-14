@@ -23,14 +23,36 @@ use chrono::{DateTime, Datelike, Utc};
 use serde_json::{json, Value};
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
+use viewmodel::freshness::Freshness;
 
-use crate::panel::{progress_bar, status_footer, Configured};
+use crate::panel::{freshness_payload, progress_bar, status_footer, Configured};
 
-/// `PanelStatusFooter(..., staleAfter: 5 * 60 * 60)`. The export publishes about
-/// once a day and the poll runs every 4h, so the window sits an hour past a
-/// missed cycle: a warning here means a stuck or failing poller, not the normal
-/// gap between reads.
-pub const STALE_AFTER_SECS: u64 = 5 * 60 * 60;
+/// How long past one whole missed cycle the footer waits before it warns.
+///
+/// The footer's window used to be the flat `5 * 60 * 60` the original panel
+/// passed — 4h of cadence plus this hour, written out as one number. That was
+/// right while 4h was a constant and wrong the moment the cadence became the
+/// operator's (#300, #301): a 12h cadence would have warned on every healthy
+/// read, and a 1h cadence would have sat quiet through five missed ones. What
+/// the original number *meant* is the grace, so the grace is what survives here
+/// and the window is derived — see [`stale_after_secs`].
+pub const STALE_GRACE_SECS: u64 = 60 * 60;
+
+/// The footer's staleness window for a panel polling every `cadence_secs`.
+///
+/// **Deliberately later than [`Freshness`]'s edge, which is the cadence
+/// itself.** The two are different claims: one cycle late means the figure on
+/// screen is no longer current, which the panel says by dimming it and dating
+/// it; a *warning* means the poller looks stuck, and one late cycle is not yet
+/// evidence of that for an export published about once a day. Between the two
+/// edges the panel therefore shows a dated, dimmed reading and no warning at
+/// all — the state neither field can express on its own.
+///
+/// At the default 4h cadence this is exactly the 5h the panel has always used.
+#[must_use]
+pub fn stale_after_secs(cadence_secs: u64) -> u64 {
+    cadence_secs.saturating_add(STALE_GRACE_SECS)
+}
 
 /// The panel's zero-setup state. An instruction, not a failure.
 ///
@@ -266,9 +288,23 @@ fn breakdown(title: &str, resources: &[azurecost::ResourceCost]) -> Value {
 /// `budget` is the store's `azure_monthly_budget_usd`, read at render time
 /// rather than captured by the poller: it is a local number no fetch is involved
 /// in, so changing it must repaint the bar now, not on the next four-hour cycle.
+///
+/// `cadence_secs` is the operator's cadence for this panel (#300, #301), and is what
+/// both staleness judgements are measured against: [`Freshness`] classifies the
+/// reading at exactly one cycle, and the footer warns one [`STALE_GRACE_SECS`]
+/// after that. It is passed in rather than read here for the same reason
+/// `budget` is — this module is a view over values, and the store lives on the
+/// other side of the shell.
 #[must_use]
-pub fn view(state: &AzureState, budget: f64, now: u64) -> Value {
+pub fn view(state: &AzureState, budget: f64, cadence_secs: u64, now: u64) -> Value {
     let kind = PanelKind::AzureCost;
+    // The age of the figure this payload paints, which is the age of the last
+    // *success* — the same clock the footer's `last ok` promises about, asked a
+    // different question. `None` (nothing ever read) is `Unknown`, never a zero.
+    let freshness = Freshness::classify(
+        state.last_updated.map(|at| now.saturating_sub(at)),
+        cadence_secs,
+    );
     let mut payload = json!({
         "id": kind.id(),
         "title": kind.title(),
@@ -279,6 +315,10 @@ pub fn view(state: &AzureState, budget: f64, now: u64) -> Value {
         "budget": Value::Null,
         "breakdowns": Value::Array(vec![]),
         "footer": Value::Null,
+        // How old the headline is, beside — never inside — the footer above.
+        // Published in every state, including the message states, where it is
+        // the `unknown` that says there is no reading rather than a fresh one.
+        "freshness": freshness_payload(freshness),
         // Published for the frontend's refresh cadence: it polls faster while a
         // panel is still filling in. Nothing is known until a pass has read the
         // credential store, and a configured panel is loading until its first
@@ -332,7 +372,14 @@ pub fn view(state: &AzureState, budget: f64, now: u64) -> Value {
     });
     payload["headline"] = json!({
         "value": usd(summary.spend_mtd),
-        "valueColor": color::hex(color::GREEN),
+        // Dimmed once the reading is older than one cycle. The figure is real
+        // and stays on the card — a daily export carried forward is worth
+        // looking at — but it must not be painted in the same green as a
+        // current one, which is the "day-old figure rendering identically to a
+        // live one" failure `Freshness` exists to mark. The colour is decided
+        // here rather than by a rule in the frontend, like every other colour
+        // this panel paints.
+        "valueColor": color::hex(if freshness.is_live() { color::GREEN } else { color::GREEN_DIM }),
         "caption": caption,
         "captionColor": color::hex(caption_color),
     });
@@ -369,7 +416,7 @@ pub fn view(state: &AzureState, budget: f64, now: u64) -> Value {
         state.last_updated,
         state.last_error.as_deref(),
         now,
-        STALE_AFTER_SECS,
+        stale_after_secs(cadence_secs),
     );
     payload
 }
@@ -467,9 +514,24 @@ mod tests {
 
     const NOW: u64 = 1_700_000_000;
     const BUDGET: f64 = 2_000.0;
+    /// The store's default cadence for this panel — what an unconfigured store
+    /// polls at, and therefore what the pre-#300 constants describe.
+    const CADENCE: u64 = 4 * 3_600;
 
     fn measured() -> AzureState {
         fixture_state(Fixture::Measured, NOW)
+    }
+
+    /// A payload whose last **successful** read landed `measured_secs_ago`
+    /// before [`NOW`], rendered at `NOW` for a panel polling every
+    /// `cadence_secs`. `None` is a panel that has never read the export at all —
+    /// which is not an age of zero and must not classify as one.
+    fn azure_payload_with_age(measured_secs_ago: Option<u64>, cadence_secs: u64) -> Value {
+        let state = match measured_secs_ago {
+            Some(age) => fixture_state(Fixture::Measured, NOW - age),
+            None => AzureState::new(),
+        };
+        view(&state, BUDGET, cadence_secs, NOW)
     }
 
     // MARK: formatting
@@ -518,7 +580,12 @@ mod tests {
 
     #[test]
     fn with_no_sas_url_the_panel_asks_for_one_in_muted_text() {
-        let payload = view(&fixture_state(Fixture::Unconfigured, NOW), BUDGET, NOW);
+        let payload = view(
+            &fixture_state(Fixture::Unconfigured, NOW),
+            BUDGET,
+            CADENCE,
+            NOW,
+        );
         assert_eq!(payload["message"]["text"], UNCONFIGURED_MESSAGE);
         assert_eq!(payload["message"]["color"], color::hex(color::MUTED));
         assert!(payload["headline"].is_null());
@@ -530,14 +597,14 @@ mod tests {
         let mut state = AzureState::new();
         state.begin();
         assert_eq!(
-            view(&state, BUDGET, NOW)["message"]["text"],
+            view(&state, BUDGET, CADENCE, NOW)["message"]["text"],
             LOADING_MESSAGE
         );
 
         state.failed("boom".to_owned());
         state.last_error = None;
         assert_eq!(
-            view(&state, BUDGET, NOW)["message"]["text"],
+            view(&state, BUDGET, CADENCE, NOW)["message"]["text"],
             NO_DATA_MESSAGE
         );
     }
@@ -546,7 +613,7 @@ mod tests {
     /// state that must not be confused with "not set up yet".
     #[test]
     fn a_failed_read_with_no_prior_summary_is_red_and_named() {
-        let payload = view(&fixture_state(Fixture::Failed, NOW), BUDGET, NOW);
+        let payload = view(&fixture_state(Fixture::Failed, NOW), BUDGET, CADENCE, NOW);
         assert_eq!(
             payload["message"]["text"],
             "SAS expired or invalid — paste a new one in Settings"
@@ -560,7 +627,7 @@ mod tests {
     fn a_failed_read_after_a_good_one_keeps_the_card_and_dates_it() {
         let mut state = measured();
         state.failed("Blob request failed (HTTP 500)".to_owned());
-        let payload = view(&state, BUDGET, NOW + 3_600);
+        let payload = view(&state, BUDGET, CADENCE, NOW + 3_600);
         assert!(payload["message"].is_null());
         assert_eq!(payload["headline"]["value"], "$1,284.55");
         assert_eq!(
@@ -578,7 +645,7 @@ mod tests {
         let mut state = measured();
         state.failed("Azure CLI could not mint a SAS: Please run 'az login'".to_owned());
 
-        let payload = view(&state, BUDGET, NOW + 60);
+        let payload = view(&state, BUDGET, CADENCE, NOW + 60);
         assert!(payload["message"].is_null(), "the card stays up");
         assert_eq!(payload["headline"]["value"], "$1,284.55");
         assert_eq!(
@@ -594,7 +661,7 @@ mod tests {
     /// already set here; the `configured == false` arm above it won.
     #[test]
     fn the_panel_says_it_is_reading_before_it_has_looked_for_a_sas() {
-        let payload = view(&AzureState::new(), BUDGET, NOW);
+        let payload = view(&AzureState::new(), BUDGET, CADENCE, NOW);
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
         assert_eq!(payload["message"]["color"], color::hex(color::MUTED));
         assert_eq!(payload["loading"], true);
@@ -607,7 +674,7 @@ mod tests {
     fn the_panel_asks_for_a_sas_once_a_pass_finds_none() {
         let mut state = AzureState::new();
         state.unconfigure();
-        let payload = view(&state, BUDGET, NOW);
+        let payload = view(&state, BUDGET, CADENCE, NOW);
         assert_eq!(payload["message"]["text"], UNCONFIGURED_MESSAGE);
         assert_eq!(payload["loading"], false, "we looked; this is not loading");
     }
@@ -628,7 +695,7 @@ mod tests {
 
     #[test]
     fn the_headline_is_month_to_date_spend_with_a_muted_caption() {
-        let payload = view(&measured(), BUDGET, NOW);
+        let payload = view(&measured(), BUDGET, CADENCE, NOW);
         assert_eq!(payload["headline"]["value"], "$1,284.55");
         assert_eq!(payload["headline"]["valueColor"], color::hex(color::GREEN));
         assert_eq!(payload["headline"]["caption"], "month-to-date");
@@ -643,7 +710,7 @@ mod tests {
     /// which month and turns amber, and the trailing label stamps it too.
     #[test]
     fn a_fallback_month_is_stamped_in_amber_on_both_the_caption_and_the_trailing() {
-        let payload = view(&fixture_state(Fixture::Fallback, NOW), BUDGET, NOW);
+        let payload = view(&fixture_state(Fixture::Fallback, NOW), BUDGET, CADENCE, NOW);
         assert_eq!(payload["headline"]["caption"], "June · this month pending");
         assert_eq!(
             payload["headline"]["captionColor"],
@@ -654,7 +721,7 @@ mod tests {
 
     #[test]
     fn the_two_stat_rows_are_prior_month_and_projected() {
-        let payload = view(&measured(), BUDGET, NOW);
+        let payload = view(&measured(), BUDGET, CADENCE, NOW);
         let stats = payload["stats"].as_array().unwrap();
         assert_eq!(stats.len(), 2);
         assert_eq!(stats[0]["label"], "PRIOR MONTH");
@@ -672,7 +739,7 @@ mod tests {
         if let Some(summary) = state.summary.as_mut() {
             summary.spend_prior_month = None;
         }
-        let payload = view(&state, BUDGET, NOW);
+        let payload = view(&state, BUDGET, CADENCE, NOW);
         let stats = payload["stats"].as_array().unwrap();
         assert_eq!(stats[0]["label"], "PRIOR MONTH");
         assert_eq!(stats[0]["value"], UNKNOWN);
@@ -691,13 +758,13 @@ mod tests {
         if let Some(summary) = state.summary.as_mut() {
             summary.spend_prior_month = Some(0.0);
         }
-        let payload = view(&state, BUDGET, NOW);
+        let payload = view(&state, BUDGET, CADENCE, NOW);
         assert_eq!(payload["stats"][0]["value"], "$0.00");
     }
 
     #[test]
     fn each_breakdown_column_shows_at_most_five_rows() {
-        let payload = view(&measured(), BUDGET, NOW);
+        let payload = view(&measured(), BUDGET, CADENCE, NOW);
         let columns = payload["breakdowns"].as_array().unwrap();
         assert_eq!(columns.len(), 2);
         assert_eq!(columns[0]["title"], "TOP RESOURCE GROUPS");
@@ -714,7 +781,7 @@ mod tests {
         if let Some(summary) = state.summary.as_mut() {
             summary.by_type.clear();
         }
-        let payload = view(&state, BUDGET, NOW);
+        let payload = view(&state, BUDGET, CADENCE, NOW);
         let columns = payload["breakdowns"].as_array().unwrap();
         assert_eq!(columns.len(), 1);
         assert_eq!(columns[0]["title"], "TOP RESOURCE GROUPS");
@@ -724,19 +791,19 @@ mod tests {
 
     #[test]
     fn no_budget_means_no_bar() {
-        assert!(view(&measured(), 0.0, NOW)["budget"].is_null());
-        assert!(view(&measured(), -1.0, NOW)["budget"].is_null());
+        assert!(view(&measured(), 0.0, CADENCE, NOW)["budget"].is_null());
+        assert!(view(&measured(), -1.0, CADENCE, NOW)["budget"].is_null());
     }
 
     #[test]
     fn the_budget_bar_pairs_projected_with_budget_and_ambers_at_ninety_percent() {
-        let payload = view(&measured(), BUDGET, NOW);
+        let payload = view(&measured(), BUDGET, CADENCE, NOW);
         assert_eq!(payload["budget"]["label"], "PROJECTED VS BUDGET");
         assert_eq!(payload["budget"]["value"], "$1,942.18 / $2,000.00");
         // 1942.18 / 2000 = 0.971
         assert_eq!(payload["budget"]["bar"]["color"], color::hex(color::AMBER));
 
-        let payload = view(&measured(), 1_000.0, NOW);
+        let payload = view(&measured(), 1_000.0, CADENCE, NOW);
         assert_eq!(payload["budget"]["bar"]["fraction"], 1.0);
         assert_eq!(payload["budget"]["bar"]["color"], color::hex(color::RED));
     }
@@ -746,11 +813,126 @@ mod tests {
     #[test]
     fn staleness_is_measured_against_the_four_hour_cadence_not_a_panel_default() {
         // 4h is one cycle: fine. 5h is a missed one plus an hour: not.
-        assert!(view(&measured(), BUDGET, NOW + 4 * 3_600)["footer"].is_null());
+        assert!(view(&measured(), BUDGET, CADENCE, NOW + 4 * 3_600)["footer"].is_null());
         assert_eq!(
-            view(&measured(), BUDGET, NOW + 5 * 3_600 + 60)["footer"]["text"],
+            view(&measured(), BUDGET, CADENCE, NOW + 5 * 3_600 + 60)["footer"]["text"],
             "⚠ stale · updated 5h ago"
         );
+    }
+
+    /// The window the footer warns at is one grace hour past **the operator's**
+    /// cadence, not the 4h one that used to be a constant. A store polling every
+    /// 12h would otherwise have warned on every single healthy read.
+    #[test]
+    fn the_footers_window_follows_the_cadence_it_was_given() {
+        assert_eq!(stale_after_secs(CADENCE), 5 * 3_600, "the historic 5h");
+        assert_eq!(stale_after_secs(12 * 3_600), 13 * 3_600);
+
+        let twelve_hourly = |now| view(&measured(), BUDGET, 12 * 3_600, now);
+        assert!(
+            twelve_hourly(NOW + 13 * 3_600)["footer"].is_null(),
+            "one whole cycle plus the grace hour is not yet a warning"
+        );
+        assert_eq!(
+            twelve_hourly(NOW + 13 * 3_600 + 1)["footer"]["text"],
+            "⚠ stale · updated 13h ago"
+        );
+    }
+
+    // MARK: freshness — how old the figure is, which is NOT the footer
+
+    /// The bug this panel had: a reading measured most of a day ago rendered in
+    /// exactly the type and colour of one measured minutes ago.
+    #[test]
+    fn a_stale_azure_reading_is_marked_and_not_formatted_as_current() {
+        let payload = azure_payload_with_age(Some(23 * 3600), 4 * 3600);
+        assert_eq!(payload["freshness"]["state"], serde_json::json!("stale"));
+        assert!(payload["freshness"]["measured_secs_ago"].as_u64().unwrap() > 4 * 3600);
+    }
+
+    #[test]
+    fn a_fresh_azure_reading_is_live() {
+        assert_eq!(
+            azure_payload_with_age(Some(600), 4 * 3600)["freshness"]["state"],
+            serde_json::json!("live")
+        );
+    }
+
+    #[test]
+    fn a_never_read_azure_panel_is_unknown_not_stale() {
+        assert_eq!(
+            azure_payload_with_age(None, 4 * 3600)["freshness"]["state"],
+            serde_json::json!("unknown")
+        );
+    }
+
+    /// The mark itself, in the two places a reader meets it: the headline is no
+    /// longer painted in the live green, and the payload carries a dated line to
+    /// put beside it.
+    #[test]
+    fn a_stale_reading_is_dimmed_and_dated_while_a_live_one_is_neither() {
+        let stale = azure_payload_with_age(Some(23 * 3_600), CADENCE);
+        assert_eq!(stale["freshness"]["text"], "as of 23h ago");
+        assert_eq!(stale["freshness"]["color"], color::hex(color::AMBER));
+        assert_eq!(
+            stale["headline"]["valueColor"],
+            color::hex(color::GREEN_DIM)
+        );
+        assert_eq!(
+            stale["headline"]["value"], "$1,284.55",
+            "the figure is real and stays — only the claim about it weakens"
+        );
+
+        let live = azure_payload_with_age(Some(600), CADENCE);
+        assert!(live["freshness"]["text"].is_null(), "live paints no line");
+        assert_eq!(live["headline"]["valueColor"], color::hex(color::GREEN));
+    }
+
+    /// **The two clocks stay two fields.** Between one missed cycle and the
+    /// footer's grace hour the panel says "this number is from 4h ago" and does
+    /// *not* warn — a state neither field can express alone, and the reason
+    /// freshness was not folded into `status_footer`.
+    #[test]
+    fn freshness_marks_a_late_reading_before_the_footer_warns_about_the_poller() {
+        let payload = view(&measured(), BUDGET, CADENCE, NOW + CADENCE + 60);
+        assert_eq!(payload["freshness"]["state"], "stale");
+        assert!(
+            payload["footer"].is_null(),
+            "one late cycle is not yet evidence of a stuck poller"
+        );
+
+        // …and once the poller *is* late, both speak, about different things.
+        let payload = view(&measured(), BUDGET, CADENCE, NOW + 6 * 3_600);
+        assert_eq!(payload["freshness"]["text"], "as of 6h ago");
+        assert_eq!(payload["footer"]["text"], "⚠ stale · updated 6h ago");
+    }
+
+    /// A failed read after a good one keeps the last figure on the card, so the
+    /// age published for it must be the age of that **success** — the same clock
+    /// the footer's `last ok` promises about, never "when we last looked".
+    #[test]
+    fn the_published_age_is_the_last_success_not_the_last_attempt() {
+        let mut state = measured();
+        state.failed("Blob request failed (HTTP 500)".to_owned());
+        let payload = view(&state, BUDGET, CADENCE, NOW + 6 * 3_600);
+        assert_eq!(payload["freshness"]["state"], "stale");
+        assert_eq!(payload["freshness"]["measured_secs_ago"], 6 * 3_600);
+    }
+
+    /// Every message state — including the one an operator sees at launch —
+    /// publishes `unknown`, so nothing downstream can read a missing reading as
+    /// a fresh one.
+    #[test]
+    fn a_panel_with_nothing_to_show_publishes_no_age_at_all() {
+        for state in [
+            AzureState::new(),
+            fixture_state(Fixture::Unconfigured, NOW),
+            fixture_state(Fixture::Failed, NOW),
+        ] {
+            let payload = view(&state, BUDGET, CADENCE, NOW);
+            assert_eq!(payload["freshness"]["state"], "unknown");
+            assert!(payload["freshness"]["measured_secs_ago"].is_null());
+        }
     }
 
     /// The Playwright suite renders these payloads, so a fixture that lost the
@@ -758,23 +940,28 @@ mod tests {
     /// nothing.
     #[test]
     fn the_fixtures_cover_every_rendering_the_panel_has() {
-        let measured = view(&fixture_state(Fixture::Measured, NOW), BUDGET, NOW);
+        let measured = view(&fixture_state(Fixture::Measured, NOW), BUDGET, CADENCE, NOW);
         assert!(measured["message"].is_null());
         assert!(!measured["budget"].is_null(), "only this one has a bar");
         assert_eq!(measured["breakdowns"].as_array().unwrap().len(), 2);
         assert_eq!(measured["headline"]["caption"], "month-to-date");
 
-        let fallback = view(&fixture_state(Fixture::Fallback, NOW), BUDGET, NOW);
+        let fallback = view(&fixture_state(Fixture::Fallback, NOW), BUDGET, CADENCE, NOW);
         assert_eq!(
             fallback["headline"]["captionColor"],
             color::hex(color::AMBER),
             "the fallback caption is the amber one"
         );
 
-        let failed = view(&fixture_state(Fixture::Failed, NOW), BUDGET, NOW);
+        let failed = view(&fixture_state(Fixture::Failed, NOW), BUDGET, CADENCE, NOW);
         assert_eq!(failed["message"]["color"], color::hex(color::RED));
 
-        let unconfigured = view(&fixture_state(Fixture::Unconfigured, NOW), BUDGET, NOW);
+        let unconfigured = view(
+            &fixture_state(Fixture::Unconfigured, NOW),
+            BUDGET,
+            CADENCE,
+            NOW,
+        );
         assert_eq!(unconfigured["message"]["text"], UNCONFIGURED_MESSAGE);
         assert_eq!(
             unconfigured["message"]["color"],

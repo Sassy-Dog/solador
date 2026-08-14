@@ -77,6 +77,7 @@ app/ui/sample-azure.json
 app/ui/sample-azure-fallback.json
 app/ui/sample-azure-error.json
 app/ui/sample-azure-empty.json
+app/ui/sample-azure-stale.json
 app/ui/sample-services.json
 app/ui/sample-crons.json
 app/ui/sample-crons-empty.json
