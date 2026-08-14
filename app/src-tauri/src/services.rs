@@ -36,13 +36,22 @@
 //! endpoint rather than one call per repo, so the honest reading is available
 //! and worth taking.
 
+use crate::panel::Configured;
 use serde_json::{json, Value};
 use servicestatus::{ComponentStatus, Incident, ServiceStatus};
 use std::collections::BTreeMap;
+use store::{CredentialStore, SecretKey, StatusVendor, Store, VendorKind};
+use uuid::Uuid;
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 
 /// A service whose availability the cockpit watches.
+///
+/// **Not a closed set.** The five named variants are the vendors this build
+/// ships an adapter for; [`Custom`](ServiceId::Custom) is an operator-added
+/// status page (#294), keyed by its store record. Which of them are actually
+/// watched is [`active_vendors`]'s answer, derived from configuration — this
+/// enum names what *can* be watched, never what is.
 ///
 /// `BTreeMap`-keyed rather than `HashMap`, so the notices a pass emits come out
 /// in a stable order — three banners in a different sequence on every launch
@@ -54,11 +63,23 @@ pub enum ServiceId {
     Vercel,
     Neon,
     Azure,
+    /// An operator-added Atlassian Statuspage, identified by its
+    /// [`StatusVendor::id`]. It names itself from its record rather than from
+    /// this build, which is why [`label`](Self::label) and
+    /// [`subject`](Self::subject) have nothing to say about it.
+    Custom(Uuid),
 }
 
 impl ServiceId {
-    /// Every watched vendor, in the order the Services panel lists them —
-    /// roughly by how loudly this stack notices each one going down.
+    /// The vendors this build ships an adapter for, in the order the Services
+    /// panel lists them — roughly by how loudly this stack notices each one
+    /// going down.
+    ///
+    /// **This is not the watched set.** It used to be, and that was the bug
+    /// #284 exists to fix: five vendors hardcoded here are one operator's
+    /// stack, shipped to everyone. [`active_vendors`] derives the watched set
+    /// from configuration; this array is the menu it derives *from*, and the
+    /// order it derives in.
     pub const ALL: [ServiceId; 5] = [
         ServiceId::GitHub,
         ServiceId::Anthropic,
@@ -70,39 +91,53 @@ impl ServiceId {
     /// The stable key the frontend addresses a row by. Never the label: a
     /// display name is free to change and an id is not.
     #[must_use]
-    pub fn id(self) -> &'static str {
+    pub fn id(self) -> String {
         match self {
-            ServiceId::GitHub => "github",
-            ServiceId::Anthropic => "anthropic",
-            ServiceId::Vercel => "vercel",
-            ServiceId::Neon => "neon",
-            ServiceId::Azure => "azure",
+            ServiceId::GitHub => "github".to_owned(),
+            ServiceId::Anthropic => "anthropic".to_owned(),
+            ServiceId::Vercel => "vercel".to_owned(),
+            ServiceId::Neon => "neon".to_owned(),
+            ServiceId::Azure => "azure".to_owned(),
+            // The record's id, which is the only stable name an operator-added
+            // vendor has — the same `vendor-{uuid}` spelling `SecretKey`
+            // already uses for a per-account credential.
+            ServiceId::Custom(id) => format!("vendor-{id}"),
         }
     }
 
     /// The vendor, for the banner's title. Short: a notification is glanced at.
+    ///
+    /// `None` for [`Custom`](Self::Custom): this build does not name an
+    /// operator's vendor, their record does, and [`ActiveVendor::label`] is the
+    /// one place every renderer reads a label from. Answering with the id here
+    /// would put `vendor-9f3c…` in a notification title, which is a fabricated
+    /// name wearing a true one's clothes.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> Option<&'static str> {
         match self {
-            ServiceId::GitHub => "GitHub",
-            ServiceId::Anthropic => "Anthropic",
-            ServiceId::Vercel => "Vercel",
-            ServiceId::Neon => "Neon",
-            ServiceId::Azure => "Azure",
+            ServiceId::GitHub => Some("GitHub"),
+            ServiceId::Anthropic => Some("Anthropic"),
+            ServiceId::Vercel => Some("Vercel"),
+            ServiceId::Neon => Some("Neon"),
+            ServiceId::Azure => Some("Azure"),
+            ServiceId::Custom(_) => None,
         }
     }
 
     /// The specific thing we watch, for the banner's body. Not the vendor —
     /// "GitHub is operational again" would overclaim from one component, and
     /// every one of these is a single component of a much larger service.
+    ///
+    /// `None` for [`Custom`](Self::Custom), for [`label`](Self::label)'s reason.
     #[must_use]
-    pub fn subject(self) -> &'static str {
+    pub fn subject(self) -> Option<&'static str> {
         match self {
-            ServiceId::GitHub => "GitHub Actions",
-            ServiceId::Anthropic => "the Claude API",
-            ServiceId::Vercel => "Vercel Builds",
-            ServiceId::Neon => "Neon",
-            ServiceId::Azure => "Azure",
+            ServiceId::GitHub => Some("GitHub Actions"),
+            ServiceId::Anthropic => Some("the Claude API"),
+            ServiceId::Vercel => Some("Vercel Builds"),
+            ServiceId::Neon => Some("Neon"),
+            ServiceId::Azure => Some("Azure"),
+            ServiceId::Custom(_) => None,
         }
     }
 
@@ -112,10 +147,242 @@ impl ServiceId {
     /// health, so a quiet feed is *no known incidents* rather than operational.
     /// The panel words its healthy row differently for that reason, and the
     /// distinction is here rather than in the renderer so there is one place to
-    /// read it from.
+    /// read it from. An operator-added vendor is an Atlassian Statuspage, which
+    /// publishes a component status, so it answers like the other four.
     #[must_use]
     pub fn publishes_health(self) -> bool {
         !matches!(self, ServiceId::Azure)
+    }
+}
+
+/// One vendor whose availability the cockpit watches this pass.
+///
+/// Carries its own strings rather than deriving them from
+/// [`service`](Self::service), because an operator-added vendor has none in
+/// this build: its label and the component it watches are the operator's, and
+/// this is where every renderer reads them from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveVendor {
+    /// The stable key the watch and the panel address this vendor by.
+    pub service: ServiceId,
+    /// The vendor, for the row and the banner's title.
+    pub label: String,
+    /// The specific component being watched, for the banner's body.
+    pub subject: String,
+    /// Where its status is read from.
+    pub source: VendorSource,
+}
+
+/// How a watched vendor's status is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VendorSource {
+    /// One of the vendors this build ships an adapter for — see [`read`],
+    /// which knows both the endpoint *and* which component of it matters.
+    Builtin,
+    /// An operator-added Atlassian Statuspage (#294): the page they probed and
+    /// the component they picked out of it. Both halves, because a vendor is
+    /// not a URL — `CLAUDE_API_COMPONENT` is the API rather than `claude.ai`
+    /// for exactly that reason, and that judgement is theirs to make.
+    Statuspage {
+        base_url: String,
+        component_id: String,
+    },
+}
+
+impl ActiveVendor {
+    /// One of [`ServiceId::ALL`], watched. `None` for a
+    /// [`ServiceId::Custom`], which this build cannot name — those are built
+    /// from their record by [`ActiveVendor::from_record`].
+    fn builtin(service: ServiceId) -> Option<Self> {
+        Some(ActiveVendor {
+            service,
+            label: service.label()?.to_owned(),
+            subject: service.subject()?.to_owned(),
+            source: VendorSource::Builtin,
+        })
+    }
+
+    /// An operator-added vendor, as its record describes it.
+    fn from_record(vendor: &StatusVendor) -> Self {
+        let label = vendor.label.trim();
+        let component = vendor.component_label.trim();
+        ActiveVendor {
+            service: ServiceId::Custom(vendor.id),
+            label: label.to_owned(),
+            // The component, qualified by the vendor, for the same reason the
+            // built-in subjects are ("GitHub Actions", not "GitHub"): a banner
+            // reading "API: major outage" names nothing. When the operator
+            // called the component after the vendor, or left it blank, the
+            // vendor's own name is the whole of it — "Neon Neon" is not a
+            // second fact.
+            subject: if component.is_empty() || component.eq_ignore_ascii_case(label) {
+                label.to_owned()
+            } else {
+                format!("{label} {component}")
+            },
+            source: VendorSource::Statuspage {
+                base_url: vendor.base_url.clone(),
+                component_id: vendor.component_id.clone(),
+            },
+        }
+    }
+}
+
+/// Which vendors' availability this cockpit watches — **derived from
+/// configuration, never shipped**.
+///
+/// A vendor is watched when that vendor's data is already in the cockpit. A
+/// stranger with one token sees one tile; the operator this app was written on
+/// sees the same five they saw before, because all five are configured. Nobody
+/// gets a shipped opinion — the same rule `CLAUDE.md` records for container
+/// grouping, where a shipped example rule *"silently groups a stranger's
+/// containers by a rule they never wrote"*. A shipped vendor list is that
+/// error with a different noun.
+///
+/// **Per vendor, not per account.** A status page is one page however many
+/// credentials point at it, so three GitHub accounts derive one tile. That
+/// falls out of the shape: each vendor contributes a single [`Configured`], and
+/// a single `Configured` cannot produce a second tile.
+///
+/// **`Unknown` is not `Absent`.** A credential store that refused to answer has
+/// not told us there is no token, so its vendor is left out of this pass rather
+/// than derived from a guess — and, because
+/// [`StatusWatch::observe`] forgets whatever leaves the pass, the pass that
+/// gets an answer seeds instead of alerting. A locked keychain is silent in
+/// both directions, which is the only honest thing it can be.
+///
+/// `claude_usage_present` is Anthropic's trigger, and it is the named
+/// exception: there is no Anthropic credential to look for, so the signal is
+/// whether the Usage panel found Claude rollups to show. It must be an answer
+/// the caller has actually established — "not read yet" is `false`, so the tile
+/// appears when the data does rather than ahead of it.
+///
+/// Operator-added vendors (#294) are appended after the derived ones, in the
+/// order the operator arranged them, and a disabled one is not watched.
+// Nothing in the shipped binary calls this yet. #296 lands the rule; the poll
+// pass in `main.rs` still walks `ServiceId::ALL`, and the slice that hands this
+// list to `read`, `readings` and `view` edits that file, which #288's open
+// change owns.
+//
+// `expect`, not `allow`, so the attribute cannot outlive the gap it documents:
+// it fails the build the moment a caller appears. `not(test)` because the tests
+// below *are* callers — under `cfg(test)` the expectation would itself be
+// unfulfilled. One attribute covers the whole derivation, which is reachable
+// only from here.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the poll pass adopts this list in the slice after #288; see the note above"
+    )
+)]
+pub fn active_vendors(
+    store: &Store,
+    credentials: &dyn CredentialStore,
+    claude_usage_present: bool,
+) -> Vec<ActiveVendor> {
+    // In `ServiceId::ALL`'s order, so upgrading to a derived list does not also
+    // reshuffle the rows of an operator for whom nothing else changed.
+    let derived = [
+        (ServiceId::GitHub, github_configured(store, credentials)),
+        (
+            ServiceId::Anthropic,
+            // The one vendor with no credential: usage data is the evidence.
+            if claude_usage_present {
+                Configured::Present
+            } else {
+                Configured::Absent
+            },
+        ),
+        (
+            ServiceId::Vercel,
+            credential_configured(credentials, SecretKey::VercelApiToken),
+        ),
+        (
+            ServiceId::Neon,
+            credential_configured(credentials, SecretKey::NeonApiKey),
+        ),
+        (ServiceId::Azure, azure_configured(store)),
+    ];
+
+    let mut vendors: Vec<ActiveVendor> = derived
+        .into_iter()
+        // `is_present`, never `!is_absent`: `Unknown` is neither.
+        .filter(|(_, configured)| configured.is_present())
+        .filter_map(|(service, _)| ActiveVendor::builtin(service))
+        .collect();
+
+    vendors.extend(
+        store
+            .status_vendors()
+            .iter()
+            .filter(|vendor| vendor.enabled)
+            .map(ActiveVendor::from_record),
+    );
+    vendors
+}
+
+/// Whether GitHub is configured — **one answer for the vendor**, however many
+/// accounts hold a credential.
+///
+/// A fold over the v2 account list (#288), which is what keeps the cardinality
+/// right: this returns a single [`Configured`], so three GitHub accounts cannot
+/// produce a second tile. Disabled accounts *"stay configured but are not
+/// polled"*, so a vendor whose every account is switched off has nothing in the
+/// cockpit and is not watched.
+///
+/// The credential read is the fallback for **no GitHub account at all**, not
+/// for "none enabled": that is a v1 store whose `migrate_v1_to_v2` has not run,
+/// and the reason it has not run may be the very credential store this asks.
+/// `Absent` and `Unknown` are the two answers that distinguishes, and collapsing
+/// them here would let a locked keychain read as "there is no GitHub".
+fn github_configured(store: &Store, credentials: &dyn CredentialStore) -> Configured {
+    let mut accounts = store
+        .accounts()
+        .iter()
+        .filter(|account| account.vendor == VendorKind::GitHub)
+        .peekable();
+    if accounts.peek().is_none() {
+        return credential_configured(credentials, SecretKey::GitHubAccessToken);
+    }
+    if accounts.any(|account| account.enabled) {
+        Configured::Present
+    } else {
+        Configured::Absent
+    }
+}
+
+/// Whether a credential is stored, keeping "there is none" apart from "we could
+/// not ask" — the same three-way read `main.rs`'s `read_credential` makes, minus
+/// the value, which this has no reason to hold.
+fn credential_configured(credentials: &dyn CredentialStore, key: SecretKey) -> Configured {
+    match credentials.secret(key) {
+        Ok(Some(value)) if !value.trim().is_empty() => Configured::Present,
+        Ok(_) => Configured::Absent,
+        Err(e) => {
+            // The account name only — `SecretError` is value-free by
+            // construction and this must stay that way.
+            eprintln!("could not read a stored credential: {e}");
+            Configured::Unknown
+        }
+    }
+}
+
+/// Whether the Azure cost export's address is configured.
+///
+/// Azure is the one derived vendor with no credential to look for: the panel
+/// mints a container-scoped SAS per poll from the operator's own `az` session
+/// and stores nothing. Its evidence is the export's address, and **both halves
+/// of it** — `poll_azure` gates on the pair, so an account without a container
+/// is a panel with no Azure data in it.
+fn azure_configured(store: &Store) -> Configured {
+    let settings = store.settings();
+    if settings.azure_storage_account.trim().is_empty()
+        || settings.azure_cost_container.trim().is_empty()
+    {
+        Configured::Absent
+    } else {
+        Configured::Present
     }
 }
 
@@ -123,6 +390,16 @@ impl ServiceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading<'a> {
     pub service: ServiceId,
+    /// How to name this vendor in a banner — from its record for an
+    /// operator-added vendor, from the table for one of this build's own.
+    ///
+    /// Carried rather than looked up from [`Reading::service`], because
+    /// [`ServiceId::label`] has no answer for a [`ServiceId::Custom`] and a
+    /// notice must never be worded from a name this build invented.
+    pub label: &'a str,
+    /// The specific component being watched, for the banner's body. See
+    /// [`Reading::label`] for why it travels with the reading.
+    pub subject: &'a str,
     /// `None` when the statuspage could not be read, or answered with a status
     /// word this build does not recognise. Not a status — see the module doc.
     pub status: Option<ComponentStatus>,
@@ -141,13 +418,12 @@ pub struct StatusNotice {
 
 impl StatusNotice {
     fn new(reading: &Reading<'_>, previous: ComponentStatus, current: ComponentStatus) -> Self {
-        let service = reading.service;
         if current == ComponentStatus::Operational {
             return Self {
-                title: format!("{} · recovered", service.label()),
+                title: format!("{} · recovered", reading.label),
                 body: format!(
                     "{} is operational again, after {}.",
-                    service.subject(),
+                    reading.subject,
                     previous.label()
                 ),
             };
@@ -157,8 +433,8 @@ impl StatusNotice {
             .map(|name| format!(" Incident: {name}."))
             .unwrap_or_default();
         Self {
-            title: format!("{} · {}", service.label(), current.label()),
-            body: format!("{}: {}.{incident}", service.subject(), current.label()),
+            title: format!("{} · {}", reading.label, current.label()),
+            body: format!("{}: {}.{incident}", reading.subject, current.label()),
         }
     }
 }
@@ -283,23 +559,36 @@ impl ServiceStatuses {
     /// fresh observation — that would make an unreachable page look like a
     /// steady state forever, and `StatusWatch` would never notice the recovery
     /// when the page came back saying something new.
+    ///
+    /// Walks [`ServiceId::ALL`] — the vendors this build ships an adapter for —
+    /// because that is still what the poll pass reads. Once the pass takes
+    /// [`active_vendors`]'s derived list, the labels come from there and an
+    /// operator-added vendor is watched alongside them; a vendor that leaves
+    /// the pass then correctly loses its baseline, which is what
+    /// [`StatusWatch::observe`] already handles.
     #[must_use]
     pub fn readings(&self) -> Vec<Reading<'_>> {
         ServiceId::ALL
             .iter()
-            .map(|&service| {
+            // `filter_map`, and nothing is ever filtered: `ALL` holds only
+            // vendors this build names. A vendor it cannot name is not skipped
+            // here so much as never reached — and it is not given an invented
+            // name either.
+            .filter_map(|&service| {
                 let fresh = self
                     .entries
                     .get(&service)
                     .filter(|e| e.error.is_none())
                     .and_then(|e| e.status.as_ref());
-                Reading {
+                Some(Reading {
                     service,
+                    label: service.label()?,
+                    subject: service.subject()?,
                     status: fresh.and_then(|s| s.component),
                     incident: fresh
                         .and_then(|s| s.incident.as_ref())
                         .map(|i| i.name.as_str()),
-                }
+                })
             })
             .collect()
     }
@@ -314,7 +603,13 @@ impl ServiceStatuses {
 #[must_use]
 pub fn view(statuses: &ServiceStatuses) -> Value {
     let kind = PanelKind::Services;
-    let rows: Vec<Value> = ServiceId::ALL.iter().map(|&s| row(s, statuses)).collect();
+    // `filter_map` for [`ServiceStatuses::readings`]'s reason: `ALL` holds only
+    // the vendors this build names, so nothing is dropped, and a vendor it
+    // cannot name gets no row rather than a row headed by its id.
+    let rows: Vec<Value> = ServiceId::ALL
+        .iter()
+        .filter_map(|&s| row(s, statuses))
+        .collect();
     // "2 degraded" / "all clear". Counted from the rendered rows so the
     // trailing label can never disagree with what is under it.
     let degraded = rows.iter().filter(|r| r["degraded"] == json!(true)).count();
@@ -326,7 +621,8 @@ pub fn view(statuses: &ServiceStatuses) -> Value {
     })
 }
 
-fn row(service: ServiceId, statuses: &ServiceStatuses) -> Value {
+fn row(service: ServiceId, statuses: &ServiceStatuses) -> Option<Value> {
+    let (label, subject) = (service.label()?, service.subject()?);
     let entry = statuses.get(service);
     let status = entry.and_then(|e| e.status.as_ref());
     let component = status.and_then(|s| s.component);
@@ -352,19 +648,16 @@ fn row(service: ServiceId, statuses: &ServiceStatuses) -> Value {
         entry.and_then(|e| e.error.as_deref()),
         status.and_then(|s| s.incident.as_ref()),
     ) {
-        (Some(error), _) => format!("{} — {error}", service.subject()),
-        (None, Some(incident)) => format!(
-            "{}: {} ({}).",
-            service.subject(),
-            incident.name,
-            incident.impact
-        ),
-        (None, None) => service.subject().to_owned(),
+        (Some(error), _) => format!("{subject} — {error}"),
+        (None, Some(incident)) => {
+            format!("{subject}: {} ({}).", incident.name, incident.impact)
+        }
+        (None, None) => subject.to_owned(),
     };
 
-    json!({
+    Some(json!({
         "id": service.id(),
-        "label": service.label(),
+        "label": label,
         "state": state,
         "color": color::hex(color),
         "detail": detail,
@@ -372,7 +665,7 @@ fn row(service: ServiceId, statuses: &ServiceStatuses) -> Value {
         // count reads this, and counting amber pixels would be a second
         // definition of "degraded" free to disagree with the first.
         "degraded": component.is_some_and(ComponentStatus::is_degraded),
-    })
+    }))
 }
 
 /// A fixture covering every rendering the Services panel has: one healthy
@@ -409,13 +702,24 @@ pub fn fixture_statuses() -> ServiceStatuses {
     s
 }
 
-/// Read one vendor's status page.
+/// Read one **built-in** vendor's status page.
 ///
 /// The three transports differ enough to need their own clients and the same
 /// enough to answer one type, which is the whole point of `crates/servicestatus`.
 ///
 /// # Errors
 /// [`servicestatus::StatusError`] as each adapter classifies it.
+///
+/// # Panics
+/// On a [`ServiceId::Custom`], which carries no page. **Call [`read_vendor`]
+/// instead** — it takes the whole [`ActiveVendor`], so the page an
+/// operator-added vendor carries never has to be reconstructed from its id, and
+/// this arm stays unreachable by construction.
+///
+/// The alternative was returning a [`servicestatus::StatusError`], and every
+/// variant of that blames a status page — for a vendor whose page this build
+/// was never given, that is a fabricated failure, and it would reach the panel
+/// wearing a real one's words.
 pub async fn read(service: ServiceId) -> Result<ServiceStatus, servicestatus::StatusError> {
     match service {
         ServiceId::GitHub => github::status::client().status().await,
@@ -440,6 +744,43 @@ pub async fn read(service: ServiceId) -> Result<ServiceStatus, servicestatus::St
                 .await
         }
         ServiceId::Azure => servicestatus::AzureFeedClient::new().status().await,
+        ServiceId::Custom(id) => {
+            unreachable!("operator-added vendor {id} has no built-in status page")
+        }
+    }
+}
+
+/// Read one watched vendor's status page, whoever configured it.
+///
+/// The total reader over [`active_vendors`]'s list, and the one the poll pass
+/// should take when it adopts that list: it routes an operator-added vendor to
+/// the page **its record carries**, which is the only place that page exists.
+/// `crates/servicestatus`'s Statuspage adapter is already parameterized by base
+/// URL, so this adds no transport — #284 moves the vendor list from code to
+/// data and nothing else.
+///
+/// # Errors
+/// [`servicestatus::StatusError`] as each adapter classifies it.
+// Dead for the same reason [`active_vendors`] is, and for exactly as long: the
+// poll pass adopts both together. Plain `expect` rather than `cfg_attr`, unlike
+// the derivation — this one does I/O, so no test calls it either.
+#[expect(
+    dead_code,
+    reason = "the poll pass adopts this alongside active_vendors; see the note on that function"
+)]
+pub async fn read_vendor(
+    vendor: &ActiveVendor,
+) -> Result<ServiceStatus, servicestatus::StatusError> {
+    match &vendor.source {
+        VendorSource::Builtin => read(vendor.service).await,
+        VendorSource::Statuspage {
+            base_url,
+            component_id,
+        } => {
+            servicestatus::StatusPageClient::new(base_url, component_id)
+                .status()
+                .await
+        }
     }
 }
 
@@ -553,10 +894,14 @@ impl HostWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use store::{CredentialStore, MemoryCredentialStore, SecretError, StatusVendor, VendorAccount};
+    use uuid::Uuid;
 
     fn reading(status: Option<ComponentStatus>) -> Reading<'static> {
         Reading {
             service: ServiceId::GitHub,
+            label: "GitHub",
+            subject: "GitHub Actions",
             status,
             incident: None,
         }
@@ -598,9 +943,8 @@ mod tests {
 
         let notices = watch.observe(
             &[Reading {
-                service: ServiceId::GitHub,
-                status: Some(ComponentStatus::MajorOutage),
                 incident: Some("Incident with Actions"),
+                ..reading(Some(ComponentStatus::MajorOutage))
             }],
             true,
         );
@@ -770,6 +1114,8 @@ mod tests {
         fn as_reading(s: &servicestatus::ServiceStatus) -> Reading<'_> {
             Reading {
                 service: ServiceId::GitHub,
+                label: "GitHub",
+                subject: "GitHub Actions",
                 status: s.component,
                 incident: s.incident.as_ref().map(|i| i.name.as_str()),
             }
@@ -1090,6 +1436,298 @@ mod tests {
         );
     }
 
+    // MARK: - the derived vendor list
+
+    /// A store and a credential store, held together with the temp dir they
+    /// live in. `Store` reads a real file rather than a mock, the way
+    /// `crates/store`'s own tests do.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        store: Store,
+        credentials: MemoryCredentialStore,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            // `false`: nothing is stored yet, so `migrate_v1_to_v2` has no
+            // token to mint an account for. Each fixture below adds what it
+            // needs afterwards.
+            let store = Store::open_in(dir.path(), false).expect("open");
+            Fixture {
+                _dir: dir,
+                store,
+                credentials: MemoryCredentialStore::new(),
+            }
+        }
+
+        fn vendors(&self, claude_usage_present: bool) -> Vec<ActiveVendor> {
+            active_vendors(&self.store, &self.credentials, claude_usage_present)
+        }
+
+        fn labels(&self, claude_usage_present: bool) -> Vec<String> {
+            self.vendors(claude_usage_present)
+                .into_iter()
+                .map(|vendor| vendor.label)
+                .collect()
+        }
+
+        fn store_secret(&self, key: SecretKey, value: &str) {
+            self.credentials.set_secret(key, value).expect("write");
+        }
+    }
+
+    fn empty_store() -> Fixture {
+        Fixture::new()
+    }
+
+    /// `n` GitHub accounts, each with the credential it owns — the v2 shape
+    /// (#288), one `VendorAccount` per identity rather than one token per
+    /// vendor.
+    fn store_with_github_accounts(n: usize) -> Fixture {
+        let mut fixture = Fixture::new();
+        for index in 0..n {
+            let mut account =
+                VendorAccount::new(VendorKind::GitHub, format!("account-{index}"), "");
+            account.secret_account = SecretKey::VendorToken(account.id).account();
+            fixture.store_secret(SecretKey::VendorToken(account.id), "github-pat");
+            fixture.store.upsert_account(account);
+        }
+        fixture
+    }
+
+    /// Everything the five shipped vendors are derived from, all configured —
+    /// the machine the hardcoded list was written on.
+    fn store_with_all_credentials() -> Fixture {
+        let mut fixture = store_with_github_accounts(1);
+        fixture.store_secret(SecretKey::VercelApiToken, "vercel-token");
+        fixture.store_secret(SecretKey::NeonApiKey, "neon-key");
+        let mut settings = fixture.store.settings().clone();
+        settings.azure_storage_account = "stexample".to_owned();
+        settings.azure_cost_container = "cost-exports".to_owned();
+        fixture.store.set_settings(settings);
+        fixture
+    }
+
+    /// The rule this list exists for. A store nobody has configured watches
+    /// **nothing**, because the five vendors this file used to ship were one
+    /// operator's stack — the same error `CLAUDE.md` records for container
+    /// grouping, where a shipped example rule groups a stranger's containers by
+    /// a rule they never wrote.
+    #[test]
+    fn a_store_with_no_credentials_derives_no_vendors() {
+        assert!(
+            empty_store().vendors(false).is_empty(),
+            "a first-run store must not watch one operator's vendors on everyone's behalf"
+        );
+    }
+
+    #[test]
+    fn one_github_credential_derives_exactly_one_github_tile() {
+        let fixture = store_with_github_accounts(1);
+        let vendors = fixture.vendors(false);
+        assert_eq!(vendors.len(), 1);
+        assert_eq!(vendors[0].service, ServiceId::GitHub);
+        assert_eq!(vendors[0].label, "GitHub");
+    }
+
+    /// Derivation is per **vendor**, not per account: a status page is one page
+    /// however many credentials point at it.
+    #[test]
+    fn three_github_accounts_still_derive_one_tile() {
+        assert_eq!(
+            store_with_github_accounts(3).vendors(false).len(),
+            1,
+            "three accounts are three credentials and one status page"
+        );
+    }
+
+    /// The regression guard. Removing the hardcoded list changes what the
+    /// current operator sees after upgrading, so the derived rule reproducing
+    /// today's five is asserted rather than assumed.
+    #[test]
+    fn a_fully_configured_store_derives_the_five_vendors_shipped_today() {
+        let labels = store_with_all_credentials().labels(true);
+        for expected in ["GitHub", "Anthropic", "Vercel", "Neon", "Azure"] {
+            assert!(labels.contains(&expected.to_owned()), "missing {expected}");
+        }
+        assert_eq!(labels.len(), 5, "…and nothing beyond them: {labels:?}");
+    }
+
+    /// …in the order the panel lists them, so upgrading does not reshuffle the
+    /// rows either.
+    #[test]
+    fn the_derived_order_is_the_one_the_panel_lists_today() {
+        let services: Vec<ServiceId> = store_with_all_credentials()
+            .vendors(true)
+            .into_iter()
+            .map(|vendor| vendor.service)
+            .collect();
+        assert_eq!(services, ServiceId::ALL.to_vec());
+    }
+
+    /// A disabled account *"stays configured but is not polled"*, so a vendor
+    /// whose every account is switched off has nothing in the cockpit. The
+    /// credential is still sitting in the keychain, and must not resurrect the
+    /// tile behind the operator's back.
+    #[test]
+    fn a_vendor_whose_every_account_is_disabled_is_not_watched() {
+        let mut fixture = store_with_github_accounts(2);
+        let ids: Vec<Uuid> = fixture
+            .store
+            .accounts()
+            .iter()
+            .map(|account| account.id)
+            .collect();
+        for id in &ids {
+            fixture.store.account_mut(*id).expect("account").enabled = false;
+        }
+        assert!(fixture.vendors(false).is_empty());
+
+        // …and one of them coming back is enough, because one page is one page.
+        fixture.store.account_mut(ids[0]).expect("account").enabled = true;
+        assert_eq!(fixture.labels(false), vec!["GitHub".to_owned()]);
+    }
+
+    /// A v1 store that has not migrated yet has no account, so the derivation
+    /// falls back to the credential the migration is waiting on. Without that
+    /// fallback an operator upgrading mid-flight loses their GitHub tile until
+    /// the next launch.
+    #[test]
+    fn a_v1_store_still_derives_github_from_the_token_its_migration_has_not_read() {
+        let fixture = empty_store();
+        fixture.store_secret(SecretKey::GitHubAccessToken, "github-pat");
+        assert!(
+            fixture.store.accounts().is_empty(),
+            "the fixture opens with no token in sight, so no account is minted"
+        );
+        assert_eq!(fixture.labels(false), vec!["GitHub".to_owned()]);
+    }
+
+    /// Anthropic is the named exception: it has no credential, so its trigger
+    /// is the presence of Claude usage data.
+    #[test]
+    fn anthropic_is_derived_from_usage_data_rather_than_a_credential() {
+        let fixture = empty_store();
+        assert!(fixture.vendors(false).is_empty());
+        assert_eq!(fixture.labels(true), vec!["Anthropic".to_owned()]);
+    }
+
+    /// Azure stores no credential — the panel mints a container-scoped SAS per
+    /// poll from the operator's own `az` session — so its trigger is the
+    /// export's address, and **both halves** of it: `poll_azure` gates on the
+    /// pair, so an account without a container is a panel with no data in it.
+    #[test]
+    fn azure_is_derived_from_the_export_address_and_needs_both_halves() {
+        let mut fixture = empty_store();
+        let mut settings = fixture.store.settings().clone();
+        settings.azure_storage_account = "stexample".to_owned();
+        fixture.store.set_settings(settings.clone());
+        assert!(
+            fixture.vendors(false).is_empty(),
+            "half an address reads no export, so there is nothing to watch yet"
+        );
+
+        settings.azure_cost_container = "cost-exports".to_owned();
+        fixture.store.set_settings(settings);
+        assert_eq!(fixture.labels(false), vec!["Azure".to_owned()]);
+    }
+
+    /// Operator-added vendors (#294) are appended, carrying the page and the
+    /// component **they** picked — this build ships no adapter for them and
+    /// invents no name for them.
+    #[test]
+    fn an_operator_added_vendor_is_appended_with_the_page_it_was_given() {
+        let mut fixture = store_with_github_accounts(1);
+        let vendor = StatusVendor::new("Railway", "https://status.railway.app", "abc123", "API");
+        let id = vendor.id;
+        fixture.store.upsert_status_vendor(vendor);
+
+        let vendors = fixture.vendors(false);
+        assert_eq!(vendors.len(), 2, "appended, not merged: {vendors:?}");
+        assert_eq!(vendors[0].service, ServiceId::GitHub, "derived ones lead");
+        assert_eq!(vendors[1].service, ServiceId::Custom(id));
+        assert_eq!(vendors[1].label, "Railway");
+        assert_eq!(
+            vendors[1].source,
+            VendorSource::Statuspage {
+                base_url: "https://status.railway.app".to_owned(),
+                component_id: "abc123".to_owned(),
+            }
+        );
+    }
+
+    /// A disabled vendor stays configured and is not polled — the same rule
+    /// `StatusVendor::enabled` states, applied where the pass is assembled.
+    #[test]
+    fn a_disabled_operator_added_vendor_is_not_watched() {
+        let mut fixture = empty_store();
+        let mut vendor =
+            StatusVendor::new("Railway", "https://status.railway.app", "abc123", "API");
+        vendor.enabled = false;
+        fixture.store.upsert_status_vendor(vendor);
+        assert!(fixture.vendors(false).is_empty());
+    }
+
+    /// A credential store that fails every read — a keychain that will not
+    /// unlock. Value-free by construction, like `SecretError` itself.
+    struct UnreadableCredentialStore;
+
+    impl UnreadableCredentialStore {
+        fn refusal() -> SecretError {
+            SecretError::CorruptBlob {
+                account: "solador-secrets".to_owned(),
+            }
+        }
+    }
+
+    impl CredentialStore for UnreadableCredentialStore {
+        fn secret(&self, _key: SecretKey) -> Result<Option<String>, SecretError> {
+            Err(Self::refusal())
+        }
+
+        fn set_secret(&self, _key: SecretKey, _value: &str) -> Result<(), SecretError> {
+            unreachable!("no path under test writes a credential")
+        }
+
+        fn delete_secret(&self, _key: SecretKey) -> Result<(), SecretError> {
+            unreachable!("no path under test deletes a credential")
+        }
+
+        fn secret_bytes(&self, _key: SecretKey) -> Result<Option<Vec<u8>>, SecretError> {
+            Err(Self::refusal())
+        }
+
+        fn set_secret_bytes(&self, _key: SecretKey, _value: &[u8]) -> Result<(), SecretError> {
+            unreachable!("no path under test writes a credential")
+        }
+    }
+
+    /// `Unknown` is not `Absent`. A locked credential store has not told us
+    /// there is no GitHub token, so no GitHub tile is invented — and, equally,
+    /// the vendors that need no credential are still derived, because that
+    /// answer never depended on the keychain.
+    ///
+    /// A store with no GitHub account at all is exactly the case that has to
+    /// ask, because a keychain that refuses is also what stops
+    /// `migrate_v1_to_v2` from minting one: no account here means "we do not
+    /// know yet", never "there is no GitHub".
+    #[test]
+    fn an_unreadable_credential_store_derives_only_what_it_did_not_need_to_ask_about() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open_in(dir.path(), false).expect("open");
+        assert_eq!(
+            active_vendors(&store, &UnreadableCredentialStore, true),
+            vec![ActiveVendor {
+                service: ServiceId::Anthropic,
+                label: "Anthropic".to_owned(),
+                subject: "the Claude API".to_owned(),
+                source: VendorSource::Builtin,
+            }],
+            "a credential we could not read is unknown, and unknown is not a tile"
+        );
+    }
+
     /// Each service seeds on its own first reading. A vendor added to the map
     /// three passes late must not have that first reading read as a change —
     /// which is why there is no global `seeded` flag.
@@ -1101,11 +1739,7 @@ mod tests {
         let notices = watch.observe(
             &[
                 reading(Some(ComponentStatus::Operational)),
-                Reading {
-                    service: ServiceId::GitHub,
-                    status: Some(ComponentStatus::MajorOutage),
-                    incident: None,
-                },
+                reading(Some(ComponentStatus::MajorOutage)),
             ],
             true,
         );
