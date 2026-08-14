@@ -37,6 +37,16 @@ pub const STALE_AFTER_SECS: u64 = 30;
 /// `LocalContainerService.start(interval: 10)` and the remote container task's
 /// own 10s loop. Deliberately slower than the 1s metrics tick: a container
 /// list changes on human timescales, and `docker ps` is a process spawn.
+///
+/// **`containers_loop` no longer reads this.** Since #301 the cadence comes
+/// from the store, and these ten seconds are its *default*, declared in
+/// `store::settings::PanelInterval::spec` — the only place that can hold it,
+/// since `crates/store` cannot import this crate. What stays here is this
+/// source's own recommendation, the role `azurecost::POLL_INTERVAL` plays for
+/// the cost export, and `cfg(test)` because the mirror test is now its only
+/// reader: editing this number moves no cadence, it makes the test say the two
+/// have parted.
+#[cfg(test)]
 pub const POLL_INTERVAL_SECS: u64 = 10;
 
 /// The sentence before the first `docker ps` has returned.

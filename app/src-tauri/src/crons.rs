@@ -792,6 +792,13 @@ mod tests {
     /// The window sits above the hourly cadence behind it, or the panel would be
     /// permanently stale. One definition, shared with the other Sentry read —
     /// so the pair cannot drift apart.
+    ///
+    /// "The hourly cadence" is the *default* since #301: an operator who sets
+    /// this panel's interval past 90 minutes gets a footer between every pair
+    /// of polls. That reading is truthful — it really is two hours old — but it
+    /// is noise rather than a warning, and closing it means deriving the window
+    /// from the configured cadence, which is the shape #302 is working out on
+    /// the Azure panel.
     #[test]
     fn the_staleness_window_sits_above_the_hourly_cadence() {
         assert_eq!(STALE_AFTER_SECS, 90 * 60);

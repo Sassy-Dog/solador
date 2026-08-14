@@ -35,7 +35,7 @@ detailed than this file.
 - **Hosts** — this machine's card plus one per configured agent, in a
   width-aware grid (1s poll).
 - **Containers/VMs** — local docker/podman/tart plus every host's agent, with
-  grouping rules and presence memory (10s).
+  grouping rules and presence memory (10s by default).
 - **GitHub Repos + GitHub Runners** — per-repo CI health and counts, local
   branch/worktree counts, self-hosted runners with the absence roster
   (the store's `refresh_interval_secs`).
@@ -45,9 +45,9 @@ detailed than this file.
   (MTD)` from operator-entered rates, and a best-effort `NEON LAST INVOICE` off
   an undocumented endpoint — that one failing degrades to `—` plus a footer,
   never the consumption rows.
-- **Azure Cost** — the daily cost export, on its own 4h cadence.
+- **Azure Cost** — the daily cost export, on its own cadence (4h by default).
 - **Sentry Crons** — every cron monitor environment that is not `ok`, and **how
-  long it has been broken** (fixed 1h cadence). The age comes from
+  long it has been broken** (its own cadence, 1h by default). The age comes from
   `activeIncident.startingTimestamp`, never from `lastCheckIn` — measuring from
   the last attempt is what made day 6 of an outage look identical to day 1, and
   on the monitor that motivated the panel the two read 7d 22h and 0d 22h. A
@@ -221,8 +221,17 @@ the bundle's floor.
   remote branch / open-issue / open-PR counts).
 - Claude Code usage rollups: `crates/usage` (tokens only — USD is computed and
   unit-tested but never displayed, since the account is subscription-based).
-- Neon, Sentry, Vercel consumption: `crates/usage`. Own fixed 1h cadence, not
-  the shared refresh interval; render `—` when the key is missing or the API fails.
+- Neon, Sentry, Vercel consumption: `crates/usage`. Own 1h cadence, not the
+  shared refresh interval; render `—` when the key is missing or the API fails.
+- **Four cadences are the operator's, not constants**: containers, the metered
+  providers, Azure cost and Sentry crons are `store.json`'s `panel_intervals`,
+  each clamped to a floor stated beside the source it protects
+  (`PanelInterval::spec`). Today's constants are their *defaults*, so an
+  unconfigured store polls exactly as it always did. Every loop re-reads its
+  cadence **after each pass** through `panel_interval` in
+  `app/src-tauri/src/main.rs` — capturing it at spawn is what would make a
+  change take up to one full interval (four hours, on Azure) to apply. There is
+  no Settings control for them yet: `store.json` is the only way in.
 - Sentry cron monitors: `crates/usage/src/sentry.rs`'s `cron_monitors()` /
   `summarize_monitors()` plus `app/src-tauri/src/crons.rs`. Three wire traps are
   documented there and each has a test: there is **no** flat `projectSlug` (it is
