@@ -37,6 +37,7 @@ pub mod repos;
 pub mod runners;
 pub mod secrets;
 pub mod settings;
+pub mod statusvendors;
 
 pub use accounts::{VendorAccount, VendorKind};
 pub use containers::{
@@ -49,6 +50,7 @@ pub use repos::{seeded_repos, TrackedRepo};
 pub use runners::RunnerRosterRecord;
 pub use secrets::{CredentialStore, KeyringStore, MemoryCredentialStore, SecretError, SecretKey};
 pub use settings::{HostOverflowMode, Settings};
+pub use statusvendors::StatusVendor;
 
 /// Schema version stamped into every file this crate writes.
 ///
@@ -141,6 +143,15 @@ pub struct StoreData {
     pub hosts: Vec<Host>,
     /// Tracked repo portfolio, in user-visible order.
     pub repos: Vec<TrackedRepo>,
+    /// Operator-added status vendors, in user-visible order.
+    ///
+    /// `#[serde(default)]` so a `store.json` written before this key existed
+    /// still opens — an absent key is an install that never added one, and
+    /// there is nothing to seed: the Services panel derives its tiles rather
+    /// than shipping a list (#284), so an empty vec is a complete answer and
+    /// not a "never configured" case to keep apart from it.
+    #[serde(default)]
+    pub status_vendors: Vec<StatusVendor>,
     /// Containers panel grouping rules.
     ///
     /// `None` is "never configured" (an absent, null or unreadable value) and
@@ -196,6 +207,7 @@ impl Default for StoreData {
             settings: Settings::default(),
             hosts: Vec::new(),
             repos: Vec::new(),
+            status_vendors: Vec::new(),
             container_rules: None,
             container_presence: BTreeMap::new(),
             runner_roster: Vec::new(),
@@ -455,6 +467,44 @@ impl Store {
     pub fn remove_repo(&mut self, slug: &str) -> Option<TrackedRepo> {
         let index = self.data.repos.iter().position(|repo| repo.slug == slug)?;
         Some(self.data.repos.remove(index))
+    }
+
+    /// Every operator-added status vendor, in user-visible order.
+    #[must_use]
+    pub fn status_vendors(&self) -> &[StatusVendor] {
+        &self.data.status_vendors
+    }
+
+    /// One status vendor by id.
+    #[must_use]
+    pub fn status_vendor(&self, id: Uuid) -> Option<&StatusVendor> {
+        self.data.status_vendors.iter().find(|v| v.id == id)
+    }
+
+    /// One status vendor by id, mutable. Call [`Store::save`] to persist.
+    pub fn status_vendor_mut(&mut self, id: Uuid) -> Option<&mut StatusVendor> {
+        self.data.status_vendors.iter_mut().find(|v| v.id == id)
+    }
+
+    /// Creates or updates a status vendor, keyed by [`StatusVendor::id`].
+    ///
+    /// One entry point for both, as with [`Store::upsert_host`], so a caller
+    /// cannot land two rows sharing an id. An update keeps the vendor's
+    /// position in the list.
+    pub fn upsert_status_vendor(&mut self, vendor: StatusVendor) {
+        match self.status_vendor_mut(vendor.id) {
+            Some(existing) => *existing = vendor,
+            None => self.data.status_vendors.push(vendor),
+        }
+    }
+
+    /// Removes a status vendor, returning it.
+    ///
+    /// Nothing else to clean up, unlike [`Store::remove_host`]: this tier
+    /// stores no credential, which is the whole reason it scales.
+    pub fn remove_status_vendor(&mut self, id: Uuid) -> Option<StatusVendor> {
+        let index = self.data.status_vendors.iter().position(|v| v.id == id)?;
+        Some(self.data.status_vendors.remove(index))
     }
 
     /// The Containers panel's grouping rules — the user's, or the seeds when
@@ -988,6 +1038,58 @@ mod tests {
             store.repos().is_empty(),
             "an existing file with an explicit empty list must not be re-seeded"
         );
+    }
+
+    /// A file written before status vendors existed still opens, and the
+    /// missing section reads as "this operator added none" rather than failing
+    /// the whole load. Written as raw JSON on purpose: the current code can no
+    /// longer *emit* a file without the key, and a compatibility test fed only
+    /// values the current code produces proves nothing about the old ones.
+    #[test]
+    fn a_store_written_before_status_vendors_still_opens_with_none() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":1,"settings":{},"hosts":[],"repos":[]}"#,
+        )
+        .expect("write");
+        let store = Store::open_in(dir.path()).expect("open");
+        assert!(
+            store.status_vendors().is_empty(),
+            "an absent section is an install that never added a vendor, not a parse failure"
+        );
+    }
+
+    #[test]
+    fn status_vendors_round_trip_and_are_keyed_by_id() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path()).expect("open");
+        assert!(
+            store.status_vendors().is_empty(),
+            "a fresh store ships none"
+        );
+
+        let vendor = StatusVendor::new("Railway", "https://status.railway.app", "abc123", "API");
+        let id = vendor.id;
+        store.upsert_status_vendor(vendor.clone());
+        store.save().expect("save");
+
+        let mut reopened = Store::open_in(dir.path()).expect("reopen");
+        assert_eq!(reopened.status_vendors(), std::slice::from_ref(&vendor));
+        assert_eq!(reopened.status_vendor(id), Some(&vendor));
+
+        // An update keeps the entry's position rather than appending a second
+        // row under the same id.
+        let renamed = StatusVendor {
+            label: "Railway (prod)".into(),
+            ..vendor
+        };
+        reopened.upsert_status_vendor(renamed.clone());
+        assert_eq!(reopened.status_vendors(), std::slice::from_ref(&renamed));
+
+        assert_eq!(reopened.remove_status_vendor(id), Some(renamed));
+        assert!(reopened.status_vendors().is_empty());
+        assert_eq!(reopened.remove_status_vendor(id), None);
     }
 
     #[test]
