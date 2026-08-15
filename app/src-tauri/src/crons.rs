@@ -28,13 +28,24 @@
 //! that renders those as empty-and-green is the exact failure mode the work
 //! exists to remove. Only the fourth case, a measured org with nothing broken,
 //! is entitled to say so.
+//!
+//! ## Two clocks, and they are not the same question
+//!
+//! [`status_footer`] answers *"did the last attempt fail, or is the poller
+//! late"*. `freshness` ([`Freshness`], #338) answers *"how old is the age on
+//! screen"* — and on an hourly read that matters, because this panel's rows are
+//! durations frozen at read time: a row reading `7d 22h` measured 50 minutes ago
+//! is really `7d 22h` **plus** those 50 minutes. The panel does not recompute
+//! it, so it says how old the figure is instead of quietly re-presenting it as
+//! current. They stay two fields for the same reason the Azure Cost panel's do.
 
 use serde_json::{json, Value};
 use usage::sentry::{CronAge, CronAlert, CronMonitorsSummary};
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
+use viewmodel::freshness::Freshness;
 
-use crate::panel::{status_footer, Configured};
+use crate::panel::{freshness_payload, status_footer, Configured};
 
 /// The staleness window. Reuses the Neon/Sentry figure rather than restating it:
 /// this read is on the same hourly cadence, so the window has to sit above it or
@@ -252,9 +263,22 @@ fn title(alert: &CronAlert) -> String {
 // MARK: - View
 
 /// The panel payload.
+///
+/// `cadence_secs` is the operator's cadence for this panel
+/// (`PanelInterval::Crons`), and is what the reading's age is classified
+/// against. It is passed in rather than read here because this module is a view
+/// over values and the store lives on the other side of the shell — the same
+/// arrangement the Azure Cost panel uses.
 #[must_use]
-pub fn view(state: &CronsState, now: u64) -> Value {
+pub fn view(state: &CronsState, cadence_secs: u64, now: u64) -> Value {
     let kind = PanelKind::SentryCrons;
+    // The age of the ages this payload paints, which is the age of the last
+    // *success* — the same clock the footer's `last ok` promises about, asked a
+    // different question. `None` (nothing ever read) is `Unknown`, never a zero.
+    let freshness = Freshness::classify(
+        state.last_updated.map(|at| now.saturating_sub(at)),
+        cadence_secs,
+    );
     let mut payload = json!({
         "id": kind.id(),
         "title": kind.title(),
@@ -262,6 +286,10 @@ pub fn view(state: &CronsState, now: u64) -> Value {
         "message": Value::Null,
         "rows": Value::Array(vec![]),
         "footer": Value::Null,
+        // How old the rows are, beside — never inside — the footer above.
+        // Published in every state, including the message states, where it is
+        // the `unknown` that says there is no reading rather than a fresh one.
+        "freshness": freshness_payload(freshness),
         // Published for the frontend's refresh cadence, which is faster while a
         // panel is still filling in. Nothing is known until a pass has read the
         // credential store.
@@ -492,6 +520,13 @@ mod tests {
 
     const NOW: u64 = 1_700_000_000;
 
+    /// The cadence every test below classifies freshness against: this panel's
+    /// own default, which is what an unconfigured store polls at. Read from
+    /// `PanelInterval` rather than written out, so a change to the default
+    /// cannot leave these tests asserting against a cadence the app no longer
+    /// uses.
+    const CADENCE: u64 = store::settings::PanelInterval::Crons.spec().default_secs as u64;
+
     fn fixture_now() -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::parse_from_rfc3339("2026-08-04T15:00:00Z")
             .expect("a fixed now")
@@ -499,7 +534,7 @@ mod tests {
     }
 
     fn payload(kind: Fixture) -> Value {
-        view(&fixture_state(kind, NOW, fixture_now()), NOW)
+        view(&fixture_state(kind, NOW, fixture_now()), CADENCE, NOW)
     }
 
     fn rows(payload: &Value) -> &Vec<Value> {
@@ -699,7 +734,7 @@ mod tests {
         let mut state = CronsState::new();
         state.begin();
         state.succeeded(usage::summarize_monitors(&monitors, fixture_now()), NOW);
-        let payload = view(&state, NOW);
+        let payload = view(&state, CADENCE, NOW);
 
         assert_eq!(payload["message"]["color"], color::hex(color::RED));
         let text = payload["message"]["text"].as_str().expect("text");
@@ -724,7 +759,7 @@ mod tests {
     /// operator whose token is fine to go and paste one.
     #[test]
     fn the_frame_before_any_pass_is_loading_and_not_a_setup_instruction() {
-        let payload = view(&CronsState::new(), NOW);
+        let payload = view(&CronsState::new(), CADENCE, NOW);
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
         assert_ne!(
             payload["message"]["text"], UNCONFIGURED_MESSAGE,
@@ -752,7 +787,7 @@ mod tests {
     fn a_failure_after_a_success_keeps_the_rows_and_dates_the_last_good_read() {
         let mut state = fixture_state(Fixture::Alerting, NOW - 600, fixture_now());
         state.failed("Sentry API request failed (HTTP 503)".to_owned());
-        let payload = view(&state, NOW);
+        let payload = view(&state, CADENCE, NOW);
 
         assert_eq!(rows(&payload).len(), 4, "the last good rows stay on screen");
         assert_eq!(
@@ -774,7 +809,71 @@ mod tests {
         let mut state = CronsState::new();
         state.begin();
         state.failed("boom".to_owned());
-        assert_eq!(view(&state, NOW)["footer"], Value::Null);
+        assert_eq!(view(&state, CADENCE, NOW)["footer"], Value::Null);
+    }
+
+    // MARK: freshness
+
+    /// The two clocks, side by side. Inside the cycle nothing is added; one
+    /// second past it the rows are dated, in amber, while the footer stays
+    /// silent — the window neither field can express on its own.
+    ///
+    /// Both readings carry the *same* `7d 22h`, which is the point: the ages
+    /// are frozen at read time, so the only difference a reader sees is the
+    /// claim being made about them.
+    #[test]
+    fn a_stale_reading_is_dated_beside_the_footer_rather_than_inside_it() {
+        let live = payload(Fixture::Alerting);
+        assert_eq!(live["freshness"]["state"], "live");
+        assert_eq!(live["freshness"]["measured_secs_ago"], 0);
+        assert!(
+            live["freshness"]["text"].is_null(),
+            "a current reading is painted as it always was"
+        );
+
+        let state = fixture_state(Fixture::Alerting, NOW - CADENCE - 1, fixture_now());
+        let stale = view(&state, CADENCE, NOW);
+        assert_eq!(stale["freshness"]["state"], "stale");
+        assert_eq!(stale["freshness"]["measured_secs_ago"], CADENCE + 1);
+        assert_eq!(stale["freshness"]["text"], "as of 1h ago");
+        assert_eq!(stale["freshness"]["color"], color::hex(color::AMBER));
+        // The rows have not moved, and the warning has not fired: the footer's
+        // window is 90m and the cadence an hour.
+        assert_eq!(row_by(&stale, "cron-relay-drift-check")["age"], "7d 22h");
+        assert!(stale["footer"].is_null(), "dated, and no warning yet");
+    }
+
+    /// The failure this field exists to prevent: a panel that has never once
+    /// read publishing an age of zero, which would look like the freshest
+    /// reading in the cockpit. Every message state must publish `unknown` —
+    /// including the one where a token is simply missing, which is setup rather
+    /// than staleness.
+    #[test]
+    fn a_panel_with_no_reading_publishes_no_age_rather_than_a_fresh_looking_zero() {
+        for kind in [Fixture::Unconfigured, Fixture::Failed] {
+            let payload = payload(kind);
+            assert_eq!(payload["freshness"]["state"], "unknown", "{kind:?}");
+            assert!(
+                payload["freshness"]["measured_secs_ago"].is_null(),
+                "{kind:?}"
+            );
+            assert_ne!(payload["freshness"]["measured_secs_ago"], 0, "{kind:?}");
+            assert!(payload["freshness"]["text"].is_null(), "{kind:?}");
+        }
+        // …and the very first frame, before any pass has read the keychain.
+        let first = view(&CronsState::new(), CADENCE, NOW);
+        assert_eq!(first["freshness"]["state"], "unknown");
+        assert_eq!(first["message"]["text"], LOADING_MESSAGE);
+    }
+
+    /// The age is classified against the operator's cadence, not a constant
+    /// here: an operator polling every four hours must not be told a two-hour
+    /// old reading is stale.
+    #[test]
+    fn a_longer_configured_cadence_keeps_a_reading_live_for_longer() {
+        let state = fixture_state(Fixture::Alerting, NOW - 2 * 3_600, fixture_now());
+        assert_eq!(view(&state, 4 * 3_600, NOW)["freshness"]["state"], "live");
+        assert_eq!(view(&state, CADENCE, NOW)["freshness"]["state"], "stale");
     }
 
     /// A fresh, healthy panel renders no footer — that is what makes a footer
@@ -784,7 +883,7 @@ mod tests {
         assert!(payload(Fixture::Alerting)["footer"].is_null());
         let state = fixture_state(Fixture::Alerting, NOW - STALE_AFTER_SECS - 1, fixture_now());
         assert_eq!(
-            view(&state, NOW)["footer"]["text"],
+            view(&state, CADENCE, NOW)["footer"]["text"],
             "⚠ stale · updated 1h ago"
         );
     }
@@ -807,7 +906,7 @@ mod tests {
         // …and the constant is live rather than merely declared: exactly at the
         // window is still fresh, one second past it is a footer.
         let fresh = fixture_state(Fixture::Alerting, NOW - STALE_AFTER_SECS, fixture_now());
-        assert_eq!(view(&fresh, NOW)["footer"], Value::Null);
+        assert_eq!(view(&fresh, CADENCE, NOW)["footer"], Value::Null);
     }
 
     /// An unreadable credential store keeps a live panel's rows and adds the
@@ -817,7 +916,7 @@ mod tests {
     fn an_unreadable_credential_store_degrades_rather_than_unconfiguring() {
         let mut live = fixture_state(Fixture::Alerting, NOW, fixture_now());
         live.unreadable("the credential store would not answer".to_owned());
-        let payload = view(&live, NOW);
+        let payload = view(&live, CADENCE, NOW);
         assert_eq!(rows(&payload).len(), 4);
         assert_eq!(
             payload["footer"]["text"],
@@ -826,7 +925,10 @@ mod tests {
 
         let mut never = CronsState::new();
         never.unreadable("the credential store would not answer".to_owned());
-        assert_eq!(view(&never, NOW)["message"]["text"], LOADING_MESSAGE);
+        assert_eq!(
+            view(&never, CADENCE, NOW)["message"]["text"],
+            LOADING_MESSAGE
+        );
     }
 
     /// A vanished token drops the retained rows: a stale monitor list must not
@@ -836,7 +938,7 @@ mod tests {
     fn clearing_the_token_drops_the_rows_it_was_showing() {
         let mut state = fixture_state(Fixture::Alerting, NOW, fixture_now());
         state.unconfigure();
-        let payload = view(&state, NOW);
+        let payload = view(&state, CADENCE, NOW);
         assert!(rows(&payload).is_empty());
         assert_eq!(payload["message"]["text"], UNCONFIGURED_MESSAGE);
         assert!(payload["footer"].is_null());

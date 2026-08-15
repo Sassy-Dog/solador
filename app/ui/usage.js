@@ -90,7 +90,36 @@ function footerNode(footer, cls) {
   return el;
 }
 
-/** One provider section: a divider, its rows, an optional bar, its own footer. */
+/**
+ * How old this section's figures are, or nothing.
+ *
+ * A DIFFERENT question from the footer beside it, and deliberately a different
+ * element: `provider.footer` says the last attempt failed or the poller is
+ * late, `provider.freshness` says the dollars and counts on screen were
+ * measured 23h ago. These providers are read hourly, so the first speaks a full
+ * half hour before the second does — the window where a figure is no longer
+ * current and the poller is not yet worth warning about.
+ *
+ * `.panel-asof` is the Azure Cost panel's class, reused rather than reinvented:
+ * same job, same typography. `live` and `unknown` carry no text and paint
+ * nothing — a current reading reads as it always did, and a section that has
+ * never answered has no figure to date. Rust classifies the age against the
+ * providers' cadence and hands over the finished line, so nothing here compares
+ * an age to a threshold.
+ */
+function asOfNode(freshness) {
+  const text = freshness && freshness.text;
+  if (!text) return null;
+  const el = node("div", "panel-asof", text);
+  el.title = text;
+  el.style.color = freshness.color;
+  return el;
+}
+
+/**
+ * One provider section: a divider, its rows, an optional bar, how old they are,
+ * and its own footer.
+ */
 function providerNode(provider) {
   const el = node("div", "pv-section");
   el.dataset.provider = provider.id;
@@ -98,6 +127,10 @@ function providerNode(provider) {
   for (const row of provider.rows || []) el.appendChild(valueRow(row));
   const bar = barNode(provider.bar);
   if (bar) el.appendChild(bar);
+  // Above the footer, matching the Azure header's order: how old the figure is,
+  // then the warning about the poller.
+  const asOf = asOfNode(provider.freshness);
+  if (asOf) el.appendChild(asOf);
   const footer = footerNode(provider.footer, "pv-footer");
   if (footer) el.appendChild(footer);
   return el;

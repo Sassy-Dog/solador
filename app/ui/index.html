@@ -170,6 +170,15 @@
     <section class="panel" id="cronsPanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="cronsTitle"></h2>
+        <!-- Two spans, two clocks, exactly as on the Azure Cost panel above.
+             `#cronsFreshness` dates the rows ("as of 23h ago") — which matters
+             here because every age below it is a duration frozen at read time,
+             so a row saying `7d 22h` read an hour ago is really `7d 23h`.
+             `#cronsStale` is the status footer and says the last attempt failed
+             or the poller is late. A reading goes stale one cadence late and
+             the footer only warns half an hour past that, so there is a window
+             where the first speaks and the second is silent. -->
+        <span class="panel-asof" id="cronsFreshness" hidden></span>
         <span class="panel-stale" id="cronsStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="cronsTrailing"></span>

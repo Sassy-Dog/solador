@@ -2496,9 +2496,14 @@ static FIRST_CRONS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
 fn crons(state: tauri::State<'_, Arc<App>>) -> Value {
+    // The operator's cadence for this panel, read at render time like the Azure
+    // panel's and for the same reason: it is what the reading's age is measured
+    // against, so a shortened interval must re-date the card now rather than an
+    // hour from now.
+    let cadence_secs = panel_interval(&state.store, PanelInterval::Crons).as_secs();
     let payload = {
         let panel = state.crons.lock().expect("crons state poisoned");
-        crons::view(&panel, panel::now_unix())
+        crons::view(&panel, cadence_secs, panel::now_unix())
     };
     FIRST_CRONS_REQUEST.call_once(|| {
         eprintln!(
@@ -2692,9 +2697,13 @@ fn usage(state: tauri::State<'_, Arc<App>>) -> Value {
             },
         )
     };
+    // The metered providers' cadence, read at render time for the same reason:
+    // it is what each section's freshness line is measured against, and a
+    // shortened interval must re-date those sections now.
+    let cadence_secs = panel_interval(&state.store, PanelInterval::UsageProviders).as_secs();
     let payload = {
         let panel = state.usage.lock().expect("usage state poisoned");
-        usage::view(&panel, quota, rates, panel::now_unix())
+        usage::view(&panel, quota, rates, cadence_secs, panel::now_unix())
     };
     FIRST_USAGE_REQUEST.call_once(|| {
         let providers = payload["providers"].as_array().map_or(0, Vec::len);
@@ -4180,17 +4189,26 @@ fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Val
 /// The Usage and Azure Cost panels as fixtures, at a fixed `now` for the same
 /// reason `--dump-containers` is: every relative age in a footer would otherwise
 /// drift on each regeneration and no test could assert one.
-fn dump_usage(kind: usage::Fixture) -> Value {
+///
+/// `stale` dates the **metered providers'** last successful read most of a day
+/// back — Claude's walk stays current, because it is on a cadence two orders of
+/// magnitude faster and its staleness is a different fixture's job. Like
+/// [`dump_azure`], a fixture has no store, so the cadence the age is classified
+/// against is the one an unconfigured store polls at.
+fn dump_usage(kind: usage::Fixture, stale: bool) -> Value {
     const NOW: u64 = 1_700_000_000;
+    let cadence_secs = u64::from(PanelInterval::UsageProviders.spec().default_secs);
+    let providers_at = if stale { NOW - 23 * 3_600 } else { NOW };
     // A quota the fixture's own count lands at 94% of, so the amber step is
     // exercised rather than a flat green bar.
     usage::view(
-        &usage::fixture_state(kind, NOW),
+        &usage::fixture_state(kind, NOW, providers_at),
         10_000,
         usage::NeonRates {
             usd_per_cu_hour: 0.106,
             usd_per_gib_month: 0.35,
         },
+        cadence_secs,
         NOW,
     )
 }
@@ -4218,12 +4236,23 @@ fn dump_azure(kind: azure::Fixture, stale: bool) -> Value {
 /// panel clock keeps the footer from drifting, and the *wire* clock is what makes
 /// the ages exactly `7d 22h` and `0d 22h` — the two figures the age rule is
 /// about — on every machine and at every hour.
-fn dump_crons(kind: crons::Fixture) -> Value {
+///
+/// `stale` moves only the **panel** clock, dating the last successful read 23h
+/// back. The wire clock stays put, so the rows still read `7d 22h` — which is
+/// the point of the rendering: the same ages, now carrying the age of the
+/// reading itself.
+fn dump_crons(kind: crons::Fixture, stale: bool) -> Value {
     const NOW: u64 = 1_700_000_000;
+    let cadence_secs = u64::from(PanelInterval::Crons.spec().default_secs);
     let wire_now = chrono::DateTime::parse_from_rfc3339("2026-08-04T15:00:00Z")
         .expect("a fixed wire clock")
         .with_timezone(&chrono::Utc);
-    crons::view(&crons::fixture_state(kind, NOW, wire_now), NOW)
+    let read_at = if stale { NOW - 23 * 3_600 } else { NOW };
+    crons::view(
+        &crons::fixture_state(kind, read_at, wire_now),
+        cadence_secs,
+        NOW,
+    )
 }
 
 /// The Settings payload as a fixture, built from a hand-made configuration
@@ -4595,6 +4624,7 @@ fn run_dump(args: &[String]) -> bool {
         return true;
     }
     let empty = args.iter().any(|arg| arg == "--empty");
+    let stale = args.iter().any(|arg| arg == "--stale");
     if let Some(path) = dump_flag_path(args, "--dump-repos", "sample-repos.json") {
         write_json(&path, &dump_github(empty, false));
         return true;
@@ -4611,7 +4641,7 @@ fn run_dump(args: &[String]) -> bool {
         } else {
             usage::Fixture::Measured
         };
-        write_json(&path, &dump_usage(kind));
+        write_json(&path, &dump_usage(kind, stale));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-azure", "sample-azure.json") {
@@ -4624,7 +4654,6 @@ fn run_dump(args: &[String]) -> bool {
         } else {
             azure::Fixture::Measured
         };
-        let stale = args.iter().any(|arg| arg == "--stale");
         write_json(&path, &dump_azure(kind, stale));
         return true;
     }
@@ -4644,7 +4673,7 @@ fn run_dump(args: &[String]) -> bool {
         } else {
             crons::Fixture::Alerting
         };
-        write_json(&path, &dump_crons(kind));
+        write_json(&path, &dump_crons(kind, stale));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-openclaw", "sample-openclaw.json") {

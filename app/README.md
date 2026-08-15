@@ -550,8 +550,12 @@ await window.__TAURI__.core.invoke("azure_cost");
       //   ^ the row is *absent*, not "—", when no rate is set or usage is unmeasured
       {"label": "NEON LAST INVOICE",      "value": "$15.91",    "valueColor": …}
       //   ^ "—" when the org has no invoices yet, or none could be read
-    ], "footer": …},
-    {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"}, "footer": …}
+    ], "footer": …,
+      "freshness": {"state": "live", "measured_secs_ago": 600, "text": null, "color": null}},
+      //   ^ how old THESE ROWS are, which is not what the footer answers. Same
+      //     shape and same rules as Azure Cost's below, one per metered section.
+    {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"},
+      "footer": …, "freshness": …}
   ],
   "footer": null                         // Claude's own, staleAfter 150s
 }
@@ -584,18 +588,30 @@ operator's in [#301](https://github.com/Sassy-Dog/solador/issues/301)), because
 the export is published about once a day and the crate's fingerprint cache makes
 an unchanged cycle cost one blob listing and zero partition bodies.
 
-**Azure Cost carries two staleness clocks, and they are not the same question**
-([#302](https://github.com/Sassy-Dog/solador/issues/302)). `freshness` is
+**Every slow-cadence panel carries two staleness clocks, and they are not the
+same question** ([#302](https://github.com/Sassy-Dog/solador/issues/302),
+extended to Usage and Sentry Crons by
+[#338](https://github.com/Sassy-Dog/solador/issues/338)). `freshness` is
 `viewmodel::freshness::Freshness` over the age of the last **success**: past one
-whole cadence the reading stops being live, the headline is painted in the
-dimmer green and the header gains an `as of 23h ago` line beside — never inside
-— the footer. `footer` is `status_footer` and answers something else entirely:
-*is the poller stuck*. Its window is therefore one grace hour **past** the
-cadence (`azure::stale_after_secs`, the flat `5 * 60 * 60` the panel used to
-hardcode, now derived so an operator who changes the interval does not get a
-warning on every healthy read). Between the two edges the card shows a dated,
-dimmed figure and no warning at all — the state neither field can express
-alone, and the reason they were not folded into one.
+whole cadence the reading stops being live and an `as of 23h ago` line appears
+beside — never inside — the footer. On Azure Cost that line sits in the header
+and the headline is repainted in the dimmer green; on Sentry Crons it sits in
+the header too; on Usage each metered provider section carries its own, in the
+body beside the per-section footer that is already there, because a section has
+no header to move to. `footer` is `status_footer` and answers something else
+entirely: *is the poller stuck*. Its window sits **past** the cadence — an hour
+of grace on Azure (`azure::stale_after_secs`, the flat `5 * 60 * 60` the panel
+used to hardcode, now derived so an operator who changes the interval does not
+get a warning on every healthy read), and a flat 90m on the hourly reads. Between
+the two edges the card shows a dated figure and no warning at all — the state
+neither field can express alone, and the reason they were not folded into one.
+
+The classification happens in exactly one place (`Freshness::classify`, against
+the operator's `PanelInterval` for that panel) and arrives as a finished
+`{state, measured_secs_ago, text, color}`, so no frontend compares an age to a
+threshold. `unknown` — nothing has ever been read — publishes a **null** age and
+no text: a `0` there would paint the panel that has never answered as the
+freshest thing in the cockpit.
 
 **Unknown is not zero, again — and this time it also suppresses a bar.**
 `crates/usage` models Neon's and Sentry's summaries as enums whose *unmeasured*
@@ -747,7 +763,13 @@ await window.__TAURI__.core.invoke("crons");
       "title": "cron-relay-drift-check (platform/prd) — error for 7d 22h"
     }
   ],
-  "footer": null                          // staleAfter 90m, the other Sentry read's window
+  "footer": null,                         // staleAfter 90m, the other Sentry read's window
+  "freshness": {"state": "live", "measured_secs_ago": 600, "text": null, "color": null}
+  //   ^ how old the ROWS are, which is not what the footer answers. Every age
+  //     above is frozen at read time, so a `7d 22h` read an hour ago is really
+  //     `7d 23h`; "stale" past one cadence carries {"text": "as of 23h ago"} to
+  //     paint, and "unknown" (a null age, never a 0) means nothing has ever
+  //     been read. Same shape and same rules as the Azure Cost panel's.
 }
 ```
 
@@ -1554,13 +1576,22 @@ cargo run -p solador-app -- --dump-runners sample-runners.json     # the Runners
 #   …both take `--empty`, which dumps the no-credential state.
 cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage panel
 #   …plus `--unmeasured` (both providers answering, neither measuring: the em
-#   dash path, with the quota set and the bar therefore suppressed) and
-#   `--empty` (no summary, no provider configured).
+#   dash path, with the quota set and the bar therefore suppressed),
+#   `--empty` (no summary, no provider configured) and `--stale` (the same good
+#   read, with the METERED providers' last success dated 23h back: an "as of
+#   23h ago" line per section, and each section's separate warning beside it —
+#   Claude's own rollups stay current, being on a far faster cadence).
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and
 #   `--stale` (the same good read, dated 23h back: a dimmed headline, an "as of
 #   23h ago" line, and the footer's separate warning beside it).
+cargo run -p solador-app -- --dump-crons sample-crons.json         # the Sentry Crons panel
+#   …plus `--empty` (a measured org with nothing broken), `--blind` (no monitors
+#   at all: red, never empty-and-green), `--error` (a failed read),
+#   `--unconfigured` (no Sentry token) and `--stale` (the same monitors, dated
+#   23h back: an "as of 23h ago" line and the footer's separate warning beside
+#   it — the ages themselves do not move, which is the point).
 cargo run -p solador-app -- --dump-openclaw sample-openclaw.json   # the OpenClaw panel
 #   …plus `--pairing` (the banner with the approve command), `--error` (a
 #   rejected handshake, red), `--idle` (no gateway URL: the muted Settings

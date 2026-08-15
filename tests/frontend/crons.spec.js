@@ -199,6 +199,41 @@ test("a fresh panel renders no footer at all", async ({ page, baseURL }) => {
   await expect(page.locator("#cronsStale")).toBeHidden();
 });
 
+test("a stale reading is dated on its own line beside the footer", async ({ page, baseURL }) => {
+  // The two clocks, side by side and answering different questions:
+  // `#cronsFreshness` dates the rows ("as of 23h ago"), `#cronsStale` is the
+  // status footer warning that the poller is late. Both fixtures carry the
+  // SAME `7d 22h` — the ages are frozen at read time, so the only difference a
+  // reader sees is the claim being made about them.
+  const live = await gotoWithCrons(page, baseURL, await fixture(baseURL, "sample-crons.json"));
+  expect(live.freshness.state).toBe("live");
+  expect(live.freshness.text, "a current reading is painted as it always was").toBeNull();
+  await expect(page.locator("#cronsFreshness")).toBeHidden();
+
+  const stale = await gotoWithCrons(page, baseURL, await fixture(baseURL, "sample-crons-stale.json"));
+  expect(stale.freshness.state).toBe("stale");
+  expect(stale.freshness.measured_secs_ago).toBeGreaterThan(0);
+  await expect(page.locator("#cronsFreshness")).toHaveText(stale.freshness.text);
+  await expect(page.locator("#cronsFreshness")).toHaveAttribute("title", stale.freshness.text);
+  await expect(page.locator("#cronsFreshness")).toHaveCSS("color", rgb(stale.freshness.color));
+
+  // Not folded into the footer: two elements, two strings, both visible.
+  await expect(page.locator("#cronsStale")).toHaveText(stale.footer.text);
+  expect(stale.footer.text).not.toBe(stale.freshness.text);
+
+  // Same ages, same rows — the mark is the line, never a changed duration.
+  expect(stale.rows.map((r) => r.age)).toEqual(live.rows.map((r) => r.age));
+});
+
+test("a panel with no reading publishes no age rather than a fresh-looking zero", async ({ page, baseURL }) => {
+  // A missing token is setup, not staleness: the panel says so and dates
+  // nothing, because nothing has ever been read.
+  const vm = await fixture(baseURL, "sample-crons.json");
+  vm.freshness = { state: "unknown", measured_secs_ago: null, text: null, color: null };
+  await gotoWithCrons(page, baseURL, vm);
+  await expect(page.locator("#cronsFreshness")).toBeHidden();
+});
+
 /**
  * Monitor slugs, project slugs and Sentry status words are remote strings, and a
  * webview parses markup. Every one of them is set with textContent.
