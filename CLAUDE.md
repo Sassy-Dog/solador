@@ -88,7 +88,9 @@ carries a five-minute manual smoke checklist that is the only thing covering it
   `shellcheck -S warning` over `agent/deploy/*.sh`; mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — Clean build artifacts
-- `./dev publish` — **Not implemented.** Refuses before minting a tag; see #15.
+- `./dev publish` — mint the CalVer tag, then build a signed, notarized,
+  stapled `.dmg` (#306). **Pushes a real tag**; `--skip-mint` runs the same
+  build without one
 
 > `./dev lint` is the local mirror of CI's Rust lint gates, which live inside the
 > `rust-workspace` and `agent-tests` jobs. `./scripts/install-hooks.sh`
@@ -101,7 +103,8 @@ carries a five-minute manual smoke checklist that is the only thing covering it
 
 ### Releasing
 
-There is a **bundle** but still no release path.
+There is a signed, notarized release path as of #306 — and no release
+*train* yet (#15).
 
 `./dev build --release` produces `target/release/bundle/macos/Solador.app`
 through `cargo tauri build` (#303). The bundler is not in `tauri-build` — that
@@ -116,11 +119,35 @@ the debug profile on every PR (`./dev build --bundle`, job **macOS bundle
 (unsigned)**), so bundling cannot break unnoticed the way the agent deploy did
 in #269.
 
-The bundle is **unsigned and unnotarized**, so Gatekeeper refuses it anywhere
-it was not built. Signing is **#306**, updates are **#308**, and the release
-train is **#15**, which is still gating. `scripts/publish.sh` keeps the CalVer
-minting and CI-verification pre-flight as the scaffold #15 will complete, and
-refuses *before* minting a tag.
+`./dev build --release --notarize` produces a **signed, notarized, stapled
+`.dmg`** (#306). `./dev publish` is the same thing behind the CalVer mint, and
+its blanket refusal is gone. Updates are **#308**, release.yml is **#307**, and
+the train that ties them together is **#15**.
+
+**Signing runs last, after the `CFBundleVersion` stamp, and the ordering is not
+a preference.** Info.plist is sealed by the signature, so stamping it afterwards
+yields `invalid Info.plist (plist or signature have been modified)` — measured,
+not assumed. That is also why Tauri's own `APPLE_SIGNING_IDENTITY` path is left
+off: the CLI signs *during* bundling, which is before this repo has stamped
+anything. Same reason the `.dmg` is built with `hdiutil` here rather than by
+`--bundles dmg`. Keep both after the stamp.
+
+The identity is resolved from the keychain by the prefix `Developer ID
+Application` rather than configured, so no per-machine certificate hash lands in
+the repo; `APPLE_SIGNING_IDENTITY` overrides for CI. **Two matches is refused,
+never resolved by picking the first.** Gatekeeper shows `Sassy Dog Enterprises
+LLC` — a distribution certificate's name is derived by Apple from the team's
+legal entity, so no certificate under this team can read anything else.
+
+Notarization uses the **App Store Connect API key** (`APPLE_ASC_KEY_ID`,
+`APPLE_ASC_ISSUER_ID`, `APPLE_ASC_KEY_BASE64`, from Doppler `_stores/apple`),
+never an Apple ID plus app-specific password. The key is written to a 0600 file
+in a private temp dir because `notarytool` takes a path, and removed on every
+exit path.
+
+`./dev publish --skip-mint` runs the whole signed-and-notarized build **without
+minting or pushing a tag** — the seam that lets the release path be exercised
+without cutting a release.
 
 Under `cargo tauri build`, `.cargo/config.toml`'s `MACOSX_DEPLOYMENT_TARGET` is
 **shadowed**: the CLI exports the floor from `bundle.macOS.minimumSystemVersion`

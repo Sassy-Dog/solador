@@ -44,6 +44,8 @@ script knows where they come from, and no contributor needs to.
 |---|---|---|
 | `SENTRY_DSN` | where opt-in crash reports go — see below | The crash reporter is a silent no-op: nothing is sent, nothing errors. This is the normal state of any build you compile yourself. |
 | `DEVELOPMENT_TEAM` | picking a specific Apple signing team | `codesign` falls back to an ad-hoc signature. `./dev build` works either way. |
+| `APPLE_ASC_KEY_ID`, `APPLE_ASC_ISSUER_ID`, `APPLE_ASC_KEY_BASE64` | notarizing a release (`./dev build --notarize`, `./dev publish`) | The build **fails before submitting** and names which of the three is unset. Everything short of notarization — including `--sign` — works without them. |
+| `APPLE_SIGNING_IDENTITY` | overriding which certificate signs | The identity is resolved from the keychain by the prefix `Developer ID Application`. Only needed where that is ambiguous or absent (CI). |
 
 Nothing in the day-to-day loop needs either: `./dev`, `./dev test`, `./dev lint`
 and `./dev build` all work on a clean clone with neither set.

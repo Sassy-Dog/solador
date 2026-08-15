@@ -24,8 +24,10 @@ set -euo pipefail
 # storm — has to keep applying to the dev loop's throwaway .app. `tauri build`
 # signs as `app.solador.desktop` and moves the designated requirement.
 #
-# The bundle produced here is UNSIGNED, and that is correct for now: signing
-# and notarization are #306, the updater is #308, the tag mint is #15.
+# The bundle is unsigned by DEFAULT and signed on request: `--sign` applies the
+# Developer ID identity, `--notarize` adds the .dmg, Apple's verdict and the
+# staple (#306). Both are off unless asked for, so a contributor without the
+# certificate still gets a bundle. The updater is #308, the release train #15.
 #
 # One CLI side effect to know about: `cargo tauri build` EDITS TRACKED SOURCE.
 # It rewrites app/src-tauri/Cargo.toml's `tauri` / `tauri-build` entries into
@@ -44,6 +46,8 @@ TAURI_CONF="$ROOT_DIR/app/src-tauri/tauri.conf.json"
 CARGO_PROFILE="debug"
 WANT_BUNDLE=false
 BUNDLE_REQUESTED=false
+WANT_SIGN=false
+WANT_NOTARIZE=false
 PASSTHRU=()
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +62,22 @@ while [[ $# -gt 0 ]]; do
         --bundle)
             WANT_BUNDLE=true
             BUNDLE_REQUESTED=true
+            shift
+            ;;
+        --notarize)
+            # Implies --sign: there is nothing to notarize about an unsigned
+            # bundle, and Apple rejects one.
+            WANT_NOTARIZE=true
+            WANT_SIGN=true
+            WANT_BUNDLE=true
+            shift
+            ;;
+        --sign)
+            # Off by default, and deliberately not implied by --release: a
+            # contributor without the certificate must still be able to produce
+            # a bundle. `scripts/publish.sh` is what turns it on (#306).
+            WANT_SIGN=true
+            WANT_BUNDLE=true
             shift
             ;;
         *)
@@ -250,7 +270,229 @@ build_bundle() {
     executable="$app_bundle/Contents/MacOS/$(plutil -extract CFBundleExecutable raw -o - "$plist")"
     assert_deployment_floor "$executable" "$min_os"
 
+    if [[ "$WANT_SIGN" == true ]]; then
+        sign_app "$app_bundle" "$plist" "$marketing_version" "$build_number"
+    fi
+
+    if [[ "$WANT_NOTARIZE" == true ]]; then
+        local dmg identity
+        identity="$(resolve_signing_identity)" || exit 1
+        dmg="$ROOT_DIR/target/$CARGO_PROFILE/bundle/dmg/${product_name}-${marketing_version}.dmg"
+        mkdir -p "$(dirname "$dmg")"
+        make_dmg "$app_bundle" "$dmg" "$identity"
+        notarize_and_staple "$dmg"
+    fi
+
     log_success "Bundled $app_bundle"
+}
+
+# ---------------------------------------------------------------------------
+# Signing (#306)
+# ---------------------------------------------------------------------------
+
+# The identity is resolved from the keychain by PREFIX, not configured.
+#
+# A certificate's full name carries the team id, and its SHA-1 is per-machine;
+# pinning either in the repo makes a second machine's build fail for a reason
+# that reads like a code problem. `APPLE_SIGNING_IDENTITY` overrides for CI,
+# where the keychain is built on the fly.
+#
+# `Developer ID Application` and nothing else: `Apple Distribution` is the Mac
+# App Store lane and notarization refuses it, and this repo distributes
+# directly (#15). The name Gatekeeper shows is derived by Apple from the team's
+# legal entity, so it reads "Sassy Dog Enterprises LLC" and cannot be made to
+# read anything else.
+SIGNING_IDENTITY_PREFIX="Developer ID Application"
+
+resolve_signing_identity() {
+    if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+        printf '%s' "$APPLE_SIGNING_IDENTITY"
+        return 0
+    fi
+
+    local matches count
+    matches="$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n "s/.*\"\(${SIGNING_IDENTITY_PREFIX}[^\"]*\)\".*/\1/p")"
+    count="$(printf '%s' "$matches" | grep -c . || true)"
+
+    case "$count" in
+        1) printf '%s' "$matches" ;;
+        0)
+            log_error "No '$SIGNING_IDENTITY_PREFIX' certificate in the keychain."
+            log_error "Install the team's Developer ID cert, or set APPLE_SIGNING_IDENTITY."
+            return 1
+            ;;
+        *)
+            # Ambiguous is refused, never resolved by picking the first. Signing
+            # with the wrong identity produces an artifact that installs fine
+            # here and is rejected on every machine that is not this one.
+            log_error "$count '$SIGNING_IDENTITY_PREFIX' certificates match — refusing to guess:"
+            printf '%s\n' "$matches" | sed 's/^/    /' >&2
+            log_error "Set APPLE_SIGNING_IDENTITY to the one you mean."
+            return 1
+            ;;
+    esac
+}
+
+# Sign the bundle, and prove the signature covers the stamped Info.plist.
+#
+# **This runs last, after the CFBundleVersion stamp, and the order is not a
+# preference.** Info.plist is sealed by the signature, so editing it afterwards
+# yields `invalid Info.plist (plist or signature have been modified)` — measured,
+# not assumed. That is also why Tauri's own signing is left off: the CLI signs
+# during bundling, which is before this script has stamped anything.
+sign_app() {
+    local app="$1" plist="$2" marketing_version="$3" build_number="$4"
+
+    local identity
+    identity="$(resolve_signing_identity)" || exit 1
+    log_info "Signing $app"
+    log_info "  identity: $identity"
+
+    # --options runtime is the hardened runtime, which notarization requires.
+    # --timestamp is a trusted timestamp, without which the signature stops
+    # validating the day the certificate expires rather than surviving it.
+    if ! codesign --force --options runtime --timestamp \
+            --sign "$identity" "$app"; then
+        log_error "codesign failed"
+        exit 1
+    fi
+
+    if ! codesign --verify --strict --verbose=2 "$app" 2>&1 | sed 's/^/    /'; then
+        log_error "the signature does not verify"
+        exit 1
+    fi
+
+    # The ordering guard. If the stamp is ever moved after this call, these two
+    # assertions still pass — the plist really does say the right thing — and
+    # the verify above is what fails instead. Both are kept so the report names
+    # which half broke.
+    assert_plist_key CFBundleShortVersionString "$marketing_version" "$plist"
+    assert_plist_key CFBundleVersion "$build_number" "$plist"
+
+    # Assert the hardened runtime made it in, rather than trusting the flag we
+    # passed: an unhardened bundle notarizes as a failure, minutes later, with
+    # a message that does not mention this step.
+    #
+    # Captured, then matched — NOT piped into `grep -q`. Under `set -o pipefail`
+    # grep exits at the first match, codesign takes SIGPIPE, and the pipeline
+    # reports failure for a properly hardened bundle. Measured: this check
+    # rejected a signature whose flags were `0x10000(runtime)`.
+    local sig_flags
+    sig_flags="$(codesign -d --verbose=2 "$app" 2>&1 || true)"
+    case "$sig_flags" in
+        *"flags="*"runtime"*) ;;
+        *)
+            log_error "the signature carries no hardened runtime — notarization would reject it"
+            exit 1
+            ;;
+    esac
+
+    log_success "Signed and hardened: $identity"
+}
+
+# ---------------------------------------------------------------------------
+# DMG, notarization, staple (#306)
+# ---------------------------------------------------------------------------
+
+# The .dmg is built HERE rather than by `cargo tauri build --bundles dmg`, for
+# the same ordering reason signing is: the CLI would package the app it just
+# bundled, which is before the CFBundleVersion stamp and before the signature.
+# A .dmg wrapping an unsigned, unstamped .app is not the artifact we ship.
+make_dmg() {
+    local app="$1" dmg="$2" identity="$3"
+
+    rm -f "$dmg"
+    log_info "Building $dmg"
+    # UDZO is compressed and read-only. No fancy window layout: that is what
+    # Tauri's dmg bundler adds, and we cannot use it (above).
+    if ! hdiutil create -volname "$APP_NAME" -srcfolder "$app" \
+            -ov -format UDZO "$dmg" >/dev/null; then
+        log_error "hdiutil failed to build the disk image"
+        exit 1
+    fi
+
+    # The .dmg is signed too. Notarization staples to the container that is
+    # actually distributed, and Gatekeeper checks the container a user
+    # double-clicks — an unsigned .dmg around a signed .app still warns.
+    # No --options runtime here: the hardened runtime is a property of
+    # executable code, and a disk image is not.
+    if ! codesign --force --timestamp --sign "$identity" "$dmg"; then
+        log_error "could not sign the disk image"
+        exit 1
+    fi
+    log_success "Built and signed $dmg"
+}
+
+# Submit to Apple, wait for the verdict, staple it into the artifact.
+#
+# Credentials are the **ASC API key**, never an Apple ID plus app-specific
+# password: the key is revocable on its own, scoped, and carries no account
+# password. Names are the org-canonical `APPLE_ASC_*` (CLAUDE.md); the value
+# lives in Doppler `_stores/apple` and reaches this script through the
+# environment, never through the repo.
+notarize_and_staple() {
+    local dmg="$1"
+
+    local missing=()
+    [[ -z "${APPLE_ASC_KEY_ID:-}" ]]     && missing+=(APPLE_ASC_KEY_ID)
+    [[ -z "${APPLE_ASC_ISSUER_ID:-}" ]]  && missing+=(APPLE_ASC_ISSUER_ID)
+    [[ -z "${APPLE_ASC_KEY_BASE64:-}" ]] && missing+=(APPLE_ASC_KEY_BASE64)
+    if (( ${#missing[@]} )); then
+        log_error "notarization needs the App Store Connect API key: ${missing[*]} unset"
+        log_error "source it from Doppler _stores/apple (see docs/SECRETS.md)"
+        exit 1
+    fi
+
+    # The .p8 exists only as a file because notarytool takes a path. 0600, in a
+    # private temp dir, removed on every exit path including a failed submit.
+    local keydir keyfile
+    keydir="$(mktemp -d)"
+    keyfile="$keydir/asc.p8"
+    trap 'rm -rf "$keydir"' EXIT
+    ( umask 077; printf '%s' "$APPLE_ASC_KEY_BASE64" | base64 --decode > "$keyfile" )
+    if [[ ! -s "$keyfile" ]]; then
+        log_error "APPLE_ASC_KEY_BASE64 did not decode to a key"
+        exit 1
+    fi
+
+    log_info "Submitting $dmg to Apple (this waits for the verdict)…"
+    # --wait turns "submitted" into "accepted or rejected". Without it the
+    # staple below runs against a ticket Apple has not issued yet and fails
+    # with a message about the ticket, not about the submission.
+    if ! xcrun notarytool submit "$dmg" \
+            --key "$keyfile" \
+            --key-id "$APPLE_ASC_KEY_ID" \
+            --issuer "$APPLE_ASC_ISSUER_ID" \
+            --wait --timeout 30m; then
+        log_error "notarization was rejected — run 'xcrun notarytool log <id>' with the submission id above"
+        exit 1
+    fi
+
+    rm -rf "$keydir"
+    trap - EXIT
+
+    # Staple, so the artifact validates offline. Without it Gatekeeper has to
+    # reach Apple on first launch, and a user opening it on a plane sees the
+    # unidentified-developer refusal.
+    if ! xcrun stapler staple "$dmg"; then
+        log_error "could not staple the notarization ticket"
+        exit 1
+    fi
+
+    # Verify against the artifact, not against our own record of what we did.
+    if ! xcrun stapler validate "$dmg"; then
+        log_error "the stapled ticket does not validate"
+        exit 1
+    fi
+    # `--type install` is the disk-image assessment; the default (`execute`)
+    # answers a different question and passes on things Gatekeeper would block.
+    if ! spctl -a -vvv --type install "$dmg" 2>&1 | sed 's/^/    /'; then
+        log_error "Gatekeeper rejects the disk image"
+        exit 1
+    fi
+
+    log_success "Notarized and stapled: $dmg"
 }
 
 # ---------------------------------------------------------------------------
