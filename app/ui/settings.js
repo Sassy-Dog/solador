@@ -247,7 +247,55 @@ function generalTab(g) {
     })
   );
   box.appendChild(actionRow(apply));
-  return [box, crashReportingGroup(g.crashReporting)];
+  return [box, panelIntervalsGroup(g.panelIntervals), crashReportingGroup(g.crashReporting)];
+}
+
+/** The four per-panel poll cadences, one row each.
+ *
+ *  Per-row Apply rather than one for the group: each row is refused on its own
+ *  terms — the floors differ by two orders of magnitude — and the status line
+ *  holds one sentence, so a shared Apply would report the first outcome and
+ *  drop the rest.
+ *
+ *  Nothing here decides whether a value is legal. The `min` on the input is the
+ *  browser's own hint, taken from Rust; the answer comes back from
+ *  `settings_save_panel_interval`, which refuses below-floor values and says
+ *  why. A check in this file would be a second opinion that the store does not
+ *  consult — and on the Azure row a bypassed floor is a spend decision. */
+function panelIntervalsGroup(p) {
+  const box = group(p.heading);
+  box.appendChild(help(p.help));
+  for (const row of p.rows) {
+    const item = node("div", "cadence-item");
+    item.dataset.panel = row.id;
+
+    const input = numberInput(row.value, row.min);
+    const line = node("div", "cadence-row");
+    line.appendChild(field(`general-cadence-${row.id}`, row.label, input));
+
+    // `cadence-apply`, not the plain `apply` the two fields above use: General
+    // now holds five Apply buttons, and one class over all of them is a
+    // selector that clicks whichever the DOM happens to list first.
+    const apply = button(p.applyLabel, "cadence-apply");
+    apply.addEventListener("click", () =>
+      mutate("settings_save_panel_interval", { panel: row.id, secs: int(input.value) })
+    );
+    // Live only where there is an override to forget. "Never configured" and
+    // "configured to today's default" are different states, and this button is
+    // the only way back to the first.
+    const reset = button(p.resetLabel, "cadence-reset");
+    reset.disabled = !row.configured;
+    reset.addEventListener("click", () =>
+      mutate("settings_clear_panel_interval", { panel: row.id })
+    );
+    line.append(apply, reset);
+
+    // Rust's two sentences: which of the two states this row is in, and the
+    // floor with the reason it exists. Neither is composed here.
+    item.append(line, node("p", "help cadence-status", row.status), help(row.help));
+    box.appendChild(item);
+  }
+  return box;
 }
 
 /** The crash-reporting opt-in.

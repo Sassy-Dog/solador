@@ -2978,6 +2978,86 @@ fn settings_save_general(
     settings_response(&state, status)
 }
 
+/// Cuts short the sleep of the one loop whose cadence just changed.
+///
+/// Exhaustive over [`PanelInterval`], so a fifth settable panel cannot be added
+/// with a control that writes a cadence nothing acts on until the *old* one
+/// elapses — four hours, on the Azure row, which is indistinguishable from the
+/// setting doing nothing. The loops re-read the store every pass ([#301]), so
+/// the wake is what makes the change apply *now* rather than next tick.
+///
+/// The usage wake is deliberately **not** forced onto its provider half: the
+/// loop recomputes whether a provider pass is due from the cadence it just
+/// re-read, so a wake applies the new rhythm without spending three vendor
+/// requests to learn nothing new.
+///
+/// [#301]: https://github.com/Sassy-Dog/solador/issues/301
+fn wake_panel(app: &App, panel: PanelInterval) {
+    match panel {
+        PanelInterval::Containers => app.containers_wake.notify_one(),
+        PanelInterval::UsageProviders => wake_usage(app, false),
+        PanelInterval::AzureCost => app.azure_wake.notify_one(),
+        PanelInterval::Crons => app.crons_wake.notify_one(),
+    }
+}
+
+/// One panel's poll cadence.
+///
+/// **Refused, not clamped.** A value under the panel's floor writes nothing and
+/// comes back with [`store::settings::IntervalRejection::user_message`] — which
+/// names the panel, its floor, why that floor exists and what was asked for.
+/// Storing the floor instead would leave an operator looking at a number they
+/// did not choose, on a setting whose whole point is that the cadence is theirs.
+///
+/// The floor is enforced here rather than in the webview, and again on read in
+/// [`store::settings::Settings::panel_interval_secs`], because on the Azure row
+/// a bypassed floor is a spend decision. The `min` the row carries is a
+/// courtesy to the number input, not the gate.
+#[tauri::command]
+fn settings_save_panel_interval(
+    panel: String,
+    secs: u32,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Some(kind) = PanelInterval::parse(&panel) else {
+        return settings_response(&state, Some("Skipped — unknown panel.".into()));
+    };
+    let secs = match kind.check_secs(secs) {
+        Ok(secs) => secs,
+        Err(rejection) => return settings_response(&state, Some(rejection.user_message())),
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        let outcome = store.settings_mut().set_panel_interval_secs(kind, secs);
+        debug_assert!(
+            !outcome.was_clamped(),
+            "a value that passed check_secs must be stored as asked"
+        );
+        save_status(&store, "Saved.")
+    };
+    wake_panel(&state, kind);
+    settings_response(&state, status)
+}
+
+/// Forget one panel's cadence override.
+///
+/// Not the same as setting it *to* the default: this restores "never
+/// configured", so the panel follows its constant if that ever moves. The row's
+/// status line is what makes the two distinguishable on screen.
+#[tauri::command]
+fn settings_clear_panel_interval(panel: String, state: tauri::State<'_, Arc<App>>) -> Value {
+    let Some(kind) = PanelInterval::parse(&panel) else {
+        return settings_response(&state, Some("Skipped — unknown panel.".into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        store.settings_mut().clear_panel_interval(kind);
+        save_status(&store, "Back to the default cadence.")
+    };
+    wake_panel(&state, kind);
+    settings_response(&state, status)
+}
+
 /// The crash-reporting opt-in. Its own command, and it saves immediately.
 ///
 /// **Off is applied before the save and regardless of it.** Withdrawing consent
@@ -4275,6 +4355,12 @@ fn dump_settings() -> Value {
         // show. The default itself is asserted in `crates/store`, where it
         // belongs, and again in the view tests below.
         crash_reporting_enabled: true,
+        // Exactly one panel configured, for the same reason: the cadence rows
+        // render two ways — an override (whose **Use default** button is live)
+        // and a panel nobody has ever set — and a fixture carrying only one of
+        // them leaves the other half of the group untested. Azure, because its
+        // floor is the one that guards spend.
+        panel_intervals: std::collections::BTreeMap::from([("azure_cost".to_owned(), 6 * 3600)]),
         ..settings
     };
     let facts = openclaw::fixture_state(openclaw::Fixture::Pairing).settings_facts();
@@ -5026,6 +5112,8 @@ fn main() {
             openclaw,
             settings_view,
             settings_save_general,
+            settings_save_panel_interval,
+            settings_clear_panel_interval,
             settings_set_crash_reporting,
             settings_move_panel,
             settings_set_panel_span,

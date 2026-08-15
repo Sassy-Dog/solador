@@ -20,7 +20,9 @@ use serde_json::{json, Value};
 // The probe behind the Services tab's two-step add flow. The logic is the
 // crate's; this module only decides how its findings are painted.
 use servicestatus::discover::{self, Component, ProbeError};
-use store::settings::{CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES};
+use store::settings::{
+    interval_label, PanelInterval, CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES,
+};
 use store::{
     ContainerGroupRule, ContainerRuleAction, Host, HostOverflowMode, SecretKey, Settings,
     StatusVendor, TrackedRepo, VendorAccount, VendorKind, DEFAULT_AGENT_PORT, LOCAL_HOST_SCOPE,
@@ -161,17 +163,18 @@ impl SecretField {
 }
 
 /// `RefreshInterval.displayName` (ported).
+///
+/// The three offered cadences render exactly as the original spelled them —
+/// `30 seconds`, `1 minute`, `5 minutes` — which is what
+/// [`store::settings::interval_label`] produces for them, so this delegates
+/// rather than keeping a second ladder. Two ladders is how a floor comes to read
+/// `1 hour` on one row and `3600 seconds` on another.
+///
+/// A value the picker cannot produce is still rendered as the real number
+/// rather than a default, so a store edited by hand reads as what it is.
 #[must_use]
 pub fn refresh_interval_label(secs: u32) -> String {
-    match secs {
-        30 => "30 seconds".to_owned(),
-        60 => "1 minute".to_owned(),
-        300 => "5 minutes".to_owned(),
-        // Unreachable through the picker (the options come from
-        // REFRESH_INTERVAL_CHOICES), and still rendered as the real number
-        // rather than a default, so a store edited by hand reads as what it is.
-        other => format!("{other} seconds"),
-    }
+    interval_label(secs)
 }
 
 /// `HostOverflowMode.displayName` (ported).
@@ -566,7 +569,69 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
         // decision now (Settings → Layout), because one global switch could not
         // say "tabs in a narrow column, side by side when wide".
         "saveLabel": "Apply",
+        "panelIntervals": panel_intervals_section(settings),
         "crashReporting": crash_reporting_section(settings, crash),
+    })
+}
+
+/// The four per-panel poll cadences, one row each.
+///
+/// **Its own group and its own commands, not two more fields under the General
+/// Apply.** Each row can be refused on its own terms — the floors differ by two
+/// orders of magnitude — and a shared Apply would have to report four outcomes
+/// on one status line, or report the first and drop the rest.
+///
+/// The floor is *shown*, not merely enforced. A limit an operator only meets by
+/// tripping over it is indistinguishable from the control being broken, which is
+/// the whole reason this surface exists: the cadences already worked, and
+/// `store.json` was the only way to discover that they were settable at all.
+///
+/// There is deliberately no row for the 1 Hz host poll or the 10s agent-health
+/// poll. Neither has a [`PanelInterval`] to name it, because the first is the
+/// sparklines' time axis and the second is liveness rather than a panel.
+fn panel_intervals_section(settings: &Settings) -> Value {
+    json!({
+        "heading": "Panel Poll Cadence",
+        "help": "How often each of these panels refreshes, in seconds. Every one has a floor, stated on its row: a cadence on a metered source is a spend decision, so a value below the floor is refused rather than quietly rounded up. Host cards are not listed — they poll every second, and that cadence is the charts' time axis.",
+        "applyLabel": "Apply",
+        "resetLabel": "Use default",
+        "rows": PanelInterval::ALL
+            .into_iter()
+            .map(|panel| panel_interval_row(settings, panel))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// One panel's cadence row.
+///
+/// `status` distinguishes the two states a bare number cannot: an override that
+/// happens to equal today's constant, and a panel nobody has ever configured.
+/// They render identically in the input and behave differently forever after —
+/// the second follows the constant if it moves, the first pins the panel to
+/// today's number — so the row says which one it is.
+fn panel_interval_row(settings: &Settings, panel: PanelInterval) -> Value {
+    let spec = panel.spec();
+    let secs = settings.panel_interval_secs(panel);
+    let configured = settings.panel_interval_is_configured(panel);
+    json!({
+        "id": spec.key,
+        "label": format!("{} (seconds)", spec.label),
+        "value": secs,
+        // The input's own floor, so the browser marks a refusable value before
+        // the round trip. It is a courtesy and not the enforcement point:
+        // `PanelInterval::check_secs` is, and it does not trust this number.
+        "min": spec.floor_secs,
+        "configured": configured,
+        "status": if configured {
+            format!("Set to {}. The default is {}.", interval_label(secs), interval_label(spec.default_secs))
+        } else {
+            format!("Using the default, {}.", interval_label(secs))
+        },
+        "help": format!(
+            "No faster than {} — {}.",
+            interval_label(spec.floor_secs),
+            spec.floor_reason,
+        ),
     })
 }
 
@@ -1872,6 +1937,127 @@ mod tests {
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         assert!(vm["general"]["hostOverflow"].is_null());
         assert!(!vm["layout"]["overflowOptions"].is_null());
+    }
+
+    /// Every settable cadence has a row, in `PanelInterval::ALL`'s order, and
+    /// the host poll has none.
+    ///
+    /// The absence is the assertion that matters: the 1 Hz host poll is the
+    /// sparklines' time axis, and a control for it is how those charts stop
+    /// meaning anything. It has no `PanelInterval` to name it, so this pins that
+    /// the row list is built from that enum and not from a hand-written list
+    /// somebody could extend.
+    #[test]
+    fn every_settable_cadence_has_a_row_and_the_host_poll_has_none() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let rows = vm["general"]["panelIntervals"]["rows"]
+            .as_array()
+            .expect("rows")
+            .clone();
+        assert_eq!(
+            rows.iter()
+                .map(|r| r["id"].as_str().expect("id"))
+                .collect::<Vec<_>>(),
+            ["containers", "usage_providers", "azure_cost", "crons"],
+        );
+        for row in &rows {
+            let label = row["label"].as_str().expect("label");
+            assert!(
+                !label.to_lowercase().contains("host"),
+                "the host poll must not be settable: {label:?}"
+            );
+        }
+    }
+
+    /// An unconfigured store shows today's constant and says it is the default;
+    /// the **Use default** button has nothing to forget.
+    #[test]
+    fn an_unconfigured_cadence_row_shows_the_default_and_says_so() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let rows = vm["general"]["panelIntervals"]["rows"]
+            .as_array()
+            .expect("rows");
+        for (row, panel) in rows.iter().zip(PanelInterval::ALL) {
+            let spec = panel.spec();
+            assert_eq!(row["value"], json!(spec.default_secs), "{panel:?}");
+            assert_eq!(row["configured"], json!(false), "{panel:?}");
+            assert_eq!(row["min"], json!(spec.floor_secs), "{panel:?}");
+            assert_eq!(
+                row["status"].as_str().expect("status"),
+                format!("Using the default, {}.", interval_label(spec.default_secs)),
+                "{panel:?}"
+            );
+            // The floor and the reason for it, on the row, before anybody
+            // trips over it.
+            let help = row["help"].as_str().expect("help");
+            assert!(
+                help.contains(&interval_label(spec.floor_secs)),
+                "{panel:?}: {help}"
+            );
+            assert!(help.contains(spec.floor_reason), "{panel:?}: {help}");
+        }
+    }
+
+    /// An override renders as an override — the number *and* the fact that it is
+    /// a choice, with the default still named so it can be compared to.
+    #[test]
+    fn a_configured_cadence_row_says_it_is_a_choice_and_names_the_default() {
+        let (mut settings, hosts, repos, stored) = sample();
+        settings.set_panel_interval_secs(PanelInterval::AzureCost, 6 * 3600);
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let row = vm["general"]["panelIntervals"]["rows"][2].clone();
+        assert_eq!(row["id"], json!("azure_cost"));
+        assert_eq!(row["value"], json!(6 * 3600));
+        assert_eq!(row["configured"], json!(true));
+        assert_eq!(
+            row["status"],
+            json!("Set to 6 hours. The default is 4 hours.")
+        );
+
+        // ...and the neighbouring rows are untouched, or one Apply would look
+        // like it had configured all four.
+        assert_eq!(
+            vm["general"]["panelIntervals"]["rows"][0]["configured"],
+            json!(false)
+        );
+    }
+
+    /// An explicit choice that happens to equal the default is still a choice,
+    /// and must not render as "never configured" — that is the state that
+    /// follows the constant if it moves, and this one pins the panel to today's
+    /// number.
+    #[test]
+    fn choosing_the_default_value_is_not_the_same_as_never_choosing() {
+        let (mut settings, hosts, repos, stored) = sample();
+        let spec = PanelInterval::Containers.spec();
+        settings.set_panel_interval_secs(PanelInterval::Containers, spec.default_secs);
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let row = vm["general"]["panelIntervals"]["rows"][0].clone();
+        assert_eq!(row["value"], json!(spec.default_secs));
+        assert_eq!(row["configured"], json!(true));
+        assert_ne!(
+            row["status"],
+            json!(format!(
+                "Using the default, {}.",
+                interval_label(spec.default_secs)
+            )),
+            "an explicit choice must not read as the untouched default"
+        );
+    }
+
+    /// A cadence hand-edited below the floor is shown **floored**, not as the
+    /// number in the file: the loop polls at the floor, and a row that showed
+    /// the file's value would be describing a cadence nothing runs on.
+    #[test]
+    fn a_hand_edited_below_floor_cadence_renders_as_the_floor() {
+        let (mut settings, hosts, repos, stored) = sample();
+        settings.panel_intervals.insert("azure_cost".to_owned(), 30);
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let row = vm["general"]["panelIntervals"]["rows"][2].clone();
+        assert_eq!(row["value"], json!(3600));
+        assert_eq!(row["configured"], json!(true));
     }
 
     #[test]

@@ -149,6 +149,63 @@ test("General shows the stored values and applies them in one command", async ({
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
 });
 
+test("each panel cadence applies on its own row and paints Rust's two sentences", async ({
+  page,
+  baseURL,
+}) => {
+  const settings = await openSettings(page, baseURL);
+  const p = settings.general.panelIntervals;
+
+  // Every settable cadence has a row, in Rust's order. A row invented here
+  // would be a panel the store has no floor for.
+  await expect(page.locator(".cadence-item")).toHaveCount(p.rows.length);
+  expect(p.rows.length, "the fixture must carry every settable cadence").toBe(4);
+
+  for (const row of p.rows) {
+    const item = page.locator(`.cadence-item[data-panel="${row.id}"]`);
+    await expect(item.locator(".input")).toHaveValue(String(row.value));
+    // The browser's own hint, taken from Rust — not the enforcement point,
+    // which is `check_secs` on the other side of the IPC.
+    await expect(item.locator(".input")).toHaveAttribute("min", String(row.min));
+    // Both sentences are Rust's, verbatim: which state the row is in, and the
+    // floor with the reason for it.
+    await expect(item.locator(".cadence-status")).toHaveText(row.status);
+    await expect(item.locator(".help").last()).toHaveText(row.help);
+    // Live only where there is an override to forget.
+    await expect(item.locator(".cadence-reset")).toBeEnabled({ enabled: row.configured });
+  }
+
+  // The fixture covers both renderings, or half the group is untested.
+  const configured = p.rows.filter((r) => r.configured);
+  expect(configured.length, "the fixture needs a configured cadence").toBeGreaterThan(0);
+  expect(
+    p.rows.length - configured.length,
+    "...and an unconfigured one"
+  ).toBeGreaterThan(0);
+
+  // One row's Apply sends one row's panel, and nothing else's.
+  const containers = page.locator('.cadence-item[data-panel="containers"]');
+  await containers.locator(".input").fill("30");
+  await containers.locator(".cadence-apply").click();
+  expect(await calls(page, "settings_save_panel_interval")).toEqual([
+    {
+      command: "settings_save_panel_interval",
+      args: { panel: "containers", secs: 30 },
+    },
+  ]);
+
+  // ...and Use default forgets the override rather than writing the default
+  // back, which is a different state the store keeps apart.
+  const override = page.locator(`.cadence-item[data-panel="${configured[0].id}"]`);
+  await override.locator(".cadence-reset").click();
+  expect(await calls(page, "settings_clear_panel_interval")).toEqual([
+    {
+      command: "settings_clear_panel_interval",
+      args: { panel: configured[0].id },
+    },
+  ]);
+});
+
 test("the crash-reporting toggle saves on the spot and paints Rust's sentence", async ({
   page,
   baseURL,
