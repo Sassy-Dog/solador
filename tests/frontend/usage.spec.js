@@ -157,6 +157,75 @@ test("the Sentry quota bar is drawn only when the count is known", async ({ page
   await expect(section(page, "sentry").locator(".pbar")).toHaveCount(0);
 });
 
+test("a stale metered section is dated on its own line beside its footer", async ({ page, baseURL }) => {
+  // The two clocks, side by side and answering different questions. The
+  // `.panel-asof` line dates the figures ("as of 23h ago"); the `.pv-footer`
+  // beside it warns that the poller is late. Both fixtures carry the same
+  // numbers, so the only difference a reader sees is the claim being made about
+  // them — which is the whole point of marking staleness rather than rendering
+  // a nearly-hour-old figure as a current one.
+  const live = await gotoWithUsage(page, baseURL);
+  for (const provider of live.providers) {
+    expect(provider.freshness.state).toBe("live");
+    expect(provider.freshness.text, "a current reading paints nothing").toBeNull();
+  }
+  await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
+
+  const stale = await gotoWithUsage(page, baseURL, "sample-usage-stale.json");
+  for (const provider of stale.providers) {
+    expect(provider.freshness.state).toBe("stale");
+    expect(provider.freshness.measured_secs_ago).toBeGreaterThan(0);
+    const asOf = section(page, provider.id).locator(".panel-asof");
+    await expect(asOf).toBeVisible();
+    await expect(asOf).toHaveText(provider.freshness.text);
+    await expect(asOf).toHaveCSS("color", rgb(provider.freshness.color));
+    // It sits inside the section, above that section's own footer — not in the
+    // panel header, where it would be one line for three different clocks.
+    const order = await section(page, provider.id).evaluate((el) =>
+      [...el.children].map((c) => c.className)
+    );
+    expect(order.indexOf("panel-asof")).toBeLessThan(order.indexOf("pv-footer"));
+
+    // Not folded into the footer: two elements, two strings, both visible.
+    await expect(section(page, provider.id).locator(".pv-footer")).toHaveText(
+      provider.footer.text
+    );
+    expect(provider.footer.text).not.toBe(provider.freshness.text);
+  }
+
+  // Same figures either way — the mark is the line, never a changed number.
+  expect(stale.providers[0].rows.map((r) => r.value)).toEqual(
+    live.providers[0].rows.map((r) => r.value)
+  );
+
+  // Claude's own rollups are on a cadence two orders of magnitude faster, and
+  // this fixture leaves them current: the panel header stays clean.
+  expect(stale.footer).toBeNull();
+  await expect(page.locator("#usageStale")).toBeHidden();
+});
+
+test("a section with no reading publishes no age rather than a fresh-looking zero", async ({ page, baseURL }) => {
+  // `sample-usage-empty.json` has no provider configured at all, so there is
+  // no section — and nothing anywhere claiming an age of zero.
+  const usage = await gotoWithUsage(page, baseURL, "sample-usage-empty.json");
+  expect(usage.providers).toEqual([]);
+  await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
+
+  // A configured provider whose first read has not landed publishes `unknown`
+  // and a null age — never a 0, which would paint it as the freshest section on
+  // the card. Built by editing the payload, because no dumped fixture holds a
+  // provider mid-first-read.
+  const loading = await gotoWithUsage(page, baseURL);
+  loading.providers[0].freshness = {
+    state: "unknown",
+    measured_secs_ago: null,
+    text: null,
+    color: null,
+  };
+  await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), loading);
+  await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
+});
+
 test("an unconfigured provider contributes no section at all", async ({ page, baseURL }) => {
   // Not an em dash, not an empty heading: no markup. The em dash is for
   // "configured, and we could not find out"; a provider nobody set up is not a

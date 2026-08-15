@@ -24,6 +24,16 @@
 //! whose staleness window sits above their own cadence (90m), so a warning means
 //! a stuck poller rather than the normal gap between polls. Each section carries
 //! its own footer because each can fail on its own.
+//!
+//! **And each metered section carries a second clock beside that footer**
+//! (#338, the Azure Cost panel's arrangement one panel over). `freshness` is
+//! [`Freshness`] over the age of the last **success** and answers *"how old is
+//! the figure on screen"*; the footer answers *"did the last attempt fail, or is
+//! the poller late"*. On an hourly read the first speaks a full 30 minutes
+//! before the second does, and a nearly-hour-old dollar figure rendering
+//! identically to one measured a second ago is the same class of bug as
+//! unknown-rendered-as-zero. They are two fields for that reason and must not be
+//! folded into one.
 
 use serde_json::{json, Value};
 use usage::{
@@ -31,8 +41,9 @@ use usage::{
 };
 use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
+use viewmodel::freshness::Freshness;
 
-use crate::panel::{progress_bar, status_footer, Configured};
+use crate::panel::{freshness_payload, progress_bar, status_footer, Configured};
 
 // Re-exported so `main.rs` — where this module's name shadows the data crate's
 // — reaches the layer beneath through here rather than through a `::usage::`
@@ -365,12 +376,34 @@ fn window_row(label: &str, totals: &UsageTotals) -> Value {
     })
 }
 
+/// How old one metered section's figures are, as the frontend receives it.
+///
+/// The clock is `last_updated`, which is this provider's last **success** — the
+/// very field [`status_footer`] promises `last ok` about, asked the other
+/// question. `None` (nothing has ever been read) classifies to
+/// [`Freshness::Unknown`], which publishes a null age rather than a zero: a
+/// section that has never answered must not paint as the freshest thing on the
+/// card.
+///
+/// `cadence_secs` is the operator's `PanelInterval::UsageProviders`, not
+/// [`PROVIDER_STALE_AFTER_SECS`]. The two are deliberately different edges — a
+/// reading stops being current after one whole cycle, and the *warning* only
+/// fires once the poller looks stuck — which is the window neither field can
+/// express alone.
+fn provider_freshness<S>(state: &ProviderState<S>, cadence_secs: u64, now: u64) -> Value {
+    freshness_payload(Freshness::classify(
+        state.last_updated.map(|at| now.saturating_sub(at)),
+        cadence_secs,
+    ))
+}
+
 /// The Neon section: month-to-date compute, storage, estimated charges, and
 /// the last finalized invoice.
 fn neon_section(
     state: &ProviderState<NeonUsageSummary>,
     invoice: &ProviderState<NeonInvoiceSummary>,
     rates: NeonRates,
+    cadence_secs: u64,
     now: u64,
 ) -> Value {
     let summary = state.summary;
@@ -414,6 +447,10 @@ fn neon_section(
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
+        // Consumption's clock again, and for the same reason the footer uses
+        // it: it is this section's primary content. The invoice is a monthly
+        // figure whose own age says nothing a reader can act on.
+        "freshness": provider_freshness(state, cadence_secs, now),
     })
 }
 
@@ -424,7 +461,12 @@ fn neon_section(
 /// count would draw an empty green bar that reads "well under quota" when the
 /// truth is "we have no idea", which is the fabricated-zero bug wearing a
 /// different shape.
-fn sentry_section(state: &ProviderState<SentryUsageSummary>, quota: u64, now: u64) -> Value {
+fn sentry_section(
+    state: &ProviderState<SentryUsageSummary>,
+    quota: u64,
+    cadence_secs: u64,
+    now: u64,
+) -> Value {
     let accepted = state.summary.and_then(|s| s.accepted_error_events());
     let bar = match (quota, accepted) {
         (0, _) | (_, None) => Value::Null,
@@ -445,6 +487,7 @@ fn sentry_section(state: &ProviderState<SentryUsageSummary>, quota: u64, now: u6
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
+        "freshness": provider_freshness(state, cadence_secs, now),
     })
 }
 
@@ -464,7 +507,7 @@ pub fn usd(amount: Option<f64>) -> Option<String> {
 /// `BilledCost` is what an invoice would add on top, and on a plan with
 /// included allowance it is usually near zero. Headlining the second would
 /// report two cents for an account spending real money.
-fn vercel_section(state: &ProviderState<VercelUsageSummary>, now: u64) -> Value {
+fn vercel_section(state: &ProviderState<VercelUsageSummary>, cadence_secs: u64, now: u64) -> Value {
     let summary = state.summary.as_ref();
     let mut rows = vec![
         provider_row(
@@ -498,6 +541,7 @@ fn vercel_section(state: &ProviderState<VercelUsageSummary>, now: u64) -> Value 
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
+        "freshness": provider_freshness(state, cadence_secs, now),
     })
 }
 
@@ -508,8 +552,22 @@ fn vercel_section(state: &ProviderState<VercelUsageSummary>, now: u64) -> Value 
 /// rather than captured by the poller, because changing either must repaint the
 /// panel without waiting out an hourly cadence for a number no API call is
 /// involved in.
+///
+/// `cadence_secs` is the operator's cadence for the **metered providers**
+/// (`PanelInterval::UsageProviders`), and it is what each section's `freshness`
+/// is classified against. Read at render time for the same reason as the two
+/// above: a shortened interval must re-date the sections now rather than an hour
+/// from now. Claude's own rollups are not measured against it — they are on the
+/// store's much faster refresh interval, and their footer already covers that
+/// clock.
 #[must_use]
-pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value {
+pub fn view(
+    state: &UsageState,
+    quota: u64,
+    rates: NeonRates,
+    cadence_secs: u64,
+    now: u64,
+) -> Value {
     let kind = PanelKind::ClaudeUsage;
 
     // Three states, in the original's own order: no summary at all (loading, or a log
@@ -569,13 +627,19 @@ pub fn view(state: &UsageState, quota: u64, rates: NeonRates, now: u64) -> Value
     // dashes a failure-first appearance used to produce.
     let mut providers: Vec<Value> = Vec::new();
     if state.neon.configured.is_present() {
-        providers.push(neon_section(&state.neon, &state.neon_invoice, rates, now));
+        providers.push(neon_section(
+            &state.neon,
+            &state.neon_invoice,
+            rates,
+            cadence_secs,
+            now,
+        ));
     }
     if state.sentry.configured.is_present() {
-        providers.push(sentry_section(&state.sentry, quota, now));
+        providers.push(sentry_section(&state.sentry, quota, cadence_secs, now));
     }
     if state.vercel.configured.is_present() {
-        providers.push(vercel_section(&state.vercel, now));
+        providers.push(vercel_section(&state.vercel, cadence_secs, now));
     }
 
     json!({
@@ -623,15 +687,24 @@ pub enum Fixture {
 /// is: the states worth testing (a Neon plan without consumption history, a
 /// Sentry org with no ingest, a quota bar past amber) cannot be produced on
 /// demand by whichever machine runs the dump.
+///
+/// **Two clocks, because the panel has two.** Claude's log walk lands at
+/// `claude_at`, the metered providers' last success at `providers_at`. Separate
+/// arguments because they are separate cadences, and the `--stale` fixture is
+/// about the slow one: aging both together would date the Claude rollups 23h
+/// back as well — a second, unrelated staleness on the same card, in a fixture
+/// whose whole job is to show what one hour past the *providers'* cycle looks
+/// like.
 #[must_use]
-pub fn fixture_state(kind: Fixture, at: u64) -> UsageState {
+pub fn fixture_state(kind: Fixture, claude_at: u64, providers_at: u64) -> UsageState {
+    let at = providers_at;
     let mut state = UsageState::new();
     match kind {
         Fixture::Empty => {
-            state.apply_claude(None, at, Some(NO_LOG_ROOT_MESSAGE.to_owned()));
+            state.apply_claude(None, claude_at, Some(NO_LOG_ROOT_MESSAGE.to_owned()));
         }
         Fixture::Measured => {
-            state.apply_claude(Some(fixture_summary()), at, None);
+            state.apply_claude(Some(fixture_summary()), claude_at, None);
             state.neon.succeeded(
                 NeonUsageSummary::Measured {
                     compute_unit_hours: 12.4,
@@ -659,7 +732,7 @@ pub fn fixture_state(kind: Fixture, at: u64) -> UsageState {
             );
         }
         Fixture::Unmeasured => {
-            state.apply_claude(Some(fixture_summary()), at, None);
+            state.apply_claude(Some(fixture_summary()), claude_at, None);
             state.neon.succeeded(
                 NeonUsageSummary::Unmeasured,
                 at,
@@ -728,9 +801,17 @@ mod tests {
         usd_per_cu_hour: 0.106,
         usd_per_gib_month: 0.35,
     };
+    /// The cadence every test below classifies the metered sections' freshness
+    /// against: their own default, which is what an unconfigured store polls
+    /// at. Read from `PanelInterval` rather than written out, so a change to
+    /// the default cannot leave these tests asserting against a cadence the app
+    /// no longer uses.
+    const CADENCE: u64 = store::settings::PanelInterval::UsageProviders
+        .spec()
+        .default_secs as u64;
 
     fn measured() -> UsageState {
-        fixture_state(Fixture::Measured, NOW)
+        fixture_state(Fixture::Measured, NOW, NOW)
     }
 
     fn section<'a>(payload: &'a Value, id: &str) -> Option<&'a Value> {
@@ -786,7 +867,7 @@ mod tests {
 
     #[test]
     fn before_the_first_walk_the_panel_says_it_is_reading() {
-        let payload = view(&UsageState::new(), 0, NeonRates::default(), NOW);
+        let payload = view(&UsageState::new(), 0, NeonRates::default(), CADENCE, NOW);
         assert_eq!(payload["message"]["text"], LOADING_MESSAGE);
         assert_eq!(payload["loading"], true);
         assert_eq!(payload["trailing"], "");
@@ -801,7 +882,7 @@ mod tests {
     /// a provider we cannot yet say exists.
     #[test]
     fn a_provider_contributes_nothing_until_a_pass_has_read_its_key() {
-        let payload = view(&UsageState::new(), 0, NeonRates::default(), NOW);
+        let payload = view(&UsageState::new(), 0, NeonRates::default(), CADENCE, NOW);
         assert!(payload["providers"]
             .as_array()
             .expect("providers")
@@ -815,7 +896,7 @@ mod tests {
     fn a_provider_section_appears_as_loading_before_its_first_read_settles() {
         let mut state = UsageState::new();
         state.neon_mut().begin();
-        let payload = view(&state, 0, NeonRates::default(), NOW);
+        let payload = view(&state, 0, NeonRates::default(), CADENCE, NOW);
         assert!(
             section(&payload, "neon").is_some(),
             "the section is present"
@@ -829,9 +910,10 @@ mod tests {
     #[test]
     fn a_missing_log_root_says_no_usage_data_and_names_itself_in_the_footer() {
         let payload = view(
-            &fixture_state(Fixture::Empty, NOW),
+            &fixture_state(Fixture::Empty, NOW, NOW),
             0,
             NeonRates::default(),
+            CADENCE,
             NOW,
         );
         assert_eq!(payload["message"]["text"], NO_DATA_MESSAGE);
@@ -848,7 +930,7 @@ mod tests {
     fn a_measured_but_empty_week_says_so_rather_than_rendering_zero_rows() {
         let mut state = UsageState::new();
         state.apply_claude(Some(UsageSummary::default()), NOW, None);
-        let payload = view(&state, 0, NeonRates::default(), NOW);
+        let payload = view(&state, 0, NeonRates::default(), CADENCE, NOW);
         assert_eq!(payload["message"]["text"], EMPTY_MESSAGE);
         assert!(payload["windows"].as_array().unwrap().is_empty());
         // The trailing label still reports today's measured zero: the walk
@@ -858,7 +940,7 @@ mod tests {
 
     #[test]
     fn content_renders_both_windows_and_at_most_four_projects() {
-        let payload = view(&measured(), 0, RATES, NOW);
+        let payload = view(&measured(), 0, RATES, CADENCE, NOW);
         assert!(payload["message"].is_null());
 
         let windows = payload["windows"].as_array().unwrap();
@@ -883,7 +965,7 @@ mod tests {
     /// at all — not a null one, which would read as a feature half-wired.
     #[test]
     fn window_rows_carry_no_progress_bar() {
-        let payload = view(&measured(), 0, RATES, NOW);
+        let payload = view(&measured(), 0, RATES, CADENCE, NOW);
         for row in payload["windows"].as_array().unwrap() {
             assert!(row.get("bar").is_none(), "got {row}");
         }
@@ -895,7 +977,7 @@ mod tests {
         summary.projects_last_7d.clear();
         let mut state = UsageState::new();
         state.apply_claude(Some(summary), NOW, None);
-        assert!(view(&state, 0, NeonRates::default(), NOW)["projects"].is_null());
+        assert!(view(&state, 0, NeonRates::default(), CADENCE, NOW)["projects"].is_null());
     }
 
     // MARK: provider sections
@@ -905,9 +987,10 @@ mod tests {
     #[test]
     fn an_unconfigured_provider_renders_no_section() {
         let payload = view(
-            &fixture_state(Fixture::Empty, NOW),
+            &fixture_state(Fixture::Empty, NOW, NOW),
             QUOTA,
             NeonRates::default(),
+            CADENCE,
             NOW,
         );
         assert!(payload["providers"].as_array().unwrap().is_empty());
@@ -915,7 +998,7 @@ mod tests {
 
     #[test]
     fn a_measured_provider_renders_its_figures_in_ink() {
-        let payload = view(&measured(), QUOTA, RATES, NOW);
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW);
         let neon = section(&payload, "neon").expect("neon section");
         assert_eq!(neon["rows"][0]["label"], "NEON COMPUTE (MTD)");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h");
@@ -933,9 +1016,10 @@ mod tests {
     #[test]
     fn an_unmeasured_provider_renders_an_em_dash_and_says_why() {
         let payload = view(
-            &fixture_state(Fixture::Unmeasured, NOW),
+            &fixture_state(Fixture::Unmeasured, NOW, NOW),
             QUOTA,
             NeonRates::default(),
+            CADENCE,
             NOW,
         );
 
@@ -958,7 +1042,7 @@ mod tests {
     /// The estimate row appears only when rates are set AND usage is measured.
     #[test]
     fn the_estimate_row_needs_rates_and_a_measurement() {
-        let payload = view(&measured(), QUOTA, RATES, NOW);
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW);
         let neon = section(&payload, "neon").expect("neon section");
         let rows = neon["rows"].as_array().unwrap();
         let est = rows
@@ -968,7 +1052,7 @@ mod tests {
         // Measured fixture: 12.4 CU-h × 0.106 + 3.25 GiB × 0.35 = 2.4519
         assert_eq!(est["value"], "≈ $2.45");
 
-        let unpriced = view(&measured(), QUOTA, NeonRates::default(), NOW);
+        let unpriced = view(&measured(), QUOTA, NeonRates::default(), CADENCE, NOW);
         let neon = section(&unpriced, "neon").expect("neon section");
         assert!(
             neon["rows"]
@@ -993,7 +1077,7 @@ mod tests {
             NOW,
             None,
         );
-        let payload = view(&state, QUOTA, NeonRates::default(), NOW);
+        let payload = view(&state, QUOTA, NeonRates::default(), CADENCE, NOW);
         let neon = section(&payload, "neon").expect("neon section");
         let row = neon["rows"]
             .as_array()
@@ -1007,7 +1091,7 @@ mod tests {
         fresh
             .neon_invoice_mut()
             .succeeded(NeonInvoiceSummary::NoInvoices, NOW, None);
-        let payload = view(&fresh, QUOTA, NeonRates::default(), NOW);
+        let payload = view(&fresh, QUOTA, NeonRates::default(), CADENCE, NOW);
         let neon = section(&payload, "neon").expect("neon section");
         let row = neon["rows"]
             .as_array()
@@ -1029,7 +1113,7 @@ mod tests {
         state
             .neon_mut()
             .failed("Neon API request failed (HTTP 500)".to_owned());
-        let payload = view(&state, QUOTA, NeonRates::default(), NOW);
+        let payload = view(&state, QUOTA, NeonRates::default(), CADENCE, NOW);
         let footer = &section(&payload, "neon").expect("neon")["footer"]["text"];
         let text = footer.as_str().unwrap();
         assert!(text.contains("HTTP 500"));
@@ -1048,7 +1132,7 @@ mod tests {
         state
             .neon_invoice_mut()
             .failed("invoices: Neon API request failed (HTTP 404)".to_owned());
-        let payload = view(&state, QUOTA, NeonRates::default(), NOW);
+        let payload = view(&state, QUOTA, NeonRates::default(), CADENCE, NOW);
         let footer = &section(&payload, "neon").expect("neon")["footer"]["text"];
         assert!(footer.as_str().unwrap().contains("invoices:"));
     }
@@ -1058,21 +1142,22 @@ mod tests {
     #[test]
     fn the_quota_bar_needs_both_a_quota_and_a_known_count() {
         // Quota set, count known -> a bar.
-        let with_bar = view(&measured(), QUOTA, RATES, NOW);
+        let with_bar = view(&measured(), QUOTA, RATES, CADENCE, NOW);
         let bar = &section(&with_bar, "sentry").expect("sentry")["bar"];
         assert_eq!(bar["fraction"], 0.94);
         assert_eq!(bar["color"], color::hex(color::AMBER), "9400/10000 is 94%");
 
         // No quota -> no bar, however well measured the count is.
-        let no_quota = view(&measured(), 0, RATES, NOW);
+        let no_quota = view(&measured(), 0, RATES, CADENCE, NOW);
         assert!(section(&no_quota, "sentry").expect("sentry")["bar"].is_null());
 
         // Quota set, count unknown -> no bar. A bar at a defaulted 0 would
         // read "comfortably under quota" when the truth is "we don't know".
         let unknown = view(
-            &fixture_state(Fixture::Unmeasured, NOW),
+            &fixture_state(Fixture::Unmeasured, NOW, NOW),
             QUOTA,
             NeonRates::default(),
+            CADENCE,
             NOW,
         );
         assert!(section(&unknown, "sentry").expect("sentry")["bar"].is_null());
@@ -1089,7 +1174,7 @@ mod tests {
             NOW,
             None,
         );
-        let payload = view(&state, QUOTA, RATES, NOW);
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
         let bar = &section(&payload, "sentry").expect("sentry")["bar"];
         assert_eq!(bar["fraction"], 1.0);
         assert_eq!(bar["color"], color::hex(color::RED));
@@ -1107,10 +1192,99 @@ mod tests {
             NOW,
             None,
         );
-        let payload = view(&state, QUOTA, RATES, NOW);
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
         let sentry = section(&payload, "sentry").expect("sentry");
         assert_eq!(sentry["rows"][0]["value"], "0");
         assert_eq!(sentry["bar"]["fraction"], 0.0);
+    }
+
+    // MARK: freshness
+
+    /// The two clocks, side by side. Ten minutes into an hourly cycle the
+    /// figures are still current and nothing is added; one second past the
+    /// cadence they are dated, in amber, while the footer stays silent —
+    /// the window neither field can express on its own.
+    #[test]
+    fn each_metered_section_dates_its_figures_once_a_whole_cycle_has_passed() {
+        let live = view(&measured(), QUOTA, RATES, CADENCE, NOW + 600);
+        for id in ["neon", "sentry"] {
+            let fresh = &section(&live, id).expect(id)["freshness"];
+            assert_eq!(fresh["state"], "live", "{id}");
+            assert_eq!(fresh["measured_secs_ago"], 600, "{id}");
+            assert!(fresh["text"].is_null(), "{id} paints as it always did");
+        }
+
+        let stale = view(&measured(), QUOTA, RATES, CADENCE, NOW + CADENCE + 1);
+        for id in ["neon", "sentry"] {
+            let provider = section(&stale, id).expect(id);
+            assert_eq!(provider["freshness"]["state"], "stale", "{id}");
+            assert_eq!(provider["freshness"]["text"], "as of 1h ago", "{id}");
+            assert_eq!(
+                provider["freshness"]["color"],
+                color::hex(color::AMBER),
+                "{id}"
+            );
+            // …and the *warning* has not fired: the window is 90m, the cadence
+            // an hour. Folding the two into one field would have to pick which
+            // of those two edges to keep.
+            assert!(
+                provider["footer"].is_null(),
+                "{id}: dated, and no warning yet"
+            );
+        }
+    }
+
+    /// The failure this field exists to prevent: a section that has never once
+    /// answered publishing an age of zero, which would paint it as the freshest
+    /// thing on the card.
+    #[test]
+    fn a_section_that_has_never_read_publishes_no_age_rather_than_a_zero() {
+        let mut state = UsageState::new();
+        state.neon_mut().begin();
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
+        let fresh = &section(&payload, "neon").expect("neon")["freshness"];
+        assert_eq!(fresh["state"], "unknown");
+        assert!(fresh["measured_secs_ago"].is_null());
+        assert_ne!(fresh["measured_secs_ago"], 0);
+        assert!(fresh["text"].is_null(), "there is no figure to qualify");
+    }
+
+    /// `freshness` is additive: a failed read still dates the figure it is
+    /// carrying forward, and the footer still names the failure. Two fields,
+    /// two strings, both present.
+    #[test]
+    fn a_dated_figure_and_a_failure_are_reported_side_by_side() {
+        let mut state = measured();
+        state
+            .neon
+            .failed("Neon API request failed (HTTP 500)".to_owned());
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW + CADENCE + 1);
+        let neon = section(&payload, "neon").expect("neon");
+        assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
+        assert_eq!(neon["freshness"]["text"], "as of 1h ago");
+        assert_eq!(
+            neon["footer"]["text"],
+            "⚠ Neon API request failed (HTTP 500) · last ok 1h ago"
+        );
+        assert_ne!(neon["freshness"]["text"], neon["footer"]["text"]);
+    }
+
+    /// The age is classified against the operator's cadence, not a constant
+    /// here: an operator who polls every four hours must not be told a
+    /// two-hour-old reading is stale.
+    #[test]
+    fn a_longer_configured_cadence_keeps_a_reading_live_for_longer() {
+        let two_hours = 2 * 3_600;
+        let payload = view(&measured(), QUOTA, RATES, 4 * 3_600, NOW + two_hours);
+        assert_eq!(
+            section(&payload, "neon").expect("neon")["freshness"]["state"],
+            "live"
+        );
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW + two_hours);
+        assert_eq!(
+            section(&payload, "neon").expect("neon")["freshness"]["state"],
+            "stale"
+        );
     }
 
     // MARK: footers
@@ -1118,7 +1292,7 @@ mod tests {
     #[test]
     fn each_section_carries_its_own_footer_on_its_own_window() {
         // 10 minutes: stale for Claude (150s), fine for the hourly providers.
-        let payload = view(&measured(), QUOTA, RATES, NOW + 600);
+        let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW + 600);
         assert_eq!(payload["footer"]["text"], "⚠ stale · updated 10m ago");
         assert!(section(&payload, "neon").expect("neon")["footer"].is_null());
         assert!(section(&payload, "sentry").expect("sentry")["footer"].is_null());
@@ -1130,7 +1304,7 @@ mod tests {
         state
             .neon
             .failed("Neon API request failed (HTTP 500)".to_owned());
-        let payload = view(&state, QUOTA, RATES, NOW + 300);
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW + 300);
         let neon = section(&payload, "neon").expect("neon");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
         assert_eq!(
@@ -1148,11 +1322,11 @@ mod tests {
     fn unconfiguring_a_provider_drops_its_retained_figure() {
         let mut state = measured();
         state.neon_unconfigure();
-        let payload = view(&state, QUOTA, RATES, NOW);
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
         assert!(section(&payload, "neon").is_none());
 
         state.neon.begin();
-        let payload = view(&state, QUOTA, RATES, NOW);
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
         let neon = section(&payload, "neon").expect("neon");
         assert_eq!(neon["rows"][0]["value"], "—");
         assert_eq!(
@@ -1177,7 +1351,7 @@ mod tests {
             .neon_mut()
             .unreadable("couldn't read the credential store".to_owned());
 
-        let payload = view(&state, QUOTA, RATES, NOW + 120);
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW + 120);
         let neon = section(&payload, "neon").expect("the section stays");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
         assert_eq!(
@@ -1189,14 +1363,16 @@ mod tests {
     /// …and must not conjure a section for a provider nobody configured.
     #[test]
     fn an_unreadable_credential_store_stays_silent_when_nothing_was_configured() {
-        let mut state = fixture_state(Fixture::Empty, NOW);
+        let mut state = fixture_state(Fixture::Empty, NOW, NOW);
         state
             .sentry_mut()
             .unreadable("couldn't read the credential store".to_owned());
-        assert!(view(&state, QUOTA, NeonRates::default(), NOW)["providers"]
-            .as_array()
-            .expect("providers")
-            .is_empty());
+        assert!(
+            view(&state, QUOTA, NeonRates::default(), CADENCE, NOW)["providers"]
+                .as_array()
+                .expect("providers")
+                .is_empty()
+        );
     }
 
     // MARK: the fixtures
@@ -1206,7 +1382,13 @@ mod tests {
     /// covering nothing. Asserted here, where a Rust test can see it.
     #[test]
     fn the_fixtures_cover_every_rendering_the_panel_has() {
-        let measured = view(&fixture_state(Fixture::Measured, NOW), QUOTA, RATES, NOW);
+        let measured = view(
+            &fixture_state(Fixture::Measured, NOW, NOW),
+            QUOTA,
+            RATES,
+            CADENCE,
+            NOW,
+        );
         assert!(measured["message"].is_null(), "content, not a state line");
         assert_eq!(measured["windows"].as_array().unwrap().len(), 2);
         assert!(!measured["projects"]["rows"].as_array().unwrap().is_empty());
@@ -1234,9 +1416,10 @@ mod tests {
         );
 
         let unmeasured = view(
-            &fixture_state(Fixture::Unmeasured, NOW),
+            &fixture_state(Fixture::Unmeasured, NOW, NOW),
             QUOTA,
             NeonRates::default(),
+            CADENCE,
             NOW,
         );
         assert_eq!(unmeasured["providers"].as_array().unwrap().len(), 2);
@@ -1259,9 +1442,10 @@ mod tests {
         );
 
         let empty = view(
-            &fixture_state(Fixture::Empty, NOW),
+            &fixture_state(Fixture::Empty, NOW, NOW),
             QUOTA,
             NeonRates::default(),
+            CADENCE,
             NOW,
         );
         assert_eq!(empty["message"]["text"], NO_DATA_MESSAGE);

@@ -100,6 +100,24 @@ function renderCrons(payload) {
   stale.style.color = payload.footer ? payload.footer.color : "";
   stale.hidden = !payload.footer;
 
+  // How old the ages above are — a DIFFERENT question from the warning beside
+  // it, and deliberately a different element. `payload.footer` says the poller
+  // failed or is late; `payload.freshness` says the durations on screen were
+  // measured 23h ago, which on this panel means every one of them is 23h short.
+  // Rust classifies the age against this panel's cadence (`Freshness::classify`)
+  // and hands over the finished line, so nothing here compares an age to a
+  // threshold — a second rule in this file could disagree with the one the Rust
+  // tests guard, and this panel is *about* not misreporting an age.
+  //
+  // `live` and `unknown` carry no text and paint nothing: a current reading
+  // reads as it always did, and a panel that has never read has no rows to date.
+  const asOf = payload.freshness && payload.freshness.text;
+  const fresh = $c("cronsFreshness");
+  fresh.textContent = asOf || "";
+  fresh.title = asOf || "";
+  fresh.style.color = (payload.freshness && payload.freshness.color) || "";
+  fresh.hidden = !asOf;
+
   $c("cronsPanel").hidden = false;
 }
 

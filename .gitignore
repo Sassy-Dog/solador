@@ -73,6 +73,7 @@ app/ui/sample-runners-empty.json
 app/ui/sample-usage.json
 app/ui/sample-usage-unmeasured.json
 app/ui/sample-usage-empty.json
+app/ui/sample-usage-stale.json
 app/ui/sample-azure.json
 app/ui/sample-azure-fallback.json
 app/ui/sample-azure-error.json
@@ -83,6 +84,7 @@ app/ui/sample-crons.json
 app/ui/sample-crons-empty.json
 app/ui/sample-crons-error.json
 app/ui/sample-crons-blind.json
+app/ui/sample-crons-stale.json
 app/ui/sample-openclaw.json
 app/ui/sample-openclaw-pairing.json
 app/ui/sample-openclaw-error.json
