@@ -5,26 +5,28 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.sh"
 
-# Releasing is not implemented.
+# Local release: mint the tag, then build a signed, notarized, stapled .dmg.
 #
-# This script's CalVer minting and CI-verification pre-flight are sound and are
-# kept as the scaffold for issue #15, which owns the release train.
+# The blanket refusal that used to sit here is gone as of #306, because the
+# thing it was refusing over now exists: `scripts/build.sh --sign --notarize`
+# produces a distributable artifact, and this script's pre-flight is what makes
+# minting a tag for it safe.
 #
-# What EXISTS as of #303: `./dev build --release` produces a real
-# `Solador.app` through `cargo tauri build`, stamped with the derived CalVer
-# and build number. What is still missing is everything that makes a bundle
-# distributable -- code signing and notarization (#306) and the update
-# mechanism (#308). An unsigned, unnotarized .app is not a release; Gatekeeper
-# refuses it on every machine that did not build it.
+# **This mints and pushes a real tag.** There is no dry run by accident — use
+# `--skip-mint` to exercise the build path without one (below).
 #
-# Refusing HERE is deliberate -- before the tag is minted. The previous flow
-# pushed a CalVer tag and only then built, which on a repo that cannot yet
-# produce a *distributable* bundle would leave a permanent tag advertising a
-# release that does not exist.
-log_error "Releasing is not implemented yet -- see issue #15."
-log_error "Bundling landed in #303, but signing/notarization (#306) and updates (#308) have not."
-log_error "Build an unsigned bundle locally with: ./dev build --release"
-exit 1
+# What is still NOT here, so nobody reads a green run as more than it is:
+#   * #307 — release.yml, the same thing on CI against the `prd` environment.
+#     Today this is a local-mint-only path (§4 mode 2).
+#   * #308 — the update feed. A user who installs this .dmg has no way to be
+#     told about the next one; they re-download it.
+#   * #15  — the release train that ties those together, plus Windows/Linux.
+#
+# Signing and notarization live in build.sh, not here, and that is deliberate:
+# they have to run AFTER the CFBundleVersion stamp (editing Info.plist breaks
+# the signature), and putting them beside the stamp is what keeps the ordering
+# reviewable. It also means the whole distributable path is exercisable with
+# `./dev build --release --notarize` — no tag, no mint, no release.
 
 # Publish a release — the repo's §4 mode-2 LOCAL MINT (org Versioning spec
 # v1.0; docs/VERSIONING.md). The version is CalVer derived from git by
@@ -41,6 +43,7 @@ exit 1
 # Default values
 SKIP_TESTS=0
 SKIP_SENTRY=0
+SKIP_MINT=0
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -51,6 +54,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-sentry)
             SKIP_SENTRY=1
+            shift
+            ;;
+        --skip-mint)
+            # Exercise the whole signed-and-notarized build WITHOUT minting or
+            # pushing a tag. This is how #306's path was verified end to end
+            # without cutting the repo's first release: everything below runs,
+            # the version comes from the same derivation the mint would have
+            # used, and no permanent tag is created.
+            SKIP_MINT=1
             shift
             ;;
         --bump)
@@ -112,22 +124,29 @@ log_success "CI is green for HEAD"
 
 # Resolve the Sentry DSN (issue #75).
 #
-# UNREACHABLE TODAY, and the consumer it was written for is gone. This script
-# hard-exits above ("Releasing is not implemented"), so nothing below runs; and
-# #18's integration — which is what read this DSN — lived in the macOS app that
-# was deleted. It took the value from a SENTRY_DSN *build setting* forwarded by
-# xcodebuild into a SentryDSN Info.plist key. This repo builds with plain cargo
-# and has no Sentry SDK at all (no `sentry` crate in any manifest, no panic
-# hook), so today this block reads an environment variable that reaches nothing.
+# **This block reaches a real consumer as of #309**, and #306 is where that was
+# resolved. It described a dead path for one release cycle and no longer does:
+# the note that used to sit here — "no `sentry` crate in any manifest, no panic
+# hook, reads an environment variable that reaches nothing" — was true when #277
+# wrote it and stopped being true when `crates/crashreport` landed.
 #
-# Kept, not deleted, because #15 owns the release path and must decide: either
-# re-implement opt-in reporting for Tauri (#18's decision, and CLAUDE.md commits
-# to "no telemetry or analytics by default"), or drop this gate. Do not read the
-# guard below as evidence that releases currently report crashes.
+# The consumer is `crashreport::BUILD_DSN`, which is `option_env!("SENTRY_DSN")`
+# — read at COMPILE time, from the environment cargo inherits, which is what the
+# `export` below provides. It is deliberately not read at runtime: the SDK's own
+# `apply_defaults` would happily take a `SENTRY_DSN` out of the user's shell,
+# and an environment variable that can redirect this app's crash reports to a
+# third party is not something to leave lying around.
 #
-# The shape is still the one #15 should keep: the environment is the source of
-# truth, and it is checked here — in pre-flight — so a missing DSN fails before
-# the tag is minted and pushed, not after. Never log the value.
+# The gate is kept, not because a DSN-less build is broken — it is a silent
+# no-op, and that is the common case for a local build — but because a
+# *release* that cannot receive a report the operator opted into is a release
+# nobody can debug. `--skip-sentry` is the deliberate way past it.
+#
+# A DSN still reports nothing on its own: crash reporting is opt-in and off in
+# a fresh store (#18, #309). This makes reports possible, not automatic.
+#
+# Checked in pre-flight, so a missing DSN fails before the tag is minted and
+# pushed rather than after. Never log the value.
 if [[ $SKIP_SENTRY -eq 1 ]]; then
     SENTRY_DSN=""
     log_warning "--skip-sentry: releasing without a DSN (Sentry will no-op in this build)."
@@ -140,9 +159,10 @@ else
     log_error "Or pass --skip-sentry to release deliberately without one."
     exit 1
 fi
-# Exported for whatever #15's release build ends up being. `scripts/build.sh`
-# does NOT read it today — it is a plain `cargo build` and references neither
-# SENTRY_DSN nor xcodebuild.
+# Exported so the compile below inherits it. build.sh never names SENTRY_DSN;
+# it does not have to — `option_env!` reads the environment cargo was invoked
+# with, and crashreport's build.rs declares the rerun dependency so changing the
+# value actually rebuilds the crate rather than reusing a cached one.
 export SENTRY_DSN
 
 # Run tests unless skipped
@@ -153,6 +173,15 @@ fi
 
 # --- Mint (§4): resolve the collision-free version and push the tag -------
 
+if [[ $SKIP_MINT -eq 1 ]]; then
+    # Same derivation the mint would have started from, so the artifact is
+    # stamped exactly as a real release would stamp it — it simply carries no
+    # tag. Never let this branch invent a version of its own.
+    VERSION="$("$SCRIPT_DIR/get-version-info.sh" --version)"
+    TAG=""
+    ACTION="skipped"
+    log_warning "--skip-mint: building $VERSION without minting or pushing a tag"
+else
 log_info "Minting release tag (probe/reuse/bump ladder)..."
 MINT_OUTPUT="$("$SCRIPT_DIR/get-version-info.sh" --tag --push)"
 VERSION="$(printf '%s\n' "$MINT_OUTPUT" | sed -n 's/^version=//p')"
@@ -163,6 +192,7 @@ if [[ -z "$VERSION" || -z "$TAG" || -z "$ACTION" ]]; then
     exit 1
 fi
 log_success "Minted $TAG ($ACTION)"
+fi
 
 # --- Build: every consumer reads the minted output (§4) -------------------
 
@@ -170,19 +200,28 @@ log_success "Minted $TAG ($ACTION)"
 # the version the tag carries — build.sh must not re-resolve it (the re-derive
 # would diverge the day the bump ladder first fires).
 log_info "Building release version $VERSION..."
-MARKETING_VERSION="$VERSION" "$SCRIPT_DIR/build.sh" --release
+MARKETING_VERSION="$VERSION" "$SCRIPT_DIR/build.sh" --release --notarize
 
 log_success "Published $APP_NAME $VERSION"
-log_info "Tag: $TAG"
+if [[ -n "$TAG" ]]; then
+    log_info "Tag: $TAG"
+else
+    log_warning "No tag: --skip-mint was passed, so this artifact is not a release."
+fi
+
+DMG="$(ls -t "$SCRIPT_DIR/../target/release/bundle/dmg/"*.dmg 2>/dev/null | head -1)"
 log_info ""
-log_info "There is no automated release pipeline yet (see issue #15 for"
-log_info "signing/notarization and the update feed). To cut a build manually:"
-log_info "  1. The Release .app was just built at:"
-log_info "       build/DerivedData/Build/Products/Release/$APP_NAME.app"
-log_info "  2. Zip it:  (cd build/DerivedData/Build/Products/Release && \\"
-log_info "                zip -r ~/Desktop/$APP_NAME-$VERSION.zip $APP_NAME.app)"
-log_info "  3. Optionally attach the zip to a GitHub Release for tag $TAG:"
-log_info "       gh release create $TAG ~/Desktop/$APP_NAME-$VERSION.zip \\"
-log_info "         --title \"$APP_NAME $VERSION\" --generate-notes"
-log_info "  4. The build is unsigned/un-notarized — fine for local use; do NOT"
-log_info "     distribute it externally until #15 lands."
+log_info "Signed, notarized and stapled:"
+log_info "  ${DMG:-<no .dmg found — check the build output above>}"
+log_info ""
+log_info "There is still no automated release pipeline (#307) and no update feed"
+log_info "(#308), so distribution is manual and one-way:"
+log_info "  1. Verify on a machine that did NOT build it — stapling is what makes"
+log_info "     that check work offline, and it is the only honest test of it."
+if [[ -n "$TAG" ]]; then
+    log_info "  2. Attach it to a GitHub Release for $TAG:"
+    log_info "       gh release create $TAG \"
+    log_info "         \"${DMG:-<dmg>}\" \"
+    log_info "         --title \"$APP_NAME $VERSION\" --generate-notes"
+fi
+log_info "  3. Anyone who installs it has no upgrade path until #308 lands."
