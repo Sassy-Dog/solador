@@ -272,8 +272,12 @@ the bundle's floor.
   unconfigured store polls exactly as it always did. Every loop re-reads its
   cadence **after each pass** through `panel_interval` in
   `app/src-tauri/src/main.rs` — capturing it at spawn is what would make a
-  change take up to one full interval (four hours, on Azure) to apply. There is
-  no Settings control for them yet: `store.json` is the only way in.
+  change take up to one full interval (four hours, on Azure) to apply. Settings
+  → General → **Panel Poll Cadence** is the control (#337): one row per panel,
+  each showing its floor *and why that floor exists*, and a below-floor value is
+  **refused with that reason** rather than clamped to a number the operator did
+  not choose. `set_panel_interval_secs` still clamps and `panel_interval_secs`
+  still clamps on read, because a hand-edited `store.json` reaches neither gate.
 - Sentry cron monitors: `crates/usage/src/sentry.rs`'s `cron_monitors()` /
   `summarize_monitors()` plus `app/src-tauri/src/crons.rs`. Three wire traps are
   documented there and each has a test: there is **no** flat `projectSlug` (it is

@@ -591,6 +591,21 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    explanation below it. Brighter than `.help` because it is the sentence that
    changes, and the one an operator checks. */
 .crash-status { color:var(--ink); font-weight:600; }
+/* One panel's poll cadence: the number, its two buttons, then the state it is
+   in and the floor that constrains it. Separated like `.host-row` rather than
+   packed like `.layout-row`, because each row carries two sentences under it
+   and running four of those together loses which floor belongs to which panel.
+   Same `align-items:flex-end` trick as `.layout-row`: the `.field` label sits
+   above its input, so the buttons line up with the input and not its label. */
+.cadence-item { display:flex; flex-direction:column; gap:4px;
+  padding:8px 0; border-top:1px solid var(--line); }
+.cadence-item:first-of-type { border-top:0; }
+.cadence-row { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap; }
+.cadence-row .input { max-width:160px; }
+/* Which of the two states this row is in — an override, or the untouched
+   default. Brighter than the floor text below it for the same reason
+   `.crash-status` is: it is the line that changes. */
+.cadence-status { color:var(--ink); font-weight:600; }
 .dim { color:var(--muted); }
 .badge-ok { font-size:10px; font-weight:700; color:var(--green); }
 .badge-dim { font-size:10px; font-weight:700; color:var(--muted); }

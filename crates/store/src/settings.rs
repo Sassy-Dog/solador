@@ -99,12 +99,36 @@ pub enum PanelInterval {
 pub struct IntervalSpec {
     /// The `panel_intervals` map key. Part of the on-disk format — renaming one
     /// silently discards the operator's setting for that panel.
+    ///
+    /// It is also the identifier the Settings surface sends back
+    /// ([`PanelInterval::parse`]), for the same reason [`SecretKey`] has one
+    /// name on both sides: a second spelling is a second thing to get wrong.
+    ///
+    /// [`SecretKey`]: crate::SecretKey
     pub key: &'static str,
     /// Today's hardcoded cadence, so an unconfigured store behaves as it does now.
     pub default_secs: u32,
     /// The shortest cadence this source may be asked for. See
     /// [`PanelInterval::spec`] for why each one is what it is.
     pub floor_secs: u32,
+    /// What Settings calls this panel.
+    ///
+    /// Here rather than beside the other display names in the shell because of
+    /// the argument this whole struct is built on: a name that lives away from
+    /// the floor it labels is a name that can end up over the wrong floor, and
+    /// the row an operator reads is *"this panel, this minimum, this reason"* —
+    /// three facts that are only true together.
+    pub label: &'static str,
+    /// Why this floor is where it is, in the operator's terms — a sentence
+    /// fragment that completes "no faster than 5 seconds — …".
+    ///
+    /// A floor with no stated reason is indistinguishable from an arbitrary
+    /// limit, and an operator who cannot see why they are being refused has
+    /// only the store file left to argue with. Travelling in the spec is what
+    /// keeps this sentence describing *this* number: the prose beside each arm
+    /// below says the same thing to whoever edits the floor, and this says it to
+    /// whoever hits it.
+    pub floor_reason: &'static str,
 }
 
 impl PanelInterval {
@@ -148,6 +172,9 @@ impl PanelInterval {
                 key: "containers",
                 default_secs: 10,
                 floor_secs: 5,
+                label: "Containers/VMs",
+                floor_reason:
+                    "every pass shells out to docker, podman and tart, and a container list changes on human timescales",
             },
             // `app/src-tauri/src/usage.rs`'s `PROVIDER_POLL_INTERVAL_SECS = 60 * 60`.
             // Floor 300s: three vendor APIs (Neon, Sentry, Vercel) on one pass,
@@ -158,6 +185,9 @@ impl PanelInterval {
                 key: "usage_providers",
                 default_secs: 60 * 60,
                 floor_secs: 300,
+                label: "Usage — Neon, Sentry, Vercel",
+                floor_reason:
+                    "three vendor APIs answer on one pass, each against a rate-limit budget, and consumption figures move on the order of hours",
             },
             // `crates/azurecost/src/lib.rs`'s `POLL_INTERVAL = 4 * 60 * 60`.
             // Floor 3600s, and this is the floor that exists to stop a spend
@@ -169,6 +199,9 @@ impl PanelInterval {
                 key: "azure_cost",
                 default_secs: 4 * 60 * 60,
                 floor_secs: 3600,
+                label: "Azure Cost",
+                floor_reason:
+                    "the export is published about once a day, and every poll mints a SAS and may pull the whole blob, so a shorter cadence buys nothing and moves real egress",
             },
             // Crons has **no constant of its own today**: `crons_loop` in
             // `app/src-tauri/src/main.rs` sleeps on `usage`'s
@@ -183,8 +216,125 @@ impl PanelInterval {
                 key: "crons",
                 default_secs: 60 * 60,
                 floor_secs: 300,
+                label: "Sentry Crons",
+                floor_reason:
+                    "it shares Sentry's rate-limit budget with the Usage panel's read, and a monitor's health is a persistence watch rather than a real-time alarm",
             },
         }
+    }
+
+    /// The panel the Settings surface named, or `None`.
+    ///
+    /// Matched against [`IntervalSpec::key`] — the on-disk key doubles as the
+    /// wire identifier — so an unrecognised string is a *rejected* command
+    /// rather than a silently-ignored save, the same closed-set treatment
+    /// `SecretField::parse` gives credentials in the shell.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        PanelInterval::ALL
+            .into_iter()
+            .find(|panel| panel.spec().key == raw)
+    }
+
+    /// Whether this panel may be polled every `secs`, without storing anything.
+    ///
+    /// **The gate the Settings surface writes through.** A requested cadence is
+    /// either accepted as asked or refused with a reason — never quietly moved
+    /// to a number nobody chose. [`Settings::set_panel_interval_secs`] still
+    /// clamps, and [`Settings::panel_interval_secs`] still clamps on read,
+    /// because a hand-edited `store.json` reaches neither this function nor that
+    /// setter; but a value that has been through here cannot be clamped by
+    /// either, which is what makes "refused, not substituted" true of every path
+    /// a human can actually type into.
+    ///
+    /// # Errors
+    ///
+    /// [`IntervalRejection::BelowFloor`] when `secs` is under
+    /// [`IntervalSpec::floor_secs`]. There is deliberately no upper bound: a
+    /// cadence that is too *slow* costs nobody anything and says so on the
+    /// panel's own staleness footer.
+    pub fn check_secs(self, secs: u32) -> Result<u32, IntervalRejection> {
+        if secs < self.spec().floor_secs {
+            Err(IntervalRejection::BelowFloor {
+                panel: self,
+                asked: secs,
+            })
+        } else {
+            Ok(secs)
+        }
+    }
+}
+
+/// Why a requested cadence was not stored.
+///
+/// One variant today, and an enum rather than a `String` so the refusal is a
+/// *value* the caller can test against rather than a sentence it has to match
+/// on. The sentence is [`IntervalRejection::user_message`], per the repo-wide
+/// `user_message()` convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntervalRejection {
+    /// Under the panel's floor. Nothing was written.
+    BelowFloor {
+        /// The panel whose floor stopped it.
+        panel: PanelInterval,
+        /// What the operator asked for.
+        asked: u32,
+    },
+}
+
+impl IntervalRejection {
+    /// The floor that refused the request.
+    #[must_use]
+    pub const fn floor_secs(self) -> u32 {
+        match self {
+            IntervalRejection::BelowFloor { panel, .. } => panel.spec().floor_secs,
+        }
+    }
+
+    /// What Settings shows the operator.
+    ///
+    /// Names the panel, the floor, the reason for the floor **and** what was
+    /// asked. Dropping the last of those is what would make this read like a
+    /// generic hint instead of an answer to something a person just typed.
+    #[must_use]
+    pub fn user_message(self) -> String {
+        match self {
+            IntervalRejection::BelowFloor { panel, asked } => {
+                let spec = panel.spec();
+                format!(
+                    "Not saved — {} polls no faster than every {}: {}. You asked for {}.",
+                    spec.label,
+                    interval_label(spec.floor_secs),
+                    spec.floor_reason,
+                    interval_label(asked),
+                )
+            }
+        }
+    }
+}
+
+/// A cadence in seconds, said in words: `10 seconds`, `1 minute`, `4 hours`.
+///
+/// One ladder, shared by the cadence rows, the refusal message and the refresh
+/// interval's picker, because a floor described as `1 hour` in one place and
+/// `3600 seconds` in another reads as two different limits. Exact units only —
+/// 90 seconds is `90 seconds`, not `1.5 minutes` — since every number this
+/// renders is one somebody has to be able to type back in.
+#[must_use]
+pub fn interval_label(secs: u32) -> String {
+    let unit = |count: u32, name: &str| {
+        if count == 1 {
+            format!("1 {name}")
+        } else {
+            format!("{count} {name}s")
+        }
+    };
+    if secs >= 3600 && secs.is_multiple_of(3600) {
+        unit(secs / 3600, "hour")
+    } else if secs >= 60 && secs.is_multiple_of(60) {
+        unit(secs / 60, "minute")
+    } else {
+        unit(secs, "second")
     }
 }
 
@@ -370,10 +520,26 @@ impl Settings {
             .map_or(spec.default_secs, |&secs| secs.max(spec.floor_secs))
     }
 
+    /// Whether this panel's cadence has ever been configured.
+    ///
+    /// `false` is "never chosen", which is *not* the same as "chosen, and equal
+    /// to the default": the first follows the constant if it ever moves and the
+    /// second pins the panel to today's number. Settings shows the difference,
+    /// and [`Settings::clear_panel_interval`] is how an operator gets back to
+    /// the first.
+    #[must_use]
+    pub fn panel_interval_is_configured(&self, panel: PanelInterval) -> bool {
+        self.panel_intervals.contains_key(panel.spec().key)
+    }
+
     /// Set this panel's cadence, reporting whether the floor moved it.
     ///
     /// Returns [`ClampOutcome`] rather than a bare `u32` so the caller cannot
     /// show a floored value as though it were the one requested.
+    ///
+    /// A value that has been through [`PanelInterval::check_secs`] is never
+    /// clamped here — that is the gate the Settings surface writes through, so
+    /// what an operator types is either stored as typed or refused out loud.
     pub fn set_panel_interval_secs(&mut self, panel: PanelInterval, secs: u32) -> ClampOutcome {
         let spec = panel.spec();
         let applied = secs.max(spec.floor_secs);
@@ -786,6 +952,163 @@ mod tests {
                 spec.default_secs
             );
             assert!(spec.floor_secs > 0, "{panel:?}: a zero floor is no floor");
+        }
+    }
+
+    /// The gate the Settings surface writes through: at or above the floor is
+    /// accepted **as asked**, below it is refused and nothing is stored.
+    #[test]
+    fn check_secs_accepts_at_the_floor_and_refuses_below_it() {
+        for panel in PanelInterval::ALL {
+            let floor = panel.spec().floor_secs;
+            assert_eq!(panel.check_secs(floor), Ok(floor), "{panel:?}");
+            assert_eq!(
+                panel.check_secs(floor * 3),
+                Ok(floor * 3),
+                "{panel:?}: an accepted value comes back unchanged, never rounded"
+            );
+            assert_eq!(
+                panel.check_secs(floor - 1),
+                Err(IntervalRejection::BelowFloor {
+                    panel,
+                    asked: floor - 1,
+                }),
+                "{panel:?}"
+            );
+            assert_eq!(
+                panel.check_secs(0),
+                Err(IntervalRejection::BelowFloor { panel, asked: 0 }),
+                "{panel:?}: zero is a request, not an unset field"
+            );
+        }
+    }
+
+    /// **The property that makes "refused, not clamped" true.** Anything
+    /// `check_secs` accepts, the setter stores untouched — so no value an
+    /// operator types can arrive on disk as a different number without them
+    /// being told.
+    #[test]
+    fn a_checked_value_is_never_clamped_by_the_setter() {
+        let mut s = Settings::default();
+        for panel in PanelInterval::ALL {
+            let spec = panel.spec();
+            for asked in [spec.floor_secs, spec.floor_secs + 1, spec.default_secs] {
+                let checked = panel.check_secs(asked).expect("at or above the floor");
+                let outcome = s.set_panel_interval_secs(panel, checked);
+                assert_eq!(outcome, ClampOutcome::Applied(asked), "{panel:?}");
+                assert_eq!(s.panel_interval_secs(panel), asked, "{panel:?}");
+            }
+        }
+    }
+
+    /// A refusal has to be readable by whoever hit it: which panel, which floor,
+    /// why that floor, and what they asked for.
+    #[test]
+    fn a_refusal_names_the_panel_the_floor_the_reason_and_the_request() {
+        let rejection = PanelInterval::AzureCost
+            .check_secs(30)
+            .expect_err("30s is below the 1h floor");
+        assert_eq!(rejection.floor_secs(), 3600);
+        let message = rejection.user_message();
+        for expected in [
+            "Azure Cost",
+            "1 hour",
+            "published about once a day",
+            "30 seconds",
+        ] {
+            assert!(
+                message.contains(expected),
+                "{expected:?} missing from {message:?}"
+            );
+        }
+    }
+
+    /// Every panel states all five facts, and the two new ones are not blank —
+    /// an unnamed panel or an unexplained floor is a row an operator cannot act
+    /// on.
+    #[test]
+    fn every_panel_states_a_label_and_why_its_floor_exists() {
+        for panel in PanelInterval::ALL {
+            let spec = panel.spec();
+            assert!(!spec.label.is_empty(), "{panel:?}: unnamed");
+            assert!(
+                !spec.floor_reason.is_empty(),
+                "{panel:?}: unexplained floor"
+            );
+            assert!(
+                !spec.floor_reason.ends_with('.'),
+                "{panel:?}: the reason completes a sentence, so it must not end one"
+            );
+            // It is spliced in after one em dash already ("No faster than 1
+            // hour — …"), and a second inside it reads as a sentence that has
+            // lost its way.
+            assert!(
+                !spec.floor_reason.contains('—'),
+                "{panel:?}: the row already spends its em dash before this fragment"
+            );
+            assert!(
+                panel
+                    .check_secs(spec.floor_secs - 1)
+                    .expect_err("below the floor")
+                    .user_message()
+                    .contains(spec.label),
+                "{panel:?}: a refusal must name the panel it is about"
+            );
+        }
+    }
+
+    /// The Settings surface sends the on-disk key back; an unknown one is
+    /// refused rather than resolved to a neighbour.
+    #[test]
+    fn a_panel_parses_from_its_key_and_nothing_else() {
+        for panel in PanelInterval::ALL {
+            assert_eq!(PanelInterval::parse(panel.spec().key), Some(panel));
+        }
+        for unknown in ["", "hosts", "Containers", "azure-cost", "a_newer_build"] {
+            assert_eq!(PanelInterval::parse(unknown), None, "{unknown:?}");
+        }
+    }
+
+    /// "Never configured" and "configured to today's default" are different
+    /// states, and the row an operator reads has to tell them apart.
+    #[test]
+    fn configured_is_distinct_from_holding_the_default_value() {
+        let mut s = Settings::default();
+        assert!(!s.panel_interval_is_configured(PanelInterval::Containers));
+        s.set_panel_interval_secs(
+            PanelInterval::Containers,
+            PanelInterval::Containers.spec().default_secs,
+        );
+        assert!(
+            s.panel_interval_is_configured(PanelInterval::Containers),
+            "an explicit choice equal to the default is still a choice"
+        );
+        s.clear_panel_interval(PanelInterval::Containers);
+        assert!(!s.panel_interval_is_configured(PanelInterval::Containers));
+    }
+
+    #[test]
+    fn interval_label_says_exact_units_and_nothing_else() {
+        let cases = [
+            (1, "1 second"),
+            (5, "5 seconds"),
+            (30, "30 seconds"),
+            (60, "1 minute"),
+            (90, "90 seconds"),
+            (300, "5 minutes"),
+            (3600, "1 hour"),
+            (5400, "90 minutes"),
+            (4 * 3600, "4 hours"),
+        ];
+        for (secs, want) in cases {
+            assert_eq!(interval_label(secs), want, "{secs}");
+        }
+        // Every number this app can put in front of an operator round-trips
+        // through the ladder rather than falling off it.
+        for panel in PanelInterval::ALL {
+            let spec = panel.spec();
+            assert!(!interval_label(spec.floor_secs).is_empty());
+            assert!(!interval_label(spec.default_secs).is_empty());
         }
     }
 

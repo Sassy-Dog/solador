@@ -1081,6 +1081,8 @@ capability](#the-one-granted-capability) for the single entry that does.
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
 | `settings_save_general` | refresh interval, core-row span |
+| `settings_save_panel_interval` | one panel's poll cadence, by its `panel_intervals` key. **Refused, not clamped**: a value under the panel's floor writes nothing and comes back as `IntervalRejection::user_message` — which names the panel, the floor, why that floor exists and what was asked for. Storing the floor instead would leave an operator looking at a number they did not choose |
+| `settings_clear_panel_interval` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
 | `settings_move_panel` / `settings_set_panel_span` / `settings_set_breakpoint_overflow` | the [cockpit layout](#the-layout-tab), inside one breakpoint named by `minWidth`: one panel a place along the order, one panel's width, or that band's host-overflow mode |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` / `settings_reset_layout` | add a width band (seeded from the one it splits), drop one (never the last), or forget the arrangement entirely |
@@ -1112,6 +1114,7 @@ a portfolio fetch on a credential it has no use for.
 | the refresh interval | …and the usage loop's Claude half, which shares that cadence |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
 | the `azure` credential | the Azure loop |
+| a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
 | a container group rule | nothing — the rules are read at render time too, by `containers` |
@@ -1262,7 +1265,8 @@ reload entirely, mirroring the original view's `applyHiddenMounts()` vs `reload(
 
 Two gaps, deliberate and worth knowing:
 
-- **One of the two General preferences is consumed; the core row span is not.**
+- **One of the two Apply-gated General preferences is consumed; the core row
+  span is not.**
   `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
   rollup's cadence, and changing it applies immediately (see below). Neither the
   host poll loop nor the provider reads are on it: the host loop stays at 1s
@@ -1274,9 +1278,15 @@ Two gaps, deliberate and worth knowing:
   store's `panel_intervals`, each clamped to a floor stated beside the source it
   protects ([#300](https://github.com/Sassy-Dog/solador/issues/300)) and re-read
   by its loop every pass ([#301](https://github.com/Sassy-Dog/solador/issues/301)),
-  so a change applies on the next tick. **There is no Settings control for them
-  yet** — editing `store.json` is the only way in, which is also why no wake
-  channel fires on a cadence edit. The **core row span**
+  so a change applies on the next tick — and since
+  [#337](https://github.com/Sassy-Dog/solador/issues/337) they have a control of
+  their own, the **Panel Poll Cadence** group below Apply, one row per panel
+  (`settings_save_panel_interval` / `settings_clear_panel_interval`, which wake
+  the one loop each). Each row shows its floor and *why that floor exists*
+  before anybody trips over it, because a limit an operator only meets by being
+  refused is indistinguishable from the control being broken. There is still no
+  row for the 1 Hz host poll or the 10s agent-health poll: neither has a
+  `PanelInterval` to name it, deliberately. The **core row span**
   is still read by `viewmodel`'s card functions from their own constant; it
   persists (same file, same key, same laundering rules as the original) and nothing
   reads the stored value yet. `host_overflow_mode` left this tab for the
@@ -1712,6 +1722,7 @@ and that immediacy is itself the check on the corresponding wake:
 | the tabs mode, per breakpoint | with two hosts configured, set Settings → **Layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
 | `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
+| `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **General** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `openclaw_wake` | put a gateway URL under Settings → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
