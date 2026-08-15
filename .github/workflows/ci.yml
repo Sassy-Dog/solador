@@ -169,6 +169,11 @@ jobs:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          # Both slices of the universal bundle (#335). build.sh also installs
+          # these itself for the local path, so this is not load-bearing — it
+          # just lets the toolchain action do it once, before the cache step.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       # Also caches ~/.cargo/bin, which is where scripts/build.sh installs the
       # pinned cargo-tauri — so the CLI compiles once and is restored after.
@@ -200,7 +205,10 @@ jobs:
       - name: Verify the bundle
         run: |
           set -euo pipefail
-          APP="target/debug/bundle/macos/Solador.app"
+          # Beneath the triple: bundles are universal (#335), and `--target`
+          # moves cargo's output. Kept in step with MACOS_UNIVERSAL_TARGET in
+          # scripts/config.sh, which YAML cannot source.
+          APP="target/universal-apple-darwin/debug/bundle/macos/Solador.app"
           test -d "$APP"
           test -x "$APP/Contents/MacOS/solador-app"
           test -f "$APP/Contents/Resources/icon.icns"

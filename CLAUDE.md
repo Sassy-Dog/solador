@@ -106,7 +106,8 @@ carries a five-minute manual smoke checklist that is the only thing covering it
 There is a signed, notarized release path as of #306 — and no release
 *train* yet (#15).
 
-`./dev build --release` produces `target/release/bundle/macos/Solador.app`
+`./dev build --release` produces
+`target/universal-apple-darwin/release/bundle/macos/Solador.app`
 through `cargo tauri build` (#303). The bundler is not in `tauri-build` — that
 build.rs helper reads `bundle.*` and assembles nothing — so it comes from
 `tauri-cli`, pinned by `TAURI_CLI_VERSION` in `scripts/config.sh` and installed
@@ -114,7 +115,17 @@ on demand by `build.sh`. Both version numbers are **derived from git**:
 `tauri.conf.json` authors no `version` at all, the CalVer arrives as a
 `--config` overlay and lands as `CFBundleShortVersionString`, the build number
 is stamped over `CFBundleVersion`, and the build asserts all of it back out of
-the Info.plist rather than trusting that it worked. CI runs the same path at
+the Info.plist rather than trusting that it worked.
+
+**Every macOS bundle is universal** (`MACOS_UNIVERSAL_TARGET` in
+`scripts/config.sh`, #335), which is why the output sits under the triple
+rather than at `target/release/bundle`. `v2026.8.110` — the first release ever
+cut — shipped **arm64-only** because no target was named, on a bundle whose own
+floor is macOS 14.0, which Intel Macs run: "it built" and "our users can run
+it" were two different claims. So the build now asserts `lipo -archs` reports
+both slices, and checks the deployment floor **per architecture** — `vtool` on
+a fat binary prints one block per slice, and reading only the first verifies
+half the artifact while reporting on all of it. CI runs the same path at
 the debug profile on every PR (`./dev build --bundle`, job **macOS bundle
 (unsigned)**), so bundling cannot break unnoticed the way the agent deploy did
 in #269.
