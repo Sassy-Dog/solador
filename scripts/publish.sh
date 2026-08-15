@@ -209,7 +209,9 @@ else
     log_warning "No tag: --skip-mint was passed, so this artifact is not a release."
 fi
 
-DMG="$(ls -t "$SCRIPT_DIR/../target/release/bundle/dmg/"*.dmg 2>/dev/null | head -1)"
+# Under the universal target the bundle lives beneath the triple (#335), not at
+# target/release/bundle. Read from config.sh so this cannot drift from build.sh.
+DMG="$(ls -t "$SCRIPT_DIR/../target/$MACOS_UNIVERSAL_TARGET/release/bundle/dmg/"*.dmg 2>/dev/null | head -1)"
 log_info ""
 log_info "Signed, notarized and stapled:"
 log_info "  ${DMG:-<no .dmg found — check the build output above>}"

@@ -9,7 +9,8 @@ set -euo pipefail
 #                          release path uses, at the debug profile's compile
 #                          cost. This is what CI runs on every PR.
 #   ./dev build --release  `cargo tauri build` — the RELEASE path. `./prd` is
-#                          this. Produces target/release/bundle/macos/Solador.app.
+#                          this. Produces
+#                          target/universal-apple-darwin/release/bundle/macos/Solador.app.
 #
 # Why the CLI at all: the bundler is NOT in `tauri-build`. That build.rs helper
 # reads `bundle.*` — deployment floor, the Info.plist embedded into the bare
@@ -141,6 +142,31 @@ ensure_tauri_cli() {
     fi
 }
 
+# Every bundle is universal (#335). The first release ever cut, v2026.8.110,
+# was arm64-only — no `--target` was passed, so the bundle inherited whatever
+# the builder happened to be, and a `macos-*-arm64` runner produced something
+# an Intel Mac cannot execute. The bundle's own floor is macOS 14.0, which
+# Intel Macs run, so "it built fine" and "our users can run it" were two
+# different claims.
+#
+# `universal-apple-darwin` is a Tauri CLI pseudo-target: it builds both real
+# triples and lipos them, which is why BOTH have to be installed. The triple
+# itself is `MACOS_UNIVERSAL_TARGET` from config.sh — it is part of the output
+# path, so publish.sh has to agree with this file about it.
+MACOS_UNIVERSAL_ARCHS=(x86_64 arm64)
+
+ensure_universal_targets() {
+    local triple
+    for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+        if rustup target list --installed 2>/dev/null | grep -qx "$triple"; then
+            log_debug "rust target $triple already installed"
+            continue
+        fi
+        log_info "Installing rust target $triple (needed for $MACOS_UNIVERSAL_TARGET)"
+        rustup target add "$triple"
+    done
+}
+
 # ---------------------------------------------------------------------------
 # Fail-closed checks on the produced bundle
 #
@@ -178,18 +204,48 @@ assert_plist_key() {
 # `./dev lint`, CI's Rust jobs) and `tauri.conf.json` governs this one. Both
 # declare 14.0, which is exactly the no-drift arrangement config.toml's own
 # comment describes — but only one of them is in force at a time.
+#
+# Checked PER ARCHITECTURE, which a universal binary makes load-bearing (#335).
+# `vtool -show-build-version` on a fat binary prints one block per slice, and
+# this used to take the first `minos` and stop — so a build where one slice
+# carried a different floor read as clean. That is the thin-binary failure in
+# another costume: verifying one slice of two and reporting on the whole.
 assert_deployment_floor() {
-    local binary="$1" want="$2" minos
+    local binary="$1" want="$2" arch minos
     if ! command_exists vtool; then
         log_error "vtool not found — cannot verify the macOS deployment floor (install the Xcode command line tools)"
         exit 1
     fi
-    minos="$(vtool -show-build-version "$binary" 2>/dev/null | awk '$1 == "minos" { print $2; exit }')"
-    if [[ "$minos" != "$want" ]]; then
-        log_error "LC_BUILD_VERSION minos is '${minos:-<missing>}', expected '$want' (MACOSX_DEPLOYMENT_TARGET did not reach the CLI build)"
+    for arch in "${MACOS_UNIVERSAL_ARCHS[@]}"; do
+        minos="$(vtool -arch "$arch" -show-build-version "$binary" 2>/dev/null \
+                 | awk '$1 == "minos" { print $2; exit }')"
+        if [[ "$minos" != "$want" ]]; then
+            log_error "LC_BUILD_VERSION minos is '${minos:-<missing>}' for $arch, expected '$want' (MACOSX_DEPLOYMENT_TARGET did not reach the CLI build)"
+            exit 1
+        fi
+        log_success "LC_BUILD_VERSION minos = $minos ($arch)"
+    done
+}
+
+# The binary must actually be fat. Passing `--target universal-apple-darwin` is
+# not evidence that it worked — a thin binary passes every other check in this
+# file identically, ships, and fails only on a user's Intel Mac. Same standard
+# as the version numbers: derive, then assert it back out of the artifact.
+assert_universal_binary() {
+    local binary="$1" got want
+    if ! command_exists lipo; then
+        log_error "lipo not found — cannot verify the binary is universal (install the Xcode command line tools)"
         exit 1
     fi
-    log_success "LC_BUILD_VERSION minos = $minos"
+    # Sorted so the comparison does not depend on lipo's ordering.
+    got="$(lipo -archs "$binary" 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+    want="$(printf '%s\n' "${MACOS_UNIVERSAL_ARCHS[@]}" | sort | tr '\n' ' ' | sed 's/ $//')"
+    if [[ "$got" != "$want" ]]; then
+        log_error "binary architectures are '${got:-<none>}', expected '$want'"
+        log_error "(a thin binary here means Intel Macs get something they cannot run — #335)"
+        exit 1
+    fi
+    log_success "architectures = $got"
 }
 
 # ---------------------------------------------------------------------------
@@ -217,13 +273,25 @@ build_bundle() {
     # be handed. `--bundles` names what we can actually stand behind today.
     cli_args+=(--bundles app)
 
+    # Universal, on every bundling path including CI's debug one (#335). CI
+    # builds the same shape the release builds for the same reason #303 put the
+    # bundler in CI at all: a path only exercised at release time is a path
+    # where "all green" carries no information.
+    ensure_universal_targets
+    cli_args+=(--target "$MACOS_UNIVERSAL_TARGET")
+
     [[ "$CARGO_PROFILE" == "debug" ]] && cli_args+=(--debug)
 
     # productName is read back out of the config rather than assumed from
     # APP_NAME, the same way run.sh does it, so the two cannot drift.
-    local product_name app_bundle plist executable min_os
+    local product_name bundle_dir app_bundle plist executable min_os
     product_name="$(plutil -extract productName raw -o - "$TAURI_CONF")"
-    app_bundle="$ROOT_DIR/target/$CARGO_PROFILE/bundle/macos/$product_name.app"
+    # `--target` moves cargo's output under the triple, so the bundle is no
+    # longer at target/<profile>/bundle. Derived from the same variable passed
+    # to the CLI so the two cannot drift into a "reported success but produced
+    # no bundle" failure.
+    bundle_dir="$ROOT_DIR/target/$MACOS_UNIVERSAL_TARGET/$CARGO_PROFILE/bundle"
+    app_bundle="$bundle_dir/macos/$product_name.app"
     plist="$app_bundle/Contents/Info.plist"
 
     # Delete first, so "it exists afterwards" means THIS build made it.
@@ -268,6 +336,10 @@ build_bundle() {
     assert_plist_key LSMinimumSystemVersion "$min_os" "$plist"
 
     executable="$app_bundle/Contents/MacOS/$(plutil -extract CFBundleExecutable raw -o - "$plist")"
+    # Order matters: prove both slices exist BEFORE asserting a floor for each
+    # of them, so a thin binary fails saying "not universal" rather than
+    # "missing minos for arm64", which reads like a toolchain problem.
+    assert_universal_binary "$executable"
     assert_deployment_floor "$executable" "$min_os"
 
     if [[ "$WANT_SIGN" == true ]]; then
@@ -277,7 +349,7 @@ build_bundle() {
     if [[ "$WANT_NOTARIZE" == true ]]; then
         local dmg identity
         identity="$(resolve_signing_identity)" || exit 1
-        dmg="$ROOT_DIR/target/$CARGO_PROFILE/bundle/dmg/${product_name}-${marketing_version}.dmg"
+        dmg="$bundle_dir/dmg/${product_name}-${marketing_version}.dmg"
         mkdir -p "$(dirname "$dmg")"
         make_dmg "$app_bundle" "$dmg" "$identity"
         notarize_and_staple "$dmg"

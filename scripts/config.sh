@@ -31,6 +31,13 @@ export TAURI_PACKAGE="solador-app"
 # Bump this and `Cargo.lock`'s `tauri` together, never one alone.
 export TAURI_CLI_VERSION="2.11.4"
 
+# Every macOS bundle is universal (#335), and the triple lives here because it
+# is part of the OUTPUT PATH: `--target` moves cargo's output under the triple,
+# so build.sh, publish.sh and the workflows must all agree on where the bundle
+# landed. v2026.8.110 shipped arm64-only for want of this flag; a second copy of
+# the string drifting from the first is how the artifact goes missing instead.
+export MACOS_UNIVERSAL_TARGET="universal-apple-darwin"
+
 # Version is NOT configured here (org Versioning spec §3/§10: no hand-maintained
 # version fields). Both numbers derive from git via their single-source scripts:
 #   marketing version → scripts/get-version-info.sh   (CalVer YYYY.M.<commits-this-month>)
