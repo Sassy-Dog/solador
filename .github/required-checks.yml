@@ -24,3 +24,14 @@ required_checks:
   # base predates the job, and the queue waits forever rather than failing.
   - context: "macOS bundle (unsigned)"
     satisfies: [bundle]
+  # Added by #307. release.yml is the only workflow allowed to read a secret,
+  # because it is the only one declaring `environment: prd`. That property is
+  # invisible when it breaks — an unreachable secret resolves to the empty
+  # string — and this repo is public, so ci.yml runs on fork pull requests.
+  # Asserted, per #307's acceptance, rather than assumed.
+  #
+  # SAME ORDERING TRAP as the bundle job above: add this context to the ruleset
+  # only AFTER it lands on main, or every PR whose base predates the job waits
+  # forever on a context nothing reports.
+  - context: "Secrets guard"
+    satisfies: [security]

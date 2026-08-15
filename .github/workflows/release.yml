@@ -1,0 +1,205 @@
+name: Release
+
+# The signed, notarized, stapled release build (#307, part of #15).
+#
+# This is the ONLY job in this repository that declares an environment, and
+# that is the whole security design rather than a detail. Solador is a PUBLIC
+# repo, so the org's `APPLE_*` secrets — which are `private` visibility — are
+# unreachable here and would resolve to the empty string. Environment secrets
+# are repo-scoped, so `private` visibility never applies to them; `prd` also
+# carries a required reviewer and a `v*`-tag-only deployment policy, which is
+# what stops a push to `main` from quietly minting a signed build.
+#
+# `ci.yml` declares no environment and references zero secrets, asserted by
+# this repo's `secrets-guard` job rather than assumed. Keep it that way: a
+# fork's pull request runs CI.
+#
+# Verified end to end by a real tagged run — a green lint on this file proves
+# nothing about signing, because signing needs credentials and makes real
+# submissions to Apple.
+
+on:
+  push:
+    tags: ['v*']
+
+# Needed to create the draft release and upload the .dmg to it. Every other
+# workflow in this repo stays `contents: read`.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Signed release build
+    runs-on: macos-latest
+    environment: prd
+
+    env:
+      APPLE_ASC_ISSUER_ID: ${{ secrets.APPLE_ASC_ISSUER_ID }}
+      APPLE_ASC_KEY_BASE64: ${{ secrets.APPLE_ASC_KEY_BASE64 }}
+      APPLE_ASC_KEY_ID: ${{ secrets.APPLE_ASC_KEY_ID }}
+      APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
+      APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # Read at COMPILE time by `crashreport::BUILD_DSN` (`option_env!`), so it
+      # has to be in the environment cargo is invoked with — it is never a flag
+      # to build.sh, which does not name it at all.
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      # #308's updater signing key. Unused until the plugin lands; carried here
+      # so the credential path is exercised now rather than discovered later.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # MANDATORY, not an optimization. Both version numbers are derived by
+          # counting git history, and `get-version-info.sh` REFUSES on a shallow
+          # clone rather than answering "commits this month" with 1. At depth 1
+          # this job would emit no version at all.
+          fetch-depth: 0
+
+      # FIRST, before anything expensive, and before the keychain exists.
+      #
+      # This is the failure this entire credential design exists to prevent: an
+      # unreachable secret resolves to the EMPTY STRING and never raises. Skip
+      # this check and a misconfigured environment does not fail here — it fails
+      # minutes later inside codesign or notarytool, with a message that never
+      # mentions a secret, or worse it does not fail at all and publishes an
+      # unsigned artifact.
+      - name: Preflight — every release secret must be non-empty
+        run: |
+          missing=()
+          for name in \
+            APPLE_ASC_ISSUER_ID APPLE_ASC_KEY_BASE64 APPLE_ASC_KEY_ID \
+            APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64 \
+            APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD \
+            APPLE_KEYCHAIN_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID \
+            SENTRY_DSN TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::${#missing[@]} release secret(s) resolved EMPTY: ${missing[*]}"
+            echo "Most likely cause: this job lost 'environment: prd', or the Doppler" >&2
+            echo "solador/prd -> GitHub environment sync is broken. Secrets are never" >&2
+            echo "readable outside the environment, by design (#305)." >&2
+            exit 1
+          fi
+          echo "All 11 release secrets resolved."
+
+      # The tag names the artifact; the build DERIVES its version from history.
+      # Nothing forces those to agree, so assert it. Without this, hand-tagging
+      # v2026.8.5 at a commit whose derived CalVer is 2026.8.109 publishes a
+      # release called v2026.8.5 containing Solador-2026.8.109.dmg — a
+      # mislabelled artifact is worse than a failed release.
+      - name: Assert the tag matches the derived CalVer
+        run: |
+          derived="v$(scripts/get-version-info.sh --version)"
+          if [[ "$GITHUB_REF_NAME" != "$derived" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match derived version $derived"
+            echo "Tags are minted by scripts/publish.sh so these agree. A hand-made" >&2
+            echo "tag, or a tag on the wrong commit, lands here." >&2
+            exit 1
+          fi
+          echo "Tag and derived version agree: $derived"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # Also caches ~/.cargo/bin, where build.sh installs the pinned cargo-tauri.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        with:
+          workspaces: .
+
+      # build.sh deliberately does NOT manage keychains — it resolves an
+      # identity out of whatever is already there. On a hosted runner there is
+      # nothing there, so importing is this workflow's job.
+      - name: Import the signing certificate into a temporary keychain
+        run: |
+          # Recomputed here rather than carried in the job's `env:` — the
+          # `runner` context is not available at job-env scope, only the
+          # RUNNER_TEMP variable inside a step. The delete step below builds
+          # the identical path for the same reason.
+          KEYCHAIN_PATH="$RUNNER_TEMP/solador-signing.keychain-db"
+          cert="$RUNNER_TEMP/cert.p12"
+          ( umask 077; printf '%s' "$APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64" | base64 --decode > "$cert" )
+
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Disable the 300s auto-lock: a release build runs far longer than
+          # that, and a keychain that re-locks mid-build fails at codesign.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$cert" -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -f pkcs12
+          rm -f "$cert"
+
+          # Without this, codesign blocks on a GUI authorization prompt that can
+          # never be answered on a headless runner, and the job hangs until it
+          # times out rather than failing.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+
+          # Prepend to the search list, keeping the existing entries.
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | sed 's/[[:space:]"]//g')
+
+          # Prove the identity actually landed. `security import` can succeed
+          # while leaving nothing codesign will use, and the next honest signal
+          # would otherwise be a confusing failure inside build.sh.
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+               | grep -q "Developer ID Application"; then
+            echo "::error::no 'Developer ID Application' identity in the imported keychain"
+            exit 1
+          fi
+          echo "Signing identity imported."
+
+      # --notarize implies --sign. This is the same command a maintainer runs
+      # locally, which is what keeps the release path from drifting away from
+      # the one people actually exercise.
+      - name: Build, sign, notarize, staple
+        run: ./dev build --release --notarize
+
+      # build.sh asserts its own work. This re-checks the FILE THAT SHIPS,
+      # which is a different claim.
+      - name: Validate the artifact that will be uploaded
+        id: artifact
+        run: |
+          shopt -s nullglob
+          dmgs=(target/release/bundle/dmg/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one .dmg, found ${#dmgs[@]}"
+            exit 1
+          fi
+          dmg="${dmgs[0]}"
+          xcrun stapler validate "$dmg"
+          spctl -a -vvv --type install "$dmg" 2>&1 | tee /dev/stderr | grep -q "source=Notarized Developer ID"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+          echo "Validated $(basename "$dmg") ($(du -h "$dmg" | cut -f1))"
+
+      # DRAFT deliberately. The reviewer gate approved exposing credentials, not
+      # publishing to users — a draft is deletable, a public release has to be
+      # retracted.
+      - name: Attach the .dmg to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG: ${{ steps.artifact.outputs.dmg }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
+            echo "Uploaded to the existing $GITHUB_REF_NAME release."
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
+              --title "$GITHUB_REF_NAME" "$DMG"
+            echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
+          fi
+
+      # always(): a failed build must not leave the signing identity sitting in
+      # a keychain. The runner is ephemeral, so this is belt-and-braces — but it
+      # is also the step that makes the intent reviewable.
+      - name: Delete the temporary keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/solador-signing.keychain-db" || true

@@ -262,3 +262,49 @@ jobs:
       # have, and say why in the job/PR rather than narrowing silently.
       - name: Test
         run: cargo test --locked --workspace
+
+  secrets-guard:
+    name: Secrets guard
+    # Asserts the security property the rest of the release design rests on
+    # (#307): release.yml is the ONLY workflow permitted to read a secret,
+    # because it is the only one declaring `environment: prd`.
+    #
+    # This is a gate rather than a comment because the property is invisible at
+    # the point it breaks. Solador is public, so a fork's pull request runs this
+    # workflow; a secret reference added to ci.yml would resolve to the EMPTY
+    # STRING rather than erroring, and the job that "needed" it would fail for
+    # some unrelated-looking reason — or silently do the wrong thing. Catching
+    # it on the PR that adds it is the only cheap moment.
+    #
+    # Fail-closed: a NEW workflow needing secrets does not silently pass. It
+    # trips this gate, and adding it to the allowlist is a deliberate act with a
+    # reviewer attached.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Only release.yml may reference secrets
+        run: |
+          allow="release.yml"
+          fail=0
+          for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [[ -e "$wf" ]] || continue
+            [[ "$(basename "$wf")" == "$allow" ]] && continue
+            # The escaping matters: this step lives INSIDE a scanned workflow.
+            # Written escaped, the literal strings these patterns search for
+            # never appear on this line, so the guard cannot flag itself. Do
+            # not "simplify" the escapes.
+            hits="$(grep -nE '\$\{\{[[:space:]]*secrets\.|secrets:[[:space:]]*inherit' "$wf" || true)"
+            if [[ -n "$hits" ]]; then
+              echo "::error file=$wf::$wf references secrets; only $allow may"
+              echo "$hits"
+              fail=1
+            fi
+          done
+          if [[ $fail -ne 0 ]]; then
+            echo "A public repo runs this workflow on fork pull requests." >&2
+            echo "If a new workflow genuinely needs credentials, give it its own" >&2
+            echo "environment and add it to the allowlist in this step — on purpose." >&2
+            exit 1
+          fi
+          echo "No workflow outside $allow references a secret."
