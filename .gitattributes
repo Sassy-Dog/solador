@@ -1,0 +1,34 @@
+# Files whose BYTES are load-bearing.
+#
+# This is deliberately not a line-ending policy for the repository. Everything
+# here is LF in the index and LF in the working tree on macOS and Linux, where
+# git's default leaves it alone, and nothing below is trying to change that. It
+# is a list of files that a *checkout* must not rewrite.
+#
+# A Windows runner clones with `core.autocrlf=true`, so every file git
+# classifies as text gets LF -> CRLF on the way to disk. For anything covered by
+# a signature that is fatal and silent: the bytes that arrive are not the bytes
+# that were signed, and the only symptom is a verifier saying the signature is
+# invalid — which reads like a bug in the verifier.
+#
+# Measured, not theorised (#308, PR #343). The `Windows workspace tests` job
+# failed on exactly one test — `a_signature_over_the_payload_verifies_under_its_own_key`
+# — while every negative test passed, which is the signature of "the verifier is
+# right and the bytes moved". Reproduced locally with
+# `git -c core.autocrlf=true checkout-index`: `payload.tar.gz` arrived 72 bytes
+# instead of 71.
+
+# The updater fixtures (`crates/updatefeed`), byte for byte on every platform.
+# All three, not just the one that broke: the payload is the signed data, the
+# .sig is the signature over it, and test-key.pub is the key both are checked
+# against. Today only the payload is at risk — the other two are single-line
+# with no trailing newline, so there is no LF for git to convert — but that is
+# an accident of how `cargo tauri signer` writes them, not a property anyone
+# should have to re-derive when a fixture is regenerated.
+tests/fixtures/updater/** -text
+
+# The same hazard wherever it turns up next. `-text` rather than `binary`:
+# these are base64 documents and a diff of one is still worth reading, so it is
+# the conversion that has to stop, not the diff.
+*.sig -text
+*.pub -text

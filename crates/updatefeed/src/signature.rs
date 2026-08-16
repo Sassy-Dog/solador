@@ -189,6 +189,34 @@ mod tests {
             .to_string()
     }
 
+    /// The fixtures must reach the test as the bytes that were signed.
+    ///
+    /// This is not paranoia about the filesystem; it is a regression test for a
+    /// real failure. With no `.gitattributes`, a Windows runner cloning under
+    /// `core.autocrlf=true` rewrote `payload.tar.gz`'s single LF to CRLF — 71
+    /// bytes became 72 — and the *only* symptom was the positive test below
+    /// failing with `The signature verification failed`. That message points at
+    /// the verifier, which was working perfectly; every negative test passed,
+    /// because they ask for a rejection and a corrupted payload duly produced
+    /// one.
+    ///
+    /// `.gitattributes` pins the files. This says so out loud, so a future
+    /// checkout that unpins them fails on the sentence "a CR arrived" rather
+    /// than on a sentence about cryptography. **Not a substitute for the pin** —
+    /// it cannot repair the bytes, only name what happened to them.
+    #[test]
+    fn the_fixtures_arrive_as_the_bytes_that_were_signed() {
+        for name in ["payload.tar.gz", "payload.tar.gz.sig", "test-key.pub"] {
+            let bytes = fixture(name);
+            assert!(
+                !bytes.contains(&b'\r'),
+                "{name} contains a carriage return, so this checkout rewrote it. \
+                 Nothing below can pass: the signature covers the bytes as committed. \
+                 Check that `.gitattributes` still declares tests/fixtures/updater/** -text."
+            );
+        }
+    }
+
     #[test]
     fn a_signature_over_the_payload_verifies_under_its_own_key() {
         assert_eq!(
