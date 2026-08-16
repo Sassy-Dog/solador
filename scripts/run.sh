@@ -5,23 +5,6 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.sh"
 
-# Parse arguments
-BUILD_ARGS=()
-
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --tauri)
-            # Accepted and ignored: there is only one app now. Kept so the
-            # habit built while both existed does not start erroring.
-            shift
-            ;;
-        *)
-            BUILD_ARGS+=("$1")
-            shift
-            ;;
-    esac
-done
-
 # The cross-platform Tauri cockpit is the only app now; the original macOS app it
 # grew out of was deleted once panel parity landed. exec keeps the caller's
 # environment (SOLADOR_SEED_HOST, SOLADOR_STORE_DIR, ...) reaching the app.
@@ -32,7 +15,7 @@ ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 CARGO_PROFILE="debug"
 CARGO_FLAGS=()
 APP_ARGS=()
-for arg in ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}; do
+for arg in "$@"; do
     case $arg in
         --release)
             CARGO_PROFILE="release"
