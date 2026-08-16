@@ -1233,6 +1233,84 @@ function openclawTab(t) {
   return [gateway, pairing];
 }
 
+/** How often the About tab re-asks Rust where the update stands.
+ *
+ *  Only while that tab is open, and only in Tauri. The check itself runs once
+ *  at launch and once per press of the button below -- this timer is a *read*,
+ *  not a poll of the release server, and it exists because a download that
+ *  takes thirty seconds must not leave the group frozen on "Downloading...".
+ *  Rust never pushes: there is not one `emit` in the shell, and an updater is
+ *  no reason to introduce the first. */
+const UPDATE_POLL_MS = 1500;
+let updateTimer = null;
+
+/** Repaints the Updates group from one of the three `update_*` answers.
+ *
+ *  All three return the SAME shape the settings payload carries at
+ *  `about.updates`, so this is a patch of one branch rather than a second
+ *  rendering path. `null` means there was nobody to ask (a plain browser, the
+ *  Playwright suite with no stub for this command) -- and then nothing is
+ *  painted, because a state Rust never produced would be this file inventing
+ *  one. */
+async function callUpdate(command) {
+  const updates = await callRust(command);
+  if (!updates || !S.view) return;
+  // Cheap identity check: this runs on a timer, and rebuilding the tab's DOM
+  // every 1.5s would fight a click that is mid-press.
+  if (JSON.stringify(S.view.about.updates) === JSON.stringify(updates)) return;
+  S.view.about.updates = updates;
+  if (S.tab === "about") renderBody();
+}
+
+function startUpdatePolling() {
+  stopUpdatePolling();
+  updateTimer = setInterval(() => {
+    if (settingsOpen && S.tab === "about") callUpdate("update_status");
+  }, UPDATE_POLL_MS);
+}
+
+function stopUpdatePolling() {
+  if (updateTimer === null) return;
+  clearInterval(updateTimer);
+  updateTimer = null;
+}
+
+/** The Updates group: one sentence, whatever notes came with the offer, and
+ *  the buttons Rust said to draw.
+ *
+ *  Neither button is ever rendered disabled. Rust sends a label or `null`, and
+ *  `null` means the control must not exist -- a greyed-out "Install" invites a
+ *  click that does nothing, and both moments it is withheld (before the first
+ *  check has settled, and while a download is running) are moments where the
+ *  honest answer is "not yet", not "no". */
+function updatesGroup(u) {
+  const box = group(u.heading);
+  box.dataset.group = "updates";
+  const status = node("p", "update-status", u.status.text);
+  // Rust's colour, assigned through the CSSOM -- a `style=""` attribute is
+  // blocked by `style-src 'self'`. Green/amber/red mean what they mean on the
+  // cards, and this file does not choose between them.
+  status.style.color = u.status.color;
+  box.appendChild(status);
+  if (u.notes) box.appendChild(node("p", "update-notes", u.notes));
+
+  const controls = [];
+  if (u.installLabel) {
+    const install = button(u.installLabel, "install-update");
+    install.addEventListener("click", () => callUpdate("update_install"));
+    controls.push(install);
+  }
+  if (u.checkLabel) {
+    const check = button(u.checkLabel, "check-updates");
+    check.addEventListener("click", () => callUpdate("update_check"));
+    controls.push(check);
+  }
+  if (controls.length) box.appendChild(actionRow(...controls));
+
+  box.appendChild(help(u.help));
+  return box;
+}
+
 function aboutTab(t) {
   const box = group(null);
   box.append(
@@ -1250,7 +1328,7 @@ function aboutTab(t) {
     box.appendChild(row);
   }
   box.appendChild(node("p", "dim", t.copyright));
-  return [box];
+  return [box, updatesGroup(t.updates)];
 }
 
 function renderBody() {
@@ -1296,10 +1374,15 @@ async function openSettings() {
   $s("cockpitView").hidden = true;
   $s("settings").hidden = false;
   render();
+  // The group renders from the payload above; this keeps it current while a
+  // download runs. Stopped again on close, so a cockpit nobody is configuring
+  // has no timer of its own.
+  startUpdatePolling();
 }
 
 async function closeSettings() {
   settingsOpen = false;
+  stopUpdatePolling();
   $s("settings").hidden = true;
   $s("cockpitView").hidden = false;
   // Repaint at the real width now rather than up to a poll interval late: the

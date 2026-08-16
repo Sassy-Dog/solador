@@ -46,8 +46,9 @@ jobs:
       # has to be in the environment cargo is invoked with — it is never a flag
       # to build.sh, which does not name it at all.
       SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-      # #308's updater signing key. Unused until the plugin lands; carried here
-      # so the credential path is exercised now rather than discovered later.
+      # The updater signing key (#308). `build.sh`'s `make_updater_archive`
+      # reads both, through the pinned Tauri CLI's own signer, to minisign the
+      # `.app.tar.gz` the in-app updater downloads.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
@@ -187,21 +188,50 @@ jobs:
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
           echo "Validated $(basename "$dmg") ($(du -h "$dmg" | cut -f1))"
 
+          # The updater payload (#308). A .dmg is not an update: macOS applies a
+          # `.app.tar.gz`, so both ship — the disk image for a human, the
+          # tarball for `tauri-plugin-updater`. build.sh already asserted the
+          # archive's contents; this re-checks that the two files a release
+          # needs actually exist, because a release missing them publishes an
+          # un-updatable version and nothing else would say so.
+          tarballs=(target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one .app.tar.gz, found ${#tarballs[@]}"
+            exit 1
+          fi
+          tarball="${tarballs[0]}"
+          if [[ ! -s "$tarball.sig" ]]; then
+            echo "::error::$tarball has no minisign signature beside it"
+            echo "(TAURI_SIGNING_PRIVATE_KEY resolved empty, or the signer failed)" >&2
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "Validated $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) + .sig"
+
       # DRAFT deliberately. The reviewer gate approved exposing credentials, not
       # publishing to users — a draft is deletable, a public release has to be
       # retracted.
-      - name: Attach the .dmg to a draft release
+      #
+      # It is also what the update feed hangs off: a draft's assets are not
+      # publicly downloadable and the draft is not attached to its tag, so a
+      # manifest pointing into one would 404 for every client. `publish-feed.yml`
+      # therefore runs on `release: published`, which makes "a draft can never
+      # serve updates" a property of the trigger rather than a rule to remember
+      # (#308).
+      - name: Attach the .dmg and the updater payload to a draft release
         env:
           GH_TOKEN: ${{ github.token }}
           DMG: ${{ steps.artifact.outputs.dmg }}
+          TARBALL: ${{ steps.artifact.outputs.tarball }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
+            gh release upload "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig" --clobber
             echo "Uploaded to the existing $GITHUB_REF_NAME release."
           else
             gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
-              --title "$GITHUB_REF_NAME" "$DMG"
+              --title "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig"
             echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
+            echo "Publishing is what generates and uploads latest.json (publish-feed.yml)."
           fi
 
       # always(): a failed build must not leave the signing identity sitting in

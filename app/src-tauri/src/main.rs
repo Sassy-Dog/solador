@@ -28,6 +28,7 @@ mod panel;
 mod resume;
 mod services;
 mod settings;
+mod update;
 mod usage;
 
 use azure::AzureState;
@@ -37,6 +38,7 @@ use github::GitHubState;
 use local::LocalHostState;
 use openclaw::OpenClawState;
 use settings::{SecretField, StoredSecrets};
+use update::UpdateState;
 use usage::UsageState;
 
 /// How often each host is polled. Matches the original side's
@@ -269,6 +271,14 @@ struct App {
     /// discipline as `approvals` and `service_status`: a delivery ledger, not
     /// something a card renders.
     host_reachability: Mutex<services::HostWatch>,
+    /// What the app knows about a newer version of itself (#308).
+    ///
+    /// **On no cadence at all**, unlike every other field above: it is written
+    /// by the launch check in `setup` and by the operator's own re-check, and
+    /// read by the `update_*` commands. A background poll would be a cockpit
+    /// that quietly reaches a release server all day; once at launch is what
+    /// the Settings surface promises, so it is what happens.
+    update: Mutex<UpdateState>,
     /// The Tauri handle, once the app has started — the notifier's way out to
     /// the OS.
     ///
@@ -1900,6 +1910,206 @@ fn deliver_status_notices(app: &App, notices: &[services::StatusNotice]) {
     deliver_banners(app, "service-status", &banners);
 }
 
+// MARK: - Updates (#308)
+
+/// Ask the feed whether there is a newer Solador, and record the answer.
+///
+/// Runs once from the `setup` hook and again whenever the operator presses
+/// **Check for updates**. There is no loop: the Settings surface promises a
+/// check at launch and nothing else, and a cockpit that reaches a release
+/// server on a cadence all day would be a different promise.
+///
+/// **Every outcome is recorded as itself.** `Ok(None)` is up to date, `Err` is
+/// a failed check, and the two are separate states all the way to the screen
+/// (`viewmodel::update`) — a check that could not run must never paint as one
+/// that ran and found nothing, which is the update-shaped version of an
+/// unmeasured metric rendering as zero.
+async fn run_update_check(app: Arc<App>) {
+    use tauri_plugin_updater::UpdaterExt as _;
+
+    let Some(handle) = app.handle.get().cloned() else {
+        // Only reachable if this is ever called before `setup`. Recorded as a
+        // failure rather than silently skipped: "we did not look" is not "there
+        // is nothing there".
+        app.update
+            .lock()
+            .expect("update state poisoned")
+            .check_failed(update::NO_HANDLE.to_string());
+        return;
+    };
+
+    app.update.lock().expect("update state poisoned").checking();
+
+    let outcome = match handle.updater() {
+        Ok(updater) => updater.check().await,
+        Err(e) => Err(e),
+    };
+
+    // Decided under the lock, delivered outside it — the same shape every other
+    // notifier in this file takes.
+    let notice = {
+        let mut state = app.update.lock().expect("update state poisoned");
+        match outcome {
+            Ok(Some(found)) => {
+                eprintln!("update: {} is available", found.version);
+                state.found(found.version, found.body);
+                state.notice()
+            }
+            Ok(None) => {
+                state.up_to_date();
+                None
+            }
+            Err(e) => {
+                // The plugin's own wording. It names the transport failure
+                // ("Network Error", a status code, a malformed manifest), which
+                // is more use to an operator than anything this layer could
+                // invent on top of it.
+                eprintln!("update: the check failed: {e}");
+                state.check_failed(e.to_string());
+                None
+            }
+        }
+    };
+
+    if let Some((title, body)) = notice {
+        deliver_banners(&app, "update-available", &[(&title, &body)]);
+    }
+}
+
+/// Download and apply the offered update, on the operator's say-so.
+///
+/// The offer is re-fetched rather than held from the check, and that is
+/// deliberate: keeping the plugin's `Update` in [`App`] would put a live HTTP
+/// client and an `AppHandle` inside the state every test constructs, and the
+/// second request costs one round trip against a feed we are about to download
+/// ~30 MB from. If the feed has moved on in between, this installs what is
+/// actually offered now and says so.
+///
+/// **Nothing restarts.** The bundle on disk is replaced; the running process
+/// keeps running the old one until the operator opens the app again. A cockpit
+/// living full-screen on a second monitor does not get to close itself.
+async fn run_update_install(app: Arc<App>) {
+    use tauri_plugin_updater::UpdaterExt as _;
+
+    let Some(handle) = app.handle.get().cloned() else {
+        app.update
+            .lock()
+            .expect("update state poisoned")
+            .install_failed(update::NO_HANDLE.to_string());
+        return;
+    };
+
+    let outcome = match handle.updater() {
+        Ok(updater) => updater.check().await,
+        Err(e) => Err(e),
+    };
+
+    let found = match outcome {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            // Refused rather than reported as success: there is nothing to
+            // install, and "installed" would be a claim about a file that was
+            // never written.
+            app.update
+                .lock()
+                .expect("update state poisoned")
+                .install_failed("the update is no longer offered".to_string());
+            return;
+        }
+        Err(e) => {
+            app.update
+                .lock()
+                .expect("update state poisoned")
+                .install_failed(e.to_string());
+            return;
+        }
+    };
+
+    let version = found.version.clone();
+    eprintln!("update: installing {version}");
+    // The two callbacks are progress hooks. Left empty on purpose: the
+    // frontend polls `update_status`, and a byte counter written from this
+    // task would be state nothing renders.
+    match found.download_and_install(|_, _| {}, || {}).await {
+        Ok(()) => {
+            eprintln!("update: {version} installed; it applies on the next launch");
+            app.update
+                .lock()
+                .expect("update state poisoned")
+                .installed();
+        }
+        Err(e) => {
+            eprintln!("update: installing {version} failed: {e}");
+            app.update
+                .lock()
+                .expect("update state poisoned")
+                .install_failed(e.to_string());
+        }
+    }
+}
+
+/// Guards the Updates surface's counterpart to [`FIRST_REQUEST`].
+static FIRST_UPDATE_REQUEST: std::sync::Once = std::sync::Once::new();
+
+/// The Updates group, polled by the About tab.
+///
+/// A command the frontend asks, not an event Rust pushes: there is not one
+/// `emit` in this file, and an updater is no reason to introduce the first.
+#[tauri::command]
+fn update_status(state: tauri::State<'_, Arc<App>>) -> Value {
+    let payload = {
+        let updates = state.update.lock().expect("update state poisoned");
+        update::view(&updates, settings::VERSION)
+    };
+    FIRST_UPDATE_REQUEST.call_once(|| {
+        eprintln!(
+            "update_status: first frontend request ({})",
+            payload["status"]["text"].as_str().unwrap_or_default()
+        );
+    });
+    payload
+}
+
+/// Re-run the check now.
+///
+/// Answers with the state as it stands the instant the check *starts*, which is
+/// "Checking for updates…". The result lands in `App::update` when the request
+/// completes and the frontend's next poll picks it up — there is nothing to
+/// await here, and blocking the IPC call on a release server would freeze the
+/// Settings window for as long as it took to time out.
+#[tauri::command]
+fn update_check(state: tauri::State<'_, Arc<App>>) -> Value {
+    let app = Arc::clone(&state);
+    // Here, not only inside the spawned task: this answer is what repaints the
+    // group, and a scheduled-but-not-yet-started check would otherwise answer
+    // with the previous verdict — a press that visibly does nothing.
+    app.update.lock().expect("update state poisoned").checking();
+    app.runtime.spawn(run_update_check(Arc::clone(&app)));
+    let updates = app.update.lock().expect("update state poisoned");
+    update::view(&updates, settings::VERSION)
+}
+
+/// Install the offered update, on an operator's click.
+///
+/// The guard is `can_install`, checked here rather than trusted from the
+/// frontend: a button the payload said not to draw is still a command the
+/// webview can invoke, and two clicks landing together must not start two
+/// downloads over the same bundle.
+#[tauri::command]
+fn update_install(state: tauri::State<'_, Arc<App>>) -> Value {
+    let app = Arc::clone(&state);
+    {
+        let mut updates = app.update.lock().expect("update state poisoned");
+        if !updates.can_install() {
+            return update::view(&updates, settings::VERSION);
+        }
+        updates.installing();
+    }
+    app.runtime.spawn(run_update_install(Arc::clone(&app)));
+    let updates = app.update.lock().expect("update state poisoned");
+    update::view(&updates, settings::VERSION)
+}
+
 /// The GitHub panels' poll loop, on the store's `refresh_interval_secs`.
 ///
 /// The interval is re-read after every pass rather than baked into a
@@ -2015,6 +2225,12 @@ fn settings_payload(app: &App) -> Value {
     // OpenClaw session loop takes them in the same order, so there is one
     // ordering between the two and no way to invert it here.
     let facts = openclaw_settings_facts(app);
+    // Also before the store's lock, and for the same reason: two locks taken in
+    // one order, everywhere.
+    let updates = {
+        let state = app.update.lock().expect("update state poisoned");
+        update::view(&state, settings::VERSION)
+    };
     let store = app.store.lock().expect("store poisoned");
     let stored = stored_secrets(app.credentials.as_ref(), store.hosts(), store.accounts());
     settings::view(
@@ -2030,6 +2246,7 @@ fn settings_payload(app: &App) -> Value {
         &stored,
         &facts,
         crash_facts(app),
+        updates,
     )
 }
 
@@ -4464,6 +4681,19 @@ fn dump_settings() -> Value {
             active: false,
             needs_restart: true,
         },
+        // An update on offer, which is the one Updates state a static fixture
+        // would otherwise never reach: it is the only one carrying both
+        // buttons and the release notes, and it is not the state any real
+        // `--dump-settings` run would be in. The other three renderings are
+        // covered by `update::view`'s own tests, where they cost nothing.
+        {
+            let mut updates = UpdateState::new();
+            updates.found(
+                "2026.8.114".to_owned(),
+                Some("Signed, notarized releases and the in-app updater.".to_owned()),
+            );
+            update::view(&updates, Some("2026.8.113"))
+        },
     )
 }
 
@@ -5067,6 +5297,7 @@ fn main() {
         service_status: Mutex::new(services::StatusWatch::new()),
         services: Mutex::new(services::ServiceStatuses::new()),
         host_reachability: Mutex::new(services::HostWatch::new()),
+        update: Mutex::new(UpdateState::new()),
         handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
         crash_reporting: reporting,
@@ -5112,6 +5343,13 @@ fn main() {
         // `deliver_approval_notices`; granted nothing, because only Rust ever
         // calls it.
         .plugin(tauri_plugin_notification::init())
+        // The in-app updater (#308). Granted nothing either, for the stronger
+        // version of the same reason: `run_update_check` and
+        // `run_update_install` are the only callers, so the webview cannot
+        // reach a plugin whose job is to download and unpack executable code.
+        // The frontend's whole share is `update_status` / `update_check` /
+        // `update_install`, which are app-defined and need no ACL entry.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::clone(&app))
         .setup({
             let app = Arc::clone(&app);
@@ -5126,6 +5364,15 @@ fn main() {
                 // The poll loops are already running; this is the moment they
                 // gain a way to reach the OS.
                 let _ = app.handle.set(shell.handle().clone());
+                // The launch update check (#308), and the ONLY automatic one.
+                // After the handle, necessarily: it is what `updater()` is
+                // reached through, and what the banner is delivered over.
+                //
+                // Spawned rather than awaited — this hook runs before the
+                // window is shown, and a release server that never answers
+                // must not be able to hold the cockpit closed.
+                let checking = Arc::clone(&app);
+                app.runtime.spawn(run_update_check(checking));
                 Ok(())
             }
         })
@@ -5139,6 +5386,9 @@ fn main() {
             services,
             crons,
             openclaw,
+            update_status,
+            update_check,
+            update_install,
             settings_view,
             settings_save_general,
             settings_save_panel_interval,

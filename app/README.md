@@ -1449,6 +1449,18 @@ without a grant. Here is the whole `permissions` list, line by line:
   is never in the path and needs no permission to be in it. The plugin's
   `notify` / `request_permission` / `is_permission_granted` commands remain
   unreachable from JavaScript.
+- **Anything for `tauri-plugin-updater`** ([#308](https://github.com/Sassy-Dog/solador/issues/308)).
+  Same arrangement, and here the argument is at its strongest: this plugin's job
+  is to download a tarball and unpack it over the running application, so
+  `updater:default` would give the one seam with no automated coverage
+  ([#123](https://github.com/Sassy-Dog/solador/issues/123)) the ability to
+  execute code. `run_update_check` and `run_update_install` in `src/main.rs` are
+  the only callers, both in Rust. The frontend's whole share is three
+  **app-defined** commands — `update_status`, `update_check`, `update_install` —
+  which the ACL permits without a grant and which cannot do anything the shell
+  has not already decided to allow (`update_install` re-checks
+  `UpdateState::can_install` rather than trusting that the button was drawn).
+  `capabilities/default.json` is byte-for-byte unchanged by that issue.
 
 **How far it is verified.** `actions_url_is_the_only_shape_the_granted_scope_admits`
 (in `src/github/mod.rs`) reads the real capability file, rebuilds the glob with
@@ -1677,8 +1689,9 @@ path. Trade-off accepted: ACL and command-registration regressions are
 **documented, not prevented**.
 
 **That rationale is now weaker than it was.** It was priced against one command
-and one card; the surface it leaves unguarded is now nine commands and eight
-panels, and the checklist below has grown with it. The trade-off still holds —
+and one card; the surface it leaves unguarded is now twelve commands and eight
+panels — the three newest of which can replace the application binary
+(#308) — and the checklist below has grown with it. The trade-off still holds —
 `tauri-driver` still has no macOS support, so the cost side has not moved — but
 "revisit if the skeleton graduates" has arguably come due. Re-priced during the
 #150 close-out audit (#178) and left standing; the deferred register there names
@@ -1711,7 +1724,7 @@ SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
   cargo run -p solador-app                   # 2. scratch store, distinctive name
 ```
 
-Then tick these off. Eight terminal lines and four on-screen reads — the terminal
+Then tick these off. Nine terminal lines and five on-screen reads — the terminal
 half works on a machine whose screen you cannot see.
 
 - [ ] **Terminal** — `cockpit: first frontend request (1 host(s), <N>pt)`
@@ -1734,9 +1747,22 @@ half works on a machine whose screen you cannot see.
       `settings: first frontend request (N host(s), N repo(s))`, the Hosts tab lists
       your seeded host **and the three seeded container group rules below it**, and
       **Done** returns to the cockpit.
+- [ ] **Settings → About** → terminal prints
+      `update_status: first frontend request (<sentence>)`, and the **Updates**
+      group shows one of Rust's four sentences. On a `cargo run` build the
+      version is `0.1.0`, so the feed's latest release *is* newer and the
+      expected reading is **`Solador <version> is available.`** with an
+      **Install** button — do not press it. `Could not check for updates: …`
+      is also a pass for this test (it proves the round trip); what fails is a
+      **missing terminal line**, or the group reading `Checking for updates…`
+      for more than a few seconds, which means the launch check never settled.
+      **Never `This is the latest version.` on a `cargo run` build** — that
+      sentence would mean a failed check painted as success, which is the one
+      thing this feature must not do
+      ([#308](https://github.com/Sassy-Dog/solador/issues/308)).
 
-All twelve ticked ⇒ every registered command round-tripped through the ACL and the
-IPC transport. **A zero, a `false` or an empty string is a pass**: those are Rust's
+All thirteen ticked ⇒ every registered command round-tripped through the ACL and
+the IPC transport. **A zero, a `false` or an empty string is a pass**: those are Rust's
 own unconfigured sentences, and none of them has a path to the DOM except a
 successful `invoke`. What fails this test is a *missing line* or a blank panel.
 
