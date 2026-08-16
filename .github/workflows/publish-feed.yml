@@ -1,0 +1,226 @@
+name: Publish update feed
+
+# `latest.json` — the manifest `tauri-plugin-updater` reads (#308).
+#
+# **The trigger is the design.** `release.yml` attaches its artifacts to a
+# DRAFT, and a draft is not servable: it is not attached to its tag and its
+# assets are not publicly downloadable, so a manifest generated at build time
+# would point every client into a 404. Generating on `release: published`
+# instead gives a property, not a convention — **a draft can never serve
+# updates**, because the feed does not exist until a human publishes the
+# release.
+#
+# It also means the human checkpoint `release.yml` deliberately kept is the same
+# checkpoint that opens the update path. There is one decision, not two.
+#
+# This workflow needs no signing credentials: the `.sig` was produced during the
+# release build (`build.sh`'s `make_updater_archive`) and is a release asset.
+# What happens here is a *verification* — `solador-update-feed` checks the
+# signature against the public key in `app/src-tauri/tauri.conf.json` before it
+# will write a manifest, so a mis-signed artifact fails this run instead of
+# failing silently on every installed app.
+#
+# NOTE for the first run: `release` events run the workflow file from the
+# DEFAULT BRANCH, so this file has to be on `main` before publishing a release
+# can trigger it. A release published before that merge gets no feed and needs
+# a `workflow_dispatch` re-run.
+
+on:
+  release:
+    types: [published]
+  # The manual door, for a release published before this file existed, or one
+  # whose feed step failed and was fixed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build the feed for (e.g. v2026.8.114)'
+        required: true
+        type: string
+
+# Uploading latest.json to the release. Everything else in this repo except
+# release.yml stays `contents: read`.
+permissions:
+  contents: write
+
+concurrency:
+  # One feed writer at a time: two runs racing on `latest.json` for different
+  # tags would resolve by upload order rather than by version.
+  group: publish-feed
+  cancel-in-progress: false
+
+jobs:
+  feed:
+    name: Generate and upload latest.json
+    # A prerelease must not become `releases/latest`. GitHub already excludes
+    # prereleases from that redirect, so publishing a feed for one would upload
+    # an asset nothing reads — and if the exclusion ever changed, it would
+    # quietly offer a prerelease to every stable install.
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          # Through the environment, never interpolated into the script: these
+          # are event fields, and `${{ }}` inside `run:` is substitution before
+          # the shell ever sees it.
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${EVENT_TAG:-$INPUT_TAG}"
+          # Fail closed on anything that is not the tag shape publish.sh mints.
+          # This value becomes a checkout ref and a download URL below.
+          if [[ ! "$tag" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+            echo "::error::'$tag' is not a vYYYY.M.P release tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "Building the feed for $tag"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # MANDATORY, for the reason release.yml states: the CalVer assertion
+          # below counts commits, and `get-version-info.sh` REFUSES on a shallow
+          # clone rather than answering with 1.
+          fetch-depth: 0
+
+      # The acceptance item, asserted rather than assumed: the version in the
+      # feed must equal `scripts/get-version-info.sh --version`. The tag is what
+      # names the assets and the manifest's `version` is derived from it, so if
+      # the two ever disagree the feed would advertise a version whose artifact
+      # is a different build.
+      - name: Assert the tag matches the derived CalVer
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          derived="v$(scripts/get-version-info.sh --version)"
+          if [[ "$TAG" != "$derived" ]]; then
+            echo "::error::tag $TAG does not match derived version $derived"
+            exit 1
+          fi
+          echo "Tag and derived version agree: $derived"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        with:
+          workspaces: .
+
+      - name: Download the release's updater payload
+        id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p feed
+          # The tarball and its signature only. The .dmg is the human download
+          # and the updater cannot apply one.
+          #
+          # `|| true`: gh's own "no assets match" failure is less useful than the
+          # message below, which says what a missing payload means and what to
+          # do about it. The count check is the gate, not this command.
+          gh release download "$TAG" --dir feed \
+            --pattern '*.app.tar.gz' --pattern '*.app.tar.gz.sig' || true
+
+          shopt -s nullglob
+          tarballs=(feed/*.app.tar.gz)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one .app.tar.gz on $TAG, found ${#tarballs[@]}"
+            echo "A release with no updater payload cannot serve updates. Re-run release.yml" >&2
+            echo "for this tag, or publish a release built after #308." >&2
+            exit 1
+          fi
+          tarball="${tarballs[0]}"
+          if [[ ! -s "$tarball.sig" ]]; then
+            echo "::error::$(basename "$tarball") has no .sig asset on $TAG"
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "asset=$(basename "$tarball")" >> "$GITHUB_OUTPUT"
+          echo "Downloaded $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) + .sig"
+
+      # The release body, verbatim, through a file. Never interpolated into a
+      # shell command: it is maintainer- and contributor-authored text (GitHub's
+      # generated notes quote PR titles), and it reaches the app as textContent,
+      # never as markup.
+      - name: Capture the release notes
+        env:
+          NOTES: ${{ github.event.release.body }}
+        run: printf '%s' "$NOTES" > feed/notes.md
+
+      # Verify, then write. `solador-update-feed` refuses to emit a manifest
+      # whose signature does not cover the artifact, under the public key the
+      # app compiles in — the negative case #308 exists to guarantee, checked
+      # here as well as on every operator's machine.
+      - name: Build and verify latest.json
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARBALL: ${{ steps.assets.outputs.tarball }}
+          ASSET: ${{ steps.assets.outputs.asset }}
+          PUBLISHED_AT: ${{ github.event.release.published_at }}
+          DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
+        run: |
+          # `published_at` is RFC 3339 already; absent on a workflow_dispatch
+          # re-run, where "now" would be a lie about when the release happened,
+          # so the key is simply omitted rather than filled with a plausible
+          # timestamp.
+          #
+          # An `if`, not `[[ … ]] && …`: GitHub runs `run:` blocks under `bash
+          # -e`, where a compound whose test fails is a failed command and takes
+          # the step down with it.
+          date_arg=()
+          if [[ -n "$PUBLISHED_AT" ]]; then
+            date_arg=(--pub-date "$PUBLISHED_AT")
+          fi
+
+          cargo run --locked -p solador-updatefeed --bin solador-update-feed -- \
+            --version "$VERSION" \
+            --tarball "$TARBALL" \
+            --signature "$TARBALL.sig" \
+            --url "$DOWNLOAD_BASE/$TAG/$ASSET" \
+            --tauri-config app/src-tauri/tauri.conf.json \
+            --notes-file feed/notes.md \
+            "${date_arg[@]}" \
+            --out feed/latest.json
+
+          echo "--- latest.json ---"
+          cat feed/latest.json
+
+      - name: Upload latest.json to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release upload "$TAG" feed/latest.json --clobber
+          echo "Uploaded latest.json to $TAG."
+
+      # The app is configured with `releases/latest/download/latest.json`, and
+      # that redirect is GitHub's, not ours. Checking it here is the difference
+      # between "we uploaded an asset" and "the endpoint the app polls serves a
+      # manifest" — which are two claims, and only the second one matters.
+      - name: Confirm the configured endpoint serves a manifest
+        env:
+          ENDPOINT: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/latest.json
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL "$ENDPOINT" -o served.json; then
+              break
+            fi
+            echo "attempt $attempt: not served yet, waiting…"
+            sleep 5
+          done
+          if [[ ! -s served.json ]]; then
+            echo "::error::$ENDPOINT does not serve latest.json"
+            exit 1
+          fi
+          # Shape, not equality: `releases/latest` is the newest non-prerelease
+          # release, which on a re-run of an older tag is legitimately a
+          # different (and also valid) manifest. Asserting this run's version
+          # here would fail that case for being correct.
+          served="$(jq -r '.version' served.json)"
+          jq -e '.platforms["darwin-aarch64"].signature and .platforms["darwin-x86_64"].url' served.json >/dev/null
+          echo "The configured endpoint currently offers $served."

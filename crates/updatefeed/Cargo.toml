@@ -1,0 +1,30 @@
+[package]
+# Prefixed like every other member (`solador-wire`, `solador-github`); the lib
+# below keeps the short import name the rest of the workspace uses.
+name = "solador-updatefeed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "updatefeed"
+
+[[bin]]
+# The one consumer: `.github/workflows/publish-feed.yml`, on `release: published`.
+name = "solador-update-feed"
+path = "src/bin/solador-update-feed.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The SAME verifier `tauri-plugin-updater` uses, at the same `^0.2` requirement
+# it declares, so cargo unifies them to ONE crate. That is the whole point of
+# taking the dependency: this crate must refuse to publish a feed entry the app
+# would then refuse to install, and a second implementation of the check could
+# disagree with the one that actually runs on an operator's machine.
+minisign-verify = "0.2"
+# The Tauri toolchain wraps minisign in base64 twice over — the `.pub` file and
+# the `.sig` file are each base64 of the minisign text form — and the plugin
+# undoes exactly that before verifying. Same pin it resolves through, so one
+# base64 resolves for the workspace.
+base64 = "0.22"

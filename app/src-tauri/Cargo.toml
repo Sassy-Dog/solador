@@ -71,6 +71,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-notification = "2.3.3"
+# The in-app updater (#308). Like the notification plugin it is granted NOTHING
+# in `capabilities/default.json`: `run_update_check` / `run_update_install` in
+# `src/main.rs` are the only callers, so the webview never invokes it — which
+# matters more here than anywhere else, since this plugin's job is to download
+# and unpack executable code.
+#
+# It carries `minisign-verify` and does the signature check itself, over the
+# bytes it downloaded, against `plugins.updater.pubkey`. `crates/updatefeed`
+# holds the publish-side half at the same `^0.2` requirement, so one verifier
+# resolves for the workspace and the gate that publishes a feed entry cannot
+# disagree with the gate that installs it.
+tauri-plugin-updater = "2.10.1"
 
 # macOS only, and only to call `set_application` BEFORE the notification plugin
 # does — see `claim_notification_identity` in `src/main.rs` for why that one

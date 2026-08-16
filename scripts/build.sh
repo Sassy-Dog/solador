@@ -28,7 +28,10 @@ set -euo pipefail
 # The bundle is unsigned by DEFAULT and signed on request: `--sign` applies the
 # Developer ID identity, `--notarize` adds the .dmg, Apple's verdict and the
 # staple (#306). Both are off unless asked for, so a contributor without the
-# certificate still gets a bundle. The updater is #308, the release train #15.
+# certificate still gets a bundle. `--sign` also produces the updater payload —
+# a minisigned `.app.tar.gz` (#308) — because that file is a copy of the signed
+# .app and there is no honest version of it before the signature. The release
+# train is #15.
 #
 # One CLI side effect to know about: `cargo tauri build` EDITS TRACKED SOURCE.
 # It rewrites app/src-tauri/Cargo.toml's `tauri` / `tauri-build` entries into
@@ -353,6 +356,17 @@ build_bundle() {
         mkdir -p "$(dirname "$dmg")"
         make_dmg "$app_bundle" "$dmg" "$identity"
         notarize_and_staple "$dmg"
+        # The ticket Apple just issued covers every signed item in the
+        # submission, the .app inside the .dmg included — so it can be stapled
+        # into the .app too, which is what the updater ships.
+        staple_app "$app_bundle"
+    fi
+
+    # The updater payload (#308), LAST — after the stamp, after the signature,
+    # after the staple. See `make_updater_archive` for why the Tauri bundler
+    # does not make this file.
+    if [[ "$WANT_SIGN" == true ]]; then
+        make_updater_archive "$app_bundle" "$marketing_version" "$build_number"
     fi
 
     log_success "Bundled $app_bundle"
@@ -565,6 +579,152 @@ notarize_and_staple() {
     fi
 
     log_success "Notarized and stapled: $dmg"
+}
+
+# Staple the notarization ticket into the .app as well as the .dmg.
+#
+# The .dmg is what a human downloads; the .app inside it is what the *updater*
+# ships (as a tarball, below), and `stapler staple <dmg>` staples the disk image
+# only. A ticket is looked up by the code signature's cdhash, and the notary
+# service issues one covering every signed item in the submission — so the .app
+# that was inside the .dmg we just submitted has a ticket waiting, and this is
+# the call that fetches and attaches it.
+#
+# Without it an updated app has to reach Apple on first launch to be assessed.
+# That is exactly the machine-on-a-plane failure the .dmg's staple exists to
+# prevent, arriving through the other door.
+staple_app() {
+    local app="$1"
+
+    log_info "Stapling the notarization ticket into $(basename "$app")"
+    if ! xcrun stapler staple "$app"; then
+        log_error "could not staple the ticket into the .app"
+        log_error "(the .dmg is notarized, so the ticket exists — this is a lookup, not a submission)"
+        exit 1
+    fi
+    if ! xcrun stapler validate "$app"; then
+        log_error "the .app's stapled ticket does not validate"
+        exit 1
+    fi
+    log_success "Stapled $(basename "$app")"
+}
+
+# ---------------------------------------------------------------------------
+# The updater payload (#308)
+# ---------------------------------------------------------------------------
+
+# Build and minisign the `.app.tar.gz` the in-app updater downloads.
+#
+# **Why this is not `bundle.createUpdaterArtifacts: true`.** That flag does
+# produce a `.app.tar.gz` plus a `.sig` — but it produces them *inside*
+# `cargo tauri build`, from the `.app` as it exists at that moment, which is
+# before this script stamps CFBundleVersion, before it signs, and before it
+# staples. The tarball would therefore carry a DIFFERENT artifact from the one
+# in the .dmg: same release, same name, `CFBundleVersion` still holding the
+# marketing version, no staple. A mislabelled artifact is the failure
+# `release.yml`'s tag assertion exists to prevent, and shipping it as the update
+# payload would put it on every machine rather than in one download.
+#
+# It is the same ordering argument the .dmg already lost: `make_dmg` uses
+# `hdiutil` here rather than `--bundles dmg` because the CLI would package the
+# app before the stamp. This is that argument a second time, and the answer is
+# the same one.
+#
+# The flag has a second cost worth recording: with it set, `tauri-cli` **errors**
+# when `TAURI_SIGNING_PRIVATE_KEY` is unset ("A public key has been found, but
+# no private key"), which would fail CI's unsigned bundle job on every PR.
+#
+# The mechanism is unchanged from what #308 specified — minisign, through the
+# pinned Tauri CLI's own signer, with the key already in `release.yml`'s job
+# env. Only the moment moves.
+make_updater_archive() {
+    local app="$1" marketing_version="$2" build_number="$3"
+
+    local product out_dir archive
+    product="$(basename "$app" .app)"
+    out_dir="$(dirname "$app")"
+    # Versioned like the .dmg. The updater does not care what the file is
+    # called — it reads the URL out of `latest.json` — but a release whose two
+    # artifacts are named on different schemes is a release someone has to
+    # decode.
+    archive="$out_dir/${product}-${marketing_version}.app.tar.gz"
+
+    if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+        log_error "the updater payload needs the minisign signing key: TAURI_SIGNING_PRIVATE_KEY unset"
+        log_error "source it from Doppler solador/prd (#305), or drop --sign to build an unsigned bundle"
+        exit 1
+    fi
+    # Empty rather than unset, deliberately. `cargo tauri signer sign` reads
+    # this from the environment; with it *unset* and an encrypted key, the
+    # minisign crate falls back to prompting on a tty — which on a runner means
+    # the job hangs until it times out instead of failing. An empty password
+    # against an encrypted key fails immediately and says so.
+    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+
+    # Delete first, so "it exists afterwards" means THIS build made it — the
+    # same reason `build_bundle` removes the .app before bundling.
+    rm -f "$archive" "$archive.sig"
+
+    log_info "Building $archive"
+    # The archive's single top-level entry must be `<product>.app`: the plugin
+    # extracts every entry with its FIRST path component stripped and renames
+    # the result over the installed bundle (tauri-plugin-updater 2.10.1,
+    # `install_inner`). `-C` to the parent is what produces that shape.
+    #
+    # `--no-mac-metadata` / COPYFILE_DISABLE: without them bsdtar adds an
+    # AppleDouble `._` sibling for every file carrying an extended attribute,
+    # which the plugin would faithfully extract into the installed bundle.
+    # Tauri's own tar (the Rust `tar` crate) writes no xattrs at all, so this
+    # keeps the archive byte-comparable with what the bundler would have made.
+    if ! ( cd "$out_dir" && COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$archive" "$product.app" ); then
+        log_error "could not build the updater archive"
+        exit 1
+    fi
+
+    # Assert the archive really contains THIS build's app, not a leftover.
+    # Reading the version back out of the artifact is the same standard
+    # `assert_plist_key` holds the bundle to — and here it also proves the
+    # ordering, because an archive made before the stamp carries the marketing
+    # version in CFBundleVersion and would fail this line.
+    local extracted archived_version archived_build
+    extracted="$(mktemp -d)"
+    if ! tar -xzf "$archive" -C "$extracted" "$product.app/Contents/Info.plist"; then
+        log_error "the updater archive has no $product.app/Contents/Info.plist — wrong archive shape"
+        rm -rf "$extracted"
+        exit 1
+    fi
+    archived_version="$(plutil -extract CFBundleShortVersionString raw -o - "$extracted/$product.app/Contents/Info.plist" 2>/dev/null || true)"
+    archived_build="$(plutil -extract CFBundleVersion raw -o - "$extracted/$product.app/Contents/Info.plist" 2>/dev/null || true)"
+    rm -rf "$extracted"
+    if [[ "$archived_version" != "$marketing_version" || "$archived_build" != "$build_number" ]]; then
+        log_error "the updater archive carries version '${archived_version:-<missing>}' build '${archived_build:-<missing>}', expected '$marketing_version' / '$build_number'"
+        log_error "(the archive was made before the CFBundleVersion stamp — see this function's header)"
+        exit 1
+    fi
+    # And that the signature travelled with it. `_CodeSignature/CodeResources`
+    # is a plain file inside the bundle, so tar carries it; its absence means
+    # the archived app is unsigned and every install would be a downgrade in
+    # trust.
+    if ! tar -tzf "$archive" | grep -q "^$product.app/Contents/_CodeSignature/CodeResources$"; then
+        log_error "the updater archive carries no code signature"
+        exit 1
+    fi
+    log_success "Archived $marketing_version (build $archived_build), signed"
+
+    # minisign, through the pinned CLI's own signer — the same code path
+    # `createUpdaterArtifacts` would have used, and the same key. Output
+    # discarded: it prints the signature (public, but noise) and the key's
+    # location.
+    if ! cargo tauri signer sign "$archive" >/dev/null; then
+        log_error "could not sign the updater archive with the minisign key"
+        exit 1
+    fi
+    if [[ ! -s "$archive.sig" ]]; then
+        log_error "the signer reported success but produced no $archive.sig"
+        exit 1
+    fi
+
+    log_success "Updater payload: $archive (+ .sig)"
 }
 
 # ---------------------------------------------------------------------------

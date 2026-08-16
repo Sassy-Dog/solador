@@ -32,9 +32,9 @@ const TEST_RESULT = "✓ ubu-01 · agent v0.4.0";
  * (`{status, settings}`), so the frontend's "re-render from what was
  * persisted" contract is exercised rather than mocked away.
  */
-async function stubIpc(page, cockpit, settings, probe) {
+async function stubIpc(page, cockpit, settings, probe, updates) {
   await page.addInitScript(
-    ({ cockpit, settings, testResult, probe }) => {
+    ({ cockpit, settings, testResult, probe, updates }) => {
       window.__CALLS__ = [];
       window.__TAURI__ = {
         core: {
@@ -46,12 +46,23 @@ async function stubIpc(page, cockpit, settings, probe) {
             // The probe answers in its own shape, not `{status, settings}`: a
             // finding is not a mutation, and the tab renders it without one.
             if (command === "settings_probe_status_vendor") return probe;
+            // The three updater commands answer in the About tab's own
+            // `about.updates` shape — not `{status, settings}` — because an
+            // update check is not a settings mutation and nothing is
+            // persisted. A test that wants a different state passes one.
+            if (command.startsWith("update_")) return updates;
             return { status: "Saved.", settings };
           },
         },
       };
     },
-    { cockpit, settings, testResult: TEST_RESULT, probe: probe || null }
+    {
+      cockpit,
+      settings,
+      testResult: TEST_RESULT,
+      probe: probe || null,
+      updates: updates || settings.about.updates,
+    }
   );
 }
 
@@ -59,10 +70,10 @@ const calls = (page, command) =>
   page.evaluate((c) => window.__CALLS__.filter((call) => call.command === c), command);
 
 /** Loads the app with the IPC stub installed and opens Settings. */
-async function openSettings(page, baseURL, probe) {
+async function openSettings(page, baseURL, probe, updates) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
-  await stubIpc(page, cockpit, settings, probe);
+  await stubIpc(page, cockpit, settings, probe, updates);
   await page.goto("/index.html");
   await expect(page.locator("#settingsToggle")).toBeVisible();
   await page.locator("#settingsToggle").click();
@@ -1060,6 +1071,82 @@ test("About names the app, its version and its links", async ({ page, baseURL })
   // Shown as text, never as an anchor: following one would navigate the
   // cockpit's own webview away from the app.
   await expect(page.locator(".settings-body a")).toHaveCount(0);
+});
+
+test("About offers the update Rust found, with the label Rust chose", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "about").click();
+
+  const updates = settings.about.updates;
+  const group = page.locator('.group[data-group="updates"]');
+  await expect(group.locator(".group-hdr")).toHaveText(updates.heading);
+  await expect(group.locator(".update-status")).toHaveText(updates.status.text);
+  await expect(group.locator(".update-notes")).toHaveText(updates.notes);
+  // The colour is Rust's, applied through the CSSOM. A `style=""` attribute
+  // would be dropped by `style-src 'self'` (the afterEach guard would catch
+  // it), and a class would be this file deciding what amber means.
+  await expect(group.locator(".update-status")).toHaveCSS("color", "rgb(224, 160, 58)");
+  await expect(group.locator(".btn.install-update")).toHaveText(updates.installLabel);
+  await expect(group.locator(".btn.check-updates")).toHaveText(updates.checkLabel);
+
+  await group.locator(".btn.install-update").click();
+  await expect
+    .poll(async () => (await calls(page, "update_install")).length)
+    .toBe(1);
+});
+
+/**
+ * The distinction the whole feature rests on: a check that could not run must
+ * not paint as one that ran and found nothing. Neither may offer an install.
+ */
+test("a failed update check does not render as being up to date", async ({ page, baseURL }) => {
+  const failed = {
+    heading: "Updates",
+    status: { text: "Could not check for updates: the network is unreachable", color: "#e0a03a" },
+    notes: null,
+    checkLabel: "Check for updates",
+    installLabel: null,
+    help: "Solador checks once when it starts.",
+  };
+  await openSettings(page, baseURL, null, failed);
+  await tab(page, "about").click();
+
+  const group = page.locator('.group[data-group="updates"]');
+  await expect(group.locator(".update-status")).toHaveText(failed.status.text);
+  // No install offer, and no notes for a version nobody found.
+  await expect(group.locator(".btn.install-update")).toHaveCount(0);
+  await expect(group.locator(".update-notes")).toHaveCount(0);
+  // Amber, not green: this state is a gap in knowledge, and green is a claim
+  // it cannot make.
+  await expect(group.locator(".update-status")).toHaveCSS("color", "rgb(224, 160, 58)");
+
+  await group.locator(".btn.check-updates").click();
+  await expect
+    .poll(async () => (await calls(page, "update_check")).length)
+    .toBe(1);
+});
+
+/**
+ * The group is polled while About is open — a download that takes thirty
+ * seconds must not leave it frozen — and only while it is open. Rust never
+ * pushes; there is not one `emit` in the shell.
+ */
+test("the Updates group is polled only while the About tab is showing", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  // Settings opens on General. Nothing should be asking about updates yet.
+  await page.waitForTimeout(1800);
+  expect(await calls(page, "update_status")).toEqual([]);
+
+  await tab(page, "about").click();
+  await expect
+    .poll(async () => (await calls(page, "update_status")).length, { timeout: 5000 })
+    .toBeGreaterThan(0);
+
+  // Leaving the tab stops it, and so does closing Settings.
+  await tab(page, "general").click();
+  const afterLeaving = (await calls(page, "update_status")).length;
+  await page.waitForTimeout(1800);
+  expect((await calls(page, "update_status")).length).toBe(afterLeaving);
 });
 
 test("OpenClaw round-trips the gateway URL and its bearer token", async ({ page, baseURL }) => {

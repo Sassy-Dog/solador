@@ -495,6 +495,7 @@ pub fn view(
     stored: &StoredSecrets,
     openclaw: &openclaw::SettingsFacts,
     crash: CrashFacts,
+    updates: Value,
 ) -> Value {
     let StoreSections {
         settings,
@@ -537,7 +538,7 @@ pub fn view(
         "usage": usage_tab(settings, stored),
         "services": services_tab(vendors),
         "openclaw": openclaw_tab(settings, stored, openclaw),
-        "about": about_tab(),
+        "about": about_tab(updates),
     })
 }
 
@@ -1765,10 +1766,19 @@ fn openclaw_tab(
     })
 }
 
-fn about_tab() -> Value {
+/// `updates` is `crate::update::view(...)` — the live half of this tab, built
+/// from `App::update` rather than from any store section, exactly as
+/// [`CrashFacts`] carries the live half of General.
+///
+/// It rides the settings payload *and* has its own `update_status` command:
+/// this is what the tab renders from when it opens, and the command is what
+/// keeps it current while a download runs. One shape, two deliveries — the
+/// alternative was a tab that opened blank until the first poll landed.
+fn about_tab(updates: Value) -> Value {
     json!({
         "name": "Solador",
         "version": version_label(),
+        "updates": updates,
         "tagline": "Everything around your code, at a glance",
         "links": [
             { "label": "GitHub Repository", "url": "https://github.com/Sassy-Dog/solador" },
@@ -2142,7 +2152,18 @@ mod tests {
             stored,
             openclaw,
             CrashFacts::default(),
+            no_updates(),
         )
+    }
+
+    /// The Updates group a fresh app has: nothing checked yet.
+    ///
+    /// Every helper below passes this, because every test below is about some
+    /// other tab. `about_updates_*` builds its own states — the point of a
+    /// separate argument is that this tab's live half can be named per test
+    /// instead of being whatever the last check happened to leave behind.
+    fn no_updates() -> Value {
+        crate::update::view(&crate::update::UpdateState::new(), None)
     }
 
     /// The store's sections with everything the caller did not name left empty.
@@ -2177,6 +2198,7 @@ mod tests {
             &stored,
             &facts(),
             CrashFacts::default(),
+            no_updates(),
         )
     }
 
@@ -2192,6 +2214,7 @@ mod tests {
             &StoredSecrets::default(),
             &facts(),
             CrashFacts::default(),
+            no_updates(),
         )
     }
 
@@ -2264,6 +2287,7 @@ mod tests {
             &StoredSecrets::default(),
             &facts(),
             crash,
+            no_updates(),
         )["general"]["crashReporting"]
             .clone()
     }
@@ -3076,6 +3100,7 @@ mod tests {
             &stored,
             &facts(),
             CrashFacts::default(),
+            no_updates(),
         )["portfolio"]
             .clone()
     }
@@ -3418,7 +3443,7 @@ mod tests {
             .trim();
         assert!(!holder.is_empty(), "NOTICE names no holder");
 
-        let shown = about_tab()["copyright"]
+        let shown = about_tab(no_updates())["copyright"]
             .as_str()
             .expect("copyright is a string")
             .to_owned();
@@ -3435,6 +3460,41 @@ mod tests {
         assert_eq!(vm["about"]["name"], "Solador");
         assert_eq!(vm["about"]["version"], version_label());
         assert_eq!(vm["about"]["links"].as_array().expect("links").len(), 3);
+    }
+
+    /// The Updates group rides the settings payload, so the About tab renders
+    /// complete the moment it opens rather than blank until the first
+    /// `update_status` poll lands.
+    #[test]
+    fn the_about_tab_carries_the_updates_group_it_was_given() {
+        let (settings, hosts, repos, stored) = sample();
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let updates = &vm["about"]["updates"];
+        assert_eq!(updates["heading"], json!(crate::update::HEADING));
+        assert_eq!(updates["help"], json!(crate::update::HELP));
+        // `no_updates()` is a state nothing has checked in, which must read as
+        // "checking", not as "up to date" — the distinction this whole feature
+        // rests on, asserted where the tab is assembled and not only where the
+        // sentence is chosen.
+        assert_eq!(updates["status"]["text"], json!("Checking for updates…"));
+        assert_eq!(updates["installLabel"], Value::Null);
+    }
+
+    /// And the group really is a parameter, not a constant the tab rebuilds:
+    /// two different app states have to produce two different tabs.
+    #[test]
+    fn the_updates_group_reflects_the_state_it_is_handed() {
+        let mut found = crate::update::UpdateState::new();
+        found.found("2026.9.1".to_owned(), None);
+        let offered = about_tab(crate::update::view(&found, Some("2026.8.113")));
+        assert_eq!(
+            offered["updates"]["installLabel"],
+            json!("Install 2026.9.1")
+        );
+        assert_ne!(
+            offered["updates"]["status"],
+            about_tab(no_updates())["updates"]["status"]
+        );
     }
 
     #[test]
@@ -3654,6 +3714,7 @@ mod tests {
             &stored,
             &facts(),
             CrashFacts::default(),
+            no_updates(),
         );
         let rows = vm["services"]["rows"].as_array().expect("rows");
         assert_eq!(rows.len(), 1);
@@ -3726,6 +3787,7 @@ mod tests {
             stored,
             &facts(),
             CrashFacts::default(),
+            no_updates(),
         )
     }
 
