@@ -2175,6 +2175,37 @@ fn runners(state: tauri::State<'_, Arc<App>>) -> Value {
     payload
 }
 
+/// The right-click "Forget" on a remembered-absent runner: drop the name from
+/// the persisted roster and from the panel immediately, instead of waiting out
+/// the roster's 24h age-out. The escape hatch for a deliberately
+/// decommissioned runner — a downsized fleet is not an outage, and a red
+/// "missing" row for a machine culled on purpose is a false alarm.
+///
+/// One accepted race: a poll pass reads the roster at its start and persists
+/// its own copy at the end, so a pass in flight across this call can write the
+/// name back with its old clock. The window is one fetch; a second Forget wins
+/// it, and the 24h age-out mops up regardless.
+#[tauri::command]
+fn runners_forget(name: String, state: tauri::State<'_, Arc<App>>) {
+    // Store lock released before the panel lock is taken — the two are never
+    // held together anywhere (`App::github`'s doc), and this must not become
+    // the first place they are.
+    {
+        let mut store = state.store.lock().expect("store poisoned");
+        let kept = github::forget_runner_record(store.runner_roster(), &name);
+        if store.set_runner_roster(kept) {
+            if let Err(e) = store.save() {
+                eprintln!("could not persist the runner roster after a forget: {e}");
+            }
+        }
+    }
+    state
+        .github
+        .lock()
+        .expect("github state poisoned")
+        .forget_absent(&name);
+}
+
 /// Which credentials currently hold a value — the "stored" badges, and nothing
 /// else. A read failure reads as "not stored": the badge is a hint, and an
 /// unreadable keychain must not take the Settings window down with it.
@@ -5381,6 +5412,7 @@ fn main() {
             containers,
             repos,
             runners,
+            runners_forget,
             usage,
             azure_cost,
             services,

@@ -477,6 +477,17 @@ impl GitHubState {
         self.runners_error = Some(message.into());
     }
 
+    /// Drops one remembered-absent runner from the panel, now.
+    ///
+    /// Half of the right-click "Forget" (`runners_forget` in `main.rs`); the
+    /// store half is [`forget_runner_record`]. This half exists because the
+    /// panel renders from this state, not from the store — without it the
+    /// culled row would sit red until the next successful fetch rebuilt the
+    /// absence list from the forgotten roster.
+    pub fn forget_absent(&mut self, name: &str) {
+        self.absent.retain(|absence| absence.name != name);
+    }
+
     /// A pass read a non-empty token from the credential store.
     ///
     /// Called the moment the credential is in hand, **before** the first
@@ -1094,6 +1105,9 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
             .iter()
             .map(runner_row)
             .collect::<Vec<_>>(),
+        // The absent rows' context-menu label. From here rather than authored
+        // in github.js, which owns layout and wiring but no words.
+        "forgetLabel": "Forget",
         "footer": crate::panel::status_footer(
             state.runners_last_updated,
             state.runners_error.as_deref(),
@@ -1262,6 +1276,17 @@ pub fn roster_to_records(entries: &[RunnerRosterEntry]) -> Vec<RunnerRosterRecor
             last_seen: u64::try_from(entry.last_seen.timestamp()).unwrap_or(0),
         })
         .collect()
+}
+
+/// The stored roster minus one name — the right-click "Forget", bridged to the
+/// record form the store holds.
+///
+/// Round-trips through the entry form so [`roster::forget`] stays the single
+/// author of the rule. The round trip drops undatable records as a side
+/// effect, exactly as every poll pass already does on its own read.
+#[must_use]
+pub fn forget_runner_record(records: &[RunnerRosterRecord], name: &str) -> Vec<RunnerRosterRecord> {
+    roster_to_records(&roster::forget(&roster_from_records(records), name))
 }
 
 // MARK: - Fixtures
@@ -2441,6 +2466,30 @@ mod tests {
         state
     }
 
+    /// The right-click "Forget": the row vanishes and the trailing missing
+    /// count follows it, without waiting for a fetch.
+    #[test]
+    fn forgetting_an_absent_runner_drops_its_row_and_the_missing_count() {
+        let roster = [RunnerRosterEntry {
+            name: "ubu-9ec2".to_owned(),
+            os: RunnerOs::Linux,
+            // Well past grace, well short of the 24h age-out: a red
+            // "missing" row, the state the affordance exists for.
+            last_seen: now() - TimeDelta::seconds(16 * 3_600),
+        }];
+        let registered = [runner("ubu-1", RunnerOs::Linux, RunnerState::Idle)];
+        let mut state = with_runners(&registered, &roster);
+
+        let before = runners_view(&state, now_unix());
+        assert_eq!(row_names(&before), vec!["ubu-1", "ubu-9ec2"]);
+        assert_eq!(before["trailing"], "1/1 · 1 missing");
+
+        state.forget_absent("ubu-9ec2");
+        let after = runners_view(&state, now_unix());
+        assert_eq!(row_names(&after), vec!["ubu-1"]);
+        assert_eq!(after["trailing"], "1/1");
+    }
+
     /// See `the_repos_panel_says_loading_before_it_has_looked_for_a_token` —
     /// the same first frame, and the same line this used to get wrong.
     #[test]
@@ -2942,6 +2991,29 @@ mod tests {
             last_seen: now_unix(),
         }]);
         assert_eq!(roster[0].os, RunnerOs::Other);
+    }
+
+    /// The store half of the right-click "Forget": one name gone, every other
+    /// record untouched.
+    #[test]
+    fn forgetting_a_runner_record_drops_that_name_only() {
+        let records = vec![
+            RunnerRosterRecord {
+                name: "ubu-9ec2".to_owned(),
+                os: "linux".to_owned(),
+                last_seen: now_unix(),
+            },
+            RunnerRosterRecord {
+                name: "ubu-29ca".to_owned(),
+                os: "linux".to_owned(),
+                last_seen: now_unix(),
+            },
+        ];
+        let kept = forget_runner_record(&records, "ubu-9ec2");
+        assert_eq!(
+            kept.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["ubu-29ca"]
+        );
     }
 
     // MARK: - Fixture

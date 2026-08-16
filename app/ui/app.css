@@ -356,6 +356,16 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    same misalignment wearing a different hat. */
 .gh-runner-status { font-size:9px; font-weight:700; white-space:nowrap;
   flex:none; text-align:right; overflow:hidden; }
+/* The runner list's right-click menu — one "Forget" item over an absent row.
+   Fixed at the pointer (coordinates via CSSOM, from github.js). No page z-index
+   war to win: nothing else in the app floats, so any positive value clears the
+   panels. */
+.ctx-menu { position:fixed; z-index:10; background:var(--panelAlt);
+  border:1px solid var(--line); border-radius:6px; padding:3px; }
+.ctx-item { display:block; font:inherit; font-size:11px; color:var(--ink);
+  background:none; border:0; border-radius:4px; padding:4px 12px;
+  cursor:pointer; white-space:nowrap; }
+.ctx-item:hover, .ctx-item:focus-visible { background:var(--line); }
 
 /* ---- Panel rows ---------------------------------------------------------
    Which panels share a row is `viewmodel::cockpit::reflow`'s answer and how
