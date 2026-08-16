@@ -1483,7 +1483,7 @@ static `../ui` directory with no `beforeDevCommand`. There is nothing for
 entry point:
 
 ```bash
-./dev run --tauri                   # from the repo root; --release composes
+./dev run                           # from the repo root; --release composes
 ```
 
 That builds the same package plain cargo does and then, on macOS, re-signs the

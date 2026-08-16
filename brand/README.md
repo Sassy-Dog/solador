@@ -191,7 +191,7 @@ applied there — which is why `icon.svg` carries no radius of its own.
 
 - **No wordmark.** One would need a typeface decision that hasn't been made,
   and a fabricated placeholder is worse than an absence — it gets used.
-- **`bundle.active` is `false`,** so `./dev run --tauri` launches a bare binary
+- **`bundle.active` is `false`,** so `./dev run` launches a bare binary
   with no `.app` around it and macOS shows a generic Dock icon in the dev loop
   regardless of the `.icns`. The icon set is correct and will be picked up the
   moment bundling is turned on for a release; it is simply not visible yet on
