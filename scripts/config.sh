@@ -38,6 +38,15 @@ export TAURI_CLI_VERSION="2.11.4"
 # the string drifting from the first is how the artifact goes missing instead.
 export MACOS_UNIVERSAL_TARGET="universal-apple-darwin"
 
+# The Windows release target (#341), named for the same output-path reason as
+# the universal triple above: build.sh passes it to `cargo tauri build
+# --target`, which moves the bundle under target/<triple>/, so build.sh and
+# release.yml must agree on where the installer landed. Explicit rather than
+# inherited from the builder — v2026.8.110 shipped the wrong architecture
+# because no target was named, and "whatever the runner happens to be" is not
+# a release decision.
+export WINDOWS_TARGET="x86_64-pc-windows-msvc"
+
 # Version is NOT configured here (org Versioning spec §3/§10: no hand-maintained
 # version fields). Both numbers derive from git via their single-source scripts:
 #   marketing version → scripts/get-version-info.sh   (CalVer YYYY.M.<commits-this-month>)

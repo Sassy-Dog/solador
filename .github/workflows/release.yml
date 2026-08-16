@@ -1,8 +1,9 @@
 name: Release
 
-# The signed, notarized, stapled release build (#307, part of #15).
+# The release builds: the signed, notarized, stapled macOS bundle (#307, part
+# of #15) and the unsigned Windows installer (#341; Authenticode is #342).
 #
-# This is the ONLY job in this repository that declares an environment, and
+# These are the ONLY jobs in this repository that declare an environment, and
 # that is the whole security design rather than a detail. Solador is a PUBLIC
 # repo, so the org's `APPLE_*` secrets — which are `private` visibility — are
 # unreachable here and would resolve to the empty string. Environment secrets
@@ -22,8 +23,8 @@ on:
   push:
     tags: ['v*']
 
-# Needed to create the draft release and upload the .dmg to it. Every other
-# workflow in this repo stays `contents: read`.
+# Needed to create the draft release and upload the artifacts to it. Every
+# other workflow in this repo stays `contents: read`.
 permissions:
   contents: write
 
@@ -240,3 +241,138 @@ jobs:
       - name: Delete the temporary keychain
         if: always()
         run: security delete-keychain "$RUNNER_TEMP/solador-signing.keychain-db" || true
+
+  release-windows:
+    name: Windows release build (unsigned installer)
+    runs-on: windows-latest
+    # Same gate as the macOS job, for a narrower reason: this leg signs
+    # nothing (#341 — Authenticode is #342, and a SmartScreen warning on the
+    # unsigned installer is the expected cost until then), but SENTRY_DSN is
+    # an environment secret and is compiled in, so a release Windows binary
+    # built outside `prd` would silently ship without crash reporting.
+    environment: prd
+
+    # Every scripted step below is the same bash the rest of this repo runs —
+    # `./dev` and scripts/*.sh are bash, and Git Bash is what `shell: bash`
+    # resolves to on a windows-* runner.
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      # Read at COMPILE time by `crashreport::BUILD_DSN` (`option_env!`) —
+      # same note as the macOS job above.
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+    steps:
+      # BEFORE checkout. The runner image sets core.autocrlf=true, so every
+      # file git classifies as text would arrive CRLF — including `dev` and
+      # scripts/*.sh, which bash then reads with a literal \r on every line.
+      # .gitattributes deliberately protects only the signature-covered
+      # fixtures (its header explains why it is not a repo-wide line-ending
+      # policy); the scripts are protected here, at the only place a Windows
+      # checkout executes them.
+      - name: Check out with LF line endings
+        run: git config --global core.autocrlf input
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Same as the macOS job: both version numbers are derived by
+          # counting git history, so a shallow clone derives nonsense.
+          fetch-depth: 0
+
+      # Same shape as the macOS preflight, scoped to the one secret this leg
+      # consumes: an unreachable secret resolves to the EMPTY STRING and never
+      # raises, and `option_env!` would happily compile the absence in.
+      - name: Preflight — the compile-time secret must be non-empty
+        run: |
+          if [[ -z "${SENTRY_DSN:-}" ]]; then
+            echo "::error::SENTRY_DSN resolved EMPTY — did this job lose 'environment: prd'?"
+            exit 1
+          fi
+          echo "SENTRY_DSN resolved."
+
+      # Same assertion as the macOS job, and it must run on BOTH legs: each
+      # publishes an artifact under the tag's name, so each has to prove the
+      # tag and the derived version agree.
+      - name: Assert the tag matches the derived CalVer
+        run: |
+          derived="v$(bash scripts/get-version-info.sh --version)"
+          if [[ "$GITHUB_REF_NAME" != "$derived" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match derived version $derived"
+            echo "Tags are minted by scripts/publish.sh so these agree. A hand-made" >&2
+            echo "tag, or a tag on the wrong commit, lands here." >&2
+            exit 1
+          fi
+          echo "Tag and derived version agree: $derived"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          # The one Windows target (#341) — a separate --target, never a
+          # second slice of the macOS universal story (#335). build.sh also
+          # installs it itself; naming it here just lets the toolchain action
+          # do it once, before the cache step.
+          targets: x86_64-pc-windows-msvc
+
+      # Also caches ~/.cargo/bin, where build.sh installs the pinned
+      # cargo-tauri.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        with:
+          workspaces: .
+
+      # The same command a maintainer would run, minus signing flags this
+      # platform refuses (#342). build.sh derives both version numbers from
+      # git, bundles via `cargo tauri build --bundles nsis`, and asserts both
+      # numbers back out of the installer's version resource.
+      - name: Build the unsigned NSIS installer
+        run: ./dev build --release
+
+      # build.sh asserts its own work. This re-checks the FILE THAT SHIPS,
+      # which is a different claim — same division of labor as the macOS job.
+      - name: Validate the artifact that will be uploaded
+        id: artifact
+        run: |
+          shopt -s nullglob
+          # Beneath the triple: `--target` moves cargo's output. Kept in step
+          # with WINDOWS_TARGET in scripts/config.sh, which YAML cannot source.
+          exes=(target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe)
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one NSIS installer, found ${#exes[@]}"
+            exit 1
+          fi
+          exe="${exes[0]}"
+
+          # An independent second read of the version resource — the fixed
+          # VS_FIXEDFILEINFO block carries the marketing version in words 1-3
+          # and the build number in word 4 (see build.sh's Windows section).
+          want="$(bash scripts/get-version-info.sh --version).$(bash scripts/get-build-number.sh)"
+          got="$(powershell.exe -NoProfile -Command \
+            "\$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo('$(cygpath -w "$exe")'); '{0}.{1}.{2}.{3}' -f \$v.ProductMajorPart, \$v.ProductMinorPart, \$v.ProductBuildPart, \$v.ProductPrivatePart" \
+            | tr -d '\r')"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::installer ProductVersion is '$got', expected '$want'"
+            exit 1
+          fi
+          echo "exe=$exe" >> "$GITHUB_OUTPUT"
+          echo "Validated $(basename "$exe") ($(du -h "$exe" | cut -f1)), ProductVersion $got"
+
+      # Same draft-release destination as the macOS job. Both legs run in
+      # parallel and either may get here first, so both use the same
+      # view-then-create pattern — with a fallback for the race where both
+      # observe "no release yet" and the create loses: `gh release create`
+      # fails on an existing release rather than uploading to it.
+      - name: Attach the installer to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXE: ${{ steps.artifact.outputs.exe }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$EXE" --clobber
+            echo "Uploaded to the existing $GITHUB_REF_NAME release."
+          elif gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
+              --title "$GITHUB_REF_NAME" "$EXE"; then
+            echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
+          else
+            gh release upload "$GITHUB_REF_NAME" "$EXE" --clobber
+            echo "Lost the create race to the macOS job — uploaded to its release."
+          fi
