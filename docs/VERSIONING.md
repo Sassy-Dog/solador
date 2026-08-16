@@ -39,6 +39,17 @@ Consumers — version is **never** computed anywhere else:
   version is a red build rather than a quiet lie. The Xcode build that injected
   these as `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` went with the
   original macOS app.
+- **The Windows bundle path** (same commands, on Windows — **#341**) rides the
+  same `--config` overlay, with one twist: the overlay version carries the
+  build number as semver build metadata (`2026.8.14+152`), because Tauri maps
+  that metadata onto the fourth word of the NSIS installer's
+  `VIProductVersion`. Windows has no Info.plist; the analogue is the PE
+  VERSIONINFO resource compiled into the installer, and `build.sh` asserts
+  both numbers back out of it (`VS_FIXEDFILEINFO` = `YYYY.M.P.<build>`, string
+  `ProductVersion` = `YYYY.M.P+<build>`) via `FileVersionInfo` — same
+  derive-then-assert standard as the plist keys. MSI is not built at all:
+  its `ProductVersion` caps the major field at 255, which CalVer's year
+  cannot fit.
 - `scripts/publish.sh` consumes the mint's output contract (below) and pins
   the build via `MARKETING_VERSION=<minted>` so the artifact is stamped with
   exactly the tagged version.

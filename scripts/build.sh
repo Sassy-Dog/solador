@@ -12,6 +12,10 @@ set -euo pipefail
 #                          this. Produces
 #                          target/universal-apple-darwin/release/bundle/macos/Solador.app.
 #
+# On Windows the same two bundling shapes produce an NSIS installer instead of
+# a .app (#341) — see the "Windows bundle" section below. Linux still has no
+# bundler here (#15).
+#
 # Why the CLI at all: the bundler is NOT in `tauri-build`. That build.rs helper
 # reads `bundle.*` — deployment floor, the Info.plist embedded into the bare
 # Mach-O — and assembles nothing: no Contents/MacOS, no Resources, no hdiutil
@@ -370,6 +374,181 @@ build_bundle() {
     fi
 
     log_success "Bundled $app_bundle"
+}
+
+# ---------------------------------------------------------------------------
+# Windows bundle (#341)
+#
+# The same derive-then-assert contract as the macOS path above, translated to
+# what a Windows artifact actually carries. There is no Info.plist; the
+# analogue is the PE VERSIONINFO resource compiled into the NSIS installer
+# itself — a fixed VS_FIXEDFILEINFO block of four 16-bit words, plus a string
+# table. Tauri's NSIS template maps our two numbers onto it like this:
+#
+#   version "2026.8.14+152"  (semver build metadata carries the build number)
+#     → VIProductVersion 2026.8.14.152   — the fixed block: marketing version
+#                                          in words 1–3, build number in word 4
+#     → ProductVersion / FileVersion string keys = "2026.8.14+152"
+#
+# (tauri-bundler 2.9.4, nsis/mod.rs `try_add_numeric_build_number` plus
+# installer.nsi's VIProductVersion/VIAddVersionKey lines.) So unlike macOS —
+# where Tauri's config has exactly ONE version field and the build number is
+# stamped over CFBundleVersion after the fact — Windows takes both numbers in
+# the front door. That makes the read-back in
+# `assert_installer_version_resource` the ONLY evidence the stamp happened:
+# trusting the `--config` flag we passed is precisely the failure #303 removed.
+#
+# NSIS and not MSI, and that is arithmetic rather than preference: MSI's
+# ProductVersion caps its major field at 255, and CalVer's year (2026) does
+# not fit — a .msi genuinely cannot carry the marketing version, so there is
+# no second field to assert and no installer to build. The VERSIONINFO words
+# are 16-bit, which holds every CalVer component and decades of build
+# numbers; the guard in build_bundle_windows turns the day that stops being
+# true into a red build instead of a silent truncation.
+#
+# Unsigned for Authenticode, expectedly — signing is #342, and SmartScreen
+# warning on an unsigned installer is the known cost until then. Updates are
+# NOT protected by Authenticode anyway: tauri-plugin-updater verifies its
+# payloads with minisign on every platform.
+# ---------------------------------------------------------------------------
+
+# Windows is a separate `--target`, never a second slice of the universal
+# story (#335) — one triple, mirrored from ensure_universal_targets for the
+# same reason: `--target` is part of the output path, and a missing rustup
+# target fails minutes into the build with a message about std, not about
+# setup.
+ensure_windows_target() {
+    if rustup target list --installed 2>/dev/null | grep -qx "$WINDOWS_TARGET"; then
+        log_debug "rust target $WINDOWS_TARGET already installed"
+        return 0
+    fi
+    log_info "Installing rust target $WINDOWS_TARGET"
+    rustup target add "$WINDOWS_TARGET"
+}
+
+# The Windows analogue of assert_plist_key: read both numbers back OUT of the
+# produced installer's version resource and compare against what was derived.
+# `[System.Diagnostics.FileVersionInfo]` reads the compiled VERSIONINFO — the
+# fixed block via the *Part properties, the string table via .ProductVersion —
+# so a passing check is a fact about the artifact, not about the flags.
+assert_installer_version_resource() {
+    local installer="$1" want_version="$2" want_build="$3"
+    local winpath want_fixed got_fixed got_product
+
+    if ! command_exists powershell.exe; then
+        log_error "powershell.exe not found — cannot read the installer's version resource"
+        exit 1
+    fi
+    # FileVersionInfo needs a native path; this script runs under Git Bash,
+    # whose /c/... paths PowerShell does not resolve.
+    winpath="$(cygpath -w "$installer")"
+
+    want_fixed="${want_version}.${want_build}"
+    got_fixed="$(powershell.exe -NoProfile -Command \
+        "\$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo('$winpath'); '{0}.{1}.{2}.{3}' -f \$v.ProductMajorPart, \$v.ProductMinorPart, \$v.ProductBuildPart, \$v.ProductPrivatePart" \
+        2>/dev/null | tr -d '\r' || true)"
+    if [[ "$got_fixed" != "$want_fixed" ]]; then
+        log_error "VS_FIXEDFILEINFO ProductVersion is '${got_fixed:-<missing>}', expected '$want_fixed'"
+        log_error "(the build metadata did not reach VIProductVersion — the build number is unproven)"
+        exit 1
+    fi
+    log_success "VS_FIXEDFILEINFO ProductVersion = $got_fixed"
+
+    # The string table too — it is what Explorer's Details pane and most
+    # inventory tooling show a human, so it drifting from the fixed block is
+    # its own bug even with the fixed block correct.
+    got_product="$(powershell.exe -NoProfile -Command \
+        "[System.Diagnostics.FileVersionInfo]::GetVersionInfo('$winpath').ProductVersion" \
+        2>/dev/null | tr -d '\r' || true)"
+    if [[ "$got_product" != "${want_version}+${want_build}" ]]; then
+        log_error "string ProductVersion is '${got_product:-<missing>}', expected '${want_version}+${want_build}'"
+        exit 1
+    fi
+    log_success "ProductVersion = $got_product"
+}
+
+build_bundle_windows() {
+    # Fail the flags rather than ignore them: a caller asking for --sign got
+    # a macOS promise this platform cannot keep yet. Authenticode is #342.
+    if [[ "$WANT_SIGN" == true || "$WANT_NOTARIZE" == true ]]; then
+        log_error "--sign/--notarize are the macOS signing flow; Windows Authenticode signing is #342 — drop the flag to build the unsigned installer"
+        exit 1
+    fi
+
+    ensure_tauri_cli
+
+    # Same two numbers, same single-source scripts as the macOS path.
+    local marketing_version build_number
+    marketing_version="$(bash "$SCRIPT_DIR/get-version-info.sh" --version)"
+    build_number="$(bash "$SCRIPT_DIR/get-build-number.sh")"
+
+    # VS_FIXEDFILEINFO words are 16-bit. Every component fits today (the year
+    # is the largest at 2026) and the build number has decades of headroom —
+    # but "fits today" is a claim to check, not remember: an overflowing word
+    # would not fail the bundler, it would ship a wrong number that reads
+    # exactly like a correct one.
+    local component
+    for component in ${marketing_version//./ } "$build_number"; do
+        if (( component > 65535 )); then
+            log_error "version component '$component' exceeds 65535 — VS_FIXEDFILEINFO words are 16-bit and cannot carry it"
+            exit 1
+        fi
+    done
+
+    # Both numbers ride the one `--config` overlay: Tauri maps semver build
+    # metadata onto VIProductVersion's fourth word (see the section header).
+    # There is no post-hoc stamp step here — the assert below is what keeps
+    # this from being version-by-hope.
+    local cli_args=(--config "{\"version\":\"$marketing_version+$build_number\"}")
+    cli_args+=(--bundles nsis)
+
+    ensure_windows_target
+    cli_args+=(--target "$WINDOWS_TARGET")
+
+    [[ "$CARGO_PROFILE" == "debug" ]] && cli_args+=(--debug)
+
+    # `--target` moves cargo's output under the triple, same as macOS.
+    local nsis_dir="$ROOT_DIR/target/$WINDOWS_TARGET/$CARGO_PROFILE/bundle/nsis"
+
+    # Delete first, so "it exists afterwards" means THIS build made it — the
+    # same stale-artifact hazard build_bundle documents (#269's shape).
+    rm -rf "$nsis_dir"
+
+    log_info "Bundling $APP_NAME $marketing_version (build $build_number), $CARGO_PROFILE profile, unsigned (Authenticode is #342)..."
+
+    # Run from app/src-tauri: the CLI locates tauri.conf.json relative to the
+    # cwd, and `frontendDist: "../ui"` is relative to the config file.
+    (
+        cd "$ROOT_DIR/app/src-tauri"
+        cargo tauri build "${cli_args[@]}" ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+    )
+
+    # Exactly one installer — with the directory deleted above, a glob that
+    # matches one file is proof this build produced it.
+    local installers=()
+    shopt -s nullglob
+    installers=("$nsis_dir"/*-setup.exe)
+    shopt -u nullglob
+    if [[ ${#installers[@]} -ne 1 ]]; then
+        log_error "expected exactly one NSIS installer in $nsis_dir, found ${#installers[@]}"
+        log_error "(is bundle.active still true in app/src-tauri/tauri.conf.json?)"
+        exit 1
+    fi
+    local installer="${installers[0]}"
+
+    # The bundler names the file with the full overlay version, `+build`
+    # included. Strip the metadata: GitHub release assets sanitize `+` to `.`,
+    # which would rename the artifact into a four-part version disagreeing
+    # with the .dmg's three-part naming. The build number's home is the
+    # version resource inside the file — asserted next — not the filename.
+    local final_installer="${installer/+$build_number/}"
+    if [[ "$final_installer" != "$installer" ]]; then
+        mv "$installer" "$final_installer"
+    fi
+
+    assert_installer_version_resource "$final_installer" "$marketing_version" "$build_number"
+
+    log_success "Bundled $final_installer"
 }
 
 # ---------------------------------------------------------------------------
@@ -736,17 +915,24 @@ if [[ "$WANT_BUNDLE" != true ]]; then
     exit 0
 fi
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-    # Windows and Linux packaging are #15's, and neither has a bundler
-    # configured here yet. Loud, never silent: a release build that quietly
-    # degrades to a bare binary is a release nobody can install.
-    if [[ "$BUNDLE_REQUESTED" == true ]]; then
-        log_error "--bundle is macOS-only today (Windows/Linux packaging is #15) — nothing to bundle on $(uname -s)"
-        exit 1
-    fi
-    log_warning "Bundling is macOS-only today (Windows/Linux packaging is #15) — building the bare $CARGO_PROFILE binary instead"
-    build_with_cargo
-    exit 0
-fi
-
-build_bundle
+case "$(uname -s)" in
+    Darwin)
+        build_bundle
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        # Git Bash / MSYS — what `shell: bash` on a windows-* runner is, and
+        # the only bash a Windows machine is expected to carry (#341).
+        build_bundle_windows
+        ;;
+    *)
+        # Linux packaging is #15's, and it has no bundler configured here
+        # yet. Loud, never silent: a release build that quietly degrades to a
+        # bare binary is a release nobody can install.
+        if [[ "$BUNDLE_REQUESTED" == true ]]; then
+            log_error "--bundle is macOS/Windows-only today (Linux packaging is #15) — nothing to bundle on $(uname -s)"
+            exit 1
+        fi
+        log_warning "Bundling is macOS/Windows-only today (Linux packaging is #15) — building the bare $CARGO_PROFILE binary instead"
+        build_with_cargo
+        ;;
+esac
