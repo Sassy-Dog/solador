@@ -401,6 +401,49 @@ test("registered and absent runner rows carry Rust's state words and colours", a
 });
 
 /**
+ * The right-click "Forget" — the escape hatch for a deliberately
+ * decommissioned runner that should not wait out the roster's 24h age-out.
+ * The label is Rust's (`forgetLabel`), the invoke carries the row's own name,
+ * and the menu never survives its click.
+ */
+test("right-clicking an absent runner offers Rust's Forget and invokes runners_forget", async ({ page, baseURL }) => {
+  const { runners } = await gotoWithFixtures(page, baseURL);
+  const absent = runners.rows.find((r) => r.kind === "absent");
+  const row = runnerRows(page).filter({
+    has: page.locator(".gh-runner-name", { hasText: absent.name }),
+  }).first();
+
+  // Escape dismisses without invoking anything.
+  await row.click({ button: "right" });
+  await expect(page.locator(".ctx-menu .ctx-item")).toHaveText(runners.forgetLabel);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ctx-menu")).toHaveCount(0);
+
+  await row.click({ button: "right" });
+  await page.locator(".ctx-menu .ctx-item").click();
+  await expect(page.locator(".ctx-menu")).toHaveCount(0);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__CALLS__.map((c) => c.command)))
+    .toContain("runners_forget");
+  const call = await page.evaluate(
+    () => window.__CALLS__.find((c) => c.command === "runners_forget")
+  );
+  expect(call.args).toEqual({ name: absent.name });
+});
+
+/** A registered runner has nothing to forget, so it gets no menu at all. */
+test("a registered runner offers no context menu", async ({ page, baseURL }) => {
+  const { runners } = await gotoWithFixtures(page, baseURL);
+  const registered = runners.rows.find((r) => r.kind === "registered");
+  await runnerRows(page)
+    .filter({ has: page.locator(".gh-runner-name", { hasText: registered.name }) })
+    .first()
+    .click({ button: "right" });
+  await expect(page.locator(".ctx-menu")).toHaveCount(0);
+});
+
+/**
  * The status column is a reservation, not a measurement (#206).
  *
  * A presence label ("recycling 40s") is nearly three times the width of a

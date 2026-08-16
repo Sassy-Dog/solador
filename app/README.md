@@ -308,6 +308,7 @@ await window.__TAURI__.core.invoke("runners");
   "chips": ["macOS 2/2", "Linux 1/2"],   // only for a platform the org actually has
   "rows": [{"kind": "absent", "name": "ubu-1", "os": "LINUX",
             "dotColor": "#e05a4f", "status": "missing 12m", "statusColor": "#e05a4f"}],
+  "forgetLabel": "Forget",              // the absent rows' context-menu label
   "footer": null                         // or {"text": "⚠ … · last ok 4m ago", "color": …}
 }
 ```
@@ -513,10 +514,15 @@ Two honest gaps against the original, both platform, neither hidden:
   "the default one", so the banner is silent there rather than named with
   something the platform would ignore.
 
-One thing is still deliberately **not** here: **no "Forget" on an absent
-runner**. That is a right-click context menu over a `roster::forget` that
-`crates/github` already implements, and a remembered name ages out on its own
-after 24h regardless.
+An absent runner takes a **right-click "Forget"** (`runners_forget`): the menu
+github.js builds over `roster::forget`, for a deliberately decommissioned
+runner that should not spend the rest of the roster's 24h age-out as a red
+"missing" row. The command drops the name from the persisted roster and the
+panel state in one go; a name forgotten by mistake is re-learned on its next
+registration. One accepted race, documented on the command: a poll pass in
+flight across the forget can write the name back with its old clock — the
+window is one fetch, a second Forget wins it, and the age-out mops up
+regardless.
 
 Both panels now sit in whichever row `panelRows` puts them — side by side at
 ≥896pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).

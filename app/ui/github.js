@@ -247,7 +247,55 @@ function statNode(stat) {
   return el;
 }
 
-function runnerRowNode(row) {
+/** The open context menu, if any — at most one, torn down before another
+ *  opens and on any click, right-click or Escape outside it. */
+let forgetMenu = null;
+
+function closeForgetMenu() {
+  if (!forgetMenu) return;
+  forgetMenu.remove();
+  forgetMenu = null;
+}
+
+/**
+ * The one context menu this file owns: "Forget" over a remembered-absent
+ * runner. `runners_forget` drops the name from the persisted roster and the
+ * panel state, and the refresh right behind it repaints from that state — so
+ * the row is gone now, not when the 10s poll gets around to it.
+ */
+function openForgetMenu(x, y, name, label) {
+  closeForgetMenu();
+  const menu = node("div", "ctx-menu");
+  const item = node("button", "ctx-item", label);
+  item.type = "button";
+  item.addEventListener("click", async () => {
+    closeForgetMenu();
+    // A rejected invoke is swallowed like openRepo's: the row simply stays,
+    // and the next right-click can try again.
+    await callRust("runners_forget", { name }).catch(() => {});
+    await refresh();
+  });
+  menu.appendChild(item);
+  // CSSOM, never a style="" attribute — `style-src 'self'` blocks it.
+  menu.style.left = x + "px";
+  menu.style.top = y + "px";
+  document.body.appendChild(menu);
+  item.focus();
+  forgetMenu = menu;
+}
+
+// Any interaction that is not the menu itself dismisses it. The row's own
+// contextmenu handler stops propagation, so opening never self-dismisses.
+for (const type of ["click", "contextmenu"]) {
+  document.addEventListener(type, (e) => {
+    if (forgetMenu && !forgetMenu.contains(e.target)) closeForgetMenu();
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeForgetMenu();
+});
+
+function runnerRowNode(row, forgetLabel) {
   const el = node("div", "gh-row");
   // `data-kind` is what makes a registered row and a remembered-absent one
   // addressable from a test without reading their colours back.
@@ -271,6 +319,17 @@ function runnerRowNode(row) {
   status.style.color = row.statusColor;
   reserveWidth(status, row.statusWidth);
   el.appendChild(status);
+
+  // The right-click "Forget" — only on a remembered-absent row, the only kind
+  // with anything to forget. The label is Rust's (`forgetLabel`): this file
+  // owns layout and wiring, not words.
+  if (row.kind === "absent" && forgetLabel) {
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openForgetMenu(e.clientX, e.clientY, row.name, forgetLabel);
+    });
+  }
   return el;
 }
 
@@ -302,7 +361,7 @@ function renderRunners(payload) {
   // The rows go in their own wrapper so the header above them stays
   // full-width: `--panel-cols` splits the LIST, not the whole panel body.
   const list = node("div", "gh-list");
-  for (const row of payload.rows || []) list.appendChild(runnerRowNode(row));
+  for (const row of payload.rows || []) list.appendChild(runnerRowNode(row, payload.forgetLabel));
   children.push(list);
   $g("runnersBody").replaceChildren(...children);
 
