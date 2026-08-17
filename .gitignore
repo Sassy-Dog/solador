@@ -104,6 +104,10 @@ tests/frontend/test-results/
 # markers, which shipped in the repo as a result. An exception for one path
 # also leaves the next path the tooling invents equally exposed.
 .claude/
+# Serena MCP's per-project state (cache, memories, project.yml) — the same
+# per-machine class as .claude/, self-created the moment the server touches
+# the repo. Same deny-by-default, no carve-outs.
+.serena/
 
 # direnv: `.envrc` is committed and holds no values; the real ones live here.
 .envrc.local
