@@ -27,4 +27,4 @@ minisign-verify = "0.2"
 # the `.sig` file are each base64 of the minisign text form — and the plugin
 # undoes exactly that before verifying. Same pin it resolves through, so one
 # base64 resolves for the workspace.
-base64 = "0.22"
+base64 = "0.23"
