@@ -1,7 +1,8 @@
 name: Release
 
 # The release builds: the signed, notarized, stapled macOS bundle (#307, part
-# of #15) and the unsigned Windows installer (#341; Authenticode is #342).
+# of #15) and the Authenticode-signed Windows installer (#341, signed via
+# Azure Trusted Signing in #342).
 #
 # These are the ONLY jobs in this repository that declare an environment, and
 # that is the whole security design rather than a detail. Solador is a PUBLIC
@@ -243,14 +244,29 @@ jobs:
         run: security delete-keychain "$RUNNER_TEMP/solador-signing.keychain-db" || true
 
   release-windows:
-    name: Windows release build (unsigned installer)
+    name: Windows release build (signed installer)
     runs-on: windows-latest
-    # Same gate as the macOS job, for a narrower reason: this leg signs
-    # nothing (#341 — Authenticode is #342, and a SmartScreen warning on the
-    # unsigned installer is the expected cost until then), but SENTRY_DSN is
-    # an environment secret and is compiled in, so a release Windows binary
-    # built outside `prd` would silently ship without crash reporting.
+    # Same gate as the macOS job, and since #342 for the same reason: this
+    # leg signs. The Trusted Signing credential is not a secret at all but a
+    # federated identity whose subject is
+    # `repo:Sassy-Dog/solador:environment:prd` — the OIDC exchange in
+    # azure/login below succeeds ONLY for a job running in this environment,
+    # which makes "a push to main cannot mint a signed build" a property of
+    # Entra's trust configuration rather than of this file. SENTRY_DSN
+    # additionally is an environment secret and is compiled in, so a release
+    # Windows binary built outside `prd` would silently ship without crash
+    # reporting.
     environment: prd
+
+    # Job-level rather than workflow-level, because job permissions REPLACE
+    # the workflow's block: `contents: write` must be restated for the draft
+    # release upload, and `id-token: write` is what lets azure/login request
+    # the OIDC token that workload identity federation exchanges for the
+    # signing credential. The macOS job needs no Azure token, so it keeps the
+    # narrower workflow-level grant.
+    permissions:
+      contents: write
+      id-token: write
 
     # Every scripted step below is the same bash the rest of this repo runs —
     # `./dev` and scripts/*.sh are bash, and Git Bash is what `shell: bash`
@@ -263,6 +279,14 @@ jobs:
       # Read at COMPILE time by `crashreport::BUILD_DSN` (`option_env!`) —
       # same note as the macOS job above.
       SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      # Consumed by azure/login's `with:` below, not by any build step — the
+      # three ride the job env only so the preflight can prove they resolved
+      # non-empty BEFORE an expensive build. None is sensitive on its own
+      # (they are ids, not keys); the signing capability lives in the
+      # federated identity, which never materialises as a secret.
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
     steps:
       # BEFORE checkout. The runner image sets core.autocrlf=true, so every
@@ -281,16 +305,28 @@ jobs:
           # counting git history, so a shallow clone derives nonsense.
           fetch-depth: 0
 
-      # Same shape as the macOS preflight, scoped to the one secret this leg
+      # Same shape as the macOS preflight, scoped to the four secrets this leg
       # consumes: an unreachable secret resolves to the EMPTY STRING and never
-      # raises, and `option_env!` would happily compile the absence in.
-      - name: Preflight — the compile-time secret must be non-empty
+      # raises. `option_env!` would happily compile SENTRY_DSN's absence in,
+      # and azure/login handed an empty client-id fails much later inside the
+      # signing step with an auth error that never mentions a secret — or
+      # worse, a misconfiguration that skipped signing would publish an
+      # unsigned installer whose only symptom is a SmartScreen warning on
+      # users' machines, exactly what #342's acceptance forbids.
+      - name: Preflight — every release secret must be non-empty
         run: |
-          if [[ -z "${SENTRY_DSN:-}" ]]; then
-            echo "::error::SENTRY_DSN resolved EMPTY — did this job lose 'environment: prd'?"
+          missing=()
+          for name in SENTRY_DSN AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::${#missing[@]} release secret(s) resolved EMPTY: ${missing[*]}"
+            echo "Most likely cause: this job lost 'environment: prd', or the secrets" >&2
+            echo "were set at repo scope instead of on the environment. Secrets are" >&2
+            echo "never readable outside the environment, by design (#305)." >&2
             exit 1
           fi
-          echo "SENTRY_DSN resolved."
+          echo "All 4 Windows release secrets resolved."
 
       # Same assertion as the macOS job, and it must run on BOTH legs: each
       # publishes an artifact under the tag's name, so each has to prove the
@@ -320,12 +356,58 @@ jobs:
         with:
           workspaces: .
 
-      # The same command a maintainer would run, minus signing flags this
-      # platform refuses (#342). build.sh derives both version numbers from
-      # git, bundles via `cargo tauri build --bundles nsis`, and asserts both
-      # numbers back out of the installer's version resource.
-      - name: Build the unsigned NSIS installer
+      # The same command a maintainer would run — build.sh derives both
+      # version numbers from git, bundles via `cargo tauri build --bundles
+      # nsis`, and asserts both numbers back out of the installer's version
+      # resource. It produces an UNSIGNED installer on every machine, CI
+      # included: Authenticode is applied to the finished file in the steps
+      # below rather than through Tauri's in-bundle NSIS `signCommand` hook,
+      # mirroring the macOS division of labour — finish the artifact, sign
+      # the exact file that ships, assert the signature back out of it. A
+      # signCommand would additionally sign the app binary inside the
+      # installer, but the file SmartScreen actually evaluates is the
+      # MotW-carrying download (this installer), updater payloads are
+      # minisign-verified regardless (#308), and threading a CI-only
+      # signCommand through build.sh's `--config` overlay would make the
+      # build behave differently in CI than anywhere else — the drift the
+      # "same command a maintainer runs" rule exists to prevent.
+      - name: Build the NSIS installer (unsigned until the next step)
         run: ./dev build --release
+
+      # Minted AFTER the long build, immediately before its only consumer:
+      # the federated session is an access token with an expiry, not a
+      # refreshable login, and a token requested before a long compile could
+      # age out before the signing call uses it. The exchange itself is the
+      # environment gate — see the job comment above.
+      - name: Azure login (workload identity federation)
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Signs the exact file build.sh produced (already renamed and
+      # version-asserted). The folder glob is safe because build.sh
+      # guarantees exactly one `*-setup.exe` here — it deletes the directory
+      # before bundling. Authenticode appends to the PE and does not touch
+      # the VERSIONINFO resource the validate step below re-reads. The action
+      # authenticates via DefaultAzureCredential, whose only non-excluded
+      # entry that can succeed on this runner is AzureCliCredential — i.e.
+      # the azure/login session above; with a broken login the signing call
+      # FAILS, it never soft-skips. The RFC 3161 timestamp is load-bearing:
+      # Trusted Signing certificates are short-lived by design, and an
+      # untimestamped signature would die with its certificate.
+      - name: Authenticode-sign the installer (Azure Trusted Signing)
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: tsa-sassydog
+          certificate-profile-name: solador-public-trust
+          files-folder: ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release\bundle\nsis
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       # build.sh asserts its own work. This re-checks the FILE THAT SHIPS,
       # which is a different claim — same division of labor as the macOS job.
@@ -353,6 +435,32 @@ jobs:
             echo "::error::installer ProductVersion is '$got', expected '$want'"
             exit 1
           fi
+
+          # The signature is asserted from the artifact, never inferred from
+          # the signing step's exit code — the same claim-splitting as the
+          # macOS `codesign`/`spctl` re-read. Get-AuthenticodeSignature
+          # re-hashes the file and walks the chain: Status catches a missing
+          # or broken signature, the subject check catches signing with the
+          # wrong certificate profile, and the timestamper check catches a
+          # signature that would expire with the short-lived Trusted Signing
+          # certificate.
+          sig="$(powershell.exe -NoProfile -Command \
+            "\$s = Get-AuthenticodeSignature -LiteralPath '$(cygpath -w "$exe")'; '{0}|{1}|{2}' -f \$s.Status, \$s.SignerCertificate.Subject, [bool]\$s.TimeStamperCertificate" \
+            | tr -d '\r')"
+          IFS='|' read -r sig_status sig_subject sig_timestamped <<< "$sig"
+          if [[ "$sig_status" != "Valid" ]]; then
+            echo "::error::Authenticode status is '${sig_status:-<none>}', expected 'Valid' — the file that would ship is unsigned or corrupt"
+            exit 1
+          fi
+          if [[ "$sig_subject" != *"Sassy Dog Enterprises LLC"* ]]; then
+            echo "::error::signer subject is '$sig_subject' — not the Sassy Dog Enterprises LLC certificate profile"
+            exit 1
+          fi
+          if [[ "$sig_timestamped" != "True" ]]; then
+            echo "::error::signature carries no RFC 3161 timestamp — it would expire with the short-lived signing certificate"
+            exit 1
+          fi
+          echo "Authenticode: $sig_status, signer '$sig_subject', timestamped"
           echo "exe=$exe" >> "$GITHUB_OUTPUT"
           echo "Validated $(basename "$exe") ($(du -h "$exe" | cut -f1)), ProductVersion $got"
 
@@ -375,4 +483,17 @@ jobs:
           else
             gh release upload "$GITHUB_REF_NAME" "$EXE" --clobber
             echo "Lost the create race to the macOS job — uploaded to its release."
+          fi
+
+          # Say the installer is signed IN the notes rather than leaving
+          # users to discover it via SmartScreen (#342). This runs after
+          # every branch above because either leg may have created the
+          # release and only this one knows the Windows artifact is signed;
+          # the substring guard keeps a re-run (the --clobber path) from
+          # stacking duplicates. Prepending is race-safe: the macOS leg
+          # never edits the body.
+          note="The Windows installer is Authenticode-signed via Azure Trusted Signing (publisher: Sassy Dog Enterprises LLC) and RFC 3161-timestamped. The macOS disk image is Developer ID-signed and notarized."
+          body="$(gh release view "$GITHUB_REF_NAME" --json body --jq .body)"
+          if [[ "$body" != *"Authenticode-signed"* ]]; then
+            gh release edit "$GITHUB_REF_NAME" --notes "$note"$'\n\n'"$body"
           fi
