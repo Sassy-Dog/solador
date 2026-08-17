@@ -4299,7 +4299,7 @@ dependencies = [
 name = "solador-updatefeed"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "minisign-verify",
  "serde",
  "serde_json",
