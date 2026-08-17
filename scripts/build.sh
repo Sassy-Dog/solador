@@ -406,10 +406,13 @@ build_bundle() {
 # numbers; the guard in build_bundle_windows turns the day that stops being
 # true into a red build instead of a silent truncation.
 #
-# Unsigned for Authenticode, expectedly — signing is #342, and SmartScreen
-# warning on an unsigned installer is the known cost until then. Updates are
-# NOT protected by Authenticode anyway: tauri-plugin-updater verifies its
-# payloads with minisign on every platform.
+# This script never Authenticode-signs, deliberately (#342): the credential is
+# a federated identity scoped to CI's `prd` environment and cannot exist on a
+# laptop, so release.yml signs the produced installer AFTER this script
+# finishes — and asserts the signature back out of the exact file it uploads.
+# Local Windows builds therefore stay unsigned (SmartScreen warning and all).
+# Updates are NOT protected by Authenticode anyway: tauri-plugin-updater
+# verifies its payloads with minisign on every platform.
 # ---------------------------------------------------------------------------
 
 # Windows is a separate `--target`, never a second slice of the universal
@@ -469,9 +472,10 @@ assert_installer_version_resource() {
 
 build_bundle_windows() {
     # Fail the flags rather than ignore them: a caller asking for --sign got
-    # a macOS promise this platform cannot keep yet. Authenticode is #342.
+    # a macOS promise this script cannot keep on Windows — Authenticode is
+    # CI-only, applied by release.yml to the produced installer (#342).
     if [[ "$WANT_SIGN" == true || "$WANT_NOTARIZE" == true ]]; then
-        log_error "--sign/--notarize are the macOS signing flow; Windows Authenticode signing is #342 — drop the flag to build the unsigned installer"
+        log_error "--sign/--notarize are the macOS signing flow; Windows Authenticode signing is CI-only (release.yml signs the produced installer, #342) — drop the flag to build the unsigned installer"
         exit 1
     fi
 
@@ -514,7 +518,7 @@ build_bundle_windows() {
     # same stale-artifact hazard build_bundle documents (#269's shape).
     rm -rf "$nsis_dir"
 
-    log_info "Bundling $APP_NAME $marketing_version (build $build_number), $CARGO_PROFILE profile, unsigned (Authenticode is #342)..."
+    log_info "Bundling $APP_NAME $marketing_version (build $build_number), $CARGO_PROFILE profile, unsigned (Authenticode is applied in CI by release.yml, #342)..."
 
     # Run from app/src-tauri: the CLI locates tauri.conf.json relative to the
     # cwd, and `frontendDist: "../ui"` is relative to the config file.
