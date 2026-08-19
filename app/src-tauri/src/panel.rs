@@ -191,15 +191,53 @@ fn footer_line(
 /// about it.
 #[must_use]
 pub fn merged_footer(footers: &[Value]) -> Value {
-    let firing: Vec<&str> = footers.iter().filter_map(|f| f["text"].as_str()).collect();
+    merged_line(footers, " ")
+}
+
+/// Several sections' freshness clocks folded into the one header line, or `Null`
+/// when every one of them is current.
+///
+/// The [`merged_footer`] argument, one clock over
+/// ([#355](https://github.com/Sassy-Dog/solador/issues/355)). A per-section
+/// `as of 23h ago` rendered beside its own rows is absent while the section is
+/// healthy and present when it is not, so it costs the card a line of height the
+/// moment a poll is missed — the identical growth the warnings were hoisted out
+/// of the body to stop, one line instead of six. Segments come from
+/// [`attributed_freshness_payload`], so each names the section it dates.
+///
+/// **The separator is `·`, not the space [`merged_footer`] joins on**, and the
+/// difference is not cosmetic. A warning segment opens with a `⚠`, which is
+/// itself the boundary between segments; a freshness segment opens with an
+/// ordinary word, so `neon: as of 23h ago sentry: as of 23h ago` runs two
+/// sentences together with nothing marking where one ends. `·` is free here for
+/// the same reason it is taken there: [`freshness_payload`]'s line has no
+/// interior `·` to be confused with.
+#[must_use]
+pub fn merged_freshness(clocks: &[Value]) -> Value {
+    merged_line(clocks, " · ")
+}
+
+/// The fold both merges share: the firing segments' text joined, in the caller's
+/// order, carrying the first firing segment's colour.
+///
+/// Order is the caller's, and should be the order the sections themselves render
+/// in, so the line reads down the card. A segment that is not firing carries a
+/// null `text` — or is `Null` outright — and contributes nothing; `Null` indexes
+/// to `Null` rather than panicking, so a caller may pass either spelling.
+///
+/// The colour is the first firing segment's rather than a constant restated
+/// here: this composes what the ladder (or [`Freshness::classify`]) decided and
+/// does not get a second opinion about it.
+fn merged_line(segments: &[Value], separator: &str) -> Value {
+    let firing: Vec<&str> = segments.iter().filter_map(|s| s["text"].as_str()).collect();
     if firing.is_empty() {
         return Value::Null;
     }
-    let color = footers
+    let color = segments
         .iter()
-        .find(|f| !f["text"].is_null())
-        .map_or(Value::Null, |f| f["color"].clone());
-    json!({ "text": firing.join(" "), "color": color })
+        .find(|s| !s["text"].is_null())
+        .map_or(Value::Null, |s| s["color"].clone());
+    json!({ "text": firing.join(separator), "color": color })
 }
 
 /// How old the figure a panel is painting is, as the frontend receives it.
@@ -246,6 +284,33 @@ pub fn freshness_payload(freshness: Freshness) -> Value {
         "text": stale_age.map(|secs| format!("as of {}", relative_age(secs))),
         "color": stale_age.map(|_| color::hex(color::AMBER)),
     })
+}
+
+/// [`freshness_payload`], with the section the clock dates named.
+///
+/// The [`attributed_status_footer`] argument applied to the other clock. A panel
+/// whose body is several independently-polled sections has one header and one
+/// clock per section, and those clocks are byte-identical the moment two
+/// sections were last read at the same time — `as of 23h ago` twice over names
+/// neither of them. `source` is the section's **own id** for the same reason the
+/// warning's is: the line's job is to send a reader to a block on the card.
+///
+/// Only the line is renamed. `state` and `measured_secs_ago` are the
+/// classification and belong to the section, not to the string, so they are
+/// passed through untouched — and `text` stays null for
+/// [`Freshness::Live`] and [`Freshness::Unknown`], which is what keeps a current
+/// or never-read section out of [`merged_freshness`]'s line entirely rather than
+/// contributing an attributed blank.
+#[must_use]
+pub fn attributed_freshness_payload(source: &str, freshness: Freshness) -> Value {
+    let mut payload = freshness_payload(freshness);
+    let named = payload["text"]
+        .as_str()
+        .map(|text| format!("{source}: {text}"));
+    if let Some(named) = named {
+        payload["text"] = Value::String(named);
+    }
+    payload
 }
 
 /// One thin progress bar: how much of the track to fill, and what colour.
@@ -563,6 +628,108 @@ mod tests {
         assert!(payload["measured_secs_ago"].is_null());
         assert_ne!(payload["measured_secs_ago"], 0);
         assert!(payload["text"].is_null(), "there is no figure to qualify");
+    }
+
+    // MARK: attributed freshness
+
+    /// The line is named and the classification is not: `state` and
+    /// `measured_secs_ago` describe the section, `text` is the string a header
+    /// carrying several of them has to keep apart.
+    #[test]
+    fn an_attributed_clock_names_only_its_line() {
+        let payload =
+            attributed_freshness_payload("neon", Freshness::classify(Some(23 * 3600), 3600));
+        assert_eq!(payload["state"], "stale");
+        assert_eq!(payload["measured_secs_ago"], 23 * 3600);
+        assert_eq!(payload["text"], "neon: as of 23h ago");
+        assert_eq!(payload["color"], color::hex(color::AMBER));
+    }
+
+    /// A current or never-read section is *not* labelled with its own name and
+    /// left blank — it publishes no line at all, exactly as the unattributed
+    /// spelling does, so it contributes nothing to the merged header.
+    #[test]
+    fn an_attributed_clock_is_still_silent_when_there_is_nothing_to_date() {
+        for freshness in [Freshness::classify(Some(600), 3600), Freshness::Unknown] {
+            let payload = attributed_freshness_payload("neon", freshness);
+            assert!(
+                payload["text"].is_null(),
+                "{freshness:?} must not publish an attributed blank"
+            );
+            assert_eq!(
+                payload,
+                freshness_payload(freshness),
+                "{freshness:?} is byte-identical to the unattributed spelling"
+            );
+        }
+    }
+
+    // MARK: merged_freshness
+
+    /// The reason these clocks are merged rather than rendered one per section:
+    /// two sections last read at the same moment emit the byte-identical line,
+    /// and the header has to say which is which.
+    #[test]
+    fn two_sections_dated_alike_stay_distinguishable_on_the_one_line() {
+        let stale = Freshness::classify(Some(23 * 3600), 3600);
+        let neon = attributed_freshness_payload("neon", stale);
+        let sentry = attributed_freshness_payload("sentry", stale);
+        assert_ne!(neon["text"], sentry["text"]);
+        assert_eq!(
+            freshness_payload(stale)["text"],
+            "as of 23h ago",
+            "and unattributed they would be this line, twice"
+        );
+        assert_eq!(
+            merged_freshness(&[neon, sentry])["text"],
+            "neon: as of 23h ago · sentry: as of 23h ago"
+        );
+    }
+
+    /// The separator is the one thing that differs from [`merged_footer`], and
+    /// it differs because a freshness segment carries no `⚠` to mark where the
+    /// previous one ended.
+    #[test]
+    fn freshness_segments_are_separated_and_warnings_are_not() {
+        let stale = Freshness::classify(Some(23 * 3600), 3600);
+        let clocks = merged_freshness(&[
+            attributed_freshness_payload("neon", stale),
+            attributed_freshness_payload("sentry", stale),
+        ]);
+        assert!(clocks["text"].as_str().unwrap().contains(" · "));
+
+        let warnings = merged_footer(&[
+            attributed_status_footer("neon", Some(NOW - 82_800), None, NOW, 5400),
+            attributed_status_footer("sentry", Some(NOW - 82_800), None, NOW, 5400),
+        ]);
+        assert!(!warnings["text"].as_str().unwrap().contains("ago · ⚠"));
+    }
+
+    /// Nothing is dated, so there is no line — not an empty one, which would
+    /// still be a rendered element reserving a header's worth of amber.
+    #[test]
+    fn a_panel_whose_sections_are_all_current_merges_to_null() {
+        assert_eq!(merged_freshness(&[]), Value::Null);
+        assert_eq!(
+            merged_freshness(&[
+                attributed_freshness_payload("neon", Freshness::classify(Some(600), 3600)),
+                attributed_freshness_payload("sentry", Freshness::Unknown),
+            ]),
+            Value::Null
+        );
+    }
+
+    /// One dated section among current ones contributes one segment and no
+    /// separator — the line names what it can date and invents nothing for the
+    /// rest.
+    #[test]
+    fn a_current_section_contributes_no_segment() {
+        let merged = merged_freshness(&[
+            attributed_freshness_payload("neon", Freshness::classify(Some(600), 3600)),
+            attributed_freshness_payload("sentry", Freshness::classify(Some(23 * 3600), 3600)),
+        ]);
+        assert_eq!(merged["text"], "sentry: as of 23h ago");
+        assert_eq!(merged["color"], color::hex(color::AMBER));
     }
 
     // MARK: progress_bar

@@ -115,6 +115,17 @@
     <section class="panel" id="usagePanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="usageTitle"></h2>
+        <!-- Two spans, two clocks, exactly as on Azure Cost and Sentry Crons
+             below — with one difference that earns `.merged`. Those panels
+             have ONE reading each, so their `.panel-asof` is the short,
+             fixed-format "as of 23h ago". This panel's body is several
+             independently-polled sections, so Rust folds their clocks into one
+             line and names each ("neon: as of 23h ago · sentry: …"), which
+             makes this the one `.panel-asof` long enough to need to yield
+             width. Both lines are here rather than beside the rows they
+             describe because the header is the only place a line that comes
+             and goes costs the card no height. -->
+        <span class="panel-asof merged" id="usageFreshness" hidden></span>
         <span class="panel-stale" id="usageStale" hidden></span>
         <span class="grow"></span>
         <span class="panel-trailing" id="usageTrailing"></span>

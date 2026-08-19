@@ -83,46 +83,36 @@ function barNode(bar) {
 }
 
 /**
- * How old this section's figures are, or nothing.
+ * One of the panel's two header lines — the warning, or the freshness clock —
+ * or no line at all.
  *
- * A DIFFERENT question from the panel's warning line, and deliberately a
- * different element in a different place: the header's warning says the last
- * attempt failed or the poller is late, `provider.freshness` says the dollars
- * and counts *on this section* were measured 23h ago. These providers are read
- * hourly, so the first speaks a full half hour before the second does — the
- * window where a figure is no longer current and the poller is not yet worth
- * warning about.
+ * Both are `{text, color}` from Rust or `null`, and `null` means "render
+ * nothing", not "render an empty one": a blank element still occupies the
+ * header and still reads as a claim. `hidden` rather than an empty string for
+ * exactly that reason.
  *
- * It stays in the body while the warnings moved to the header because it dates
- * a figure that is in the body: hoisted, one header line would be answering for
- * three different clocks. Its own appear/disappear height cost is #355.
- *
- * `.panel-asof` is the Azure Cost panel's class, reused rather than reinvented:
- * same job, same typography. `live` and `unknown` carry no text and paint
- * nothing — a current reading reads as it always did, and a section that has
- * never answered has no figure to date. Rust classifies the age against the
- * providers' cadence and hands over the finished line, so nothing here compares
- * an age to a threshold.
+ * Ellipsised in a narrow panel, so `title` keeps the whole message reachable.
+ * Nothing is composed here — the text arrives finished.
  */
-function asOfNode(freshness) {
-  const text = freshness && freshness.text;
-  if (!text) return null;
-  const el = node("div", "panel-asof", text);
-  el.title = text;
-  el.style.color = freshness.color;
-  return el;
+function headerLine(id, line) {
+  const el = $u(id);
+  el.textContent = line ? line.text : "";
+  el.title = line ? line.text : "";
+  el.style.color = line ? line.color : "";
+  el.hidden = !line;
 }
 
 /**
- * One provider section: a divider, its rows, an optional bar, and how old they
- * are.
+ * One provider section: a divider, its rows, and an optional bar.
  *
- * **No warning line.** A section that degrades used to grow a `.pv-footer`
- * under its rows, which made the card taller, which `.panel-row` then spent on
- * every other card in the row — one stale Neon read pushed the rows below it
- * down the cockpit. The warning is Rust's `payload.footer` now, painted once in
- * the header, and the payload carries no per-section `footer` for this to draw
- * even if it wanted to.
+ * **No warning line, and no freshness line either.** A section that degraded
+ * used to grow a `.pv-footer` under its rows (#351), and a section whose
+ * figures aged used to grow a `.panel-asof` under those (#355). Both are
+ * absent while the section is healthy and present when it is not, so each made
+ * the card taller the moment it fired, which `.panel-row` then spent on every
+ * other card in the row — one stale Neon read pushed the rows below it down the
+ * cockpit. Both are header lines now, and the payload carries no per-section
+ * `footer` or `freshness` for this to draw even if it wanted to.
  */
 function providerNode(provider) {
   const el = node("div", "pv-section");
@@ -131,8 +121,6 @@ function providerNode(provider) {
   for (const row of provider.rows || []) el.appendChild(valueRow(row));
   const bar = barNode(provider.bar);
   if (bar) el.appendChild(bar);
-  const asOf = asOfNode(provider.freshness);
-  if (asOf) el.appendChild(asOf);
   return el;
 }
 
@@ -188,13 +176,25 @@ function renderUsage(payload) {
   // rollup — or one stale Neon read — moved OpenClaw beside it and every row
   // below. Nothing is composed here: the join, the separator and each provider's
   // name are `panel::merged_footer`'s, on the far side of the boundary where a
-  // Rust test can see them. Ellipsised in a narrow panel, so `title` keeps the
-  // whole message reachable.
-  const stale = $u("usageStale");
-  stale.textContent = payload.footer ? payload.footer.text : "";
-  stale.title = payload.footer ? payload.footer.text : "";
-  stale.style.color = payload.footer ? payload.footer.color : "";
-  stale.hidden = !payload.footer;
+  // Rust test can see them.
+  headerLine("usageStale", payload.footer);
+
+  // …and ONE clock line beside it, from `panel::merged_freshness`
+  // (`neon: as of 23h ago · sentry: as of 23h ago`). A DIFFERENT question from
+  // the warning, which is why it is a different element carrying a different
+  // string: the warning says the last attempt failed or the poller is late,
+  // this says the dollars and counts on the card were measured 23h ago. These
+  // providers are read hourly, so the second speaks a full half hour before the
+  // first does — the window where a figure is no longer current and the poller
+  // is not yet worth warning about, and the reason the two must never be joined
+  // into one sentence. Rust classifies each age against the providers' cadence
+  // and names each section, so nothing here compares an age to a threshold or
+  // decides what to call a provider.
+  //
+  // `live` and `unknown` sections contribute no segment at all, so a current
+  // reading paints as it always did and a section that has never answered has
+  // no figure to date — and neither gets a blank line held open for it.
+  headerLine("usageFreshness", payload.freshness);
 
   $u("usagePanel").hidden = false;
 }

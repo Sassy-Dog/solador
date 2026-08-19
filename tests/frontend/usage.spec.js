@@ -82,6 +82,19 @@ const LONG_WARNING =
   "cannot be left to depend on how long the message happens to be today " +
   "· last ok 6h ago";
 
+/**
+ * The busiest clock line this panel can actually produce: every configured
+ * provider dated at once, each naming itself
+ * (`panel::merged_freshness`).
+ *
+ * Unlike `LONG_WARNING` this is not exaggerated — it is the cost the Decision
+ * on [#355](https://github.com/Sassy-Dog/solador/issues/355) accepted for
+ * hoisting these clocks into the header, so it is the case that has to stay
+ * inside the tile rather than a pathological one.
+ */
+const THREE_CLOCKS =
+  "neon: as of 23h ago · sentry: as of 23h ago · vercel: as of 23h ago";
+
 /** How wide an element got, and whether its text had to be cut to fit. */
 const fit = (page, selector) =>
   page.locator(selector).evaluate((el) => ({
@@ -196,41 +209,30 @@ test("the Sentry quota bar is drawn only when the count is known", async ({ page
   await expect(section(page, "sentry").locator(".pbar")).toHaveCount(0);
 });
 
-test("a stale metered section is dated on its own line, and warned about in the header", async ({ page, baseURL }) => {
-  // The two clocks, answering different questions and now living in two
-  // different places. The `.panel-asof` line dates the figures ("as of 23h
-  // ago") and stays in the body, beside the numbers it qualifies; the warning
-  // that the poller is late is hoisted to the panel header, because a line
-  // under the body makes the card taller and `.panel-row` stretches every other
-  // card in the row to match. Both fixtures carry the same numbers, so the only
-  // difference a reader sees is the claim being made about them — which is the
-  // whole point of marking staleness rather than rendering a nearly-hour-old
-  // figure as a current one.
+test("a stale metered section is dated and warned about in the header, on two separate lines", async ({ page, baseURL }) => {
+  // The two clocks, answering different questions, in two different elements —
+  // both in the header now. The `.panel-asof` line dates the figures ("neon: as
+  // of 23h ago"); `.panel-stale` says the poller is late. Neither may sit
+  // beside the rows it describes: both are absent while the section is healthy,
+  // so each made the card taller the moment it fired and `.panel-row` stretched
+  // every other card in the row to match. Both fixtures carry the same numbers,
+  // so the only difference a reader sees is the claim being made about them —
+  // which is the whole point of marking staleness rather than rendering a
+  // nearly-hour-old figure as a current one.
   const live = await gotoWithUsage(page, baseURL);
-  for (const provider of live.providers) {
-    expect(provider.freshness.state).toBe("live");
-    expect(provider.freshness.text, "a current reading paints nothing").toBeNull();
-  }
-  await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
-  expect(live.footer, "and a fresh panel warns about nothing").toBeNull();
+  expect(live.freshness, "a current panel dates nothing").toBeNull();
+  expect(live.footer, "and warns about nothing").toBeNull();
+  await expect(page.locator("#usageFreshness")).toBeHidden();
   await expect(page.locator("#usageStale")).toBeHidden();
 
   const stale = await gotoWithUsage(page, baseURL, "sample-usage-stale.json");
   for (const provider of stale.providers) {
-    expect(provider.freshness.state).toBe("stale");
-    expect(provider.freshness.measured_secs_ago).toBeGreaterThan(0);
-    const asOf = section(page, provider.id).locator(".panel-asof");
-    await expect(asOf).toBeVisible();
-    await expect(asOf).toHaveText(provider.freshness.text);
-    await expect(asOf).toHaveCSS("color", rgb(provider.freshness.color));
-    // The freshness line is the LAST thing in the section: nothing is appended
-    // under it any more.
-    const order = await section(page, provider.id).evaluate((el) =>
-      [...el.children].map((c) => c.className)
-    );
-    expect(order[order.length - 1]).toBe("panel-asof");
+    expect(provider.freshness, "a section carries no clock of its own").toBeUndefined();
     expect(provider.footer, "a section carries no warning of its own").toBeUndefined();
   }
+  // Nothing at all was appended under the rows — neither class, at either
+  // spelling.
+  await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
   await expect(page.locator("#usageBody .pv-footer")).toHaveCount(0);
 
   // Same figures either way — the mark is the line, never a changed number.
@@ -238,39 +240,70 @@ test("a stale metered section is dated on its own line, and warned about in the 
     live.providers[0].rows.map((r) => r.value)
   );
 
-  // Both sections went stale at once and both are on the one header line, each
-  // naming itself. Unattributed they would be the byte-identical
-  // `⚠ stale · updated 23h ago` twice over — a line saying the same thing twice
-  // and identifying neither.
+  // Both sections went stale at once, so each header line carries both of them,
+  // each naming itself. Unattributed the clocks would be the byte-identical
+  // `as of 23h ago` twice over — a line saying the same thing twice and
+  // identifying neither, exactly as the warnings were before #351.
+  const freshness = page.locator("#usageFreshness");
+  await expect(freshness).toBeVisible();
+  await expect(freshness).toHaveText(stale.freshness.text);
+  await expect(freshness).toHaveAttribute("title", stale.freshness.text);
+  await expect(freshness).toHaveCSS("color", rgb(stale.freshness.color));
+
   const warning = page.locator("#usageStale");
   await expect(warning).toBeVisible();
   await expect(warning).toHaveText(stale.footer.text);
   await expect(warning).toHaveAttribute("title", stale.footer.text);
+
   for (const provider of stale.providers) {
-    expect(stale.footer.text).toContain(`${provider.id}:`);
+    expect(stale.freshness.text, "the clock names its section").toContain(`${provider.id}:`);
+    expect(stale.footer.text, "and so does the warning").toContain(`${provider.id}:`);
   }
-  // …and it is not the freshness line wearing a different class: two strings,
-  // two questions.
-  expect(stale.footer.text).not.toBe(stale.providers[0].freshness.text);
+  // …and the clock is not the warning wearing a different class: two elements,
+  // two strings, two questions. Sharing a header is not being folded together.
+  expect(stale.freshness.text).not.toBe(stale.footer.text);
+  expect(stale.footer.text).not.toContain(stale.freshness.text);
 });
 
-test("a degraded panel is exactly as tall as a healthy one, however long the warning", async ({ page, baseURL }) => {
-  // The regression this issue is about. A `.pv-footer` under a provider section
-  // carried no `white-space:nowrap`, so a long message wrapped — six lines, on
-  // the screenshot that reported it — the card grew, `.panel-row` stretched
-  // every other card in the row to match, and every row below moved down. One
-  // Neon read going stale rearranged the cockpit. Mirrors the identical
-  // assertion on the Repos panel in `github.spec.js`.
+test("a degraded panel is exactly as tall as a healthy one, however long the warning and the clock", async ({ page, baseURL }) => {
+  // The regression these two issues are about. A `.pv-footer` under a provider
+  // section carried no `white-space:nowrap`, so a long message wrapped — six
+  // lines, on the screenshot that reported it — the card grew, `.panel-row`
+  // stretched every other card in the row to match, and every row below moved
+  // down. The `.panel-asof` under it was one line rather than six and otherwise
+  // identical: absent while the section polls on cadence, present the moment a
+  // poll is missed. One Neon read going stale rearranged the cockpit. Mirrors
+  // the identical assertion on the Repos panel in `github.spec.js`.
   const healthy = await gotoWithUsage(page, baseURL);
   expect(healthy.footer, "the healthy fixture warns about nothing").toBeNull();
+  expect(healthy.freshness, "and dates nothing").toBeNull();
   const before = await page.locator("#usagePanel").boundingBox();
   const headerBefore = await page.locator("#usagePanel .panel-hdr").boundingBox();
 
-  // Rust's amber, read off a fixture that carries a real warning rather than
-  // written out here — this test is about height, and a literal would be a
-  // second author of a colour `viewmodel::color` owns.
-  const amber = (await fixture(baseURL, "sample-usage-stale.json")).footer.color;
-  const degraded = { ...healthy, footer: { text: LONG_WARNING, color: amber } };
+  // First the real thing: the dumped stale payload, which carries BOTH lines
+  // and is otherwise the same panel — `dump_usage` moves only the providers'
+  // last-success clock, so every row, section and bar is identical.
+  const stale = await fixture(baseURL, "sample-usage-stale.json");
+  expect(stale.footer.text, "the stale fixture carries a warning").toBeTruthy();
+  expect(stale.freshness.text, "and a clock").toBeTruthy();
+  await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), stale);
+  await expect(page.locator("#usageFreshness")).toBeVisible();
+  await expect(page.locator("#usageStale")).toBeVisible();
+  const dated = await page.locator("#usagePanel").boundingBox();
+  expect(dated.height, "both lines arriving cost the card nothing").toBeCloseTo(
+    before.height,
+    1
+  );
+
+  // Then the pathological one, on both lines at once: Rust's amber, read off
+  // the fixture rather than written out here — this test is about height, and a
+  // literal would be a second author of a colour `viewmodel::color` owns.
+  const amber = stale.footer.color;
+  const degraded = {
+    ...healthy,
+    footer: { text: LONG_WARNING, color: amber },
+    freshness: { text: THREE_CLOCKS, color: amber },
+  };
   await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), degraded);
 
   const warning = page.locator("#usageStale");
@@ -279,9 +312,12 @@ test("a degraded panel is exactly as tall as a healthy one, however long the war
   // Ellipsised rather than wrapped, so the whole message has to stay reachable
   // somewhere.
   await expect(warning).toHaveAttribute("title", LONG_WARNING);
+  const freshness = page.locator("#usageFreshness");
+  await expect(freshness).toHaveText(THREE_CLOCKS);
+  await expect(freshness).toHaveAttribute("title", THREE_CLOCKS);
 
   // The header did not become two lines, and the card did not become one line
-  // taller — the two ways this message could have cost height.
+  // taller — the two ways these messages could have cost height.
   const headerAfter = await page.locator("#usagePanel .panel-hdr").boundingBox();
   expect(headerAfter.height).toBeCloseTo(headerBefore.height, 1);
   const after = await page.locator("#usagePanel").boundingBox();
@@ -294,10 +330,16 @@ test("a pathologically long warning stays inside the tile and starves nothing be
   const cell = await page.locator("#usagePanel").boundingBox();
   const amber = (await fixture(baseURL, "sample-usage-stale.json")).footer.color;
 
+  // Both header lines at their worst at once: the warning exaggerated, the
+  // clock at the busiest arrangement this panel can really produce.
   await page.evaluate(
-    ([vm, text, color]) =>
-      window.__SOLADOR_USAGE_TEST__.render({ ...vm, footer: { text, color } }),
-    [healthy, LONG_WARNING, amber]
+    ([vm, warning, clocks, color]) =>
+      window.__SOLADOR_USAGE_TEST__.render({
+        ...vm,
+        footer: { text: warning, color },
+        freshness: { text: clocks, color },
+      }),
+    [healthy, LONG_WARNING, THREE_CLOCKS, amber]
   );
 
   // Nothing bleeds into the neighbouring tile or the page gutter: the panel's
@@ -306,16 +348,33 @@ test("a pathologically long warning stays inside the tile and starves nothing be
   expect(degraded.x).toBeCloseTo(cell.x, 1);
   expect(degraded.width).toBeCloseTo(cell.width, 1);
   const inside = await contentRight(page, "#usagePanel");
-  for (const selector of ["#usageTitle", "#usageStale", "#usageTrailing"]) {
+  for (const selector of ["#usageTitle", "#usageFreshness", "#usageStale", "#usageTrailing"]) {
     const el = await fit(page, selector);
     expect(el.right, `${selector} must stay inside the card`).toBeLessThanOrEqual(inside + 0.5);
   }
 
-  // The warning is the designated give and the only one: the trailing figure
-  // beside it keeps every character.
-  expect((await fit(page, "#usageStale")).ellipsised).toBe(true);
+  // NEITHER message disappears. This is the acceptance criterion "degrades by
+  // ellipsis, never by dropping a clause silently", asserted the only way it
+  // can be: an element flexed to a width of zero renders no ellipsis and no
+  // characters, so it reads as absent rather than as cut. Both carry the
+  // designated give's `flex-shrink:100`, which splits the shortfall in
+  // proportion to their length — each loses the same fraction, so they run out
+  // of room together and not one before the other. At any lopsided pair of
+  // factors one of these two is zero here.
+  await expect(page.locator("#usageStale")).toBeVisible();
+  await expect(page.locator("#usageFreshness")).toBeVisible();
+  for (const selector of ["#usageStale", "#usageFreshness"]) {
+    const el = await fit(page, selector);
+    expect(el.ellipsised, `${selector} is cut, not deleted`).toBe(true);
+  }
+
+  // And the two elements that are not messages keep every character: the
+  // trailing figure cannot shrink at all, and the panel's name is what tells a
+  // reader which card this is.
   expect((await fit(page, "#usageTrailing")).ellipsised).toBe(false);
   await expect(page.locator("#usageTrailing")).toHaveText(healthy.trailing);
+  expect((await fit(page, "#usageTitle")).ellipsised).toBe(false);
+  await expect(page.locator("#usageTitle")).toHaveText(healthy.title);
 });
 
 test("a section with no reading publishes no age rather than a fresh-looking zero", async ({ page, baseURL }) => {
@@ -323,20 +382,26 @@ test("a section with no reading publishes no age rather than a fresh-looking zer
   // no section — and nothing anywhere claiming an age of zero.
   const usage = await gotoWithUsage(page, baseURL, "sample-usage-empty.json");
   expect(usage.providers).toEqual([]);
-  await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
+  expect(usage.freshness).toBeNull();
+  await expect(page.locator("#usagePanel .panel-asof")).toBeHidden();
 
-  // A configured provider whose first read has not landed publishes `unknown`
-  // and a null age — never a 0, which would paint it as the freshest section on
-  // the card. Built by editing the payload, because no dumped fixture holds a
-  // provider mid-first-read.
-  const loading = await gotoWithUsage(page, baseURL);
-  loading.providers[0].freshness = {
-    state: "unknown",
-    measured_secs_ago: null,
-    text: null,
-    color: null,
-  };
+  // A configured provider whose first read has not landed classifies to
+  // `unknown` and contributes no segment — Rust's decision, pinned by
+  // `usage.rs::a_section_that_has_never_read_publishes_no_age_rather_than_a_zero`,
+  // and it reaches this file as a null `freshness`. What this suite owns is
+  // that null renders NOTHING: not an empty amber element, and not a reserved
+  // line's worth of blank space that would read as a measured value.
+  const healthy = await gotoWithUsage(page, baseURL);
+  const before = await page.locator("#usagePanel .panel-hdr").boundingBox();
+
+  const loading = { ...healthy, freshness: null };
   await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), loading);
+  const clock = page.locator("#usageFreshness");
+  await expect(clock).toBeHidden();
+  await expect(clock).toHaveText("");
+  expect(await clock.boundingBox(), "a hidden clock occupies no box at all").toBeNull();
+  const after = await page.locator("#usagePanel .panel-hdr").boundingBox();
+  expect(after.height).toBeCloseTo(before.height, 1);
   await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
 });
 
