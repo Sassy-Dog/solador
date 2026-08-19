@@ -158,11 +158,26 @@ pub enum SentryUsageError {
     InvalidResponse,
     #[error("Sentry API request failed (HTTP {status})")]
     Http { status: u16 },
-    #[error("Couldn't read the Sentry response ({0})")]
+    /// The payload is the decoder's complaint, kept for the log and for
+    /// `Debug`. It is **not** interpolated: `serde_json` quotes the input it
+    /// choked on, so a body carrying a URL would put one in a panel footer by
+    /// a route nobody would think to look at.
+    #[error("couldn't read the Sentry response")]
     DecodingFailed(String),
     /// No counterpart: `URLSession` folds transport failures into a generic
     /// `Error` the service reports via `localizedDescription`.
-    #[error("Couldn't reach the Sentry API ({0})")]
+    ///
+    /// # Invariant: no request URL in the message
+    ///
+    /// `reqwest` attaches the request URL to its errors, and Sentry's carries
+    /// the org slug and the whole percent-encoded stats query. Interpolating it
+    /// is what filled this panel's footer with four lines of URL (#352). Every
+    /// construction site strips it with [`reqwest::Error::without_url`] before
+    /// the error becomes a string — [`unreachable()`] is the one-line helper, the
+    /// twin of `crates/azurecost/src/blob.rs`'s — and the payload is not
+    /// interpolated here either. Two guards, because one of them is a habit and
+    /// the other is a type.
+    #[error("couldn't reach Sentry")]
     Unreachable(String),
     /// The cron monitor list ran past [`MAX_MONITOR_PAGES`].
     ///
@@ -171,6 +186,23 @@ pub enum SentryUsageError {
     /// blind read this panel exists to refuse.
     #[error("Sentry listed more cron monitors than one read will page through")]
     MonitorListTruncated,
+}
+
+/// Strip the request URL — and with it the org slug and the query — before a
+/// transport error becomes a string, then keep the stripped cause in the log.
+///
+/// The panel gets the sentence, the log keeps the detail. Same split, and the
+/// same one-liner, as `crates/azurecost/src/blob.rs`.
+fn unreachable(error: reqwest::Error) -> SentryUsageError {
+    let detail = error.without_url().to_string();
+    eprintln!("sentry: couldn't reach the API: {detail}");
+    SentryUsageError::Unreachable(detail)
+}
+
+/// A decode failure, with the decoder's complaint logged rather than rendered.
+fn decoding_failed(error: &serde_json::Error) -> SentryUsageError {
+    eprintln!("sentry: couldn't read the response: {error}");
+    SentryUsageError::DecodingFailed(error.to_string())
 }
 
 impl SentryUsageError {
@@ -183,6 +215,17 @@ impl SentryUsageError {
     /// The message the panel footer shows. Cause-specific so the operator fixes
     /// the right thing: a 403 is a token to replace, a 404 is a slug to
     /// correct, and everything else names the failure it actually was.
+    ///
+    /// The two payload-carrying variants render `viewmodel::fault`'s stock
+    /// sentences — "couldn't reach Sentry" and "couldn't read the Sentry
+    /// response" — through their `Display`, character for character. That
+    /// vocabulary owns the words; this crate must not depend on the
+    /// presentation layer, so `app/src-tauri/tests/fault_vocabulary.rs` is
+    /// where the equality is asserted. Nothing a transport or a decoder
+    /// produced is interpolated: it is in the log instead.
+    ///
+    /// One credential feeds two panels, so this wording lands in Usage **and**
+    /// Sentry Crons.
     #[must_use]
     pub fn user_message(&self) -> String {
         if self.is_auth_failure() {
@@ -817,18 +860,15 @@ impl SentryClient {
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
             .await
-            .map_err(|e| SentryUsageError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
 
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             return Err(SentryUsageError::Http { status });
         }
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| SentryUsageError::Unreachable(e.to_string()))?;
-        serde_json::from_str(&body).map_err(|e| SentryUsageError::DecodingFailed(e.to_string()))
+        let body = resp.text().await.map_err(unreachable)?;
+        serde_json::from_str(&body).map_err(|e| decoding_failed(&e))
     }
 
     /// The read the panel makes: accepted error events over the default
@@ -881,7 +921,7 @@ impl SentryClient {
                 .header(reqwest::header::ACCEPT, "application/json")
                 .send()
                 .await
-                .map_err(|e| SentryUsageError::Unreachable(e.to_string()))?;
+                .map_err(unreachable)?;
 
             let status = resp.status().as_u16();
             if !(200..300).contains(&status) {
@@ -894,12 +934,9 @@ impl SentryClient {
                 .and_then(|value| value.to_str().ok())
                 .and_then(next_cursor)
                 .map(ToOwned::to_owned);
-            let body = resp
-                .text()
-                .await
-                .map_err(|e| SentryUsageError::Unreachable(e.to_string()))?;
-            let page: Vec<CronMonitor> = serde_json::from_str(&body)
-                .map_err(|e| SentryUsageError::DecodingFailed(e.to_string()))?;
+            let body = resp.text().await.map_err(unreachable)?;
+            let page: Vec<CronMonitor> =
+                serde_json::from_str(&body).map_err(|e| decoding_failed(&e))?;
             monitors.extend(page);
 
             match next {
@@ -1139,9 +1176,11 @@ mod tests {
             SentryUsageError::MissingOrgSlug.user_message(),
             "Add your Sentry org slug in Settings"
         );
+        // The decoder's complaint is deliberately absent — see the twin in
+        // `neon.rs`: `serde_json` quotes the input it choked on.
         assert_eq!(
             SentryUsageError::DecodingFailed("bad token".into()).user_message(),
-            "Couldn't read the Sentry response (bad token)"
+            "couldn't read the Sentry response"
         );
         assert_eq!(
             SentryUsageError::InvalidUrl.user_message(),
@@ -1317,8 +1356,12 @@ mod tests {
         );
     }
 
+    /// The #352 bug, proved against a *real* `reqwest` error — see the twin in
+    /// `neon.rs`. Sentry's request URL carries the org slug and the whole
+    /// percent-encoded stats query, and all four lines of it reached the
+    /// footer.
     #[tokio::test]
-    async fn an_unroutable_host_is_unreachable() {
+    async fn an_unroutable_host_is_unreachable_without_saying_where() {
         let err = client("http://127.0.0.1:1")
             .accepted_errors("acme")
             .await
@@ -1327,6 +1370,15 @@ mod tests {
             matches!(err, SentryUsageError::Unreachable(_)),
             "got {err:?}"
         );
+        assert_eq!(err.user_message(), "couldn't reach Sentry");
+        for rendered in [err.user_message(), err.to_string()] {
+            for forbidden in ["://", "127.0.0.1", "http", "?", "%", "acme"] {
+                assert!(
+                    !rendered.contains(forbidden),
+                    "{rendered:?} carries {forbidden:?}"
+                );
+            }
+        }
     }
 
     /// The token must never reach the URL, or it would ride along in
