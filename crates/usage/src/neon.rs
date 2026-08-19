@@ -253,12 +253,45 @@ pub enum NeonUsageError {
     InvalidResponse,
     #[error("Neon API request failed (HTTP {status})")]
     Http { status: u16 },
-    #[error("Couldn't read the Neon response ({0})")]
+    /// The payload is the decoder's complaint, kept for the log and for
+    /// `Debug`. It is **not** interpolated: `serde_json` quotes the input it
+    /// choked on, so a body carrying a URL would put one in a panel footer by
+    /// a route nobody would think to look at.
+    #[error("couldn't read the Neon response")]
     DecodingFailed(String),
     /// No counterpart: `URLSession` folds transport failures into a generic
     /// `Error` the service reports via `localizedDescription`.
-    #[error("Couldn't reach the Neon API ({0})")]
+    ///
+    /// # Invariant: no request URL in the message
+    ///
+    /// `reqwest` attaches the request URL to its errors, and Neon's carries the
+    /// org id, the month window and the whole metric list, percent-encoded.
+    /// Interpolating it is what wrapped this panel to six lines and cut it off
+    /// mid-token (#352). Every construction site strips it with
+    /// [`reqwest::Error::without_url`] before the error becomes a string —
+    /// [`unreachable()`] is the one-line helper, the twin of
+    /// `crates/azurecost/src/blob.rs`'s — and the payload is not interpolated
+    /// here either. Two guards, because one of them is a habit and the other
+    /// is a type.
+    #[error("couldn't reach Neon")]
     Unreachable(String),
+}
+
+/// Strip the request URL — and with it the org id and the query — before a
+/// transport error becomes a string, then keep the stripped cause in the log.
+///
+/// The panel gets the sentence, the log keeps the detail. Same split, and the
+/// same one-liner, as `crates/azurecost/src/blob.rs`.
+fn unreachable(error: reqwest::Error) -> NeonUsageError {
+    let detail = error.without_url().to_string();
+    eprintln!("neon: couldn't reach the API: {detail}");
+    NeonUsageError::Unreachable(detail)
+}
+
+/// A decode failure, with the decoder's complaint logged rather than rendered.
+fn decoding_failed(error: &serde_json::Error) -> NeonUsageError {
+    eprintln!("neon: couldn't read the response: {error}");
+    NeonUsageError::DecodingFailed(error.to_string())
 }
 
 impl NeonUsageError {
@@ -271,6 +304,14 @@ impl NeonUsageError {
     /// The message the panel footer shows. Cause-specific so the operator fixes
     /// the right thing: a 401 is a key to replace, a 404 is an org id to
     /// correct, and everything else names the failure it actually was.
+    ///
+    /// The two payload-carrying variants render `viewmodel::fault`'s stock
+    /// sentences — "couldn't reach Neon" and "couldn't read the Neon response"
+    /// — through their `Display`, character for character. That vocabulary owns
+    /// the words; this crate must not depend on the presentation layer, so
+    /// `app/src-tauri/tests/fault_vocabulary.rs` is where the equality is
+    /// asserted. Nothing a transport or a decoder produced is interpolated: it
+    /// is in the log instead.
     #[must_use]
     pub fn user_message(&self) -> String {
         if self.is_auth_failure() {
@@ -466,18 +507,15 @@ impl NeonClient {
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
             .await
-            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
 
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             return Err(NeonUsageError::Http { status });
         }
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
-        serde_json::from_str(&body).map_err(|e| NeonUsageError::DecodingFailed(e.to_string()))
+        let body = resp.text().await.map_err(unreachable)?;
+        serde_json::from_str(&body).map_err(|e| decoding_failed(&e))
     }
 
     /// The month-to-date read the panel makes: window from `now`, fold to a
@@ -516,19 +554,16 @@ impl NeonClient {
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
             .await
-            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
 
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             return Err(NeonUsageError::Http { status });
         }
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| NeonUsageError::Unreachable(e.to_string()))?;
-        let response: NeonInvoicesResponse = serde_json::from_str(&body)
-            .map_err(|e| NeonUsageError::DecodingFailed(e.to_string()))?;
+        let body = resp.text().await.map_err(unreachable)?;
+        let response: NeonInvoicesResponse =
+            serde_json::from_str(&body).map_err(|e| decoding_failed(&e))?;
         Ok(summarize_invoices(&response))
     }
 }
@@ -815,9 +850,13 @@ mod tests {
             NeonUsageError::MissingOrgId.user_message(),
             "Add your Neon org ID in Settings"
         );
+        // The decoder's complaint is deliberately absent: `serde_json`
+        // quotes the input it choked on, and a body carrying a URL would put
+        // one in the footer through a route nobody would think to look at. It
+        // is in the log instead.
         assert_eq!(
             NeonUsageError::DecodingFailed("bad token".into()).user_message(),
-            "Couldn't read the Neon response (bad token)"
+            "couldn't read the Neon response"
         );
         assert_eq!(
             NeonUsageError::InvalidUrl.user_message(),
@@ -1032,18 +1071,31 @@ mod tests {
             matches!(err, NeonUsageError::DecodingFailed(_)),
             "got {err:?}"
         );
-        assert!(err
-            .user_message()
-            .starts_with("Couldn't read the Neon response"));
+        assert_eq!(err.user_message(), "couldn't read the Neon response");
     }
 
+    /// The #352 bug, proved against a *real* `reqwest` error rather than a
+    /// hand-built one: the panel showed the request URL — org id, month window
+    /// and percent-encoded metric list — wrapped over six lines and cut off
+    /// mid-token. Both the message the footer reads and the `Display` a
+    /// careless caller would reach for are checked, because the leak arrived
+    /// through the second falling through to the first.
     #[tokio::test]
-    async fn an_unroutable_host_is_unreachable() {
+    async fn an_unroutable_host_is_unreachable_without_saying_where() {
         let err = client("http://127.0.0.1:1")
             .month_to_date("org-abc", utc(2026, 7, 31, 12, 0))
             .await
             .unwrap_err();
         assert!(matches!(err, NeonUsageError::Unreachable(_)), "got {err:?}");
+        assert_eq!(err.user_message(), "couldn't reach Neon");
+        for rendered in [err.user_message(), err.to_string()] {
+            for forbidden in ["://", "127.0.0.1", "http", "?", "%", "org-abc"] {
+                assert!(
+                    !rendered.contains(forbidden),
+                    "{rendered:?} carries {forbidden:?}"
+                );
+            }
+        }
     }
 
     /// The key must never reach the URL, or it would ride along in `reqwest`'s
