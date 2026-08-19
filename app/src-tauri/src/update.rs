@@ -26,10 +26,18 @@
 //! per launch anyway — but a manual re-check must not re-announce something
 //! already announced. [`UpdateState::notice`] is the ledger, the same shape as
 //! `ApprovalWatch`: it decides, `main.rs` delivers.
+//!
+//! # Some builds never get that far
+//!
+//! [`not_updatable`] is asked before the plugin is reached at all (#353). It
+//! supplies the one fact `viewmodel::update::not_updatable` cannot know — which
+//! cargo profile this is — and its answer is the whole of this module's share
+//! of that decision; the rule, the sentence and the colour are all in
+//! `viewmodel`.
 
 use serde_json::{json, Value};
 use viewmodel::color;
-use viewmodel::update::{self, Check, Install};
+use viewmodel::update::{self, Check, Install, NotUpdatable, Provenance};
 
 /// The Settings group's heading.
 pub const HEADING: &str = "Updates";
@@ -45,11 +53,41 @@ pub const CHECK_LABEL: &str = "Check for updates";
 /// waits for a relaunch the operator chooses.
 pub const HELP: &str = "Solador checks once when it starts. Nothing is downloaded or installed until you ask, and an installed update takes effect the next time you open the app.";
 
-/// Said when the update check cannot run at all in this build.
+/// Said when the plugin cannot be reached because the app is not up yet.
 ///
-/// A `cargo run` build has no bundle to replace, and the plugin says so in its
-/// own words; this is the case where *we* know before asking.
+/// Only reachable if a check is ever started before `setup` has handed over the
+/// `AppHandle`. It is recorded as a *failure* rather than skipped, because "we
+/// never looked" is not "there is nothing there" — and it is deliberately not
+/// [`NotUpdatable`], which is a statement about the build rather than about the
+/// moment.
 pub const NO_HANDLE: &str = "the app is not up yet";
+
+/// Why this build is outside the update path, or `None` when it is inside it.
+///
+/// The rule is [`update::not_updatable`]; this supplies the one fact only the
+/// shell can know. `cfg!(debug_assertions)` is that fact: `./dev` and `./dev
+/// run --tauri` build the debug profile, and the signed bundle an update is
+/// unpacked over only ever comes off `cargo tauri build --release`.
+///
+/// It is a compile-time constant rather than something sniffed off disk at
+/// runtime, and that choice has a direction. Deriving it from the running
+/// `.app`'s path, or from whether `package_info().version` still reads
+/// `0.1.0`, would misclassify a *shipped* build the first time either
+/// assumption broke — and a shipped build misread as development stops updates
+/// reaching users silently, which is a far worse failure than the launch-time
+/// nag being fixed here. So the ambiguous cases fall towards checking. The one
+/// build this does not catch is `./dev run --release`, a release-profile build
+/// made at the operator's own request; [`update::is_newer`] is what keeps that
+/// one honest, by comparing the CalVer it actually is.
+#[must_use]
+pub fn not_updatable(current: Option<&str>) -> Option<NotUpdatable> {
+    let provenance = if cfg!(debug_assertions) {
+        Provenance::Development
+    } else {
+        Provenance::Released
+    };
+    update::not_updatable(current, provenance)
+}
 
 /// Everything the Updates group renders from, plus the banner ledger.
 #[derive(Debug, Default)]
@@ -98,6 +136,16 @@ impl UpdateState {
     /// A check ran and failed. **Never** folded into [`up_to_date`](Self::up_to_date).
     pub fn check_failed(&mut self, reason: String) {
         self.check = Check::Failed { reason };
+    }
+
+    /// No check will run: this build is not one a release can replace (#353).
+    ///
+    /// Set *instead of* [`checking`](Self::checking), never after it. Nothing
+    /// is in flight, and "Checking for updates…" beside a check that will never
+    /// happen is the stale-verdict problem in the other direction — a sentence
+    /// promising an answer that is not coming.
+    pub fn not_updatable(&mut self, why: NotUpdatable) {
+        self.check = Check::NotUpdatable(why);
     }
 
     pub fn installing(&mut self) {
@@ -285,5 +333,70 @@ mod tests {
             .as_str()
             .expect("a status sentence")
             .contains("next time"));
+    }
+
+    // MARK: - #353
+
+    /// The bug this fixes, at the seam that would have delivered the banner.
+    ///
+    /// `notice()` is the only thing `main.rs` will deliver an `update-available`
+    /// banner from, so a `None` here is the property the acceptance asks for:
+    /// no banner can fire on a build with nothing to replace, however the feed
+    /// answers.
+    #[test]
+    fn a_build_with_nothing_to_replace_can_never_deliver_a_banner() {
+        for why in [
+            NotUpdatable::DevelopmentBuild,
+            NotUpdatable::UnnameableBuild,
+        ] {
+            let mut state = UpdateState::new();
+            state.not_updatable(why);
+            assert_eq!(state.notice(), None, "{why:?}");
+            // …and pressing it a second time cannot shake one loose either.
+            assert_eq!(state.notice(), None, "{why:?}");
+            assert!(!state.can_install(), "{why:?}");
+        }
+    }
+
+    /// The payload the About tab paints: one sentence, no buttons, no notes.
+    #[test]
+    fn a_build_with_nothing_to_replace_renders_its_own_payload() {
+        let mut state = UpdateState::new();
+        state.not_updatable(NotUpdatable::DevelopmentBuild);
+        let mine = view(&state, Some("2026.8.113"));
+
+        assert_eq!(mine["installLabel"], Value::Null);
+        assert_eq!(mine["checkLabel"], Value::Null);
+        assert_eq!(mine["notes"], Value::Null);
+
+        // And it is none of the other four sentences — most of all not the
+        // green one, which would be a verdict nothing looked for.
+        let mut fresh = UpdateState::new();
+        fresh.up_to_date();
+        for other in [
+            view(&UpdateState::new(), Some("2026.8.113")),
+            view(&fresh, Some("2026.8.113")),
+        ] {
+            assert_ne!(mine["status"]["text"], other["status"]["text"]);
+            assert_ne!(mine["status"]["color"], other["status"]["color"]);
+        }
+    }
+
+    /// The shell's whole share of the decision: which profile this is.
+    ///
+    /// Asserted against the profile the test itself was compiled at, because
+    /// that is the only honest thing to assert about a `cfg!` — the rule it
+    /// feeds is covered exhaustively in `viewmodel::update`.
+    #[test]
+    fn the_cargo_profile_is_what_decides_whether_this_build_checks() {
+        let named = Some("2026.8.113");
+        if cfg!(debug_assertions) {
+            assert_eq!(not_updatable(named), Some(NotUpdatable::DevelopmentBuild));
+        } else {
+            assert_eq!(not_updatable(named), None);
+        }
+        // Either way, a build that cannot name itself never compares itself
+        // against anything.
+        assert!(not_updatable(None).is_some());
     }
 }

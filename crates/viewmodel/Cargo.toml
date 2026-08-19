@@ -8,3 +8,9 @@ rust-version.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 solador-wire = { path = "../wire" }
+# The SAME comparator `tauri-plugin-updater` uses, at the same `^1` requirement
+# it declares, so cargo unifies them to ONE crate. `update::is_newer` replaces
+# the plugin's own version comparison (#353), and a second implementation of
+# version ordering could disagree with the one that would otherwise have run —
+# the reasoning `crates/updatefeed` takes `minisign-verify` for.
+semver = "1"
