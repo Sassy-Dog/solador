@@ -38,10 +38,15 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use fault::Fault;
 use serde::Deserialize;
 
 /// `https://api.vercel.com`.
 const DEFAULT_BASE_URL: &str = "https://api.vercel.com";
+
+/// The operator-facing name of what failed, and the only thing
+/// [`Fault::message`] interpolates.
+const VENDOR: &str = "Vercel";
 
 /// How many services the panel names. The rest fold into the total; a cockpit
 /// row is a glance, and 56 service names is a spreadsheet.
@@ -143,16 +148,25 @@ impl VercelUsageError {
     }
 
     /// Cause-specific guidance, so the operator chases the right layer.
+    ///
+    /// Every state the `fault` vocabulary names renders through it (#354). The
+    /// auth arm keeps the scope hint appended, because a Vercel token that
+    /// authenticates and cannot see the team's charges is the failure this
+    /// panel actually hits, and "update it in Settings" alone would send the
+    /// operator to paste the same token again.
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            VercelUsageError::MissingToken => "add a Vercel API token in Settings".to_owned(),
+            VercelUsageError::MissingToken => Fault::NotConfigured.message(VENDOR),
             VercelUsageError::Unauthorized | VercelUsageError::Http { status: 403 } => {
-                "Vercel rejected the token — check its scope in Settings".to_owned()
+                format!(
+                    "{} or widen its scope",
+                    Fault::CredentialRejected.message(VENDOR)
+                )
             }
-            VercelUsageError::Http { status } => format!("Vercel returned HTTP {status}"),
-            VercelUsageError::Unreachable(_) => "couldn't reach Vercel".to_owned(),
-            VercelUsageError::DecodeFailed(_) => "couldn't read the Vercel charges".to_owned(),
+            VercelUsageError::Http { status } => fault::http_status_message(*status, VENDOR),
+            VercelUsageError::Unreachable(_) => Fault::Unreachable.message(VENDOR),
+            VercelUsageError::DecodeFailed(_) => Fault::Undecodable.message(VENDOR),
         }
     }
 }
@@ -413,7 +427,7 @@ mod tests {
     fn a_body_with_nothing_parseable_is_an_error_not_a_zero() {
         let err = summarize("<html>bad gateway</html>").expect_err("not JSONL");
         assert!(matches!(err, VercelUsageError::DecodeFailed(_)));
-        assert_eq!(err.user_message(), "couldn't read the Vercel charges");
+        assert_eq!(err.user_message(), Fault::Undecodable.message(VENDOR));
     }
 
     /// An empty body is a successful read that measured nothing — a window
@@ -438,9 +452,15 @@ mod tests {
         assert!(VercelUsageError::Unauthorized.is_auth_failure());
         assert!(VercelUsageError::Http { status: 403 }.is_auth_failure());
         assert!(!VercelUsageError::Http { status: 500 }.is_auth_failure());
-        assert!(VercelUsageError::Unauthorized
-            .user_message()
-            .contains("token"));
+        // The stock sentence plus the hint only this crate has: a token that
+        // authenticates and cannot see the team's charges is the live failure,
+        // and #354 was not allowed to drop the second half.
+        let message = VercelUsageError::Unauthorized.user_message();
+        assert!(
+            message.starts_with(&Fault::CredentialRejected.message(VENDOR)),
+            "{message}"
+        );
+        assert!(message.ends_with("or widen its scope"), "{message}");
     }
 
     #[tokio::test]

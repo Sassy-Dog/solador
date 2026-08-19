@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# The stock message vocabulary. It lived in this crate until #354 moved it down
+# to a leaf crate every vendor crate can also point at; `src/fault.rs`
+# re-exports it, so the name #352 introduced still resolves.
+solador-fault = { path = "../fault" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 solador-wire = { path = "../wire" }

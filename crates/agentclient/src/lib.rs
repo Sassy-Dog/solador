@@ -4,8 +4,18 @@
 //! The error variants mirror the original `failureTooltip` cases so the shell can
 //! keep giving cause-specific guidance instead of a generic failure.
 
-use std::borrow::Cow;
 use std::time::Duration;
+
+use fault::Fault;
+
+/// The operator-facing name of what failed, and the only thing
+/// [`Fault::message`] interpolates.
+///
+/// It carries its article because every stock sentence has to read as English
+/// around it: "couldn't reach agent" is not a sentence. The host it belongs to
+/// is not in the string on purpose — this message lands in one host card's
+/// error slot, and the card already says which host it is.
+const AGENT: &str = "the agent";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -22,23 +32,37 @@ pub enum AgentError {
 impl AgentError {
     /// Cause-specific guidance, so the operator chases the right layer.
     ///
-    /// Returns `Cow` rather than `&'static str` so the `HttpStatus` arm can
-    /// interpolate the code: a 503 and a 500 send an operator to different
-    /// places, and a fixed string told them neither. Only that arm allocates.
-    pub fn user_message(&self) -> Cow<'static, str> {
+    /// Every state the `fault` vocabulary names renders through it (#354),
+    /// with the one thing only this crate knows appended — a stock sentence is
+    /// the floor a message may not fall below, never a cap on how specific one
+    /// may be. Nothing the transport or the decoder produced is interpolated;
+    /// those payloads are for the log and for `Debug`.
+    ///
+    /// Returns an owned `String` rather than the `Cow` it used to: every arm
+    /// allocates now, so the borrowed half of that type was answering a
+    /// question nobody was asking.
+    #[must_use]
+    pub fn user_message(&self) -> String {
         match self {
-            AgentError::Unreachable(_) => {
-                "Couldn't reach the agent. Check the host is up and the agent is running.".into()
-            }
-            AgentError::AuthFailed => {
-                "Agent rejected the bearer token (401). Check the host's token in Settings.".into()
-            }
-            // Parity with the original this replaces
-            // (`HostMetricsPanel.failureTooltip`): "Agent returned HTTP 503."
-            AgentError::HttpStatus(code) => format!("Agent returned HTTP {code}.").into(),
-            AgentError::DecodeFailed(_) => {
-                "Agent responded but the payload didn't decode — likely agent/app version skew after a redeploy.".into()
-            }
+            AgentError::Unreachable(_) => format!(
+                "{} — check the host is up and the agent is running",
+                Fault::Unreachable.message(AGENT)
+            ),
+            // The stock sentence, with no "(401)" and no "the host's": the
+            // status code is transport plumbing, and which host's token to fix
+            // is the identity of the card this lands in.
+            AgentError::AuthFailed => Fault::CredentialRejected.message(AGENT),
+            // The code survives whichever branch this takes, which is the
+            // property the original relied on
+            // (`HostMetricsPanel.failureTooltip`: "Agent returned HTTP 503.")
+            // and the reason this variant carries a `u16` rather than a flag.
+            // A 404 here is a missing endpoint, never "no such account", which
+            // is exactly what `fault::http_status_message` refuses to guess.
+            AgentError::HttpStatus(code) => fault::http_status_message(*code, AGENT),
+            AgentError::DecodeFailed(_) => format!(
+                "{} — likely agent/app version skew after a redeploy",
+                Fault::Undecodable.message(AGENT)
+            ),
         }
     }
 }
@@ -279,7 +303,7 @@ mod tests {
                 "{}: expected AuthFailed, got {err:?}",
                 ep.path()
             );
-            assert!(err.user_message().contains("token"));
+            assert_eq!(err.user_message(), Fault::CredentialRejected.message(AGENT));
         }
     }
 
@@ -302,16 +326,30 @@ mod tests {
 
     /// The whole point of carrying `u16` instead of a flag: two different
     /// failures must not read identically to the operator staring at the card.
+    ///
+    /// Both are 5xx, so both now name the state as well as the code (#354) —
+    /// and the code is still there, which is what keeps them apart.
     #[test]
     fn a_status_user_message_names_the_code_so_500_and_503_read_differently() {
         assert_eq!(
             AgentError::HttpStatus(503).user_message(),
-            "Agent returned HTTP 503."
+            "the agent is failing on its side (HTTP 503)"
         );
         assert_eq!(
             AgentError::HttpStatus(500).user_message(),
-            "Agent returned HTTP 500."
+            "the agent is failing on its side (HTTP 500)"
         );
+    }
+
+    /// A 404 from an agent is a missing endpoint — version skew after a
+    /// redeploy — and never "no such account". The vocabulary's account-shaped
+    /// reading of that status is the one thing this arm must not borrow.
+    #[test]
+    fn a_404_is_not_dressed_up_as_a_missing_account() {
+        let message = AgentError::HttpStatus(404).user_message();
+        assert_eq!(message, "the agent returned HTTP 404");
+        assert!(!message.contains("account"), "{message}");
+        assert_ne!(message, Fault::NotFound.message(AGENT));
     }
 
     /// Pins the exact-`200` success rule in `get_body()`. A 204 has no body to

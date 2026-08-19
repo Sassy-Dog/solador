@@ -220,6 +220,11 @@ the bundle's floor.
 ├── crates/
 │   ├── wire/               # Wire-format types shared with the agent's JSON
 │   │                       #   contract (package `solador-wire`, imported as `wire`)
+│   ├── fault/              # the stock message vocabulary: one sentence per
+│   │                       #   anticipated failure. NO dependencies, deliberately —
+│   │                       #   every vendor crate points at it, so anything added
+│   │                       #   here is added to all of them. `viewmodel::fault`
+│   │                       #   re-exports it
 │   ├── viewmodel/          # every string/colour the frontend paints
 │   ├── agentclient/        # HTTP client polling the agent
 │   ├── store/              # settings/hosts/repos/container-rules/runner-roster/
@@ -479,8 +484,22 @@ share one release and a fixed crash would read as regressed.
 1. Business logic in `crates/`, not in the Tauri shell or the frontend.
 2. Keep the frontend thin — it paints what `viewmodel` hands it.
 3. Handle errors gracefully with user-friendly messages; `user_message()` on
-   error types is the repo-wide convention.
-4. Never fabricate a value to fill a gap — render `—` and say why.
+   error types is the repo-wide convention. **Error enums classify; `crates/fault`
+   owns the words** (#352, #354): every state the `Fault` vocabulary names
+   renders `Fault::message(vendor)`, with the one thing only that crate knows
+   appended — a stock sentence is the floor a message may not fall below, never
+   a cap on how specific one may be. A `self.to_string()` fallback is how a
+   transport error, a request URL and a storage path each reached a panel
+   footer, so `user_message()` writes out every arm. `Fault::from_http_status`
+   reads 401/403/404 as *account* states, which is true of an org-scoped read
+   and false of a host agent's endpoint or a public status page — callers with
+   no sharper reading use `fault::http_status_message`, which classifies only
+   the two status classes that mean the same thing everywhere.
+4. Never fabricate a value to fill a gap — render `—` and say why. **A state is
+   a value**: an unanticipated failure keeps `Fault::Unexpected` rather than
+   being rounded to the nearest anticipated one, and a crate whose failure the
+   vocabulary has no word for keeps its own sentence rather than borrowing a
+   neighbour's.
 
 ## Security Considerations
 

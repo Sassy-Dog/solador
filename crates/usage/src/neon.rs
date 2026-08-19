@@ -11,10 +11,15 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, SecondsFormat, Utc};
+use fault::Fault;
 use percent_encoding::utf8_percent_encode;
 use serde::Deserialize;
 
 use crate::urlpath::PATH_SEGMENT;
+
+/// The operator-facing name of what failed, and the only thing
+/// [`Fault::message`] interpolates.
+const VENDOR: &str = "Neon";
 
 pub const DEFAULT_BASE_URL: &str = "https://console.neon.tech";
 /// Path of the org-wide consumption history read, appended to the base URL.
@@ -305,22 +310,34 @@ impl NeonUsageError {
     /// the right thing: a 401 is a key to replace, a 404 is an org id to
     /// correct, and everything else names the failure it actually was.
     ///
-    /// The two payload-carrying variants render `viewmodel::fault`'s stock
-    /// sentences — "couldn't reach Neon" and "couldn't read the Neon response"
-    /// — through their `Display`, character for character. That vocabulary owns
-    /// the words; this crate must not depend on the presentation layer, so
-    /// `app/src-tauri/tests/fault_vocabulary.rs` is where the equality is
-    /// asserted. Nothing a transport or a decoder produced is interpolated: it
-    /// is in the log instead.
+    /// The two payload-carrying variants render the `fault` vocabulary's stock
+    /// sentences. Until #354 they *retyped* them into their `#[error(…)]`
+    /// attributes and reached them through `self.to_string()`, because the
+    /// vocabulary lived in `crates/viewmodel` and no vendor crate may depend on
+    /// the panel layer; the words are now a leaf crate this one can point at,
+    /// so there is one copy again. Nothing a transport or a decoder produced is
+    /// interpolated: it is in the log instead.
+    ///
+    /// The first two arms stay hand-written on purpose. Neon's reads *are*
+    /// account-scoped, so both are sharper than the stock sentence for the same
+    /// state — they name the field to fix rather than the layer it lives in —
+    /// and a stock sentence is the floor a message may not fall below.
     #[must_use]
     pub fn user_message(&self) -> String {
         if self.is_auth_failure() {
             return "API key invalid — paste a new one in Settings".to_string();
         }
-        if matches!(self, NeonUsageError::Http { status: 404 }) {
-            return "Neon org not found — check the org ID in Settings".to_string();
+        match self {
+            NeonUsageError::Http { status: 404 } => {
+                "Neon org not found — check the org ID in Settings".to_string()
+            }
+            NeonUsageError::Http { status } => fault::http_status_message(*status, VENDOR),
+            NeonUsageError::Unreachable(_) => Fault::Unreachable.message(VENDOR),
+            NeonUsageError::DecodingFailed(_) => Fault::Undecodable.message(VENDOR),
+            NeonUsageError::MissingOrgId
+            | NeonUsageError::InvalidUrl
+            | NeonUsageError::InvalidResponse => self.to_string(),
         }
-        self.to_string()
     }
 }
 
@@ -844,7 +861,7 @@ mod tests {
     fn other_failures_name_themselves() {
         assert_eq!(
             NeonUsageError::Http { status: 503 }.user_message(),
-            "Neon API request failed (HTTP 503)"
+            "Neon is failing on its side (HTTP 503)"
         );
         assert_eq!(
             NeonUsageError::MissingOrgId.user_message(),
@@ -856,7 +873,7 @@ mod tests {
         // is in the log instead.
         assert_eq!(
             NeonUsageError::DecodingFailed("bad token".into()).user_message(),
-            "couldn't read the Neon response"
+            Fault::Undecodable.message(VENDOR)
         );
         assert_eq!(
             NeonUsageError::InvalidUrl.user_message(),
@@ -1071,7 +1088,7 @@ mod tests {
             matches!(err, NeonUsageError::DecodingFailed(_)),
             "got {err:?}"
         );
-        assert_eq!(err.user_message(), "couldn't read the Neon response");
+        assert_eq!(err.user_message(), Fault::Undecodable.message(VENDOR));
     }
 
     /// The #352 bug, proved against a *real* `reqwest` error rather than a
@@ -1088,6 +1105,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, NeonUsageError::Unreachable(_)), "got {err:?}");
         assert_eq!(err.user_message(), "couldn't reach Neon");
+        assert_eq!(err.user_message(), Fault::Unreachable.message(VENDOR));
         for rendered in [err.user_message(), err.to_string()] {
             for forbidden in ["://", "127.0.0.1", "http", "?", "%", "org-abc"] {
                 assert!(

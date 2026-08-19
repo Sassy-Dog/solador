@@ -1,0 +1,15 @@
+[package]
+# Prefixed like `solador-wire`/`solador-store` to stay clear of the generic
+# name on crates.io. The lib below keeps the short import name.
+name = "solador-fault"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "fault"
+
+# Deliberately empty, and that is load-bearing rather than incidental: every
+# vendor crate in this workspace depends on this one, so anything added here is
+# added to all of them. A vocabulary of sentences needs nothing but `format!`.
+[dependencies]
