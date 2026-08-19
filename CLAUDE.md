@@ -157,8 +157,24 @@ In the app: the check runs **once, in `setup`**, never on a cadence, and nothing
 auto-installs — a cockpit on a second monitor does not restart itself.
 `tauri-plugin-updater` is granted **nothing** in `capabilities/default.json`
 (the `tauri-plugin-notification` precedent), and "up to date", "checking", "the
-check failed" and "an update is waiting" are four separate states in
-`viewmodel::update` that must never render alike.
+check failed", "an update is waiting" and "this build has nothing to replace"
+are five separate states in `viewmodel::update` that must never render alike.
+
+**The version compared against the feed is `settings::VERSION`, never the
+plugin's own (#353).** Left alone, `tauri-plugin-updater` evaluates
+`release.version > package_info().version`, and `package_info().version` reads
+`tauri.conf.json`'s `version` — a key this repo does not author — so Tauri falls
+back to `app/src-tauri/Cargo.toml`'s unpublished `0.1.0`. Every CalVer ever
+released beats that, so every locally built cockpit announced an update on every
+launch. `UpdaterBuilder` has **no `current_version` setter** (private field, set
+from `package_info()`); the supported seam is `default_version_comparator`, and
+`viewmodel::update::is_newer` is what it calls. The other half is that a
+development build is not compared *at all*: `update::not_updatable` reads the
+cargo profile and lands it in `Check::NotUpdatable` before any request is made,
+because a release `.app.tar.gz` unpacked over `target/debug/Solador.app` is not
+an update, and an offer that cannot be honoured is a fabricated state. Bumping
+`app/src-tauri/Cargo.toml`'s `0.1.0` is **not** a fix — it would create a third
+place a version lives.
 
 **Signing runs last, after the `CFBundleVersion` stamp, and the ordering is not
 a preference.** Info.plist is sealed by the signature, so stamping it afterwards

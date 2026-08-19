@@ -1924,8 +1924,28 @@ fn deliver_status_notices(app: &App, notices: &[services::StatusNotice]) {
 /// (`viewmodel::update`) — a check that could not run must never paint as one
 /// that ran and found nothing, which is the update-shaped version of an
 /// unmeasured metric rendering as zero.
+///
+/// **And some builds are not asked at all.** The first thing this does is put a
+/// question to the *build* rather than to the feed (#353): a `./dev` cockpit has
+/// no installed release for a `.app.tar.gz` to be unpacked over, so it gets no
+/// verdict about being behind one. Returning here rather than filtering the
+/// answer afterwards is what makes that concrete — a development build sends no
+/// request to the release server whatsoever.
 async fn run_update_check(app: Arc<App>) {
     use tauri_plugin_updater::UpdaterExt as _;
+
+    if let Some(why) = update::not_updatable(settings::VERSION) {
+        // Logged like the other two non-trivial outcomes below, and for a
+        // sharper reason: "no banner appeared" is also what a check that never
+        // ran looks like. This line is the difference, and it is what the
+        // manual smoke checklist reads.
+        eprintln!("update: not checked ({why:?})");
+        app.update
+            .lock()
+            .expect("update state poisoned")
+            .not_updatable(why);
+        return;
+    }
 
     let Some(handle) = app.handle.get().cloned() else {
         // Only reachable if this is ever called before `setup`. Recorded as a
@@ -5380,7 +5400,26 @@ fn main() {
         // reach a plugin whose job is to download and unpack executable code.
         // The frontend's whole share is `update_status` / `update_check` /
         // `update_install`, which are app-defined and need no ACL entry.
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        //
+        // The comparator is not a preference either (#353). Left alone, the
+        // plugin evaluates `release.version > package_info().version`, and
+        // `package_info().version` is `tauri.conf.json`'s `version` — a key
+        // this repo deliberately does not author (#303), so Tauri falls back to
+        // `app/src-tauri/Cargo.toml`'s unpublished `0.1.0`. Every CalVer ever
+        // released is greater than that, so every build without the release
+        // `--config` overlay was told it was behind, on every launch, forever.
+        // `UpdaterBuilder` has no `current_version` setter — the field is
+        // private and set from `package_info()` — so this is the supported
+        // seam. The `current` handed in is that wrong number and is discarded;
+        // `settings::VERSION` is the git-derived CalVer `build.rs` publishes
+        // for every profile, and is what the app actually is.
+        .plugin(
+            tauri_plugin_updater::Builder::new()
+                .default_version_comparator(|_package_info_version, release| {
+                    viewmodel::update::is_newer(settings::VERSION, &release.version.to_string())
+                })
+                .build(),
+        )
         .manage(Arc::clone(&app))
         .setup({
             let app = Arc::clone(&app);

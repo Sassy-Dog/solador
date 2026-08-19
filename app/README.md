@@ -1466,7 +1466,10 @@ without a grant. Here is the whole `permissions` list, line by line:
   which the ACL permits without a grant and which cannot do anything the shell
   has not already decided to allow (`update_install` re-checks
   `UpdateState::can_install` rather than trusting that the button was drawn).
-  `capabilities/default.json` is byte-for-byte unchanged by that issue.
+  `capabilities/default.json` is byte-for-byte unchanged by that issue — and by
+  [#353](https://github.com/Sassy-Dog/solador/issues/353), which fixed *which
+  version* the plugin compares against by registering a
+  `default_version_comparator` in Rust, and needed no grant to do it.
 
 **How far it is verified.** `actions_url_is_the_only_shape_the_granted_scope_admits`
 (in `src/github/mod.rs`) reads the real capability file, rebuilds the glob with
@@ -1755,16 +1758,18 @@ half works on a machine whose screen you cannot see.
       **Done** returns to the cockpit.
 - [ ] **Settings → About** → terminal prints
       `update_status: first frontend request (<sentence>)`, and the **Updates**
-      group shows one of Rust's four sentences. On a `cargo run` build the
-      version is `0.1.0`, so the feed's latest release *is* newer and the
-      expected reading is **`Solador <version> is available.`** with an
-      **Install** button — do not press it. `Could not check for updates: …`
-      is also a pass for this test (it proves the round trip); what fails is a
+      group shows one of Rust's five sentences. On a `./dev` build the expected
+      reading is **`Solador <version>, built locally. Updates are not checked:
+      there is no installed release here to replace.`** with **no buttons at
+      all** — there is nothing to install over a throwaway `.app` under
+      `target/debug/`, and no request is made to the release server
+      ([#353](https://github.com/Sassy-Dog/solador/issues/353)). What fails is a
       **missing terminal line**, or the group reading `Checking for updates…`
-      for more than a few seconds, which means the launch check never settled.
-      **Never `This is the latest version.` on a `cargo run` build** — that
-      sentence would mean a failed check painted as success, which is the one
-      thing this feature must not do
+      for more than a few seconds, which means `run_update_check` never ran.
+      **Never `This is the latest version.` and never `Solador <version> is
+      available.` on a `./dev` build** — the first is a verdict nothing looked
+      for, and the second is #353 back: an offer to install a release over a
+      build that has no bundle for it to replace
       ([#308](https://github.com/Sassy-Dog/solador/issues/308)).
 
 All thirteen ticked ⇒ every registered command round-tripped through the ACL and

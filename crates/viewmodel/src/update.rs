@@ -10,10 +10,46 @@
 //! stops updates reaching them, which is the same class of bug as an unmeasured
 //! metric rendering as zero.
 //!
-//! So there are four check states, and the fourth ([`Check::Unknown`]) is the
-//! first frame — before the launch check has settled, the app has nothing to
-//! say and says so, the same discipline `panel::Configured` applies to
-//! credentials.
+//! So there are five check states, and the last two are refusals to give a
+//! verdict rather than verdicts. [`Check::Unknown`] is the first frame — before
+//! the launch check has settled, the app has nothing to say and says so, the
+//! same discipline `panel::Configured` applies to credentials.
+//!
+//! # A build with nothing to replace gets no verdict at all
+//!
+//! [`Check::NotUpdatable`] is that discipline one step earlier (#353). Two
+//! builds have no business being compared against a release feed:
+//!
+//! * a **development build** — `./dev` runs plain `cargo build` and
+//!   `scripts/run.sh` wraps the binary in a throwaway `.app` under
+//!   `target/<profile>/`. A release `.app.tar.gz` unpacked over that is not an
+//!   update, so "you are behind" would be a verdict implying an install that
+//!   cannot work; and
+//! * a build that **cannot name its own version** — a shallow clone, where
+//!   `settings::VERSION` is `None` and About already renders `—`. A build that
+//!   cannot say what it is must not be told it is behind something else.
+//!
+//! It is not [`Check::UpToDate`] (nothing was compared), not [`Check::Failed`]
+//! (nothing broke) and not [`Check::Unknown`] (which promises a check is
+//! running). It is its own sentence in its own colour, and it offers no buttons
+//! — there is nothing to install, and nothing a re-check could change.
+//!
+//! # The version compared is the one the app actually is
+//!
+//! [`is_newer`] exists because the updater plugin's own comparison uses the
+//! wrong number. `tauri-plugin-updater` compares `release.version` against
+//! `app.package_info().version`, which comes from `tauri.conf.json` — and this
+//! repo deliberately authors no `version` key there (#303,
+//! `docs/VERSIONING.md`), so Tauri falls back to `app/src-tauri/Cargo.toml`'s
+//! unpublished `0.1.0`. The real CalVer only ever arrives as a `--config`
+//! overlay on the bundling build, so a locally built cockpit compared every
+//! release ever cut against `0.1.0`, found all of them greater, and announced
+//! an update on every launch, forever (#353).
+//!
+//! `UpdaterBuilder` has no `current_version` setter — the field is private and
+//! set from `package_info()` — so the comparator is the supported seam, and
+//! this is it. The `current` the plugin passes in is that wrong number, and is
+//! discarded.
 //!
 //! # Never auto-install
 //!
@@ -23,12 +59,12 @@
 //! state machine ([`Install`]) that only an operator action starts.
 
 use crate::color;
+use semver::Version;
 
 /// The result of the most recent update check.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Check {
-    /// No check has completed. The launch check is in flight, or this build
-    /// cannot check at all.
+    /// No check has completed. The launch check is in flight.
     #[default]
     Unknown,
     /// A check completed and the feed offers nothing newer.
@@ -47,6 +83,42 @@ pub enum Check {
         /// `user_message`-style wording.
         reason: String,
     },
+    /// No check was run at all, because this build is not one a release can
+    /// replace. **Not** [`UpToDate`](Self::UpToDate) — nothing was compared.
+    ///
+    /// Decided from the build itself by [`not_updatable`] *before* any request
+    /// is made, so a `./dev` cockpit never reaches the release server.
+    NotUpdatable(NotUpdatable),
+}
+
+/// Why a build is outside the update path.
+///
+/// Both cases are properties of the build, fixed for the life of the process:
+/// nothing an operator can do moves a build from one to the other, which is why
+/// the state offers no "Check for updates" button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotUpdatable {
+    /// Built locally by `./dev`. There is no installed release here to replace.
+    DevelopmentBuild,
+    /// The build could not derive its own CalVer — a shallow clone, where
+    /// `settings::VERSION` is `None` and About renders `—`.
+    UnnameableBuild,
+}
+
+/// How the running build was produced, as far as replacing it goes.
+///
+/// The shell decides this from the cargo profile. The ambiguity is deliberately
+/// resolved *towards* checking: a release-profile build is always
+/// [`Released`](Self::Released), because a rule that could silently classify a
+/// shipped build as development would stop updates reaching users — a far worse
+/// failure than the launch-time nag it is replacing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provenance {
+    /// Produced by the release path: there is an installed bundle on disk that
+    /// an update can be unpacked over.
+    Released,
+    /// A local development build.
+    Development,
 }
 
 /// How far an operator-started install has got.
@@ -79,6 +151,51 @@ pub struct Status {
 /// `settings::VERSION`). It is carried as an `Option` rather than defaulted to
 /// a plausible number for the same reason About renders `Version —`.
 pub type CurrentVersion<'a> = Option<&'a str>;
+
+/// Why this build must not be compared against the release feed, or `None` when
+/// it may be.
+///
+/// Asked **before** the request rather than after it: a build with nothing to
+/// replace has no verdict to render whatever the feed says, and asking anyway
+/// would mean every developer launch pinging a release server to discard the
+/// answer.
+///
+/// [`NotUpdatable::DevelopmentBuild`] wins when both apply. It is the reason
+/// that names what the operator did, and a shallow clone that is also a `./dev`
+/// build is still, first, a `./dev` build.
+#[must_use]
+pub fn not_updatable(current: CurrentVersion<'_>, provenance: Provenance) -> Option<NotUpdatable> {
+    match (provenance, current) {
+        (Provenance::Development, _) => Some(NotUpdatable::DevelopmentBuild),
+        (Provenance::Released, None) => Some(NotUpdatable::UnnameableBuild),
+        (Provenance::Released, Some(_)) => None,
+    }
+}
+
+/// Whether the feed's newest `release` is newer than the build that is running.
+///
+/// This is what `tauri-plugin-updater` is registered with as its version
+/// comparator; the module header carries why its own comparison cannot be used.
+/// `current` is `settings::VERSION` — the git-derived CalVer `build.rs`
+/// publishes for **every** profile, debug included — and never
+/// `CARGO_PKG_VERSION` / `package_info().version`.
+///
+/// `semver` is the same crate, at the same `^1` requirement, that the plugin
+/// resolves, so cargo unifies them to one and this cannot order two versions
+/// differently from the code that would otherwise have compared them. That is
+/// the reasoning `crates/updatefeed` takes `minisign-verify` for.
+///
+/// **It fails closed.** A build that cannot name itself, or a version string
+/// neither side can parse, answers `false` — no offer — rather than one that
+/// could not be justified. A missed offer is an update that arrives late; a
+/// fabricated one is an install prompt for a comparison that never happened.
+#[must_use]
+pub fn is_newer(current: CurrentVersion<'_>, release: &str) -> bool {
+    let (Some(current), Ok(release)) = (current, Version::parse(release)) else {
+        return false;
+    };
+    Version::parse(current).is_ok_and(|current| release > current)
+}
 
 /// The sentence describing where this app stands relative to the feed.
 ///
@@ -139,6 +256,28 @@ pub fn status(check: &Check, install: &Install, current: CurrentVersion<'_>) -> 
             text: format!("Could not check for updates: {reason}"),
             color: color::AMBER,
         },
+        // Neither a verdict nor a failure, so neither a verdict's colour nor a
+        // failure's. `color::INK` is the one palette value that is explicitly
+        // *not* semantic — its own doc says no threshold reads it — which makes
+        // it the honest paint for a line that declines to claim anything about
+        // updates. It is also none of the four colours the states above use, so
+        // this cannot be misread as any of them.
+        Check::NotUpdatable(why) => Status {
+            text: match (why, current) {
+                (NotUpdatable::DevelopmentBuild, Some(v)) => format!(
+                    "Solador {v}, built locally. Updates are not checked: there is no installed release here to replace."
+                ),
+                (NotUpdatable::DevelopmentBuild, None) => {
+                    "This is a local build. Updates are not checked: there is no installed release here to replace."
+                        .to_string()
+                }
+                (NotUpdatable::UnnameableBuild, _) => {
+                    "This build could not derive its own version, so it is not compared against any release."
+                        .to_string()
+                }
+            },
+            color: color::INK,
+        },
     }
 }
 
@@ -159,12 +298,16 @@ pub fn install_label(check: &Check, install: &Install) -> Option<String> {
 
 /// Whether the "Check for updates" button should be offered.
 ///
-/// Suppressed only while work is in flight. It stays available after a failure
-/// — retrying is the obvious next thing an operator wants — and after an
-/// install, because a check is harmless.
+/// Suppressed while work is in flight, and on a build that is outside the
+/// update path at all: [`Check::NotUpdatable`] is a property of the build, so a
+/// button there would be a control whose only possible effect is to repaint the
+/// same sentence. It stays available after a failure — retrying is the obvious
+/// next thing an operator wants — and after an install, because a check is
+/// harmless.
 #[must_use]
 pub fn can_check(check: &Check, install: &Install) -> bool {
-    !matches!(install, Install::Running) && !matches!(check, Check::Unknown)
+    !matches!(install, Install::Running)
+        && !matches!(check, Check::Unknown | Check::NotUpdatable(_))
 }
 
 /// The release notes to show, if any, for an offered update.
@@ -191,6 +334,10 @@ mod tests {
             version: "2026.8.114".to_string(),
             notes: Some("fixed a thing".to_string()),
         }
+    }
+
+    fn local_build() -> Check {
+        Check::NotUpdatable(NotUpdatable::DevelopmentBuild)
     }
 
     /// The invariant this module exists for. Three states that a `bool` or an
@@ -311,6 +458,7 @@ mod tests {
         assert_eq!(notes(&available()), Some("fixed a thing"));
         assert_eq!(notes(&Check::UpToDate), None);
         assert_eq!(notes(&Check::Unknown), None);
+        assert_eq!(notes(&local_build()), None);
         // A feed that carried an empty `notes` string said nothing, and an
         // empty paragraph on screen is not a way of saying nothing.
         assert_eq!(
@@ -320,5 +468,143 @@ mod tests {
             }),
             None
         );
+    }
+
+    // MARK: - #353
+
+    /// The bug, pinned from both ends.
+    ///
+    /// `0.1.0` is `app/src-tauri/Cargo.toml`'s unpublished package version, and
+    /// what `package_info().version` returns on any build that did not get the
+    /// `--config` overlay. The first assertion *is* the defect: compared
+    /// against that number, every release ever cut is an available update. The
+    /// rest is what the comparator does instead.
+    #[test]
+    fn the_feed_is_compared_against_the_calver_not_the_cargo_version() {
+        assert!(
+            is_newer(Some("0.1.0"), "2026.8.110"),
+            "0.1.0 loses to every CalVer — which is exactly why the plugin's own \
+             comparison announced an update on every launch"
+        );
+
+        // The build in the report: newer than the newest release, so nothing is
+        // offered. Not "nothing offered because the check failed" — it compared.
+        assert!(!is_newer(Some("2026.8.113"), "2026.8.110"));
+        // The same version is not a newer version.
+        assert!(!is_newer(Some("2026.8.110"), "2026.8.110"));
+        // And a genuinely newer release still wins, including across a month
+        // roll, where the patch counter restarts and only the minor moves.
+        assert!(is_newer(Some("2026.8.110"), "2026.8.113"));
+        assert!(is_newer(Some("2026.8.113"), "2026.9.1"));
+        assert!(!is_newer(Some("2026.9.1"), "2026.8.113"));
+    }
+
+    /// Fail closed: every input this cannot order answers "no offer".
+    #[test]
+    fn an_uncomparable_version_offers_nothing_rather_than_guessing() {
+        assert!(!is_newer(None, "2026.8.113"));
+        assert!(!is_newer(Some("2026.8.113"), "not-a-version"));
+        assert!(!is_newer(Some("not-a-version"), "2026.8.113"));
+        assert!(!is_newer(Some(""), "2026.8.113"));
+    }
+
+    /// Which builds are inside the update path, and which are not.
+    #[test]
+    fn only_a_released_build_that_can_name_itself_is_compared_at_all() {
+        assert_eq!(not_updatable(CURRENT, Provenance::Released), None);
+        assert_eq!(
+            not_updatable(CURRENT, Provenance::Development),
+            Some(NotUpdatable::DevelopmentBuild)
+        );
+        // A shallow clone lands in the state rather than comparing against
+        // anything — the same refusal About makes when it renders `—`.
+        assert_eq!(
+            not_updatable(None, Provenance::Released),
+            Some(NotUpdatable::UnnameableBuild)
+        );
+        // Both at once is still, first, a local build.
+        assert_eq!(
+            not_updatable(None, Provenance::Development),
+            Some(NotUpdatable::DevelopmentBuild)
+        );
+    }
+
+    /// The fifth state must not read like any of the four before it, which is
+    /// the invariant `a_failed_check_never_reads_as_up_to_date` asserts one
+    /// state earlier.
+    #[test]
+    fn a_build_with_nothing_to_replace_renders_as_none_of_the_other_four() {
+        let mine = status(&local_build(), &Install::Idle, CURRENT);
+        for other in [
+            Check::Unknown,
+            Check::UpToDate,
+            available(),
+            Check::Failed {
+                reason: "the network is unreachable".to_string(),
+            },
+        ] {
+            let s = status(&other, &Install::Idle, CURRENT);
+            assert_ne!(mine.text, s.text, "{other:?}");
+            assert_ne!(mine.color, s.color, "{other:?}");
+        }
+        // Never green, for the reason the whole module exists.
+        assert_ne!(mine.color, color::GREEN);
+        assert_ne!(mine.color, color::GREEN_DIM);
+        // It names the running build rather than hiding it, and says why there
+        // is no verdict.
+        assert!(mine.text.contains("2026.8.113"), "{}", mine.text);
+        assert!(mine.text.contains("built locally"), "{}", mine.text);
+    }
+
+    /// No install button, no re-check button, no notes — there is nothing to
+    /// install and nothing a second look could change.
+    #[test]
+    fn a_build_with_nothing_to_replace_offers_no_buttons() {
+        assert_eq!(install_label(&local_build(), &Install::Idle), None);
+        assert!(!can_check(&local_build(), &Install::Idle));
+        assert_eq!(notes(&local_build()), None);
+
+        let unnameable = Check::NotUpdatable(NotUpdatable::UnnameableBuild);
+        assert_eq!(install_label(&unnameable, &Install::Idle), None);
+        assert!(!can_check(&unnameable, &Install::Idle));
+    }
+
+    /// The two reasons are different sentences: "you built this yourself" and
+    /// "this checkout cannot say what it is" are different things to fix.
+    #[test]
+    fn the_two_reasons_for_having_nothing_to_replace_do_not_read_alike() {
+        let local = status(&local_build(), &Install::Idle, None);
+        let unnameable = status(
+            &Check::NotUpdatable(NotUpdatable::UnnameableBuild),
+            &Install::Idle,
+            None,
+        );
+        assert_ne!(local.text, unnameable.text);
+        assert!(unnameable.text.contains("could not derive"));
+        // Neither invents a version it does not have.
+        assert!(!local.text.contains("Solador "));
+        assert!(!unnameable.text.contains("Solador "));
+    }
+
+    /// A real release build is untouched by all of the above: it checks, it is
+    /// offered the newer release, and it is offered the button to install it.
+    #[test]
+    fn a_released_build_still_checks_offers_and_installs() {
+        let current = Some("2026.8.113");
+        assert_eq!(not_updatable(current, Provenance::Released), None);
+        assert!(is_newer(current, "2026.8.114"));
+
+        let s = status(&available(), &Install::Idle, current);
+        assert_eq!(s.color, color::AMBER);
+        assert_eq!(
+            s.text,
+            "Solador 2026.8.114 is available. You have 2026.8.113."
+        );
+        assert_eq!(
+            install_label(&available(), &Install::Idle),
+            Some("Install 2026.8.114".to_string())
+        );
+        assert!(can_check(&available(), &Install::Idle));
+        assert_eq!(notes(&available()), Some("fixed a thing"));
     }
 }
