@@ -201,13 +201,17 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    ellipsise rather than wrap: a second header line would be the growth this
    rule exists to stop. */
 /* `.panel-asof` is the freshness line ("as of 23h ago") on every slow-cadence
-   panel -- Azure Cost and Sentry Crons in the header, each of Usage's metered
-   provider sections in the body -- which shares this typography and nothing
-   else: it dates the figure on the card, where `.panel-stale` warns about the
-   poller. Same treatment because it has the same job -- ellipsising, and it must
-   never become a second line. Its colour is Rust's, like the warning's. In a
-   `.pv-section` it is a `div`, not a `p`, so it needs no margin reset to sit in
-   that column's 6px gap like the rows above it. */
+   panel -- Azure Cost, Sentry Crons and Usage, all three in the header -- which
+   shares this typography and nothing else: it dates the figure on the card,
+   where `.panel-stale` warns about the poller. Same treatment because it has
+   the same job -- ellipsising, and it must never become a second line. Its
+   colour is Rust's, like the warning's.
+
+   Usage's used to sit in the body, one per metered provider section, on the
+   reasoning that a clock belongs beside the figure it dates. It came and went
+   with a missed poll, which is the same appear/disappear height cost the
+   warnings were hoisted out of the body to end -- one line instead of six, and
+   the invariant was not held until it went too (#355). */
 .panel-stale, .panel-asof { font-size:9px; font-weight:700; white-space:nowrap;
   min-width:0; overflow:hidden; text-overflow:ellipsis; }
 /* ...but NOT the same `flex-shrink`, and that split is the fix for #351. The
@@ -232,6 +236,28 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    overflows the tile. */
 .panel-stale { flex-shrink:100; }
 .panel-asof { flex-shrink:0; }
+/* ...with one exception, and it is the reason the 0 above is argued from "short
+   and fixed-format" rather than from "it is a clock". The Usage panel's body is
+   several independently-polled sections, so its header carries ONE line holding
+   all of their clocks, each named ("neon: as of 23h ago · sentry: as of 23h
+   ago", `panel::merged_freshness`, #355). That grows with the number of
+   configured providers, and on a quarter-width card it is one of two
+   variable-length messages sharing a line with about 130px left in it.
+
+   So it takes the warning's factor exactly, and equal is the only split that
+   works. Shrink is proportional to factor TIMES base size, so at an equal
+   factor two items give up the same FRACTION of their length: both ellipsise
+   together, and neither reaches zero until there is no room for either. The
+   two lopsided alternatives both fail the same way -- at 0 this line keeps
+   every character and starves the warning to a width of nothing, at 1 the
+   warning is destroyed instead and this line then eats into the title. An
+   element at zero width does not render an ellipsis; it renders nothing, which
+   is a clause silently disappearing rather than a message being cut.
+
+   The title is safe either way: 1 against 100x a message's length is a
+   rounding error, which is what keeps "Usage" from being eaten the way
+   "GitHub Runners" was. */
+.panel-asof.merged { flex-shrink:100; }
 /* GitHub's availability folded with our fleet -- the "is it us?" verdict, on
    both the Repos and Runners headers. `flex:none` because it is short, fixed
    and the whole point: the staleness message beside it is already the
@@ -484,14 +510,21 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   text-overflow:ellipsis; }
 .pv-item .val { margin-left:auto; font-size:10px; color:var(--muted);
   white-space:nowrap; font-variant-numeric:tabular-nums; }
-/* There is deliberately no `.pv-footer` here any more (#351). The Usage panel's
-   metered sections used to append their warning under their rows in that class,
-   which carried no `white-space:nowrap` -- so a long message wrapped to six
-   lines, the card grew, `.panel-row` stretched every other card in the row to
-   match, and the rows below were pushed down. Those warnings are now folded into
-   the panel's single `.panel-stale` header line by `panel::merged_footer`, each
-   naming the section it came from. A per-section warning must not come back to
-   the body: the header is the only place one costs no height. */
+/* There is deliberately no `.pv-footer` here any more (#351), and deliberately
+   no `.panel-asof` inside a `.pv-section` either (#355). The Usage panel's
+   metered sections used to append their warning under their rows in that first
+   class, which carried no `white-space:nowrap` -- so a long message wrapped to
+   six lines, the card grew, `.panel-row` stretched every other card in the row
+   to match, and the rows below were pushed down. The freshness line under it
+   was one line rather than six, and otherwise the identical bug: a section is
+   `Live` while it polls on cadence and paints nothing, so the line appeared
+   only when a poll was missed and its arrival cost the card a line of height.
+
+   Both are folded into a header line now -- the warnings by
+   `panel::merged_footer` into `.panel-stale`, the clocks by
+   `panel::merged_freshness` into `.panel-asof.merged` -- each naming the
+   section it came from. Neither may come back to the body: the header is the
+   only place a line that comes and goes costs no height. */
 
 /* Usage is authored a quarter, but reflow leaves it alone on a full-width row
    at every width below the four-across one — so at `--panel-cols: 2` (from

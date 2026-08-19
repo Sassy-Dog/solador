@@ -210,17 +210,41 @@ once emit the byte-identical line twice and identify neither. There is no
 per-section `footer` key in the payload any more, so the frontend has nowhere to
 put one back.
 
-**The warning is the only element in a header that may give ground.**
-`.panel-stale` keeps `flex-shrink:100`; `.panel-asof` (the freshness clock) is
-`flex-shrink:0`, `.panel-trailing` has no `min-width:0` and is unshrinkable
-already, and `.panel-chip` says `flex:none`. The two used to share one
-declaration, and flex distributes a shortfall in proportion to shrink factor
-*times* base size — so at an equal factor the longest element keeps the most
-characters. An Azure header carrying both rendered `as of 6h a…` beside a
-warning that kept most of an `az` traceback: the two short, fixed-format clocks
-lost everything. `0` rather than a smaller factor because a factor still costs
-the clock a sub-pixel, and a sub-pixel is enough to ellipsise a line that had
-room for every character.
+**Every panel's freshness clock is in the header too**
+([#355](https://github.com/Sassy-Dog/solador/issues/355)). Usage's stayed in the
+body when its warnings left, one `.panel-asof` per metered provider section, on
+the reasoning that a clock dates a figure that is in the body. It had the same
+property the warnings did: a section polling on cadence is `Live` and paints
+nothing, so the line appeared only when a poll was missed — one line rather than
+six, and the card still changed height. `panel::merged_freshness` folds the
+sections' clocks into one header line the way `merged_footer` folds their
+warnings, and `panel::attributed_freshness_payload` names each
+(`neon: as of 23h ago · sentry: as of 23h ago`). **Two elements, two strings,
+one header**: `#usageFreshness` and `#usageStale` answer different questions and
+are never joined — see the two clocks below. There is no per-section `freshness`
+key in the payload any more either.
+
+**The warning is the only element in a header that may give ground — unless
+something beside it is a message too.** `.panel-stale` keeps `flex-shrink:100`;
+`.panel-asof` (the freshness clock) is `flex-shrink:0`, `.panel-trailing` has no
+`min-width:0` and is unshrinkable already, and `.panel-chip` says `flex:none`.
+The first two used to share one declaration, and flex distributes a shortfall in
+proportion to shrink factor *times* base size — so at an equal factor the longest
+element keeps the most characters. An Azure header carrying both rendered
+`as of 6h a…` beside a warning that kept most of an `az` traceback: the two
+short, fixed-format clocks lost everything. `0` rather than a smaller factor
+because a factor still costs the clock a sub-pixel, and a sub-pixel is enough to
+ellipsise a line that had room for every character.
+
+`.panel-asof.merged` — Usage's, and only Usage's — takes the warning's `100`
+back, because the argument for `0` is "short and fixed-format" and a merged
+clock is neither: it grows a named segment per configured provider. Equal is the
+only split that works when two variable-length messages share one line. At an
+equal factor they give up the same *fraction* of their length and ellipsise
+together; lopsided either way, one of them flexes to a width of zero, which
+renders no ellipsis and no characters and so reads as a clause that vanished
+rather than one that was cut. The panel title is unaffected either way — `1`
+against `100 ×` a message's length is a rounding error.
 
 `empty` keys on the count of *monitored* hosts, not on the number of cards: the
 local card is always there, so counting cards would answer "is anything
@@ -579,18 +603,23 @@ await window.__TAURI__.core.invoke("azure_cost");
       //   ^ the row is *absent*, not "—", when no rate is set or usage is unmeasured
       {"label": "NEON LAST INVOICE",      "value": "$15.91",    "valueColor": …}
       //   ^ "—" when the org has no invoices yet, or none could be read
-    ],
-      "freshness": {"state": "live", "measured_secs_ago": 600, "text": null, "color": null}},
-      //   ^ how old THESE ROWS are, which is not what the footer answers. Same
-      //     shape and same rules as Azure Cost's below, one per metered section.
-      //     A section carries NO `footer` of its own — see below.
-    {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"},
-      "freshness": …}
+    ]},
+    //   ^ a section carries NEITHER line of its own — no `footer` and no
+    //     `freshness`. Both are the panel's, in the header; see below.
+    {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"}}
   ],
-  "footer": null    // ONE line for the panel: Claude's own (staleAfter 150s)
+  "footer": null,   // ONE line for the panel: Claude's own (staleAfter 150s)
                     // plus each metered section's, attributed and joined by
                     // `merged_footer` — "⚠ neon: stale · updated 23h ago
                     // ⚠ sentry: stale · updated 23h ago"
+  "freshness": null // ONE more, beside it and never folded into it: each
+                    // metered section's clock, attributed and joined by
+                    // `merged_freshness` — "neon: as of 23h ago · sentry: as of
+                    // 23h ago". `{text, color}` only, because a panel with
+                    // several sections has no single `state` or age to publish;
+                    // Azure Cost's below is one reading and carries both.
+                    // Claude contributes no clock: its rollups are on the
+                    // store's refresh interval, not the providers' cadence.
 }
 
 // azure_cost
@@ -629,10 +658,11 @@ extended to Usage and Sentry Crons by
 whole cadence the reading stops being live and an `as of 23h ago` line appears
 beside — never inside — the footer. On Azure Cost that line sits in the header
 and the headline is repainted in the dimmer green; on Sentry Crons it sits in
-the header too; on Usage each metered provider section carries its own, in the
-body, because it dates a figure that is in the body — hoisting it would leave one
-header line answering for three different clocks. Its own appear/disappear height
-cost is [#355](https://github.com/Sassy-Dog/solador/issues/355). `footer` is
+the header too; on Usage the metered sections' clocks are merged into one header
+line, each naming its section, since
+[#355](https://github.com/Sassy-Dog/solador/issues/355) — they used to sit in the
+body beside the figures they date, which cost the card a line of height every
+time a poll was missed. `footer` is
 `status_footer` and answers something else
 entirely: *is the poller stuck*. Its window sits **past** the cadence — an hour
 of grace on Azure (`azure::stale_after_secs`, the flat `5 * 60 * 60` the panel
@@ -1639,9 +1669,10 @@ cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage p
 #   …plus `--unmeasured` (both providers answering, neither measuring: the em
 #   dash path, with the quota set and the bar therefore suppressed),
 #   `--empty` (no summary, no provider configured) and `--stale` (the same good
-#   read, with the METERED providers' last success dated 23h back: an "as of
-#   23h ago" line per section in the body, and ONE header line naming both of
-#   them — Claude's own rollups stay current, being on a far faster cadence).
+#   read, with the METERED providers' last success dated 23h back: TWO header
+#   lines, each naming both sections — one warning about the poller and one
+#   dating the figures, never joined. Claude's own rollups stay current, being
+#   on a far faster cadence).
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and

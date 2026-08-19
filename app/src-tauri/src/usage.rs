@@ -37,17 +37,27 @@
 //! byte-identical without it, and `⚠ stale · updated 23h ago` twice over says
 //! the same thing twice and identifies neither section.
 //!
-//! **And each metered section carries a second clock, in the body** (#338, the
-//! Azure Cost panel's arrangement one panel over). `freshness` is [`Freshness`]
-//! over the age of the last **success** and answers *"how old is the figure on
-//! screen"*; the warning answers *"did the last attempt fail, or is the poller
-//! late"*. On an hourly read the first speaks a full 30 minutes before the
-//! second does, and a nearly-hour-old dollar figure rendering identically to one
-//! measured a second ago is the same class of bug as unknown-rendered-as-zero.
-//! They are two fields for that reason and must not be folded into one — which
-//! is also why `freshness` stayed in the body when the warnings left it: it
-//! dates a figure that *is* in the body, and hoisting it would leave one header
-//! line answering for three different clocks (#355).
+//! **And each metered section carries a second clock** (#338, the Azure Cost
+//! panel's arrangement one panel over). `freshness` is [`Freshness`] over the
+//! age of the last **success** and answers *"how old is the figure on screen"*;
+//! the warning answers *"did the last attempt fail, or is the poller late"*. On
+//! an hourly read the first speaks a full 30 minutes before the second does, and
+//! a nearly-hour-old dollar figure rendering identically to one measured a
+//! second ago is the same class of bug as unknown-rendered-as-zero. They are two
+//! fields for that reason and **must not be folded into one string**.
+//!
+//! **Those clocks are in the header too** (#355). They stayed in the body when
+//! the warnings left it, on the reasoning that a clock dates a figure that is in
+//! the body — but they carry the same appear/disappear height cost the warnings
+//! did: a section is `Live` while it polls on cadence and paints nothing, so the
+//! line shows up only when a poll is missed, and its arrival makes the card a
+//! line taller. One line rather than six, and the invariant is not held until it
+//! is gone. So each section's clock is
+//! [`attributed_freshness_payload`](crate::panel::attributed_freshness_payload)
+//! and they fold into the panel's own single header line by
+//! [`merged_freshness`](crate::panel::merged_freshness) — a **second** header
+//! element beside the warning, never the same string. Same header is not the
+//! same question.
 
 use serde_json::{json, Value};
 use usage::{
@@ -58,8 +68,8 @@ use viewmodel::color;
 use viewmodel::freshness::Freshness;
 
 use crate::panel::{
-    attributed_status_footer, freshness_payload, merged_footer, progress_bar, status_footer,
-    Configured,
+    attributed_freshness_payload, attributed_status_footer, merged_footer, merged_freshness,
+    progress_bar, status_footer, Configured,
 };
 
 // Re-exported so `main.rs` — where this module's name shadows the data crate's
@@ -119,12 +129,14 @@ const QUOTA_AMBER_AT: f64 = 0.9;
 /// Red threshold: at quota, not past it.
 const QUOTA_RED_AT: f64 = 1.0;
 
-// The metered sections' ids — **and their names in the panel header**.
+// The metered sections' ids — **and their names in the panel header**, on both
+// hoisted lines.
 //
-// One constant serving both, deliberately. A hoisted warning's whole job is to
-// send a reader to a block on the card, so `⚠ neon: stale · updated 23h ago`
-// above a section the payload keys as something else would be an attribution
-// pointing at nothing. Two strings could drift apart; one cannot.
+// One constant serving all of them, deliberately. A hoisted line's whole job is
+// to send a reader to a block on the card, so `⚠ neon: stale · updated 23h ago`
+// — or `neon: as of 23h ago` — above a section the payload keys as something
+// else would be an attribution pointing at nothing. Two strings could drift
+// apart; one cannot.
 const NEON_ID: &str = "neon";
 const SENTRY_ID: &str = "sentry";
 const VERCEL_ID: &str = "vercel";
@@ -403,41 +415,57 @@ fn window_row(label: &str, totals: &UsageTotals) -> Value {
     })
 }
 
-/// One metered provider's contribution to the panel: the section the body
-/// paints, and the warning it raises for the header.
+/// One metered provider's contribution to the panel: the rows the body paints,
+/// and the two header lines it raises — the warning about its poller and the
+/// clock dating its figures.
 ///
-/// Two values because the two now render in two different places, and they are
-/// returned **together** rather than the warning being rebuilt in [`view`]: the
-/// rule deciding *which* failure a section reports — Neon's consumption error
-/// outranking its invoice error, against consumption's own clock — belongs
-/// beside the section that owns it, not in the loop that collects them.
+/// Three values because the three render in three different places, and the two
+/// lines are returned **together with** the section rather than being rebuilt in
+/// [`view`]: the rule deciding *which* failure a section reports — Neon's
+/// consumption error outranking its invoice error, against consumption's own
+/// clock — belongs beside the section that owns it, not in the loop that
+/// collects them.
 ///
-/// `warning` is `Null` for a healthy, fresh section, exactly as
-/// [`status_footer`] has always been.
+/// `warning` is `Null` for a healthy section exactly as [`status_footer`] has
+/// always been, and `freshness` carries a null `text` for a current one, so
+/// neither reaches the header when there is nothing to say.
 struct ProviderView {
     section: Value,
     warning: Value,
+    freshness: Value,
 }
 
-/// How old one metered section's figures are, as the frontend receives it.
+/// How old one metered section's figures are, named, as the header receives it.
 ///
 /// The clock is `last_updated`, which is this provider's last **success** — the
 /// very field [`status_footer`] promises `last ok` about, asked the other
 /// question. `None` (nothing has ever been read) classifies to
 /// [`Freshness::Unknown`], which publishes a null age rather than a zero: a
 /// section that has never answered must not paint as the freshest thing on the
-/// card.
+/// card, and must not reserve a blank line's worth of header either.
+///
+/// Attributed with `source`, because the panel has one header and three of
+/// these: read at the same moment, two sections emit the byte-identical
+/// `as of 23h ago`, and a line carrying it twice names neither of them.
 ///
 /// `cadence_secs` is the operator's `PanelInterval::UsageProviders`, not
 /// [`PROVIDER_STALE_AFTER_SECS`]. The two are deliberately different edges — a
 /// reading stops being current after one whole cycle, and the *warning* only
 /// fires once the poller looks stuck — which is the window neither field can
 /// express alone.
-fn provider_freshness<S>(state: &ProviderState<S>, cadence_secs: u64, now: u64) -> Value {
-    freshness_payload(Freshness::classify(
-        state.last_updated.map(|at| now.saturating_sub(at)),
-        cadence_secs,
-    ))
+fn provider_freshness<S>(
+    source: &str,
+    state: &ProviderState<S>,
+    cadence_secs: u64,
+    now: u64,
+) -> Value {
+    attributed_freshness_payload(
+        source,
+        Freshness::classify(
+            state.last_updated.map(|at| now.saturating_sub(at)),
+            cadence_secs,
+        ),
+    )
 }
 
 /// The Neon section: month-to-date compute, storage, estimated charges, and
@@ -479,10 +507,6 @@ fn neon_section(
         section: json!({
             "id": NEON_ID,
             "rows": rows,
-            // Consumption's clock, because it is this section's primary
-            // content. The invoice is a monthly figure whose own age says
-            // nothing a reader can act on.
-            "freshness": provider_freshness(state, cadence_secs, now),
         }),
         // Consumption's error owns the warning — it is the section's primary
         // content; the invoice's reason shows only when consumption is healthy.
@@ -500,6 +524,10 @@ fn neon_section(
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
+        // Consumption's clock too, because it is this section's primary
+        // content. The invoice is a monthly figure whose own age says nothing a
+        // reader can act on.
+        freshness: provider_freshness(NEON_ID, state, cadence_secs, now),
     }
 }
 
@@ -531,7 +559,6 @@ fn sentry_section(
                 events(accepted),
             )],
             "bar": bar,
-            "freshness": provider_freshness(state, cadence_secs, now),
         }),
         warning: attributed_status_footer(
             SENTRY_ID,
@@ -540,6 +567,7 @@ fn sentry_section(
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
+        freshness: provider_freshness(SENTRY_ID, state, cadence_secs, now),
     }
 }
 
@@ -592,7 +620,6 @@ fn vercel_section(
             "id": VERCEL_ID,
             "rows": rows,
             "bar": Value::Null,
-            "freshness": provider_freshness(state, cadence_secs, now),
         }),
         warning: attributed_status_footer(
             VERCEL_ID,
@@ -601,6 +628,7 @@ fn vercel_section(
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
+        freshness: provider_freshness(VERCEL_ID, state, cadence_secs, now),
     }
 }
 
@@ -613,8 +641,9 @@ fn vercel_section(
 /// involved in.
 ///
 /// `cadence_secs` is the operator's cadence for the **metered providers**
-/// (`PanelInterval::UsageProviders`), and it is what each section's `freshness`
-/// is classified against. Read at render time for the same reason as the two
+/// (`PanelInterval::UsageProviders`), and it is what each section's clock on the
+/// panel's `freshness` line is classified against. Read at render time for the
+/// same reason as the two
 /// above: a shortened interval must re-date the sections now rather than an hour
 /// from now. Claude's own rollups are not measured against it — they are on the
 /// store's much faster refresh interval, and their footer already covers that
@@ -712,10 +741,17 @@ pub fn view(
             .is_present()
             .then(|| vercel_section(&state.vercel, cadence_secs, now)),
     ];
+    // Claude contributes no clock, only a warning. Its rollups are on the
+    // store's refresh interval rather than `cadence_secs`, so classifying them
+    // against the metered providers' cycle would date a local log walk by a
+    // stranger's edge — and its own 150s window is already what the warning
+    // above measures.
+    let mut clocks: Vec<Value> = Vec::new();
     let mut providers: Vec<Value> = Vec::new();
     for provider in configured.into_iter().flatten() {
         providers.push(provider.section);
         warnings.push(provider.warning);
+        clocks.push(provider.freshness);
     }
 
     json!({
@@ -731,6 +767,13 @@ pub fn view(
         // shove the rest of the cockpit around (#351), so the payload gives the
         // frontend nowhere to put one.
         "footer": merged_footer(&warnings),
+        // And ONE clock line, beside it in the same header and never folded
+        // into it: `footer` says the poller is late, this says how old the
+        // figures are, and between the two edges only this one speaks (#338).
+        // A section carries no `freshness` key for the same reason it carries no
+        // `footer` — the line appeared and disappeared with a missed poll, and
+        // in the body that cost the card a line of height (#355).
+        "freshness": merged_freshness(&clocks),
         "providers": providers,
         // Any half of the panel still waiting on its first answer keeps the
         // frontend on its fast refresh. Published rather than inferred from the
@@ -1309,56 +1352,75 @@ mod tests {
             CADENCE,
             NOW + 600,
         );
-        for id in ["neon", "sentry"] {
-            let fresh = &section(&live, id).expect(id)["freshness"];
-            assert_eq!(fresh["state"], "live", "{id}");
-            assert_eq!(fresh["measured_secs_ago"], 600, "{id}");
-            assert!(fresh["text"].is_null(), "{id} paints as it always did");
-        }
+        assert!(
+            live["freshness"].is_null(),
+            "current figures paint as they always did"
+        );
 
         let at = NOW + CADENCE + 1;
         let stale = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
-        for id in ["neon", "sentry"] {
-            let provider = section(&stale, id).expect(id);
-            assert_eq!(provider["freshness"]["state"], "stale", "{id}");
-            assert_eq!(provider["freshness"]["text"], "as of 1h ago", "{id}");
-            assert_eq!(
-                provider["freshness"]["color"],
-                color::hex(color::AMBER),
-                "{id}"
-            );
-            // …and the *warning* has not fired: the window is 90m, the cadence
-            // an hour. Folding the two into one field would have to pick which
-            // of those two edges to keep.
-            assert!(
-                provider["footer"].is_null(),
-                "{id}: a section never carries a warning of its own"
-            );
-        }
+        assert_eq!(
+            stale["freshness"]["text"],
+            "neon: as of 1h ago · sentry: as of 1h ago"
+        );
+        assert_eq!(stale["freshness"]["color"], color::hex(color::AMBER));
+        // …and the *warning* has not fired: the window is 90m, the cadence an
+        // hour. Folding the two into one field would have to pick which of
+        // those two edges to keep.
         assert!(
             stale["footer"].is_null(),
-            "and the panel's header line stays clean: dated is not late"
+            "the panel's warning stays clean: dated is not late"
         );
+    }
+
+    /// Neither line may live under the body. Both used to — the warning until
+    /// #351, the clock until #355 — and both appear only when something is
+    /// wrong, so each cost the card a line of height the moment it fired, which
+    /// `.panel-row` then spent on every other card in the row.
+    #[test]
+    fn a_section_carries_neither_line_of_its_own() {
+        // Far enough past the 90m window that both lines are firing, so the
+        // assertions below are about where they went rather than about a
+        // fixture with nothing to say.
+        let at = NOW + 23 * 3_600;
+        let payload = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ neon: stale · updated 23h ago ⚠ sentry: stale · updated 23h ago"
+        );
+        assert_eq!(
+            payload["freshness"]["text"],
+            "neon: as of 23h ago · sentry: as of 23h ago"
+        );
+        for id in [NEON_ID, SENTRY_ID] {
+            let provider = section(&payload, id).expect(id);
+            assert!(provider["footer"].is_null(), "{id} warning");
+            assert!(provider["freshness"].is_null(), "{id} clock");
+        }
     }
 
     /// The failure this field exists to prevent: a section that has never once
     /// answered publishing an age of zero, which would paint it as the freshest
-    /// thing on the card.
+    /// thing on the card — and, in the header, a named blank reserving a line
+    /// for a measurement nobody took.
     #[test]
     fn a_section_that_has_never_read_publishes_no_age_rather_than_a_zero() {
         let mut state = UsageState::new();
         state.neon_mut().begin();
         let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
-        let fresh = &section(&payload, "neon").expect("neon")["freshness"];
-        assert_eq!(fresh["state"], "unknown");
-        assert!(fresh["measured_secs_ago"].is_null());
-        assert_ne!(fresh["measured_secs_ago"], 0);
-        assert!(fresh["text"].is_null(), "there is no figure to qualify");
+        assert!(
+            section(&payload, NEON_ID).is_some(),
+            "the section itself is rendered"
+        );
+        assert!(
+            payload["freshness"].is_null(),
+            "there is no figure to qualify"
+        );
     }
 
     /// `freshness` is additive: a failed read still dates the figure it is
     /// carrying forward, and the footer still names the failure. Two fields,
-    /// two strings, both present.
+    /// two strings, both in the header, and never joined.
     #[test]
     fn a_dated_figure_and_a_failure_are_reported_side_by_side() {
         let at = NOW + CADENCE + 1;
@@ -1369,12 +1431,15 @@ mod tests {
         let payload = view(&state, QUOTA, RATES, CADENCE, at);
         let neon = section(&payload, "neon").expect("neon");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
-        assert_eq!(neon["freshness"]["text"], "as of 1h ago");
+        assert_eq!(
+            payload["freshness"]["text"], "neon: as of 1h ago · sentry: as of 1h ago",
+            "both sections are dated; only one of them failed"
+        );
         assert_eq!(
             payload["footer"]["text"],
             "⚠ neon: Neon API request failed (HTTP 500) · last ok 1h ago"
         );
-        assert_ne!(neon["freshness"]["text"], payload["footer"]["text"]);
+        assert_ne!(payload["freshness"]["text"], payload["footer"]["text"]);
     }
 
     /// The age is classified against the operator's cadence, not a constant
@@ -1384,15 +1449,32 @@ mod tests {
     fn a_longer_configured_cadence_keeps_a_reading_live_for_longer() {
         let two_hours = 2 * 3_600;
         let payload = view(&measured(), QUOTA, RATES, 4 * 3_600, NOW + two_hours);
-        assert_eq!(
-            section(&payload, "neon").expect("neon")["freshness"]["state"],
-            "live"
-        );
+        assert!(payload["freshness"].is_null(), "still live at four hours");
         let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW + two_hours);
         assert_eq!(
-            section(&payload, "neon").expect("neon")["freshness"]["state"],
-            "stale"
+            payload["freshness"]["text"],
+            "neon: as of 2h ago · sentry: as of 2h ago"
         );
+    }
+
+    /// Two sections, two clocks, one line — and each names the block it dates.
+    /// Unattributed they are the byte-identical `as of 23h ago` twice over: a
+    /// header saying the same thing twice and identifying neither, which is the
+    /// failure that made the warnings' attribution load-bearing in #351.
+    #[test]
+    fn two_dated_sections_are_distinguishable_on_the_one_clock_line() {
+        let at = NOW + 23 * 3_600;
+        let payload = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
+        let line = payload["freshness"]["text"].as_str().expect("a clock line");
+        for id in [NEON_ID, SENTRY_ID] {
+            assert!(line.contains(&format!("{id}: ")), "{id} is named");
+            assert!(
+                section(&payload, id).is_some(),
+                "{id} is named after a section that exists"
+            );
+        }
+        // Two questions, two strings — same header, never the same line.
+        assert_ne!(payload["freshness"]["text"], payload["footer"]["text"]);
     }
 
     // MARK: footers
