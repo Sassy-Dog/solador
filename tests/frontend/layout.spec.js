@@ -1158,3 +1158,140 @@ test("cards sharing a row share one core-block height", async ({ page, baseURL }
   expect(ten.height, `heights ${live.map((m) => m.height)}`).toBe(thirtySix.height);
   expect(thirtySix.height).toBe(334);
 });
+
+/**
+ * Every in-panel row list: the container that holds a panel's rows, the rows
+ * inside it, and the `.panel` section it belongs to.
+ *
+ * This table is the point of the test below. The assertion is CROSS-panel, so
+ * the spacing can only ever be checked against the other panels, never against
+ * a number written here — there is no pixel in this file to keep in step with
+ * the stylesheet. What a new panel has to declare is `list` and `row`.
+ *
+ * `panel` is not decoration: the test reads every `.panel` section the page
+ * rendered and refuses to run against one this table does not name, so a panel
+ * added later cannot opt out of the rhythm by going unlisted. Azure Cost is
+ * here through its breakdown columns for exactly that reason.
+ *
+ * `row` is separate from `list` on purpose. A list also holds things that are
+ * not rows — Containers' `.lbl` group label, Repos' `.gh-head`, Usage's
+ * `.pv-divider`, Sentry Crons' `.cron-message` — and the gap either side of one
+ * of those answers a different question (what separates a heading from its
+ * list) from the one the report asked (what separates two rows).
+ */
+const ROW_LISTS = [
+  { panel: "containersPanel", list: "#containersBody .cont-section", row: ".cont-row" },
+  { panel: "reposPanel", list: "#reposBody .gh-col", row: ".gh-row:not(.gh-head)" },
+  { panel: "runnersPanel", list: "#runnersBody .gh-list", row: ".gh-row" },
+  { panel: "usagePanel", list: "#usageBody .pv-section", row: ".pv-row, .pv-item" },
+  { panel: "azurePanel", list: "#azureBody .pv-section", row: ".pv-item" },
+  { panel: "servicesPanel", list: "#servicesBody", row: ".svc-row" },
+  { panel: "cronsPanel", list: "#cronsBody", row: ".cron-row" },
+  { panel: "openclawPanel", list: "#openclawBody .oc-section", row: ".oc-row, .oc-agent" },
+];
+
+test("every panel's row list carries the same vertical rhythm", async ({ page, baseURL }) => {
+  // The report this closes: "the list of repos vs the list of runners". Repos
+  // sat at a 10px flex gap and Runners at 0 — `.gh-list` is multi-column, where
+  // `gap` sets `column-gap` and `row-gap` does nothing at all — and the two
+  // render side by side on the same row of the grid. Containers (3) and Usage
+  // (6) were two more values again.
+  //
+  // MEASURED, never read off `getComputedStyle`: these lists reach their
+  // spacing by two different mechanisms — a flex `gap` everywhere else, a child
+  // `margin-bottom` in the multicol Runners list — so comparing declarations
+  // would compare things that are not comparable, and a `gap:10px` on
+  // `.gh-list` would read as a pass while rendering 0.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  // Real panel contents: an empty panel has no second row to measure against,
+  // and every list would agree about nothing.
+  await stubPanels(page, baseURL, vm);
+  await gotoApp(page);
+  await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
+  await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
+
+  // Nothing may sit this out. A panel that renders and is not in ROW_LISTS is
+  // a list nobody is comparing, which is how the four values this closes got
+  // there in the first place.
+  const rendered = await page
+    .locator("#panelRows section.panel:not([hidden])")
+    .evaluateAll((els) => els.map((el) => el.id));
+  expect(rendered.length, "the fixture must render the panels").toBeGreaterThan(0);
+  const rostered = new Set(ROW_LISTS.map(({ panel }) => panel));
+  expect(rendered.filter((id) => !rostered.has(id)), "panels with no row list declared").toEqual([]);
+
+  const measured = await page.evaluate((lists) =>
+    lists.map(({ panel, list, row }) => {
+      const gaps = [];
+      for (const container of document.querySelectorAll(list)) {
+        const kids = [...container.children];
+        for (let i = 1; i < kids.length; i++) {
+          const [prev, next] = [kids[i - 1], kids[i]];
+          if (!prev.matches(row) || !next.matches(row)) continue;
+          const a = prev.getBoundingClientRect();
+          const b = next.getBoundingClientRect();
+          // Runners is multi-column: the pair that straddles a column break is
+          // not a row gap at all — the second row starts back at the TOP of the
+          // next column, well above the first row's bottom edge. Everything
+          // below it in that column is measured normally.
+          if (b.top < a.bottom - 0.5) continue;
+          gaps.push(Math.round((b.top - a.bottom) * 100) / 100);
+        }
+      }
+      return { panel, gaps };
+    }), ROW_LISTS);
+
+  // A panel that rendered no measurable pair would otherwise agree with
+  // everyone by saying nothing — which is exactly how a list drifts unnoticed.
+  for (const { panel, gaps } of measured) {
+    expect(gaps.length, `${panel} rendered no adjacent row pair to measure`).toBeGreaterThan(0);
+  }
+
+  const report = measured.map(({ panel, gaps }) => `${panel}=${[...new Set(gaps)].join("/")}`).join(", ");
+  const distinct = [...new Set(measured.flatMap(({ gaps }) => gaps))];
+  expect(distinct, `one row gap everywhere, got ${report}`).toHaveLength(1);
+});
+
+test("the Runners list ends at its last row, at one column and at two", async ({ page, baseURL }) => {
+  // The trap in the mechanism that gives Runners its gap. `.gh-list` is
+  // multi-column, so the gap is a child `margin-bottom` — and the bottom row of
+  // EVERY column carries one, while the balancer sizes the list to its tallest
+  // column. That is where a trailing gap turns into dead space inside the card
+  // and the panel's bottom padding stops reading like every other panel's.
+  //
+  // Driven at both column counts on purpose: `:last-child` — the exemption the
+  // stylesheet rejects — is indistinguishable from the container compensation
+  // at ONE column and wrong at two, because the last child is last in flow, not
+  // last in each column. Only the two-column render tells them apart.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  await stubPanels(page, baseURL, vm);
+  await gotoApp(page);
+  await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
+
+  for (const cols of [1, 2]) {
+    const measured = await page.evaluate((n) => {
+      const list = document.querySelector("#runnersBody .gh-list");
+      // The same custom property `applyPanelColumns` publishes from Rust's
+      // count, set directly rather than resized into: the split is what is
+      // under test, not the width that produces it.
+      const panel = document.getElementById("runnersPanel");
+      const before = panel.style.getPropertyValue("--panel-cols");
+      panel.style.setProperty("--panel-cols", String(n));
+      void list.offsetHeight;
+      const rows = [...list.querySelectorAll(":scope > .gh-row")];
+      const lowest = Math.max(...rows.map((r) => r.getBoundingClientRect().bottom));
+      const columns = new Set(rows.map((r) => Math.round(r.getBoundingClientRect().left))).size;
+      // Against the panel BODY, not the list's own box: the compensation is a
+      // negative margin on `.gh-list`, and an element's margin is not part of
+      // the border box `getBoundingClientRect` reports. The body is where the
+      // gap either survives into the card or does not, so the body is what the
+      // card's bottom padding is measured from.
+      const px = document.getElementById("runnersBody").getBoundingClientRect().bottom - lowest;
+      if (before) panel.style.setProperty("--panel-cols", before);
+      else panel.style.removeProperty("--panel-cols");
+      return { px, columns };
+    }, cols);
+    expect(measured.columns, `the list must actually split at --panel-cols:${cols}`).toBe(cols);
+    expect(measured.px, `dead space under the last row at ${cols} column(s)`).toBeLessThan(0.5);
+  }
+});

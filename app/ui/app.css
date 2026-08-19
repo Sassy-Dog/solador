@@ -7,6 +7,36 @@
   --muted:#8090ac; --ink:#f5e6cd; --read:#3fb950; --write:#e0922a;
   --net:#3fc8d4; --netup:#9bd34a;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* The vertical gap between two rows of the same in-panel list — every list,
+     no per-panel exceptions (#357). Four values were in use before it, and the
+     two furthest apart sat side by side on the same row of the grid: Repos at
+     10 beside Runners at 0, with Containers and OpenClaw at 3 and Usage at 6
+     below them. Nothing in the cockpit shared a rhythm.
+
+     10 because it is what the frame already says: `.card`, `.panel` and
+     `.group` all separate their own children by 10, so a list that agrees with
+     them is the cockpit measuring one thing one way rather than a fifth value
+     chosen to average the other four. Containers/VMs is taller for it — it is
+     the panel that renders 21+ rows — and that is the accepted cost of the
+     decision, not an oversight in it.
+
+     Those three keep their literal 10, and so do the `gap:10px 24px` grids on
+     `#containersBody`/`#reposBody`/`#usageBody`/`#azureBody` and the block
+     wrappers inside them (`.usage-main`, `.usage-providers`, `.az-main`).
+     Every one of those spaces SECTIONS, COLUMNS or a card's frame apart, which
+     is a different axis asking a different question; that they agree on 10
+     today is the point, not a reason to fuse them — pointing them here would
+     tie two decisions together at the first value that had to move. Read this
+     token only from a rule whose children are the rows of one list.
+
+     Authored HERE, unlike `--cockpit-gap`, which arrives from Rust (`spacing`
+     on the cockpit payload) and is the gap BETWEEN panels: spacing inside a
+     list is not a value the view-model computes, and inventing a `spacing`
+     field for it would put a number the frontend owns behind an IPC call. That
+     is also why every use below is a bare `var(--row-gap)` with no fallback —
+     a fallback would be a second authored value, free to disagree with this
+     one, in a stylesheet that is the only thing that ever sets it. */
+  --row-gap:10px;
 }
 * { box-sizing: border-box; }
 /* A class selector out-specifies the UA stylesheet's `[hidden] {display:none}`,
@@ -185,7 +215,11 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   flex-direction:column; gap:10px; min-width:0; }
 .panel-hdr { display:flex; align-items:baseline; gap:8px; min-width:0; }
 .panel-trailing { font-size:10px; color:var(--muted); white-space:nowrap; }
-.panel-body { display:flex; flex-direction:column; gap:10px; min-width:0; }
+/* The row list for Services and Sentry Crons, which put their rows straight
+   into the body; for Runners and OpenClaw it stacks the blocks the rows live
+   inside instead. One `--row-gap` either way — a panel whose rows ARE its body
+   must not read differently from one whose rows sit a level down. */
+.panel-body { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 /* The staleness/error warning shares the header row rather than owning a line
    under the body, where it used to live. A line below the content makes the
    card taller the moment a panel degrades, and `.panel-row` stretches every
@@ -284,7 +318,11 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
   gap:10px 24px; align-items:start;
 }
-.cont-section { display:flex; flex-direction:column; gap:3px; min-width:0; }
+/* The 21+ rows this file's densest list renders. It was 3px, and going to
+   `--row-gap` is the whole visible cost of #357 — deliberately paid: the panel
+   with the most rows is exactly the one that would have argued for an
+   exception, and an exception is what leaves the cockpit with no rhythm. */
+.cont-section { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 .cont-empty { font-size:10px; color:var(--muted); margin:0; }
 .cont-row { display:flex; align-items:center; gap:7px; min-width:0; }
 /* 6px here, not the header dot's 8px: a row of these reads as a list, not as
@@ -331,7 +369,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
   display:grid; grid-template-columns: repeat(var(--panel-cols, 1), minmax(0, 1fr));
   gap:10px 24px; align-items:start;
 }
-.gh-col { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.gh-col { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 .panel-health { font-size:10px; margin:4px 0 0; }
 
 /* A repo row opens its GitHub Actions page. The affordance is deliberately
@@ -396,6 +434,29 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    opens with a dot and a bold name. At 24 the two read as one crowded run. */
 .gh-list { column-count: var(--panel-cols, 1); column-gap:40px; }
 .gh-list > .gh-row { break-inside:avoid; }
+/* …and the row gap as a child MARGIN, because this list cannot express one any
+   other way: `gap` on a multi-column container is `column-gap` alone, and
+   `row-gap` is ignored outright. That is why this list rendered flush at 0
+   beside Repos at 10 — no value was ever chosen here and rejected; the
+   mechanism silently discarded the one that was. Converting to grid or flex to
+   get a `gap` would buy it at the cost of the balancing the comment above
+   defends, which is the feature, so the margin is the mechanism.
+
+   Scoped to `.gh-list >`: `.gh-row` is Repos' row class too, where the gap
+   already comes from `.gh-col`'s flex — unscoped, Repos would render gap PLUS
+   margin and land 20px apart while fixing Runners.
+
+   On EVERY row, with exactly one gap taken back off the container. The obvious
+   `:last-child` exemption does not do this job: in multicol the last child is
+   last in FLOW, so at two columns the bottom row of the OTHER column keeps its
+   margin, and the balancer sizes the list to the tallest column — a trailing
+   gap inside the card, in the one shape a single-column test never renders.
+   Taking one gap off the container is right at either count, because the
+   tallest column ends in exactly one either way. `:not(:empty)` because a
+   panel showing a message instead of rows has no margin to take back, and
+   pulling its body up by 10px would be this bug in the other direction. */
+.gh-list > .gh-row { margin-bottom:var(--row-gap); }
+.gh-list:not(:empty) { margin-bottom:calc(-1 * var(--row-gap)); }
 /* The width is Rust's `statusWidth`, applied via CSSOM, and there is no
    `min-width` fallback on purpose: a minimum is what let "recycling 1m" grow
    its own column and shove the OS chip left on that one row (#206). `overflow`
@@ -502,7 +563,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .pv-row.window .lbl { font-size:10px; min-width:42px; }
 .pv-message { font-size:11px; color:var(--muted); margin:0; }
 .pv-divider { border:0; border-top:1px solid var(--line); margin:0; width:100%; }
-.pv-section { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.pv-section { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 /* A named breakdown line (a project, a resource group): dot, name, figure. */
 .pv-item { display:flex; align-items:center; gap:7px; min-width:0; }
 .pv-item .dot { width:5px; height:5px; flex:none; }
@@ -596,7 +657,17 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .oc-runtime { display:flex; flex-direction:column; gap:8px; min-width:0; }
 .oc-runtime + .oc-runtime { padding-top:6px; border-top:1px solid var(--line); }
 .oc-runtime-hdr { font-size:10px; font-weight:700; }
-.oc-section { display:flex; flex-direction:column; gap:3px; min-width:0; }
+/* A heading and its rows, the same shape as `.cont-section` — and the same
+   `--row-gap`. It is not in #357's inventory table, which counted the four
+   DISTINCT values in use and folded this list in with Containers' 3px; the
+   decision it records is "every in-panel list, no per-panel exceptions", and
+   leaving the one list the table did not name at 3 would have re-opened the
+   report against the next panel to sit beside this one.
+
+   `.oc-runtime` above keeps its own 8px, and `.oc-agent` / `.oc-pairing` below
+   keep their 1-3px: those space runtime BLOCKS apart and stack the two lines
+   INSIDE one row. Neither is the gap between two rows of a list. */
+.oc-section { display:flex; flex-direction:column; gap:var(--row-gap); min-width:0; }
 .oc-hdr { font-size:10px; font-weight:700; }
 .oc-row { display:flex; align-items:center; gap:7px; min-width:0; }
 .oc-row .dot { width:6px; height:6px; flex:none; }
