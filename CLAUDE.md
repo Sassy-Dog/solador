@@ -490,11 +490,14 @@ share one release and a fixed crash would read as regressed.
    appended — a stock sentence is the floor a message may not fall below, never
    a cap on how specific one may be. A `self.to_string()` fallback is how a
    transport error, a request URL and a storage path each reached a panel
-   footer, so `user_message()` writes out every arm. `Fault::from_http_status`
-   reads 401/403/404 as *account* states, which is true of an org-scoped read
-   and false of a host agent's endpoint or a public status page — callers with
-   no sharper reading use `fault::http_status_message`, which classifies only
-   the two status classes that mean the same thing everywhere.
+   footer, so `user_message()` writes out every arm. Reading 401/403/404 as
+   *account* states is true of an org-scoped read and false of a host agent's
+   endpoint or a public status page, so that classifier is **private** to
+   `crates/fault` (#364) — a caller with no sharper reading takes
+   `fault::http_status_message`, which classifies only the two status classes
+   that mean the same thing everywhere. The vendor slot is an untyped `&str`
+   carrying two grammatical categories, and `Fault::ToolUnavailable` is the one
+   sentence that needs a proper noun rather than `"that host"`.
 4. Never fabricate a value to fill a gap — render `—` and say why. **A state is
    a value**: an unanticipated failure keeps `Fault::Unexpected` rather than
    being rounded to the nearest anticipated one, and a crate whose failure the
