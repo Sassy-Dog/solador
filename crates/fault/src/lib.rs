@@ -48,6 +48,30 @@
 //! response`) rather than `the {vendor} response`, which said "the the agent
 //! response" the first time a non-proper noun reached it.
 //!
+//! # Two vendor categories, and the one pairing that is not valid
+//!
+//! The slot is an untyped `&str` filled from two grammatical categories:
+//! **proper nouns** — `"Neon"`, `"Sentry"`, `"Vercel"`, `"GitHub"`,
+//! `"Azure CLI"`, `"Azure Storage"` — and **names that carry their own
+//! determiner** — `"the agent"`, `"the status page"`, `"that host"`. Eight of
+//! the nine templates read correctly against both. [`Fault::ToolUnavailable`]
+//! does not: it tells the operator to install what it names, and *"that host
+//! not found — install it and sign in"* is broken English about a machine
+//! nobody can install.
+//!
+//! Typing the vendor is deliberately **not** the fix (#364). Nine sentences do
+//! not justify a vendor-category type, and the slot stays `&str`. What the
+//! constraint needed was to be *said*: the crate's own sweeps iterated the
+//! whole (state × vendor) cross product, so the one pairing production never
+//! produces was implicitly blessed — which is what made the broken sentence
+//! look tested. `is_rendered` in the tests below is the table those sweeps now
+//! iterate, and the pairing it excludes is asserted excluded, printing the
+//! sentence a widening would ship.
+//!
+//! No test here can see a caller in another crate; only a type could, and a
+//! type is not warranted at nine sentences. This states the rule and stops
+//! this crate from endorsing its violation.
+//!
 //! # The fallback is not a category
 //!
 //! [`Fault::Unexpected`] exists so an unanticipated failure can be *said*
@@ -86,7 +110,13 @@ pub enum Fault {
     /// expects.
     Undecodable,
     /// A tool this panel shells out to is missing, or is installed and not
-    /// signed in. The `az` case.
+    /// signed in. The `az` case, which is the only one rendered today.
+    ///
+    /// **The one state whose template needs a proper noun.** Its sentence
+    /// tells the operator to go and install what it names, so the vendor has
+    /// to be something installable — see the module note on the two vendor
+    /// categories. Rendered against `"that host"` it reads "that host not
+    /// found — install it and sign in".
     ToolUnavailable,
     /// None of the above.
     ///
@@ -113,14 +143,29 @@ pub enum Fault {
 pub const MAX_MESSAGE_CHARS: usize = 64;
 
 impl Fault {
-    /// Classify an HTTP status.
+    /// Classify an HTTP status **for a read that is scoped to an account**.
+    ///
+    /// Private, and private is the point (#364). The account reading is true
+    /// of the org-scoped consumption read this was written for and false
+    /// almost everywhere else in this app: 404 lands in [`Fault::NotFound`] —
+    /// "no such account — check Settings" — which is a mistyped URL for a
+    /// public status page, version skew for a host agent, a repo the PAT
+    /// cannot see for GitHub, and a renamed container for blob storage.
+    /// Public, it was the most misusable constructor in the crate, and it had
+    /// no caller anywhere but [`http_status_message`] — the safe wrapper
+    /// sitting directly beside it.
+    ///
+    /// It keeps the account-scoped *name* while it is private so that when a
+    /// read the account reading actually fits arrives — #283's vendor accounts
+    /// — it comes back out already saying what it means, rather than being
+    /// rediscovered as the shortest name in the crate.
     ///
     /// A status this vocabulary does not recognise is [`Fault::Unexpected`] —
     /// **never** folded into the nearest named state. A 400 is not a
     /// credential problem and a 418 is not an outage; reporting either as one
     /// would read as a diagnosis and be a guess.
     #[must_use]
-    pub const fn from_http_status(status: u16) -> Self {
+    const fn from_account_scoped_status(status: u16) -> Self {
         match status {
             401 | 403 => Fault::CredentialRejected,
             404 => Fault::NotFound,
@@ -145,6 +190,11 @@ impl Fault {
     /// `vendor` is the operator-facing name — "Neon", "Sentry", "Azure CLI" —
     /// and it is the only thing interpolated. Nothing a transport, a response
     /// or a subprocess produced belongs in here.
+    ///
+    /// A name may carry its own determiner (`"the agent"`), and every template
+    /// but [`Fault::ToolUnavailable`]'s reads correctly with one. That
+    /// exception is a constraint on callers, stated on the variant and pinned
+    /// by the tests below.
     #[must_use]
     pub fn message(self, vendor: &str) -> String {
         match self {
@@ -165,21 +215,24 @@ impl Fault {
 
 /// The sentence for an HTTP status the caller has no sharper reading of.
 ///
-/// Only two of [`Fault::from_http_status`]'s classes mean the same thing
-/// wherever they arrive from, and those render through the vocabulary: a 429 is
-/// throttling and a 5xx is the far side failing, for a host agent and a blob
-/// container and a public status page alike. The 5xx sentence keeps the code
-/// beside it, because "is failing on its side" is a kind and a 502 and a 500
-/// are still two different things to go and read about.
+/// Only two of the classes `Fault::from_account_scoped_status` recognises mean
+/// the same thing wherever they arrive from, and those render through the
+/// vocabulary: a 429 is throttling and a 5xx is the far side failing, for a
+/// host agent and a blob container and a public status page alike. The 5xx
+/// sentence keeps the code beside it, because "is failing on its side" is a
+/// kind and a 502 and a 500 are still two different things to go and read
+/// about.
 ///
-/// **Everything else names the status**, deliberately.
-/// [`Fault::from_http_status`] reads 401/403 as "update the credential" and 404
-/// as "no such account", which is true of the org-scoped consumption read it
-/// was written for and false almost everywhere else in this app: a 404 from a
-/// host agent is a missing endpoint (version skew), from GitHub a repo the PAT
-/// cannot see, from a status page a mistyped URL, and from blob storage a
-/// container that was renamed. Reporting any of those as "no such account —
-/// check Settings" sends the operator to edit a field that was never wrong.
+/// **Everything else names the status**, deliberately. That classifier reads
+/// 401/403 as "update the credential" and 404 as "no such account", which is
+/// true of the org-scoped consumption read it was written for and false almost
+/// everywhere else in this app: a 404 from a host agent is a missing endpoint
+/// (version skew), from GitHub a repo the PAT cannot see, from a status page a
+/// mistyped URL, and from blob storage a container that was renamed. Reporting
+/// any of those as "no such account — check Settings" sends the operator to
+/// edit a field that was never wrong. Which is why the classifier is **private
+/// to this module** and this wrapper is the crate's only public way in from a
+/// bare status (#364).
 ///
 /// A caller for which the account reading *is* right says so in its own arm
 /// before it gets here — `crates/usage`'s Neon 404 ("check the org ID") and
@@ -187,7 +240,7 @@ impl Fault {
 /// the stock sentence anyway.
 #[must_use]
 pub fn http_status_message(status: u16, vendor: &str) -> String {
-    match Fault::from_http_status(status) {
+    match Fault::from_account_scoped_status(status) {
         Fault::RateLimited => Fault::RateLimited.message(vendor),
         Fault::VendorFailure => {
             format!("{} (HTTP {status})", Fault::VendorFailure.message(vendor))
@@ -214,20 +267,56 @@ mod tests {
         Fault::Unexpected,
     ];
 
-    /// The vendor names this app actually renders, longest included — the
-    /// bound is meaningless against a name nobody uses. The article-carrying
-    /// three arrived with #354 and are the reason `Undecodable` is possessive.
-    const VENDORS: &[&str] = &[
+    /// The vendor names this app renders that are **proper nouns** — a name
+    /// the operator could type at a shell or read off a Settings field.
+    /// Longest included: the bound is meaningless against a name nobody uses.
+    const PROPER_NOUN_VENDORS: &[&str] = &[
         "Neon",
         "Sentry",
         "Vercel",
         "GitHub",
         "Azure CLI",
         "Azure Storage",
-        "the agent",
-        "the status page",
-        "that host",
     ];
+
+    /// …and the ones that **carry their own determiner**. These three arrived
+    /// with #354 and are the reason `Undecodable` is possessive.
+    const ARTICLE_CARRYING_VENDORS: &[&str] = &["the agent", "the status page", "that host"];
+
+    /// Every vendor name this app renders, both categories.
+    fn all_vendors() -> impl Iterator<Item = &'static str> {
+        PROPER_NOUN_VENDORS
+            .iter()
+            .chain(ARTICLE_CARRYING_VENDORS.iter())
+            .copied()
+    }
+
+    /// Whether production can put this (state, vendor) pairing on a panel.
+    ///
+    /// The sweeps below iterate this rather than the whole cross product. A
+    /// sweep of every pairing is what made `ToolUnavailable`'s incompatibility
+    /// with an article-carrying name look tested: it asserted the three
+    /// properties that hold perfectly well for "that host not found — install
+    /// it and sign in" — it names the vendor, it fits the header, it carries no
+    /// URL — and none that would notice the sentence is nonsense.
+    fn is_rendered(fault: Fault, vendor: &str) -> bool {
+        match fault {
+            // The one template that needs a proper noun: it tells the operator
+            // to go and install what it names, and a host is not installable.
+            Fault::ToolUnavailable => PROPER_NOUN_VENDORS.contains(&vendor),
+            // Everything else is a thing that can happen to anything this app
+            // reads, through a template valid against both categories.
+            _ => true,
+        }
+    }
+
+    /// Every pairing `is_rendered` admits.
+    fn rendered_pairings() -> impl Iterator<Item = (Fault, &'static str)> {
+        ALL.iter()
+            .copied()
+            .flat_map(|fault| all_vendors().map(move |vendor| (fault, vendor)))
+            .filter(|(fault, vendor)| is_rendered(*fault, vendor))
+    }
 
     /// The bug in #352: a request URL, percent-encoded parameters and a query
     /// string reached three panel headers. Asserted per state rather than by
@@ -235,15 +324,13 @@ mod tests {
     /// looked innocent at the construction site.
     #[test]
     fn no_stock_sentence_can_carry_a_url() {
-        for fault in ALL {
-            for vendor in VENDORS {
-                let message = fault.message(vendor);
-                for forbidden in ["://", "http", "?", "%", "&", "="] {
-                    assert!(
-                        !message.contains(forbidden),
-                        "{fault:?} for {vendor} carries {forbidden:?}: {message}"
-                    );
-                }
+        for (fault, vendor) in rendered_pairings() {
+            let message = fault.message(vendor);
+            for forbidden in ["://", "http", "?", "%", "&", "="] {
+                assert!(
+                    !message.contains(forbidden),
+                    "{fault:?} for {vendor} carries {forbidden:?}: {message}"
+                );
             }
         }
     }
@@ -252,29 +339,25 @@ mod tests {
     /// through five panels for the one that is red.
     #[test]
     fn every_stock_sentence_names_the_vendor() {
-        for fault in ALL {
-            for vendor in VENDORS {
-                let message = fault.message(vendor);
-                assert!(
-                    message.contains(vendor),
-                    "{fault:?} does not name {vendor}: {message}"
-                );
-            }
+        for (fault, vendor) in rendered_pairings() {
+            let message = fault.message(vendor);
+            assert!(
+                message.contains(vendor),
+                "{fault:?} does not name {vendor}: {message}"
+            );
         }
     }
 
     /// Six wrapped lines cut off mid-token is what this vocabulary replaces.
     #[test]
     fn every_stock_sentence_fits_a_panel_header() {
-        for fault in ALL {
-            for vendor in VENDORS {
-                let message = fault.message(vendor);
-                let width = message.chars().count();
-                assert!(
-                    width <= MAX_MESSAGE_CHARS,
-                    "{fault:?} for {vendor} is {width} chars: {message}"
-                );
-            }
+        for (fault, vendor) in rendered_pairings() {
+            let message = fault.message(vendor);
+            let width = message.chars().count();
+            assert!(
+                width <= MAX_MESSAGE_CHARS,
+                "{fault:?} for {vendor} is {width} chars: {message}"
+            );
         }
     }
 
@@ -282,13 +365,54 @@ mod tests {
     /// one. "couldn't read the the agent response" is what this caught.
     #[test]
     fn no_template_doubles_an_article_on_a_vendor_that_carries_one() {
-        for fault in ALL {
-            for vendor in VENDORS.iter().filter(|v| v.starts_with("the ")) {
-                let message = fault.message(vendor);
-                assert!(
-                    !message.contains("the the"),
-                    "{fault:?} for {vendor}: {message}"
-                );
+        for (fault, vendor) in rendered_pairings().filter(|(_, v)| v.starts_with("the ")) {
+            let message = fault.message(vendor);
+            assert!(
+                !message.contains("the the"),
+                "{fault:?} for {vendor}: {message}"
+            );
+        }
+    }
+
+    /// The one pairing the sweeps above exclude, asserted directly so the
+    /// exclusion is a stated rule rather than a gap somebody has to notice.
+    ///
+    /// The failure prints the sentence a widening would ship, because that
+    /// sentence *is* the argument: `ToolUnavailable`'s template supplies the
+    /// grammar of a thing you can go and install, and none of the three
+    /// determiner-carrying names is one. The pairing production does render —
+    /// `AZURE_CLI`, from `app/src-tauri/src/azure/sas.rs` — is pinned here
+    /// byte-for-byte alongside it.
+    #[test]
+    fn tool_unavailable_is_rendered_only_against_a_tool_that_can_be_named() {
+        for vendor in ARTICLE_CARRYING_VENDORS {
+            assert!(
+                !is_rendered(Fault::ToolUnavailable, vendor),
+                "would ship {:?}",
+                Fault::ToolUnavailable.message(vendor)
+            );
+        }
+        for vendor in PROPER_NOUN_VENDORS {
+            assert!(
+                is_rendered(Fault::ToolUnavailable, vendor),
+                "{vendor} is installable and nameable"
+            );
+        }
+        assert_eq!(
+            Fault::ToolUnavailable.message("Azure CLI"),
+            "Azure CLI not found — install it and sign in"
+        );
+    }
+
+    /// …and it is the *only* exclusion. Narrowing any other state here would
+    /// quietly stop sweeping a pairing that does reach a panel, which is the
+    /// same defect as blessing one that cannot — in the other direction, and
+    /// harder to see because the sweeps would still be green.
+    #[test]
+    fn every_other_state_is_swept_against_both_vendor_categories() {
+        for fault in ALL.iter().filter(|f| **f != Fault::ToolUnavailable) {
+            for vendor in all_vendors() {
+                assert!(is_rendered(*fault, vendor), "{fault:?} for {vendor}");
             }
         }
     }
@@ -310,13 +434,19 @@ mod tests {
 
     #[test]
     fn the_recognised_statuses_map_to_the_states_they_mean() {
-        assert_eq!(Fault::from_http_status(401), Fault::CredentialRejected);
-        assert_eq!(Fault::from_http_status(403), Fault::CredentialRejected);
-        assert_eq!(Fault::from_http_status(404), Fault::NotFound);
-        assert_eq!(Fault::from_http_status(429), Fault::RateLimited);
-        assert_eq!(Fault::from_http_status(500), Fault::VendorFailure);
-        assert_eq!(Fault::from_http_status(503), Fault::VendorFailure);
-        assert_eq!(Fault::from_http_status(599), Fault::VendorFailure);
+        assert_eq!(
+            Fault::from_account_scoped_status(401),
+            Fault::CredentialRejected
+        );
+        assert_eq!(
+            Fault::from_account_scoped_status(403),
+            Fault::CredentialRejected
+        );
+        assert_eq!(Fault::from_account_scoped_status(404), Fault::NotFound);
+        assert_eq!(Fault::from_account_scoped_status(429), Fault::RateLimited);
+        assert_eq!(Fault::from_account_scoped_status(500), Fault::VendorFailure);
+        assert_eq!(Fault::from_account_scoped_status(503), Fault::VendorFailure);
+        assert_eq!(Fault::from_account_scoped_status(599), Fault::VendorFailure);
     }
 
     /// The load-bearing one. A status nobody anticipated must land in the
@@ -326,7 +456,7 @@ mod tests {
     #[test]
     fn an_unrecognised_status_lands_in_the_fallback_not_the_nearest_named_state() {
         for status in [400u16, 402, 405, 418, 451, 302, 100] {
-            let fault = Fault::from_http_status(status);
+            let fault = Fault::from_account_scoped_status(status);
             assert_eq!(
                 fault,
                 Fault::Unexpected,

@@ -154,10 +154,11 @@ impl StatusError {
     /// and every one of these sentences becomes a claim about GitHub.
     ///
     /// These reads carry no credential, which is why the status arm goes
-    /// through `fault::http_status_message` rather than
-    /// `Fault::from_http_status`: a 401 or a 404 from a public status page is a
-    /// wrong URL, and "rejected the credential" would name a credential that
-    /// does not exist.
+    /// through `fault::http_status_message`, the only public way into the
+    /// vocabulary from a bare status: a 401 or a 404 from a public status page
+    /// is a wrong URL, and "rejected the credential" would name a credential
+    /// that does not exist. The account-scoped classifier that reads them the
+    /// other way is private to `crates/fault` (#364).
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
