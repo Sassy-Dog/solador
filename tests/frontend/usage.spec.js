@@ -65,6 +65,43 @@ const rgb = (hex) => {
 const windowRows = (page) => page.locator("#usageBody .pv-row.window");
 const section = (page, id) => page.locator(`#usageBody .pv-section[data-provider="${id}"]`);
 
+/**
+ * A warning long enough that no header could ever hold it, and deliberately not
+ * a realistic sentence.
+ *
+ * Containment is a property of the layout, not of today's wording:
+ * [#352](https://github.com/Sassy-Dog/solador/issues/352) is shortening these
+ * messages to stock sentences, which makes the header comfortable — and a test
+ * that passed for *that* reason would stop covering the thing it was written
+ * for the moment a vendor returned a paragraph again.
+ */
+const LONG_WARNING =
+  "⚠ neon: the vendor answered with a paragraph rather than a sentence, and " +
+  "this is what a paragraph looks like on a card that is authored one quarter " +
+  "of a cockpit row wide — which is exactly why the containment asserted here " +
+  "cannot be left to depend on how long the message happens to be today " +
+  "· last ok 6h ago";
+
+/** How wide an element got, and whether its text had to be cut to fit. */
+const fit = (page, selector) =>
+  page.locator(selector).evaluate((el) => ({
+    right: el.getBoundingClientRect().right,
+    // `scrollWidth > clientWidth` is what `text-overflow:ellipsis` reacts to,
+    // so it is the same question the browser asked rather than a re-derivation.
+    ellipsised: el.scrollWidth > el.clientWidth,
+  }));
+
+/** The inside of a panel's box — where its content has to stay. */
+const contentRight = (page, selector) =>
+  page.locator(selector).evaluate((el) => {
+    const style = getComputedStyle(el);
+    return (
+      el.getBoundingClientRect().right -
+      parseFloat(style.paddingRight) -
+      parseFloat(style.borderRightWidth)
+    );
+  });
+
 test("the panel paints Rust's title, trailing label and window rows", async ({ page, baseURL }) => {
   const usage = await gotoWithUsage(page, baseURL);
   await expect(page.locator("#usagePanel")).toBeVisible();
@@ -136,10 +173,12 @@ test("a measured provider shows its figures and an unmeasured one shows an em da
     "color",
     rgb(unmeasured.providers[0].rows[0].valueColor)
   );
-  // …and it says why, rather than leaving a bare dash.
-  await expect(section(page, "neon").locator(".pv-footer")).toHaveText(
-    unmeasured.providers[0].footer.text
-  );
+  // …and it says why, rather than leaving a bare dash — in the header, naming
+  // the section it is about. Nothing is appended under the rows: that is what
+  // made the card grow and shove the rest of the cockpit around.
+  await expect(section(page, "neon").locator(".pv-footer")).toHaveCount(0);
+  await expect(page.locator("#usageStale")).toHaveText(unmeasured.footer.text);
+  expect(unmeasured.footer.text, "the warning names the section").toContain("neon:");
 });
 
 test("the Sentry quota bar is drawn only when the count is known", async ({ page, baseURL }) => {
@@ -157,19 +196,24 @@ test("the Sentry quota bar is drawn only when the count is known", async ({ page
   await expect(section(page, "sentry").locator(".pbar")).toHaveCount(0);
 });
 
-test("a stale metered section is dated on its own line beside its footer", async ({ page, baseURL }) => {
-  // The two clocks, side by side and answering different questions. The
-  // `.panel-asof` line dates the figures ("as of 23h ago"); the `.pv-footer`
-  // beside it warns that the poller is late. Both fixtures carry the same
-  // numbers, so the only difference a reader sees is the claim being made about
-  // them — which is the whole point of marking staleness rather than rendering
-  // a nearly-hour-old figure as a current one.
+test("a stale metered section is dated on its own line, and warned about in the header", async ({ page, baseURL }) => {
+  // The two clocks, answering different questions and now living in two
+  // different places. The `.panel-asof` line dates the figures ("as of 23h
+  // ago") and stays in the body, beside the numbers it qualifies; the warning
+  // that the poller is late is hoisted to the panel header, because a line
+  // under the body makes the card taller and `.panel-row` stretches every other
+  // card in the row to match. Both fixtures carry the same numbers, so the only
+  // difference a reader sees is the claim being made about them — which is the
+  // whole point of marking staleness rather than rendering a nearly-hour-old
+  // figure as a current one.
   const live = await gotoWithUsage(page, baseURL);
   for (const provider of live.providers) {
     expect(provider.freshness.state).toBe("live");
     expect(provider.freshness.text, "a current reading paints nothing").toBeNull();
   }
   await expect(page.locator("#usageBody .panel-asof")).toHaveCount(0);
+  expect(live.footer, "and a fresh panel warns about nothing").toBeNull();
+  await expect(page.locator("#usageStale")).toBeHidden();
 
   const stale = await gotoWithUsage(page, baseURL, "sample-usage-stale.json");
   for (const provider of stale.providers) {
@@ -179,29 +223,99 @@ test("a stale metered section is dated on its own line beside its footer", async
     await expect(asOf).toBeVisible();
     await expect(asOf).toHaveText(provider.freshness.text);
     await expect(asOf).toHaveCSS("color", rgb(provider.freshness.color));
-    // It sits inside the section, above that section's own footer — not in the
-    // panel header, where it would be one line for three different clocks.
+    // The freshness line is the LAST thing in the section: nothing is appended
+    // under it any more.
     const order = await section(page, provider.id).evaluate((el) =>
       [...el.children].map((c) => c.className)
     );
-    expect(order.indexOf("panel-asof")).toBeLessThan(order.indexOf("pv-footer"));
-
-    // Not folded into the footer: two elements, two strings, both visible.
-    await expect(section(page, provider.id).locator(".pv-footer")).toHaveText(
-      provider.footer.text
-    );
-    expect(provider.footer.text).not.toBe(provider.freshness.text);
+    expect(order[order.length - 1]).toBe("panel-asof");
+    expect(provider.footer, "a section carries no warning of its own").toBeUndefined();
   }
+  await expect(page.locator("#usageBody .pv-footer")).toHaveCount(0);
 
   // Same figures either way — the mark is the line, never a changed number.
   expect(stale.providers[0].rows.map((r) => r.value)).toEqual(
     live.providers[0].rows.map((r) => r.value)
   );
 
-  // Claude's own rollups are on a cadence two orders of magnitude faster, and
-  // this fixture leaves them current: the panel header stays clean.
-  expect(stale.footer).toBeNull();
-  await expect(page.locator("#usageStale")).toBeHidden();
+  // Both sections went stale at once and both are on the one header line, each
+  // naming itself. Unattributed they would be the byte-identical
+  // `⚠ stale · updated 23h ago` twice over — a line saying the same thing twice
+  // and identifying neither.
+  const warning = page.locator("#usageStale");
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveText(stale.footer.text);
+  await expect(warning).toHaveAttribute("title", stale.footer.text);
+  for (const provider of stale.providers) {
+    expect(stale.footer.text).toContain(`${provider.id}:`);
+  }
+  // …and it is not the freshness line wearing a different class: two strings,
+  // two questions.
+  expect(stale.footer.text).not.toBe(stale.providers[0].freshness.text);
+});
+
+test("a degraded panel is exactly as tall as a healthy one, however long the warning", async ({ page, baseURL }) => {
+  // The regression this issue is about. A `.pv-footer` under a provider section
+  // carried no `white-space:nowrap`, so a long message wrapped — six lines, on
+  // the screenshot that reported it — the card grew, `.panel-row` stretched
+  // every other card in the row to match, and every row below moved down. One
+  // Neon read going stale rearranged the cockpit. Mirrors the identical
+  // assertion on the Repos panel in `github.spec.js`.
+  const healthy = await gotoWithUsage(page, baseURL);
+  expect(healthy.footer, "the healthy fixture warns about nothing").toBeNull();
+  const before = await page.locator("#usagePanel").boundingBox();
+  const headerBefore = await page.locator("#usagePanel .panel-hdr").boundingBox();
+
+  // Rust's amber, read off a fixture that carries a real warning rather than
+  // written out here — this test is about height, and a literal would be a
+  // second author of a colour `viewmodel::color` owns.
+  const amber = (await fixture(baseURL, "sample-usage-stale.json")).footer.color;
+  const degraded = { ...healthy, footer: { text: LONG_WARNING, color: amber } };
+  await page.evaluate((vm) => window.__SOLADOR_USAGE_TEST__.render(vm), degraded);
+
+  const warning = page.locator("#usageStale");
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveText(LONG_WARNING);
+  // Ellipsised rather than wrapped, so the whole message has to stay reachable
+  // somewhere.
+  await expect(warning).toHaveAttribute("title", LONG_WARNING);
+
+  // The header did not become two lines, and the card did not become one line
+  // taller — the two ways this message could have cost height.
+  const headerAfter = await page.locator("#usagePanel .panel-hdr").boundingBox();
+  expect(headerAfter.height).toBeCloseTo(headerBefore.height, 1);
+  const after = await page.locator("#usagePanel").boundingBox();
+  expect(after.height).toBeCloseTo(before.height, 1);
+  expect(after.width).toBeCloseTo(before.width, 1);
+});
+
+test("a pathologically long warning stays inside the tile and starves nothing beside it", async ({ page, baseURL }) => {
+  const healthy = await gotoWithUsage(page, baseURL);
+  const cell = await page.locator("#usagePanel").boundingBox();
+  const amber = (await fixture(baseURL, "sample-usage-stale.json")).footer.color;
+
+  await page.evaluate(
+    ([vm, text, color]) =>
+      window.__SOLADOR_USAGE_TEST__.render({ ...vm, footer: { text, color } }),
+    [healthy, LONG_WARNING, amber]
+  );
+
+  // Nothing bleeds into the neighbouring tile or the page gutter: the panel's
+  // own box is unmoved, and every header element sits inside it.
+  const degraded = await page.locator("#usagePanel").boundingBox();
+  expect(degraded.x).toBeCloseTo(cell.x, 1);
+  expect(degraded.width).toBeCloseTo(cell.width, 1);
+  const inside = await contentRight(page, "#usagePanel");
+  for (const selector of ["#usageTitle", "#usageStale", "#usageTrailing"]) {
+    const el = await fit(page, selector);
+    expect(el.right, `${selector} must stay inside the card`).toBeLessThanOrEqual(inside + 0.5);
+  }
+
+  // The warning is the designated give and the only one: the trailing figure
+  // beside it keeps every character.
+  expect((await fit(page, "#usageStale")).ellipsised).toBe(true);
+  expect((await fit(page, "#usageTrailing")).ellipsised).toBe(false);
+  await expect(page.locator("#usageTrailing")).toHaveText(healthy.trailing);
 });
 
 test("a section with no reading publishes no age rather than a fresh-looking zero", async ({ page, baseURL }) => {
