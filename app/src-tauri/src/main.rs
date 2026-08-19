@@ -670,7 +670,7 @@ fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at
         Err(e) => {
             s.consecutive_failures = s.consecutive_failures.saturating_add(1);
             if s.consecutive_failures >= FAILURE_THRESHOLD {
-                s.error = Some(e.user_message().into_owned());
+                s.error = Some(e.user_message());
             }
         }
     }
@@ -4376,9 +4376,7 @@ fn dump_card(host_name: &str, connection: &Connection) -> Value {
 /// The stale message the agent client produces for an unreachable host, so a
 /// dumped fixture carries the real string rather than a copy of it.
 fn unreachable_message() -> String {
-    AgentError::Unreachable("connection refused".into())
-        .user_message()
-        .into_owned()
+    AgentError::Unreachable("connection refused".into()).user_message()
 }
 
 /// One live host, the offline fallback `app/ui/app.js` fetches when

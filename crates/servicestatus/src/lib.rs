@@ -37,10 +37,21 @@ pub mod discover;
 pub mod statusio;
 pub mod statuspage;
 
+use fault::Fault;
+
 pub use azurefeed::AzureFeedClient;
 pub use discover::{Component, ProbeError};
 pub use statusio::StatusIoClient;
 pub use statuspage::StatusPageClient;
+
+/// What every failure in this crate blames, and the only thing
+/// [`Fault::message`] interpolates.
+///
+/// **Not the vendor.** A status page and the service it describes fail
+/// independently, and "couldn't reach GitHub" from an unreadable
+/// `githubstatus.com` would be a claim about GitHub that nothing here observed.
+/// It carries its article so every stock sentence reads as English around it.
+const STATUS_PAGE: &str = "the status page";
 
 /// One component's health, in Atlassian Statuspage's vocabulary.
 ///
@@ -137,12 +148,22 @@ impl StatusError {
     /// What the panel shows. Deliberately blames the *status page*, never the
     /// vendor itself — the two fail independently, and an unreachable page says
     /// nothing about whether the service is up.
+    ///
+    /// That distinction is carried entirely by [`STATUS_PAGE`], the only thing
+    /// the `fault` vocabulary interpolates (#354): pass "GitHub" here instead
+    /// and every one of these sentences becomes a claim about GitHub.
+    ///
+    /// These reads carry no credential, which is why the status arm goes
+    /// through `fault::http_status_message` rather than
+    /// `Fault::from_http_status`: a 401 or a 404 from a public status page is a
+    /// wrong URL, and "rejected the credential" would name a credential that
+    /// does not exist.
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            StatusError::Unreachable(_) => "couldn't reach the status page".to_owned(),
-            StatusError::HttpStatus(code) => format!("the status page returned HTTP {code}"),
-            StatusError::DecodeFailed(_) => "couldn't read the status page".to_owned(),
+            StatusError::Unreachable(_) => Fault::Unreachable.message(STATUS_PAGE),
+            StatusError::HttpStatus(code) => fault::http_status_message(*code, STATUS_PAGE),
+            StatusError::DecodeFailed(_) => Fault::Undecodable.message(STATUS_PAGE),
         }
     }
 }

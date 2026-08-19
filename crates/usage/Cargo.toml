@@ -10,6 +10,10 @@ rust-version.workspace = true
 name = "usage"
 
 [dependencies]
+# The stock message vocabulary (#354). A leaf crate with no dependencies of its
+# own, so this edge costs nothing — and it is not a dependency on the panel
+# layer: `viewmodel` re-exports the same enum rather than owning it.
+solador-fault = { path = "../fault" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Same HTTP stack (and feature set) as crates/agentclient and crates/github, so

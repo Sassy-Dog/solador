@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# The stock message vocabulary (#354). A leaf crate with no dependencies of its
+# own, so this edge costs nothing — and it is not a dependency on the panel
+# layer: `viewmodel` re-exports the same enum rather than owning it.
+solador-fault = { path = "../fault" }
 solador-wire = { path = "../wire" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = { workspace = true }

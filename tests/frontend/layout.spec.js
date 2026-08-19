@@ -372,7 +372,7 @@ test("a host that fails after connecting blanks its card and says it cannot be c
   // What is left is the host's name and one sentence dating the outage.
   const down = page.locator(".card-down");
   await expect(down).toBeVisible();
-  await expect(down).toContainText("Couldn't reach the agent");
+  await expect(down).toContainText("couldn't reach the agent");
   await expect(down).toContainText("last update");
   await expect(down).toContainText("ago");
   await expect(page.locator(".hostName")).toHaveText("ubu-01");
@@ -409,7 +409,7 @@ test("a host whose agent stopped sampling loses the green dot even though every 
   // The message names the agent rather than the link -- a stalled sampler and
   // an unreachable host send an operator to different places.
   await expect(page.locator(".staleMsg")).toContainText("sampler");
-  await expect(page.locator(".staleMsg")).not.toContainText("Couldn't reach");
+  await expect(page.locator(".staleMsg")).not.toContainText("couldn't reach");
   // …dated by the agent's own clock (`sampleAgeSeconds`, 300 in the fixture).
   // This side's last successful request is a second old, and a badge measuring
   // that would say five-minute-old numbers are current.
@@ -454,7 +454,7 @@ test("one unreachable host shows its error card while the others stay live", asy
   // crucially not its neighbour's figures, which a shared `cpuValue` selector
   // would produce.
   await expect(cards.nth(2).locator(".cpuValue")).toHaveText("—");
-  await expect(cards.nth(2).locator(".card-down")).toContainText("Couldn't reach the agent");
+  await expect(cards.nth(2).locator(".card-down")).toContainText("couldn't reach the agent");
   await expect(cards.nth(2).locator(".cores .core").first()).toBeHidden();
 
   // The host that never connected shows the cause, never a fabricated number.
@@ -551,8 +551,8 @@ test("a card's header names the host and its CPU on one line, ellipsizing the mo
   // …and the unreachable card in the same fixture carries its reason on its
   // own line rather than in the header, where a long message would compete
   // with the very ellipsis rule this test exists to pin.
-  const downCard = page.locator(".cockpit .card").filter({ hasText: "Couldn't reach the agent" }).first();
-  await expect(downCard.locator(".card-down")).toContainText("Couldn't reach the agent");
+  const downCard = page.locator(".cockpit .card").filter({ hasText: "couldn't reach the agent" }).first();
+  await expect(downCard.locator(".card-down")).toContainText("couldn't reach the agent");
   await expect(downCard.locator(".staleMsg")).toHaveText("");
   await expect(downCard.locator(".cpuValue")).toHaveText("—");
 });
@@ -827,7 +827,7 @@ test("side-by-side cards reserve volume slots so the sections below them line up
   //
   // It stops at the cores block rather than the card's top edge because the
   // header genuinely varies: a host that has gone unreachable while still
-  // showing its last-known data carries a "Couldn't reach the agent" banner
+  // showing its last-known data carries a "couldn't reach the agent" banner
   // there, making its header 21px taller. That difference is the card doing
   // its job — padding every healthy card to match would be alignment for its
   // own sake.

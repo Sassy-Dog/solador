@@ -43,6 +43,16 @@
 //! browser would. The threat this guards is a URL that quietly downgrades or
 //! walks off https, not an operator naming their own network.
 
+use fault::Fault;
+
+/// What this surface calls the thing the operator just typed a URL for, and the
+/// only thing [`Fault::message`] interpolates.
+///
+/// Not a vendor name: nothing here knows whose host it is — that is the
+/// question the probe was asked. It carries its article so every stock sentence
+/// reads as English around it.
+const THAT_HOST: &str = "that host";
+
 /// One entry of a Statuspage's `components[]`, reduced to what a picker needs.
 ///
 /// The `id` is the part that gets stored: display names are the vendor's to
@@ -96,6 +106,28 @@ impl ProbeError {
     /// Six findings, six sentences. The [`NotJson`](ProbeError::NotJson) line
     /// deliberately makes no claim about Statuspage-ness, which
     /// `the_two_shape_failures_do_not_share_a_verdict` holds it to.
+    ///
+    /// # What #354 migrated here, and what it deliberately did not
+    ///
+    /// Two of the six are states the `fault` vocabulary names — the host never
+    /// answered, and the host answered with a status — and those render through
+    /// it, with [`THAT_HOST`] as the vendor. The wording did not move: the
+    /// vocabulary's sentence for an unreachable vendor was already this
+    /// module's, character for character.
+    ///
+    /// The other four are **probe findings, not vendor transport failures**,
+    /// and the vocabulary has no word for any of them — which is the point of
+    /// this surface. `Malformed` and `Insecure` are refusals raised before a
+    /// request exists; `NotJson` is a shape observation that must stop short of
+    /// a verdict; `NoComponents` is the one finding entitled to that verdict.
+    /// Rounding any of them to a neighbouring stock sentence would throw away
+    /// the distinction the whole module is built on, and stretching the
+    /// vocabulary to cover form validation would make it worse at its job.
+    ///
+    /// Nor does this surface use the vocabulary's account-shaped statuses: this
+    /// probe carries no credential and names no account, so a 401 or a 404 from
+    /// the host means "that URL is wrong", never "update the credential" — see
+    /// `fault::http_status_message`.
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
@@ -103,8 +135,8 @@ impl ProbeError {
                 "that isn't a URL — try something like https://status.example.com".to_owned()
             }
             ProbeError::Insecure => "only https URLs can be probed".to_owned(),
-            ProbeError::Unreachable(_) => "couldn't reach that host".to_owned(),
-            ProbeError::Http(code) => format!("that host returned HTTP {code}"),
+            ProbeError::Unreachable(_) => Fault::Unreachable.message(THAT_HOST),
+            ProbeError::Http(code) => fault::http_status_message(*code, THAT_HOST),
             ProbeError::NotJson => "that host answered, but not with JSON".to_owned(),
             ProbeError::NoComponents => {
                 "that page is JSON but lists no components, so it isn't a Statuspage".to_owned()

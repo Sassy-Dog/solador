@@ -14,12 +14,17 @@ use chrono::{DateTime, Utc};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use fault::Fault;
 use percent_encoding::utf8_percent_encode;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::urlpath::PATH_SEGMENT;
+
+/// The operator-facing name of what failed, and the only thing
+/// [`Fault::message`] interpolates.
+const VENDOR: &str = "Sentry";
 
 pub const DEFAULT_BASE_URL: &str = "https://sentry.io";
 
@@ -216,13 +221,17 @@ impl SentryUsageError {
     /// the right thing: a 403 is a token to replace, a 404 is a slug to
     /// correct, and everything else names the failure it actually was.
     ///
-    /// The two payload-carrying variants render `viewmodel::fault`'s stock
-    /// sentences — "couldn't reach Sentry" and "couldn't read the Sentry
-    /// response" — through their `Display`, character for character. That
-    /// vocabulary owns the words; this crate must not depend on the
-    /// presentation layer, so `app/src-tauri/tests/fault_vocabulary.rs` is
-    /// where the equality is asserted. Nothing a transport or a decoder
-    /// produced is interpolated: it is in the log instead.
+    /// The two payload-carrying variants render the `fault` vocabulary's stock
+    /// sentences. Until #354 they *retyped* them into their `#[error(…)]`
+    /// attributes and reached them through `self.to_string()`, because the
+    /// vocabulary lived in `crates/viewmodel` and no vendor crate may depend on
+    /// the panel layer; the words are now a leaf crate this one can point at,
+    /// so there is one copy again. Nothing a transport or a decoder produced is
+    /// interpolated: it is in the log instead.
+    ///
+    /// The first two arms stay hand-written on purpose. Sentry's reads *are*
+    /// account-scoped, so both are sharper than the stock sentence for the same
+    /// state — they name the field to fix rather than the layer it lives in.
     ///
     /// One credential feeds two panels, so this wording lands in Usage **and**
     /// Sentry Crons.
@@ -231,10 +240,18 @@ impl SentryUsageError {
         if self.is_auth_failure() {
             return "token invalid — paste a new one in Settings".to_string();
         }
-        if matches!(self, SentryUsageError::Http { status: 404 }) {
-            return "Sentry org not found — check the org slug in Settings".to_string();
+        match self {
+            SentryUsageError::Http { status: 404 } => {
+                "Sentry org not found — check the org slug in Settings".to_string()
+            }
+            SentryUsageError::Http { status } => fault::http_status_message(*status, VENDOR),
+            SentryUsageError::Unreachable(_) => Fault::Unreachable.message(VENDOR),
+            SentryUsageError::DecodingFailed(_) => Fault::Undecodable.message(VENDOR),
+            SentryUsageError::MissingOrgSlug
+            | SentryUsageError::InvalidUrl
+            | SentryUsageError::InvalidResponse
+            | SentryUsageError::MonitorListTruncated => self.to_string(),
         }
-        self.to_string()
     }
 }
 
@@ -1170,7 +1187,7 @@ mod tests {
     fn other_failures_name_themselves() {
         assert_eq!(
             SentryUsageError::Http { status: 503 }.user_message(),
-            "Sentry API request failed (HTTP 503)"
+            "Sentry is failing on its side (HTTP 503)"
         );
         assert_eq!(
             SentryUsageError::MissingOrgSlug.user_message(),
@@ -1180,7 +1197,7 @@ mod tests {
         // `neon.rs`: `serde_json` quotes the input it choked on.
         assert_eq!(
             SentryUsageError::DecodingFailed("bad token".into()).user_message(),
-            "couldn't read the Sentry response"
+            Fault::Undecodable.message(VENDOR)
         );
         assert_eq!(
             SentryUsageError::InvalidUrl.user_message(),
@@ -1335,7 +1352,10 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, SentryUsageError::Http { status: 503 });
-        assert_eq!(err.user_message(), "Sentry API request failed (HTTP 503)");
+        assert_eq!(
+            err.user_message(),
+            "Sentry is failing on its side (HTTP 503)"
+        );
     }
 
     #[tokio::test]
@@ -1371,6 +1391,7 @@ mod tests {
             "got {err:?}"
         );
         assert_eq!(err.user_message(), "couldn't reach Sentry");
+        assert_eq!(err.user_message(), Fault::Unreachable.message(VENDOR));
         for rendered in [err.user_message(), err.to_string()] {
             for forbidden in ["://", "127.0.0.1", "http", "?", "%", "acme"] {
                 assert!(

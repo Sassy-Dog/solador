@@ -3562,7 +3562,10 @@ mod tests {
                 "that isn't a URL — try something like https://status.example.com",
                 "only https URLs can be probed",
                 "couldn't reach that host",
-                "that host returned HTTP 503",
+                // A 5xx is one of the two status classes that mean the same
+                // thing wherever they come from, so #354 has it name the state
+                // as well as the code.
+                "that host is failing on its side (HTTP 503)",
                 "that host answered, but not with JSON",
                 "that page is JSON but lists no components, so it isn't a Statuspage",
             ]

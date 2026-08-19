@@ -23,6 +23,7 @@ version = "0.1.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde_json",
+ "solador-fault",
  "solador-wire",
  "thiserror 2.0.20",
  "tokio",
@@ -4209,6 +4210,7 @@ dependencies = [
  "chrono",
  "reqwest 0.12.28",
  "serde",
+ "solador-fault",
  "thiserror 2.0.20",
  "tokio",
  "wiremock",
@@ -4224,6 +4226,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "solador-fault"
+version = "0.1.0"
+
+[[package]]
 name = "solador-github"
 version = "0.1.0"
 dependencies = [
@@ -4232,6 +4238,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "solador-fault",
  "solador-servicestatus",
  "thiserror 2.0.20",
  "tokio",
@@ -4277,6 +4284,7 @@ version = "0.1.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde_json",
+ "solador-fault",
  "thiserror 2.0.20",
  "tokio",
  "wiremock",
@@ -4315,6 +4323,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "solador-fault",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -5521,6 +5530,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "solador-fault",
  "solador-wire",
 ]
 

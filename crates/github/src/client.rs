@@ -8,6 +8,7 @@
 //! of `reqwest`'s error strings and any log line built from them.
 
 use chrono::{DateTime, Utc};
+use fault::Fault;
 use futures_util::future::join3;
 use serde::Deserialize;
 
@@ -18,6 +19,10 @@ use crate::workflows::{self, RepoCounts, RepoWorkflowHealth, WorkflowRun, Workfl
 
 pub const DEFAULT_BASE_URL: &str = "https://api.github.com";
 pub const API_VERSION: &str = "2022-11-28";
+
+/// The operator-facing name of what failed, and the only thing
+/// [`Fault::message`] interpolates.
+const VENDOR: &str = "GitHub";
 
 /// How many runs the Repos panel classifies per repo.
 const RUNS_PER_PAGE: &str = "30";
@@ -47,25 +52,45 @@ pub enum GitHubError {
 
 impl GitHubError {
     /// Cause-specific guidance, so the operator chases the right layer.
+    ///
+    /// Every state the `fault` vocabulary names renders through it (#354),
+    /// with the one thing only this crate knows appended: the Settings tab that
+    /// holds the PAT, the instant a rate limit resets, the network to check. A
+    /// stock sentence is the floor a message may not fall below, never a cap on
+    /// how specific one may be — and this arm set was the bar #354 was held to,
+    /// so nothing here got shorter by being migrated.
+    ///
+    /// [`GitHubError::UnsupportedPagination`] keeps its own sentence because
+    /// the vocabulary has no word for it and must not be stretched to invent
+    /// one: it is not a transport failure at all, it is this build declining to
+    /// report a count it cannot obtain.
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
             GitHubError::NotAuthenticated => {
-                "GitHub rejected the token (401). Check the PAT in Settings → GitHub Token.".into()
+                format!(
+                    "{} → GitHub Token",
+                    Fault::CredentialRejected.message(VENDOR)
+                )
             }
             GitHubError::RateLimited { reset: Some(reset) } => format!(
-                "GitHub rate limit exceeded. Resets at {}.",
+                "{}. Resets at {}.",
+                Fault::RateLimited.message(VENDOR),
                 reset.format("%Y-%m-%d %H:%M:%SZ")
             ),
-            GitHubError::RateLimited { reset: None } => "GitHub rate limit exceeded.".to_string(),
-            GitHubError::HttpStatus(code) => format!("GitHub returned HTTP {code}."),
-            GitHubError::Unreachable(_) => {
-                "Couldn't reach GitHub. Check the network connection.".into()
-            }
-            GitHubError::DecodeFailed(_) => {
-                "GitHub responded but the payload didn't decode — likely an API contract change."
-                    .into()
-            }
+            GitHubError::RateLimited { reset: None } => Fault::RateLimited.message(VENDOR),
+            // A 404 here is a repo the PAT cannot see, not an account that does
+            // not exist, so the status stays the sharpest true thing said —
+            // see `fault::http_status_message`.
+            GitHubError::HttpStatus(code) => fault::http_status_message(*code, VENDOR),
+            GitHubError::Unreachable(_) => format!(
+                "{} — check the network connection",
+                Fault::Unreachable.message(VENDOR)
+            ),
+            GitHubError::DecodeFailed(_) => format!(
+                "{} — likely an API contract change",
+                Fault::Undecodable.message(VENDOR)
+            ),
             GitHubError::UnsupportedPagination => {
                 "GitHub paginates this collection by cursor, so the count is unavailable.".into()
             }
@@ -415,7 +440,14 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, GitHubError::NotAuthenticated), "got {err:?}");
-        assert!(err.user_message().contains("token"));
+        // The stock sentence plus the tab that holds the PAT — the migration in
+        // #354 was not allowed to drop the second half.
+        let message = err.user_message();
+        assert!(
+            message.starts_with(&Fault::CredentialRejected.message("GitHub")),
+            "{message}"
+        );
+        assert!(message.ends_with("Settings → GitHub Token"), "{message}");
     }
 
     /// A 403 whose response says the budget is spent is a rate limit, and it
@@ -469,17 +501,29 @@ mod tests {
         assert!(matches!(err, GitHubError::HttpStatus(403)), "got {err:?}");
     }
 
-    /// Two different failures must not read identically to the operator.
+    /// Two different failures must not read identically to the operator. Both
+    /// are 5xx, so both name the state as well as the code (#354) — and the
+    /// code is still there, which is what keeps them apart.
     #[test]
     fn status_user_messages_name_the_code() {
         assert_eq!(
             GitHubError::HttpStatus(503).user_message(),
-            "GitHub returned HTTP 503."
+            "GitHub is failing on its side (HTTP 503)"
         );
         assert_eq!(
             GitHubError::HttpStatus(500).user_message(),
-            "GitHub returned HTTP 500."
+            "GitHub is failing on its side (HTTP 500)"
         );
+    }
+
+    /// A 404 from a repo read is a repo this PAT cannot see, not an account
+    /// that does not exist. The vocabulary's account-shaped reading of that
+    /// status is the one thing this arm must not borrow.
+    #[test]
+    fn a_404_is_not_dressed_up_as_a_missing_account() {
+        let message = GitHubError::HttpStatus(404).user_message();
+        assert_eq!(message, "GitHub returned HTTP 404");
+        assert!(!message.contains("account"), "{message}");
     }
 
     /// An unknown reset must not be dressed up as a timestamp — the message
@@ -487,8 +531,27 @@ mod tests {
     #[test]
     fn a_rate_limit_without_a_reset_does_not_invent_one() {
         let message = GitHubError::RateLimited { reset: None }.user_message();
-        assert_eq!(message, "GitHub rate limit exceeded.");
+        assert_eq!(message, Fault::RateLimited.message("GitHub"));
         assert!(!message.contains("Resets"));
+    }
+
+    /// …and a known one still reaches the operator. The reset instant is the
+    /// single thing this arm knows that the vocabulary cannot, so it survives
+    /// the migration or the migration made the message worse.
+    #[test]
+    fn a_rate_limit_with_a_reset_still_says_when() {
+        let message = GitHubError::RateLimited {
+            reset: DateTime::from_timestamp(1_780_000_000, 0),
+        }
+        .user_message();
+        assert!(
+            message.starts_with(&Fault::RateLimited.message("GitHub")),
+            "{message}"
+        );
+        assert!(
+            message.contains("Resets at 2026-05-28 20:26:40Z"),
+            "{message}"
+        );
     }
 
     #[tokio::test]
