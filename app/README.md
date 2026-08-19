@@ -196,8 +196,31 @@ header is always rendered, so the warning now costs no height at all. It
 ellipsises rather than wrapping — a second header line would be the growth this
 exists to prevent — with the panel title yielding its width first
 (`flex-shrink:100`, the host card's `.stale` rule) and the full text on the
-element's `title`. Usage's *per-provider* footers stay in the body: they belong
-to a section, and a section has no header to move to.
+element's `title`.
+
+**Every panel's warning, including Usage's per-section ones**
+([#351](https://github.com/Sassy-Dog/solador/issues/351)). The Usage panel used
+to append each metered provider's warning under that provider's rows, in a class
+carrying no `white-space:nowrap`; a long message wrapped to six lines and one
+stale Neon read pushed every row below it down the cockpit. `panel::merged_footer`
+folds them into the one header line instead, and
+`panel::attributed_status_footer` makes each name the section it came from
+(`⚠ neon: stale · updated 23h ago`) — without which two sections degrading at
+once emit the byte-identical line twice and identify neither. There is no
+per-section `footer` key in the payload any more, so the frontend has nowhere to
+put one back.
+
+**The warning is the only element in a header that may give ground.**
+`.panel-stale` keeps `flex-shrink:100`; `.panel-asof` (the freshness clock) is
+`flex-shrink:0`, `.panel-trailing` has no `min-width:0` and is unshrinkable
+already, and `.panel-chip` says `flex:none`. The two used to share one
+declaration, and flex distributes a shortfall in proportion to shrink factor
+*times* base size — so at an equal factor the longest element keeps the most
+characters. An Azure header carrying both rendered `as of 6h a…` beside a
+warning that kept most of an `az` traceback: the two short, fixed-format clocks
+lost everything. `0` rather than a smaller factor because a factor still costs
+the clock a sub-pixel, and a sub-pixel is enough to ellipsise a line that had
+room for every character.
 
 `empty` keys on the count of *monitored* hosts, not on the number of cards: the
 local card is always there, so counting cards would answer "is anything
@@ -556,14 +579,18 @@ await window.__TAURI__.core.invoke("azure_cost");
       //   ^ the row is *absent*, not "—", when no rate is set or usage is unmeasured
       {"label": "NEON LAST INVOICE",      "value": "$15.91",    "valueColor": …}
       //   ^ "—" when the org has no invoices yet, or none could be read
-    ], "footer": …,
+    ],
       "freshness": {"state": "live", "measured_secs_ago": 600, "text": null, "color": null}},
       //   ^ how old THESE ROWS are, which is not what the footer answers. Same
       //     shape and same rules as Azure Cost's below, one per metered section.
+      //     A section carries NO `footer` of its own — see below.
     {"id": "sentry", "rows": […], "bar": {"fraction": 0.94, "color": "#e09a26"},
-      "footer": …, "freshness": …}
+      "freshness": …}
   ],
-  "footer": null                         // Claude's own, staleAfter 150s
+  "footer": null    // ONE line for the panel: Claude's own (staleAfter 150s)
+                    // plus each metered section's, attributed and joined by
+                    // `merged_footer` — "⚠ neon: stale · updated 23h ago
+                    // ⚠ sentry: stale · updated 23h ago"
 }
 
 // azure_cost
@@ -603,8 +630,10 @@ whole cadence the reading stops being live and an `as of 23h ago` line appears
 beside — never inside — the footer. On Azure Cost that line sits in the header
 and the headline is repainted in the dimmer green; on Sentry Crons it sits in
 the header too; on Usage each metered provider section carries its own, in the
-body beside the per-section footer that is already there, because a section has
-no header to move to. `footer` is `status_footer` and answers something else
+body, because it dates a figure that is in the body — hoisting it would leave one
+header line answering for three different clocks. Its own appear/disappear height
+cost is [#355](https://github.com/Sassy-Dog/solador/issues/355). `footer` is
+`status_footer` and answers something else
 entirely: *is the poller stuck*. Its window sits **past** the cadence — an hour
 of grace on Azure (`azure::stale_after_secs`, the flat `5 * 60 * 60` the panel
 used to hardcode, now derived so an operator who changes the interval does not
@@ -641,8 +670,9 @@ measurement; set one and it prices its half with the other counted as zero.
 from Neon's public OpenAPI spec** but served to org API keys, so it is treated
 as **best-effort** everywhere. A failure leaves the last figure standing (or `—`
 if there never was one) and degrades the section to estimate-only; its reason
-reaches the footer only when consumption is healthy, since consumption is the
-section's primary content and there is one footer per section. An org with no
+reaches the panel's warning line only when consumption is healthy, since
+consumption is the section's primary content and there is one warning per
+section. An org with no
 invoices yet renders that same `—` rather than `$0.00`, which would assert a
 bill that does not exist. The amount wears a `$` only when the invoice's
 currency is USD — a euro total in dollar clothing is a wrong number with right
@@ -1610,8 +1640,8 @@ cargo run -p solador-app -- --dump-usage sample-usage.json         # the Usage p
 #   dash path, with the quota set and the bar therefore suppressed),
 #   `--empty` (no summary, no provider configured) and `--stale` (the same good
 #   read, with the METERED providers' last success dated 23h back: an "as of
-#   23h ago" line per section, and each section's separate warning beside it —
-#   Claude's own rollups stay current, being on a far faster cadence).
+#   23h ago" line per section in the body, and ONE header line naming both of
+#   them — Claude's own rollups stay current, being on a far faster cadence).
 cargo run -p solador-app -- --dump-azure sample-azure.json         # the Azure Cost panel
 #   …plus `--fallback` (the rollover gap: amber caption, month stamped),
 #   `--error` (red, an expired SAS), `--empty` (no SAS URL at all) and
@@ -1943,8 +1973,10 @@ and that immediacy is itself the check on the corresponding wake:
    without a relaunch — `settings_save_secret` wakes the usage loop *and* forces
    its hourly half — so the sections should appear within seconds. That
    immediacy is itself the check on the wake. A key with no org id is the
-   interesting case: the section appears, both figures render `—`, and the footer
-   says `Add your Neon org ID in Settings` — never a fabricated `0.0 CU-h`.
+   interesting case: the section appears, both figures render `—`, and the panel
+   header says `⚠ neon: Add your Neon org ID in Settings` — never a fabricated
+   `0.0 CU-h`, and never an unattributed warning that could have come from any
+   of the three sections.
 
 9. **Read the terminal for the OpenClaw panel's own one-line signal** (it prints
    at load, alongside the others):

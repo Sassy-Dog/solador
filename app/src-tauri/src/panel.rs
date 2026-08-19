@@ -106,14 +106,56 @@ pub fn status_footer(
     now: u64,
     stale_after: u64,
 ) -> Value {
+    footer_line(None, last_updated, error, now, stale_after)
+}
+
+/// [`status_footer`], with the section that raised it named.
+///
+/// For a panel whose body is several independently-polled sections sharing one
+/// header line. Naming nothing is correct while a warning sits *inside* the
+/// section it describes, and becomes a lie the moment it does not: the Usage
+/// panel's Neon and Sentry sections emit the byte-identical
+/// `⚠ stale · updated 23h ago`, so hoisting both to the header unattributed
+/// produced a line that said the same thing twice and identified neither.
+///
+/// `source` is the section's **own id**, not a second display name: the
+/// warning's job is to send a reader to a block on the card, and an attribution
+/// free to drift from the id that block is keyed by would eventually point at
+/// nothing.
+#[must_use]
+pub fn attributed_status_footer(
+    source: &str,
+    last_updated: Option<u64>,
+    error: Option<&str>,
+    now: u64,
+    stale_after: u64,
+) -> Value {
+    footer_line(Some(source), last_updated, error, now, stale_after)
+}
+
+/// The ladder both spellings share.
+///
+/// `source` is spliced immediately after the `⚠`, so an unattributed line is
+/// byte-identical to what it has always been and an attributed one reads
+/// `⚠ neon: stale · updated 23h ago`. One ladder rather than two, for the reason
+/// the module doc gives: two panels must never disagree about whether an error
+/// outranks staleness, and neither must two spellings of the same panel.
+fn footer_line(
+    source: Option<&str>,
+    last_updated: Option<u64>,
+    error: Option<&str>,
+    now: u64,
+    stale_after: u64,
+) -> Value {
+    let subject = source.map_or_else(String::new, |source| format!("{source}: "));
     let text = match (error, last_updated) {
         (Some(error), Some(updated)) => Some(format!(
-            "⚠ {error} · last ok {}",
+            "⚠ {subject}{error} · last ok {}",
             relative_age(now.saturating_sub(updated))
         )),
-        (Some(error), None) => Some(format!("⚠ {error}")),
+        (Some(error), None) => Some(format!("⚠ {subject}{error}")),
         (None, Some(updated)) if now.saturating_sub(updated) > stale_after => Some(format!(
-            "⚠ stale · updated {}",
+            "⚠ {subject}stale · updated {}",
             relative_age(now.saturating_sub(updated))
         )),
         (None, _) => None,
@@ -122,6 +164,42 @@ pub fn status_footer(
         Some(text) => json!({ "text": text, "color": color::hex(color::AMBER) }),
         None => Value::Null,
     }
+}
+
+/// Several panel warnings folded into the one header line, or `Null` when none
+/// of them fired.
+///
+/// A panel whose body is several independently-polled sections still has exactly
+/// one header, and the header is the only place a warning costs no height —
+/// which is the whole point (`.panel-stale` in `app.css`, and
+/// [#351](https://github.com/Sassy-Dog/solador/issues/351)). A warning rendered
+/// beside its section instead makes the card a line taller the moment it fires,
+/// `.panel-row` stretches every other card in the row to match, and one Neon
+/// read going stale rearranges the cockpit.
+///
+/// Order is the caller's, and should be the order the sections themselves render
+/// in, so the line reads down the card.
+///
+/// **The separator is the `⚠` each segment already carries**, which is why they
+/// are joined on a plain space. `·` is taken: [`status_footer`] uses it *inside*
+/// a segment to separate the reason from the clock, so joining on it too would
+/// make `⚠ neon: stale · updated 23h ago · ⚠ sentry: …` ambiguous about which
+/// half belongs to which provider.
+///
+/// The colour is the first firing warning's rather than a constant restated
+/// here: this composes what the ladder decided and does not get a second opinion
+/// about it.
+#[must_use]
+pub fn merged_footer(footers: &[Value]) -> Value {
+    let firing: Vec<&str> = footers.iter().filter_map(|f| f["text"].as_str()).collect();
+    if firing.is_empty() {
+        return Value::Null;
+    }
+    let color = footers
+        .iter()
+        .find(|f| !f["text"].is_null())
+        .map_or(Value::Null, |f| f["color"].clone());
+    json!({ "text": firing.join(" "), "color": color })
 }
 
 /// How old the figure a panel is painting is, as the frontend receives it.
@@ -332,6 +410,128 @@ mod tests {
     fn the_footer_is_always_amber() {
         let footer = status_footer(Some(NOW - 900), None, NOW, 150);
         assert_eq!(footer["color"], color::hex(color::AMBER));
+    }
+
+    // MARK: attribution
+
+    /// Every arm of the ladder carries the source, and nothing else about the
+    /// line moves: the reason, the clock and the order they appear in are the
+    /// unattributed spelling's, verbatim.
+    #[test]
+    fn an_attributed_footer_names_its_source_on_every_arm() {
+        assert_eq!(
+            text_of(&attributed_status_footer(
+                "neon",
+                Some(NOW - 5400),
+                None,
+                NOW,
+                150
+            )),
+            Some("⚠ neon: stale · updated 1h ago")
+        );
+        assert_eq!(
+            text_of(&attributed_status_footer(
+                "neon",
+                Some(NOW - 240),
+                Some("Neon API request failed (HTTP 500)"),
+                NOW,
+                150
+            )),
+            Some("⚠ neon: Neon API request failed (HTTP 500) · last ok 4m ago")
+        );
+        assert_eq!(
+            text_of(&attributed_status_footer(
+                "neon",
+                None,
+                Some("boom"),
+                NOW,
+                150
+            )),
+            Some("⚠ neon: boom")
+        );
+    }
+
+    /// A healthy section names nothing, because there is nothing to name. The
+    /// attribution is part of the warning, not a label the section always wears.
+    #[test]
+    fn an_attributed_footer_is_still_silent_when_the_section_is_healthy() {
+        assert_eq!(
+            attributed_status_footer("neon", Some(NOW), None, NOW, 150),
+            Value::Null
+        );
+    }
+
+    /// The unattributed spelling is byte-identical to what it always was — the
+    /// refactor that introduced `source` must not have moved a single character
+    /// of the line every other panel renders.
+    #[test]
+    fn the_unattributed_spelling_is_unchanged() {
+        for (updated, error) in [
+            (Some(NOW - 240), Some("couldn't read runners")),
+            (None, Some("couldn't read runners")),
+            (Some(NOW - 90), None),
+        ] {
+            assert_eq!(
+                status_footer(updated, error, NOW, 30),
+                footer_line(None, updated, error, NOW, 30)
+            );
+        }
+        assert_eq!(
+            text_of(&status_footer(Some(NOW - 90), None, NOW, 30)),
+            Some("⚠ stale · updated 1m ago")
+        );
+    }
+
+    // MARK: merged_footer
+
+    /// The failure attribution exists to prevent: two sections emitting the
+    /// *byte-identical* line. Merged without a source they say the same thing
+    /// twice and identify neither; merged with one they are two facts.
+    #[test]
+    fn two_sections_with_the_same_symptom_stay_distinguishable() {
+        let neon = attributed_status_footer("neon", Some(NOW - 82_800), None, NOW, 5400);
+        let sentry = attributed_status_footer("sentry", Some(NOW - 82_800), None, NOW, 5400);
+        assert_ne!(neon["text"], sentry["text"]);
+        assert_eq!(
+            merged_footer(&[neon, sentry])["text"],
+            "⚠ neon: stale · updated 23h ago ⚠ sentry: stale · updated 23h ago"
+        );
+    }
+
+    /// The panel's own warning and its sections' share the one line, in the
+    /// order they were handed over — which is the order the card reads down.
+    /// Neither is dropped when both are present.
+    #[test]
+    fn the_panels_own_warning_and_its_sections_share_the_line() {
+        let claude = status_footer(Some(NOW - 600), None, NOW, 150);
+        let neon = attributed_status_footer("neon", None, Some("boom"), NOW, 5400);
+        let merged = merged_footer(&[claude, Value::Null, neon]);
+        assert_eq!(
+            merged["text"], "⚠ stale · updated 10m ago ⚠ neon: boom",
+            "the healthy section between them contributes nothing at all"
+        );
+        assert_eq!(merged["color"], color::hex(color::AMBER));
+    }
+
+    /// Nothing fired, so there is no line — not an empty string, which would
+    /// still be a rendered element and still cost the header a warning colour.
+    #[test]
+    fn a_panel_with_nothing_to_report_merges_to_null() {
+        assert_eq!(merged_footer(&[]), Value::Null);
+        assert_eq!(
+            merged_footer(&[Value::Null, status_footer(Some(NOW), None, NOW, 150)]),
+            Value::Null
+        );
+    }
+
+    /// The colour is carried over from the ladder, never restated here — so a
+    /// later change to what a warning looks like cannot leave this function
+    /// painting the old one.
+    #[test]
+    fn the_merged_colour_comes_from_the_first_firing_warning() {
+        let firing = status_footer(Some(NOW - 600), None, NOW, 150);
+        let expected = firing["color"].clone();
+        assert_eq!(merged_footer(&[Value::Null, firing])["color"], expected);
     }
 
     // MARK: freshness_payload

@@ -52,6 +52,40 @@ const rgb = (hex) => {
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
 
+/**
+ * A warning long enough that no header could ever hold it, and deliberately not
+ * a realistic sentence — see the twin in `usage.spec.js`. The shape is the one
+ * that reported this: an `az` traceback reaching the header verbatim, with a
+ * `last ok` clock behind it that has to survive.
+ */
+const LONG_WARNING =
+  "⚠ Azure CLI could not mint a SAS: ERROR: The command failed with an " +
+  "unexpected error. Here is the traceback: Traceback (most recent call " +
+  "last): File \"knack/cli.py\", line 233, in invoke — and the point of " +
+  "asserting against something this long is that containment is a property " +
+  "of the layout, not of how long the message happens to be today " +
+  "· last ok 6h ago";
+
+/** How wide an element got, and whether its text had to be cut to fit. */
+const fit = (page, selector) =>
+  page.locator(selector).evaluate((el) => ({
+    right: el.getBoundingClientRect().right,
+    // `scrollWidth > clientWidth` is what `text-overflow:ellipsis` reacts to,
+    // so it is the same question the browser asked rather than a re-derivation.
+    ellipsised: el.scrollWidth > el.clientWidth,
+  }));
+
+/** The inside of a panel's box — where its content has to stay. */
+const contentRight = (page, selector) =>
+  page.locator(selector).evaluate((el) => {
+    const style = getComputedStyle(el);
+    return (
+      el.getBoundingClientRect().right -
+      parseFloat(style.paddingRight) -
+      parseFloat(style.borderRightWidth)
+    );
+  });
+
 test("the panel paints Rust's headline, caption, trailing label and stat rows", async ({ page, baseURL }) => {
   const azure = await gotoWithAzure(page, baseURL);
   await expect(page.locator("#azurePanel")).toBeVisible();
@@ -205,6 +239,79 @@ test("a stale reading is dimmed and dated, on its own line beside the footer", a
     "color",
     rgb(stale.headline.valueColor)
   );
+});
+
+test("a warning costs the card no height, however long it is", async ({ page, baseURL }) => {
+  // The same assertion the Repos panel carries in `github.spec.js` and the
+  // Usage panel in `usage.spec.js`: a message must never make its own card
+  // taller, because `.panel-row` stretches every other card in the row to match
+  // and the rows below then move down.
+  const healthy = await gotoWithAzure(page, baseURL);
+  expect(healthy.footer, "the healthy fixture warns about nothing").toBeNull();
+  const before = await page.locator("#azurePanel").boundingBox();
+  const headerBefore = await page.locator("#azurePanel .panel-hdr").boundingBox();
+
+  // Rust's amber, read off a fixture that carries a real warning rather than
+  // written out here.
+  const amber = (await fixture(baseURL, "sample-azure-stale.json")).footer.color;
+  await page.evaluate(
+    ([vm, text, color]) =>
+      window.__SOLADOR_AZURE_TEST__.render({ ...vm, footer: { text, color } }),
+    [healthy, LONG_WARNING, amber]
+  );
+
+  const warning = page.locator("#azureStale");
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveText(LONG_WARNING);
+  await expect(warning).toHaveAttribute("title", LONG_WARNING);
+
+  const headerAfter = await page.locator("#azurePanel .panel-hdr").boundingBox();
+  expect(headerAfter.height, "one header line, never two").toBeCloseTo(headerBefore.height, 1);
+  const after = await page.locator("#azurePanel").boundingBox();
+  expect(after.height).toBeCloseTo(before.height, 1);
+  expect(after.width).toBeCloseTo(before.width, 1);
+});
+
+test("a long warning yields its width before the freshness clock does", async ({ page, baseURL }) => {
+  // This header carries BOTH `.panel-asof` and `.panel-stale`, and the two used
+  // to share one declaration — `flex-shrink:100` included. Flex distributes a
+  // shortfall in proportion to shrink factor TIMES base size, so at an equal
+  // factor the longest element keeps the most characters: the screenshot that
+  // reported this rendered `as of 6h a…` beside a warning that kept most of a
+  // traceback. The clocks are short and fixed-format and the warning is the
+  // designated give, so the give is now the warning's alone.
+  const stale = await gotoWithAzure(page, baseURL, "sample-azure-stale.json");
+  expect(stale.freshness.text, "this fixture has both clocks in the header").toBeTruthy();
+  expect(stale.footer.text).toBeTruthy();
+  const cell = await page.locator("#azurePanel").boundingBox();
+
+  await page.evaluate(
+    ([vm, text]) =>
+      window.__SOLADOR_AZURE_TEST__.render({
+        ...vm,
+        footer: { ...vm.footer, text },
+      }),
+    [stale, LONG_WARNING]
+  );
+
+  // The freshness clock keeps every character…
+  await expect(page.locator("#azureFreshness")).toHaveText(stale.freshness.text);
+  expect((await fit(page, "#azureFreshness")).ellipsised).toBe(false);
+  // …and so does the trailing figure at the other end of the row.
+  await expect(page.locator("#azureTrailing")).toHaveText(stale.trailing);
+  expect((await fit(page, "#azureTrailing")).ellipsised).toBe(false);
+  // …while the warning is cut, which is what it is for.
+  expect((await fit(page, "#azureStale")).ellipsised).toBe(true);
+
+  // And nothing bleeds into the neighbouring tile or the page gutter.
+  const degraded = await page.locator("#azurePanel").boundingBox();
+  expect(degraded.x).toBeCloseTo(cell.x, 1);
+  expect(degraded.width).toBeCloseTo(cell.width, 1);
+  const inside = await contentRight(page, "#azurePanel");
+  for (const selector of ["#azureTitle", "#azureFreshness", "#azureStale", "#azureTrailing"]) {
+    const el = await fit(page, selector);
+    expect(el.right, `${selector} must stay inside the card`).toBeLessThanOrEqual(inside + 0.5);
+  }
 });
 
 test("a panel with no reading publishes no age rather than a fresh-looking zero", async ({ page, baseURL }) => {

@@ -82,23 +82,20 @@ function barNode(bar) {
   return el;
 }
 
-/** A footer line, or nothing — a healthy, fresh section renders neither. */
-function footerNode(footer, cls) {
-  if (!footer) return null;
-  const el = node("p", cls, footer.text);
-  el.style.color = footer.color;
-  return el;
-}
-
 /**
  * How old this section's figures are, or nothing.
  *
- * A DIFFERENT question from the footer beside it, and deliberately a different
- * element: `provider.footer` says the last attempt failed or the poller is
- * late, `provider.freshness` says the dollars and counts on screen were
- * measured 23h ago. These providers are read hourly, so the first speaks a full
- * half hour before the second does — the window where a figure is no longer
- * current and the poller is not yet worth warning about.
+ * A DIFFERENT question from the panel's warning line, and deliberately a
+ * different element in a different place: the header's warning says the last
+ * attempt failed or the poller is late, `provider.freshness` says the dollars
+ * and counts *on this section* were measured 23h ago. These providers are read
+ * hourly, so the first speaks a full half hour before the second does — the
+ * window where a figure is no longer current and the poller is not yet worth
+ * warning about.
+ *
+ * It stays in the body while the warnings moved to the header because it dates
+ * a figure that is in the body: hoisted, one header line would be answering for
+ * three different clocks. Its own appear/disappear height cost is #355.
  *
  * `.panel-asof` is the Azure Cost panel's class, reused rather than reinvented:
  * same job, same typography. `live` and `unknown` carry no text and paint
@@ -117,8 +114,15 @@ function asOfNode(freshness) {
 }
 
 /**
- * One provider section: a divider, its rows, an optional bar, how old they are,
- * and its own footer.
+ * One provider section: a divider, its rows, an optional bar, and how old they
+ * are.
+ *
+ * **No warning line.** A section that degrades used to grow a `.pv-footer`
+ * under its rows, which made the card taller, which `.panel-row` then spent on
+ * every other card in the row — one stale Neon read pushed the rows below it
+ * down the cockpit. The warning is Rust's `payload.footer` now, painted once in
+ * the header, and the payload carries no per-section `footer` for this to draw
+ * even if it wanted to.
  */
 function providerNode(provider) {
   const el = node("div", "pv-section");
@@ -127,12 +131,8 @@ function providerNode(provider) {
   for (const row of provider.rows || []) el.appendChild(valueRow(row));
   const bar = barNode(provider.bar);
   if (bar) el.appendChild(bar);
-  // Above the footer, matching the Azure header's order: how old the figure is,
-  // then the warning about the poller.
   const asOf = asOfNode(provider.freshness);
   if (asOf) el.appendChild(asOf);
-  const footer = footerNode(provider.footer, "pv-footer");
-  if (footer) el.appendChild(footer);
   return el;
 }
 
@@ -181,12 +181,15 @@ function renderUsage(payload) {
 
   $u("usageBody").replaceChildren(...children);
 
-  // Claude's own warning goes in the header, not below the provider sections
-  // where the original panel puts it: a line under the body makes the card taller
-  // and `.panel-row` stretches its neighbours to match, so a stale rollup would
-  // move OpenClaw beside it. The per-provider `.pv-footer` lines stay in the
-  // body — they belong to a section, and a section has no header to move to.
-  // Ellipsised in a narrow panel, so `title` keeps the whole message reachable.
+  // ONE warning line for the whole panel, in the header — Claude's own and
+  // every metered section's, already folded together and already attributed by
+  // Rust (`⚠ neon: stale · updated 23h ago`). A line under the body makes the
+  // card taller and `.panel-row` stretches its neighbours to match, so a stale
+  // rollup — or one stale Neon read — moved OpenClaw beside it and every row
+  // below. Nothing is composed here: the join, the separator and each provider's
+  // name are `panel::merged_footer`'s, on the far side of the boundary where a
+  // Rust test can see them. Ellipsised in a narrow panel, so `title` keeps the
+  // whole message reachable.
   const stale = $u("usageStale");
   stale.textContent = payload.footer ? payload.footer.text : "";
   stale.title = payload.footer ? payload.footer.text : "";

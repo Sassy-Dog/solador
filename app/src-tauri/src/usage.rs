@@ -19,21 +19,35 @@
 //! panel is pixel-identical to its Claude-only self: no heading, no em dash, no
 //! layout shift. The em dash is for "configured, and we could not find out".
 //!
-//! **Three clocks, three footers.** Claude reads local files on the store's
+//! **Three clocks, one warning line.** Claude reads local files on the store's
 //! refresh interval (`staleAfter` 150s); Neon and Sentry are hourly API reads
 //! whose staleness window sits above their own cadence (90m), so a warning means
-//! a stuck poller rather than the normal gap between polls. Each section carries
-//! its own footer because each can fail on its own.
+//! a stuck poller rather than the normal gap between polls. Each section decides
+//! its own warning because each can fail on its own — and every one of them is
+//! then folded into the panel's **single header line** by
+//! [`merged_footer`](crate::panel::merged_footer), naming the section it came
+//! from.
 //!
-//! **And each metered section carries a second clock beside that footer**
-//! (#338, the Azure Cost panel's arrangement one panel over). `freshness` is
-//! [`Freshness`] over the age of the last **success** and answers *"how old is
-//! the figure on screen"*; the footer answers *"did the last attempt fail, or is
-//! the poller late"*. On an hourly read the first speaks a full 30 minutes
-//! before the second does, and a nearly-hour-old dollar figure rendering
-//! identically to one measured a second ago is the same class of bug as
-//! unknown-rendered-as-zero. They are two fields for that reason and must not be
-//! folded into one.
+//! **Nothing a section can say may live under the section** (#351). A warning in
+//! the body makes the card a line taller the moment it fires, `.panel-row`
+//! stretches every other card in the row to match, and the rows below are pushed
+//! down: one Neon read going stale rearranged the cockpit. The header is always
+//! rendered, so a warning there costs no height at all. That is also why the
+//! attribution is load-bearing rather than decorative — the hoisted lines are
+//! byte-identical without it, and `⚠ stale · updated 23h ago` twice over says
+//! the same thing twice and identifies neither section.
+//!
+//! **And each metered section carries a second clock, in the body** (#338, the
+//! Azure Cost panel's arrangement one panel over). `freshness` is [`Freshness`]
+//! over the age of the last **success** and answers *"how old is the figure on
+//! screen"*; the warning answers *"did the last attempt fail, or is the poller
+//! late"*. On an hourly read the first speaks a full 30 minutes before the
+//! second does, and a nearly-hour-old dollar figure rendering identically to one
+//! measured a second ago is the same class of bug as unknown-rendered-as-zero.
+//! They are two fields for that reason and must not be folded into one — which
+//! is also why `freshness` stayed in the body when the warnings left it: it
+//! dates a figure that *is* in the body, and hoisting it would leave one header
+//! line answering for three different clocks (#355).
 
 use serde_json::{json, Value};
 use usage::{
@@ -43,7 +57,10 @@ use viewmodel::cockpit::PanelKind;
 use viewmodel::color;
 use viewmodel::freshness::Freshness;
 
-use crate::panel::{freshness_payload, progress_bar, status_footer, Configured};
+use crate::panel::{
+    attributed_status_footer, freshness_payload, merged_footer, progress_bar, status_footer,
+    Configured,
+};
 
 // Re-exported so `main.rs` — where this module's name shadows the data crate's
 // — reaches the layer beneath through here rather than through a `::usage::`
@@ -101,6 +118,16 @@ pub const NO_LOG_ROOT_MESSAGE: &str = "no ~/.claude/projects";
 const QUOTA_AMBER_AT: f64 = 0.9;
 /// Red threshold: at quota, not past it.
 const QUOTA_RED_AT: f64 = 1.0;
+
+// The metered sections' ids — **and their names in the panel header**.
+//
+// One constant serving both, deliberately. A hoisted warning's whole job is to
+// send a reader to a block on the card, so `⚠ neon: stale · updated 23h ago`
+// above a section the payload keys as something else would be an attribution
+// pointing at nothing. Two strings could drift apart; one cannot.
+const NEON_ID: &str = "neon";
+const SENTRY_ID: &str = "sentry";
+const VERCEL_ID: &str = "vercel";
 
 // MARK: - Formatting
 //
@@ -376,6 +403,22 @@ fn window_row(label: &str, totals: &UsageTotals) -> Value {
     })
 }
 
+/// One metered provider's contribution to the panel: the section the body
+/// paints, and the warning it raises for the header.
+///
+/// Two values because the two now render in two different places, and they are
+/// returned **together** rather than the warning being rebuilt in [`view`]: the
+/// rule deciding *which* failure a section reports — Neon's consumption error
+/// outranking its invoice error, against consumption's own clock — belongs
+/// beside the section that owns it, not in the loop that collects them.
+///
+/// `warning` is `Null` for a healthy, fresh section, exactly as
+/// [`status_footer`] has always been.
+struct ProviderView {
+    section: Value,
+    warning: Value,
+}
+
 /// How old one metered section's figures are, as the frontend receives it.
 ///
 /// The clock is `last_updated`, which is this provider's last **success** — the
@@ -405,7 +448,7 @@ fn neon_section(
     rates: NeonRates,
     cadence_secs: u64,
     now: u64,
-) -> Value {
+) -> ProviderView {
     let summary = state.summary;
     let mut rows = vec![
         provider_row(
@@ -432,26 +475,32 @@ fn neon_section(
         invoice_amount(invoice.summary.as_ref()),
     ));
 
-    json!({
-        "id": "neon",
-        "rows": rows,
-        // Consumption's error owns the footer — it is the section's primary
+    ProviderView {
+        section: json!({
+            "id": NEON_ID,
+            "rows": rows,
+            // Consumption's clock, because it is this section's primary
+            // content. The invoice is a monthly figure whose own age says
+            // nothing a reader can act on.
+            "freshness": provider_freshness(state, cadence_secs, now),
+        }),
+        // Consumption's error owns the warning — it is the section's primary
         // content; the invoice's reason shows only when consumption is healthy.
-        // The "last ok" age below is always consumption's `last_updated`, even
-        // when the displayed error text is the invoice's: one footer per
-        // section, and consumption is the age that matters here since the
-        // invoice is a slow-moving monthly figure anyway.
-        "footer": status_footer(
+        // The "last ok" age is always consumption's `last_updated`, even when
+        // the displayed error text is the invoice's: one warning per section,
+        // and consumption is the age that matters here since the invoice is a
+        // slow-moving monthly figure anyway.
+        warning: attributed_status_footer(
+            NEON_ID,
             state.last_updated,
-            state.last_error.as_deref().or(invoice.last_error.as_deref()),
+            state
+                .last_error
+                .as_deref()
+                .or(invoice.last_error.as_deref()),
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
-        // Consumption's clock again, and for the same reason the footer uses
-        // it: it is this section's primary content. The invoice is a monthly
-        // figure whose own age says nothing a reader can act on.
-        "freshness": provider_freshness(state, cadence_secs, now),
-    })
+    }
 }
 
 /// The Sentry section: accepted error events over the rolling window, with an
@@ -466,7 +515,7 @@ fn sentry_section(
     quota: u64,
     cadence_secs: u64,
     now: u64,
-) -> Value {
+) -> ProviderView {
     let accepted = state.summary.and_then(|s| s.accepted_error_events());
     let bar = match (quota, accepted) {
         (0, _) | (_, None) => Value::Null,
@@ -474,21 +523,24 @@ fn sentry_section(
             progress_bar(accepted as f64 / quota as f64, QUOTA_AMBER_AT, QUOTA_RED_AT)
         }
     };
-    json!({
-        "id": "sentry",
-        "rows": [provider_row(
-            format!("SENTRY ERRORS ({}D)", usage::sentry::query::WINDOW_DAYS),
-            events(accepted),
-        )],
-        "bar": bar,
-        "footer": status_footer(
+    ProviderView {
+        section: json!({
+            "id": SENTRY_ID,
+            "rows": [provider_row(
+                format!("SENTRY ERRORS ({}D)", usage::sentry::query::WINDOW_DAYS),
+                events(accepted),
+            )],
+            "bar": bar,
+            "freshness": provider_freshness(state, cadence_secs, now),
+        }),
+        warning: attributed_status_footer(
+            SENTRY_ID,
             state.last_updated,
             state.last_error.as_deref(),
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
-        "freshness": provider_freshness(state, cadence_secs, now),
-    })
+    }
 }
 
 /// USD to the cent. Sub-cent figures render `$0.00`, which is honest: at
@@ -507,7 +559,11 @@ pub fn usd(amount: Option<f64>) -> Option<String> {
 /// `BilledCost` is what an invoice would add on top, and on a plan with
 /// included allowance it is usually near zero. Headlining the second would
 /// report two cents for an account spending real money.
-fn vercel_section(state: &ProviderState<VercelUsageSummary>, cadence_secs: u64, now: u64) -> Value {
+fn vercel_section(
+    state: &ProviderState<VercelUsageSummary>,
+    cadence_secs: u64,
+    now: u64,
+) -> ProviderView {
     let summary = state.summary.as_ref();
     let mut rows = vec![
         provider_row(
@@ -531,18 +587,21 @@ fn vercel_section(state: &ProviderState<VercelUsageSummary>, cadence_secs: u64, 
             usd(Some(svc.effective_usd)),
         ));
     }
-    json!({
-        "id": "vercel",
-        "rows": rows,
-        "bar": Value::Null,
-        "footer": status_footer(
+    ProviderView {
+        section: json!({
+            "id": VERCEL_ID,
+            "rows": rows,
+            "bar": Value::Null,
+            "freshness": provider_freshness(state, cadence_secs, now),
+        }),
+        warning: attributed_status_footer(
+            VERCEL_ID,
             state.last_updated,
             state.last_error.as_deref(),
             now,
             PROVIDER_STALE_AFTER_SECS,
         ),
-        "freshness": provider_freshness(state, cadence_secs, now),
-    })
+    }
 }
 
 /// The whole panel payload.
@@ -620,26 +679,43 @@ pub fn view(
         format!("{} today", tokens(summary.today.total_tokens()))
     });
 
+    // The panel's one warning line starts with Claude's own, so the header reads
+    // in the body's order: the rollups first, then each metered section down the
+    // card. Claude's is unattributed — it is the panel's own subject, and
+    // `⚠ claude: no ~/.claude/projects` would name a section that is not one.
+    let mut warnings = vec![status_footer(
+        state.claude_succeeded,
+        state.claude_error.as_deref(),
+        now,
+        CLAUDE_STALE_AFTER_SECS,
+    )];
+
     // `is_present`, not `!is_absent`: a provider nobody has looked for yet
     // contributes no markup, exactly as an unconfigured one does. The section
     // appears once a pass has read its key — which is `begin()`, before the
     // request, so its first frame is a loading line rather than the row of em
     // dashes a failure-first appearance used to produce.
+    let configured = [
+        state
+            .neon
+            .configured
+            .is_present()
+            .then(|| neon_section(&state.neon, &state.neon_invoice, rates, cadence_secs, now)),
+        state
+            .sentry
+            .configured
+            .is_present()
+            .then(|| sentry_section(&state.sentry, quota, cadence_secs, now)),
+        state
+            .vercel
+            .configured
+            .is_present()
+            .then(|| vercel_section(&state.vercel, cadence_secs, now)),
+    ];
     let mut providers: Vec<Value> = Vec::new();
-    if state.neon.configured.is_present() {
-        providers.push(neon_section(
-            &state.neon,
-            &state.neon_invoice,
-            rates,
-            cadence_secs,
-            now,
-        ));
-    }
-    if state.sentry.configured.is_present() {
-        providers.push(sentry_section(&state.sentry, quota, cadence_secs, now));
-    }
-    if state.vercel.configured.is_present() {
-        providers.push(vercel_section(&state.vercel, cadence_secs, now));
+    for provider in configured.into_iter().flatten() {
+        providers.push(provider.section);
+        warnings.push(provider.warning);
     }
 
     json!({
@@ -649,12 +725,12 @@ pub fn view(
         "message": message,
         "windows": windows,
         "projects": projects,
-        "footer": status_footer(
-            state.claude_succeeded,
-            state.claude_error.as_deref(),
-            now,
-            CLAUDE_STALE_AFTER_SECS,
-        ),
+        // ONE line for the whole panel — Claude's warning and every metered
+        // section's, each naming itself. There is deliberately no `footer` on a
+        // section: a warning under the body is what made the card grow and
+        // shove the rest of the cockpit around (#351), so the payload gives the
+        // frontend nowhere to put one.
+        "footer": merged_footer(&warnings),
         "providers": providers,
         // Any half of the panel still waiting on its first answer keeps the
         // frontend on its fast refresh. Published rather than inferred from the
@@ -812,6 +888,18 @@ mod tests {
 
     fn measured() -> UsageState {
         fixture_state(Fixture::Measured, NOW, NOW)
+    }
+
+    /// The measured fixture with Claude's walk dated `at` instead of `NOW`.
+    ///
+    /// The panel now has **one** warning line, so a test that advances the clock
+    /// past the metered providers' window would otherwise pick up Claude's own
+    /// 150s staleness too — 10 minutes is late for a local log walk — and every
+    /// assertion about a provider would be an assertion about two clocks at
+    /// once. Keeping Claude current is what lets these tests name the exact line
+    /// the header renders rather than matching a substring of it.
+    fn measured_with_claude_at(at: u64) -> UsageState {
+        fixture_state(Fixture::Measured, at, NOW)
     }
 
     fn section<'a>(payload: &'a Value, id: &str) -> Option<&'a Value> {
@@ -1028,10 +1116,15 @@ mod tests {
             assert_eq!(row["value"], "—", "got {row}");
             assert_eq!(row["valueColor"], color::hex(color::MUTED));
         }
-        assert_eq!(
-            neon["footer"]["text"],
-            format!("⚠ {NEON_NO_CONSUMPTION_MESSAGE} · last ok 0s ago")
-        );
+        // …in the header, naming the section it belongs to. Not under the rows,
+        // where it would make the card taller than the panel beside it.
+        assert!(neon["footer"].is_null(), "no section carries its own line");
+        assert!(payload["footer"]["text"]
+            .as_str()
+            .expect("a header line")
+            .contains(&format!(
+                "⚠ neon: {NEON_NO_CONSUMPTION_MESSAGE} · last ok 0s ago"
+            )));
 
         let sentry = section(&payload, "sentry").expect("sentry section");
         assert_eq!(sentry["rows"][0]["value"], "—");
@@ -1102,8 +1195,9 @@ mod tests {
         assert_eq!(row["value"], "—");
     }
 
-    /// Consumption's error owns the footer; the invoice's shows only when
-    /// consumption is healthy.
+    /// Consumption's error owns the warning; the invoice's shows only when
+    /// consumption is healthy. The rule is unchanged by the hoist — only where
+    /// the line it produces ends up (`payload["footer"]`, not the section's).
     #[test]
     fn the_consumption_error_outranks_the_invoice_error_in_the_footer() {
         let mut state = measured();
@@ -1114,17 +1208,17 @@ mod tests {
             .neon_mut()
             .failed("Neon API request failed (HTTP 500)".to_owned());
         let payload = view(&state, QUOTA, NeonRates::default(), CADENCE, NOW);
-        let footer = &section(&payload, "neon").expect("neon")["footer"]["text"];
-        let text = footer.as_str().unwrap();
+        let text = payload["footer"]["text"].as_str().unwrap();
         assert!(text.contains("HTTP 500"));
         assert!(
             !text.contains("404"),
             "the invoice's error text must be absent when consumption's error wins: {text}"
         );
+        assert!(text.contains("neon:"), "and it says whose failure it is");
     }
 
     /// When consumption is healthy but the invoice read failed, the invoice's
-    /// error is the only one available and must still reach the footer —
+    /// error is the only one available and must still reach the header line —
     /// the `.or(invoice.last_error.as_deref())` fallback in `neon_section`.
     #[test]
     fn the_invoice_error_reaches_the_footer_when_consumption_is_healthy() {
@@ -1133,8 +1227,10 @@ mod tests {
             .neon_invoice_mut()
             .failed("invoices: Neon API request failed (HTTP 404)".to_owned());
         let payload = view(&state, QUOTA, NeonRates::default(), CADENCE, NOW);
-        let footer = &section(&payload, "neon").expect("neon")["footer"]["text"];
-        assert!(footer.as_str().unwrap().contains("invoices:"));
+        assert!(payload["footer"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("invoices:"));
     }
 
     // MARK: the quota bar
@@ -1206,7 +1302,13 @@ mod tests {
     /// the window neither field can express on its own.
     #[test]
     fn each_metered_section_dates_its_figures_once_a_whole_cycle_has_passed() {
-        let live = view(&measured(), QUOTA, RATES, CADENCE, NOW + 600);
+        let live = view(
+            &measured_with_claude_at(NOW + 600),
+            QUOTA,
+            RATES,
+            CADENCE,
+            NOW + 600,
+        );
         for id in ["neon", "sentry"] {
             let fresh = &section(&live, id).expect(id)["freshness"];
             assert_eq!(fresh["state"], "live", "{id}");
@@ -1214,7 +1316,8 @@ mod tests {
             assert!(fresh["text"].is_null(), "{id} paints as it always did");
         }
 
-        let stale = view(&measured(), QUOTA, RATES, CADENCE, NOW + CADENCE + 1);
+        let at = NOW + CADENCE + 1;
+        let stale = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
         for id in ["neon", "sentry"] {
             let provider = section(&stale, id).expect(id);
             assert_eq!(provider["freshness"]["state"], "stale", "{id}");
@@ -1229,9 +1332,13 @@ mod tests {
             // of those two edges to keep.
             assert!(
                 provider["footer"].is_null(),
-                "{id}: dated, and no warning yet"
+                "{id}: a section never carries a warning of its own"
             );
         }
+        assert!(
+            stale["footer"].is_null(),
+            "and the panel's header line stays clean: dated is not late"
+        );
     }
 
     /// The failure this field exists to prevent: a section that has never once
@@ -1254,19 +1361,20 @@ mod tests {
     /// two strings, both present.
     #[test]
     fn a_dated_figure_and_a_failure_are_reported_side_by_side() {
-        let mut state = measured();
+        let at = NOW + CADENCE + 1;
+        let mut state = measured_with_claude_at(at);
         state
             .neon
             .failed("Neon API request failed (HTTP 500)".to_owned());
-        let payload = view(&state, QUOTA, RATES, CADENCE, NOW + CADENCE + 1);
+        let payload = view(&state, QUOTA, RATES, CADENCE, at);
         let neon = section(&payload, "neon").expect("neon");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
         assert_eq!(neon["freshness"]["text"], "as of 1h ago");
         assert_eq!(
-            neon["footer"]["text"],
-            "⚠ Neon API request failed (HTTP 500) · last ok 1h ago"
+            payload["footer"]["text"],
+            "⚠ neon: Neon API request failed (HTTP 500) · last ok 1h ago"
         );
-        assert_ne!(neon["freshness"]["text"], neon["footer"]["text"]);
+        assert_ne!(neon["freshness"]["text"], payload["footer"]["text"]);
     }
 
     /// The age is classified against the operator's cadence, not a constant
@@ -1289,18 +1397,73 @@ mod tests {
 
     // MARK: footers
 
+    /// Each section is still measured against **its own window** — the whole
+    /// reason the window is an argument. Only the place the resulting line
+    /// lands changed: 10 minutes is stale for Claude (150s) and perfectly fine
+    /// for the hourly providers, so the one header line carries Claude's
+    /// warning and nothing else.
     #[test]
     fn each_section_carries_its_own_footer_on_its_own_window() {
-        // 10 minutes: stale for Claude (150s), fine for the hourly providers.
         let payload = view(&measured(), QUOTA, RATES, CADENCE, NOW + 600);
         assert_eq!(payload["footer"]["text"], "⚠ stale · updated 10m ago");
-        assert!(section(&payload, "neon").expect("neon")["footer"].is_null());
-        assert!(section(&payload, "sentry").expect("sentry")["footer"].is_null());
+        assert!(
+            !payload["footer"]["text"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("{NEON_ID}:")),
+            "a fresh section must not be named on the line"
+        );
+        for id in [NEON_ID, SENTRY_ID] {
+            assert!(section(&payload, id).expect(id)["footer"].is_null(), "{id}");
+        }
+    }
+
+    /// Two sections degrading at once. Hoisted unattributed these were the
+    /// byte-identical `⚠ stale · updated 23h ago` twice over — a header line
+    /// that said the same thing twice and identified neither. Each names itself
+    /// with the very id its section is keyed by, so the line points at a block a
+    /// reader can find.
+    #[test]
+    fn two_degraded_sections_are_distinguishable_on_the_one_line() {
+        let at = NOW + 23 * 3_600;
+        let payload = view(&measured_with_claude_at(at), QUOTA, RATES, CADENCE, at);
+        assert_eq!(
+            payload["footer"]["text"],
+            "⚠ neon: stale · updated 23h ago ⚠ sentry: stale · updated 23h ago"
+        );
+        for id in [NEON_ID, SENTRY_ID] {
+            assert!(
+                section(&payload, id).is_some(),
+                "{id} is named after a section that exists"
+            );
+        }
+    }
+
+    /// Claude's warning and the sections' share the line, and neither is
+    /// dropped when both are present.
+    #[test]
+    fn claudes_warning_and_a_providers_both_reach_the_header() {
+        let mut state = fixture_state(Fixture::Empty, NOW, NOW);
+        state.neon_mut().begin();
+        state
+            .neon_mut()
+            .failed("Neon API request failed (HTTP 500)".to_owned());
+        let payload = view(&state, QUOTA, RATES, CADENCE, NOW);
+        let text = payload["footer"]["text"].as_str().expect("a header line");
+        assert!(text.contains(NO_LOG_ROOT_MESSAGE), "Claude's: {text}");
+        assert!(
+            text.contains("neon: Neon API request failed"),
+            "Neon's: {text}"
+        );
+        assert!(
+            text.starts_with(&format!("⚠ {NO_LOG_ROOT_MESSAGE}")),
+            "the panel's own subject leads, then the sections in body order: {text}"
+        );
     }
 
     #[test]
     fn a_provider_failure_keeps_the_last_good_figure_and_dates_it() {
-        let mut state = measured();
+        let mut state = measured_with_claude_at(NOW + 300);
         state
             .neon
             .failed("Neon API request failed (HTTP 500)".to_owned());
@@ -1308,8 +1471,8 @@ mod tests {
         let neon = section(&payload, "neon").expect("neon");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
         assert_eq!(
-            neon["footer"]["text"],
-            "⚠ Neon API request failed (HTTP 500) · last ok 5m ago"
+            payload["footer"]["text"],
+            "⚠ neon: Neon API request failed (HTTP 500) · last ok 5m ago"
         );
     }
 
@@ -1355,8 +1518,8 @@ mod tests {
         let neon = section(&payload, "neon").expect("the section stays");
         assert_eq!(neon["rows"][0]["value"], "12.4 CU-h", "last good is kept");
         assert_eq!(
-            neon["footer"]["text"],
-            "⚠ couldn't read the credential store · last ok 2m ago"
+            payload["footer"]["text"],
+            "⚠ neon: couldn't read the credential store · last ok 2m ago"
         );
     }
 
@@ -1427,9 +1590,19 @@ mod tests {
             section(&unmeasured, "sentry").expect("sentry")["bar"].is_null(),
             "a quota with no count must suppress the bar"
         );
-        for id in ["neon", "sentry"] {
+        let unmeasured_line = unmeasured["footer"]["text"]
+            .as_str()
+            .expect("both blank sections explain themselves");
+        for id in [NEON_ID, SENTRY_ID] {
             let s = section(&unmeasured, id).expect(id);
-            assert!(!s["footer"].is_null(), "{id} explains why it is blank");
+            assert!(
+                s["footer"].is_null(),
+                "{id} must not carry a line of its own"
+            );
+            assert!(
+                unmeasured_line.contains(&format!("⚠ {id}: ")),
+                "{id} explains why it is blank, and says it is {id}: {unmeasured_line}"
+            );
             assert_eq!(s["rows"][0]["value"], "—");
         }
         assert!(
