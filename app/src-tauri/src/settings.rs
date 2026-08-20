@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 // crate's; this module only decides how its findings are painted.
 use servicestatus::discover::{self, Component, ProbeError};
 use store::settings::{
-    interval_label, PanelInterval, CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES,
+    interval_label, PanelInterval, CORE_ROW_SPAN_RANGE, REFRESH_INTERVAL_CHOICES, ROW_GAP_PX_RANGE,
 };
 use store::{
     ContainerGroupRule, ContainerRuleAction, Host, HostOverflowMode, SecretKey, Settings,
@@ -415,9 +415,9 @@ pub fn apply_rule_edit(
     true
 }
 
-/// The General tab's two values, laundered through the same rules the store
-/// enforces on deserialize: an unoffered cadence reads as the default and a row
-/// span outside 1–4 is clamped.
+/// The General tab's three values, laundered through the same rules the store
+/// enforces on deserialize: an unoffered cadence reads as the default, a row
+/// span outside 1–4 is clamped, and so is a row gap outside 0–16.
 ///
 /// Applied on the way *in* as well as on the way out so a webview that sends a
 /// value no picker can produce cannot write one to disk either.
@@ -429,7 +429,11 @@ pub fn apply_rule_edit(
 /// layout of its own is migrated from — read by [`breakpoints`], written by
 /// nothing.
 #[must_use]
-pub fn normalized_general(refresh_interval_secs: u32, core_row_span: u8) -> Settings {
+pub fn normalized_general(
+    refresh_interval_secs: u32,
+    core_row_span: u8,
+    row_gap_px: u8,
+) -> Settings {
     Settings {
         refresh_interval_secs: if REFRESH_INTERVAL_CHOICES.contains(&refresh_interval_secs) {
             refresh_interval_secs
@@ -438,6 +442,7 @@ pub fn normalized_general(refresh_interval_secs: u32, core_row_span: u8) -> Sett
         },
         core_row_span: core_row_span
             .clamp(*CORE_ROW_SPAN_RANGE.start(), *CORE_ROW_SPAN_RANGE.end()),
+        row_gap_px: row_gap_px.clamp(*ROW_GAP_PX_RANGE.start(), *ROW_GAP_PX_RANGE.end()),
         ..Settings::default()
     }
 }
@@ -565,6 +570,18 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
             "min": CORE_ROW_SPAN_RANGE.start(),
             "max": CORE_ROW_SPAN_RANGE.end(),
             "help": "How many rows tall the per-core CPU grid is on every host card.",
+        },
+        // Names the axis it moves, because there are three of them and only
+        // this one is settable: rows within one list, not panels beside each
+        // other and not the sections inside a panel. An operator who sets this
+        // expecting the cockpit grid to tighten has been misled by the control,
+        // not by their own reading of it.
+        "rowGapPx": {
+            "label": "Row spacing (px)",
+            "value": settings.row_gap_px,
+            "min": ROW_GAP_PX_RANGE.start(),
+            "max": ROW_GAP_PX_RANGE.end(),
+            "help": "Space between two rows of the same list inside a panel — the containers on a host, the repos, the runners. 0 sits them flush, which is the default: it is the setting that decides how many rows fit on screen. The gap between panels is fixed.",
         },
         // No host-overflow picker here any more: it is a per-breakpoint
         // decision now (Settings → Layout), because one global switch could not
@@ -1929,13 +1946,18 @@ mod tests {
 
     #[test]
     fn general_values_are_laundered_on_the_way_in_too() {
-        let s = normalized_general(45, 9);
+        let s = normalized_general(45, 9, 40);
         assert_eq!(s.refresh_interval_secs, 60);
         assert_eq!(s.core_row_span, 4);
+        assert_eq!(
+            s.row_gap_px, 16,
+            "a gap wider than the range is clamped, not dropped"
+        );
 
-        let s = normalized_general(300, 1);
+        let s = normalized_general(300, 1, 0);
         assert_eq!(s.refresh_interval_secs, 300);
         assert_eq!(s.core_row_span, 1);
+        assert_eq!(s.row_gap_px, 0, "zero is a value an operator may send");
     }
 
     /// The host-overflow mode left General for the Layout tab, where it is one
@@ -2088,6 +2110,7 @@ mod tests {
         let mut settings = Settings {
             refresh_interval_secs: 300,
             core_row_span: 3,
+            row_gap_px: 6,
             host_overflow_mode: HostOverflowMode::Tabs,
             neon_org_id: "org-abc".into(),
             sentry_org_slug: "acme".into(),
@@ -2258,6 +2281,7 @@ mod tests {
         let general = &vm["general"];
         assert_eq!(general["refreshInterval"]["value"], 300);
         assert_eq!(general["coreRowSpan"]["value"], 3);
+        assert_eq!(general["rowGapPx"]["value"], 6);
         // The sample's `host_overflow_mode` is `tabs`; it now seeds the Layout
         // tab's first band rather than a picker here.
         assert_eq!(vm["layout"]["breakpoints"][0]["hostOverflow"], "tabs");
@@ -2271,6 +2295,11 @@ mod tests {
         assert_eq!(labels, vec!["30 seconds", "1 minute", "5 minutes"]);
         assert_eq!(general["coreRowSpan"]["min"], 1);
         assert_eq!(general["coreRowSpan"]["max"], 4);
+        // The bounds are Rust's, so the number input cannot offer a value the
+        // store would only launder back — the same contract the cadence picker
+        // has, one field down.
+        assert_eq!(general["rowGapPx"]["min"], 0);
+        assert_eq!(general["rowGapPx"]["max"], 16);
     }
 
     // MARK: - crash reporting

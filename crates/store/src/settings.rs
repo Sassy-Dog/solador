@@ -26,6 +26,25 @@ pub const CORE_ROW_SPAN_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
 /// The `coreRowSpan` default shared by Settings and `HostMetricsPanel`.
 pub const DEFAULT_CORE_ROW_SPAN: u8 = 2;
 
+/// Inclusive bounds, in points, for the gap between two rows of the same
+/// in-panel list (`--row-gap` in `app/ui/app.css`).
+///
+/// The top is 16 because that is `viewmodel::cockpit::SPACING` — the gap
+/// *between* cards. A list whose own rows sit further apart than the panels
+/// holding them no longer reads as a list, so the outer gap is the natural
+/// ceiling rather than a number picked to feel roomy.
+pub const ROW_GAP_PX_RANGE: std::ops::RangeInclusive<u8> = 0..=16;
+
+/// No gap at all — rows of one list sit flush.
+///
+/// This is a **decision**, not `u8::default()` happening to be zero. #363 gave
+/// every in-panel list one rhythm and set it to 10, and the panel that renders
+/// 21+ rows got taller for it; on a cockpit that lives full-screen on a second
+/// monitor, fitting the rows in beats separating them. How much air a list wants
+/// is taste rather than correctness, which is why the value is settable at all —
+/// and why an operator who preferred #363's answer can type it back in.
+pub const DEFAULT_ROW_GAP_PX: u8 = 0;
+
 /// What the cockpit does when host cards no longer fit side by side.
 ///
 /// Mirrors the original's `HostOverflowMode` (`stack`/`tabs`), including its
@@ -392,6 +411,18 @@ pub struct Settings {
     /// into it rather than dropped, since the intent still survives.
     #[serde(deserialize_with = "de_core_row_span")]
     pub core_row_span: u8,
+    /// Points between two rows of the same in-panel list, painted as
+    /// `--row-gap`. Always within [`ROW_GAP_PX_RANGE`]; an out-of-range value
+    /// read from disk is clamped into it rather than dropped, since the intent
+    /// still survives.
+    ///
+    /// `0` is a chosen value here — see [`DEFAULT_ROW_GAP_PX`] — not the absence
+    /// of one. It spaces the *rows of one list*; the gap between panels is
+    /// `viewmodel::cockpit::SPACING`, and the grids that separate a panel's
+    /// sections from each other are a third axis again. Widening this one does
+    /// not move either.
+    #[serde(deserialize_with = "de_row_gap_px")]
+    pub row_gap_px: u8,
     /// Host-card behaviour below the side-by-side breakpoint.
     pub host_overflow_mode: HostOverflowMode,
     /// Monthly Azure budget in USD. `0` means "no budget set" and hides the bar.
@@ -568,6 +599,8 @@ impl Default for Settings {
         Settings {
             refresh_interval_secs: DEFAULT_REFRESH_INTERVAL_SECS,
             core_row_span: DEFAULT_CORE_ROW_SPAN,
+            // Zero on purpose, and the field says why.
+            row_gap_px: DEFAULT_ROW_GAP_PX,
             host_overflow_mode: HostOverflowMode::default(),
             azure_monthly_budget_usd: 0.0,
             azure_storage_account: String::new(),
@@ -609,6 +642,17 @@ fn de_core_row_span<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     }))
 }
 
+/// Clamped, not defaulted, for [`de_core_row_span`]'s reason: a hand-edited `40`
+/// means "as much air as this will give me", and the top of the range is a truer
+/// reading of that than snapping back to a default of zero — which would look
+/// like the edit was ignored.
+fn de_row_gap_px<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let raw = Option::<u8>::deserialize(d)?;
+    Ok(raw.map_or(DEFAULT_ROW_GAP_PX, |px| {
+        px.clamp(*ROW_GAP_PX_RANGE.start(), *ROW_GAP_PX_RANGE.end())
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,6 +662,10 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.refresh_interval_secs, 60);
         assert_eq!(s.core_row_span, 2);
+        assert_eq!(
+            s.row_gap_px, 0,
+            "rows of one list sit flush until someone asks otherwise"
+        );
         assert_eq!(s.host_overflow_mode, HostOverflowMode::Stack);
         assert_eq!(s.azure_monthly_budget_usd, 0.0);
         assert_eq!(s.sentry_monthly_event_quota, 0);
@@ -697,6 +745,9 @@ mod tests {
         let s = Settings {
             refresh_interval_secs: 300,
             core_row_span: 4,
+            // Off the default so the round trip proves the field persists
+            // rather than reappearing from `Default`.
+            row_gap_px: 12,
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 125.5,
             azure_storage_account: "acmestorage".into(),
@@ -787,6 +838,40 @@ mod tests {
             let s: Settings = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(s.core_row_span, want, "raw {raw}");
         }
+    }
+
+    #[test]
+    fn out_of_range_row_gap_is_clamped() {
+        let cases = [("40", 16), ("16", 16), ("0", 0), ("7", 7), ("null", 0)];
+        for (raw, want) in cases {
+            let json = format!(r#"{{"row_gap_px":{raw}}}"#);
+            let s: Settings = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(s.row_gap_px, want, "raw {raw}");
+        }
+    }
+
+    /// Zero is the *chosen* row gap, so a store file that predates the key must
+    /// read as zero for the same reason it reads as anything at all — not
+    /// because `u8::default()` agrees with the decision today.
+    ///
+    /// The neighbouring assertion is what gives this one its teeth: an explicit
+    /// `0` and an absent key land on the same number, and they must, because the
+    /// operator who typed 0 and the operator who upgraded want the same cockpit.
+    #[test]
+    fn a_store_file_without_the_row_gap_key_reads_as_flush() {
+        for stored in [
+            r#"{}"#,
+            r#"{"core_row_span":3}"#,
+            r#"{"refresh_interval_secs":300,"github_org":"acme"}"#,
+        ] {
+            let s: Settings = serde_json::from_str(stored).expect("deserialize");
+            assert_eq!(s.row_gap_px, DEFAULT_ROW_GAP_PX, "stored {stored}");
+        }
+        let widened: Settings = serde_json::from_str(r#"{"row_gap_px":10}"#).expect("deserialize");
+        assert_eq!(
+            widened.row_gap_px, 10,
+            "an explicit gap survives the round trip"
+        );
     }
 
     #[test]

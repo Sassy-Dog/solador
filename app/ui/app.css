@@ -13,30 +13,33 @@
      10 beside Runners at 0, with Containers and OpenClaw at 3 and Usage at 6
      below them. Nothing in the cockpit shared a rhythm.
 
-     10 because it is what the frame already says: `.card`, `.panel` and
-     `.group` all separate their own children by 10, so a list that agrees with
-     them is the cockpit measuring one thing one way rather than a fifth value
-     chosen to average the other four. Containers/VMs is taller for it — it is
-     the panel that renders 21+ rows — and that is the accepted cost of the
-     decision, not an oversight in it.
+     One rhythm was the decision; 10 was only its first answer. It agreed with
+     `.card`, `.panel` and `.group`, which separate their own children by 10 —
+     and the panel that renders 21+ rows got taller for it, which the cockpit
+     cannot afford on a screen whose whole job is fitting rows in. So the number
+     is the OPERATOR's now (`row_gap_px`, Settings → General), and the answer
+     shipped in an untouched store is 0: flush.
 
-     Those three keep their literal 10, and so do the `gap:10px 24px` grids on
-     `#containersBody`/`#reposBody`/`#usageBody`/`#azureBody` and the block
-     wrappers inside them (`.usage-main`, `.usage-providers`, `.az-main`).
-     Every one of those spaces SECTIONS, COLUMNS or a card's frame apart, which
-     is a different axis asking a different question; that they agree on 10
-     today is the point, not a reason to fuse them — pointing them here would
-     tie two decisions together at the first value that had to move. Read this
-     token only from a rule whose children are the rows of one list.
+     The value therefore ARRIVES FROM RUST, as `rowGapPx` on the cockpit
+     payload, exactly like `--cockpit-gap` — which is a reversal, and the reason
+     is that the number stopped being the frontend's. It was authored here while
+     spacing inside a list was a thing nothing but this stylesheet had an opinion
+     about; a preference is not that. What is left here is the value the page
+     paints BEFORE the first payload lands, which is why this declaration stays
+     and why the uses below are still bare `var(--row-gap)` with no fallbacks.
+     That is where this token and `--cockpit-gap` differ on purpose: nine
+     `var(--cockpit-gap, 16px)` fallbacks are nine places its pre-payload value
+     could disagree with itself, and one `:root` declaration is one.
 
-     Authored HERE, unlike `--cockpit-gap`, which arrives from Rust (`spacing`
-     on the cockpit payload) and is the gap BETWEEN panels: spacing inside a
-     list is not a value the view-model computes, and inventing a `spacing`
-     field for it would put a number the frontend owns behind an IPC call. That
-     is also why every use below is a bare `var(--row-gap)` with no fallback —
-     a fallback would be a second authored value, free to disagree with this
-     one, in a stylesheet that is the only thing that ever sets it. */
-  --row-gap:10px;
+     `.card`, `.panel` and `.group` keep their literal 10, and so do the
+     `gap:10px 24px` grids on `#containersBody`/`#reposBody`/`#usageBody`/
+     `#azureBody` and the block wrappers inside them (`.usage-main`,
+     `.usage-providers`, `.az-main`). Every one of those spaces SECTIONS,
+     COLUMNS or a card's frame apart, which is a different axis asking a
+     different question — and now a fixed one, so pointing them at a preference
+     would put them under a control that does not name them. Read this token
+     only from a rule whose children are the rows of one list. */
+  --row-gap:0px;
 }
 * { box-sizing: border-box; }
 /* A class selector out-specifies the UA stylesheet's `[hidden] {display:none}`,

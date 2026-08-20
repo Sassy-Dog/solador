@@ -1351,10 +1351,10 @@ not change keeps its own task — and therefore its sparkline history, its failu
 streak and its last-success time. Unhiding a volume deliberately skips that
 reload entirely, mirroring the original view's `applyHiddenMounts()` vs `reload()`.
 
-Two gaps, deliberate and worth knowing:
+Two things worth knowing about this surface — what the General preferences
+actually reach, and the one gap left:
 
-- **One of the two Apply-gated General preferences is consumed; the core row
-  span is not.**
+- **All three Apply-gated General preferences are consumed.**
   `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
   rollup's cadence, and changing it applies immediately (see below). Neither the
   host poll loop nor the provider reads are on it: the host loop stays at 1s
@@ -1374,10 +1374,22 @@ Two gaps, deliberate and worth knowing:
   before anybody trips over it, because a limit an operator only meets by being
   refused is indistinguishable from the control being broken. There is still no
   row for the 1 Hz host poll or the 10s agent-health poll: neither has a
-  `PanelInterval` to name it, deliberately. The **core row span**
-  is still read by `viewmodel`'s card functions from their own constant; it
-  persists (same file, same key, same laundering rules as the original) and nothing
-  reads the stored value yet. `host_overflow_mode` left this tab for the
+  `PanelInterval` to name it, deliberately. The **core row span** reaches the
+  host cards through `align_core_ladders`, which is the only place that has seen
+  every card — `host_card` cannot read a preference, which is why the stored
+  value went unread for as long as it did
+  (`the_core_row_span_preference_reaches_the_block`). **Row spacing**
+  (`row_gap_px`, 0–16, default **0**) is the third: it is the gap between two
+  rows of the *same list inside a panel* — the containers on a host, the repos,
+  the runners — and it rides the **cockpit** payload as `rowGapPx` rather than
+  the settings one, because the settings payload is only fetched while that
+  surface is open and this value has to be on the page from the first frame.
+  `app/ui/app.js` paints it as `--row-gap`, over the pre-payload value
+  `app/ui/app.css` still declares. It needs no wake: `cockpit_view` re-reads the
+  store every frame, so a change lands on the next 1s tick. It moves that one
+  axis and no other — the gap *between* panels is `viewmodel::cockpit::SPACING`
+  and the grids that separate a panel's sections are a third, both fixed.
+  `host_overflow_mode` left this tab for the
   [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
   stored field remains only as that migration's seed.
 - **About's version is hard-coded** to the crate version, not the CalVer

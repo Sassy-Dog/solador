@@ -539,6 +539,15 @@ function applyHostTabs(spec, grid) {
 function renderCockpit(p) {
   const grid = $("cockpit");
   document.documentElement.style.setProperty("--cockpit-gap", Number(p.spacing) + "px");
+  // The operator's row spacing, over the stylesheet's pre-payload value. Guarded
+  // because an absent key would set the property to the string "NaNpx" — a legal
+  // custom-property token, so `var(--row-gap)` resolves to it and only fails at
+  // substitution time, leaving every list at `gap:normal`. That renders 0 and
+  // looks deliberate. Saying nothing leaves app.css's value standing, which is
+  // the honest answer to "we were not told".
+  if (Number.isFinite(p.rowGapPx)) {
+    document.documentElement.style.setProperty("--row-gap", p.rowGapPx + "px");
+  }
   const cols = Math.max(1, Number(p.hostColumns) | 0);
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
 

@@ -120,8 +120,8 @@ function group(heading) {
   return box;
 }
 
-/** Whole numbers only: `refreshIntervalSecs`, `coreRowSpan` and the Sentry
- *  quota are integers in Rust, and a NaN is not even JSON. */
+/** Whole numbers only: `refreshIntervalSecs`, `coreRowSpan`, `rowGapPx` and the
+ *  Sentry quota are integers in Rust, and a NaN is not even JSON. */
 const int = (raw) => Math.max(0, Math.round(Number(raw) || 0));
 
 // MARK: talking to Rust
@@ -236,6 +236,9 @@ function generalTab(g) {
   const span = numberInput(g.coreRowSpan.value, g.coreRowSpan.min, g.coreRowSpan.max);
   box.append(field("general-core-rows", g.coreRowSpan.label, span), help(g.coreRowSpan.help));
 
+  const gap = numberInput(g.rowGapPx.value, g.rowGapPx.min, g.rowGapPx.max);
+  box.append(field("general-row-gap", g.rowGapPx.label, gap), help(g.rowGapPx.help));
+
   // No host-overflow picker here: it is per breakpoint now (the Layout tab),
   // because one global switch could not say "tabs in a narrow column, side by
   // side when wide".
@@ -244,6 +247,7 @@ function generalTab(g) {
     mutate("settings_save_general", {
       refreshIntervalSecs: int(interval.value),
       coreRowSpan: int(span.value),
+      rowGapPx: int(gap.value),
     })
   );
   box.appendChild(actionRow(apply));

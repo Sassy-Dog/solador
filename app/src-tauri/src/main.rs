@@ -390,6 +390,7 @@ fn cockpit_view(
     available: f64,
     overflow: HostOverflowMode,
     core_row_span: usize,
+    row_gap_px: u8,
     layout: &CockpitLayout,
 ) -> Value {
     let remote: Vec<Value> = hosts
@@ -406,6 +407,7 @@ fn cockpit_view(
         available,
         overflow,
         core_row_span,
+        row_gap_px,
         layout,
     )
 }
@@ -544,6 +546,7 @@ fn cockpit_payload(
     available: f64,
     overflow: HostOverflowMode,
     core_row_span: usize,
+    row_gap_px: u8,
     layout: &CockpitLayout,
 ) -> Value {
     let mut cards = cards;
@@ -563,6 +566,13 @@ fn cockpit_payload(
         "hostColumns": columns,
         "hostCardMinWidth": HOST_CARD_MIN_WIDTH,
         "spacing": SPACING,
+        // The operator's row spacing, painted as `--row-gap`. It rides the
+        // cockpit payload rather than the settings one because the settings
+        // payload is only fetched while that surface is open, and this value has
+        // to be on the page from the first frame. Beside `spacing` because the
+        // two are the same kind of number in different places: this one separates
+        // rows inside a card, that one separates the cards.
+        "rowGapPx": row_gap_px,
         // Null unless the cards actually collapse. A tab bar the frontend has
         // to decide the visibility of would be `host_tabs` re-implemented in
         // JS, free to disagree with the tested one -- the same argument
@@ -2396,7 +2406,7 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
     // laundered on the way out as well as on the way in (`breakpoints`), so a
     // store hand-edited to name a panel this build does not have still renders
     // every panel it does.
-    let (overflow, core_row_span, layout) = {
+    let (overflow, core_row_span, row_gap_px, layout) = {
         let store = state.store.lock().expect("store poisoned");
         let settings = store.settings();
         let bands = settings::breakpoints(store.layout(), settings.host_overflow_mode);
@@ -2404,10 +2414,19 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         (
             band.host_overflow,
             settings.core_row_span as usize,
+            settings.row_gap_px,
             band.layout(),
         )
     };
-    cockpit_view(Some(local), &hosts, width, overflow, core_row_span, &layout)
+    cockpit_view(
+        Some(local),
+        &hosts,
+        width,
+        overflow,
+        core_row_span,
+        row_gap_px,
+        &layout,
+    )
 }
 
 // MARK: the Usage + Azure Cost panels
@@ -3234,14 +3253,17 @@ fn settings_view(state: tauri::State<'_, Arc<App>>) -> Value {
 fn settings_save_general(
     refresh_interval_secs: u32,
     core_row_span: u8,
+    row_gap_px: u8,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        let general = settings::normalized_general(refresh_interval_secs, core_row_span);
+        let general =
+            settings::normalized_general(refresh_interval_secs, core_row_span, row_gap_px);
         let current = store.settings_mut();
         current.refresh_interval_secs = general.refresh_interval_secs;
         current.core_row_span = general.core_row_span;
+        current.row_gap_px = general.row_gap_px;
         save_status(&store, "Saved.")
     };
     // The refresh interval is the GitHub *and* Claude-usage loops' cadence, so
@@ -3250,6 +3272,11 @@ fn settings_save_general(
     // to take is indistinguishable from the setting doing nothing. The Usage
     // panel's provider half is on its own hourly clock and is deliberately not
     // forced here: nothing about a cadence change alters what Neon returns.
+    //
+    // The row gap needs no wake of its own. A cadence change has to reach a loop
+    // that is already asleep on the *old* interval; this one is read out of the
+    // store by `cockpit_view` on every frame, so it paints on the next 1s tick
+    // whether anything is woken or not.
     wake_github(&state);
     wake_usage(&state, false);
     settings_response(&state, status)
@@ -4395,6 +4422,7 @@ fn dump_pending(pending: &Pending) -> Value {
         1000.0,
         HostOverflowMode::Stack,
         viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        store::settings::DEFAULT_ROW_GAP_PX,
         &CockpitLayout::hosts_forward(),
     )
 }
@@ -4406,6 +4434,7 @@ fn dump_single(connection: &Connection) -> Value {
         1000.0,
         HostOverflowMode::Stack,
         viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        store::settings::DEFAULT_ROW_GAP_PX,
         // The shipped arrangement: the fixtures are what the Playwright suite
         // renders, and a dump carrying someone's edited layout would make the
         // suite depend on a store this repo does not have.
@@ -4528,6 +4557,7 @@ fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Val
         available,
         overflow,
         viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        store::settings::DEFAULT_ROW_GAP_PX,
         &CockpitLayout::hosts_forward(),
     )
 }
@@ -4650,6 +4680,10 @@ fn dump_settings() -> Value {
         // show. The default itself is asserted in `crates/store`, where it
         // belongs, and again in the view tests below.
         crash_reporting_enabled: true,
+        // Off the shipped 0 for the same reason: a fixture whose row gap equals
+        // the default cannot tell "the field paints the stored value" apart from
+        // "the field paints a constant that happens to match".
+        row_gap_px: 6,
         // Exactly one panel configured, for the same reason: the cadence rows
         // render two ways — an override (whose **Use default** button is live)
         // and a panel nobody has ever set — and a fixture carrying only one of
@@ -5557,6 +5591,7 @@ mod tests {
             available,
             HostOverflowMode::Stack,
             viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+            store::settings::DEFAULT_ROW_GAP_PX,
             &CockpitLayout::hosts_forward(),
         )
     }
@@ -5584,6 +5619,7 @@ mod tests {
             available,
             HostOverflowMode::Stack,
             viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+            store::settings::DEFAULT_ROW_GAP_PX,
             layout,
         )
     }
@@ -5597,6 +5633,7 @@ mod tests {
             available,
             HostOverflowMode::Tabs,
             viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+            store::settings::DEFAULT_ROW_GAP_PX,
             &CockpitLayout::hosts_forward(),
         )
     }
@@ -6621,6 +6658,7 @@ mod tests {
             1000.0,
             HostOverflowMode::Stack,
             3, // three section-rows rather than the default two
+            store::settings::DEFAULT_ROW_GAP_PX,
             &CockpitLayout::hosts_forward(),
         );
         let card = &payload["hosts"][0];
@@ -6634,6 +6672,38 @@ mod tests {
         assert!(
             tallest >= 330.0,
             "the span raises the block, not just the base"
+        );
+    }
+
+    /// The row gap is `row_gap_px`, not a constant the frontend keeps.
+    ///
+    /// Exactly [`the_core_row_span_preference_reaches_the_block`]'s defect in
+    /// the other panel half: that one was persisted and editable in Settings and
+    /// never reached the card, because the renderer had a default of its own. A
+    /// gap the operator sets and the stylesheet ignores would be the same bug
+    /// with a different symptom, and the frontend cannot notice — an unset
+    /// `--row-gap` and one set to the shipped 0 paint identically.
+    #[test]
+    fn the_row_gap_preference_reaches_the_payload() {
+        let widened = cockpit_payload(
+            core_cards(&[8]),
+            0,
+            1000.0,
+            HostOverflowMode::Stack,
+            viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+            10,
+            &CockpitLayout::hosts_forward(),
+        );
+        assert_eq!(widened["rowGapPx"], 10);
+
+        // And zero travels as a value rather than as an omission: `app.js` only
+        // paints the key when it is finite, so a payload that dropped it would
+        // leave the stylesheet's value standing instead of the operator's.
+        let flush = stacked_payload(core_cards(&[8]), 0, 1000.0);
+        assert_eq!(flush["rowGapPx"], 0);
+        assert!(
+            flush.get("rowGapPx").is_some(),
+            "the key must ship even at the default"
         );
     }
 
