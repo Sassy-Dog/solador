@@ -787,10 +787,12 @@ one machine therefore land in the same windows and the same `TOP PROJECTS` rows
 with nothing in the data to tell them apart, and that is *inherent to the
 source* rather than a feature nobody wrote — separating them needs a source that
 knows who paid, and this one does not. Read every figure on the Claude half as
-"this machine", never as "this subscription". When the Anthropic **API-key**
-integration lands under the vendor-accounts epic
-([#283](https://github.com/Sassy-Dog/solador/issues/283)) those keys are
-`VendorAccount`s and their usage *is* attributable; the subscription is not one
+"this machine", never as "this subscription". An Anthropic **API-key**
+integration would make those keys `VendorAccount`s whose usage *is*
+attributable — but it has not been built. The vendor-accounts epic
+([#283](https://github.com/Sassy-Dog/solador/issues/283)) closed with
+`VendorKind::GitHub` as its only variant, and no open issue tracks adding
+Anthropic; the subscription is not one
 and must not be modelled as one, because an account id hung on these rollups
 would be an attribution invented to fill a gap — the same unknown-as-zero error
 the `Unmeasured` enums above exist to prevent, wearing a different costume.
@@ -1559,9 +1561,11 @@ the About tab's own links, `http://` instead of `https://`, and
 `https://github.com.evil.example/…`. Widening the scope fails that test.
 
 What the test does **not** do is exercise the IPC boundary that enforces the
-scope: it reads the file, it does not invoke through it. Nothing automated does
-— that is still [#123](https://github.com/Sassy-Dog/solador/issues/123), and
-it is why the checklist below grew a tap-to-open line.
+scope: it reads the file, it does not invoke through it. Nothing automated does,
+and nothing is planned to:
+[#123](https://github.com/Sassy-Dog/solador/issues/123) closed on the checklist
+below rather than on automation, which is why that checklist grew a tap-to-open
+line.
 
 ## Build & run
 
