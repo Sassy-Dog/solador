@@ -37,7 +37,7 @@
 
 use serde_json::{json, Value};
 use viewmodel::color;
-use viewmodel::update::{self, Check, Install, NotUpdatable, Provenance};
+use viewmodel::update::{self, Channel, Check, Install, NotUpdatable, Provenance};
 
 /// The Settings group's heading.
 pub const HEADING: &str = "Updates";
@@ -86,7 +86,22 @@ pub fn not_updatable(current: Option<&str>) -> Option<NotUpdatable> {
     } else {
         Provenance::Released
     };
-    update::not_updatable(current, provenance)
+    // The second fact only the shell can know (#368). `latest.json` carries
+    // `darwin-aarch64` and `darwin-x86_64` and nothing else, and
+    // `publish-feed.yml` harvests only `*.app.tar.gz`, so macOS is the one
+    // platform with anything to be offered. A `cfg!` rather than a probe, for
+    // the same reason the profile is: it cannot drift at runtime.
+    //
+    // This mirrors `crates/updatefeed`'s platform keys rather than reading
+    // them — the app deliberately does not depend on the release tooling. When
+    // Windows gains an updater payload, this is the line that changes, and
+    // `crates/updatefeed` is the file to change with it.
+    let channel = if cfg!(target_os = "macos") {
+        Channel::Published
+    } else {
+        Channel::Absent
+    };
+    update::not_updatable(current, provenance, channel)
 }
 
 /// Everything the Updates group renders from, plus the banner ledger.
@@ -382,18 +397,24 @@ mod tests {
         }
     }
 
-    /// The shell's whole share of the decision: which profile this is.
+    /// The shell's whole share of the decision: which profile, and which
+    /// platform.
     ///
-    /// Asserted against the profile the test itself was compiled at, because
-    /// that is the only honest thing to assert about a `cfg!` — the rule it
-    /// feeds is covered exhaustively in `viewmodel::update`.
+    /// Asserted against the profile and target the test itself was compiled
+    /// at, because that is the only honest thing to assert about a `cfg!` —
+    /// the rule they feed is covered exhaustively in `viewmodel::update`.
     #[test]
-    fn the_cargo_profile_is_what_decides_whether_this_build_checks() {
+    fn the_cargo_profile_and_platform_are_what_decide_whether_this_build_checks() {
         let named = Some("2026.8.113");
         if cfg!(debug_assertions) {
             assert_eq!(not_updatable(named), Some(NotUpdatable::DevelopmentBuild));
-        } else {
+        } else if cfg!(target_os = "macos") {
             assert_eq!(not_updatable(named), None);
+        } else {
+            // #368: the feed publishes darwin keys only, so a release build
+            // anywhere else is outside the update path by platform — and says
+            // so, instead of asking and reporting the refusal as a failure.
+            assert_eq!(not_updatable(named), Some(NotUpdatable::NoChannel));
         }
         // Either way, a build that cannot name itself never compares itself
         // against anything.

@@ -218,10 +218,15 @@ the only place a Windows checkout executes them.
 `latest.json` carries exactly `darwin-aarch64` and `darwin-x86_64`, and
 `publish-feed.yml` harvests only `*.app.tar.gz`. Windows ships an installer and
 nothing else, so a Windows user updates by downloading the next one, and everything
-**Updates** describes below is a macOS mechanism. That gap currently misreports itself
-in the app: a released Windows build still queries the feed and renders the resulting
-`TargetNotFound` as *"the update check failed"* rather than "there is no channel here"
-— #368.
+**Updates** describes below is a macOS mechanism. **The app says so rather than
+discovering it** (#368): `update::not_updatable` takes a `Channel` alongside the cargo
+profile, and a platform the feed does not publish for reaches
+`NotUpdatable::NoChannel` *before any request is made*. Until that landed, a released
+Windows build asked anyway, got `TargetNotFound`, and rendered it as *"the update
+check failed"* — on every launch, forever, with nothing broken. The shell's
+`cfg!(target_os = "macos")` mirrors `crates/updatefeed`'s platform keys rather than
+reading them, because the app deliberately does not depend on the release tooling;
+when Windows gains an updater payload, those two lines change together.
 
 **Updates (#308).** `--sign` also produces the updater payload: a minisigned
 `Solador-<version>.app.tar.gz` beside the `.dmg`. A `.dmg` is not an update —
@@ -247,6 +252,9 @@ auto-installs — a cockpit on a second monitor does not restart itself.
 (the `tauri-plugin-notification` precedent), and "up to date", "checking", "the
 check failed", "an update is waiting" and "this build has nothing to replace"
 are five separate states in `viewmodel::update` that must never render alike.
+The last of those carries three distinct *reasons* — a `./dev` build, a build that
+cannot name itself, and a platform with no channel — which must not render alike
+either; only the first two are facts about the build.
 
 **The version compared against the feed is `settings::VERSION`, never the
 plugin's own (#353).** Left alone, `tauri-plugin-updater` evaluates
