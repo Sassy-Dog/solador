@@ -1351,8 +1351,7 @@ not change keeps its own task — and therefore its sparkline history, its failu
 streak and its last-success time. Unhiding a volume deliberately skips that
 reload entirely, mirroring the original view's `applyHiddenMounts()` vs `reload()`.
 
-Two things worth knowing about this surface — what the General preferences
-actually reach, and the one gap left:
+Two things worth knowing about this surface:
 
 - **All three Apply-gated General preferences are consumed.**
   `refresh_interval_secs` is the GitHub panels' *and* the Claude usage
@@ -1392,14 +1391,23 @@ actually reach, and the one gap left:
   `host_overflow_mode` left this tab for the
   [Layout tab](#the-layout-tab), where it is one value per breakpoint; the
   stored field remains only as that migration's seed.
-- **About's version is hard-coded** to the crate version, not the CalVer
-  `docs/VERSIONING.md` requires and `scripts/get-version-info.sh` mints
-  ([#15](https://github.com/Sassy-Dog/solador/issues/15)),
-  and the About links render as selectable URLs rather than anchors — following
-  one would navigate the cockpit's own webview away from the app, and the opener
-  scope granted below deliberately does **not** reach them. They are repo roots
-  and issue pages; the grant admits `/{owner}/{repo}/actions` and nothing else,
-  so making those links openable would be a second widening, argued separately.
+- **About's version is the git-derived CalVer, and `—` when there is not one.**
+  `settings::VERSION` is `option_env!("SOLADOR_MARKETING_VERSION")`, published by
+  `app/src-tauri/build.rs` out of `scripts/get-version-info.sh` — the CalVer
+  algorithm's single owner, per `docs/VERSIONING.md`. `build.rs` publishes
+  **nothing** where it cannot derive one honestly (a shallow clone, a tree with
+  no git), and About renders `Version —` there rather than a plausible-looking
+  number. It used to be `env!("CARGO_PKG_VERSION")`, i.e. `Cargo.toml`'s
+  unpublished `0.1.0`, which after #309 was also the Sentry release name on every
+  crash report — a number that has never been a release, shown with exactly the
+  confidence of one that had.
+
+  The About **links** are a separate decision and still stand: they render as
+  selectable URLs rather than anchors — following one would navigate the
+  cockpit's own webview away from the app, and the opener scope granted below
+  deliberately does **not** reach them. They are repo roots and issue pages; the
+  grant admits `/{owner}/{repo}/actions` and nothing else, so making those links
+  openable would be a second widening, argued separately.
 
 ### The Accounts tab
 

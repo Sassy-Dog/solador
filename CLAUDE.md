@@ -103,8 +103,10 @@ carries a five-minute manual smoke checklist that is the only thing covering it
 
 ### Releasing
 
-There is a signed, notarized release path as of #306 — and no release
-*train* yet (#15).
+There is a full release train: pushing a `v*` tag runs `release.yml` (#307),
+which builds the signed, notarized, stapled artifacts (#306) on the `prd`
+environment and attaches them to a **draft** GitHub release. #15 tracked the
+whole path and is closed.
 
 `./dev build --release` produces
 `target/universal-apple-darwin/release/bundle/macos/Solador.app`
@@ -132,8 +134,25 @@ in #269.
 
 `./dev build --release --notarize` produces a **signed, notarized, stapled
 `.dmg`** (#306). `./dev publish` is the same thing behind the CalVer mint, and
-its blanket refusal is gone. release.yml is **#307**, and the train that ties it
-all together is **#15**.
+its blanket refusal is gone.
+
+`release.yml` (#307) is the same build in CI, and it is **the only workflow in
+this repo that declares an `environment`** — that is the security design, not a
+detail. Solador is public, so the org's `APPLE_*` secrets (visibility `private`)
+resolve to the empty string here; environment secrets are repo-scoped, so that
+visibility never applies to them. `prd` also carries a required reviewer and a
+`v*`-tag-only deployment policy, which is what stops a push to `main` minting a
+signed build. `ci.yml` declares no environment and references zero secrets, and
+the `secrets-guard` job asserts that rather than trusting it. The release is
+attached as a **draft**, which is what makes publish-feed.yml's
+`release: published` trigger meaningful — see **Updates** below.
+
+Windows is packaged too, and this section does not yet describe it: a
+`release-windows` job builds an NSIS installer and asserts both version numbers
+back out of it (#341), then Authenticode-signs it through Azure Trusted Signing
+(#342) — a federated `azure/login` on the same `prd` environment, so the
+signing credential is an OIDC identity rather than a stored secret.
+`.github/workflows/release.yml` is the reference until that is written up here.
 
 **Updates (#308).** `--sign` also produces the updater payload: a minisigned
 `Solador-<version>.app.tar.gz` beside the `.dmg`. A `.dmg` is not an update —
