@@ -139,6 +139,11 @@ test("General shows the stored values and applies them in one command", async ({
 
   await expect(page.locator("#general-interval")).toHaveValue(String(g.refreshInterval.value));
   await expect(page.locator("#general-core-rows")).toHaveValue(String(g.coreRowSpan.value));
+  // The fixture's row gap is off the shipped 0 on purpose, so this asserts the
+  // field paints the STORED value rather than a constant that agrees with the
+  // default.
+  await expect(page.locator("#general-row-gap")).toHaveValue(String(g.rowGapPx.value));
+  expect(g.rowGapPx.value, "the fixture must carry a non-default gap").not.toBe(0);
   // The picker offers exactly what Rust offers -- an option invented here
   // would be a cadence the store launders straight back to the default.
   await expect(page.locator("#general-interval option")).toHaveText(
@@ -149,12 +154,16 @@ test("General shows the stored values and applies them in one command", async ({
 
   await page.locator("#general-interval").selectOption("300");
   await page.locator("#general-core-rows").fill("4");
+  await page.locator("#general-row-gap").fill("0");
   await page.locator(".btn.apply").click();
 
+  // One command for all three, and `0` travels in it. A field that dropped a
+  // zero — the shape `Number(raw) || fallback` produces — would look like the
+  // operator never touched the row spacing.
   expect(await calls(page, "settings_save_general")).toEqual([
     {
       command: "settings_save_general",
-      args: { refreshIntervalSecs: 300, coreRowSpan: 4 },
+      args: { refreshIntervalSecs: 300, coreRowSpan: 4, rowGapPx: 0 },
     },
   ]);
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");

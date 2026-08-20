@@ -1190,37 +1190,17 @@ const ROW_LISTS = [
   { panel: "openclawPanel", list: "#openclawBody .oc-section", row: ".oc-row, .oc-agent" },
 ];
 
-test("every panel's row list carries the same vertical rhythm", async ({ page, baseURL }) => {
-  // The report this closes: "the list of repos vs the list of runners". Repos
-  // sat at a 10px flex gap and Runners at 0 — `.gh-list` is multi-column, where
-  // `gap` sets `column-gap` and `row-gap` does nothing at all — and the two
-  // render side by side on the same row of the grid. Containers (3) and Usage
-  // (6) were two more values again.
-  //
-  // MEASURED, never read off `getComputedStyle`: these lists reach their
-  // spacing by two different mechanisms — a flex `gap` everywhere else, a child
-  // `margin-bottom` in the multicol Runners list — so comparing declarations
-  // would compare things that are not comparable, and a `gap:10px` on
-  // `.gh-list` would read as a pass while rendering 0.
-  const vm = await fixture(baseURL, "sample-cockpit.json");
-  // Real panel contents: an empty panel has no second row to measure against,
-  // and every list would agree about nothing.
-  await stubPanels(page, baseURL, vm);
-  await gotoApp(page);
-  await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
-  await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
-
-  // Nothing may sit this out. A panel that renders and is not in ROW_LISTS is
-  // a list nobody is comparing, which is how the four values this closes got
-  // there in the first place.
-  const rendered = await page
-    .locator("#panelRows section.panel:not([hidden])")
-    .evaluateAll((els) => els.map((el) => el.id));
-  expect(rendered.length, "the fixture must render the panels").toBeGreaterThan(0);
-  const rostered = new Set(ROW_LISTS.map(({ panel }) => panel));
-  expect(rendered.filter((id) => !rostered.has(id)), "panels with no row list declared").toEqual([]);
-
-  const measured = await page.evaluate((lists) =>
+/**
+ * Every measurable gap between two adjacent rows of the same list, per panel.
+ *
+ * MEASURED, never read off `getComputedStyle`: these lists reach their spacing
+ * by two different mechanisms — a flex `gap` everywhere else, a child
+ * `margin-bottom` in the multicol Runners list — so comparing declarations would
+ * compare things that are not comparable, and a `gap:10px` on `.gh-list` would
+ * read as a pass while rendering 0.
+ */
+const measureRowGaps = (page) =>
+  page.evaluate((lists) =>
     lists.map(({ panel, list, row }) => {
       const gaps = [];
       for (const container of document.querySelectorAll(list)) {
@@ -1241,6 +1221,40 @@ test("every panel's row list carries the same vertical rhythm", async ({ page, b
       return { panel, gaps };
     }), ROW_LISTS);
 
+test("every panel's row list carries the same vertical rhythm", async ({ page, baseURL }) => {
+  // The report this closes: "the list of repos vs the list of runners". Repos
+  // sat at a 10px flex gap and Runners at 0 — `.gh-list` is multi-column, where
+  // `gap` sets `column-gap` and `row-gap` does nothing at all — and the two
+  // render side by side on the same row of the grid. Containers (3) and Usage
+  // (6) were two more values again. `measureRowGaps` says why it measures
+  // rather than reading the declarations.
+  const vm = await fixture(baseURL, "sample-cockpit.json");
+  // Driven at a NON-ZERO gap, and it has to be. The shipped `row_gap_px` is 0,
+  // where "every list agrees" is satisfied by every list rendering nothing —
+  // this test would pass on a stylesheet that had lost the token entirely. The
+  // value has to arrive the way the app's does, so it is set on the payload
+  // rather than poked into `--row-gap`: that is also the only thing asserting
+  // the multicol Runners list receives it at all.
+  vm.rowGapPx = 10;
+  // Real panel contents: an empty panel has no second row to measure against,
+  // and every list would agree about nothing.
+  await stubPanels(page, baseURL, vm);
+  await gotoApp(page);
+  await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
+  await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
+
+  // Nothing may sit this out. A panel that renders and is not in ROW_LISTS is
+  // a list nobody is comparing, which is how the four values this closes got
+  // there in the first place.
+  const rendered = await page
+    .locator("#panelRows section.panel:not([hidden])")
+    .evaluateAll((els) => els.map((el) => el.id));
+  expect(rendered.length, "the fixture must render the panels").toBeGreaterThan(0);
+  const rostered = new Set(ROW_LISTS.map(({ panel }) => panel));
+  expect(rendered.filter((id) => !rostered.has(id)), "panels with no row list declared").toEqual([]);
+
+  const measured = await measureRowGaps(page);
+
   // A panel that rendered no measurable pair would otherwise agree with
   // everyone by saying nothing — which is exactly how a list drifts unnoticed.
   for (const { panel, gaps } of measured) {
@@ -1250,7 +1264,36 @@ test("every panel's row list carries the same vertical rhythm", async ({ page, b
   const report = measured.map(({ panel, gaps }) => `${panel}=${[...new Set(gaps)].join("/")}`).join(", ");
   const distinct = [...new Set(measured.flatMap(({ gaps }) => gaps))];
   expect(distinct, `one row gap everywhere, got ${report}`).toHaveLength(1);
+  // …and that one value is the operator's, not a survivor in the stylesheet.
+  // "They all agree" and "they all agree with what was asked for" are different
+  // claims, and only the second one notices a hardcoded rhythm.
+  expect(distinct[0], `the payload asked for ${vm.rowGapPx}, got ${report}`).toBe(vm.rowGapPx);
 });
+
+// `row_gap_px` is the operator's (Settings → General) and 0 by default, which is
+// the combination that hides a break: an unpainted `--row-gap` and one painted
+// at the default render identically, so a preference that never left the payload
+// would appear to work for everyone who never changed it.
+//
+// Both ends of the range, because either alone proves less than it looks. At 0 a
+// stylesheet that ignored the payload outright still passes; at 16 so does one
+// that pinned every list to a constant 16. A separate test per value rather than
+// a loop, so each gets its own page — and its own CSP check.
+for (const px of [0, 16]) {
+  test(`the row spacing preference is what every list renders (${px}px)`, async ({ page, baseURL }) => {
+    const vm = await fixture(baseURL, "sample-cockpit.json");
+    vm.rowGapPx = px;
+    await stubPanels(page, baseURL, vm);
+    await gotoApp(page);
+    await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
+    await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
+
+    for (const { panel, gaps } of await measureRowGaps(page)) {
+      expect(gaps.length, `${panel} rendered no adjacent row pair to measure`).toBeGreaterThan(0);
+      expect([...new Set(gaps)], `${panel} at rowGapPx:${px}`).toEqual([px]);
+    }
+  });
+}
 
 test("the Runners list ends at its last row, at one column and at two", async ({ page, baseURL }) => {
   // The trap in the mechanism that gives Runners its gap. `.gh-list` is
@@ -1264,6 +1307,11 @@ test("the Runners list ends at its last row, at one column and at two", async ({
   // at ONE column and wrong at two, because the last child is last in flow, not
   // last in each column. Only the two-column render tells them apart.
   const vm = await fixture(baseURL, "sample-cockpit.json");
+  // Non-zero, for the same reason the rhythm test is: the trailing gap this
+  // catches is a `margin-bottom`, and at the shipped 0 there is no margin to
+  // leak. The bug would be undetectable at the default and arrive the moment an
+  // operator widened the spacing.
+  vm.rowGapPx = 10;
   await stubPanels(page, baseURL, vm);
   await gotoApp(page);
   await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();

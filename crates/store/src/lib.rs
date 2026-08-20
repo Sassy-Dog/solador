@@ -1058,6 +1058,7 @@ mod tests {
         store.set_settings(Settings {
             refresh_interval_secs: 300,
             core_row_span: 3,
+            row_gap_px: 10,
             host_overflow_mode: HostOverflowMode::Tabs,
             azure_monthly_budget_usd: 250.0,
             azure_storage_account: "acmestorage".into(),
@@ -1107,6 +1108,7 @@ mod tests {
         let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.data(), store.data());
         assert_eq!(reopened.settings().refresh_interval_secs, 300);
+        assert_eq!(reopened.settings().row_gap_px, 10);
         assert!(!reopened.settings().notify_on_approval_needed);
         assert_eq!(reopened.hosts().len(), 2);
         assert_eq!(
