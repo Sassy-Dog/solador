@@ -70,8 +70,12 @@ in a row is the same height. An in-app Settings surface over `crates/store`
 general prefs) applies changes without a restart.
 
 The Tauri IPC boundary itself is **not** automatically tested — `app/README.md`
-carries a five-minute manual smoke checklist that is the only thing covering it
-(see #123).
+carries a five-minute manual smoke checklist, plus a dated observation log, and
+that is the only thing covering it. This is a **decision, not a gap left open**:
+#123 closed on it deliberately, because `tauri-driver` has no macOS support
+(WKWebView ships no WebDriver), so the only automatable host would be the
+Windows CI job — an oversized harness covering one build path. A test claiming
+coverage it does not have would be worse than the checklist.
 
 ## Development Workflow
 
@@ -147,12 +151,77 @@ the `secrets-guard` job asserts that rather than trusting it. The release is
 attached as a **draft**, which is what makes publish-feed.yml's
 `release: published` trigger meaningful — see **Updates** below.
 
-Windows is packaged too, and this section does not yet describe it: a
-`release-windows` job builds an NSIS installer and asserts both version numbers
-back out of it (#341), then Authenticode-signs it through Azure Trusted Signing
-(#342) — a federated `azure/login` on the same `prd` environment, so the
-signing credential is an OIDC identity rather than a stored secret.
-`.github/workflows/release.yml` is the reference until that is written up here.
+**Windows (#341, #342).** `release-windows` is the second leg of `release.yml`, on the
+same `prd` environment behind the same `v*` gate, and it produces an
+**Authenticode-signed NSIS installer**. `./dev build --release` is the same command
+on both platforms; on Windows it bundles via `cargo tauri build --bundles nsis` to
+`target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe`.
+
+**NSIS rather than MSI is arithmetic, not preference.** MSI's `ProductVersion` caps
+its major field at 255, and CalVer's major is the year — 2026 does not fit, and no
+later year will either.
+
+**Both version numbers arrive during bundling, not after it** — the one place the
+Windows path genuinely inverts the macOS one. There is no Info.plist; the analogue is
+the PE VERSIONINFO resource compiled into the installer, and Tauri's NSIS template
+takes both numbers as build *inputs* (`VIProductVersion`'s fourth word carries the
+build number; the `ProductVersion` / `FileVersion` string keys read
+`<version>+<build>`). Nothing is stamped over a finished file, so **the macOS "sign
+last, because the signature seals the plist" constraint has no Windows counterpart**:
+Authenticode appends to the PE and does not touch VERSIONINFO, which is exactly why
+the validate step can re-read both numbers *after* signing.
+
+What does carry over is the division of labour. **Tauri's in-bundle NSIS `signCommand`
+hook is deliberately left off**, for the same reason `APPLE_SIGNING_IDENTITY` is:
+finish the artifact, sign the exact file that ships, then assert the signature back
+out of it. A `signCommand` would additionally sign the app binary *inside* the
+installer, but the file SmartScreen evaluates is the MotW-carrying download, and
+threading a CI-only `signCommand` through `build.sh`'s `--config` overlay would make
+CI build differently from every other machine — the drift the "same command a
+maintainer runs" rule exists to prevent.
+
+**The signing credential is not a secret at all.** Azure Trusted Signing is reached
+through a federated `azure/login` (`id-token: write`, subject scoped to
+`environment:prd`), so there is no `.pfx` and nothing to leak — the same principle as
+resolving the macOS identity from the keychain by prefix instead of configuring a
+hash, reached by a different mechanism. The exchange succeeds only for a job running
+in `prd`, which makes "a push to `main` cannot mint a signed build" a property of
+Entra's trust configuration rather than of this file. The login is minted **after**
+the long build and immediately before its only consumer, because the federated
+session is an access token with an expiry rather than a refreshable login. The RFC
+3161 timestamp is load-bearing: Trusted Signing certificates are short-lived by
+design, and an untimestamped signature would die with its certificate.
+
+**The artifact is validated, never inferred from the signing step's exit code** —
+exactly one `*-setup.exe`, both numbers re-read out of the version resource,
+`Get-AuthenticodeSignature` reporting `Valid`, a signer subject containing `Sassy Dog
+Enterprises LLC` (which is what catches signing with the wrong certificate profile),
+and a timestamper present. The same claim-splitting as the macOS `codesign` / `spctl`
+re-read.
+
+**One architecture, and it is not a universal analogue.** `WINDOWS_TARGET` is
+`x86_64-pc-windows-msvc` and only that — a separate `--target`, never a second slice
+of #335's universal story. There is no ARM64 Windows slice, so
+`MACOS_UNIVERSAL_TARGET`'s "assert both slices, and check the floor per architecture"
+discipline has no counterpart here; the single-file assertion above is what replaces
+it. **Local Windows builds stay unsigned**, SmartScreen warning and all: the signing
+capability lives in a federated identity no workstation holds.
+
+One Windows-only checkout detail, easy to lose and expensive to rediscover:
+`core.autocrlf input` is set **before** `actions/checkout`, because the runner image
+defaults it to `true` and `dev` plus `scripts/*.sh` would then arrive CRLF for Git
+Bash to read with a literal `\r` on every line. `.gitattributes` deliberately protects
+only the signature-covered fixtures, so the scripts are protected here instead — at
+the only place a Windows checkout executes them.
+
+**There is no Windows updater, and saying so is the point.** The feed is macOS-only:
+`latest.json` carries exactly `darwin-aarch64` and `darwin-x86_64`, and
+`publish-feed.yml` harvests only `*.app.tar.gz`. Windows ships an installer and
+nothing else, so a Windows user updates by downloading the next one, and everything
+**Updates** describes below is a macOS mechanism. That gap currently misreports itself
+in the app: a released Windows build still queries the feed and renders the resulting
+`TargetNotFound` as *"the update check failed"* rather than "there is no channel here"
+— #368.
 
 **Updates (#308).** `--sign` also produces the updater payload: a minisigned
 `Solador-<version>.app.tar.gz` beside the `.dmg`. A `.dmg` is not an update —
@@ -369,8 +438,11 @@ the bundle's floor.
   are **one machine-local aggregate**, and two subscriptions used on one machine
   are *inherently* unseparable from this source — impossible, not
   unimplemented; per-subscription attribution needs a source that knows who
-  paid. Anthropic **API keys** are `VendorAccount`s when that integration lands
-  (#283) and their usage *is* attributable. **A subscription is not an account
+  paid. Anthropic **API keys** would be `VendorAccount`s and their usage *would
+  be* attributable — but that integration **has not been built**: the
+  vendor-accounts epic (#283) closed with `VendorKind::GitHub` as its only
+  variant, and nothing currently tracks adding Anthropic. **A subscription is
+  not an account
   and must not be modelled as one**: an account id on these rollups would be an
   attribution invented to fill a gap — the unknown-as-zero error in another
   costume. If a number cannot be attributed, say so rather than attributing it.
