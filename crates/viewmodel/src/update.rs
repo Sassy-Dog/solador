@@ -93,9 +93,10 @@ pub enum Check {
 
 /// Why a build is outside the update path.
 ///
-/// Both cases are properties of the build, fixed for the life of the process:
-/// nothing an operator can do moves a build from one to the other, which is why
-/// the state offers no "Check for updates" button.
+/// Every case is fixed for the life of the process — two are properties of the
+/// build, one of the platform it runs on — so nothing an operator can do moves
+/// a build from one to another, which is why the state offers no "Check for
+/// updates" button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotUpdatable {
     /// Built locally by `./dev`. There is no installed release here to replace.
@@ -103,6 +104,32 @@ pub enum NotUpdatable {
     /// The build could not derive its own CalVer — a shallow clone, where
     /// `settings::VERSION` is `None` and About renders `—`.
     UnnameableBuild,
+    /// The feed publishes nothing for this platform, so there is no release
+    /// this build could be compared against (#368).
+    ///
+    /// This is the one arm that is not about *this build* at all. Asking the
+    /// feed anyway earns `TargetNotFound`, which lands in [`Check::Failed`] —
+    /// and "the check broke" is a different claim from "there is no channel
+    /// here". Every released Windows cockpit rendered the former, on every
+    /// launch, until this variant existed.
+    NoChannel,
+}
+
+/// Whether the update feed carries an artifact for the platform this build runs
+/// on.
+///
+/// Supplied by the shell for exactly the reason [`Provenance`] is: the rule
+/// belongs here, the fact does not. It is deliberately **not** read out of
+/// `crates/updatefeed` — that crate is release tooling and the app does not
+/// depend on it, so the two state the same fact in two places on purpose.
+/// `crates/updatefeed`'s `platforms` map is the source of truth; this mirrors
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// The feed publishes an artifact that could replace this build.
+    Published,
+    /// The feed publishes nothing for this platform.
+    Absent,
 }
 
 /// How the running build was produced, as far as replacing it goes.
@@ -160,15 +187,30 @@ pub type CurrentVersion<'a> = Option<&'a str>;
 /// would mean every developer launch pinging a release server to discard the
 /// answer.
 ///
-/// [`NotUpdatable::DevelopmentBuild`] wins when both apply. It is the reason
+/// The three reasons are ordered by how permanent they are, most first.
+///
+/// [`NotUpdatable::DevelopmentBuild`] wins over everything. It is the reason
 /// that names what the operator did, and a shallow clone that is also a `./dev`
 /// build is still, first, a `./dev` build.
+///
+/// [`NotUpdatable::NoChannel`] then beats
+/// [`NotUpdatable::UnnameableBuild`], because it is the more durable truth: a
+/// build that cannot name itself could be rebuilt from a full clone and would
+/// then update, whereas a platform the feed does not publish for cannot be
+/// updated by any build. Saying "this build could not derive its version" to
+/// someone whose platform has no channel would name the fixable half of a
+/// problem whose other half is not.
 #[must_use]
-pub fn not_updatable(current: CurrentVersion<'_>, provenance: Provenance) -> Option<NotUpdatable> {
-    match (provenance, current) {
-        (Provenance::Development, _) => Some(NotUpdatable::DevelopmentBuild),
-        (Provenance::Released, None) => Some(NotUpdatable::UnnameableBuild),
-        (Provenance::Released, Some(_)) => None,
+pub fn not_updatable(
+    current: CurrentVersion<'_>,
+    provenance: Provenance,
+    channel: Channel,
+) -> Option<NotUpdatable> {
+    match (provenance, channel, current) {
+        (Provenance::Development, _, _) => Some(NotUpdatable::DevelopmentBuild),
+        (Provenance::Released, Channel::Absent, _) => Some(NotUpdatable::NoChannel),
+        (Provenance::Released, Channel::Published, None) => Some(NotUpdatable::UnnameableBuild),
+        (Provenance::Released, Channel::Published, Some(_)) => None,
     }
 }
 
@@ -273,6 +315,18 @@ pub fn status(check: &Check, install: &Install, current: CurrentVersion<'_>) -> 
                 }
                 (NotUpdatable::UnnameableBuild, _) => {
                     "This build could not derive its own version, so it is not compared against any release."
+                        .to_string()
+                }
+                // Deliberately does not name a platform. The feed being
+                // macOS-only is true today and is the kind of fact that
+                // changes; "not published for this platform" stays true
+                // either way, and the second sentence is the only thing an
+                // operator here can actually act on.
+                (NotUpdatable::NoChannel, Some(v)) => format!(
+                    "Solador {v}. Updates are not published for this platform, so this build is not compared against any release. Install a newer build to update."
+                ),
+                (NotUpdatable::NoChannel, None) => {
+                    "Updates are not published for this platform, so this build is not compared against any release. Install a newer build to update."
                         .to_string()
                 }
             },
@@ -511,22 +565,91 @@ mod tests {
     /// Which builds are inside the update path, and which are not.
     #[test]
     fn only_a_released_build_that_can_name_itself_is_compared_at_all() {
-        assert_eq!(not_updatable(CURRENT, Provenance::Released), None);
         assert_eq!(
-            not_updatable(CURRENT, Provenance::Development),
+            not_updatable(CURRENT, Provenance::Released, Channel::Published),
+            None
+        );
+        assert_eq!(
+            not_updatable(CURRENT, Provenance::Development, Channel::Published),
             Some(NotUpdatable::DevelopmentBuild)
         );
         // A shallow clone lands in the state rather than comparing against
         // anything — the same refusal About makes when it renders `—`.
         assert_eq!(
-            not_updatable(None, Provenance::Released),
+            not_updatable(None, Provenance::Released, Channel::Published),
             Some(NotUpdatable::UnnameableBuild)
         );
         // Both at once is still, first, a local build.
         assert_eq!(
-            not_updatable(None, Provenance::Development),
+            not_updatable(None, Provenance::Development, Channel::Published),
             Some(NotUpdatable::DevelopmentBuild)
         );
+    }
+
+    /// #368: a platform the feed does not publish for never asks it anything.
+    ///
+    /// The bug this replaces was not a missing feature — it was a *wrong
+    /// state*. A released Windows build asked, the plugin answered
+    /// `TargetNotFound`, and the cockpit rendered "Could not check for
+    /// updates" on every launch forever. `Check::Failed` means the check
+    /// broke; nothing here is broken.
+    #[test]
+    fn a_platform_with_no_feed_channel_is_never_compared() {
+        assert_eq!(
+            not_updatable(CURRENT, Provenance::Released, Channel::Absent),
+            Some(NotUpdatable::NoChannel)
+        );
+        // Unnameable AND unpublished: the platform is the durable half, so it
+        // is the half that gets named. A full clone would fix the version; it
+        // would not conjure a channel.
+        assert_eq!(
+            not_updatable(None, Provenance::Released, Channel::Absent),
+            Some(NotUpdatable::NoChannel)
+        );
+        // A local build is still, first, a local build — the existing
+        // precedence is unchanged by adding a reason beneath it.
+        assert_eq!(
+            not_updatable(CURRENT, Provenance::Development, Channel::Absent),
+            Some(NotUpdatable::DevelopmentBuild)
+        );
+    }
+
+    /// The whole point of the variant: it must not read as a failure.
+    ///
+    /// `Check::Failed` is amber and says something went wrong. This says
+    /// nothing went wrong, in `color::INK` like the other two `NotUpdatable`
+    /// reasons — the same "must never render alike" invariant the module header
+    /// commits to across the five `Check` states, applied to the three reasons
+    /// one of them carries.
+    #[test]
+    fn no_channel_reads_as_a_state_rather_than_a_failure() {
+        let no_channel = Check::NotUpdatable(NotUpdatable::NoChannel);
+        let failed = Check::Failed {
+            reason: "the platform `windows-x86_64` was not found".to_string(),
+        };
+
+        let quiet = status(&no_channel, &Install::Idle, CURRENT);
+        let broken = status(&failed, &Install::Idle, CURRENT);
+
+        assert_ne!(quiet.text, broken.text);
+        assert_ne!(quiet.color, broken.color);
+        assert_eq!(quiet.color, color::INK);
+        assert!(!quiet.text.to_lowercase().contains("could not"));
+        assert!(!quiet.text.to_lowercase().contains("failed"));
+
+        // And it must not read like either of its two siblings either.
+        for sibling in [
+            NotUpdatable::DevelopmentBuild,
+            NotUpdatable::UnnameableBuild,
+        ] {
+            let other = status(&Check::NotUpdatable(sibling), &Install::Idle, CURRENT);
+            assert_ne!(quiet.text, other.text);
+        }
+
+        // No offer, and nothing to press: this is a property of the platform,
+        // so re-checking cannot change it.
+        assert_eq!(install_label(&no_channel, &Install::Idle), None);
+        assert!(!can_check(&no_channel, &Install::Idle));
     }
 
     /// The fifth state must not read like any of the four before it, which is
@@ -591,7 +714,10 @@ mod tests {
     #[test]
     fn a_released_build_still_checks_offers_and_installs() {
         let current = Some("2026.8.113");
-        assert_eq!(not_updatable(current, Provenance::Released), None);
+        assert_eq!(
+            not_updatable(current, Provenance::Released, Channel::Published),
+            None
+        );
         assert!(is_newer(current, "2026.8.114"));
 
         let s = status(&available(), &Install::Idle, current);
