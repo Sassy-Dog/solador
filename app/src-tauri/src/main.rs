@@ -3991,28 +3991,157 @@ async fn settings_test_host(
 }
 
 #[tauri::command]
-fn settings_add_repo(slug: String, state: tauri::State<'_, Arc<App>>) -> Value {
+fn settings_add_repo(
+    slug: String,
+    account_id: Option<String>,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    // An explicit account (the per-account "add by name" path) is parsed
+    // before the lock, exactly as `settings_set_repo_account` parses its.
+    let account = match account_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(raw) => match Uuid::parse_str(raw) {
+            Ok(id) => Some(id),
+            Err(_) => return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into())),
+        },
+        None => None,
+    };
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        match settings::validated_slug(&slug, store.repos()) {
-            Some(slug) => {
-                // Attributed here, at the one moment the answer can be
-                // deduced: with exactly one account there is nothing to ask,
-                // and with more than one `new_repo` leaves it unattributed for
-                // the row's picker rather than guessing. The *pass* never
-                // adopts an unattributed repo — that asymmetry is the whole
-                // point, and `plan_github_pass` has its own test for it.
-                let repo = settings::new_repo(&slug, store.accounts());
-                store.upsert_repo(repo);
-                save_status(&store, format!("Added {slug}."))
+        if account.is_some_and(|id| store.account(id).is_none()) {
+            Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned())
+        } else {
+            match settings::validated_slug(&slug, store.repos()) {
+                Some(slug) => {
+                    // With an explicit account the attribution is the
+                    // operator's own answer. Without one it is deduced only
+                    // when forced: exactly one account and there is nothing to
+                    // ask; more than one and `new_repo` leaves it unattributed
+                    // for the row's picker rather than guessing. The *pass*
+                    // never adopts an unattributed repo — that asymmetry is
+                    // the whole point, and `plan_github_pass` has its own test
+                    // for it.
+                    let repo = match account {
+                        Some(id) => TrackedRepo {
+                            account_id: Some(id),
+                            ..TrackedRepo::new(&*slug)
+                        },
+                        None => settings::new_repo(&slug, store.accounts()),
+                    };
+                    store.upsert_repo(repo);
+                    save_status(&store, format!("Added {slug}."))
+                }
+                None => Some("Skipped — invalid or already tracked.".to_owned()),
             }
-            None => Some("Skipped — invalid or already tracked.".to_owned()),
         }
     };
     // The portfolio IS the Repos panel's row set, so an edit that does not
     // reach the loop leaves the panel describing the previous portfolio.
     wake_github(&state);
     settings_response(&state, status)
+}
+
+/// One discovery-picker checkbox: track or untrack `slug` for the account.
+///
+/// The decision is [`settings::tracked_change`]'s, made in one place and
+/// tested there: add, adopt (the explicit operator click that legitimises
+/// what the pass refuses to guess), remove, refuse-with-the-owner-named, or
+/// a harmless no-op. The untrack consequence (configured watched workflows
+/// are lost) is warned about by the discovery payload's `untrackPrompt` —
+/// the frontend two-steps on it exactly as the account delete does; by the
+/// time this command runs, the decision is made.
+#[tauri::command]
+fn settings_set_repo_tracked(
+    id: String,
+    slug: String,
+    tracked: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+    };
+    let status = {
+        let mut store = state.store.lock().expect("store poisoned");
+        if store.account(id).is_none() {
+            Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned())
+        } else {
+            match settings::tracked_change(&slug, id, tracked, store.repos(), store.accounts()) {
+                Ok(settings::TrackChange::Add(repo)) => {
+                    let slug = repo.slug.clone();
+                    store.upsert_repo(repo);
+                    save_status(&store, format!("Added {slug}."))
+                }
+                Ok(settings::TrackChange::Adopt(slug)) => {
+                    if let Some(repo) = store.repo_mut(&slug) {
+                        repo.account_id = Some(id);
+                    }
+                    save_status(&store, "Saved.")
+                }
+                Ok(settings::TrackChange::Remove(slug)) => match store.remove_repo(&slug) {
+                    Some(repo) => save_status(&store, format!("Removed {}.", repo.slug)),
+                    None => Some("Skipped — not tracked.".to_owned()),
+                },
+                Ok(settings::TrackChange::Noop) => save_status(&store, "Saved."),
+                Err(status) => Some(status),
+            }
+        }
+    };
+    wake_github(&state);
+    settings_response(&state, status)
+}
+
+/// The discovery probe: everything this account's token can see, merged
+/// against the store into checkbox rows — the Services-probe pattern, one
+/// surface over. The answer is ephemeral: nothing here persists, so a failed
+/// or stale probe costs nothing but the sentence explaining it.
+///
+/// Unlike the poll loop this reads exactly one credential and fires exactly
+/// one walk, only when the operator opens the picker — discovery never rides
+/// a cadence.
+#[tauri::command]
+async fn settings_discover_repos(
+    id: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    // `Result` because Tauri requires one of an async command with reference
+    // inputs (`settings_test_host` precedent). Every outcome — including a
+    // failed probe — is an `Ok` payload: the finding is the product, and the
+    // frontend renders `reason` in place rather than handling a rejection.
+    let Ok(account_id) = Uuid::parse_str(&id) else {
+        return Ok(json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE }));
+    };
+    // Everything the answer needs, cloned out before the await — no lock is
+    // ever held across one (`poll_github`'s rule, applied to a command).
+    let (account, repos, accounts) = {
+        let store = state.store.lock().expect("store poisoned");
+        let Some(account) = store.account(account_id).cloned() else {
+            return Ok(json!({ "id": id, "reason": UNKNOWN_ACCOUNT_MESSAGE }));
+        };
+        (account, store.repos().to_vec(), store.accounts().to_vec())
+    };
+    let token = match account_secret_key(&account) {
+        None => return Ok(json!({ "id": id, "reason": ACCOUNT_CREDENTIAL_UNKNOWN_MESSAGE })),
+        Some(key) => match read_credential(&*state.credentials, key) {
+            Credential::Present(token) => token,
+            Credential::Absent => {
+                return Ok(json!({ "id": id, "reason": ACCOUNT_TOKEN_MISSING_MESSAGE }))
+            }
+            Credential::Unreadable => {
+                return Ok(json!({ "id": id, "reason": CREDENTIAL_UNREADABLE_MESSAGE }))
+            }
+        },
+    };
+    Ok(
+        match github::GitHubClient::new(token)
+            .list_accessible_repos()
+            .await
+        {
+            Ok(found) => settings::discovery_answer(&account, &found, &repos, &accounts),
+            // A failed probe found something, and the finding is the product —
+            // worded by the error's own `user_message`, never a bare transport
+            // string.
+            Err(e) => json!({ "id": id, "reason": e.user_message() }),
+        },
+    )
 }
 
 #[tauri::command]
@@ -5639,6 +5768,8 @@ fn main() {
             settings_set_repo_enabled,
             settings_set_repo_workflows,
             settings_set_repo_account,
+            settings_set_repo_tracked,
+            settings_discover_repos,
             settings_save_account,
             settings_set_account_enabled,
             settings_set_account_org,

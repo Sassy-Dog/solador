@@ -1,0 +1,32 @@
+[
+  {
+    "id": 1001,
+    "full_name": "acme/gadget",
+    "archived": false,
+    "private": true,
+    "owner": {
+      "login": "acme",
+      "type": "Organization"
+    }
+  },
+  {
+    "id": 1002,
+    "full_name": "acme/legacy-tool",
+    "archived": true,
+    "private": false,
+    "owner": {
+      "login": "acme",
+      "type": "Organization"
+    }
+  },
+  {
+    "id": 1003,
+    "full_name": "jdoe/dotfiles",
+    "archived": false,
+    "private": false,
+    "owner": {
+      "login": "jdoe",
+      "type": "User"
+    }
+  }
+]

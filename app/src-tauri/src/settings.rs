@@ -261,6 +261,203 @@ pub fn new_repo(slug: impl Into<String>, accounts: &[VendorAccount]) -> TrackedR
     }
 }
 
+/// What one discovery-picker checkbox change amounts to, decided before the
+/// store is touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackChange {
+    /// Not tracked before: upsert this repo, attributed to the account.
+    Add(TrackedRepo),
+    /// Tracked but unattributed (or naming a removed account): set its
+    /// `account_id` — the explicit adoption `plan_github_pass` refuses to
+    /// perform silently, made legitimate here by being the operator's click.
+    Adopt(String),
+    /// Tracked by this account: remove it (its watched-workflows config goes
+    /// with it — the payload's `untrackPrompt` is what warns beforehand).
+    Remove(String),
+    /// Already in the asked-for state — a double-click is harmless.
+    Noop,
+}
+
+/// One checkbox change in the discovery picker, resolved to exactly one
+/// action or the status line refusing it.
+///
+/// A repo another account fetches is refused **with the owner named**, in
+/// both directions: checking it would be two accounts fetching one repo, and
+/// unchecking it is not this picker's business. A tracked-but-unattributed
+/// repo unchecks nowhere either — its removal belongs to the portfolio row,
+/// where the unattributed state is visible rather than merely absent.
+///
+/// # Errors
+/// The status line to show, already worded as one.
+pub fn tracked_change(
+    slug: &str,
+    account_id: Uuid,
+    tracked: bool,
+    repos: &[TrackedRepo],
+    accounts: &[VendorAccount],
+) -> Result<TrackChange, String> {
+    let owner_label = |id: Uuid| {
+        accounts
+            .iter()
+            .find(|account| account.id == id)
+            .map(|account| account.label.clone())
+    };
+    let existing = repos
+        .iter()
+        .find(|repo| repo.slug.eq_ignore_ascii_case(slug.trim()));
+    match (existing, tracked) {
+        (Some(repo), true) if repo.account_id == Some(account_id) => Ok(TrackChange::Noop),
+        (Some(repo), true) => match repo.account_id.and_then(owner_label) {
+            Some(label) => Err(format!("Skipped — {} is fetched by {label}.", repo.slug)),
+            None => Ok(TrackChange::Adopt(repo.slug.clone())),
+        },
+        (Some(repo), false) if repo.account_id == Some(account_id) => {
+            Ok(TrackChange::Remove(repo.slug.clone()))
+        }
+        (Some(repo), false) => match repo.account_id.and_then(owner_label) {
+            Some(label) => Err(format!("Skipped — {} is fetched by {label}.", repo.slug)),
+            None => Err(format!(
+                "Skipped — {} has no account; remove it from the tracked list instead.",
+                repo.slug
+            )),
+        },
+        (None, false) => Ok(TrackChange::Noop),
+        (None, true) => match validated_slug(slug, repos) {
+            Some(slug) => Ok(TrackChange::Add(TrackedRepo {
+                account_id: Some(account_id),
+                ..TrackedRepo::new(slug)
+            })),
+            None => Err("Skipped — invalid repo name.".to_owned()),
+        },
+    }
+}
+
+/// The consequence line an untrack checkbox carries, or `None` when
+/// unchecking costs nothing beyond the row itself. The same
+/// prompt-exactly-when-something-is-lost rule as `account_removal_prompt`.
+fn untrack_prompt(repo: &TrackedRepo) -> Option<String> {
+    let watched = repo
+        .watched_workflows
+        .as_deref()
+        .filter(|w| !w.is_empty())?;
+    Some(format!(
+        "Stop tracking {}? Its watched workflows ({}) are forgotten.",
+        repo.slug,
+        watched.join(", ")
+    ))
+}
+
+/// The one sentence a capped discovery walk must carry — reported, never
+/// silent, because a picker that quietly dropped page eleven reads as
+/// "covered everything" to the one operator it did not.
+const DISCOVERY_TRUNCATED_NOTE: &str =
+    "This token can access more repositories than the picker walks (1,000) — the list is cut short. Add anything missing by name.";
+
+/// The discovery picker's payload: every repo this account's token can see,
+/// every repo this account already tracks, and the orgs derived from the
+/// grant — merged against the store so each row knows its checkbox state.
+///
+/// Like the Services probe, the result is **ephemeral**: it renders a live
+/// answer and is never persisted, so the stored selection stays editable with
+/// no request in flight. Rows are sorted by slug; a repo this account tracks
+/// that the token's grants do not include is shown with `granted: false`
+/// rather than vanished — unchecking it must be possible from the same list
+/// that shows everything else.
+#[must_use]
+pub fn discovery_answer(
+    account: &VendorAccount,
+    found: &github::AccessibleRepos,
+    repos: &[TrackedRepo],
+    accounts: &[VendorAccount],
+) -> Value {
+    let tracked_by_label = |repo: &TrackedRepo| {
+        repo.account_id
+            .filter(|id| *id != account.id)
+            .and_then(|id| accounts.iter().find(|other| other.id == id))
+            .map(|other| other.label.clone())
+    };
+    let tracked_row = |repo: &TrackedRepo| {
+        repos
+            .iter()
+            .find(|tracked| tracked.slug.eq_ignore_ascii_case(&repo.slug))
+    };
+    let mut rows: Vec<Value> = found
+        .repos
+        .iter()
+        .map(|granted| {
+            let tracked = repos
+                .iter()
+                .find(|repo| repo.slug.eq_ignore_ascii_case(&granted.full_name));
+            let mine = tracked.is_some_and(|repo| repo.account_id == Some(account.id));
+            json!({
+                "slug": granted.full_name,
+                "tracked": mine,
+                "trackedBy": tracked.and_then(tracked_by_label),
+                "granted": true,
+                "archived": granted.archived,
+                "untrackPrompt": tracked.filter(|_| mine).and_then(untrack_prompt),
+            })
+        })
+        .collect();
+    // This account's tracked repos the grant list does not cover — added by
+    // name, or a grant since revoked. Shown, not vanished.
+    for repo in repos {
+        if repo.account_id != Some(account.id) {
+            continue;
+        }
+        let granted = found
+            .repos
+            .iter()
+            .any(|found| found.full_name.eq_ignore_ascii_case(&repo.slug));
+        if granted {
+            continue;
+        }
+        rows.push(json!({
+            "slug": repo.slug,
+            "tracked": true,
+            "trackedBy": Value::Null,
+            "granted": false,
+            "archived": false,
+            "untrackPrompt": tracked_row(repo).and_then(untrack_prompt),
+        }));
+    }
+    rows.sort_by(|a, b| a["slug"].as_str().cmp(&b["slug"].as_str()));
+
+    let org_selected_by = |org: &str| {
+        accounts
+            .iter()
+            .filter(|other| other.id != account.id)
+            .find(|other| {
+                other
+                    .orgs
+                    .iter()
+                    .flatten()
+                    .any(|watched| watched.eq_ignore_ascii_case(org))
+            })
+            .map(|other| other.label.clone())
+    };
+    let selected: Vec<&String> = account.orgs.iter().flatten().collect();
+    let orgs: Vec<Value> = github::discovery::organizations(&found.repos)
+        .into_iter()
+        .map(|org| {
+            json!({
+                "name": org,
+                "selected": selected.iter().any(|watched| watched.eq_ignore_ascii_case(&org)),
+                "selectedBy": org_selected_by(&org),
+            })
+        })
+        .collect();
+
+    json!({
+        "id": account.id.to_string(),
+        "repos": rows,
+        "orgs": orgs,
+        "truncated": found.truncated,
+        "truncatedNote": found.truncated.then_some(DISCOVERY_TRUNCATED_NOTE),
+        "reason": Value::Null,
+    })
+}
+
 /// The comma-separated watched-workflow field, parsed the way
 /// `PortfolioSettingsView.watchedBinding` parses it: split on commas and
 /// newlines, trim, drop blanks. An empty result is `None` (the default
@@ -3950,6 +4147,192 @@ mod tests {
         let prompt = rows[0]["removePrompt"].as_str().expect("a prompt");
         assert!(prompt.contains("acme/widget"), "{prompt}");
         assert!(prompt.contains("acme/gadget"), "{prompt}");
+    }
+
+    fn discovered(full_name: &str, owner: &str, is_org: bool, archived: bool) -> github::RepoRef {
+        github::RepoRef {
+            full_name: full_name.into(),
+            owner_login: owner.into(),
+            owner_is_org: is_org,
+            archived,
+        }
+    }
+
+    /// The picker's whole vocabulary in one payload: checked (tracked by this
+    /// account, with the untrack consequence when workflows are configured),
+    /// foreign (another account's, named), by-name (tracked but not in this
+    /// token's grants), and offered (granted, untracked).
+    #[test]
+    fn the_discovery_answer_marks_tracked_granted_and_foreign_repos() {
+        let mut mine = account("work");
+        mine.orgs = Some(vec!["acme".into()]);
+        let other = account("personal");
+        let repos = vec![
+            TrackedRepo {
+                account_id: Some(mine.id),
+                watched_workflows: Some(vec!["release.yml".into()]),
+                ..TrackedRepo::new("acme/gadget")
+            },
+            TrackedRepo {
+                account_id: Some(other.id),
+                ..TrackedRepo::new("acme/other")
+            },
+            TrackedRepo {
+                account_id: Some(mine.id),
+                ..TrackedRepo::new("acme/byname")
+            },
+        ];
+        let found = github::AccessibleRepos {
+            repos: vec![
+                discovered("acme/fresh", "acme", true, false),
+                discovered("acme/gadget", "acme", true, false),
+                discovered("acme/other", "acme", true, true),
+                discovered("beta/tool", "beta", true, false),
+                discovered("jdoe/dotfiles", "jdoe", false, false),
+            ],
+            truncated: false,
+        };
+        let accounts = [mine.clone(), other.clone()];
+
+        let answer = discovery_answer(&mine, &found, &repos, &accounts);
+        assert!(answer["reason"].is_null());
+        assert_eq!(answer["truncated"], json!(false));
+        assert!(answer["truncatedNote"].is_null());
+
+        let rows = answer["repos"].as_array().expect("repo rows");
+        let row = |slug: &str| {
+            rows.iter()
+                .find(|row| row["slug"] == slug)
+                .unwrap_or_else(|| panic!("no row for {slug}"))
+                .clone()
+        };
+        let gadget = row("acme/gadget");
+        assert_eq!(gadget["tracked"], json!(true));
+        assert!(gadget["trackedBy"].is_null());
+        assert_eq!(gadget["granted"], json!(true));
+        let prompt = gadget["untrackPrompt"].as_str().expect("a consequence");
+        assert!(prompt.contains("release.yml"), "{prompt}");
+
+        let foreign = row("acme/other");
+        assert_eq!(foreign["tracked"], json!(false));
+        assert_eq!(foreign["trackedBy"], json!("personal"));
+        assert_eq!(foreign["archived"], json!(true));
+
+        let byname = row("acme/byname");
+        assert_eq!(byname["tracked"], json!(true));
+        assert_eq!(
+            byname["granted"],
+            json!(false),
+            "tracked by name, outside this token's grants — shown, not vanished"
+        );
+        assert!(byname["untrackPrompt"].is_null(), "no workflows, no prompt");
+
+        let fresh = row("acme/fresh");
+        assert_eq!(fresh["tracked"], json!(false));
+        assert!(fresh["trackedBy"].is_null());
+
+        let orgs = answer["orgs"].as_array().expect("org rows");
+        let org = |name: &str| {
+            orgs.iter()
+                .find(|row| row["name"] == name)
+                .unwrap_or_else(|| panic!("no org row for {name}"))
+                .clone()
+        };
+        assert_eq!(org("acme")["selected"], json!(true));
+        assert_eq!(org("beta")["selected"], json!(false));
+        assert!(
+            !orgs.iter().any(|row| row["name"] == "jdoe"),
+            "a person is not an organization"
+        );
+    }
+
+    #[test]
+    fn a_truncated_discovery_says_so_rather_than_reading_as_complete() {
+        let mine = account("work");
+        let found = github::AccessibleRepos {
+            repos: Vec::new(),
+            truncated: true,
+        };
+        let answer = discovery_answer(&mine, &found, &[], std::slice::from_ref(&mine));
+        assert_eq!(answer["truncated"], json!(true));
+        assert!(
+            answer["truncatedNote"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
+            "a capped walk must say so, or it reads as covered-everything"
+        );
+    }
+
+    /// Every branch of the checkbox: add, adopt, refuse-foreign, remove, and
+    /// the idempotent no-ops that make a double-click harmless.
+    #[test]
+    fn a_tracked_checkbox_change_resolves_to_exactly_one_action() {
+        let mine = account("work");
+        let other = account("personal");
+        let accounts = [mine.clone(), other.clone()];
+        let repos = vec![
+            TrackedRepo {
+                account_id: Some(mine.id),
+                ..TrackedRepo::new("acme/mine")
+            },
+            TrackedRepo {
+                account_id: Some(other.id),
+                ..TrackedRepo::new("acme/theirs")
+            },
+            TrackedRepo::new("acme/orphan"),
+        ];
+
+        match tracked_change("acme/new", mine.id, true, &repos, &accounts) {
+            Ok(TrackChange::Add(repo)) => {
+                assert_eq!(repo.slug, "acme/new");
+                assert_eq!(repo.account_id, Some(mine.id));
+            }
+            wrong => panic!("expected Add, got {wrong:?}"),
+        }
+        assert!(
+            matches!(
+                tracked_change("acme/mine", mine.id, true, &repos, &accounts),
+                Ok(TrackChange::Noop)
+            ),
+            "re-checking what is already checked is not an error"
+        );
+        assert!(
+            matches!(
+                tracked_change("acme/orphan", mine.id, true, &repos, &accounts),
+                Ok(TrackChange::Adopt(slug)) if slug == "acme/orphan"
+            ),
+            "checking an unattributed repo is the explicit adoption the pass refuses to guess"
+        );
+        let err = tracked_change("acme/theirs", mine.id, true, &repos, &accounts)
+            .expect_err("another account's repo is refused");
+        assert!(
+            err.contains("personal"),
+            "the refusal names the owner: {err}"
+        );
+        assert!(
+            tracked_change("not-a-slug", mine.id, true, &repos, &accounts).is_err(),
+            "an invalid name is refused, not stored"
+        );
+
+        assert!(matches!(
+            tracked_change("acme/mine", mine.id, false, &repos, &accounts),
+            Ok(TrackChange::Remove(slug)) if slug == "acme/mine"
+        ));
+        assert!(
+            matches!(
+                tracked_change("acme/gone", mine.id, false, &repos, &accounts),
+                Ok(TrackChange::Noop)
+            ),
+            "unchecking what is not tracked is not an error"
+        );
+        assert!(
+            tracked_change("acme/theirs", mine.id, false, &repos, &accounts).is_err(),
+            "another account's repo is not this checkbox's to remove"
+        );
+        assert!(
+            tracked_change("acme/orphan", mine.id, false, &repos, &accounts).is_err(),
+            "an unattributed repo's removal belongs to the portfolio, not a picker"
+        );
     }
 
     /// The stored selection always renders — the panel must be editable

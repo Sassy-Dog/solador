@@ -12,6 +12,7 @@ use fault::Fault;
 use futures_util::future::join3;
 use serde::Deserialize;
 
+use crate::discovery;
 use crate::link;
 use crate::roster::{apply_fetch, RosterUpdate, RunnerRosterEntry};
 use crate::runners::{self, RunnersResponse};
@@ -28,6 +29,11 @@ const VENDOR: &str = "GitHub";
 const RUNS_PER_PAGE: &str = "30";
 /// One page covers every self-hosted runner an org of this size registers.
 const RUNNERS_PER_PAGE: &str = "100";
+
+/// The discovery walk's page backstop: 10 pages × 100 per page = 1,000 repos,
+/// an order of magnitude past any portfolio this cockpit tracks. Hitting it
+/// sets [`discovery::AccessibleRepos::truncated`] rather than looping on.
+pub const DISCOVERY_PAGE_CAP: usize = 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitHubError {
@@ -195,6 +201,46 @@ impl GitHubClient {
             .await
             .map_err(|e| GitHubError::Unreachable(e.to_string()))?;
         Ok(Response { body, link })
+    }
+
+    /// Every repository the token can access — Settings' discovery picker.
+    ///
+    /// `GET /user/repos`, 100 per page, server-side `full_name` sort (a
+    /// stable picker order the client does not have to invent), walking each
+    /// advertised `rel="next"` up to [`DISCOVERY_PAGE_CAP`] pages. The cap is
+    /// a runaway backstop an order of magnitude past any real portfolio, and
+    /// hitting it is **reported** (`truncated`) rather than silent — a picker
+    /// that quietly dropped page eleven would read as "covered everything" to
+    /// the one operator it did not. Settings-time only, never the poll loop:
+    /// discovery spends requests only when the operator opens the picker.
+    pub async fn list_accessible_repos(&self) -> Result<discovery::AccessibleRepos, GitHubError> {
+        let mut repos = Vec::new();
+        for page in 1..=DISCOVERY_PAGE_CAP {
+            let page_query = page.to_string();
+            let resp = self
+                .get(
+                    "/user/repos",
+                    &[
+                        ("per_page", "100"),
+                        ("sort", "full_name"),
+                        ("page", &page_query),
+                    ],
+                )
+                .await?;
+            let dtos: Vec<discovery::UserRepoDto> =
+                serde_json::from_str(&resp.body).map_err(decode_failed)?;
+            repos.extend(discovery::map(dtos));
+            if !link::has_next_page(resp.link.as_deref()) {
+                return Ok(discovery::AccessibleRepos {
+                    repos,
+                    truncated: false,
+                });
+            }
+        }
+        Ok(discovery::AccessibleRepos {
+            repos,
+            truncated: true,
+        })
     }
 
     /// Total number of branches for a repo.
@@ -414,6 +460,93 @@ mod tests {
             .expect("should decode");
         assert_eq!(runs.len(), 6);
         assert_eq!(runs[0].name, "CI");
+    }
+
+    const USER_REPOS_FIXTURE: &str = include_str!("../tests/fixtures/user_repos.json");
+
+    /// One page, no `Link` header — the whole answer, and nothing truncated.
+    /// The matchers pin the query: 100 per page, server-side `full_name` sort
+    /// (a stable picker order the client does not have to invent).
+    #[tokio::test]
+    async fn accessible_repos_are_fetched_in_one_sorted_page_when_one_suffices() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/repos"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("sort", "full_name"))
+            .and(query_param("page", "1"))
+            .respond_with(json(USER_REPOS_FIXTURE))
+            .mount(&server)
+            .await;
+
+        let found = GitHubClient::with_base_url(server.uri(), "t")
+            .list_accessible_repos()
+            .await
+            .expect("decode");
+        assert_eq!(found.repos.len(), 3);
+        assert_eq!(found.repos[0].full_name, "acme/gadget");
+        assert!(found.repos[1].archived);
+        assert!(!found.truncated, "a complete walk is not a truncated one");
+    }
+
+    /// A `rel="next"` is an instruction, not a hint: every advertised page is
+    /// walked and concatenated in order.
+    #[tokio::test]
+    async fn discovery_walks_every_advertised_page() {
+        let server = MockServer::start().await;
+        let next = format!(
+            "<{}/user/repos?per_page=100&page=2>; rel=\"next\"",
+            server.uri()
+        );
+        Mock::given(method("GET"))
+            .and(path("/user/repos"))
+            .and(query_param("page", "1"))
+            .respond_with(json(USER_REPOS_FIXTURE).insert_header("link", next.as_str()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/repos"))
+            .and(query_param("page", "2"))
+            .respond_with(json(r#"[{"full_name":"acme/tail","archived":false,"owner":{"login":"acme","type":"Organization"}}]"#))
+            .mount(&server)
+            .await;
+
+        let found = GitHubClient::with_base_url(server.uri(), "t")
+            .list_accessible_repos()
+            .await
+            .expect("decode");
+        assert_eq!(found.repos.len(), 4);
+        assert_eq!(found.repos[3].full_name, "acme/tail");
+        assert!(!found.truncated);
+    }
+
+    /// The cap is reported, never silent: a walk that stops with more pages
+    /// advertised says so, because a picker that quietly dropped page eleven
+    /// would read as "covered everything" to the one operator it did not.
+    #[tokio::test]
+    async fn discovery_reports_the_cap_rather_than_walking_forever() {
+        let server = MockServer::start().await;
+        // Every page advertises another — the pathological endless collection.
+        let next = format!(
+            "<{}/user/repos?per_page=100&page=99>; rel=\"next\"",
+            server.uri()
+        );
+        Mock::given(method("GET"))
+            .and(path("/user/repos"))
+            .respond_with(json(USER_REPOS_FIXTURE).insert_header("link", next.as_str()))
+            .mount(&server)
+            .await;
+
+        let found = GitHubClient::with_base_url(server.uri(), "t")
+            .list_accessible_repos()
+            .await
+            .expect("decode");
+        assert_eq!(
+            found.repos.len(),
+            3 * DISCOVERY_PAGE_CAP,
+            "exactly the cap's worth of pages, no more"
+        );
+        assert!(found.truncated, "the cut must be said out loud");
     }
 
     /// No token means no request at all — the client must not fire an
