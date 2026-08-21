@@ -717,7 +717,6 @@ pub fn view(
             // GitHub tab that used to precede it is retired — accounts are the
             // only home a token has, and org selection lives on each account.
             { "id": "accounts", "title": "Accounts" },
-            { "id": "portfolio", "title": "Portfolio" },
             { "id": "hosts", "title": "Hosts" },
             { "id": "azure", "title": "Azure Cost" },
             { "id": "usage", "title": "Usage" },
@@ -728,7 +727,6 @@ pub fn view(
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
-        "portfolio": portfolio_tab(repos, accounts),
         "hosts": hosts_tab(settings, hosts, rules, stored),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
@@ -898,61 +896,6 @@ fn secret_section(field: SecretField, label: &str, stored: bool, badge: &str, he
 /// answered. Named rather than inlined because it is an *option* the operator
 /// can pick deliberately, not the absence of one.
 const UNATTRIBUTED_LABEL: &str = "Unattributed";
-
-fn portfolio_tab(repos: &[TrackedRepo], accounts: &[VendorAccount]) -> Value {
-    // Empty when there are no accounts: a picker whose only option is
-    // "Unattributed" is a control that cannot be right, and in a v1 store
-    // every repo is already the single GitHub credential's.
-    let options: Vec<Value> =
-        if accounts.is_empty() {
-            Vec::new()
-        } else {
-            std::iter::once(json!({ "value": "", "label": UNATTRIBUTED_LABEL }))
-                .chain(accounts.iter().map(
-                    |account| json!({ "value": account.id.to_string(), "label": account.label }),
-                ))
-                .collect()
-        };
-    json!({
-        "heading": "Tracked Repos",
-        "empty": "No tracked repos yet. Add one below as owner/name.",
-        "workflowsLabel": "Watched workflows (comma-separated, e.g. release.yml)",
-        "accountLabel": "Fetched by",
-        "accountOptions": options,
-        // The row's own sentence for an id nothing answers to. Said out loud
-        // rather than folded into "Unattributed": the operator did configure
-        // this repo's account once, and a row that silently forgets that reads
-        // as a bug in the app rather than a consequence of the removal.
-        "missingAccountLabel": "Account removed — pick one",
-        "deleteLabel": "Delete",
-        "rows": repos
-            .iter()
-            .map(|repo| {
-                // Resolved against the accounts that actually exist. A stale id
-                // is reported as stale (below) rather than sent to a picker
-                // that has no option for it — a `<select>` handed an unknown
-                // value falls back to its first entry, which would paint
-                // "Unattributed" over a row the store says otherwise about.
-                let named = repo
-                    .account_id
-                    .filter(|id| accounts.iter().any(|account| account.id == *id));
-                json!({
-                    "slug": repo.slug,
-                    "enabled": repo.enabled,
-                    "workflows": workflows_text(repo),
-                    "accountId": named.map(|id| id.to_string()),
-                    "accountMissing": repo.account_id.is_some() && named.is_none(),
-                })
-            })
-            .collect::<Vec<_>>(),
-        "add": {
-            "heading": "Add Repo",
-            "slugLabel": "owner/name (e.g. acme/gadget)",
-            "buttonLabel": "Add",
-            "help": "Drives the Repos and GitHub Runners panels. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive. A repo added while exactly one account exists is attributed to it; with more than one there is no correct default, so it arrives unattributed and Fetched by is the answer.",
-        },
-    })
-}
 
 // MARK: - vendor accounts
 
@@ -1160,18 +1103,101 @@ pub fn validated_account(
     })
 }
 
-/// The Accounts tab: one credential per *account*, not per vendor, and what
-/// each one fetches.
+/// One repo as an account card (or the unattributed section) renders it.
+fn repo_row(repo: &TrackedRepo) -> Value {
+    json!({
+        "slug": repo.slug,
+        "enabled": repo.enabled,
+        "workflows": workflows_text(repo),
+    })
+}
+
+/// The Accounts tab — the whole GitHub surface now: one card per *account*
+/// with the repos it fetches and the orgs it watches, the unattributed repos
+/// no card can claim, and the add form. The Portfolio tab retired into this
+/// one, so every repo row is read under the token that fetches it.
 ///
-/// Every row carries the repos attributed to it, so the consequence of removing
-/// it is on screen before the button is ever pressed — see
+/// Every card carries the repos attributed to it, so the consequence of
+/// removing an account is on screen before the button is ever pressed — see
 /// [`account_removal_impact`].
 fn accounts_tab(
     accounts: &[VendorAccount],
     repos: &[TrackedRepo],
     stored: &StoredSecrets,
 ) -> Value {
-    json!({
+    // Empty when there are no accounts: a picker whose only option is
+    // "Unattributed" is a control that cannot be right, and in a v1-shaped
+    // store every repo is already the single GitHub credential's.
+    let options: Vec<Value> =
+        if accounts.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(json!({ "value": "", "label": UNATTRIBUTED_LABEL }))
+                .chain(accounts.iter().map(
+                    |account| json!({ "value": account.id.to_string(), "label": account.label }),
+                ))
+                .collect()
+        };
+    // Repos no existing account claims — deliberately including those whose
+    // account was removed, distinguished per row: the operator did configure
+    // an account once, and a row that silently forgets that reads as a bug in
+    // the app rather than a consequence of the removal.
+    let unattributed: Vec<Value> = repos
+        .iter()
+        .filter(|repo| {
+            !repo
+                .account_id
+                .is_some_and(|id| accounts.iter().any(|account| account.id == id))
+        })
+        .map(|repo| {
+            let mut row = repo_row(repo);
+            row["accountMissing"] = json!(repo.account_id.is_some());
+            row
+        })
+        .collect();
+    let rows: Vec<Value> = accounts
+        .iter()
+        .map(|account| {
+            let orphaned = account_removal_impact(repos, account.id);
+            let orgs = account.orgs.clone().unwrap_or_default();
+            json!({
+                "id": account.id.to_string(),
+                "vendor": vendor_id(account.vendor),
+                "vendorLabel": vendor_label(account.vendor),
+                "label": account.label,
+                "enabled": account.enabled,
+                "stored": stored.accounts.contains(&account.id),
+                // Full rows, not just slugs: the card is where a repo is
+                // enabled, configured and untracked now that the Portfolio
+                // tab is gone.
+                "repos": repos
+                    .iter()
+                    .filter(|repo| repo.account_id == Some(account.id))
+                    .map(repo_row)
+                    .collect::<Vec<_>>(),
+                // The stored selection, always rendered — editable with no
+                // discovery request in flight.
+                "orgs": orgs,
+                // Null when the removal costs nothing.
+                "removePrompt": account_removal_prompt(&account.label, &orphaned, &orgs),
+            })
+        })
+        .collect();
+    let add = json!({
+        "heading": "Add Account",
+        "vendorLabel": "Vendor",
+        "vendorOptions": VENDOR_KINDS
+            .iter()
+            .map(|kind| json!({ "value": vendor_id(*kind), "label": vendor_label(*kind) }))
+            .collect::<Vec<_>>(),
+        "nameLabel": "Name (e.g. work)",
+        "tokenLabel": "Fine-grained PAT",
+        "buttonLabel": "Add Account",
+        "help": "The token is stored in your OS credential store under this account's own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests. You can add the account now and its token later.",
+    });
+    // Two literals merged into one object: a single `json!` this size trips
+    // the macro's recursion limit, and the split is invisible on the wire.
+    let mut tab = json!({
         "heading": "Vendor Accounts",
         // Said out loud, like the Services tab's: an operator who cannot see
         // the consequence stated reads the empty list as broken.
@@ -1183,52 +1209,50 @@ fn accounts_tab(
         "saveLabel": "Save",
         "deleteLabel": "Delete",
         "cancelLabel": "Cancel",
-        "reposLabel": "Fetches",
+        // The disclosure buttons. Every form sits behind one — an always-open
+        // form is what made three tabs read as sprawl — and each gets its own
+        // modifier class in the frontend (the `cadence-apply` lesson).
+        "renameLabel": "Rename…",
+        "replaceTokenLabel": "Replace token…",
+        "addAccountLabel": "Add account…",
+        "reposHeading": "Repos",
         "noReposLabel": "No repos attributed yet",
+        "configureLabel": "Configure…",
+        "chooseReposLabel": "Choose repos…",
+        "closeLabel": "Close",
+        "addByNameLabel": "Add by name…",
+        "slugLabel": "owner/name (e.g. acme/gadget)",
+        "addLabel": "Add",
+        "workflowsLabel": "Watched workflows (comma-separated, e.g. release.yml)",
+        "discoverPendingLabel": "Reading what this token can access…",
+        "archivedLabel": "archived",
+        "notGrantedLabel": "not in this token's grants",
+        "fetchedByLabel": "fetched by",
+        "watchedByLabel": "watched by",
+        "reposHelp": "Drives the Repos and GitHub Runners panels. Choose repos lists everything this account's token was granted; add by name covers public repos you'd rather not grant. Disabled repos stay in the list but are skipped. Watched workflows: leave blank for the default ci.yml view, or list extra workflows (e.g. release.yml) whose failures should redden the panel — matched by display name or filename, case-insensitive. The panel polls 4 requests per repo per pass against GitHub's 5,000/hour per-token budget — about 20 repos at the default 60s cadence, about 100 at 5 minutes.",
+    });
+    let rest = json!({
         "orgsHeading": "Runner organizations",
         "noOrgsLabel": "No organizations watched",
         "orgAddLabel": "Organization (e.g. acme)",
         "orgAddButtonLabel": "Watch",
         "orgRemoveLabel": "Stop watching",
         "orgsHelp": "The GitHub Runners panel lists each watched organization's self-hosted runners, polled with this account's token — grant it organization read access to Self-hosted runners. An organization can be watched by one account.",
-        "rows": accounts
-            .iter()
-            .map(|account| {
-                let orphaned = account_removal_impact(repos, account.id);
-                let orgs = account.orgs.clone().unwrap_or_default();
-                json!({
-                    "id": account.id.to_string(),
-                    "vendor": vendor_id(account.vendor),
-                    "vendorLabel": vendor_label(account.vendor),
-                    "label": account.label,
-                    "enabled": account.enabled,
-                    "stored": stored.accounts.contains(&account.id),
-                    // The slugs, not a count: a number names nothing, and the
-                    // operator deciding whether to remove this account is
-                    // deciding about these repos specifically.
-                    "repos": orphaned,
-                    // The stored selection, always rendered — editable with no
-                    // discovery request in flight.
-                    "orgs": orgs,
-                    // Null when the removal costs nothing.
-                    "removePrompt": account_removal_prompt(&account.label, &orphaned, &orgs),
-                })
-            })
-            .collect::<Vec<_>>(),
+        "accountLabel": "Fetched by",
+        "accountOptions": options,
+        "missingAccountLabel": "Account removed — pick one",
+        "unattributedHeading": "Unattributed repos",
+        "unattributedHelp": "Tracked, but no account fetches them — their rows sit blank on the Repos panel until one is picked.",
+        "unattributed": unattributed,
+        "rows": rows,
         "help": "Each tracked repo is fetched by the account it belongs to. Removing an account leaves its repos tracked but unattributed — nothing re-homes them onto another account, because an invented owner is worse than none.",
-        "add": {
-            "heading": "Add Account",
-            "vendorLabel": "Vendor",
-            "vendorOptions": VENDOR_KINDS
-                .iter()
-                .map(|kind| json!({ "value": vendor_id(*kind), "label": vendor_label(*kind) }))
-                .collect::<Vec<_>>(),
-            "nameLabel": "Name (e.g. work)",
-            "tokenLabel": "Fine-grained PAT",
-            "buttonLabel": "Add Account",
-            "help": "The token is stored in your OS credential store under this account's own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests. You can add the account now and its token later.",
-        },
-    })
+        "add": add,
+    });
+    let (Some(map), Some(more)) = (tab.as_object_mut(), rest.as_object()) else {
+        unreachable!("both literals are objects");
+    };
+    map.extend(more.clone());
+    tab
 }
 
 // MARK: - the cockpit layout
@@ -2499,15 +2523,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "general",
-                "layout",
-                "accounts",
-                "portfolio",
-                "hosts",
-                "azure",
-                "usage",
-                "services",
-                "openclaw",
+                "general", "layout", "accounts", "hosts", "azure", "usage", "services", "openclaw",
                 "about"
             ]
         );
@@ -3347,12 +3363,14 @@ mod tests {
     }
 
     #[test]
-    fn the_portfolio_tab_lists_repos_with_their_watched_workflows() {
+    fn repo_rows_carry_their_watched_workflows_and_enabled_state() {
         let (settings, hosts, mut repos, stored) = sample();
         repos[0].watched_workflows = Some(vec!["release.yml".into()]);
         repos[1].enabled = false;
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
-        let rows = vm["portfolio"]["rows"].as_array().expect("rows");
+        // The sample store has no accounts, so every repo sits in the
+        // unattributed section — the Portfolio tab's rows, relocated.
+        let rows = vm["accounts"]["unattributed"].as_array().expect("rows");
         assert_eq!(rows.len(), repos.len());
         assert_eq!(rows[0]["slug"], repos[0].slug);
         assert_eq!(rows[0]["workflows"], "release.yml");
@@ -3360,9 +3378,9 @@ mod tests {
         assert_eq!(rows[1]["workflows"], "");
     }
 
-    // MARK: - the Portfolio tab's account picker
+    // MARK: - the account picker (the retired Portfolio tab's, relocated)
 
-    /// [`view`]'s Portfolio tab over a given portfolio and account list.
+    /// [`view`]'s Accounts tab over a given portfolio and account list.
     fn portfolio_view(accounts: &[VendorAccount], repos: &[TrackedRepo]) -> Value {
         let (settings, _, _, stored) = sample();
         view(
@@ -3374,7 +3392,7 @@ mod tests {
             &facts(),
             CrashFacts::default(),
             no_updates(),
-        )["portfolio"]
+        )["accounts"]
             .clone()
     }
 
@@ -3438,24 +3456,31 @@ mod tests {
             json!([]),
             "a picker over nothing is a control that can only be wrong"
         );
-        assert_eq!(tab["rows"][0]["accountId"], Value::Null);
+        assert_eq!(tab["unattributed"].as_array().expect("rows").len(), 1);
     }
 
-    /// The row names the account that fetches it, and the picker offers every
-    /// account plus the unattributed state it starts in at N > 1.
+    /// A repo sits under the card of the account that fetches it, orphans sit
+    /// in their own section, and the picker offers every account plus the
+    /// unattributed state it starts in at N > 1.
     #[test]
-    fn a_portfolio_row_names_the_account_that_fetches_it() {
+    fn a_repo_sits_under_the_account_that_fetches_it() {
         let work = account("work");
         let personal = account("personal");
         let repos = [owned_by(&work, "acme/widget"), TrackedRepo::new("acme/new")];
 
         let tab = portfolio_view(&[work.clone(), personal.clone()], &repos);
-        let rows = tab["rows"].as_array().expect("rows");
-        assert_eq!(rows[0]["accountId"], json!(work.id.to_string()));
+        let rows = tab["rows"].as_array().expect("account rows");
+        assert_eq!(rows[0]["repos"][0]["slug"], "acme/widget");
         assert_eq!(
-            rows[1]["accountId"],
-            Value::Null,
-            "an unattributed repo says so rather than showing the first account"
+            rows[1]["repos"],
+            json!([]),
+            "personal fetches nothing, and its card says so with an empty list"
+        );
+        let orphans = tab["unattributed"].as_array().expect("unattributed");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(
+            orphans[0]["slug"], "acme/new",
+            "an unattributed repo sits apart rather than under the first account"
         );
 
         assert_eq!(
@@ -3480,13 +3505,13 @@ mod tests {
         let repos = [owned_by(&removed, "acme/orphan")];
 
         let tab = portfolio_view(std::slice::from_ref(&work), &repos);
-        let row = &tab["rows"][0];
-        assert_eq!(row["accountId"], Value::Null);
+        let row = &tab["unattributed"][0];
+        assert_eq!(row["slug"], "acme/orphan");
         assert_eq!(row["accountMissing"], json!(true));
 
         // …and an honestly unattributed row is not accused of it.
         let tab = portfolio_view(std::slice::from_ref(&work), &[TrackedRepo::new("acme/new")]);
-        assert_eq!(tab["rows"][0]["accountMissing"], json!(false));
+        assert_eq!(tab["unattributed"][0]["accountMissing"], json!(false));
     }
 
     #[test]
@@ -4139,9 +4164,15 @@ mod tests {
             &repos,
             &StoredSecrets::default(),
         ));
+        let slugs: Vec<&str> = rows[0]["repos"]
+            .as_array()
+            .expect("repo rows")
+            .iter()
+            .map(|repo| repo["slug"].as_str().expect("slug"))
+            .collect();
         assert_eq!(
-            rows[0]["repos"],
-            json!(["acme/widget", "acme/gadget"]),
+            slugs,
+            vec!["acme/widget", "acme/gadget"],
             "the slugs themselves, not just a count — a number names nothing"
         );
         let prompt = rows[0]["removePrompt"].as_str().expect("a prompt");

@@ -1154,10 +1154,12 @@ live. The gap is now this app's alone to close.
 ## Settings
 
 The **Settings** button opens an in-app view over the cockpit: General, Layout,
-Accounts, Portfolio, Hosts, Azure Cost, Usage, Services, OpenClaw and About —
-the original window's tabs plus **Layout** and **Services**, which have no
-original counterpart, and minus **GitHub**, which retired when accounts became
-the only home a GitHub token has (org selection lives on each account too).
+Accounts, Hosts, Azure Cost, Usage, Services, OpenClaw and About — the
+original window's tabs plus **Layout** and **Services**, which have no
+original counterpart, and minus **GitHub** and **Portfolio**, which both
+retired into **Accounts**: a token is an account's, org selection lives on
+each account, and every tracked repo sits on the card of the account that
+fetches it (with an Unattributed section for repos no account claims).
 Every label, help string and result line it paints comes from
 `src/settings.rs`, exactly as the cards' do from `crates/viewmodel`.
 
@@ -1418,12 +1420,21 @@ Two things worth knowing about this surface:
 
 ### The Accounts tab
 
-One vendor credential per **account** — a label, a token, an enabled flag, and
-the runner organizations it watches — instead of the single GitHub token and
-global org that came before it. It sits before **Portfolio** on purpose: read
-left to right, the two tabs are *whose token*, then *which repos it fetches*.
-The GitHub tab that used to precede them is retired; this tab is the only home
-a GitHub token has.
+One vendor credential per **account** — a label, a token, an enabled flag,
+the repos it fetches and the runner organizations it watches — the whole
+GitHub surface on one tab, one card per account. The GitHub and Portfolio
+tabs both retired into it: a token is an account's, and a repo row sits on
+the card of the account whose token reads it. Every form is behind a button
+(Rename…, Replace token…, Add account…, Choose repos…, Add by name…,
+Configure… per repo) — built up-front and toggled, the delete-confirm
+precedent applied to forms. The **Choose repos…** picker is the
+`settings_discover_repos` probe rendered live: checkbox rows over the
+token's grants (state read from the live view, never the probe snapshot),
+foreign repos disabled with their owner named, by-name repos kept visible as
+"not in this token's grants", a reported truncation, and an untrack two-step
+exactly when unchecking would forget configured watched workflows. Repos no
+account claims render in an **Unattributed** section with the Fetched-by
+picker.
 
 Each account's token is **its own item** in the OS credential store
 (`SecretKey::VendorToken`, keyed by the account's id) and is never shared with
@@ -1888,7 +1899,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Accounts (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
 | `settings_set_account_org` / Runners | under Settings → Accounts, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Accounts". Watching the same org from a second account is refused with the owner named |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
-| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Portfolio | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
+| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Accounts (Add by name… on its account's card) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | the rules editor | under Settings → Hosts, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
 | the tabs mode, per breakpoint | with two hosts configured, set Settings → **Layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
@@ -2126,7 +2137,7 @@ and that immediacy is itself the check on the corresponding wake:
     *after* that is diffed against a baseline that never contained it.
 
     So — with the panel already populated — add a repo whose CI has a run parked
-    at a deployment-protection gate under Settings → Portfolio. Saving wakes the
+    at a deployment-protection gate under Settings → Accounts. Saving wakes the
     loop, and the pass that first sees the gate is not the seeding pass, so it
     delivers: one banner reading `{repo} · needs approval`, body
     `{workflow} · {branch} is parked at an approval gate.` Watch two more passes

@@ -39,6 +39,12 @@ const S = {
    *  `components` is a non-empty list or `null` and `reason` is the finding or
    *  `null`. This file never fills either in. */
   probe: null,
+  /** Per-account discovery answers, keyed by account id: `"pending"` while
+   *  the walk runs, then Rust's `settings_discover_repos` payload verbatim
+   *  (`reason` set when it failed). Held here like `probe` is — which
+   *  account you last probed is a *view* state, not something the store
+   *  remembers. This file never fills any of it in. */
+  discover: {},
 };
 
 const $s = (id) => document.getElementById(id);
@@ -688,130 +694,196 @@ function rulesGroup(t) {
   return box;
 }
 
-function portfolioTab(t) {
-  const list = group(t.heading);
-  if (t.rows.length === 0) list.appendChild(help(t.empty));
-  for (const repo of t.rows) {
-    const row = node("div", "repo-row");
-    row.dataset.repo = repo.slug;
-
-    const head = node("div", "row");
-    head.append(node("span", "slug", repo.slug));
-    // Rust's sentence for a repo naming an account that no longer exists.
-    // Shown beside the slug rather than folded into the picker: the picker's
-    // "Unattributed" is a state the operator chose, and this one is not.
-    if (repo.accountMissing) head.appendChild(node("span", "badge-dim", t.missingAccountLabel));
-    head.appendChild(node("span", "grow"));
-
-    const enabled = checkbox(repo.enabled);
-    enabled.addEventListener("change", () =>
-      mutate("settings_set_repo_enabled", { slug: repo.slug, enabled: enabled.checked })
+/** One repo's Configure… disclosure: watched workflows, the account picker,
+ *  and Delete. Built up-front and toggled with `.hidden` — the delete-confirm
+ *  precedent, applied to a form. */
+function repoConfig(t, account, repo) {
+  const box = node("div", "stack hidden-row");
+  box.hidden = true;
+  box.dataset.disclosure = "configure";
+  const workflows = textInput(repo.workflows);
+  workflows.disabled = !repo.enabled;
+  // `change`, not `input`: a per-keystroke save re-renders under the caret.
+  workflows.addEventListener("change", () =>
+    mutate("settings_set_repo_workflows", { slug: repo.slug, workflows: workflows.value })
+  );
+  box.appendChild(field(`repo-workflows-${repo.slug}`, t.workflowsLabel, workflows));
+  if (t.accountOptions.length > 0) {
+    const picker = select(t.accountOptions, account ? account.id : "");
+    picker.addEventListener("change", () =>
+      mutate("settings_set_repo_account", { slug: repo.slug, accountId: picker.value || null })
     );
-    const remove = button(t.deleteLabel, "delete");
-    remove.addEventListener("click", () => mutate("settings_remove_repo", { slug: repo.slug }));
-    head.append(enabled, remove);
-
-    const workflows = textInput(repo.workflows);
-    workflows.disabled = !repo.enabled;
-    // On change, not on every keystroke: a per-keystroke save would re-render
-    // the list under the caret and eat the rest of the word.
-    workflows.addEventListener("change", () =>
-      mutate("settings_set_repo_workflows", { slug: repo.slug, workflows: workflows.value })
-    );
-    row.append(head, field(`repo-workflows-${repo.slug}`, t.workflowsLabel, workflows));
-
-    // Which account fetches this repo. Rust sends no options at all in a store
-    // with no accounts, and this file renders no control rather than deciding
-    // for itself when one is worth showing. `accountId` is null for an
-    // unattributed repo, which is the picker's own first option -- never the
-    // first account, which is the guess the whole change exists to refuse.
-    if (t.accountOptions.length > 0) {
-      const account = select(t.accountOptions, repo.accountId || "");
-      account.addEventListener("change", () =>
-        // Empty back to null: the option's value is a string, and "" is the
-        // unattributed state rather than an id of no characters.
-        mutate("settings_set_repo_account", {
-          slug: repo.slug,
-          accountId: account.value || null,
-        })
-      );
-      row.appendChild(field(`repo-account-${repo.slug}`, t.accountLabel, account));
-    }
-    list.appendChild(row);
+    box.appendChild(field(`repo-account-${repo.slug}`, t.accountLabel, picker));
   }
-
-  const add = group(t.add.heading);
-  const slug = textInput("");
-  add.appendChild(field("repo-slug", t.add.slugLabel, slug));
-  const submit = button(t.add.buttonLabel, "add");
-  // The original disables Add until the slug at least looks like `owner/name`; Rust
-  // re-checks it (and rejects duplicates) either way -- this is a hint, not
-  // the validation.
-  const syncAdd = () => {
-    submit.disabled = !slug.value.includes("/");
-  };
-  slug.addEventListener("input", syncAdd);
-  syncAdd();
-  const submitSlug = () => {
-    const value = slug.value;
-    // Reset at submit, like the Add Host form: a submitted field must not
-    // ride the re-render as an unapplied edit.
-    slug.value = "";
-    mutate("settings_add_repo", { slug: value });
-  };
-  submit.addEventListener("click", submitSlug);
-  slug.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !submit.disabled) submitSlug();
-  });
-  add.append(actionRow(submit), help(t.add.help));
-  return [list, add];
+  const remove = button(t.deleteLabel, "repo-delete");
+  remove.addEventListener("click", () => mutate("settings_remove_repo", { slug: repo.slug }));
+  box.appendChild(actionRow(remove));
+  return box;
 }
 
-/**
- * One vendor account: what it fetches, whether a token is stored, and the
- * controls that rename, pause or remove it.
+/** One tracked repo: a compact line, with everything editable behind
+ *  Configure…. `account` is null in the unattributed section. */
+function repoRow(t, account, repo) {
+  const row = node("div", "repo-row");
+  row.dataset.repo = repo.slug;
+  const head = node("div", "row");
+  head.append(node("span", "slug", repo.slug));
+  if (repo.accountMissing) head.appendChild(node("span", "badge-dim", t.missingAccountLabel));
+  head.appendChild(node("span", "grow"));
+  const enabled = checkbox(repo.enabled);
+  enabled.addEventListener("change", () =>
+    mutate("settings_set_repo_enabled", { slug: repo.slug, enabled: enabled.checked })
+  );
+  const config = repoConfig(t, account, repo);
+  const configure = button(t.configureLabel, "configure");
+  configure.addEventListener("click", () => {
+    config.hidden = !config.hidden;
+  });
+  head.append(enabled, configure);
+  row.append(head, config);
+  return row;
+}
+
+/** One row of the discovery picker: a checkbox over "this account tracks it".
  *
- * Delete is two-step exactly when Rust sent a `removePrompt` — that is, when
- * tracked repos depend on this account. The prompt is Rust's sentence, shown
- * verbatim; this file decides only *when* it appears, never what it says. An
- * account nothing depends on deletes in one click like a host does: a
- * confirmation over no consequence is what teaches an operator to click through
- * the one that has one.
- */
-function accountRow(t, account) {
-  const row = node("div", "account-row");
-  row.dataset.account = account.id;
+ *  The checkbox state reads the LIVE view (`account.repos`), never the probe
+ *  payload — a probe is a snapshot, and painting its `tracked` after a toggle
+ *  round-trip would show the state from before the click. Everything else on
+ *  the row (grants, foreign owner, the untrack consequence) is the probe's. */
+function pickerRow(t, account, entry) {
+  const row = node("div", "repo-row");
+  row.dataset.pick = entry.slug;
+  const head = node("div", "row");
+  const tracked = account.repos.some(
+    (repo) => repo.slug.toLowerCase() === entry.slug.toLowerCase()
+  );
+  const box = checkbox(tracked);
+  head.append(box, node("span", "slug", entry.slug));
+  if (entry.archived) head.appendChild(node("span", "badge-dim", t.archivedLabel));
+  if (!entry.granted) head.appendChild(node("span", "badge-dim", t.notGrantedLabel));
+  if (entry.trackedBy) {
+    // Two nodes, never a template literal: a composed sentence here would be
+    // this file writing copy Rust did not.
+    head.append(node("span", "dim", t.fetchedByLabel), node("span", "dim", entry.trackedBy));
+    box.disabled = true;
+  }
+  head.appendChild(node("span", "grow"));
+
+  // The untrack consequence is Rust's sentence, shown verbatim before the
+  // remove goes through — the account-delete confirm, one row down.
+  const confirm = node("div", "stack");
+  confirm.dataset.confirm = "untrack";
+  confirm.hidden = true;
+  const setTracked = (want) =>
+    mutate("settings_set_repo_tracked", { id: account.id, slug: entry.slug, tracked: want });
+  box.addEventListener("change", () => {
+    if (!box.checked && entry.untrackPrompt) {
+      box.checked = true;
+      box.disabled = true;
+      confirm.hidden = false;
+      return;
+    }
+    setTracked(box.checked);
+  });
+  const proceed = button(t.untrackLabel, "untrack-proceed");
+  proceed.addEventListener("click", () => setTracked(false));
+  const cancel = button(t.cancelLabel, "untrack-cancel");
+  cancel.addEventListener("click", () => {
+    confirm.hidden = true;
+    box.disabled = false;
+  });
+  confirm.append(node("p", "confirm", entry.untrackPrompt || ""), actionRow(proceed, cancel));
+  row.append(head, confirm);
+  return row;
+}
+
+/** The Choose repos… picker: render-driven from `S.discover[account.id]`,
+ *  the Services-probe pattern — "pending" while the walk runs, Rust's worded
+ *  `reason` when it failed, checkbox rows when it answered. */
+function discoveryPicker(t, account) {
+  const boxes = node("div", "stack hidden-row");
+  boxes.dataset.picker = account.id;
+  const found = S.discover[account.id];
+  if (found === "pending") {
+    boxes.appendChild(node("span", "result", t.discoverPendingLabel));
+  } else if (found && found.reason) {
+    boxes.appendChild(node("p", "confirm", found.reason));
+  } else if (found) {
+    if (found.truncatedNote) boxes.appendChild(help(found.truncatedNote));
+    for (const entry of found.repos) boxes.appendChild(pickerRow(t, account, entry));
+  }
+  if (found) {
+    const close = button(t.closeLabel, "picker-close");
+    close.addEventListener("click", () => {
+      delete S.discover[account.id];
+      render();
+    });
+    boxes.appendChild(actionRow(close));
+  }
+  return boxes;
+}
+
+/** One vendor account as a card: identity and badge on top, every form
+ *  behind a button, the repos it fetches and the orgs it watches below. */
+function accountCard(t, account) {
+  const card = group(account.label);
+  card.dataset.account = account.id;
 
   const head = node("div", "row");
-  const names = node("div", "stack");
-  names.append(node("span", "host-name", account.label), node("span", "dim", account.vendorLabel));
-
-  // What this account fetches, on the row that removes it. Two nodes rather
-  // than one string: a template literal here is this file writing a sentence
-  // Rust did not.
-  const repos = node("div", "row");
-  if (account.repos.length === 0) {
-    repos.appendChild(node("span", "result", t.noReposLabel));
-  } else {
-    repos.append(node("span", "result", t.reposLabel), node("span", "result", account.repos.join(", ")));
-  }
-  names.appendChild(repos);
-  head.append(names, node("span", "grow"));
-  head.appendChild(
+  head.append(
+    node("span", "dim", account.vendorLabel),
+    node("span", "grow"),
     node("span", account.stored ? "badge-ok" : "badge-dim",
       account.stored ? t.tokenStoredLabel : t.noTokenLabel)
   );
-
   const enabled = checkbox(account.enabled);
   enabled.addEventListener("change", () =>
     mutate("settings_set_account_enabled", { id: account.id, enabled: enabled.checked })
   );
 
-  // Built before the button that reveals it, and empty until then.
+  // Rename…: the name field and its Save, revealed on demand. The save sends
+  // an empty token, which leaves the stored credential alone — Rust's rule.
+  const name = textInput(account.label);
+  const renameBox = node("div", "stack");
+  renameBox.dataset.disclosure = "rename";
+  renameBox.hidden = true;
+  const renameSave = button(t.saveLabel, "rename-save");
+  renameSave.addEventListener("click", () =>
+    mutate("settings_save_account", {
+      id: account.id, vendor: account.vendor, label: name.value, token: "",
+    })
+  );
+  renameBox.append(field(`account-name-${account.id}`, t.nameLabel, name), actionRow(renameSave));
+  const rename = button(t.renameLabel, "rename");
+  rename.addEventListener("click", () => {
+    renameBox.hidden = !renameBox.hidden;
+  });
+
+  // Replace token…: same shape. Dropped before the round-trip, like the Add
+  // Host form: the token has no reason to outlive the call, and a rejected
+  // save must not leave it in the DOM.
+  const token = textInput("", "password");
+  const tokenBox = node("div", "stack");
+  tokenBox.dataset.disclosure = "replace-token";
+  tokenBox.hidden = true;
+  const tokenSave = button(t.saveLabel, "token-save");
+  tokenSave.addEventListener("click", () => {
+    const args = { id: account.id, vendor: account.vendor, label: account.label, token: token.value };
+    token.value = "";
+    mutate("settings_save_account", args);
+  });
+  tokenBox.append(field(`account-token-${account.id}`, t.tokenLabel, token), actionRow(tokenSave));
+  const replace = button(t.replaceTokenLabel, "replace-token");
+  replace.addEventListener("click", () => {
+    tokenBox.hidden = !tokenBox.hidden;
+  });
+
+  // Delete is two-step exactly when Rust sent a `removePrompt` — the prompt
+  // is Rust's sentence, shown verbatim; this file decides only *when* it
+  // appears, never what it says.
   const confirm = node("div", "stack");
   confirm.dataset.confirm = "remove";
   confirm.hidden = true;
-
   const remove = button(t.deleteLabel, "delete");
   const removeNow = () => mutate("settings_remove_account", { id: account.id });
   remove.addEventListener("click", () => {
@@ -822,7 +894,6 @@ function accountRow(t, account) {
     remove.disabled = true;
     confirm.hidden = false;
   });
-
   const proceed = button(t.deleteLabel, "delete");
   proceed.addEventListener("click", removeNow);
   const cancel = button(t.cancelLabel, "cancel");
@@ -832,16 +903,70 @@ function accountRow(t, account) {
   });
   confirm.append(node("p", "confirm", account.removePrompt || ""), actionRow(proceed, cancel));
 
-  head.append(enabled, remove);
+  head.append(enabled, rename, replace, remove);
 
-  // The name and the token travel together through `settings_save_account`,
-  // which is one command for create and update alike. An empty token field
-  // leaves the stored credential alone -- that is Rust's rule, and this file
-  // does not re-state it by disabling anything.
-  // Runner organizations: the stored selection, each removable, plus a Watch
+  // The repos this account fetches, each editable behind Configure…, plus
+  // the two ways in: the discovery picker and the add-by-name form.
+  const repos = node("div", "stack");
+  repos.dataset.repos = account.id;
+  repos.appendChild(node("span", "lbl", t.reposHeading));
+  if (account.repos.length === 0) {
+    repos.appendChild(node("span", "result", t.noReposLabel));
+  }
+  for (const repo of account.repos) repos.appendChild(repoRow(t, account, repo));
+
+  const picker = discoveryPicker(t, account);
+  const choose = button(t.chooseReposLabel, "choose-repos");
+  choose.addEventListener("click", async () => {
+    if (S.discover[account.id]) {
+      delete S.discover[account.id];
+      render();
+      return;
+    }
+    S.discover[account.id] = "pending";
+    render();
+    const found = await callRust("settings_discover_repos", { id: account.id }).catch(() => null);
+    if (found) {
+      S.discover[account.id] = found;
+    } else {
+      delete S.discover[account.id];
+    }
+    render();
+  });
+
+  const slug = textInput("");
+  const byNameBox = node("div", "stack");
+  byNameBox.dataset.disclosure = "add-by-name";
+  byNameBox.hidden = true;
+  const addRepo = button(t.addLabel, "repo-add");
+  // A hint, not the validation: Rust re-checks and refuses in its own words.
+  const syncAddRepo = () => {
+    addRepo.disabled = !slug.value.includes("/");
+  };
+  slug.addEventListener("input", syncAddRepo);
+  syncAddRepo();
+  const submitSlug = () => {
+    const value = slug.value;
+    // Cleared before the round-trip so the submitted value does not ride the
+    // re-render as an unapplied edit (see `unappliedEdits`).
+    slug.value = "";
+    mutate("settings_add_repo", { slug: value, accountId: account.id });
+  };
+  addRepo.addEventListener("click", submitSlug);
+  slug.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !addRepo.disabled) submitSlug();
+  });
+  byNameBox.append(field(`repo-slug-${account.id}`, t.slugLabel, slug), actionRow(addRepo));
+  const addByName = button(t.addByNameLabel, "add-by-name");
+  addByName.addEventListener("click", () => {
+    byNameBox.hidden = !byNameBox.hidden;
+  });
+  repos.append(actionRow(choose, addByName), picker, byNameBox);
+
+  // Runner organizations: the stored selection, each removable; orgs the
+  // discovery derived but nobody watches yet, offered; plus the manual Watch
   // field. Checkbox semantics — every click round-trips through
-  // `settings_set_account_org` and the re-render paints what was persisted,
-  // so nothing here tracks a draft.
+  // `settings_set_account_org` and the re-render paints what was persisted.
   const orgs = node("div", "stack");
   orgs.dataset.orgs = account.id;
   orgs.appendChild(node("span", "lbl", t.orgsHeading));
@@ -858,6 +983,26 @@ function accountRow(t, account) {
     orgRow.append(node("span", "result", org), node("span", "grow"), stop);
     orgs.appendChild(orgRow);
   }
+  const found = S.discover[account.id];
+  if (found && found.orgs) {
+    for (const org of found.orgs) {
+      if (org.selected) continue;
+      const orgRow = node("div", "row");
+      orgRow.dataset.discoveredOrg = org.name;
+      orgRow.append(node("span", "result", org.name));
+      if (org.selectedBy) {
+        orgRow.append(node("span", "dim", t.watchedByLabel), node("span", "dim", org.selectedBy));
+      } else {
+        orgRow.appendChild(node("span", "grow"));
+        const watch = button(t.orgAddButtonLabel, "org-watch");
+        watch.addEventListener("click", () =>
+          mutate("settings_set_account_org", { id: account.id, org: org.name, selected: true })
+        );
+        orgRow.appendChild(watch);
+      }
+      orgs.appendChild(orgRow);
+    }
+  }
   const orgInput = textInput("");
   const watch = button(t.orgAddButtonLabel, "org-add");
   // A hint, not the validation: Rust trims, refuses blanks, and refuses an
@@ -869,8 +1014,6 @@ function accountRow(t, account) {
   syncOrg();
   const submitOrg = () => {
     const org = orgInput.value;
-    // Cleared before the round-trip so the submitted value does not ride the
-    // re-render as an unapplied edit (see `unappliedEdits`).
     orgInput.value = "";
     mutate("settings_set_account_org", { id: account.id, org, selected: true });
   };
@@ -880,59 +1023,46 @@ function accountRow(t, account) {
   });
   orgs.append(field(`account-org-${account.id}`, t.orgAddLabel, orgInput), actionRow(watch));
 
-  const name = textInput(account.label);
-  const token = textInput("", "password");
-  const save = button(t.saveLabel, "save");
-  save.addEventListener("click", () => {
-    const args = {
-      id: account.id,
-      vendor: account.vendor,
-      label: name.value,
-      token: token.value,
-    };
-    // Dropped before the round-trip, like the Add Host form: the token has no
-    // reason to outlive the call, and a rejected save must not leave it in the
-    // DOM.
-    token.value = "";
-    mutate("settings_save_account", args);
-  });
-
-  row.append(
-    head,
-    confirm,
-    orgs,
-    field(`account-name-${account.id}`, t.nameLabel, name),
-    field(`account-token-${account.id}`, t.tokenLabel, token),
-    actionRow(save)
-  );
-  return row;
+  card.append(head, confirm, renameBox, tokenBox, repos, orgs);
+  return card;
 }
 
 /**
- * The Accounts tab: one credential per account, not per vendor.
- *
- * Every row carries the repos attributed to it, so what removing an account
- * costs is on screen before the button is pressed. Nothing here re-homes an
- * orphaned repo onto a surviving account — that would be this file inventing an
- * owner, and Rust refuses to do it for the same reason.
+ * The Accounts tab — the whole GitHub surface: one card per account, the
+ * unattributed repos no card can claim, and the add form behind a button.
+ * Nothing here re-homes an orphaned repo onto a surviving account — that
+ * would be this file inventing an owner, and Rust refuses to do it for the
+ * same reason.
  */
 function accountsTab(t) {
-  const list = group(t.heading);
-  if (t.rows.length === 0) list.appendChild(help(t.empty));
-  for (const account of t.rows) list.appendChild(accountRow(t, account));
-  list.appendChild(help(t.help));
-  list.appendChild(help(t.orgsHelp));
+  const out = [];
+  if (t.rows.length === 0) {
+    const empty = group(t.heading);
+    empty.appendChild(help(t.empty));
+    out.push(empty);
+  }
+  for (const account of t.rows) out.push(accountCard(t, account));
 
-  const add = group(t.add.heading);
+  if (t.unattributed.length > 0) {
+    const orphans = group(t.unattributedHeading);
+    for (const repo of t.unattributed) orphans.appendChild(repoRow(t, null, repo));
+    orphans.appendChild(help(t.unattributedHelp));
+    out.push(orphans);
+  }
+
+  // Add Account, behind a button like every other form on this tab.
+  const add = node("section", "group");
+  const addBox = node("div", "stack");
+  addBox.dataset.disclosure = "add-account";
+  addBox.hidden = true;
   const vendor = select(t.add.vendorOptions, t.add.vendorOptions[0].value);
   const name = textInput("");
   const token = textInput("", "password");
-  add.append(
+  addBox.append(
     field("account-vendor", t.add.vendorLabel, vendor),
     field("account-name", t.add.nameLabel, name),
     field("account-token", t.add.tokenLabel, token)
   );
-
   const submit = button(t.add.buttonLabel, "add");
   // A hint, not the validation: Rust re-checks the name and the vendor and
   // refuses the save in its own words.
@@ -942,16 +1072,22 @@ function accountsTab(t) {
   name.addEventListener("input", syncAdd);
   syncAdd();
   submit.addEventListener("click", () => {
-    // `id: null` is what makes this a create. An update carries the row's id
-    // (see `accountRow`), and the two paths are one command so an update can
+    // `id: null` is what makes this a create. An update carries the card's id
+    // (see `accountCard`), and the two paths are one command so an update can
     // never land as a second row on the same credential.
     const args = { id: null, vendor: vendor.value, label: name.value, token: token.value };
     token.value = "";
     name.value = "";
     mutate("settings_save_account", args);
   });
-  add.append(actionRow(submit), help(t.add.help));
-  return [list, add];
+  addBox.append(actionRow(submit), help(t.add.help));
+  const open = button(t.addAccountLabel, "add-account");
+  open.addEventListener("click", () => {
+    addBox.hidden = !addBox.hidden;
+  });
+  add.append(actionRow(open), addBox, help(t.reposHelp), help(t.help), help(t.orgsHelp));
+  out.push(add);
+  return out;
 }
 
 function azureTab(t) {
@@ -1370,7 +1506,6 @@ function renderBody() {
     general: generalTab,
     layout: layoutTab,
     accounts: accountsTab,
-    portfolio: portfolioTab,
     hosts: hostsTab,
     azure: azureTab,
     usage: usageTab,
