@@ -824,6 +824,20 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .rule-row .rule-expected { width:96px; flex:none; }
 .rule-row .rule-host { flex:none; width:auto; }
 .rule-arrow { color:var(--muted); }
+
+/* The Configure repos… modal — the app's second floating layer (.ctx-menu at
+   z-index:10 is the first, so this sits one up). The scrim owns dismissal:
+   a click that lands on it, and not on the panel, closes the picker. */
+.modal-scrim { position:fixed; inset:0; z-index:20; background:rgba(4,8,18,.65);
+  display:flex; align-items:center; justify-content:center; }
+.modal { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  padding:14px 18px; width:min(560px, 90vw); max-height:80vh; overflow-y:auto;
+  display:flex; flex-direction:column; gap:10px; }
+/* One row per grant, checkbox first in a fixed slot — the constant-width
+   .toggle is what left-aligns every slug in the column. */
+.pick-row { display:flex; flex-direction:column; gap:6px; padding:6px 0;
+  border-top:1px solid var(--line); }
+.pick-row:first-of-type { border-top:0; }
 .about-name { font-size:20px; font-weight:700; margin:0; }
 .about-tagline { font-size:13px; font-weight:700; margin:0; }
 .link-row { display:flex; gap:10px; font-size:11px; flex-wrap:wrap; }

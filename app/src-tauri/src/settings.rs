@@ -1218,9 +1218,10 @@ fn accounts_tab(
         "reposHeading": "Repos",
         "noReposLabel": "No repos attributed yet",
         "configureLabel": "Configure…",
-        "chooseReposLabel": "Choose repos…",
+        "configureReposLabel": "Configure repos…",
+        // The modal's title line, beside the account's own label.
+        "pickerHeading": "Repos this token can access",
         "closeLabel": "Close",
-        "addByNameLabel": "Add by name…",
         "slugLabel": "owner/name (e.g. acme/gadget)",
         "addLabel": "Add",
         "workflowsLabel": "Watched workflows (comma-separated, e.g. release.yml)",

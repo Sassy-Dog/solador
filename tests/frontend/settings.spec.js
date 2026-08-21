@@ -718,23 +718,11 @@ test("repos live under their account card, edited behind Configure", async ({ pa
   await expect(rows).toHaveCount(owning.repos.length);
   await expect(rows.first().locator(".slug")).toHaveText(owning.repos[0].slug);
 
-  // Add by name sits behind its button, and the add carries the card's own
-  // account — the attribution is the operator's answer, not a deduction.
-  const byName = card.locator('[data-disclosure="add-by-name"]');
-  await expect(byName).toBeHidden();
-  await card.locator(".btn.add-by-name").click();
-  await expect(byName).toBeVisible();
-  const add = card.locator(".btn.repo-add");
-  await expect(add).toBeDisabled();
-  await page.locator(`#repo-slug-${owning.id}`).fill("gadget");
-  await expect(add, "a bare name is not owner/name").toBeDisabled();
-  await page.locator(`#repo-slug-${owning.id}`).fill("acme/lathe");
-  await expect(add).toBeEnabled();
-  await add.click();
-  expect(await calls(page, "settings_add_repo")).toEqual([
-    { command: "settings_add_repo", args: { slug: "acme/lathe", accountId: owning.id } },
-  ]);
-  await expect(page.locator(`#repo-slug-${owning.id}`)).toHaveValue("");
+  // The card is just the list plus one way in: Configure repos… opens the
+  // modal; the old inline picker and add-by-name disclosure are gone.
+  await expect(card.locator(".btn.configure-repos")).toBeVisible();
+  await expect(card.locator(".btn.add-by-name")).toHaveCount(0);
+  await expect(card.locator(".btn.choose-repos")).toHaveCount(0);
 
   const first = owning.repos[0].slug;
   const row = card.locator(`.repo-row[data-repo="${first}"]`);
@@ -764,12 +752,13 @@ test("repos live under their account card, edited behind Configure", async ({ pa
 });
 
 /**
- * The Choose repos… picker: checkbox rows over what the token was granted,
- * with the checkbox state read from the live view, a foreign repo disabled
- * with its owner named, a reported truncation, and the untrack two-step
- * shown exactly when Rust sent a consequence.
+ * The Configure repos… modal: every grant as a checkbox row, the already-
+ * tracked ones checked (state read from the live view), a foreign repo
+ * disabled with its owner named, a reported truncation, the untrack
+ * two-step exactly when Rust sent a consequence, add-by-name in the footer,
+ * and three ways out — Close, the scrim, and Escape.
  */
-test("the discovery picker checkboxes the grants and two-steps a costly untrack", async ({
+test("the repo modal checkboxes the grants and two-steps a costly untrack", async ({
   page,
   baseURL,
 }) => {
@@ -796,8 +785,10 @@ test("the discovery picker checkboxes the grants and two-steps a costly untrack"
   await tab(page, "accounts").click();
 
   const card = page.locator(`.group[data-account="${owning.id}"]`);
-  await card.locator(".btn.choose-repos").click();
-  const picker = card.locator(`[data-picker="${owning.id}"]`);
+  await card.locator(".btn.configure-repos").click();
+  const picker = page.locator(`.modal[data-picker="${owning.id}"]`);
+  await expect(picker).toBeVisible();
+  await expect(picker, "the modal names its account").toContainText(owning.label);
   await expect(picker.locator('[data-pick="acme/fresh"] .toggle')).not.toBeChecked();
   const trackedRow = picker.locator(`[data-pick="${tracked.slug}"]`);
   await expect(
@@ -832,12 +823,43 @@ test("the discovery picker checkboxes the grants and two-steps a costly untrack"
     args: { id: owning.id, slug: tracked.slug, tracked: false },
   });
 
-  // The discovery's derived org is offered beside the stored selection.
-  await card.locator('[data-discovered-org="beta"] .btn.org-watch').click();
+  // Add by name lives in the modal footer, and the add carries the card's
+  // own account — the attribution is the operator's answer, not a deduction.
+  const add = picker.locator(".btn.repo-add");
+  await expect(add).toBeDisabled();
+  await page.locator(`#repo-slug-${owning.id}`).fill("gadget");
+  await expect(add, "a bare name is not owner/name").toBeDisabled();
+  await page.locator(`#repo-slug-${owning.id}`).fill("acme/lathe");
+  await expect(add).toBeEnabled();
+  await add.click();
+  expect(await calls(page, "settings_add_repo")).toEqual([
+    { command: "settings_add_repo", args: { slug: "acme/lathe", accountId: owning.id } },
+  ]);
+  await expect(page.locator(`#repo-slug-${owning.id}`)).toHaveValue("");
+
+  // The discovery's derived org is offered inside the modal — on the card it
+  // would sit behind this very scrim.
+  await picker.locator('[data-discovered-org="beta"] .btn.org-watch').click();
   expect((await calls(page, "settings_set_account_org")).at(-1)).toEqual({
     command: "settings_set_account_org",
     args: { id: owning.id, org: "beta", selected: true },
   });
+
+  // Three ways out, all of them forgetting the probe: Close…
+  await picker.locator(".btn.picker-close").click();
+  await expect(page.locator(".modal-scrim")).toHaveCount(0);
+  // …the scrim (a click on the panel itself must NOT close it)…
+  await card.locator(".btn.configure-repos").click();
+  await expect(picker).toBeVisible();
+  await picker.click({ position: { x: 10, y: 10 } });
+  await expect(picker, "a click inside the panel is not a dismissal").toBeVisible();
+  await page.locator(".modal-scrim").click({ position: { x: 5, y: 5 } });
+  await expect(page.locator(".modal-scrim")).toHaveCount(0);
+  // …and Escape.
+  await card.locator(".btn.configure-repos").click();
+  await expect(picker).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".modal-scrim")).toHaveCount(0);
 });
 
 /**
