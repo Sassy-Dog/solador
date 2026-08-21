@@ -2345,7 +2345,6 @@ fn stored_secrets(
             .is_some_and(|value| !value.is_empty())
     };
     StoredSecrets {
-        github: present(SecretKey::GitHubAccessToken),
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
         vercel: present(SecretKey::VercelApiToken),
@@ -3659,22 +3658,51 @@ fn settings_save_azure(
     settings_response(&state, status)
 }
 
-/// The GitHub organization the Runners panel queries.
+/// One org checked or unchecked on one account's runner-org selection.
 ///
-/// A command of its own rather than a field on [`ProviderPrefs`]: that struct
-/// is sent whole by two tabs precisely because a partial write blanks the
-/// fields the sending tab does not show, and the GitHub tab shows none of
-/// them. One field, one command, nothing to blank.
+/// Checkbox semantics — saved on the spot, like the crash toggle: a selection
+/// is not a draft. A select lands in `Some(vec![org])` even from `None`, and
+/// the last deselect leaves `Some(vec![])` — the deliberate "watch nothing",
+/// never a fall back to never-configured. An org another account already
+/// watches is refused at this gate ([`settings::validated_org`]) rather than
+/// tie-broken at poll time.
 #[tauri::command]
-fn settings_save_github(org: String, state: tauri::State<'_, Arc<App>>) -> Value {
+fn settings_set_account_org(
+    id: String,
+    org: String,
+    selected: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+    };
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        store.settings_mut().github_org = org.trim().to_owned();
+        let org = if selected {
+            match settings::validated_org(&org, id, store.accounts()) {
+                Ok(org) => org,
+                Err(status) => return settings_response(&state, Some(status)),
+            }
+        } else {
+            org.trim().to_owned()
+        };
+        let Some(account) = store.account_mut(id) else {
+            return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+        };
+        let orgs = account.orgs.get_or_insert_with(Vec::new);
+        if selected {
+            if !orgs.iter().any(|watched| watched == &org) {
+                orgs.push(org);
+            }
+        } else {
+            orgs.retain(|watched| watched != &org);
+        }
         save_status(&store, "Saved.")
     };
-    // No wake: unlike the usage loops on their hourly cadence, the GitHub poll
-    // re-reads settings on every pass, so this applies within one refresh
-    // interval by the same mechanism that makes a re-pasted token apply.
+    // The selection is what the runners half of the pass polls, so it has to
+    // reach the loop now — an org checked and then watched going nowhere for a
+    // full refresh interval reads as broken.
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -4256,6 +4284,12 @@ fn settings_remove_account(id: String, state: tauri::State<'_, Arc<App>>) -> Val
         // Read while the attribution still exists: after `remove_account` the
         // rows are indistinguishable from repos that never had an account.
         let orphaned = settings::account_removal_impact(store.repos(), id);
+        // The org selection leaves with the account — read it for the receipt
+        // before the row is gone.
+        let stopped_orgs = store
+            .account(id)
+            .and_then(|account| account.orgs.clone())
+            .unwrap_or_default();
         match store.remove_account(id) {
             Some(account) => {
                 // The store deliberately leaves the credential store alone, so
@@ -4276,7 +4310,7 @@ fn settings_remove_account(id: String, state: tauri::State<'_, Arc<App>>) -> Val
                 }
                 save_status(
                     &store,
-                    settings::account_removed_status(&account.label, &orphaned),
+                    settings::account_removed_status(&account.label, &orphaned, &stopped_orgs),
                 )
             }
             None => Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned()),
@@ -4449,7 +4483,6 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 /// loop to wake — its caller reconciles poll *tasks* instead.
 fn wake_for(app: &App, field: SecretField) {
     match field {
-        SecretField::GitHub => wake_github(app),
         SecretField::Neon | SecretField::Vercel => wake_usage(app, true),
         // One credential, two panels: the Usage panel's Sentry section and the
         // Sentry Crons panel are separate loops, so a save has to reach both or
@@ -4747,7 +4780,6 @@ fn dump_settings() -> Value {
     // and the *absent* prompt are covered too).
     let accounts = dump_accounts();
     let stored = StoredSecrets {
-        github: true,
         neon: false,
         sentry: true,
         vercel: true,
@@ -4761,9 +4793,6 @@ fn dump_settings() -> Value {
     // cover.
     let settings = store::Settings {
         openclaw_gateway_url: "ws://gateway.local:7878".into(),
-        // Populated so the frontend suite sees the GitHub org field in its
-        // filled state; its empty state is covered by the Rust view tests.
-        github_org: "acme".into(),
         // On in the fixture, off in `Settings::default()` — the checked
         // rendering of the toggle is the one a default fixture would never
         // show. The default itself is asserted in `crates/store`, where it
@@ -4880,6 +4909,9 @@ fn dump_accounts() -> Vec<VendorAccount> {
     let mut work = VendorAccount::new(VendorKind::GitHub, "work", "");
     work.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0021);
     work.secret_account = SecretKey::VendorToken(work.id).account();
+    // One org watched, so the fixture carries the org list in its filled state
+    // — the "No organizations watched" state rides the second account.
+    work.orgs = Some(vec!["acme".to_owned()]);
     let mut personal = VendorAccount::new(VendorKind::GitHub, "personal", "");
     personal.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0022);
     personal.secret_account = SecretKey::VendorToken(personal.id).account();
@@ -5593,7 +5625,6 @@ fn main() {
             settings_remove_breakpoint,
             settings_reset_layout,
             settings_save_azure,
-            settings_save_github,
             settings_save_providers,
             settings_add_host,
             settings_set_host_enabled,
@@ -5610,6 +5641,7 @@ fn main() {
             settings_set_repo_account,
             settings_save_account,
             settings_set_account_enabled,
+            settings_set_account_org,
             settings_remove_account,
             settings_save_openclaw,
             settings_openclaw_retry,
@@ -7705,7 +7737,12 @@ mod tests {
         };
         let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
 
-        let pass = plan_github_pass(&credentials, &[account], &[repos, vec![orphan]].concat(), "");
+        let pass = plan_github_pass(
+            &credentials,
+            &[account],
+            &[repos, vec![orphan]].concat(),
+            "",
+        );
 
         assert_eq!(
             pass.fetches[0]
@@ -7791,7 +7828,12 @@ mod tests {
         }
 
         let one = [work.clone()];
-        let pass = plan_github_pass(&credentials, &one, &[settings::new_repo("acme/new", &one)], "");
+        let pass = plan_github_pass(
+            &credentials,
+            &one,
+            &[settings::new_repo("acme/new", &one)],
+            "",
+        );
         assert_eq!(
             pass.fetches[0]
                 .repos
@@ -7803,7 +7845,12 @@ mod tests {
         assert!(pass.reports.is_empty(), "{pass:?}");
 
         let two = [work, personal];
-        let pass = plan_github_pass(&credentials, &two, &[settings::new_repo("acme/new", &two)], "");
+        let pass = plan_github_pass(
+            &credentials,
+            &two,
+            &[settings::new_repo("acme/new", &two)],
+            "",
+        );
         assert!(
             pass.fetches.iter().all(|fetch| fetch.repos.is_empty()),
             "neither token may fetch a repo nobody has attributed: {pass:?}"
@@ -8116,8 +8163,18 @@ mod tests {
         assert_eq!(rows[1]["tokenStored"], false);
         assert_eq!(rows[1]["enabled"], false);
 
-        assert_eq!(vm["github"]["secret"]["stored"], true);
+        assert!(vm["github"].is_null(), "the GitHub tab stays retired");
         assert!(vm["azure"]["secret"].is_null(), "no Azure credential");
+
+        // Both states of the org list, same rule as the account badges below:
+        // one account watching an org, one watching none.
+        let account_rows = vm["accounts"]["rows"].as_array().expect("account rows");
+        assert!(account_rows
+            .iter()
+            .any(|row| row["orgs"] == serde_json::json!(["acme"])));
+        assert!(account_rows
+            .iter()
+            .any(|row| row["orgs"] == serde_json::json!([])));
 
         // Both readings of the account picker, for the reason the rules
         // fixture below carries every action: the Playwright suite must not be

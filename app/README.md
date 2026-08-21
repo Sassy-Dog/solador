@@ -455,17 +455,20 @@ Atlassian's to re-word; and the read is issued **before** `poll_github`'s token
 gate, since "GitHub is on fire" is most useful precisely when the panel is
 otherwise blank.
 
-**The runner roster is the memory that makes an absence visible.** The org's
+**The runner roster is the memory that makes an absence visible.** An org's
 ephemeral runners de-register between jobs, so GitHub's registered list can
 never say "mac-s2 *should* exist". Every name it has shown us is remembered in
-`store.json`'s new `runner_roster` field (the Rust counterpart of the original
-app's `ghRunnerRoster` UserDefaults blob), with a 24h age-out for rotated
-names. An absent name renders amber `recycling 40s` inside the 300s grace and
-red `missing 12m` past it — and those clocks are folded forward **only by a
-successful fetch**, so an hour of GitHub being unreachable ages nothing. The
-panel keeps its last-good rows through a failure and puts the reason in the
-`footer` field (`staleAfter: 150s`), which the frontend paints **beside the
-panel title, not under its body** — see "Where a warning goes" below.
+`store.json`'s `runner_roster` field (the Rust counterpart of the original
+app's `ghRunnerRoster` UserDefaults blob), each record stamped with **the org
+it was sighted in**, with a 24h age-out for rotated names. An absent name
+renders amber `recycling 40s` inside the 300s grace and red `missing 12m` past
+it — and those clocks are folded forward **only by a successful fetch of that
+org**, so an hour of GitHub being unreachable ages nothing, and one org's
+successful fetch never marks another org's runners absent. Each watched org is
+polled with its owning account's token; a failing org keeps its last-good rows
+with the reason in the `footer` field (`staleAfter: 150s`), which the frontend
+paints **beside the panel title, not under its body** — see "Where a warning
+goes" below. Rows name their org only when more than one is watched.
 
 **Applied without a restart.** The token and the portfolio are re-read on every
 pass, and `github_wake` cuts the sleep short after a Save, a Clear, a portfolio
@@ -1151,11 +1154,12 @@ live. The gap is now this app's alone to close.
 ## Settings
 
 The **Settings** button opens an in-app view over the cockpit: General, Layout,
-GitHub, Portfolio, Hosts, Azure Cost, Usage, Services, OpenClaw and About — the
-original window's tabs plus **Layout** and **Services**, which have no
-the original counterpart. Every label, help
-string and result line it paints comes from `src/settings.rs`, exactly as the
-cards' do from `crates/viewmodel`.
+Accounts, Portfolio, Hosts, Azure Cost, Usage, Services, OpenClaw and About —
+the original window's tabs plus **Layout** and **Services**, which have no
+original counterpart, and minus **GitHub**, which retired when accounts became
+the only home a GitHub token has (org selection lives on each account too).
+Every label, help string and result line it paints comes from
+`src/settings.rs`, exactly as the cards' do from `crates/viewmodel`.
 
 **In-app view, not a second window.** A second window means the frontend calls
 `WebviewWindow`, which means granting the webview
@@ -1177,7 +1181,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_move_panel` / `settings_set_panel_span` / `settings_set_breakpoint_overflow` | the [cockpit layout](#the-layout-tab), inside one breakpoint named by `minWidth`: one panel a place along the order, one panel's width, or that band's host-overflow mode |
 | `settings_add_breakpoint` / `settings_remove_breakpoint` / `settings_reset_layout` | add a width band (seeded from the one it splits), drop one (never the last), or forget the arrangement entirely |
 | `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |
-| `settings_save_github` | the GitHub organization the Runners panel queries. One field, one command — `ProviderPrefs` above is sent *whole* by two tabs, and the GitHub tab shows none of its fields, so folding this in would blank them |
+| `settings_set_account_org` | one org checked or unchecked on one account's runner-org selection. Checkbox semantics — saved on the spot, like the crash toggle: a selection is not a draft. An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop — the selection is what the runners half of the pass polls |
 | `settings_save_azure` | where the cost export lives: storage account + container. Its own command for the same reason, and it **wakes the Azure poll** — that loop runs on a four-hour rhythm, so without the nudge an operator who just fixed a typo waits until teatime to learn whether it worked |
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it |
 | `settings_unhide_volume` | one mount, on a host or on the local list |
@@ -1192,7 +1196,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_openclaw_retry` | reconnect now, instead of waiting out the pairing backoff |
 | `settings_probe_status_vendor` | step one of [adding a status page](#the-services-tab): one GET of `{base}/api/v2/summary.json` → its components, **or** the finding that stopped it. Deliberately not a `Result` — a failed probe found something, and the finding is the product |
 | `settings_save_status_vendor` / `settings_set_status_vendor_enabled` / `settings_remove_status_vendor` | step two, and the list it lands in |
-| `settings_save_secret` / `settings_clear_secret` | one credential, by key (`github`/`neon`/`sentry`/`azure`/`openclaw`) |
+| `settings_save_secret` / `settings_clear_secret` | one credential, by key (`neon`/`sentry`/`vercel`/`openclaw`). The `github` key retired with its tab — a GitHub token is an account's now, written through `settings_save_account` |
 
 **Every mutation wakes exactly the loop its data feeds, and no other.** A wake
 spends a whole poll pass, so nudging the GitHub loop after a Neon save would burn
@@ -1200,10 +1204,9 @@ a portfolio fetch on a credential it has no use for.
 
 | Edit | Wakes |
 |---|---|
-| the portfolio, the refresh interval, the `github` credential | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
+| the portfolio, the refresh interval, an account (saved, enabled, removed), an org checked or unchecked | the GitHub loop ([Repos + Runners](#the-repos-and-runners-commands)) |
 | the refresh interval | …and the usage loop's Claude half, which shares that cadence |
 | the `neon` / `sentry` credential, the Neon org id, the Sentry slug | the usage loop, *forcing* its hourly provider half onto that pass |
-| the `azure` credential | the Azure loop |
 | a panel's poll cadence — set or cleared | that one panel's loop, and no other (`wake_panel`). The loops re-read the store each pass, so the change would apply anyway — on the *old* cadence's schedule, which on the Azure row is four hours away. The usage wake is not forced onto its provider half: that loop recomputes whether a provider pass is due from the cadence it just re-read, so the new rhythm applies without spending three vendor requests |
 | the gateway URL, the `openclaw` credential, **Retry now** | the OpenClaw session — cutting short the *session*, not a sleep |
 | the Sentry quota, the Azure budget, the two Neon rates | nothing — all four are read at render time |
@@ -1413,10 +1416,12 @@ Two things worth knowing about this surface:
 
 ### The Accounts tab
 
-One vendor credential per **account** — a label, a token, and an enabled flag —
-instead of the single GitHub token that came before it. It sits between the
-**GitHub** tab and **Portfolio** on purpose: read left to right, the three tabs
-are *the token*, *whose token*, and *which repos it fetches*.
+One vendor credential per **account** — a label, a token, an enabled flag, and
+the runner organizations it watches — instead of the single GitHub token and
+global org that came before it. It sits before **Portfolio** on purpose: read
+left to right, the two tabs are *whose token*, then *which repos it fetches*.
+The GitHub tab that used to precede them is retired; this tab is the only home
+a GitHub token has.
 
 Each account's token is **its own item** in the OS credential store
 (`SecretKey::VendorToken`, keyed by the account's id) and is never shared with
@@ -1444,14 +1449,25 @@ from one place so the two cannot disagree:
 - the status line afterwards is the receipt — *"Removed `<label>`. 2 tracked repos
   are now unattributed: `owner/a`, `owner/b`."*
 
-An account **no repo names** skips the prompt and deletes in one click. That
-asymmetry is deliberate: a confirmation step over no consequence is what teaches
-an operator to click through the one that has a consequence.
+An account **no repo names and no org rides** skips the prompt and deletes in
+one click. That asymmetry is deliberate: a confirmation step over no
+consequence is what teaches an operator to click through the one that has a
+consequence.
 
-Saving, toggling, or removing an account wakes the GitHub poll immediately
-rather than waiting out a refresh interval — accounts are the identities that
-pass fetches with, so a change that does not reach the loop leaves the panel
-fetching with the previous set.
+**Runner organizations live on the account, not in a global field.** Each
+watched org is polled with its owning account's token — the per-account
+cardinality the old single `github_org` never had, which made the runners
+fetch ride whatever account happened to be first. The selection is checkbox
+semantics through `settings_set_account_org`, an org another account already
+watches is refused at the gate with the owner named, and removing the account
+stops its orgs' watching — the prompt and the receipt both say so. (An org
+selection has no independent existence to become "unattributed": unlike a
+repo, there is nothing left to render.)
+
+Saving, toggling, or removing an account — or checking an org — wakes the
+GitHub poll immediately rather than waiting out a refresh interval — accounts
+are the identities that pass fetches with, so a change that does not reach the
+loop leaves the panel fetching with the previous set.
 
 ### The Services tab
 
@@ -1867,7 +1883,8 @@ and that immediacy is itself the check on the corresponding wake:
 
 | Touched | Do | Expect |
 |---|---|---|
-| `github_wake` / Repos / Runners | save a fine-grained PAT under Settings → GitHub | both panels fill within seconds; **Clear** drops them back just as fast. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
+| `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Accounts (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
+| `settings_set_account_org` / Runners | under Settings → Accounts, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Accounts". Watching the same org from a second account is refused with the owner named |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
 | the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Portfolio | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |

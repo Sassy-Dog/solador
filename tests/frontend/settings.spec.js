@@ -616,37 +616,80 @@ test("Add Host waits for a name and an address, and keeps the token out of the D
 
 test("a credential saves, clears, and never comes back", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "github").click();
+  // Sentry, not GitHub: the GitHub tab is retired (its token lives on
+  // accounts), and the fixture stores a Sentry token, which is the same
+  // claim with a subject that still exists.
+  await tab(page, "usage").click();
 
-  const secret = settings.github.secret;
-  const box = page.locator('.group[data-secret="github"]');
-  const input = page.locator("#secret-github");
+  const secret = settings.usage.sentry.secret;
+  const box = page.locator('.group[data-secret="sentry"]');
+  const input = page.locator("#secret-sentry");
   await expect(input).toHaveAttribute("type", "password");
   await expect(input).toHaveValue("");
-  // The fixture stores a GitHub token, so the badge is up and Clear is live;
+  // The fixture stores a Sentry token, so the badge is up and Clear is live;
   // Save waits for something to save.
   await expect(box.locator(".badge-ok")).toHaveText(secret.storedLabel);
   await expect(box.locator(".save")).toBeDisabled();
   await expect(box.locator(".clear")).toBeEnabled();
 
-  await input.fill("ghp_supersecret");
+  await input.fill("sntryu_supersecret");
   await expect(box.locator(".save")).toBeEnabled();
   await box.locator(".save").click();
   expect(await calls(page, "settings_save_secret")).toEqual([
-    { command: "settings_save_secret", args: { key: "github", value: "ghp_supersecret" } },
+    { command: "settings_save_secret", args: { key: "sentry", value: "sntryu_supersecret" } },
   ]);
   await expect(input).toHaveValue("");
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
 
   await box.locator(".clear").click();
   expect(await calls(page, "settings_clear_secret")).toEqual([
-    { command: "settings_clear_secret", args: { key: "github" } },
+    { command: "settings_clear_secret", args: { key: "sentry" } },
   ]);
 
   // Nothing in the payload, and therefore nothing in the page, can echo a
   // stored credential back: the view-model carries a boolean per credential.
-  expect(JSON.stringify(settings)).not.toContain("ghp_");
-  await expect(page.locator("body")).not.toContainText("ghp_supersecret");
+  expect(JSON.stringify(settings)).not.toContain("sntryu_");
+  await expect(page.locator("body")).not.toContainText("sntryu_supersecret");
+});
+
+test("the retired GitHub tab is gone and org watching lives on the account", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await expect(page.locator('.tab[data-tab="github"]')).toHaveCount(0);
+  await tab(page, "accounts").click();
+
+  // The fixture's first account watches one org; the second watches none.
+  const rows = settings.accounts.rows;
+  const watching = rows.find((r) => r.orgs.length > 0);
+  const fresh = rows.find((r) => r.orgs.length === 0);
+  const watchingRow = page.locator(`.account-row[data-account="${watching.id}"]`);
+  const freshRow = page.locator(`.account-row[data-account="${fresh.id}"]`);
+
+  await expect(watchingRow.locator(`[data-org="${watching.orgs[0]}"]`)).toBeVisible();
+  await expect(freshRow.locator(".result", { hasText: settings.accounts.noOrgsLabel }).first())
+    .toBeVisible();
+
+  // Stop watching sends the row's own org, unchecked.
+  await watchingRow.locator(`[data-org="${watching.orgs[0]}"] .org-remove`).click();
+  expect(await calls(page, "settings_set_account_org")).toEqual([
+    {
+      command: "settings_set_account_org",
+      args: { id: watching.id, org: watching.orgs[0], selected: false },
+    },
+  ]);
+
+  // Watch sends the typed org, checked, and clears the field before the
+  // round trip. Disabled until something is typed — a hint; Rust validates.
+  const orgInput = page.locator(`#account-org-${fresh.id}`);
+  const watch = freshRow.locator(".org-add");
+  await expect(watch).toBeDisabled();
+  await orgInput.fill("beta");
+  await expect(watch).toBeEnabled();
+  await watch.click();
+  expect((await calls(page, "settings_set_account_org")).at(-1)).toEqual({
+    command: "settings_set_account_org",
+    args: { id: fresh.id, org: "beta", selected: true },
+  });
+  await expect(orgInput).toHaveValue("");
 });
 
 test("a credential with nothing stored offers nothing to clear", async ({ page, baseURL }) => {

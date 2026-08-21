@@ -429,7 +429,7 @@ test("right-clicking an absent runner offers Rust's Forget and invokes runners_f
   const call = await page.evaluate(
     () => window.__CALLS__.find((c) => c.command === "runners_forget")
   );
-  expect(call.args).toEqual({ name: absent.name });
+  expect(call.args).toEqual({ org: absent.org, name: absent.name });
 });
 
 /** A registered runner has nothing to forget, so it gets no menu at all. */
