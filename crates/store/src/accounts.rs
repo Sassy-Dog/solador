@@ -53,6 +53,18 @@ pub struct VendorAccount {
     /// during a store migration is the `LEGACY_SERVICE` hazard in miniature:
     /// orphaned is worse than deleted.
     pub secret_account: String,
+    /// GitHub organizations whose self-hosted runners this account watches,
+    /// each polled with this account's own token.
+    ///
+    /// `None` is "never configured" — a row written before this field existed,
+    /// or an account nobody has opened the org picker for; `Some(vec![])` is a
+    /// deliberate "watch nothing". The same distinction
+    /// [`crate::TrackedRepo::watched_workflows`] draws, kept for the same
+    /// reason: a defaulted state is as much a fabrication as a defaulted
+    /// number. Lenient individually because this struct has no container-level
+    /// default — an id-less entry must still fail to load.
+    #[serde(default)]
+    pub orgs: Option<Vec<String>>,
 }
 
 impl VendorAccount {
@@ -70,6 +82,7 @@ impl VendorAccount {
             label: label.into(),
             enabled: true,
             secret_account: secret_account.into(),
+            orgs: None,
         }
     }
 }
@@ -114,6 +127,38 @@ mod tests {
         );
         let account: VendorAccount = serde_json::from_str(&json).expect("deserialize");
         assert!(account.enabled);
+    }
+
+    #[test]
+    fn an_account_written_before_orgs_existed_reads_as_never_configured() {
+        let id = Uuid::new_v4();
+        let json = format!(
+            r#"{{"id":"{id}","vendor":"github","label":"work","secret_account":"github_access_token"}}"#
+        );
+        let account: VendorAccount = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            account.orgs, None,
+            "a v2 row must read as never-configured, not as a deliberate empty selection"
+        );
+    }
+
+    #[test]
+    fn a_cleared_org_selection_is_stored_as_a_decision_not_re_read_as_unconfigured() {
+        let mut account = VendorAccount::new(VendorKind::GitHub, "work", "vendor-abc");
+        account.orgs = Some(Vec::new());
+        let text = serde_json::to_string(&account).expect("serialize");
+        let back: VendorAccount = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(
+            back.orgs,
+            Some(Vec::new()),
+            "watch-nothing is a decision and must survive a round trip distinct from None"
+        );
+    }
+
+    #[test]
+    fn a_new_account_has_never_configured_orgs() {
+        let account = VendorAccount::new(VendorKind::GitHub, "work", "vendor-abc");
+        assert_eq!(account.orgs, None);
     }
 
     #[test]

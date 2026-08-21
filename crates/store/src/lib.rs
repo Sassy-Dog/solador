@@ -68,7 +68,12 @@ pub use statusvendors::StatusVendor;
 ///   a build that reads 1 refuses a file stamped 2 outright, by the same
 ///   fail-closed rule that makes this constant worth having. See
 ///   `migrate_v1_to_v2`.
-pub const STORE_VERSION: u32 = 2;
+/// - **3** — the Settings GitHub tab retires into accounts: the standalone
+///   token's implicit legacy identity becomes a real [`VendorAccount`], the
+///   global `github_org` moves onto [`VendorAccount::orgs`], and every
+///   [`RunnerRosterRecord`] names the org it was sighted in. See
+///   `migrate_v2_to_v3`.
+pub const STORE_VERSION: u32 = 3;
 
 /// Directory under the platform config dir, named for the app's bundle id:
 /// `~/Library/Application Support/app.solador.desktop` on macOS,
@@ -371,10 +376,15 @@ impl Store {
                 // the retry" discipline `secrets::SERVICE_MIGRATION_MARKER`
                 // uses, and for the same reason: a partial pass must be
                 // retryable, not permanent.
-                if data.version >= STORE_VERSION
-                    || migrate_v1_to_v2(&mut data, github_token_present)
-                {
-                    data.version = STORE_VERSION;
+                // Stepwise, not a single `>=` guard: each migration runs only
+                // on exactly the version it understands, and each stamp is
+                // earned separately — a v2 file whose v2→v3 pass cannot finish
+                // must not be re-run through the v1→v2 mint.
+                if data.version < 2 && migrate_v1_to_v2(&mut data, github_token_present) {
+                    data.version = 2;
+                }
+                if data.version == 2 && migrate_v2_to_v3(&mut data, github_token_present) {
+                    data.version = 3;
                 }
                 Ok(Store { path, data })
             }
@@ -682,6 +692,37 @@ impl Store {
         self.data.runner_roster = roster;
         changed
     }
+
+    /// Replaces one org's records, leaving every other org's memory untouched
+    /// — the per-org sibling of [`Store::set_runner_roster`], and the one the
+    /// poll uses now that each selected org is fetched on its own: a failed
+    /// org's absence clocks must not be rewritten by a neighbour's success.
+    ///
+    /// The org is stamped onto every stored record rather than trusted from
+    /// the caller, and output order is (org, name) — stable across saves, so
+    /// a steady fleet writes an identical file. Same change-detection contract
+    /// as the whole-list setter: call [`Store::save`] when this returns `true`.
+    pub fn set_runner_roster_for_org(
+        &mut self,
+        org: &str,
+        records: Vec<RunnerRosterRecord>,
+    ) -> bool {
+        let mut roster: Vec<RunnerRosterRecord> = self
+            .data
+            .runner_roster
+            .iter()
+            .filter(|record| record.org != org)
+            .cloned()
+            .chain(records.into_iter().map(|mut record| {
+                record.org = org.to_string();
+                record
+            }))
+            .collect();
+        roster.sort_by(|a, b| (&a.org, &a.name).cmp(&(&b.org, &b.name)));
+        let changed = roster != self.data.runner_roster;
+        self.data.runner_roster = roster;
+        changed
+    }
 }
 
 /// Schema 1 → 2: mint the account the single v1 GitHub credential *was*, and
@@ -732,6 +773,76 @@ fn migrate_v1_to_v2(data: &mut StoreData, github_token_present: bool) -> bool {
         repo.account_id = Some(account.id);
     }
     data.accounts.push(account);
+    true
+}
+
+/// Schema 2 → 3: the Settings GitHub tab retires, so its two concerns move
+/// into accounts. Returns whether the migration finished — the caller stamps
+/// version 3 only then.
+///
+/// **Minting runs first**, so the org it may need to adopt has an account to
+/// land on. A zero-account v2 store with the standalone token present is the
+/// v2 legacy mode — "the GitHub tab's single token fetches every tracked
+/// repo" — made explicit: the minted account points at the *pre-existing*
+/// `github_access_token` item (no keychain write, `migrate_v1_to_v2`'s rule 2)
+/// and adopts only `account_id: None` repos, which that token provably
+/// fetched. A repo naming a *removed* account keeps naming it: it was not the
+/// legacy token's, and unattributed-by-removal is a fact, not a gap.
+///
+/// A zero-account store with **no** token returns `false` — retry next
+/// launch, exactly `migrate_v1_to_v2`'s reasoning: `false` conflates "no
+/// token" with "keychain unreadable", and stamping would permanently freeze
+/// both the unminted account and an unadoptable `github_org`. This is also
+/// why a genuinely removed account is not resurrected: removal deletes the
+/// credential item too, so that store presents as token-absent.
+///
+/// **Org adoption runs second.** A non-empty `github_org` lands on the first
+/// GitHub account in store order — the knowable-at-migration analog of the
+/// runner poll's `fetches.first()` — and every pre-v3 roster record (spelled
+/// `org == ""`) is stamped with it: there was exactly one org, so every
+/// remembered name provably belongs to it, and dropping the records would
+/// forget their absence memory. The moved value is then cleared so nothing
+/// reads it twice.
+fn migrate_v2_to_v3(data: &mut StoreData, github_token_present: bool) -> bool {
+    let has_github_account = data
+        .accounts
+        .iter()
+        .any(|account| account.vendor == VendorKind::GitHub);
+    if !has_github_account {
+        if !github_token_present {
+            return false;
+        }
+        let account = VendorAccount::new(
+            VendorKind::GitHub,
+            "GitHub",
+            SecretKey::GitHubAccessToken.account(),
+        );
+        for repo in &mut data.repos {
+            if repo.account_id.is_none() {
+                repo.account_id = Some(account.id);
+            }
+        }
+        data.accounts.push(account);
+    }
+
+    let org = data.settings.github_org.trim().to_owned();
+    if !org.is_empty() {
+        let target = data
+            .accounts
+            .iter_mut()
+            .find(|account| account.vendor == VendorKind::GitHub)
+            .expect("a GitHub account exists: minted above or found before");
+        let orgs = target.orgs.get_or_insert_with(Vec::new);
+        if !orgs.contains(&org) {
+            orgs.push(org.clone());
+        }
+        for record in &mut data.runner_roster {
+            if record.org.is_empty() {
+                record.org.clone_from(&org);
+            }
+        }
+        data.settings.github_org.clear();
+    }
     true
 }
 
@@ -1271,11 +1382,61 @@ mod tests {
         assert_eq!(migrated.data().version, STORE_VERSION);
     }
 
-    /// A v2 file is never migrated again, however empty its account list is.
-    /// An operator who deleted their last account must not find it back on the
-    /// next launch just because the old keychain item is still lying around.
+    // MARK: - Schema 2 → 3: the GitHub tab retires into accounts
+    //
+    // Same raw-JSON-literal discipline as the 1 → 2 suite above: this build
+    // can no longer emit a v2 document, so these fixtures are hand-written.
+
+    /// Consciously reverses v2's
+    /// `a_v2_store_with_no_accounts_is_left_exactly_as_the_operator_left_it`.
+    /// That test guarded against resurrecting a *removed* account — but
+    /// `settings_remove_account` deletes the credential item along with the
+    /// row, so a genuinely removed account leaves no token to find and the
+    /// no-token branch below still refuses to mint. The store minted for here
+    /// is the other zero-account population: the v2 legacy mode, where the
+    /// GitHub tab's single token implicitly fetched every unattributed repo.
+    /// That tab is gone, so the implicit account becomes an explicit one —
+    /// with the same zero-keychain-writes proof v1 → v2 used.
     #[test]
-    fn a_v2_store_with_no_accounts_is_left_exactly_as_the_operator_left_it() {
+    fn a_v2_store_still_on_the_single_token_gets_the_account_it_was_implicitly_using() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":2,"settings":{},"hosts":[],"repos":[{"slug":"acme/one"},{"slug":"acme/two","account_id":"6f2c1e0a-1111-2222-3333-444455556666"}],"accounts":[]}"#,
+        )
+        .expect("write");
+
+        let store = Store::open_in(dir.path(), true).expect("open");
+        assert_eq!(store.accounts().len(), 1);
+        let account = &store.accounts()[0];
+        assert_eq!(
+            account.secret_account, "github_access_token",
+            "the minted account reads the item the legacy mode already used — \
+             no keychain write, no rename"
+        );
+        assert_eq!(
+            store.repo("acme/one").expect("repo").account_id,
+            Some(account.id),
+            "an unattributed repo was provably fetched by the single token"
+        );
+        assert_eq!(
+            store.repo("acme/two").expect("repo").account_id,
+            Some(
+                "6f2c1e0a-1111-2222-3333-444455556666"
+                    .parse()
+                    .expect("uuid")
+            ),
+            "a repo naming a removed account was NOT fetched by the legacy \
+             token, so the mint must not adopt it"
+        );
+        assert_eq!(store.data().version, STORE_VERSION);
+    }
+
+    /// The old test's actual guarantee, preserved under the new rule: removal
+    /// deletes the credential too, so the removed-account store presents as
+    /// token-absent and nothing is resurrected.
+    #[test]
+    fn a_v2_store_whose_account_was_removed_is_not_resurrected() {
         let dir = temp_dir();
         fs::write(
             dir.path().join(STORE_FILE_NAME),
@@ -1283,12 +1444,120 @@ mod tests {
         )
         .expect("write");
 
-        let store = Store::open_in(dir.path(), true).expect("open");
+        let store = Store::open_in(dir.path(), false).expect("open");
         assert!(
             store.accounts().is_empty(),
-            "a removed account must not be resurrected by a re-run migration"
+            "no credential, no account — an invented owner is harder to spot \
+             than an empty one"
         );
         assert_eq!(store.repos()[0].account_id, None);
+        assert_eq!(
+            store.data().version,
+            2,
+            "an unfinished migration must not claim the new schema"
+        );
+    }
+
+    #[test]
+    fn the_global_github_org_moves_onto_the_first_github_account_and_is_cleared() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":2,"settings":{"github_org":"Sassy-Dog"},"hosts":[],"repos":[],"accounts":[{"id":"aaaaaaaa-0000-0000-0000-000000000001","vendor":"github","label":"GitHub","secret_account":"github_access_token"},{"id":"aaaaaaaa-0000-0000-0000-000000000002","vendor":"github","label":"work","secret_account":"vendor-aaaaaaaa-0000-0000-0000-000000000002"}]}"#,
+        )
+        .expect("write");
+
+        let store = Store::open_in(dir.path(), false).expect("open");
+        assert_eq!(
+            store.accounts()[0].orgs.as_deref(),
+            Some(["Sassy-Dog".to_owned()].as_slice()),
+            "the first account in store order is the knowable analog of the \
+             runner poll's fetches.first()"
+        );
+        assert_eq!(
+            store.accounts()[1].orgs,
+            None,
+            "the second account never watched the org and must not start to"
+        );
+        assert_eq!(
+            store.settings().github_org,
+            "",
+            "the moved value is cleared so nothing reads it twice"
+        );
+        assert_eq!(store.data().version, STORE_VERSION);
+    }
+
+    #[test]
+    fn org_adoption_stamps_the_persisted_roster_with_the_migrated_org() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":2,"settings":{"github_org":"Sassy-Dog"},"hosts":[],"repos":[],"accounts":[{"id":"aaaaaaaa-0000-0000-0000-000000000001","vendor":"github","label":"GitHub","secret_account":"github_access_token"}],"runner_roster":[{"name":"mac-s1","os":"macOS","last_seen":100}]}"#,
+        )
+        .expect("write");
+
+        let store = Store::open_in(dir.path(), false).expect("open");
+        assert_eq!(
+            store.runner_roster(),
+            [RunnerRosterRecord {
+                name: "mac-s1".into(),
+                os: "macOS".into(),
+                last_seen: 100,
+                org: "Sassy-Dog".into(),
+            }],
+            "there was exactly one org, so every remembered name provably \
+             belongs to it — dropping would forget its absence memory"
+        );
+    }
+
+    /// An org with no account to live on blocks the stamp rather than
+    /// vanishing: dropping it would destroy real configuration on the strength
+    /// of a keychain read that may simply have failed this launch. The retry
+    /// also covers the operator who creates an account through Settings later
+    /// — the next launch adopts the org onto it.
+    #[test]
+    fn an_org_with_no_account_to_live_on_blocks_the_stamp_rather_than_vanishing() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":2,"settings":{"github_org":"Sassy-Dog"},"hosts":[],"repos":[],"accounts":[]}"#,
+        )
+        .expect("write");
+
+        let unmigrated = Store::open_in(dir.path(), false).expect("open");
+        assert_eq!(unmigrated.data().version, 2);
+        assert_eq!(
+            unmigrated.settings().github_org,
+            "Sassy-Dog",
+            "the unadopted org must survive to the launch that can adopt it"
+        );
+        // A re-save in the unmigrated state still carries the org forward.
+        unmigrated.save().expect("save");
+        let reopened = Store::open_in(dir.path(), false).expect("reopen");
+        assert_eq!(reopened.settings().github_org, "Sassy-Dog");
+        assert_eq!(reopened.data().version, 2);
+    }
+
+    #[test]
+    fn a_v1_store_with_a_token_and_an_org_reaches_v3_in_one_launch() {
+        let dir = temp_dir();
+        fs::write(
+            dir.path().join(STORE_FILE_NAME),
+            r#"{"version":1,"settings":{"github_org":"Sassy-Dog"},"hosts":[],"repos":[{"slug":"acme/one"}]}"#,
+        )
+        .expect("write");
+
+        let store = Store::open_in(dir.path(), true).expect("open");
+        assert_eq!(store.data().version, STORE_VERSION);
+        assert_eq!(store.accounts().len(), 1);
+        let account = &store.accounts()[0];
+        assert_eq!(store.repos()[0].account_id, Some(account.id));
+        assert_eq!(
+            account.orgs.as_deref(),
+            Some(["Sassy-Dog".to_owned()].as_slice()),
+            "the v1 → v2 mint runs first so the org has an account to land on"
+        );
+        assert_eq!(store.settings().github_org, "");
     }
 
     #[test]
@@ -1801,11 +2070,13 @@ mod tests {
                 name: "mac-s1".into(),
                 os: "macOS".into(),
                 last_seen: 1_700_000_000,
+                org: "acme".into(),
             },
             RunnerRosterRecord {
                 name: "ubu-1".into(),
                 os: "linux".into(),
                 last_seen: 1_700_000_060,
+                org: "acme".into(),
             },
         ];
         assert!(store.set_runner_roster(roster.clone()));
@@ -1818,6 +2089,49 @@ mod tests {
 
         let reopened = Store::open_in(dir.path(), false).expect("reopen");
         assert_eq!(reopened.runner_roster(), roster);
+    }
+
+    fn roster_record(name: &str, org: &str, last_seen: u64) -> RunnerRosterRecord {
+        RunnerRosterRecord {
+            name: name.into(),
+            os: "linux".into(),
+            last_seen,
+            org: org.into(),
+        }
+    }
+
+    #[test]
+    fn replacing_one_orgs_roster_leaves_the_other_orgs_memory_alone() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        let beta = roster_record("win-1", "beta", 200);
+        store.set_runner_roster(vec![roster_record("mac-s1", "acme", 100), beta.clone()]);
+
+        let replacement = roster_record("mac-s2", "acme", 300);
+        assert!(store.set_runner_roster_for_org("acme", vec![replacement.clone()]));
+        assert_eq!(
+            store.runner_roster(),
+            [replacement.clone(), beta],
+            "acme's fetch replaces acme's records only, and output order is (org, name)"
+        );
+        assert!(
+            !store.set_runner_roster_for_org("acme", vec![replacement]),
+            "an unchanged org must report no change, so a steady fleet does not \
+             rewrite the file on every poll"
+        );
+    }
+
+    #[test]
+    fn the_org_helper_stamps_its_org_onto_every_record_it_stores() {
+        let dir = temp_dir();
+        let mut store = Store::open_in(dir.path(), false).expect("open");
+        let unstamped = roster_record("ubu-1", "", 100);
+        assert!(store.set_runner_roster_for_org("acme", vec![unstamped]));
+        assert_eq!(
+            store.runner_roster(),
+            [roster_record("ubu-1", "acme", 100)],
+            "the org is the helper's invariant, not the caller's promise"
+        );
     }
 
     /// The field is new, so every existing store file on disk is missing it —
