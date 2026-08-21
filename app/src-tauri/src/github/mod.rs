@@ -90,7 +90,7 @@ pub const REPOS_LOADING_MESSAGE: &str = "loading…";
 /// an operator to connect a token they already connected sends them to the
 /// wrong screen — the same mistake, one state over, that
 /// `the_repos_panel_says_loading_before_it_has_looked_for_a_token` records.
-pub const NO_REPOS_MESSAGE: &str = "no repos tracked — add one in Settings → Portfolio";
+pub const NO_REPOS_MESSAGE: &str = "no repos tracked — add one in Settings → Accounts";
 
 /// Runners, same moment. the original words this one differently and the difference is
 /// kept: the Repos panel says what it is doing, the Runners panel says what it

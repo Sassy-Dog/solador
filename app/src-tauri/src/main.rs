@@ -8307,14 +8307,24 @@ mod tests {
             .iter()
             .any(|row| row["orgs"] == serde_json::json!([])));
 
-        // Both readings of the account picker, for the reason the rules
-        // fixture below carries every action: the Playwright suite must not be
-        // able to pass against a payload that quietly lost one of them.
-        let repos = vm["portfolio"]["rows"].as_array().expect("repo rows");
-        assert!(repos.iter().any(|repo| repo["accountId"].is_string()));
-        assert!(repos.iter().any(|repo| repo["accountId"].is_null()));
+        // Both homes a repo can have, for the reason the rules fixture below
+        // carries every action: the Playwright suite must not be able to pass
+        // against a payload that quietly lost one of them. The Portfolio tab
+        // retired into the Accounts tab, so the two readings are "under a
+        // card" and "in the unattributed section".
+        assert!(account_rows.iter().any(|row| row["repos"]
+            .as_array()
+            .is_some_and(|repos| !repos.is_empty())));
+        assert!(
+            !vm["accounts"]["unattributed"]
+                .as_array()
+                .expect("unattributed rows")
+                .is_empty(),
+            "the fixture must carry an orphaned repo"
+        );
+        assert!(vm["portfolio"].is_null(), "the Portfolio tab stays retired");
         assert_eq!(
-            vm["portfolio"]["accountOptions"]
+            vm["accounts"]["accountOptions"]
                 .as_array()
                 .expect("picker options")
                 .len(),

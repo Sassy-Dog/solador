@@ -32,9 +32,9 @@ const TEST_RESULT = "✓ ubu-01 · agent v0.4.0";
  * (`{status, settings}`), so the frontend's "re-render from what was
  * persisted" contract is exercised rather than mocked away.
  */
-async function stubIpc(page, cockpit, settings, probe, updates) {
+async function stubIpc(page, cockpit, settings, probe, updates, discover) {
   await page.addInitScript(
-    ({ cockpit, settings, testResult, probe, updates }) => {
+    ({ cockpit, settings, testResult, probe, updates, discover }) => {
       window.__CALLS__ = [];
       window.__TAURI__ = {
         core: {
@@ -46,6 +46,8 @@ async function stubIpc(page, cockpit, settings, probe, updates) {
             // The probe answers in its own shape, not `{status, settings}`: a
             // finding is not a mutation, and the tab renders it without one.
             if (command === "settings_probe_status_vendor") return probe;
+            // The discovery probe likewise — ephemeral, never persisted.
+            if (command === "settings_discover_repos") return discover;
             // The three updater commands answer in the About tab's own
             // `about.updates` shape — not `{status, settings}` — because an
             // update check is not a settings mutation and nothing is
@@ -62,6 +64,7 @@ async function stubIpc(page, cockpit, settings, probe, updates) {
       testResult: TEST_RESULT,
       probe: probe || null,
       updates: updates || settings.about.updates,
+      discover: discover || null,
     }
   );
 }
@@ -70,10 +73,10 @@ const calls = (page, command) =>
   page.evaluate((c) => window.__CALLS__.filter((call) => call.command === c), command);
 
 /** Loads the app with the IPC stub installed and opens Settings. */
-async function openSettings(page, baseURL, probe, updates) {
+async function openSettings(page, baseURL, probe, updates, discover) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
-  await stubIpc(page, cockpit, settings, probe, updates);
+  await stubIpc(page, cockpit, settings, probe, updates, discover);
   await page.goto("/index.html");
   await expect(page.locator("#settingsToggle")).toBeVisible();
   await page.locator("#settingsToggle").click();
@@ -661,8 +664,8 @@ test("the retired GitHub tab is gone and org watching lives on the account", asy
   const rows = settings.accounts.rows;
   const watching = rows.find((r) => r.orgs.length > 0);
   const fresh = rows.find((r) => r.orgs.length === 0);
-  const watchingRow = page.locator(`.account-row[data-account="${watching.id}"]`);
-  const freshRow = page.locator(`.account-row[data-account="${fresh.id}"]`);
+  const watchingRow = page.locator(`.group[data-account="${watching.id}"]`);
+  const freshRow = page.locator(`.group[data-account="${fresh.id}"]`);
 
   await expect(watchingRow.locator(`[data-org="${watching.orgs[0]}"]`)).toBeVisible();
   await expect(freshRow.locator(".result", { hasText: settings.accounts.noOrgsLabel }).first())
@@ -705,31 +708,44 @@ test("a credential with nothing stored offers nothing to clear", async ({ page, 
   await expect(box.locator(".badge-ok")).toHaveCount(0);
 });
 
-test("Portfolio adds, toggles and edits watched workflows", async ({ page, baseURL }) => {
+test("repos live under their account card, edited behind Configure", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "portfolio").click();
+  await tab(page, "accounts").click();
+  const { owning } = accountsOf(settings);
+  const card = page.locator(`.group[data-account="${owning.id}"]`);
 
-  const rows = page.locator(".repo-row");
-  await expect(rows).toHaveCount(settings.portfolio.rows.length);
-  await expect(rows.first().locator(".slug")).toHaveText(settings.portfolio.rows[0].slug);
+  const rows = card.locator(".repo-row[data-repo]");
+  await expect(rows).toHaveCount(owning.repos.length);
+  await expect(rows.first().locator(".slug")).toHaveText(owning.repos[0].slug);
 
-  const add = page.locator(".btn.add");
+  // Add by name sits behind its button, and the add carries the card's own
+  // account — the attribution is the operator's answer, not a deduction.
+  const byName = card.locator('[data-disclosure="add-by-name"]');
+  await expect(byName).toBeHidden();
+  await card.locator(".btn.add-by-name").click();
+  await expect(byName).toBeVisible();
+  const add = card.locator(".btn.repo-add");
   await expect(add).toBeDisabled();
-  await page.locator("#repo-slug").fill("gadget");
+  await page.locator(`#repo-slug-${owning.id}`).fill("gadget");
   await expect(add, "a bare name is not owner/name").toBeDisabled();
-  await page.locator("#repo-slug").fill("acme/lathe");
+  await page.locator(`#repo-slug-${owning.id}`).fill("acme/lathe");
   await expect(add).toBeEnabled();
   await add.click();
   expect(await calls(page, "settings_add_repo")).toEqual([
-    { command: "settings_add_repo", args: { slug: "acme/lathe" } },
+    { command: "settings_add_repo", args: { slug: "acme/lathe", accountId: owning.id } },
   ]);
+  await expect(page.locator(`#repo-slug-${owning.id}`)).toHaveValue("");
 
-  const first = settings.portfolio.rows[0].slug;
-  const row = page.locator(`.repo-row[data-repo="${first}"]`);
-  // `input.input`, not `.input`: the row also carries the account picker,
-  // which is a `<select>` sharing the class.
-  await row.locator("input.input").fill("release.yml, deploy.yml");
-  await row.locator("input.input").blur();
+  const first = owning.repos[0].slug;
+  const row = card.locator(`.repo-row[data-repo="${first}"]`);
+  const config = row.locator('[data-disclosure="configure"]');
+  await expect(config).toBeHidden();
+  await row.locator(".btn.configure").click();
+  await expect(config).toBeVisible();
+  // `input.input` inside the disclosure, not the id: the slug carries a `/`,
+  // which a CSS id selector cannot spell unescaped.
+  await config.locator("input.input").fill("release.yml, deploy.yml");
+  await config.locator("input.input").blur();
   expect(await calls(page, "settings_set_repo_workflows")).toEqual([
     {
       command: "settings_set_repo_workflows",
@@ -741,55 +757,141 @@ test("Portfolio adds, toggles and edits watched workflows", async ({ page, baseU
   // the stub returns (unchanged, by design), so `uncheck`'s own read-back of
   // the checked state would fight the render forever. The assertion that
   // matters is which command the toggle sent.
-  await row.locator(".toggle").click();
+  await row.locator(".toggle").first().click();
   expect(await calls(page, "settings_set_repo_enabled")).toEqual([
     { command: "settings_set_repo_enabled", args: { slug: first, enabled: false } },
   ]);
 });
 
 /**
- * The picker half of #292.
+ * The Choose repos… picker: checkbox rows over what the token was granted,
+ * with the checkbox state read from the live view, a foreign repo disabled
+ * with its owner named, a reported truncation, and the untrack two-step
+ * shown exactly when Rust sent a consequence.
+ */
+test("the discovery picker checkboxes the grants and two-steps a costly untrack", async ({
+  page,
+  baseURL,
+}) => {
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const settings = await fixture(baseURL, "sample-settings.json");
+  const owning = settings.accounts.rows.find((row) => row.repos.length > 0);
+  const tracked = owning.repos[0];
+  const discover = {
+    id: owning.id,
+    repos: [
+      { slug: "acme/fresh", tracked: false, trackedBy: null, granted: true, archived: false, untrackPrompt: null },
+      { slug: tracked.slug, tracked: true, trackedBy: null, granted: true, archived: false,
+        untrackPrompt: "Stop tracking " + tracked.slug + "? Its watched workflows (release.yml) are forgotten." },
+      { slug: "acme/vault", tracked: false, trackedBy: "personal", granted: true, archived: true, untrackPrompt: null },
+    ],
+    orgs: [{ name: "beta", selected: false, selectedBy: null }],
+    truncated: true,
+    truncatedNote: "the walk was cut short",
+    reason: null,
+  };
+  await stubIpc(page, cockpit, settings, null, null, discover);
+  await page.goto("/index.html");
+  await page.locator("#settingsToggle").click();
+  await tab(page, "accounts").click();
+
+  const card = page.locator(`.group[data-account="${owning.id}"]`);
+  await card.locator(".btn.choose-repos").click();
+  const picker = card.locator(`[data-picker="${owning.id}"]`);
+  await expect(picker.locator('[data-pick="acme/fresh"] .toggle')).not.toBeChecked();
+  const trackedRow = picker.locator(`[data-pick="${tracked.slug}"]`);
+  await expect(
+    trackedRow.locator(".toggle"),
+    "the checkbox reads the live view, not the probe snapshot"
+  ).toBeChecked();
+  const foreign = picker.locator('[data-pick="acme/vault"]');
+  await expect(foreign.locator(".toggle")).toBeDisabled();
+  await expect(foreign, "a foreign repo names its owner").toContainText("personal");
+  await expect(foreign).toContainText(settings.accounts.archivedLabel);
+  await expect(picker, "a cut walk says so").toContainText(discover.truncatedNote);
+
+  await picker.locator('[data-pick="acme/fresh"] .toggle').click();
+  expect(await calls(page, "settings_set_repo_tracked")).toEqual([
+    {
+      command: "settings_set_repo_tracked",
+      args: { id: owning.id, slug: "acme/fresh", tracked: true },
+    },
+  ]);
+
+  // Unchecking the one with a consequence waits for the operator's answer —
+  // Rust's sentence, verbatim, and nothing sent until Proceed.
+  const confirm = trackedRow.locator('[data-confirm="untrack"]');
+  await expect(confirm).toBeHidden();
+  await trackedRow.locator(".toggle").click();
+  await expect(confirm).toBeVisible();
+  await expect(confirm.locator(".confirm")).toHaveText(discover.repos[1].untrackPrompt);
+  expect((await calls(page, "settings_set_repo_tracked")).length).toBe(1);
+  await confirm.locator(".btn.untrack-proceed").click();
+  expect((await calls(page, "settings_set_repo_tracked")).at(-1)).toEqual({
+    command: "settings_set_repo_tracked",
+    args: { id: owning.id, slug: tracked.slug, tracked: false },
+  });
+
+  // The discovery's derived org is offered beside the stored selection.
+  await card.locator('[data-discovered-org="beta"] .btn.org-watch').click();
+  expect((await calls(page, "settings_set_account_org")).at(-1)).toEqual({
+    command: "settings_set_account_org",
+    args: { id: owning.id, org: "beta", selected: true },
+  });
+});
+
+/**
+ * The picker half of #292, relocated with the Portfolio tab's retirement.
  *
  * A repo added while exactly one account exists is attributed to it in Rust
- * and never reaches this control as a question. A repo added with two arrives
- * *unattributed*, and the picker is what resolves it — showing that state
- * honestly rather than pre-selecting the first account, which is the guess the
- * whole change exists to refuse.
+ * and never reaches this control as a question. A repo that arrives
+ * unattributed sits in its own section, and the Fetched-by picker (behind
+ * Configure) is what resolves it — showing that state honestly rather than
+ * pre-selecting the first account, which is the guess the whole change exists
+ * to refuse.
  */
-test("Portfolio shows each repo's account and offers the unattributed state", async ({
+test("the unattributed section offers the picker, and a card's repo can be re-homed", async ({
   page,
   baseURL,
 }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "portfolio").click();
+  await tab(page, "accounts").click();
 
-  const t = settings.portfolio;
-  const attributed = t.rows.find((repo) => repo.accountId);
-  const unattributed = t.rows.find((repo) => !repo.accountId);
-  expect(attributed, "the fixture has no attributed repo").toBeTruthy();
-  expect(unattributed, "the fixture has no unattributed repo").toBeTruthy();
+  const t = settings.accounts;
+  const { owning } = accountsOf(settings);
+  const attributed = owning.repos[0];
+  const orphan = t.unattributed[0];
+  expect(orphan, "the fixture has no unattributed repo").toBeTruthy();
 
-  const picker = (repo) => page.locator(`.repo-row[data-repo="${repo.slug}"] select.input`);
-  await expect(picker(attributed)).toHaveValue(attributed.accountId);
+  const configOf = async (slug) => {
+    const row = page.locator(`.repo-row[data-repo="${slug}"]`);
+    await row.locator(".btn.configure").click();
+    return row.locator("select.input");
+  };
+
+  const orphanPicker = await configOf(orphan.slug);
   await expect(
-    picker(unattributed),
+    orphanPicker,
     "an unattributed repo shows the unattributed option, not the first account"
   ).toHaveValue("");
   // Every account, plus that option.
-  await expect(picker(unattributed).locator("option")).toHaveCount(t.accountOptions.length);
+  await expect(orphanPicker.locator("option")).toHaveCount(t.accountOptions.length);
 
   const chosen = t.accountOptions.find((option) => option.value);
-  await picker(unattributed).selectOption(chosen.value);
+  await orphanPicker.selectOption(chosen.value);
   expect(await calls(page, "settings_set_repo_account")).toEqual([
     {
       command: "settings_set_repo_account",
-      args: { slug: unattributed.slug, accountId: chosen.value },
+      args: { slug: orphan.slug, accountId: chosen.value },
     },
   ]);
 
-  // …and back the other way: the empty option is `null` on the wire, which is
-  // Rust's "unattributed" rather than an id of no characters.
-  await picker(attributed).selectOption("");
+  // …and back the other way: a card's repo starts on its own account, and the
+  // empty option is `null` on the wire — Rust's "unattributed" rather than an
+  // id of no characters.
+  const cardPicker = await configOf(attributed.slug);
+  await expect(cardPicker).toHaveValue(owning.id);
+  await cardPicker.selectOption("");
   expect(await calls(page, "settings_set_repo_account")).toContainEqual({
     command: "settings_set_repo_account",
     args: { slug: attributed.slug, accountId: null },
@@ -814,19 +916,19 @@ test("Accounts lists every account with its credential badge and what it fetches
   await tab(page, "accounts").click();
 
   const t = settings.accounts;
-  await expect(page.locator(".account-row")).toHaveCount(t.rows.length);
+  await expect(page.locator(".group[data-account]")).toHaveCount(t.rows.length);
   const { owning, spare } = accountsOf(settings);
 
-  const first = page.locator(`.account-row[data-account="${owning.id}"]`);
-  await expect(first.locator(".host-name")).toHaveText(owning.label);
-  await expect(first.locator(".dim")).toHaveText(owning.vendorLabel);
-  // The slugs themselves, on the row that removes them.
-  for (const slug of owning.repos) await expect(first).toContainText(slug);
+  const first = page.locator(`.group[data-account="${owning.id}"]`);
+  await expect(first.locator(".group-hdr")).toHaveText(owning.label);
+  await expect(first.locator(".dim").first()).toHaveText(owning.vendorLabel);
+  // The slugs themselves, on the card that removes them.
+  for (const repo of owning.repos) await expect(first).toContainText(repo.slug);
   await expect(first.locator(".badge-ok")).toHaveText(t.tokenStoredLabel);
 
   // An account with no token yet says so — `stored: false` is a fact the
   // payload carries, not a key it omits.
-  const second = page.locator(`.account-row[data-account="${spare.id}"]`);
+  const second = page.locator(`.group[data-account="${spare.id}"]`);
   await expect(second.locator(".badge-dim")).toHaveText(t.noTokenLabel);
   await expect(second).toContainText(t.noReposLabel);
 });
@@ -843,7 +945,7 @@ test("removing an account that repos depend on names them and waits", async ({ p
   await tab(page, "accounts").click();
   const { owning } = accountsOf(settings);
 
-  const row = page.locator(`.account-row[data-account="${owning.id}"]`);
+  const row = page.locator(`.group[data-account="${owning.id}"]`);
   const confirm = row.locator('[data-confirm="remove"]');
   await expect(confirm).toBeHidden();
 
@@ -875,7 +977,7 @@ test("an account nothing depends on removes without a confirmation", async ({ pa
   await tab(page, "accounts").click();
   const { spare } = accountsOf(settings);
 
-  const row = page.locator(`.account-row[data-account="${spare.id}"]`);
+  const row = page.locator(`.group[data-account="${spare.id}"]`);
   await row.locator(".btn.delete").first().click();
   expect(await calls(page, "settings_remove_account")).toEqual([
     { command: "settings_remove_account", args: { id: spare.id } },
@@ -887,6 +989,11 @@ test("an account is added with its vendor, and re-saved without exposing its tok
   await tab(page, "accounts").click();
   const { owning } = accountsOf(settings);
 
+  // The form sits behind Add account… — every form on this tab does.
+  const addBox = page.locator('[data-disclosure="add-account"]');
+  await expect(addBox).toBeHidden();
+  await page.locator(".btn.add-account").click();
+  await expect(addBox).toBeVisible();
   const add = page.locator(".btn.add");
   await expect(add, "an account needs a name").toBeDisabled();
   await page.locator("#account-name").fill("personal-2");
@@ -904,15 +1011,21 @@ test("an account is added with its vendor, and re-saved without exposing its tok
   // Handed to Rust and dropped, never carried across the re-render.
   await expect(page.locator("#account-token")).toHaveValue("");
 
-  const row = page.locator(`.account-row[data-account="${owning.id}"]`);
-  await row.locator(`#account-token-${owning.id}`).fill("ghp_replacement");
-  await row.locator(".btn.save").click();
+  // Replace token… reveals the card's token field; the save carries the
+  // card's own label, so a rename cannot ride a token replacement.
+  const card = page.locator(`.group[data-account="${owning.id}"]`);
+  const tokenBox = card.locator('[data-disclosure="replace-token"]');
+  await expect(tokenBox).toBeHidden();
+  await card.locator(".btn.replace-token").click();
+  await expect(tokenBox).toBeVisible();
+  await card.locator(`#account-token-${owning.id}`).fill("ghp_replacement");
+  await card.locator(".btn.token-save").click();
   const saves = await calls(page, "settings_save_account");
   expect(saves[1]).toEqual({
     command: "settings_save_account",
     args: { id: owning.id, vendor: owning.vendor, label: owning.label, token: "ghp_replacement" },
   });
-  await expect(row.locator(`#account-token-${owning.id}`)).toHaveValue("");
+  await expect(card.locator(`#account-token-${owning.id}`)).toHaveValue("");
 });
 
 test("Usage and Azure write every provider preference together", async ({ page, baseURL }) => {
