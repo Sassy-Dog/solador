@@ -49,6 +49,16 @@ const S = {
 
 const $s = (id) => document.getElementById(id);
 
+// Escape closes the Configure repos… modal — the `.ctx-menu` dismissal
+// precedent, one layer up. A no-op while nothing is open, so the listener
+// costs nothing on every other keystroke.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (Object.keys(S.discover).length === 0) return;
+  S.discover = {};
+  render();
+});
+
 function node(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -751,7 +761,7 @@ function repoRow(t, account, repo) {
  *  round-trip would show the state from before the click. Everything else on
  *  the row (grants, foreign owner, the untrack consequence) is the probe's. */
 function pickerRow(t, account, entry) {
-  const row = node("div", "repo-row");
+  const row = node("div", "pick-row");
   row.dataset.pick = entry.slug;
   const head = node("div", "row");
   const tracked = account.repos.some(
@@ -797,30 +807,97 @@ function pickerRow(t, account, entry) {
   return row;
 }
 
-/** The Choose repos… picker: render-driven from `S.discover[account.id]`,
+/** Closes the Configure repos… modal: forget the probe, repaint. */
+function closePicker(accountId) {
+  delete S.discover[accountId];
+  render();
+}
+
+/** The Configure repos… modal: render-driven from `S.discover[account.id]`,
  *  the Services-probe pattern — "pending" while the walk runs, Rust's worded
- *  `reason` when it failed, checkbox rows when it answered. */
-function discoveryPicker(t, account) {
-  const boxes = node("div", "stack hidden-row");
-  boxes.dataset.picker = account.id;
+ *  `reason` when it failed, checkbox rows when it answered — so the modal
+ *  survives the re-render every checkbox mutation triggers. An in-app
+ *  overlay, not a window: a second webview window needs the ACL grant this
+ *  repo refuses (#123), and `.ctx-menu` is the layering precedent. */
+function repoModal(t, account) {
+  const scrim = node("div", "modal-scrim");
+  // Clicks on the scrim close; clicks inside the panel must not bubble into
+  // that — the same containment test the `.ctx-menu` dismisser runs.
+  scrim.addEventListener("click", (event) => {
+    if (event.target === scrim) closePicker(account.id);
+  });
+  const modal = node("div", "modal");
+  modal.dataset.picker = account.id;
+
+  const head = node("div", "row");
+  head.append(
+    node("span", "host-name", account.label),
+    node("span", "dim", t.pickerHeading),
+    node("span", "grow")
+  );
+  const close = button(t.closeLabel, "picker-close");
+  close.addEventListener("click", () => closePicker(account.id));
+  head.appendChild(close);
+  modal.appendChild(head);
+
   const found = S.discover[account.id];
   if (found === "pending") {
-    boxes.appendChild(node("span", "result", t.discoverPendingLabel));
+    modal.appendChild(node("span", "result", t.discoverPendingLabel));
   } else if (found && found.reason) {
-    boxes.appendChild(node("p", "confirm", found.reason));
+    modal.appendChild(node("p", "confirm", found.reason));
   } else if (found) {
-    if (found.truncatedNote) boxes.appendChild(help(found.truncatedNote));
-    for (const entry of found.repos) boxes.appendChild(pickerRow(t, account, entry));
+    if (found.truncatedNote) modal.appendChild(help(found.truncatedNote));
+    for (const entry of found.repos) modal.appendChild(pickerRow(t, account, entry));
+    // The same probe derived the orgs, so the offers render here too — on
+    // the card they would sit behind this very scrim, unreachable exactly
+    // while they exist.
+    const offered = (found.orgs || []).filter((org) => !org.selected);
+    if (offered.length > 0) {
+      modal.appendChild(node("span", "lbl", t.orgsHeading));
+      for (const org of offered) {
+        const orgRow = node("div", "row");
+        orgRow.dataset.discoveredOrg = org.name;
+        orgRow.append(node("span", "result", org.name));
+        if (org.selectedBy) {
+          orgRow.append(node("span", "dim", t.watchedByLabel), node("span", "dim", org.selectedBy));
+        } else {
+          orgRow.appendChild(node("span", "grow"));
+          const watch = button(t.orgAddButtonLabel, "org-watch");
+          watch.addEventListener("click", () =>
+            mutate("settings_set_account_org", { id: account.id, org: org.name, selected: true })
+          );
+          orgRow.appendChild(watch);
+        }
+        modal.appendChild(orgRow);
+      }
+    }
   }
-  if (found) {
-    const close = button(t.closeLabel, "picker-close");
-    close.addEventListener("click", () => {
-      delete S.discover[account.id];
-      render();
-    });
-    boxes.appendChild(actionRow(close));
-  }
-  return boxes;
+
+  // Add by name, for a repo the grant list cannot offer — a public repo the
+  // operator would rather not grant to the token.
+  const slug = textInput("");
+  const add = button(t.addLabel, "repo-add");
+  // A hint, not the validation: Rust re-checks and refuses in its own words.
+  const syncAdd = () => {
+    add.disabled = !slug.value.includes("/");
+  };
+  slug.addEventListener("input", syncAdd);
+  syncAdd();
+  const submitSlug = () => {
+    const value = slug.value;
+    // Cleared before the round-trip so the submitted value does not ride the
+    // re-render as an unapplied edit (see `unappliedEdits`).
+    slug.value = "";
+    mutate("settings_add_repo", { slug: value, accountId: account.id });
+  };
+  add.addEventListener("click", submitSlug);
+  slug.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !add.disabled) submitSlug();
+  });
+  modal.append(field(`repo-slug-${account.id}`, t.slugLabel, slug), actionRow(add));
+
+  scrim.appendChild(modal);
+  return scrim;
 }
 
 /** One vendor account as a card: identity and badge on top, every form
@@ -905,8 +982,8 @@ function accountCard(t, account) {
 
   head.append(enabled, rename, replace, remove);
 
-  // The repos this account fetches, each editable behind Configure…, plus
-  // the two ways in: the discovery picker and the add-by-name form.
+  // The repos this account fetches — just the list, with everything editable
+  // behind the per-row Configure… and the whole selection behind the modal.
   const repos = node("div", "stack");
   repos.dataset.repos = account.id;
   repos.appendChild(node("span", "lbl", t.reposHeading));
@@ -915,12 +992,10 @@ function accountCard(t, account) {
   }
   for (const repo of account.repos) repos.appendChild(repoRow(t, account, repo));
 
-  const picker = discoveryPicker(t, account);
-  const choose = button(t.chooseReposLabel, "choose-repos");
-  choose.addEventListener("click", async () => {
+  const configureRepos = button(t.configureReposLabel, "configure-repos");
+  configureRepos.addEventListener("click", async () => {
     if (S.discover[account.id]) {
-      delete S.discover[account.id];
-      render();
+      closePicker(account.id);
       return;
     }
     S.discover[account.id] = "pending";
@@ -933,35 +1008,7 @@ function accountCard(t, account) {
     }
     render();
   });
-
-  const slug = textInput("");
-  const byNameBox = node("div", "stack");
-  byNameBox.dataset.disclosure = "add-by-name";
-  byNameBox.hidden = true;
-  const addRepo = button(t.addLabel, "repo-add");
-  // A hint, not the validation: Rust re-checks and refuses in its own words.
-  const syncAddRepo = () => {
-    addRepo.disabled = !slug.value.includes("/");
-  };
-  slug.addEventListener("input", syncAddRepo);
-  syncAddRepo();
-  const submitSlug = () => {
-    const value = slug.value;
-    // Cleared before the round-trip so the submitted value does not ride the
-    // re-render as an unapplied edit (see `unappliedEdits`).
-    slug.value = "";
-    mutate("settings_add_repo", { slug: value, accountId: account.id });
-  };
-  addRepo.addEventListener("click", submitSlug);
-  slug.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !addRepo.disabled) submitSlug();
-  });
-  byNameBox.append(field(`repo-slug-${account.id}`, t.slugLabel, slug), actionRow(addRepo));
-  const addByName = button(t.addByNameLabel, "add-by-name");
-  addByName.addEventListener("click", () => {
-    byNameBox.hidden = !byNameBox.hidden;
-  });
-  repos.append(actionRow(choose, addByName), picker, byNameBox);
+  repos.appendChild(actionRow(configureRepos));
 
   // Runner organizations: the stored selection, each removable; orgs the
   // discovery derived but nobody watches yet, offered; plus the manual Watch
@@ -982,26 +1029,6 @@ function accountCard(t, account) {
     );
     orgRow.append(node("span", "result", org), node("span", "grow"), stop);
     orgs.appendChild(orgRow);
-  }
-  const found = S.discover[account.id];
-  if (found && found.orgs) {
-    for (const org of found.orgs) {
-      if (org.selected) continue;
-      const orgRow = node("div", "row");
-      orgRow.dataset.discoveredOrg = org.name;
-      orgRow.append(node("span", "result", org.name));
-      if (org.selectedBy) {
-        orgRow.append(node("span", "dim", t.watchedByLabel), node("span", "dim", org.selectedBy));
-      } else {
-        orgRow.appendChild(node("span", "grow"));
-        const watch = button(t.orgAddButtonLabel, "org-watch");
-        watch.addEventListener("click", () =>
-          mutate("settings_set_account_org", { id: account.id, org: org.name, selected: true })
-        );
-        orgRow.appendChild(watch);
-      }
-      orgs.appendChild(orgRow);
-    }
   }
   const orgInput = textInput("");
   const watch = button(t.orgAddButtonLabel, "org-add");
@@ -1041,7 +1068,13 @@ function accountsTab(t) {
     empty.appendChild(help(t.empty));
     out.push(empty);
   }
-  for (const account of t.rows) out.push(accountCard(t, account));
+  for (const account of t.rows) {
+    out.push(accountCard(t, account));
+    // The modal rides the same render as its card: `position: fixed` frees
+    // it from the layout, and living inside the settings body means one
+    // `replaceChildren` swap can never strand a stale overlay.
+    if (S.discover[account.id]) out.push(repoModal(t, account));
+  }
 
   if (t.unattributed.length > 0) {
     const orphans = group(t.unattributedHeading);

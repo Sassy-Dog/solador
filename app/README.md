@@ -1425,16 +1425,23 @@ the repos it fetches and the runner organizations it watches — the whole
 GitHub surface on one tab, one card per account. The GitHub and Portfolio
 tabs both retired into it: a token is an account's, and a repo row sits on
 the card of the account whose token reads it. Every form is behind a button
-(Rename…, Replace token…, Add account…, Choose repos…, Add by name…,
-Configure… per repo) — built up-front and toggled, the delete-confirm
-precedent applied to forms. The **Choose repos…** picker is the
-`settings_discover_repos` probe rendered live: checkbox rows over the
-token's grants (state read from the live view, never the probe snapshot),
-foreign repos disabled with their owner named, by-name repos kept visible as
-"not in this token's grants", a reported truncation, and an untrack two-step
-exactly when unchecking would forget configured watched workflows. Repos no
-account claims render in an **Unattributed** section with the Fetched-by
-picker.
+(Rename…, Replace token…, Add account…, Configure… per repo) — built
+up-front and toggled, the delete-confirm precedent applied to forms — and
+the card's repos section is deliberately **just the list**, with one way in.
+
+**Configure repos…** opens a **modal** — the app's second floating layer
+(`.ctx-menu` is the first), an in-app overlay rather than a window because a
+second webview window needs the ACL grant this repo refuses (#123). It
+renders the `settings_discover_repos` probe live: one checkbox row per
+grant, checkbox-first so every slug left-aligns, with the already-tracked
+repos **checked** (state read from the live view, never the probe snapshot);
+foreign repos disabled with their owner named; by-name repos kept visible as
+"not in this token's grants"; a reported truncation; an untrack two-step
+exactly when unchecking would forget configured watched workflows; the orgs
+the probe derived offered below the rows; and the add-by-name field in the
+footer for a public repo the operator would rather not grant. Close, the
+scrim, and Escape all dismiss it. Repos no account claims render in an
+**Unattributed** section with the Fetched-by picker.
 
 Each account's token is **its own item** in the OS credential store
 (`SecretKey::VendorToken`, keyed by the account's id) and is never shared with
@@ -1899,7 +1906,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Accounts (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
 | `settings_set_account_org` / Runners | under Settings → Accounts, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Accounts". Watching the same org from a second account is refused with the owner named |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
-| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Accounts (Add by name… on its account's card) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
+| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Accounts (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | the rules editor | under Settings → Hosts, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
 | the tabs mode, per breakpoint | with two hosts configured, set Settings → **Layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
