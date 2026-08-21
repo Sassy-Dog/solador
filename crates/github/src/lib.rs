@@ -30,6 +30,7 @@
 //! parameters, never constants.
 
 pub mod client;
+pub mod discovery;
 pub mod link;
 pub mod presence;
 pub mod roster;
@@ -38,6 +39,7 @@ pub mod status;
 pub mod workflows;
 
 pub use client::{GitHubClient, GitHubError};
+pub use discovery::{AccessibleRepos, RepoRef};
 pub use presence::PresenceState;
 pub use roster::{GhRunnerAbsence, GhRunnerDisplayRow, RosterUpdate, RunnerRosterEntry};
 pub use runners::{GhRunner, RunnerOs, RunnerState, RunnerSummary};
