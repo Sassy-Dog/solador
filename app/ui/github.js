@@ -263,7 +263,7 @@ function closeForgetMenu() {
  * panel state, and the refresh right behind it repaints from that state — so
  * the row is gone now, not when the 10s poll gets around to it.
  */
-function openForgetMenu(x, y, name, label) {
+function openForgetMenu(x, y, org, name, label) {
   closeForgetMenu();
   const menu = node("div", "ctx-menu");
   const item = node("button", "ctx-item", label);
@@ -271,8 +271,9 @@ function openForgetMenu(x, y, name, label) {
   item.addEventListener("click", async () => {
     closeForgetMenu();
     // A rejected invoke is swallowed like openRepo's: the row simply stays,
-    // and the next right-click can try again.
-    await callRust("runners_forget", { name }).catch(() => {});
+    // and the next right-click can try again. Org-qualified: a name two orgs
+    // share is only forgotten where the operator clicked.
+    await callRust("runners_forget", { org, name }).catch(() => {});
     await refresh();
   });
   menu.appendChild(item);
@@ -295,7 +296,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeForgetMenu();
 });
 
-function runnerRowNode(row, forgetLabel) {
+function runnerRowNode(row, forgetLabel, showOrgTags) {
   const el = node("div", "gh-row");
   // `data-kind` is what makes a registered row and a remembered-absent one
   // addressable from a test without reading their colours back.
@@ -303,12 +304,11 @@ function runnerRowNode(row, forgetLabel) {
 
   const dot = node("span", "dot");
   dot.style.background = row.dotColor;
-  el.append(
-    dot,
-    node("span", "gh-runner-name", row.name),
-    node("span", "grow"),
-    node("span", "gh-runner-os", row.os)
-  );
+  el.append(dot, node("span", "gh-runner-name", row.name));
+  // The org tag paints only when Rust says it adds anything — with one org
+  // watched it would restate the whole panel on every row.
+  if (showOrgTags) el.appendChild(node("span", "dim", row.org));
+  el.append(node("span", "grow"), node("span", "gh-runner-os", row.os));
 
   // The status is the widest thing in the row that changes — "idle" one poll,
   // "recycling 40s" the next — so it is the one column that must be reserved
@@ -327,7 +327,7 @@ function runnerRowNode(row, forgetLabel) {
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openForgetMenu(e.clientX, e.clientY, row.name, forgetLabel);
+      openForgetMenu(e.clientX, e.clientY, row.org, row.name, forgetLabel);
     });
   }
   return el;
@@ -361,7 +361,8 @@ function renderRunners(payload) {
   // The rows go in their own wrapper so the header above them stays
   // full-width: `--panel-cols` splits the LIST, not the whole panel body.
   const list = node("div", "gh-list");
-  for (const row of payload.rows || []) list.appendChild(runnerRowNode(row, payload.forgetLabel));
+  for (const row of payload.rows || [])
+    list.appendChild(runnerRowNode(row, payload.forgetLabel, payload.showOrgTags));
   children.push(list);
   $g("runnersBody").replaceChildren(...children);
 

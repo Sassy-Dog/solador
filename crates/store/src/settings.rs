@@ -440,14 +440,16 @@ pub struct Settings {
     /// either.
     #[serde(default)]
     pub azure_cost_container: String,
-    /// GitHub organization whose self-hosted runners the Runners panel lists
-    /// (non-secret; the token is a credential). Empty means unset.
+    /// **Legacy, migration input only.** The pre-v3 global GitHub org the
+    /// Runners panel used to poll; `migrate_v2_to_v3` moves it onto
+    /// [`crate::VendorAccount::orgs`] and clears it. Nothing else writes it,
+    /// and the only remaining reader outside the migration is the poll's
+    /// legacy identity, which keeps an *unmigrated* store's Runners panel
+    /// alive until its migration completes.
     ///
-    /// There is no default and there must not be one. This was a hardcoded
-    /// constant until it became clear that every install was querying one
-    /// particular organization's runners — a panel that could only ever work
-    /// for its author. Unset is said out loud rather than rendered as an empty
-    /// roster, which would be indistinguishable from an org with no runners.
+    /// Kept serializing on purpose: an unmigrated store re-saved by this
+    /// build must carry the org forward to the launch that can finally adopt
+    /// it, or the retry loses the very value it exists to save.
     #[serde(default)]
     pub github_org: String,
     /// Neon organization id (non-secret; the API key is a credential).

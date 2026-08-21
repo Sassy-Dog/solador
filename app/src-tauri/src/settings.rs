@@ -82,7 +82,6 @@ pub const OPEN_LABEL: &str = "Settings";
 /// a struct that could carry the value is a struct a value can leak out of.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StoredSecrets {
-    pub github: bool,
     pub neon: bool,
     pub sentry: bool,
     pub vercel: bool,
@@ -111,7 +110,6 @@ pub struct StoredSecrets {
 /// a rejected command rather than a silently-ignored save.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretField {
-    GitHub,
     Neon,
     Sentry,
     Vercel,
@@ -127,7 +125,6 @@ impl SecretField {
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
-            SecretField::GitHub => "github",
             SecretField::Neon => "neon",
             SecretField::Sentry => "sentry",
             SecretField::Vercel => "vercel",
@@ -139,7 +136,6 @@ impl SecretField {
     #[must_use]
     pub const fn key(self) -> SecretKey {
         match self {
-            SecretField::GitHub => SecretKey::GitHubAccessToken,
             SecretField::Neon => SecretKey::NeonApiKey,
             SecretField::Sentry => SecretKey::SentryUsageToken,
             SecretField::Vercel => SecretKey::VercelApiToken,
@@ -151,7 +147,6 @@ impl SecretField {
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         [
-            SecretField::GitHub,
             SecretField::Neon,
             SecretField::Sentry,
             SecretField::Vercel,
@@ -520,10 +515,10 @@ pub fn view(
         "tabs": [
             { "id": "general", "title": "General" },
             { "id": "layout", "title": "Layout" },
-            { "id": "github", "title": "GitHub" },
-            // Between the credential it supersedes and the portfolio it
-            // attributes: an account is read left-to-right as "the token, then
-            // whose token, then which repos it fetches".
+            // Before the portfolio it attributes: an account is read
+            // left-to-right as "the token, then which repos it fetches". The
+            // GitHub tab that used to precede it is retired — accounts are the
+            // only home a token has, and org selection lives on each account.
             { "id": "accounts", "title": "Accounts" },
             { "id": "portfolio", "title": "Portfolio" },
             { "id": "hosts", "title": "Hosts" },
@@ -535,7 +530,6 @@ pub fn view(
         ],
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
-        "github": github_tab(settings, stored),
         "accounts": accounts_tab(accounts, repos, stored),
         "portfolio": portfolio_tab(repos, accounts),
         "hosts": hosts_tab(settings, hosts, rules, stored),
@@ -703,29 +697,6 @@ fn secret_section(field: SecretField, label: &str, stored: bool, badge: &str, he
     })
 }
 
-fn github_tab(settings: &Settings, stored: &StoredSecrets) -> Value {
-    json!({
-        "heading": "GitHub Token",
-        "secret": secret_section(
-            SecretField::GitHub,
-            "Fine-grained PAT",
-            stored.github,
-            "Token stored",
-            "Used by the Repos panel. Grant the fine-grained PAT read access to Actions (workflow runs), Contents (remote branch counts), Issues (open-issue counts), and Pull requests (open-PR counts). Stored in your OS credential store.",
-        ),
-        // Not a credential, so it lives in the store beside the other org
-        // identifiers rather than in the keychain — same treatment as the Neon
-        // org id and the Sentry slug.
-        "org": {
-            "heading": "GitHub Organization",
-            "label": "Organization (e.g. acme)",
-            "value": settings.github_org,
-            "help": "Used by the GitHub Runners panel to list your organization's self-hosted runners. Leave blank if you have none — the panel says so rather than showing an empty list.",
-            "saveLabel": "Save",
-        },
-    })
-}
-
 /// What the account picker calls the state a repo is in before anyone has
 /// answered. Named rather than inlined because it is an *option* the operator
 /// can pick deliberately, not the absence of one.
@@ -849,38 +820,107 @@ pub fn account_removal_impact(repos: &[TrackedRepo], id: Uuid) -> Vec<String> {
         .collect()
 }
 
-/// What the Delete button turns into, or `None` when nothing depends on this
-/// account.
-///
-/// `None` is not an empty warning: an account no repo names is removed the way
-/// a host is, in one click. A confirmation step over no consequence is what
-/// teaches an operator to click through the one that has a consequence.
-fn account_removal_prompt(label: &str, orphaned: &[String]) -> Option<String> {
+/// The repo half of the removal consequence, or `None` when no repo names
+/// this account.
+fn orphaned_repos_clause(orphaned: &[String]) -> Option<String> {
     let slugs = orphaned.join(", ");
     match orphaned.len() {
         0 => None,
-        1 => Some(format!(
-            "Remove {label}? 1 tracked repo becomes unattributed: {slugs}."
-        )),
-        n => Some(format!(
-            "Remove {label}? {n} tracked repos become unattributed: {slugs}."
-        )),
+        1 => Some(format!("1 tracked repo becomes unattributed: {slugs}.")),
+        n => Some(format!("{n} tracked repos become unattributed: {slugs}.")),
     }
+}
+
+/// The org half: runner watching stops with the account's token, because an
+/// org selection has no independent existence to leave behind — unlike a repo,
+/// there is nothing to render "unattributed".
+fn stopped_orgs_clause(orgs: &[String]) -> Option<String> {
+    if orgs.is_empty() {
+        return None;
+    }
+    Some(format!("Runner watching stops for: {}.", orgs.join(", ")))
+}
+
+/// What the Delete button turns into, or `None` when nothing depends on this
+/// account.
+///
+/// `None` is not an empty warning: an account no repo names and no org rides
+/// is removed the way a host is, in one click. A confirmation step over no
+/// consequence is what teaches an operator to click through the one that has
+/// a consequence.
+fn account_removal_prompt(label: &str, orphaned: &[String], orgs: &[String]) -> Option<String> {
+    let clauses: Vec<String> = [orphaned_repos_clause(orphaned), stopped_orgs_clause(orgs)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if clauses.is_empty() {
+        return None;
+    }
+    Some(format!("Remove {label}? {}", clauses.join(" ")))
 }
 
 /// The receipt a completed removal leaves in the status line.
 ///
-/// Names the same slugs the prompt did. The row said it beforehand; this is
-/// what the operator is left holding after, so the two are worded from one
-/// place and cannot disagree about how many repos just lost their account.
+/// Names the same slugs and orgs the prompt did. The row said it beforehand;
+/// this is what the operator is left holding after, so the two are worded from
+/// one place and cannot disagree about what just lost its account.
 #[must_use]
-pub fn account_removed_status(label: &str, orphaned: &[String]) -> String {
+pub fn account_removed_status(label: &str, orphaned: &[String], orgs: &[String]) -> String {
     let slugs = orphaned.join(", ");
-    match orphaned.len() {
-        0 => format!("Removed {label}."),
-        1 => format!("Removed {label}. 1 tracked repo is now unattributed: {slugs}."),
-        n => format!("Removed {label}. {n} tracked repos are now unattributed: {slugs}."),
+    let repos_clause = match orphaned.len() {
+        0 => None,
+        1 => Some(format!("1 tracked repo is now unattributed: {slugs}.")),
+        n => Some(format!("{n} tracked repos are now unattributed: {slugs}.")),
+    };
+    let orgs_clause = if orgs.is_empty() {
+        None
+    } else {
+        Some(format!("Runner watching stopped for: {}.", orgs.join(", ")))
+    };
+    let clauses: Vec<String> = [repos_clause, orgs_clause].into_iter().flatten().collect();
+    if clauses.is_empty() {
+        return format!("Removed {label}.");
     }
+    format!("Removed {label}. {}", clauses.join(" "))
+}
+
+/// One org for the given account's selection, trimmed, or the status line
+/// saying what is wrong.
+///
+/// **An org already watched by another GitHub account is refused at this
+/// gate**, visibly, rather than resolved at poll time by store order: the
+/// runners panel keys its rows and clocks by org, so two accounts polling one
+/// org would be two writers to one entry, and first-owner-wins is a tie-break
+/// the operator never chose. Re-selecting on the owning account itself is not
+/// a conflict — the toggle command needs the round trip to be idempotent.
+///
+/// # Errors
+/// The status line to show, already worded as one.
+pub fn validated_org(
+    org: &str,
+    account_id: Uuid,
+    accounts: &[VendorAccount],
+) -> Result<String, String> {
+    let org = org.trim();
+    if org.is_empty() {
+        return Err("Skipped — an organization name is required.".to_owned());
+    }
+    let owner = accounts.iter().find(|account| {
+        account.id != account_id
+            && account.vendor == VendorKind::GitHub
+            && account
+                .orgs
+                .iter()
+                .flatten()
+                .any(|watched| watched.eq_ignore_ascii_case(org))
+    });
+    if let Some(owner) = owner {
+        return Err(format!(
+            "Skipped — {org} is already watched by {}.",
+            owner.label
+        ));
+    }
+    Ok(org.to_owned())
 }
 
 /// The add form's two fields as an account, or the status line saying what is
@@ -936,10 +976,9 @@ fn accounts_tab(
 ) -> Value {
     json!({
         "heading": "Vendor Accounts",
-        // Said out loud, like the Services tab's: with no accounts the GitHub
-        // tab's single token is still what fetches the portfolio, and an
-        // operator who cannot see that stated reads the empty list as broken.
-        "empty": "No vendor accounts yet. Until one exists, the GitHub tab's single token fetches every tracked repo.",
+        // Said out loud, like the Services tab's: an operator who cannot see
+        // the consequence stated reads the empty list as broken.
+        "empty": "No vendor accounts yet. Add one — its token fetches the repos it owns and polls its watched organizations' runners.",
         "tokenStoredLabel": "Token stored",
         "noTokenLabel": "No token",
         "nameLabel": "Name",
@@ -949,10 +988,17 @@ fn accounts_tab(
         "cancelLabel": "Cancel",
         "reposLabel": "Fetches",
         "noReposLabel": "No repos attributed yet",
+        "orgsHeading": "Runner organizations",
+        "noOrgsLabel": "No organizations watched",
+        "orgAddLabel": "Organization (e.g. acme)",
+        "orgAddButtonLabel": "Watch",
+        "orgRemoveLabel": "Stop watching",
+        "orgsHelp": "The GitHub Runners panel lists each watched organization's self-hosted runners, polled with this account's token — grant it organization read access to Self-hosted runners. An organization can be watched by one account.",
         "rows": accounts
             .iter()
             .map(|account| {
                 let orphaned = account_removal_impact(repos, account.id);
+                let orgs = account.orgs.clone().unwrap_or_default();
                 json!({
                     "id": account.id.to_string(),
                     "vendor": vendor_id(account.vendor),
@@ -964,8 +1010,11 @@ fn accounts_tab(
                     // operator deciding whether to remove this account is
                     // deciding about these repos specifically.
                     "repos": orphaned,
+                    // The stored selection, always rendered — editable with no
+                    // discovery request in flight.
+                    "orgs": orgs,
                     // Null when the removal costs nothing.
-                    "removePrompt": account_removal_prompt(&account.label, &orphaned),
+                    "removePrompt": account_removal_prompt(&account.label, &orphaned, &orgs),
                 })
             })
             .collect::<Vec<_>>(),
@@ -2131,7 +2180,6 @@ mod tests {
         off.enabled = false;
 
         let stored = StoredSecrets {
-            github: true,
             neon: false,
             sentry: true,
             vercel: false,
@@ -2256,7 +2304,6 @@ mod tests {
             vec![
                 "general",
                 "layout",
-                "github",
                 "accounts",
                 "portfolio",
                 "hosts",
@@ -3249,15 +3296,17 @@ mod tests {
     fn a_stored_credential_is_a_badge_and_nothing_more() {
         let (settings, hosts, repos, stored) = sample();
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
-        assert_eq!(vm["github"]["secret"]["stored"], true);
-        assert_eq!(vm["github"]["secret"]["storedLabel"], "Token stored");
         assert_eq!(vm["usage"]["neon"]["secret"]["stored"], false);
         assert_eq!(vm["usage"]["sentry"]["secret"]["stored"], true);
 
         // Each section names the key its Save/Clear sends back.
-        assert_eq!(vm["github"]["secret"]["key"], "github");
         assert_eq!(vm["usage"]["neon"]["secret"]["key"], "neon");
         assert_eq!(vm["usage"]["sentry"]["secret"]["key"], "sentry");
+
+        // The retired GitHub tab must stay retired: its token lives on
+        // accounts, and a resurrected top-level section would be a second
+        // place a GitHub credential could be written.
+        assert!(vm["github"].is_null());
     }
 
     /// The whole reason `StoredSecrets` is booleans: a payload that could
@@ -3289,7 +3338,6 @@ mod tests {
         // would have been.
         let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
         for secret in [
-            &vm["github"]["secret"],
             &vm["usage"]["neon"]["secret"],
             &vm["usage"]["sentry"]["secret"],
             &vm["openclaw"]["secret"],
@@ -3529,7 +3577,6 @@ mod tests {
     #[test]
     fn every_secret_field_id_round_trips_and_maps_to_its_own_key() {
         let fields = [
-            SecretField::GitHub,
             SecretField::Neon,
             SecretField::Sentry,
             SecretField::OpenClaw,
@@ -3905,6 +3952,76 @@ mod tests {
         assert!(prompt.contains("acme/gadget"), "{prompt}");
     }
 
+    /// The stored selection always renders — the panel must be editable
+    /// offline, so the checked rows never depend on a discovery request.
+    #[test]
+    fn an_accounts_row_carries_its_selected_orgs() {
+        let mut watching = account("work");
+        watching.orgs = Some(vec!["acme".into(), "beta".into()]);
+        let fresh = account("personal");
+        let rows = account_rows(&accounts_view(
+            &[watching, fresh],
+            &[],
+            &StoredSecrets::default(),
+        ));
+        assert_eq!(rows[0]["orgs"], json!(["acme", "beta"]));
+        assert_eq!(
+            rows[1]["orgs"],
+            json!([]),
+            "never-configured renders as an empty list, not a missing key"
+        );
+    }
+
+    /// First-owner-wins-at-poll was the alternative; a refusal at the gate is
+    /// visible, testable, and keeps the poll planner free of tie-break policy.
+    #[test]
+    fn an_org_already_watched_by_another_account_is_refused() {
+        let mut work = account("work");
+        work.orgs = Some(vec!["acme".into()]);
+        let personal = account("personal");
+        let accounts = [work.clone(), personal.clone()];
+
+        let err = validated_org("acme", personal.id, &accounts).expect_err("must refuse");
+        assert!(err.contains("work"), "the refusal names the owner: {err}");
+        assert_eq!(
+            validated_org(" acme ", work.id, &accounts).expect("own selection is fine"),
+            "acme",
+            "trimmed, and re-selecting on the owning account is not a conflict"
+        );
+        assert!(
+            validated_org("   ", personal.id, &accounts).is_err(),
+            "a stray space is not an organization"
+        );
+        assert_eq!(
+            validated_org("beta", personal.id, &accounts).expect("a free org"),
+            "beta"
+        );
+    }
+
+    /// The removal consequence now has two halves, worded from one place: the
+    /// repos that become unattributed, and the orgs whose runner watching
+    /// stops with the account's token.
+    #[test]
+    fn the_removal_prompt_names_the_orgs_that_stop_being_watched() {
+        let mut watching = account("work");
+        watching.orgs = Some(vec!["acme".into()]);
+        let rows = account_rows(&accounts_view(
+            std::slice::from_ref(&watching),
+            &[],
+            &StoredSecrets::default(),
+        ));
+        let prompt = rows[0]["removePrompt"].as_str().expect("a prompt");
+        assert!(prompt.contains("acme"), "{prompt}");
+
+        let status = account_removed_status("work", &[], &["acme".to_owned()]);
+        assert!(status.contains("acme"), "{status}");
+        assert_eq!(
+            account_removed_status("work", &[], &[]),
+            "Removed work.",
+            "no orgs, no repos — no clause invented for either"
+        );
+    }
+
     /// Null, not an empty warning: an account nothing depends on is removed the
     /// way a host is, and a confirmation step over no consequence is noise that
     /// teaches the operator to click through the one that matters.
@@ -3924,10 +4041,10 @@ mod tests {
     /// this is what the operator is left holding after.
     #[test]
     fn the_removal_status_names_what_was_left_unattributed() {
-        let line = account_removed_status("work", &[]);
+        let line = account_removed_status("work", &[], &[]);
         assert_eq!(line, "Removed work.");
 
-        let line = account_removed_status("work", &["acme/widget".to_owned()]);
+        let line = account_removed_status("work", &["acme/widget".to_owned()], &[]);
         assert!(line.starts_with("Removed work."), "{line}");
         assert!(line.contains("acme/widget"), "{line}");
         assert!(line.contains("unattributed"), "{line}");

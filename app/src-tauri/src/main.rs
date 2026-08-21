@@ -1307,6 +1307,10 @@ struct GitHubIdentity {
     /// Where this identity's token lives, or `None` when the stored item name
     /// is unresolvable ([`account_secret_key`]).
     key: Option<SecretKey>,
+    /// Orgs whose runners this identity watches: the account's selection —
+    /// trimmed, blanks dropped — or, for the legacy identity only, the
+    /// unmigrated global `github_org`.
+    orgs: Vec<String>,
 }
 
 impl GitHubIdentity {
@@ -1333,7 +1337,16 @@ impl GitHubIdentity {
 ///
 /// Non-GitHub accounts are filtered out rather than polled: a credential minted
 /// for another vendor's API must never be sent to GitHub's.
-fn github_identities(accounts: &[VendorAccount]) -> Vec<GitHubIdentity> {
+fn github_identities(accounts: &[VendorAccount], legacy_org: &str) -> Vec<GitHubIdentity> {
+    let selected_orgs = |account: &VendorAccount| {
+        account
+            .orgs
+            .iter()
+            .flatten()
+            .map(|org| org.trim().to_owned())
+            .filter(|org| !org.is_empty())
+            .collect()
+    };
     let identities: Vec<GitHubIdentity> = accounts
         .iter()
         .filter(|account| account.vendor == VendorKind::GitHub)
@@ -1342,14 +1355,25 @@ fn github_identities(accounts: &[VendorAccount]) -> Vec<GitHubIdentity> {
             label: account.label.clone(),
             enabled: account.enabled,
             key: account_secret_key(account),
+            orgs: selected_orgs(account),
         })
         .collect();
     if identities.is_empty() {
+        // The unmigrated store's org rides the legacy identity — without this,
+        // every not-yet-migrated store's Runners panel would go dark between
+        // the v3 upgrade and its migration completing. Self-eliminating:
+        // `migrate_v2_to_v3` clears `github_org` when it adopts it.
+        let legacy_org = legacy_org.trim();
         return vec![GitHubIdentity {
             account: None,
             label: String::new(),
             enabled: true,
             key: Some(SecretKey::GitHubAccessToken),
+            orgs: if legacy_org.is_empty() {
+                Vec::new()
+            } else {
+                vec![legacy_org.to_owned()]
+            },
         }];
     }
     identities
@@ -1381,6 +1405,20 @@ struct GitHubFetch {
     token: String,
     /// `(slug, watched workflows)`, in portfolio order.
     repos: Vec<(String, Option<Vec<String>>)>,
+    /// Orgs whose runners this fetch polls, each with this fetch's own token —
+    /// the per-account cardinality the single global `github_org` never had.
+    orgs: Vec<String>,
+}
+
+/// One selected org a pass cannot poll, with the owning account's label and
+/// the same blocked reason its repos got. Reported rather than silently
+/// unpolled: a selected org whose rows quietly stop updating is the
+/// runners-side of "a tracked repo that quietly stops being fetched".
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockedOrg {
+    org: String,
+    label: String,
+    reason: String,
 }
 
 /// Everything a pass can decide before its first request: who to poll with, who
@@ -1392,6 +1430,10 @@ struct GitHubPass {
     /// The results already known — blocked accounts and unattributed repos.
     /// The fetches' results are appended to these.
     reports: Vec<github::AccountResult>,
+    /// Selected orgs that cannot be polled this pass. The legacy identity
+    /// never lands here: with no account configured there is nothing to name,
+    /// and the panel's own setup line is the whole story.
+    blocked_orgs: Vec<BlockedOrg>,
     credential: PassCredential,
 }
 
@@ -1415,13 +1457,15 @@ fn plan_github_pass<C: CredentialStore + ?Sized>(
     credentials: &C,
     accounts: &[VendorAccount],
     repos: &[TrackedRepo],
+    legacy_org: &str,
 ) -> GitHubPass {
-    let identities = github_identities(accounts);
+    let identities = github_identities(accounts, legacy_org);
     let legacy = identities.iter().all(GitHubIdentity::is_legacy);
     let tracked: Vec<&TrackedRepo> = repos.iter().filter(|repo| repo.enabled).collect();
 
     let mut fetches = Vec::new();
     let mut reports = Vec::new();
+    let mut blocked_orgs = Vec::new();
     let (mut present, mut unreadable, mut absent) = (false, false, false);
 
     for identity in &identities {
@@ -1453,6 +1497,7 @@ fn plan_github_pass<C: CredentialStore + ?Sized>(
                                 .iter()
                                 .map(|repo| (repo.slug.clone(), repo.watched_workflows.clone()))
                                 .collect(),
+                            orgs: identity.orgs.clone(),
                         });
                         None
                     }
@@ -1473,6 +1518,16 @@ fn plan_github_pass<C: CredentialStore + ?Sized>(
         // An *enabled* one that cannot authenticate is reported either way.
         let worth_reporting = identity.enabled || !owned.is_empty();
         if let Some(reason) = blocked {
+            if !identity.is_legacy() {
+                // The org report has no `worth_reporting` gate: a disabled
+                // account with no repos may still watch an org, and its rows
+                // going stale with no explanation is the same silence.
+                blocked_orgs.extend(identity.orgs.iter().map(|org| BlockedOrg {
+                    org: org.clone(),
+                    label: identity.label.clone(),
+                    reason: reason.clone(),
+                }));
+            }
             if !identity.is_legacy() && worth_reporting {
                 reports.push(github::AccountResult::Failed {
                     account: identity.account,
@@ -1502,6 +1557,7 @@ fn plan_github_pass<C: CredentialStore + ?Sized>(
     GitHubPass {
         fetches,
         reports,
+        blocked_orgs,
         // The best news any identity brought, and `Unreadable` outranks
         // `Absent`: one account holding a good token means the panels *are*
         // configured whatever the others are doing, and a keychain that would
@@ -1629,30 +1685,49 @@ async fn poll_github(app: &Arc<App>) {
     poll_service_status(app).await;
 
     // Re-read every pass rather than captured at startup: that is what makes a
-    // Save or Clear in Settings apply without a relaunch.
-    let (accounts, repos, org, roster) = {
+    // Save or Clear in Settings apply without a relaunch. `legacy_org` is the
+    // unmigrated store's `github_org`; the migrated store carries orgs on its
+    // accounts and this reads as "".
+    let (accounts, repos, legacy_org, records) = {
         let store = app.store.lock().expect("store poisoned");
         (
             store.accounts().to_vec(),
             store.repos().to_vec(),
             store.settings().github_org.trim().to_owned(),
-            github::roster_from_records(store.runner_roster()),
+            store.runner_roster().to_vec(),
         )
     };
-    // Two blocks, not one — taking the store and panel-state locks together
-    // here would be the only place in this pass that holds both at once.
-    {
-        let mut state = app.github.lock().expect("github state poisoned");
-        state.apply_org(&org);
-    }
 
     // One credential read per account, every one of them before the first
     // request.
-    let pass = plan_github_pass(&*app.credentials, &accounts, &repos);
+    let pass = plan_github_pass(&*app.credentials, &accounts, &repos, &legacy_org);
     let mut results = pass.reports;
+    // Every selected org, pollable or not, with its polling account's label —
+    // known before the first request, exactly like the credential verdict.
+    let selection: Vec<(String, String)> = pass
+        .fetches
+        .iter()
+        .flat_map(|fetch| {
+            fetch
+                .orgs
+                .iter()
+                .map(|org| (org.clone(), fetch.label.clone()))
+        })
+        .chain(
+            pass.blocked_orgs
+                .iter()
+                .map(|blocked| (blocked.org.clone(), blocked.label.clone())),
+        )
+        .collect();
     {
         let mut state = app.github.lock().expect("github state poisoned");
         apply_pass_credential(pass.credential, &mut state);
+        state.apply_runner_selection(&selection);
+        // A blocked account's orgs are reported per org, so one account's
+        // missing token cannot silently freeze another account's rows.
+        for blocked in &pass.blocked_orgs {
+            state.apply_org_runners_error(&blocked.org, &blocked.reason);
+        }
     }
     // Nothing to poll with. The pass still records what it knows — which
     // accounts are blocked, and which repos no account claims — because that
@@ -1699,33 +1774,33 @@ async fn poll_github(app: &Arc<App>) {
         });
     }
 
-    // The roster is only ever advanced by this call, and it only returns `Ok`
-    // on a successful fetch — so a failing GitHub leaves every absence clock
-    // frozen at the last successful poll instead of ageing a healthy runner
-    // into a red alarm.
-    // `None` when no org is configured, rather than a fetch that fails: the
-    // request would be `GET /orgs//actions/runners`, whose 404 would surface in
-    // the footer as "GitHub is unreachable" when the truth is a settings field
-    // nobody has filled in. The panel already names that state; this keeps a
-    // fabricated transport error from talking over it.
-    //
-    // The repos half of the pass continues either way — repos are tracked by
+    // The roster is only ever advanced by these calls, and each only returns
+    // `Ok` on a successful fetch — so a failing GitHub leaves every absence
+    // clock frozen at the last successful poll instead of ageing a healthy
+    // runner into a red alarm. Per (account, org): every selected org is
+    // polled with its **owning account's** token — the cardinality the single
+    // global `github_org` never had — and each org's fetch sees only its own
+    // slice of the roster, so one org's answer can never mark another org's
+    // runners absent. Sequential for the same rate-limit reason as the repos
+    // half above. An account with no selected orgs contributes nothing here,
+    // and the repos half of the pass runs either way — repos are tracked by
     // full `owner/name` slug and need no organization.
-    //
-    // It polls with the **first** account that had a token. There is exactly
-    // one `github_org` — a single global setting with no account of its own —
-    // so this half of the pass has no per-account cardinality to honour and no
-    // basis for choosing between tokens beyond store order. An account that
-    // cannot see the configured org fails the way any bad credential does, in
-    // the Runners footer.
-    let update = match (org.is_empty(), pass.fetches.first()) {
-        (false, Some(fetch)) => Some(
-            github::GitHubClient::new(fetch.token.clone())
-                .runner_roster(&org, &roster, now, github::RUNNER_GRACE_SECS)
-                .await,
-        ),
-        _ => None,
-    };
+    let mut org_outcomes = Vec::new();
+    for fetch in &pass.fetches {
+        if fetch.orgs.is_empty() {
+            continue;
+        }
+        let client = github::GitHubClient::new(fetch.token.clone());
+        for org in &fetch.orgs {
+            let org_roster = github::roster_for_org(&records, org);
+            org_outcomes.push((
+                org.clone(),
+                client
+                    .runner_roster(org, &org_roster, now, github::RUNNER_GRACE_SECS)
+                    .await,
+            ));
+        }
+    }
 
     // Re-read like the token, so switching the preference off applies on the
     // next pass rather than on the next launch.
@@ -1749,29 +1824,39 @@ async fn poll_github(app: &Arc<App>) {
         if let Some(local) = local {
             state.apply_local(local);
         }
-        // `None` is the no-org case, and it applies nothing on purpose: the
-        // panel's own setup line is the whole of what there is to say, and
-        // an error here would bury it.
-        if let Some(update) = &update {
-            match update {
-                Ok(update) => state.apply_runners(update, panel::now_unix()),
+        // Per org, so one org's failure never blanks or discredits another's
+        // rows — the AccountResult discipline, one panel over. An empty
+        // selection applies nothing on purpose: the panel's own setup line is
+        // the whole of what there is to say, and an error here would bury it.
+        for (org, outcome) in &org_outcomes {
+            match outcome {
+                Ok(update) => state.apply_org_runners(org, update, panel::now_unix()),
                 // The transport error is logged, not shown: a 403 for a missing
                 // scope is what this almost always is, and "HTTP 403" sends the
                 // operator to check the network instead of the PAT.
                 Err(e) => {
-                    eprintln!("org runners fetch failed: {e}");
-                    state.apply_runners_error(github::RUNNERS_ERROR_MESSAGE);
+                    eprintln!("org runners fetch failed for {org}: {e}");
+                    state.apply_org_runners_error(org, github::RUNNERS_ERROR_MESSAGE);
                 }
             }
         }
     }
 
-    // Persisted only on success, and only when it actually changed — a steady
-    // org produces an identical roster poll after poll, and rewriting the store
-    // file every minute for no change is a write nobody asked for.
-    if let Some(Ok(update)) = &update {
+    // Persisted only on success, per successful org — a failed org's records
+    // stay exactly as they were, which is its absence clocks staying frozen —
+    // and only when something actually changed: a steady fleet produces an
+    // identical roster poll after poll, and rewriting the store file every
+    // minute for no change is a write nobody asked for.
+    {
         let mut store = app.store.lock().expect("store poisoned");
-        if store.set_runner_roster(github::roster_to_records(&update.roster)) {
+        let mut changed = false;
+        for (org, outcome) in &org_outcomes {
+            if let Ok(update) = outcome {
+                changed |= store
+                    .set_runner_roster_for_org(org, github::roster_to_records(&update.roster, org));
+            }
+        }
+        if changed {
             if let Err(e) = store.save() {
                 eprintln!("could not persist the runner roster: {e}");
             }
@@ -2216,14 +2301,18 @@ fn runners(state: tauri::State<'_, Arc<App>>) -> Value {
 /// name back with its old clock. The window is one fetch; a second Forget wins
 /// it, and the 24h age-out mops up regardless.
 #[tauri::command]
-fn runners_forget(name: String, state: tauri::State<'_, Arc<App>>) {
+fn runners_forget(org: String, name: String, state: tauri::State<'_, Arc<App>>) {
+    // Org-qualified end to end: a name two orgs share must only be forgotten
+    // where the operator clicked, so the row payload carries its org and both
+    // halves below filter on it.
+    //
     // Store lock released before the panel lock is taken — the two are never
     // held together anywhere (`App::github`'s doc), and this must not become
     // the first place they are.
     {
         let mut store = state.store.lock().expect("store poisoned");
-        let kept = github::forget_runner_record(store.runner_roster(), &name);
-        if store.set_runner_roster(kept) {
+        let kept = github::forget_runner_record(store.runner_roster(), &org, &name);
+        if store.set_runner_roster_for_org(&org, kept) {
             if let Err(e) = store.save() {
                 eprintln!("could not persist the runner roster after a forget: {e}");
             }
@@ -2233,7 +2322,7 @@ fn runners_forget(name: String, state: tauri::State<'_, Arc<App>>) {
         .github
         .lock()
         .expect("github state poisoned")
-        .forget_absent(&name);
+        .forget_absent(&org, &name);
 }
 
 /// Which credentials currently hold a value — the "stored" badges, and nothing
@@ -2256,7 +2345,6 @@ fn stored_secrets(
             .is_some_and(|value| !value.is_empty())
     };
     StoredSecrets {
-        github: present(SecretKey::GitHubAccessToken),
         neon: present(SecretKey::NeonApiKey),
         sentry: present(SecretKey::SentryUsageToken),
         vercel: present(SecretKey::VercelApiToken),
@@ -3570,22 +3658,51 @@ fn settings_save_azure(
     settings_response(&state, status)
 }
 
-/// The GitHub organization the Runners panel queries.
+/// One org checked or unchecked on one account's runner-org selection.
 ///
-/// A command of its own rather than a field on [`ProviderPrefs`]: that struct
-/// is sent whole by two tabs precisely because a partial write blanks the
-/// fields the sending tab does not show, and the GitHub tab shows none of
-/// them. One field, one command, nothing to blank.
+/// Checkbox semantics — saved on the spot, like the crash toggle: a selection
+/// is not a draft. A select lands in `Some(vec![org])` even from `None`, and
+/// the last deselect leaves `Some(vec![])` — the deliberate "watch nothing",
+/// never a fall back to never-configured. An org another account already
+/// watches is refused at this gate ([`settings::validated_org`]) rather than
+/// tie-broken at poll time.
 #[tauri::command]
-fn settings_save_github(org: String, state: tauri::State<'_, Arc<App>>) -> Value {
+fn settings_set_account_org(
+    id: String,
+    org: String,
+    selected: bool,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+    };
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        store.settings_mut().github_org = org.trim().to_owned();
+        let org = if selected {
+            match settings::validated_org(&org, id, store.accounts()) {
+                Ok(org) => org,
+                Err(status) => return settings_response(&state, Some(status)),
+            }
+        } else {
+            org.trim().to_owned()
+        };
+        let Some(account) = store.account_mut(id) else {
+            return settings_response(&state, Some(UNKNOWN_ACCOUNT_MESSAGE.into()));
+        };
+        let orgs = account.orgs.get_or_insert_with(Vec::new);
+        if selected {
+            if !orgs.iter().any(|watched| watched == &org) {
+                orgs.push(org);
+            }
+        } else {
+            orgs.retain(|watched| watched != &org);
+        }
         save_status(&store, "Saved.")
     };
-    // No wake: unlike the usage loops on their hourly cadence, the GitHub poll
-    // re-reads settings on every pass, so this applies within one refresh
-    // interval by the same mechanism that makes a re-pasted token apply.
+    // The selection is what the runners half of the pass polls, so it has to
+    // reach the loop now — an org checked and then watched going nowhere for a
+    // full refresh interval reads as broken.
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -4167,6 +4284,12 @@ fn settings_remove_account(id: String, state: tauri::State<'_, Arc<App>>) -> Val
         // Read while the attribution still exists: after `remove_account` the
         // rows are indistinguishable from repos that never had an account.
         let orphaned = settings::account_removal_impact(store.repos(), id);
+        // The org selection leaves with the account — read it for the receipt
+        // before the row is gone.
+        let stopped_orgs = store
+            .account(id)
+            .and_then(|account| account.orgs.clone())
+            .unwrap_or_default();
         match store.remove_account(id) {
             Some(account) => {
                 // The store deliberately leaves the credential store alone, so
@@ -4187,7 +4310,7 @@ fn settings_remove_account(id: String, state: tauri::State<'_, Arc<App>>) -> Val
                 }
                 save_status(
                     &store,
-                    settings::account_removed_status(&account.label, &orphaned),
+                    settings::account_removed_status(&account.label, &orphaned, &stopped_orgs),
                 )
             }
             None => Some(UNKNOWN_ACCOUNT_MESSAGE.to_owned()),
@@ -4360,7 +4483,6 @@ fn settings_clear_secret(key: String, state: tauri::State<'_, Arc<App>>) -> Valu
 /// loop to wake — its caller reconciles poll *tasks* instead.
 fn wake_for(app: &App, field: SecretField) {
     match field {
-        SecretField::GitHub => wake_github(app),
         SecretField::Neon | SecretField::Vercel => wake_usage(app, true),
         // One credential, two panels: the Usage panel's Sentry section and the
         // Sentry Crons panel are separate loops, so a save has to reach both or
@@ -4658,7 +4780,6 @@ fn dump_settings() -> Value {
     // and the *absent* prompt are covered too).
     let accounts = dump_accounts();
     let stored = StoredSecrets {
-        github: true,
         neon: false,
         sentry: true,
         vercel: true,
@@ -4672,9 +4793,6 @@ fn dump_settings() -> Value {
     // cover.
     let settings = store::Settings {
         openclaw_gateway_url: "ws://gateway.local:7878".into(),
-        // Populated so the frontend suite sees the GitHub org field in its
-        // filled state; its empty state is covered by the Rust view tests.
-        github_org: "acme".into(),
         // On in the fixture, off in `Settings::default()` — the checked
         // rendering of the toggle is the one a default fixture would never
         // show. The default itself is asserted in `crates/store`, where it
@@ -4791,6 +4909,9 @@ fn dump_accounts() -> Vec<VendorAccount> {
     let mut work = VendorAccount::new(VendorKind::GitHub, "work", "");
     work.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0021);
     work.secret_account = SecretKey::VendorToken(work.id).account();
+    // One org watched, so the fixture carries the org list in its filled state
+    // — the "No organizations watched" state rides the second account.
+    work.orgs = Some(vec!["acme".to_owned()]);
     let mut personal = VendorAccount::new(VendorKind::GitHub, "personal", "");
     personal.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0022);
     personal.secret_account = SecretKey::VendorToken(personal.id).account();
@@ -5504,7 +5625,6 @@ fn main() {
             settings_remove_breakpoint,
             settings_reset_layout,
             settings_save_azure,
-            settings_save_github,
             settings_save_providers,
             settings_add_host,
             settings_set_host_enabled,
@@ -5521,6 +5641,7 @@ fn main() {
             settings_set_repo_account,
             settings_save_account,
             settings_set_account_enabled,
+            settings_set_account_org,
             settings_remove_account,
             settings_save_openclaw,
             settings_openclaw_retry,
@@ -7399,6 +7520,7 @@ mod tests {
             &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
             &[],
             &v1_repos(),
+            "",
         );
         apply_pass_credential(pass.credential, &mut state);
 
@@ -7418,7 +7540,7 @@ mod tests {
     #[test]
     fn no_stored_github_token_clears_the_panels_and_asks_for_one() {
         let mut state = populated_github_state();
-        let pass = plan_github_pass(&MemoryCredentialStore::new(), &[], &v1_repos());
+        let pass = plan_github_pass(&MemoryCredentialStore::new(), &[], &v1_repos(), "");
         apply_pass_credential(pass.credential, &mut state);
 
         assert!(pass.fetches.is_empty(), "there is nothing to poll with");
@@ -7440,7 +7562,7 @@ mod tests {
         let mut state = populated_github_state();
         let (_, runners_before) = github_views(&state);
 
-        let pass = plan_github_pass(&UnreadableCredentialStore, &[], &v1_repos());
+        let pass = plan_github_pass(&UnreadableCredentialStore, &[], &v1_repos(), "");
         apply_pass_credential(pass.credential, &mut state);
 
         assert!(pass.fetches.is_empty(), "there is nothing to poll with");
@@ -7475,6 +7597,7 @@ mod tests {
             &store_holding(SecretKey::GitHubAccessToken, "ghp_migrated"),
             &[account],
             &repos,
+            "",
         );
         assert_eq!(pass.credential, PassCredential::Present);
         assert_eq!(pass.fetches.len(), 1);
@@ -7497,7 +7620,7 @@ mod tests {
             .expect("write");
         let repos = [work_repos, personal_repos].concat();
 
-        let pass = plan_github_pass(&credentials, &[work, personal], &repos);
+        let pass = plan_github_pass(&credentials, &[work, personal], &repos, "");
 
         let fetched: Vec<(&str, Vec<&str>)> = pass
             .fetches
@@ -7530,7 +7653,7 @@ mod tests {
         let credentials = store_holding(SecretKey::VendorToken(work.id), "ghp_work");
         let repos = [work_repos, personal_repos].concat();
 
-        let pass = plan_github_pass(&credentials, &[work, personal], &repos);
+        let pass = plan_github_pass(&credentials, &[work, personal], &repos, "");
 
         assert_eq!(
             pass.credential,
@@ -7563,7 +7686,7 @@ mod tests {
         };
         let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
 
-        let pass = plan_github_pass(&credentials, &[account], &repos);
+        let pass = plan_github_pass(&credentials, &[account], &repos, "");
 
         assert!(pass.fetches.is_empty(), "a disabled account is not polled");
         assert_eq!(
@@ -7594,7 +7717,7 @@ mod tests {
         let credentials = store_holding(SecretKey::VendorToken(other.id), "ghp_other");
 
         assert_eq!(account_secret_key(&account), None);
-        let pass = plan_github_pass(&credentials, &[account], &repos);
+        let pass = plan_github_pass(&credentials, &[account], &repos, "");
         assert!(pass.fetches.is_empty(), "no token is borrowed: {pass:?}");
         assert!(matches!(
             pass.reports.as_slice(),
@@ -7614,7 +7737,12 @@ mod tests {
         };
         let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
 
-        let pass = plan_github_pass(&credentials, &[account], &[repos, vec![orphan]].concat());
+        let pass = plan_github_pass(
+            &credentials,
+            &[account],
+            &[repos, vec![orphan]].concat(),
+            "",
+        );
 
         assert_eq!(
             pass.fetches[0]
@@ -7640,7 +7768,7 @@ mod tests {
             enabled: false,
             ..TrackedRepo::new("acme/retired")
         }];
-        let pass = plan_github_pass(&credentials, &[account], &repos);
+        let pass = plan_github_pass(&credentials, &[account], &repos, "");
         assert!(pass.reports.is_empty(), "{pass:?}");
     }
 
@@ -7653,6 +7781,7 @@ mod tests {
             &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
             &[],
             &v1_repos(),
+            "",
         );
         assert_eq!(pass.fetches.len(), 1);
         assert_eq!(pass.fetches[0].account, None);
@@ -7676,7 +7805,7 @@ mod tests {
         let credentials = store_holding(SecretKey::VendorToken(account.id), "ghp_work");
         let repos = [repos, vec![TrackedRepo::new("acme/added-today")]].concat();
 
-        let pass = plan_github_pass(&credentials, &[account], &repos);
+        let pass = plan_github_pass(&credentials, &[account], &repos, "");
 
         assert_eq!(pass.fetches[0].repos.len(), 1, "{pass:?}");
         assert!(pass.reports.contains(&github::AccountResult::Unattributed {
@@ -7699,7 +7828,12 @@ mod tests {
         }
 
         let one = [work.clone()];
-        let pass = plan_github_pass(&credentials, &one, &[settings::new_repo("acme/new", &one)]);
+        let pass = plan_github_pass(
+            &credentials,
+            &one,
+            &[settings::new_repo("acme/new", &one)],
+            "",
+        );
         assert_eq!(
             pass.fetches[0]
                 .repos
@@ -7711,7 +7845,12 @@ mod tests {
         assert!(pass.reports.is_empty(), "{pass:?}");
 
         let two = [work, personal];
-        let pass = plan_github_pass(&credentials, &two, &[settings::new_repo("acme/new", &two)]);
+        let pass = plan_github_pass(
+            &credentials,
+            &two,
+            &[settings::new_repo("acme/new", &two)],
+            "",
+        );
         assert!(
             pass.fetches.iter().all(|fetch| fetch.repos.is_empty()),
             "neither token may fetch a repo nobody has attributed: {pass:?}"
@@ -7731,7 +7870,7 @@ mod tests {
         let repos = [work_repos, personal_repos].concat();
         // `UnreadableCredentialStore` refuses every read, so `work` reads as
         // unreadable and `personal` never gets the chance to read as absent.
-        let pass = plan_github_pass(&UnreadableCredentialStore, &[work, personal], &repos);
+        let pass = plan_github_pass(&UnreadableCredentialStore, &[work, personal], &repos, "");
         assert_eq!(pass.credential, PassCredential::Unreadable);
 
         let mut state = GitHubState::new();
@@ -7746,13 +7885,80 @@ mod tests {
     #[test]
     fn only_github_accounts_are_polled_for_github() {
         let github = VendorAccount::new(VendorKind::GitHub, "work", "vendor-x");
-        let identities = github_identities(std::slice::from_ref(&github));
+        let identities = github_identities(std::slice::from_ref(&github), "");
         assert_eq!(identities.len(), 1);
         assert!(identities.iter().all(|identity| !identity.is_legacy()));
         assert_eq!(
-            github_identities(&[]).len(),
+            github_identities(&[], "").len(),
             1,
             "a store with no account still has the v1 credential"
+        );
+    }
+
+    // MARK: per-account org selection rides the pass
+
+    #[test]
+    fn an_accounts_selected_orgs_ride_its_own_fetch() {
+        let (work, work_repos) = account_owning("work", &["work/one"]);
+        let work = VendorAccount {
+            orgs: Some(vec!["acme".into(), "   ".into(), "beta".into()]),
+            ..work
+        };
+        let credentials = store_holding(SecretKey::VendorToken(work.id), "ghp_work");
+
+        let pass = plan_github_pass(&credentials, std::slice::from_ref(&work), &work_repos, "");
+
+        assert_eq!(pass.fetches.len(), 1);
+        assert_eq!(
+            pass.fetches[0].orgs,
+            vec!["acme", "beta"],
+            "trimmed, blank entries dropped — a stray space is not an organization"
+        );
+        assert!(pass.blocked_orgs.is_empty());
+    }
+
+    /// Without this plumb-through, every not-yet-migrated store's Runners
+    /// panel would go dark between the v3 upgrade and its migration
+    /// completing. Self-eliminating: the migration clears `github_org`.
+    #[test]
+    fn the_legacy_identity_still_carries_the_unmigrated_global_org() {
+        let pass = plan_github_pass(
+            &store_holding(SecretKey::GitHubAccessToken, "ghp_stored"),
+            &[],
+            &v1_repos(),
+            "Sassy-Dog",
+        );
+        assert_eq!(pass.fetches.len(), 1);
+        assert_eq!(pass.fetches[0].orgs, vec!["Sassy-Dog"]);
+    }
+
+    /// The runners-side sibling of "a disabled account's repos are reported
+    /// rather than dropped": a selected org that quietly stops being polled is
+    /// the same silence, one panel over.
+    #[test]
+    fn a_blocked_accounts_orgs_are_reported_rather_than_silently_unpolled() {
+        let (work, work_repos) = account_owning("work", &["work/one"]);
+        let work = VendorAccount {
+            orgs: Some(vec!["acme".into()]),
+            enabled: false,
+            ..work
+        };
+
+        let pass = plan_github_pass(
+            &MemoryCredentialStore::new(),
+            std::slice::from_ref(&work),
+            &work_repos,
+            "",
+        );
+
+        assert!(pass.fetches.is_empty());
+        assert_eq!(
+            pass.blocked_orgs,
+            vec![BlockedOrg {
+                org: "acme".into(),
+                label: "work".into(),
+                reason: ACCOUNT_DISABLED_MESSAGE.into(),
+            }]
         );
     }
 
@@ -7957,8 +8163,18 @@ mod tests {
         assert_eq!(rows[1]["tokenStored"], false);
         assert_eq!(rows[1]["enabled"], false);
 
-        assert_eq!(vm["github"]["secret"]["stored"], true);
+        assert!(vm["github"].is_null(), "the GitHub tab stays retired");
         assert!(vm["azure"]["secret"].is_null(), "no Azure credential");
+
+        // Both states of the org list, same rule as the account badges below:
+        // one account watching an org, one watching none.
+        let account_rows = vm["accounts"]["rows"].as_array().expect("account rows");
+        assert!(account_rows
+            .iter()
+            .any(|row| row["orgs"] == serde_json::json!(["acme"])));
+        assert!(account_rows
+            .iter()
+            .any(|row| row["orgs"] == serde_json::json!([])));
 
         // Both readings of the account picker, for the reason the rules
         // fixture below carries every action: the Playwright suite must not be

@@ -838,6 +838,48 @@ function accountRow(t, account) {
   // which is one command for create and update alike. An empty token field
   // leaves the stored credential alone -- that is Rust's rule, and this file
   // does not re-state it by disabling anything.
+  // Runner organizations: the stored selection, each removable, plus a Watch
+  // field. Checkbox semantics — every click round-trips through
+  // `settings_set_account_org` and the re-render paints what was persisted,
+  // so nothing here tracks a draft.
+  const orgs = node("div", "stack");
+  orgs.dataset.orgs = account.id;
+  orgs.appendChild(node("span", "lbl", t.orgsHeading));
+  if (account.orgs.length === 0) {
+    orgs.appendChild(node("span", "result", t.noOrgsLabel));
+  }
+  for (const org of account.orgs) {
+    const orgRow = node("div", "row");
+    orgRow.dataset.org = org;
+    const stop = button(t.orgRemoveLabel, "org-remove");
+    stop.addEventListener("click", () =>
+      mutate("settings_set_account_org", { id: account.id, org, selected: false })
+    );
+    orgRow.append(node("span", "result", org), node("span", "grow"), stop);
+    orgs.appendChild(orgRow);
+  }
+  const orgInput = textInput("");
+  const watch = button(t.orgAddButtonLabel, "org-add");
+  // A hint, not the validation: Rust trims, refuses blanks, and refuses an
+  // org another account already watches, in its own words.
+  const syncOrg = () => {
+    watch.disabled = orgInput.value.trim() === "";
+  };
+  orgInput.addEventListener("input", syncOrg);
+  syncOrg();
+  const submitOrg = () => {
+    const org = orgInput.value;
+    // Cleared before the round-trip so the submitted value does not ride the
+    // re-render as an unapplied edit (see `unappliedEdits`).
+    orgInput.value = "";
+    mutate("settings_set_account_org", { id: account.id, org, selected: true });
+  };
+  watch.addEventListener("click", submitOrg);
+  orgInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !watch.disabled) submitOrg();
+  });
+  orgs.append(field(`account-org-${account.id}`, t.orgAddLabel, orgInput), actionRow(watch));
+
   const name = textInput(account.label);
   const token = textInput("", "password");
   const save = button(t.saveLabel, "save");
@@ -858,6 +900,7 @@ function accountRow(t, account) {
   row.append(
     head,
     confirm,
+    orgs,
     field(`account-name-${account.id}`, t.nameLabel, name),
     field(`account-token-${account.id}`, t.tokenLabel, token),
     actionRow(save)
@@ -878,6 +921,7 @@ function accountsTab(t) {
   if (t.rows.length === 0) list.appendChild(help(t.empty));
   for (const account of t.rows) list.appendChild(accountRow(t, account));
   list.appendChild(help(t.help));
+  list.appendChild(help(t.orgsHelp));
 
   const add = group(t.add.heading);
   const vendor = select(t.add.vendorOptions, t.add.vendorOptions[0].value);
@@ -908,21 +952,6 @@ function accountsTab(t) {
   });
   add.append(actionRow(submit), help(t.add.help));
   return [list, add];
-}
-
-function githubTab(t) {
-  const org = group(t.org.heading);
-  const input = textInput(t.org.value);
-  org.append(field("github-org", t.org.label, input), help(t.org.help));
-  const apply = button(t.org.saveLabel, "apply");
-  // Its own command, not `settings_save_providers`: that one writes every
-  // non-secret provider preference at once, so sending it from here would
-  // blank every field this tab does not show.
-  apply.addEventListener("click", () =>
-    mutate("settings_save_github", { org: input.value })
-  );
-  org.appendChild(actionRow(apply));
-  return [secretGroup(t.heading, t.secret), org];
 }
 
 function azureTab(t) {
@@ -1340,7 +1369,6 @@ function renderBody() {
   const build = {
     general: generalTab,
     layout: layoutTab,
-    github: githubTab,
     accounts: accountsTab,
     portfolio: portfolioTab,
     hosts: hostsTab,
