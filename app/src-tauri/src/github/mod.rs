@@ -56,7 +56,8 @@ pub use github::GitHubClient;
 /// used to be a hardcoded constant, which meant every install queried one
 /// particular organization and every other operator got a panel that was
 /// broken by construction.
-pub const NO_ORG_MESSAGE: &str = "set your GitHub organization in Settings";
+pub const NO_ORGS_SELECTED_MESSAGE: &str =
+    "no organizations selected — choose them in Settings → Accounts";
 
 /// Absence grace before a de-registered runner escalates from amber
 /// "recycling" to red "missing" — `crates/github`'s shipped 5 minutes, which
@@ -259,6 +260,25 @@ const ACCOUNT_FOOTER_STALE_AFTER: u64 = 0;
 /// token that authenticates one authenticates the other, and a single poll pass
 /// fills both. Splitting them would mean two copies of "are we authenticated",
 /// free to disagree.
+/// One org's runners memory — rows and clocks from its own fetches, an error
+/// from its own failures. One org's 403 never blanks another's rows, and a
+/// failed org's absence clocks freeze while its neighbours' advance.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct OrgRunners {
+    /// The label of the account that polls this org, for the footer.
+    account_label: String,
+    /// From the last **successful** fetch. Retained through a failing one so
+    /// the panel keeps showing real (if not current) rows.
+    summary: Option<RunnerSummary>,
+    runners: Vec<GhRunner>,
+    absent: Vec<GhRunnerAbsence>,
+    error: Option<String>,
+    /// When this org last fetched successfully — its footer clock. Only
+    /// advanced by a success, so a failing GitHub ages the footer instead of
+    /// freezing it at a reassuring "just now".
+    last_updated: Option<u64>,
+}
+
 #[derive(Debug, Default)]
 pub struct GitHubState {
     /// Whether a non-empty token was loaded on the last pass. Not "whether
@@ -271,10 +291,10 @@ pub struct GitHubState {
     /// first pass — the credential read plus every request after it — both
     /// panels claimed there was no token. See [`Configured`].
     token: Configured,
-    /// Whether a GitHub organization is configured, read from settings on every
-    /// pass exactly as the token is. Only the Runners panel consults it: repos
+    /// Whether any organization is selected anywhere, decided by each pass's
+    /// plan exactly as the token is. Only the Runners panel consults it: repos
     /// are tracked by full `owner/name` slug and need no org at all.
-    org: Configured,
+    orgs: Configured,
     /// Per-repo health from the last completed pass, one entry per **enabled**
     /// tracked repo (unreachable ones included). `None` until the first pass
     /// finishes, which is what "loading…" means.
@@ -300,16 +320,14 @@ pub struct GitHubState {
     account_success: BTreeMap<Option<Uuid>, u64>,
     /// Local branch/worktree counts, keyed by [`git::normalize`]d repo name.
     local: BTreeMap<String, LocalRepoCounts>,
-    /// Runners, from the last **successful** fetch. Retained through a failing
-    /// one so the panel keeps showing real (if not current) rows.
-    summary: Option<RunnerSummary>,
-    runners: Vec<GhRunner>,
-    absent: Vec<GhRunnerAbsence>,
-    runners_error: Option<String>,
-    /// When the runners last fetched successfully — the footer's clock. Only
-    /// advanced by a success, so a failing GitHub ages the footer instead of
-    /// freezing it at a reassuring "just now".
-    runners_last_updated: Option<u64>,
+    /// Each selected org's runners memory, keyed by org name — the per-org
+    /// unit the clock-freeze contract applies to, now that every selected org
+    /// is fetched with its owning account's token. `BTreeMap` so iteration
+    /// (and therefore rendering) is stable by org name. Entries are created at
+    /// selection time and pruned on deselection
+    /// ([`Self::apply_runner_selection`]); a deselected org loses its rows on
+    /// the next pass exactly as a repo removed in Settings does.
+    org_runners: BTreeMap<String, OrgRunners>,
     /// Set when the credential store would not answer, cleared by every read
     /// that does. A third state on purpose: `!authenticated` asserts there is
     /// no token and `runners_error` blames GitHub, and this is neither — we do
@@ -345,10 +363,10 @@ impl GitHubState {
     pub fn apply_unauthenticated(&mut self) {
         self.token = Configured::Absent;
         self.health = None;
-        self.summary = None;
-        self.runners.clear();
-        self.absent.clear();
-        self.runners_error = None;
+        // The whole map, not just the rows: a token removal that left ghost
+        // org entries behind would repopulate the panel the moment the org
+        // selection re-created them.
+        self.org_runners.clear();
         self.credential_error = None;
         // The per-account report goes with the rows it explains. What each
         // account last *succeeded* at does not: see `account_success`.
@@ -454,38 +472,86 @@ impl GitHubState {
         self.local = local;
     }
 
-    /// Records one **successful** org-runners fetch.
-    pub fn apply_runners(&mut self, update: &roster::RosterUpdate, now: u64) {
+    /// Records one **successful** org-runners fetch for one org.
+    pub fn apply_org_runners(&mut self, org: &str, update: &roster::RosterUpdate, now: u64) {
         self.token = Configured::Present;
         self.credential_error = None;
-        self.summary = Some(update.summary);
-        self.runners.clone_from(&update.runners);
-        self.absent.clone_from(&update.absent);
-        self.runners_error = None;
-        self.runners_last_updated = Some(now);
+        let entry = self.org_runners.entry(org.to_owned()).or_default();
+        entry.summary = Some(update.summary);
+        entry.runners.clone_from(&update.runners);
+        entry.absent.clone_from(&update.absent);
+        entry.error = None;
+        entry.last_updated = Some(now);
     }
 
-    /// Records a failed org-runners fetch: the message, and nothing else.
+    /// Records a failed org-runners fetch — or a blocked account's unpolled
+    /// org — as *that org's* message, and nothing else.
     ///
-    /// Deliberately touches neither the rows nor `runners_last_updated`. Those
-    /// are the record of the last thing we actually heard; clearing them would
-    /// blank a panel that still holds real data, and advancing the clock would
-    /// let a permanently failing fetch look freshly updated forever.
-    pub fn apply_runners_error(&mut self, message: impl Into<String>) {
-        self.token = Configured::Present;
-        self.credential_error = None;
-        self.runners_error = Some(message.into());
+    /// Deliberately touches neither the org's rows nor its clock: those are
+    /// the record of the last thing we actually heard, clearing them would
+    /// blank rows that still hold real data, and advancing the clock would
+    /// let a permanently failing fetch look freshly updated forever. Per org,
+    /// so one org's 403 never discredits another's rows. Unlike the success
+    /// applier this asserts nothing about the token — a blocked account's
+    /// org lands here precisely because no token was read for it.
+    pub fn apply_org_runners_error(&mut self, org: &str, message: impl Into<String>) {
+        self.org_runners.entry(org.to_owned()).or_default().error = Some(message.into());
     }
 
-    /// Drops one remembered-absent runner from the panel, now.
+    /// Records which orgs are selected — and by which account — before the
+    /// first request of a pass, exactly as [`Self::apply_token_present`] does
+    /// for the credential: the first frame must tell "nothing selected" apart
+    /// from "selected, still fetching".
+    ///
+    /// Prunes deselected orgs (their rows leave with them, exactly as a repo
+    /// removed in Settings loses its row) and creates an empty entry per new
+    /// org (whose `None` summary is what "loading" reads from).
+    pub fn apply_runner_selection(&mut self, selection: &[(String, String)]) {
+        self.orgs = if selection.is_empty() {
+            Configured::Absent
+        } else {
+            Configured::Present
+        };
+        self.org_runners
+            .retain(|org, _| selection.iter().any(|(selected, _)| selected == org));
+        for (org, label) in selection {
+            let entry = self.org_runners.entry(org.clone()).or_default();
+            entry.account_label.clone_from(label);
+        }
+    }
+
+    /// Drops one remembered-absent runner from one org's panel rows, now.
     ///
     /// Half of the right-click "Forget" (`runners_forget` in `main.rs`); the
     /// store half is [`forget_runner_record`]. This half exists because the
     /// panel renders from this state, not from the store — without it the
     /// culled row would sit red until the next successful fetch rebuilt the
-    /// absence list from the forgotten roster.
-    pub fn forget_absent(&mut self, name: &str) {
-        self.absent.retain(|absence| absence.name != name);
+    /// absence list from the forgotten roster. Org-qualified, because a name
+    /// two orgs share must only be forgotten where the operator clicked.
+    pub fn forget_absent(&mut self, org: &str, name: &str) {
+        if let Some(entry) = self.org_runners.get_mut(org) {
+            entry.absent.retain(|absence| absence.name != name);
+        }
+    }
+
+    /// The fleet summary across every selected org, or `None` while no org
+    /// has heard anything. Recomputed from the merged registered list via
+    /// [`github::runners::summarize`] — the same function each org's own
+    /// summary came from, so the two spellings cannot disagree.
+    fn merged_summary(&self) -> Option<RunnerSummary> {
+        if self
+            .org_runners
+            .values()
+            .all(|entry| entry.summary.is_none())
+        {
+            return None;
+        }
+        let registered: Vec<GhRunner> = self
+            .org_runners
+            .values()
+            .flat_map(|entry| entry.runners.iter().cloned())
+            .collect();
+        Some(github::runners::summarize(&registered))
     }
 
     /// A pass read a non-empty token from the credential store.
@@ -499,22 +565,6 @@ impl GitHubState {
     pub fn apply_token_present(&mut self) {
         self.token = Configured::Present;
         self.credential_error = None;
-    }
-
-    /// Records whether an organization is configured, from the settings read
-    /// each pass makes. Like [`apply_token_present`](Self::apply_token_present)
-    /// this runs *before* the request, so the first frame can already tell
-    /// "not configured" apart from "configured, still fetching".
-    ///
-    /// Whitespace-only counts as unset: a stray space in a text field is not
-    /// an organization, and `GET /orgs/ /actions/runners` fails in a way that
-    /// reads as a server problem rather than a settings one.
-    pub fn apply_org(&mut self, org: &str) {
-        self.org = if org.trim().is_empty() {
-            Configured::Absent
-        } else {
-            Configured::Present
-        };
     }
 
     /// Records one successful statuspage read.
@@ -547,12 +597,23 @@ impl GitHubState {
     /// "Fleet Down" off pre-sleep data while every runner was online.
     #[must_use]
     fn conjunction(&self, now: u64) -> github::status::Conjunction {
-        let fleet = match (self.summary.as_ref(), self.runners_last_updated) {
-            (Some(summary), Some(at)) if now.saturating_sub(at) <= RUNNERS_STALE_AFTER_SECS => {
-                github::status::Fleet::Known(summary)
-            }
-            _ => github::status::Fleet::Unknown,
+        // Every selected org must be fresh, not just one — the min-clock rule.
+        // A fleet summed from one fresh org and one stale one would let the
+        // fresh half vouch for rows the panel itself admits are old.
+        let every_org_fresh = !self.org_runners.is_empty()
+            && self.org_runners.values().all(|entry| {
+                entry
+                    .last_updated
+                    .is_some_and(|at| now.saturating_sub(at) <= RUNNERS_STALE_AFTER_SECS)
+            });
+        let merged = if every_org_fresh {
+            self.merged_summary()
+        } else {
+            None
         };
+        let fleet = merged
+            .as_ref()
+            .map_or(github::status::Fleet::Unknown, github::status::Fleet::Known);
         github::status::conjunction(self.service_status.as_ref(), fleet)
     }
 }
@@ -1070,23 +1131,37 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // before the first pass reads settings this panel knows nothing, and
     // `Unknown` must fall through to "loading runners…" rather than assert a
     // misconfiguration it has not observed.
-    if state.org.is_absent() && state.credential_error.is_none() {
-        return runners_setup_view(state, now, NO_ORG_MESSAGE);
+    if state.orgs.is_absent() && state.credential_error.is_none() {
+        return runners_setup_view(state, now, NO_ORGS_SELECTED_MESSAGE);
     }
 
     // "loading runners…" only while nothing has been heard AND nothing has
-    // failed. Once there is an error the footer carries it, and a "loading"
-    // line beside a failure would be a second, contradictory story. An
-    // unreadable credential store is the same argument one layer up: a pass
-    // that never got a token is not fetching, so it cannot be loading.
+    // failed — across every selected org. Once there is an error the footer
+    // carries it, and a "loading" line beside a failure would be a second,
+    // contradictory story. An unreadable credential store is the same argument
+    // one layer up: a pass that never got a token is not fetching, so it
+    // cannot be loading.
+    let nothing_heard = state
+        .org_runners
+        .values()
+        .all(|entry| entry.summary.is_none());
+    let nothing_failed = state
+        .org_runners
+        .values()
+        .all(|entry| entry.error.is_none());
     let message = if let Some(reason) = state.credential_error.as_deref() {
         Some(reason)
-    } else if state.summary.is_none() && state.runners_error.is_none() {
+    } else if nothing_heard && nothing_failed {
         Some(RUNNERS_LOADING_MESSAGE)
     } else {
         None
     };
 
+    let summary = state.merged_summary();
+    // The org tag is display, not data: every row names its org (the forget
+    // command needs it), and this flag is what says whether painting the name
+    // adds anything — with one org it restates the whole panel.
+    let show_org_tags = state.org_runners.len() > 1;
     json!({
         "id": PanelKind::GhRunners.id(),
         "title": PanelKind::GhRunners.title(),
@@ -1096,25 +1171,79 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         // refresh cadence rather than inferred from the message text.
         "loading": message.is_some_and(|text| text == RUNNERS_LOADING_MESSAGE),
         "availability": availability_chip(state, now),
-        "stats": state.summary.map(summary_stats).unwrap_or_default(),
-        "chips": state.summary.map(os_chips).unwrap_or_default(),
-        // Registered and remembered-absent rows, merged into one display order
-        // so an absent runner holds the exact slot it occupied while
-        // registered instead of jumping to the bottom of the list.
-        "rows": roster::display_rows(&state.runners, &state.absent)
-            .iter()
-            .map(runner_row)
-            .collect::<Vec<_>>(),
+        "stats": summary.map(summary_stats).unwrap_or_default(),
+        "chips": summary.map(os_chips).unwrap_or_default(),
+        // Grouped by org (BTreeMap order), each org's registered and
+        // remembered-absent rows merged into one display order so an absent
+        // runner holds the exact slot it occupied while registered instead of
+        // jumping to the bottom of the list.
+        "rows": state.org_runners.iter().flat_map(|(org, entry)| {
+            roster::display_rows(&entry.runners, &entry.absent)
+                .iter()
+                .map(|row| runner_row(org, row))
+                .collect::<Vec<_>>()
+        }).collect::<Vec<_>>(),
+        "showOrgTags": show_org_tags,
         // The absent rows' context-menu label. From here rather than authored
         // in github.js, which owns layout and wiring but no words.
         "forgetLabel": "Forget",
-        "footer": crate::panel::status_footer(
-            state.runners_last_updated,
-            state.runners_error.as_deref(),
+        "footer": runners_footer(state, now),
+    })
+}
+
+/// The Runners panel's footer. With one selected org this is exactly the
+/// single-org footer it has always been; with several it is the Repos
+/// pattern next door — one [`crate::panel::status_footer`] segment per
+/// failing org, each naming the org and its polling account and keeping its
+/// **own** `last ok` clock, joined into one line. When nothing is failing the
+/// panel-wide clock is the **oldest** selected org's — the weakest claim, so
+/// one fresh org cannot vouch for a stale one.
+fn runners_footer(state: &GitHubState, now: u64) -> Value {
+    if state.org_runners.len() <= 1 {
+        let entry = state.org_runners.values().next();
+        return crate::panel::status_footer(
+            entry.and_then(|entry| entry.last_updated),
+            entry.and_then(|entry| entry.error.as_deref()),
             now,
             RUNNERS_STALE_AFTER_SECS,
-        ),
-    })
+        );
+    }
+    let parts: Vec<Value> = state
+        .org_runners
+        .iter()
+        .filter_map(|(org, entry)| {
+            let error = entry.error.as_deref()?;
+            let subject = if entry.account_label.is_empty() {
+                format!("{org}: {error}")
+            } else {
+                format!("{org} ({}): {error}", entry.account_label)
+            };
+            Some(crate::panel::status_footer(
+                entry.last_updated,
+                Some(&subject),
+                now,
+                RUNNERS_STALE_AFTER_SECS,
+            ))
+        })
+        .collect();
+    if parts.is_empty() {
+        let oldest = state
+            .org_runners
+            .values()
+            .map(|entry| entry.last_updated)
+            .min()
+            .flatten();
+        return crate::panel::status_footer(oldest, None, now, RUNNERS_STALE_AFTER_SECS);
+    }
+    let text = parts
+        .iter()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    match parts.first() {
+        Some(first) if !text.is_empty() => json!({ "text": text, "color": first["color"] }),
+        _ => Value::Null,
+    }
 }
 
 /// `"3/4"`, or `"3/4 · 1 missing"` once something remembered is absent beyond
@@ -1122,10 +1251,11 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
 /// de-register between jobs constantly, and a count that ticks up and down with
 /// normal churn is a count nobody reads.
 fn runners_trailing(state: &GitHubState) -> Option<String> {
-    let summary = state.summary?;
+    let summary = state.merged_summary()?;
     let missing = state
-        .absent
-        .iter()
+        .org_runners
+        .values()
+        .flat_map(|entry| entry.absent.iter())
         .filter(|absence| matches!(absence.state, PresenceState::Missing { .. }))
         .count();
     Some(if missing > 0 {
@@ -1193,7 +1323,11 @@ fn os_chips(summary: RunnerSummary) -> Vec<Value> {
 }
 
 /// One runner row — registered, or remembered and currently absent.
-fn runner_row(row: &GhRunnerDisplayRow) -> Value {
+///
+/// Every row carries its org: the Forget command is org-qualified (a name two
+/// orgs share must only be forgotten where the operator clicked), so the org
+/// is data on every row while `showOrgTags` decides whether it is *painted*.
+fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
     let (kind, status, tint) = match row {
         GhRunnerDisplayRow::Registered(runner) => (
             "registered",
@@ -1211,6 +1345,7 @@ fn runner_row(row: &GhRunnerDisplayRow) -> Value {
     };
     json!({
         "kind": kind,
+        "org": org,
         "name": row.name(),
         "os": row.os().label().to_uppercase(),
         "dotColor": color::hex(tint),
@@ -1264,9 +1399,26 @@ pub fn roster_from_records(records: &[RunnerRosterRecord]) -> Vec<RunnerRosterEn
         .collect()
 }
 
-/// The roster back to stored records.
+/// One org's slice of the stored roster, in the form `crates/github` works
+/// in. The filter is what keeps the roster arithmetic org-blind: feeding org
+/// A's fetch a merged roster would mark every org-B runner absent on org A's
+/// success. A record still carrying the pre-v3 `""` org matches no selected
+/// org and is dropped on read — defensively, since a completed migration
+/// stamps them all.
 #[must_use]
-pub fn roster_to_records(entries: &[RunnerRosterEntry]) -> Vec<RunnerRosterRecord> {
+pub fn roster_for_org(records: &[RunnerRosterRecord], org: &str) -> Vec<RunnerRosterEntry> {
+    let owned: Vec<RunnerRosterRecord> = records
+        .iter()
+        .filter(|record| record.org == org)
+        .cloned()
+        .collect();
+    roster_from_records(&owned)
+}
+
+/// The roster back to stored records, each stamped with the org it was
+/// fetched from.
+#[must_use]
+pub fn roster_to_records(entries: &[RunnerRosterEntry], org: &str) -> Vec<RunnerRosterRecord> {
     entries
         .iter()
         .map(|entry| RunnerRosterRecord {
@@ -1274,19 +1426,26 @@ pub fn roster_to_records(entries: &[RunnerRosterEntry]) -> Vec<RunnerRosterRecor
             os: entry.os.as_raw().to_owned(),
             // Pre-epoch is not a time a runner was seen; 0 is the honest floor.
             last_seen: u64::try_from(entry.last_seen.timestamp()).unwrap_or(0),
+            org: org.to_owned(),
         })
         .collect()
 }
 
-/// The stored roster minus one name — the right-click "Forget", bridged to the
-/// record form the store holds.
+/// One org's stored roster minus one name — the right-click "Forget", bridged
+/// to the record form the store holds. The caller replaces that org's records
+/// via `Store::set_runner_roster_for_org`, which is what leaves every other
+/// org's memory untouched.
 ///
 /// Round-trips through the entry form so [`roster::forget`] stays the single
 /// author of the rule. The round trip drops undatable records as a side
 /// effect, exactly as every poll pass already does on its own read.
 #[must_use]
-pub fn forget_runner_record(records: &[RunnerRosterRecord], name: &str) -> Vec<RunnerRosterRecord> {
-    roster_to_records(&roster::forget(&roster_from_records(records), name))
+pub fn forget_runner_record(
+    records: &[RunnerRosterRecord],
+    org: &str,
+    name: &str,
+) -> Vec<RunnerRosterRecord> {
+    roster_to_records(&roster::forget(&roster_for_org(records, org), name), org)
 }
 
 // MARK: - Fixtures
@@ -1432,7 +1591,8 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         now,
         github::presence::DEFAULT_GRACE_SECS,
     );
-    state.apply_runners(&update, u64::try_from(now.timestamp()).unwrap_or(0));
+    state.apply_runner_selection(&[("acme".to_owned(), "GitHub".to_owned())]);
+    state.apply_org_runners("acme", &update, u64::try_from(now.timestamp()).unwrap_or(0));
     // The resting availability verdict. Seeded so the dumped fixture shows the
     // chip a healthy cockpit actually renders — without it every fixture would
     // carry the muted "GH ?" of a statuspage nobody read, and the Playwright
@@ -1566,7 +1726,10 @@ mod tests {
     #[test]
     fn the_repos_panel_says_loading_between_the_token_and_the_first_fetch() {
         let mut state = GitHubState::new();
-        state.apply_runners_error("boom"); // authenticates without repo health
+        state.apply_token_present();
+        // A failing org fetch is not repo health either — the repos panel
+        // stays loading through a runners-side error.
+        state.apply_org_runners_error("acme", "boom");
         let view = repos_view(&state, now());
         assert_eq!(view["message"]["text"], REPOS_LOADING_MESSAGE);
         assert_eq!(view["loading"], true);
@@ -1643,7 +1806,8 @@ mod tests {
         let mut state = ready(vec![health_of("o/r", &[], RepoCounts::default())]);
         state.apply_credential_unreadable(crate::CREDENTIAL_UNREADABLE_MESSAGE);
         // The next pass reads the token fine; only its runners fetch fails.
-        state.apply_runners_error(RUNNERS_ERROR_MESSAGE);
+        state.apply_token_present();
+        state.apply_org_runners_error("acme", RUNNERS_ERROR_MESSAGE);
         let view = repos_view(&state, now());
         assert!(
             view["message"].is_null(),
@@ -2462,7 +2626,7 @@ mod tests {
             now(),
             github::presence::DEFAULT_GRACE_SECS,
         );
-        state.apply_runners(&update, now_unix());
+        state.apply_org_runners("acme", &update, now_unix());
         state
     }
 
@@ -2484,7 +2648,7 @@ mod tests {
         assert_eq!(row_names(&before), vec!["ubu-1", "ubu-9ec2"]);
         assert_eq!(before["trailing"], "1/1 · 1 missing");
 
-        state.forget_absent("ubu-9ec2");
+        state.forget_absent("acme", "ubu-9ec2");
         let after = runners_view(&state, now_unix());
         assert_eq!(row_names(&after), vec!["ubu-1"]);
         assert_eq!(after["trailing"], "1/1");
@@ -2519,16 +2683,16 @@ mod tests {
         assert!(rows(&view).is_empty());
     }
 
-    /// The organization is a second setup step, and it has its own line. This
+    /// The org selection is a second setup step, and it has its own line. This
     /// panel lists `GET /orgs/{org}/actions/runners`; with a token but no org
-    /// there is nothing it could ask for.
+    /// selected on any account there is nothing it could ask for.
     #[test]
-    fn the_runners_panel_asks_for_an_org_once_a_pass_finds_none() {
+    fn the_runners_panel_asks_for_an_org_selection_once_a_pass_finds_none() {
         let mut state = GitHubState::new();
         state.apply_token_present();
-        state.apply_org("");
+        state.apply_runner_selection(&[]);
         let view = runners_view(&state, now_unix());
-        assert_eq!(view["message"]["text"], NO_ORG_MESSAGE);
+        assert_eq!(view["message"]["text"], NO_ORGS_SELECTED_MESSAGE);
         assert_ne!(
             view["message"]["text"], UNAUTHENTICATED_MESSAGE,
             "the token is fine; sending them to paste another is the old bug"
@@ -2538,42 +2702,32 @@ mod tests {
         assert!(view["footer"].is_null(), "nothing fetched, nothing stale");
     }
 
-    /// The first frame, before any pass has read settings. `Unknown` is not
-    /// `Absent`: asserting a misconfiguration nobody has observed is the same
-    /// mistake the token side already made once.
+    /// The first frame, before any pass has planned a selection. `Unknown` is
+    /// not `Absent`: asserting a misconfiguration nobody has observed is the
+    /// same mistake the token side already made once.
     #[test]
-    fn an_unread_org_reads_as_loading_rather_than_as_misconfigured() {
+    fn an_unread_org_selection_reads_as_loading_rather_than_as_misconfigured() {
         let mut state = GitHubState::new();
         state.apply_token_present();
         let view = runners_view(&state, now_unix());
-        assert_ne!(view["message"]["text"], NO_ORG_MESSAGE);
+        assert_ne!(view["message"]["text"], NO_ORGS_SELECTED_MESSAGE);
         assert_eq!(view["loading"], true);
     }
 
     /// With neither, the credential is the step to name: an operator sent to
-    /// fill in an organization first would be configuring something nothing
-    /// could yet query on their behalf.
+    /// pick organizations first would be configuring something nothing could
+    /// yet query on their behalf.
+    ///
+    /// (That a whitespace-only org never reaches the selection at all is the
+    /// planner's rule now — `an_accounts_selected_orgs_ride_its_own_fetch` in
+    /// `main.rs` pins the trim.)
     #[test]
-    fn a_missing_token_outranks_a_missing_org() {
+    fn a_missing_token_outranks_a_missing_org_selection() {
         let mut state = GitHubState::new();
         state.apply_unauthenticated();
-        state.apply_org("");
+        state.apply_runner_selection(&[]);
         let view = runners_view(&state, now_unix());
         assert_eq!(view["message"]["text"], UNAUTHENTICATED_MESSAGE);
-    }
-
-    /// A stray space in a text field is not an organization. Left untrimmed it
-    /// would produce `GET /orgs/ /actions/runners`, whose failure reads as a
-    /// server problem rather than the settings one it is.
-    #[test]
-    fn whitespace_is_not_an_organization() {
-        let mut state = GitHubState::new();
-        state.apply_token_present();
-        state.apply_org("   ");
-        assert_eq!(
-            runners_view(&state, now_unix())["message"]["text"],
-            NO_ORG_MESSAGE
-        );
     }
 
     #[test]
@@ -2819,7 +2973,7 @@ mod tests {
         );
         let before = runners_view(&state, now_unix());
 
-        state.apply_runners_error(RUNNERS_ERROR_MESSAGE);
+        state.apply_org_runners_error("acme", RUNNERS_ERROR_MESSAGE);
         // An hour later, still failing.
         let after = runners_view(&state, now_unix() + 3_600);
 
@@ -2918,7 +3072,7 @@ mod tests {
             now(),
             github::presence::DEFAULT_GRACE_SECS,
         );
-        state.apply_runners(&update, now_unix());
+        state.apply_org_runners("acme", &update, now_unix());
         assert!(runners_view(&state, now_unix())["message"].is_null());
 
         // …and the same for the branch that clears it by dropping back to the
@@ -2952,13 +3106,21 @@ mod tests {
                 last_seen: now(),
             },
         ];
-        let records = roster_to_records(&entries);
+        let records = roster_to_records(&entries, "acme");
         assert_eq!(
             records.iter().map(|r| r.os.as_str()).collect::<Vec<_>>(),
             vec!["macOS", "linux", "other"],
             "the stored spelling is the original raw value, not the display label"
         );
-        assert_eq!(roster_from_records(&records), entries);
+        assert!(
+            records.iter().all(|r| r.org == "acme"),
+            "every stored record names the org it was fetched from"
+        );
+        assert_eq!(roster_for_org(&records, "acme"), entries);
+        assert!(
+            roster_for_org(&records, "beta").is_empty(),
+            "another org's read sees none of them"
+        );
     }
 
     /// One unreadable entry must cost us that entry, not the whole roster.
@@ -2969,11 +3131,13 @@ mod tests {
                 name: "mac-s1".to_owned(),
                 os: "macOS".to_owned(),
                 last_seen: u64::MAX,
+                org: "acme".to_owned(),
             },
             RunnerRosterRecord {
                 name: "ubu-1".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
+                org: "acme".to_owned(),
             },
         ];
         let roster = roster_from_records(&records);
@@ -2989,6 +3153,7 @@ mod tests {
             name: "bsd-1".to_owned(),
             os: "freebsd".to_owned(),
             last_seen: now_unix(),
+            org: "acme".to_owned(),
         }]);
         assert_eq!(roster[0].os, RunnerOs::Other);
     }
@@ -3002,17 +3167,40 @@ mod tests {
                 name: "ubu-9ec2".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
+                org: "acme".to_owned(),
             },
             RunnerRosterRecord {
                 name: "ubu-29ca".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
+                org: "acme".to_owned(),
             },
         ];
-        let kept = forget_runner_record(&records, "ubu-9ec2");
+        let kept = forget_runner_record(&records, "acme", "ubu-9ec2");
         assert_eq!(
             kept.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             vec!["ubu-29ca"]
+        );
+    }
+
+    /// A name two orgs share is only forgotten where the operator clicked:
+    /// the forget is computed over one org's slice, and
+    /// `Store::set_runner_roster_for_org` replaces only that slice.
+    #[test]
+    fn forgetting_a_runner_forgets_it_in_one_org_only() {
+        let shared = |org: &str| RunnerRosterRecord {
+            name: "runner-x".to_owned(),
+            os: "linux".to_owned(),
+            last_seen: now_unix(),
+            org: org.to_owned(),
+        };
+        let records = vec![shared("acme"), shared("beta")];
+        let kept = forget_runner_record(&records, "acme", "runner-x");
+        assert!(kept.is_empty(), "acme's slice loses the name");
+        assert_eq!(
+            roster_for_org(&records, "beta").len(),
+            1,
+            "beta's slice was never part of the computation"
         );
     }
 
