@@ -26,14 +26,17 @@ Line Tools are what's missing.
 ./scripts/install-hooks.sh   # one-time: run lint before every push
 ```
 
-CI is three jobs, and their names are load-bearing (a branch ruleset requires
-them by string):
+CI is five jobs, and their names are load-bearing (a branch ruleset requires
+them by string — see `.github/required-checks.yml`, which is hand-maintained and
+must match `ci.yml`'s `name:` values exactly):
 
 | Job | Runs |
 |---|---|
-| `Rust agent` | fmt, clippy, build and test inside `agent/` |
+| `Rust agent` | fmt, clippy, build and test inside `agent/`, plus `bash -n`, ShellCheck and `lib_test.sh` over `agent/deploy/` |
 | `Rust workspace + frontend e2e` | the root workspace, then Playwright |
+| `macOS bundle (unsigned)` | assembles a real `Solador.app` on every PR, so bundling cannot break unnoticed. Deliberately unsigned and secret-free, so it runs on fork PRs too |
 | `Windows workspace tests` | the workspace on `windows-latest` |
+| `Secrets guard` | asserts that every workflow except `release.yml` references no secrets at all, and fails the PR if one appears |
 
 `agent/` is a workspace member, so `./dev test` and `./dev lint` cover it. It
 still has its own CI job because it is the only piece that builds and deploys to

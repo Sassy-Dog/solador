@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Sassy-Dog/solador/security/advisories/new
+    about: Please report privately here rather than in a public issue.
+  - name: Read the docs first
+    url: https://github.com/Sassy-Dog/solador#readme
+    about: Setup, what each panel needs, and what is deliberately out of scope.
