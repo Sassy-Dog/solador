@@ -13,15 +13,21 @@ original macOS app. [#150](https://github.com/Sassy-Dog/solador/issues/150) took
 panel parity across fourteen slices, and the original macOS app was subsequently
 deleted — this is the app.
 
-What it is not yet is *distributable*. `./dev build --release` does now produce
-a real `Solador.app` — `cargo tauri build`, stamped with the CalVer and build
-number derived from git ([#303](https://github.com/Sassy-Dog/solador/issues/303))
-— but it is **unsigned and unnotarized**, so Gatekeeper refuses it on any
-machine that did not build it. Signing is
-[#306](https://github.com/Sassy-Dog/solador/issues/306), updates are
-[#308](https://github.com/Sassy-Dog/solador/issues/308), and the release train
-is [#15](https://github.com/Sassy-Dog/solador/issues/15), which is still gating.
-Until those land, `./dev run` from source remains the way to run this.
+It is now *distributable*. `./dev build --release` produces a real
+`Solador.app` — `cargo tauri build`, universal (arm64 + x86_64), stamped with
+the CalVer and build number derived from git
+([#303](https://github.com/Sassy-Dog/solador/issues/303)) — and
+`./dev build --release --notarize` signs, notarizes and staples a `.dmg`
+([#306](https://github.com/Sassy-Dog/solador/issues/306)). Pushing a `v*` tag
+runs that same build on CI against the `prd` environment
+([#307](https://github.com/Sassy-Dog/solador/issues/307)) and attaches a
+**draft** release; publishing that draft is what generates the signed update
+feed ([#308](https://github.com/Sassy-Dog/solador/issues/308)). The release
+train ([#15](https://github.com/Sassy-Dog/solador/issues/15)) is closed, and
+the root [README](../README.md#download) is where a user is sent to download it.
+
+`./dev run` remains the *development* loop: a debug build, re-signed locally so
+the Keychain does not re-prompt on every launch.
 
 > Notes below that compare a behaviour to "the original panel" or "the original's
 > `X`" are **provenance**: they record which decision was ported and why,
