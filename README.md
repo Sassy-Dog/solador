@@ -144,9 +144,13 @@ earned a spot on your second monitor, which panels did the earning? If you
 bounced off it, where — the download, the first launch, a panel that wanted a
 credential you didn't want to create?
 
+- **[Start a discussion](https://github.com/Sassy-Dog/solador/discussions)** —
+  impressions, questions, a screenshot of your own cockpit, or an idea you
+  haven't shaped into a request yet. No template, no ceremony.
 - **[Open an issue](https://github.com/Sassy-Dog/solador/issues/new/choose)** —
-  bugs, ideas, or just impressions. Non-bug feedback is genuinely welcome and
-  there's a template for exactly that, with no repro steps to fill in.
+  something's broken, or you have a concrete request. There's a **Feedback**
+  template with no repro steps to fill in, if a bug report feels like the wrong
+  shape for what you want to say.
 - **Want a panel, or a vendor, that isn't here?** Say so. Panels are deliberately
   self-contained, so "watch X at a glance" is a tractable request rather than a
   rewrite.
@@ -234,8 +238,9 @@ installer, an update check on macOS, and all nine panels.
 - **Linux runs the agent, not the cockpit.**
 - **Adding your own status vendor is half-landed.** Settings will accept a
   status page, probe it and store it, but the Services panel still watches
-  only the five vendors above — the last wiring step never shipped. If you
-  want a vendor watched, say so in an issue and it moves up the list.
+  only the five vendors above — the last wiring step never shipped
+  ([#375](https://github.com/Sassy-Dog/solador/issues/375)). If you want a
+  vendor watched, say so there and it moves up the list.
 - **The Tauri IPC boundary has no automated coverage.** That is a decision, not
   an oversight: `tauri-driver` has no macOS support, so the only automatable
   host would be the Windows CI job — a large harness covering one build path.
