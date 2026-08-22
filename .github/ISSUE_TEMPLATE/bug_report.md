@@ -25,7 +25,7 @@ labels: bug
 ## Environment
 
 - OS and version:
-- Built from (commit or branch):
+- Version — Settings → About, or the commit if you built it:
 - Relevant panel configured how? <!-- e.g. "GitHub token set, org set, 4 repos tracked" -->
 
 ## Anything in the console?

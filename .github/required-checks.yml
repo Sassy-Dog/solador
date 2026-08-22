@@ -7,7 +7,7 @@
 # The `context` strings must match the job `name:` values in ci.yml exactly —
 # a ruleset waits forever on a context no job reports. `satisfies` records
 # which category each check covers, so a future job can be added without
-# rediscovering why these three exist.
+# rediscovering why these five exist.
 required_checks:
   - context: "Rust agent"
     satisfies: [lint, unit]
