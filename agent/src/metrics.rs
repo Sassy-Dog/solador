@@ -1504,6 +1504,23 @@ mod tests {
         let me = sysinfo::Pid::from_u32(std::process::id());
         let mut sys = SamplerSystems::new();
 
+        // One warm-up refresh, because sysinfo needs a different number of them
+        // per platform before a per-process CPU delta exists at all, and the
+        // deepest requirement is the one to satisfy. Linux and macOS establish
+        // the baseline on the prime inside `SamplerSystems::new()` and report on
+        // the next refresh; **Windows takes one more** — `compute_cpu_usage`
+        // stamps `last_update` at construction and returns before recording any
+        // baseline on a call under `MINIMUM_CPU_UPDATE_INTERVAL`, so the prime
+        // establishes nothing and the refresh after it computes against zeroed
+        // system times (Windows CI: 0.2% reported for a process burning 25.7%).
+        // Sleeping past that 200ms gate first is what makes this warm-up count.
+        // The agent itself only ever ships on Linux and macOS, where its prime
+        // plus tick 0 is exactly the two refreshes needed.
+        std::thread::sleep(Duration::from_millis(250));
+        sys.refresh_processes(PROCESS_TOP_LIMIT);
+
+        // Everything below is measured from *after* the warm-up, so the counter
+        // and the window it is compared against start together.
         let started = Instant::now();
         let before = sys
             .processes
@@ -1545,9 +1562,10 @@ mod tests {
             (reported_percent - truth_percent).abs() < 15.0,
             "process CPU must describe the window it is reported for: sysinfo \
              says {reported_percent:.1}% of one core, but {burned_ms:.0}ms of \
-             CPU over {elapsed_ms:.0}ms of wall clock is {truth_percent:.1}%. A \
-             large overshoot means the process refresh took its denominator \
-             from the machine handle's 1s cadence — see SamplerSystems."
+             CPU over {elapsed_ms:.0}ms of wall clock is {truth_percent:.1}%. \
+             Overshooting by roughly the cadence ratio means the process \
+             refresh took its denominator from the machine handle — see \
+             SamplerSystems."
         );
 
         // …and the call the loop actually makes returned a table, so the
