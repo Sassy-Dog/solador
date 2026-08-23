@@ -520,11 +520,45 @@ centre anywhere near it:
   likewise persists with no control anywhere in Settings. It is re-read on every
   pass, so editing the store file applies without a relaunch.
 
-**Five vendors, three transports, one vocabulary.** `crates/servicestatus`
-reads GitHub, Anthropic and Vercel from Atlassian Statuspage, Neon from
-status.io, and Azure from an RSS incident feed, and lowers all three onto one
-`ComponentStatus`. The Services panel renders a row each; the GitHub reading
-additionally feeds the Repos/Runners conjunction chip.
+**Three transports, one vocabulary.** `crates/servicestatus` reads GitHub,
+Anthropic and Vercel from Atlassian Statuspage, Neon from status.io, and Azure
+from an RSS incident feed, and lowers all three onto one `ComponentStatus`. The
+Services panel renders a row each; the GitHub reading additionally feeds the
+Repos/Runners conjunction chip.
+
+**The watched list is derived, never shipped**
+([#284](https://github.com/Sassy-Dog/solador/issues/284), wired up in
+[#375](https://github.com/Sassy-Dog/solador/issues/375)). `services::active_vendors`
+answers it from configuration on **every pass**, and `poll_service_status` reads
+exactly that list through `read_vendor`:
+
+- A built-in vendor is watched when its data is already in the cockpit — a
+  GitHub account or token, a Vercel or Neon key, an Azure export address. **A
+  vendor per page, not per account**: three GitHub accounts derive one row,
+  because a status page is one page however many credentials point at it.
+- **Anthropic is the named exception** — there is no Anthropic credential, so
+  its evidence is whether the Usage panel found Claude rollups. "Not walked yet"
+  answers `false`, so the row appears when the data does rather than ahead of it.
+- **`Unknown` is not `Absent`.** A credential store that refused to answer
+  leaves its vendor out of the pass rather than deriving one from a guess, and
+  the pass that does get an answer *seeds* instead of alerting.
+- **Operator-added Statuspages are appended**, after the derived ones, in the
+  order they were arranged, and a disabled one is not watched. Each names itself
+  from its `store::StatusVendor` record — `ServiceId::label`/`subject` answer
+  `None` for a `ServiceId::Custom` **by design**, because putting `vendor-9f3c…`
+  in a notification title would be a fabricated name wearing a true one's
+  clothes.
+
+Two consequences worth stating plainly. A cockpit with nothing configured
+watches **nothing**, and the panel says so (`NOTHING_WATCHED_MESSAGE`) rather
+than rendering an empty body under "all clear" — five hardcoded vendors are one
+operator's stack, and the empty green panel is the failure this area exists to
+remove. And because the set changes at runtime, `ServiceStatuses::watching`
+**forgets** the readings of a vendor that has left it: re-adding one renders
+*Unknown* until it is read again, never the status it carried when it left.
+`StatusWatch::observe` applies the identical rule to its baseline, which is what
+keeps #297 true — a vendor added while its page is already amber is seeded, not
+alerted on.
 
 Two vendor-specific traps are recorded in the code rather than here, but both
 are worth knowing: `status.anthropic.com` **302s** to `status.claude.com`, and
@@ -1504,6 +1538,12 @@ panel's vendor list out of code — with releases blocked by
 [#15](https://github.com/Sassy-Dog/solador/issues/15), "you need a rebuild to
 watch Railway" means "you cannot".
 
+A vendor saved, toggled or removed here **wakes the GitHub poll** — which is
+where `poll_service_status` runs — rather than waiting out a refresh interval,
+for the same reason the Accounts tab does: the watched set is re-derived every
+pass, so the row appears on the next one, and cutting the sleep short is the
+difference between now and up to a full `refresh_interval_secs` later.
+
 **Adding one is a probe, not a form.** A vendor is not a URL: it is a URL plus
 the one component this stack depends on, and Statuspage component ids are opaque
 (`k8w3r06qmzrp`) and published nowhere a person would look. So step one asks the
@@ -1755,6 +1795,12 @@ cargo run -p solador-app -- --dump-openclaw sample-openclaw.json   # the OpenCla
 #   rejected handshake, red), `--idle` (no gateway URL: the muted Settings
 #   hint), `--empty` (no runtime at all) and `--unmeasured` (the same live farm
 #   whose session reported no token counters: `— tokens · ctx —`).
+cargo run -p solador-app -- --dump-services sample-services.json   # the Services panel
+#   …the fully-configured machine: the five built-ins, covering every rendering
+#   the panel has (healthy, degraded, major outage, Azure's weaker "no
+#   incidents", and one never read). Plus `--empty` — a pass that LOOKED and
+#   found nothing to watch, which is what an unconfigured cockpit now gets and
+#   is deliberately not the same payload as one that has not looked yet.
 ```
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
@@ -1871,6 +1917,10 @@ half works on a machine whose screen you cannot see.
 - [ ] **Terminal** — `azure_cost: first frontend request (headline: false)` — **false is a pass**
 - [ ] **Terminal** — `crons: first frontend request (nothing read yet)` — that wording
       **is** the pass with no Sentry token; `all ok` or `N not ok` with one
+- [ ] **Terminal** — `services: first frontend request (N vendor(s)…)` — **0 is a
+      pass**, and so is 1: the watched list is derived from configuration, so the
+      scratch store this run uses watches nothing except Anthropic, which
+      appears only if this machine has Claude Code logs to roll up
 - [ ] **Terminal** — `openclaw: first frontend request (trailing: "")` — **empty is a pass**
 - [ ] **Screen** — the **local card** leads the host grid with this machine's name, a
       green dot, CPU/memory changing between ticks, and on macOS `Pressure: —` and

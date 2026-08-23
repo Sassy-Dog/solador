@@ -259,23 +259,12 @@ impl ActiveVendor {
 ///
 /// Operator-added vendors (#294) are appended after the derived ones, in the
 /// order the operator arranged them, and a disabled one is not watched.
-// Nothing in the shipped binary calls this yet. #296 lands the rule; the poll
-// pass in `main.rs` still walks `ServiceId::ALL`, and the slice that hands this
-// list to `read`, `readings` and `view` edits that file, which #288's open
-// change owns.
-//
-// `expect`, not `allow`, so the attribute cannot outlive the gap it documents:
-// it fails the build the moment a caller appears. `not(test)` because the tests
-// below *are* callers — under `cfg(test)` the expectation would itself be
-// unfulfilled. One attribute covers the whole derivation, which is reachable
-// only from here.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the poll pass adopts this list in the slice after #288; see the note above"
-    )
-)]
+///
+/// **Re-derived every pass**, never captured at startup: that is what makes an
+/// add, a remove or an enable-toggle in Settings apply on the next poll rather
+/// than on the next launch — the same rule `poll_github` follows for the token
+/// it fetches with. [`ServiceStatuses::watching`] is where the answer lands,
+/// and [`StatusWatch::observe`] is what forgets a vendor that has left it.
 pub fn active_vendors(
     store: &Store,
     credentials: &dyn CredentialStore,
@@ -521,9 +510,24 @@ pub struct ServiceEntry {
     pub error: Option<String>,
 }
 
-/// Every watched vendor's availability, as the app holds it.
+/// Every watched vendor's availability, as the app holds it — **and which
+/// vendors those are**.
+///
+/// The watched set travels *with* the readings rather than beside them, because
+/// the panel and the notifier must never be reading two different lists. A row
+/// painted for a vendor no pass polled, and a vendor polled and then left off
+/// the panel, are the two halves of the same bug (#375); one lock holding one
+/// answer is what makes them unrepresentable.
 #[derive(Debug, Default)]
 pub struct ServiceStatuses {
+    /// What [`active_vendors`] answered on the last pass.
+    ///
+    /// `None` until a pass has declared one, and that is **not** the empty
+    /// list: "the watched set has not been derived yet" and "nothing is
+    /// configured to watch" are different facts, and [`view`] words them apart.
+    /// Same [`Configured`] discipline every other panel follows — a defaulted
+    /// state is as much a fabrication as a defaulted number.
+    vendors: Option<Vec<ActiveVendor>>,
     entries: BTreeMap<ServiceId, ServiceEntry>,
 }
 
@@ -531,6 +535,33 @@ impl ServiceStatuses {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Declare the vendors this pass watches, and **forget every reading that
+    /// is not one of them**.
+    ///
+    /// The watched set is the operator's (#284), so it changes while the app is
+    /// running: adding a status page in Settings puts a vendor into it,
+    /// removing or disabling one takes it out. Dropping the departed vendor's
+    /// entry is what stops a re-added vendor from rendering the status it
+    /// carried when it left as though that had just been read — the identical
+    /// rule [`StatusWatch::observe`] applies to its baseline, for the identical
+    /// reason: what a page said while nobody was looking is *unknown*, not the
+    /// last value we happened to be holding.
+    ///
+    /// Called **before** the pass's results are folded in, so `succeeded` and
+    /// `failed` cannot write an entry this immediately discards.
+    pub fn watching(&mut self, vendors: Vec<ActiveVendor>) {
+        self.entries
+            .retain(|service, _| vendors.iter().any(|vendor| vendor.service == *service));
+        self.vendors = Some(vendors);
+    }
+
+    /// The vendors the last pass watched — `None` when no pass has declared a
+    /// set yet, which is not the same as an empty one.
+    #[must_use]
+    pub fn watched(&self) -> Option<&[ActiveVendor]> {
+        self.vendors.as_deref()
     }
 
     pub fn succeeded(&mut self, service: ServiceId, status: ServiceStatus) {
@@ -560,69 +591,113 @@ impl ServiceStatuses {
     /// steady state forever, and `StatusWatch` would never notice the recovery
     /// when the page came back saying something new.
     ///
-    /// Walks [`ServiceId::ALL`] — the vendors this build ships an adapter for —
-    /// because that is still what the poll pass reads. Once the pass takes
-    /// [`active_vendors`]'s derived list, the labels come from there and an
-    /// operator-added vendor is watched alongside them; a vendor that leaves
-    /// the pass then correctly loses its baseline, which is what
-    /// [`StatusWatch::observe`] already handles.
+    /// Walks the **watched** list [`watching`](Self::watching) was last handed,
+    /// never [`ServiceId::ALL`]: the set is derived from configuration (#284),
+    /// so it holds the operator's own status pages alongside this build's, and
+    /// each vendor's `label` and `subject` come from its
+    /// [`ActiveVendor`] record rather than from [`ServiceId::label`] — which
+    /// answers `None` for a [`ServiceId::Custom`] by design, and would have
+    /// dropped every operator-added vendor on the floor between the poll and
+    /// the banner.
+    ///
+    /// Empty before the first pass, which is exactly right: a watch with
+    /// nothing to compare has nothing to say, and [`StatusWatch::observe`]
+    /// forgets nothing it was never told about.
     #[must_use]
     pub fn readings(&self) -> Vec<Reading<'_>> {
-        ServiceId::ALL
+        self.watched()
+            .unwrap_or_default()
             .iter()
-            // `filter_map`, and nothing is ever filtered: `ALL` holds only
-            // vendors this build names. A vendor it cannot name is not skipped
-            // here so much as never reached — and it is not given an invented
-            // name either.
-            .filter_map(|&service| {
+            .map(|vendor| {
                 let fresh = self
                     .entries
-                    .get(&service)
+                    .get(&vendor.service)
                     .filter(|e| e.error.is_none())
                     .and_then(|e| e.status.as_ref());
-                Some(Reading {
-                    service,
-                    label: service.label()?,
-                    subject: service.subject()?,
+                Reading {
+                    service: vendor.service,
+                    label: &vendor.label,
+                    subject: &vendor.subject,
                     status: fresh.and_then(|s| s.component),
                     incident: fresh
                         .and_then(|s| s.incident.as_ref())
                         .map(|i| i.name.as_str()),
-                })
+                }
             })
             .collect()
     }
 }
 
+/// Shown until a pass has derived the watched set. The panel has genuinely not
+/// looked yet, and the alternative — an empty body under "all clear" — is the
+/// empty green panel this whole area exists to make impossible.
+pub const LOADING_MESSAGE: &str = "reading status pages…";
+
+/// Shown once a pass *has* looked and found nothing to watch. The watched set
+/// is derived from configuration (#284), so a cockpit with no credentials and
+/// no added status pages watches nothing — and says so, rather than reporting
+/// the happy path about vendors it is not reading.
+pub const NOTHING_WATCHED_MESSAGE: &str =
+    "nothing to watch yet — vendors appear as you configure them in Settings";
+
 /// The Services panel payload: one row per watched vendor.
 ///
 /// Every string and colour is decided here, like every other panel's. The row
-/// order is [`ServiceId::ALL`]'s, fixed, so a vendor never moves between polls
-/// — a list that re-sorted itself as things broke would be unreadable in
-/// exactly the moment it matters.
+/// order is the **watched list's**, which [`active_vendors`] builds in
+/// [`ServiceId::ALL`]'s order and then appends the operator's own pages to, in
+/// the order they arranged them. Fixed either way, so a vendor never moves
+/// between polls — a list that re-sorted itself as things broke would be
+/// unreadable in exactly the moment it matters.
+///
+/// Three states, worded apart: no pass yet, a pass that watches nothing, and
+/// rows. Collapsing the first two into "all clear" over an empty body would be
+/// the panel claiming coverage it does not have.
 #[must_use]
 pub fn view(statuses: &ServiceStatuses) -> Value {
     let kind = PanelKind::Services;
-    // `filter_map` for [`ServiceStatuses::readings`]'s reason: `ALL` holds only
-    // the vendors this build names, so nothing is dropped, and a vendor it
-    // cannot name gets no row rather than a row headed by its id.
-    let rows: Vec<Value> = ServiceId::ALL
+    let watched = statuses.watched();
+    let rows: Vec<Value> = watched
+        .unwrap_or_default()
         .iter()
-        .filter_map(|&s| row(s, statuses))
+        .map(|vendor| row(vendor, statuses))
         .collect();
     // "2 degraded" / "all clear". Counted from the rendered rows so the
-    // trailing label can never disagree with what is under it.
+    // trailing label can never disagree with what is under it — and left empty
+    // when there are none, because both "all clear" and "0 degraded" are
+    // verdicts about vendors nobody read.
     let degraded = rows.iter().filter(|r| r["degraded"] == json!(true)).count();
+    let trailing = match (rows.is_empty(), degraded) {
+        (true, _) => String::new(),
+        (false, 0) => "all clear".to_owned(),
+        (false, n) => format!("{n} degraded"),
+    };
     json!({
         "id": kind.id(),
         "title": kind.title(),
-        "trailing": if degraded > 0 { format!("{degraded} degraded") } else { "all clear".to_owned() },
+        "trailing": trailing,
+        // One sentence, not a blank body: an unconfigured panel and a panel
+        // still filling in must not look the same, and neither may look like a
+        // clean bill of health. Same shape as the Containers panel's.
+        "empty": match watched {
+            None => json!({ "message": LOADING_MESSAGE }),
+            Some(_) if rows.is_empty() => json!({ "message": NOTHING_WATCHED_MESSAGE }),
+            Some(_) => Value::Null,
+        },
         "rows": rows,
+        // Drives the frontend's refresh cadence while the panel fills in —
+        // published rather than inferred from every row reading "Unknown",
+        // which stopped being the pre-first-pass rendering when the vendor list
+        // became the operator's.
+        "loading": watched.is_none(),
     })
 }
 
-fn row(service: ServiceId, statuses: &ServiceStatuses) -> Option<Value> {
-    let (label, subject) = (service.label()?, service.subject()?);
+/// One watched vendor's row. Total, unlike the [`ServiceId`]-keyed version
+/// before it: an [`ActiveVendor`] carries its own label and subject, so there
+/// is no vendor this can fail to name and none it needs to invent a name for.
+fn row(vendor: &ActiveVendor, statuses: &ServiceStatuses) -> Value {
+    let service = vendor.service;
+    let (label, subject) = (vendor.label.as_str(), vendor.subject.as_str());
     let entry = statuses.get(service);
     let status = entry.and_then(|e| e.status.as_ref());
     let component = status.and_then(|s| s.component);
@@ -655,7 +730,7 @@ fn row(service: ServiceId, statuses: &ServiceStatuses) -> Option<Value> {
         (None, None) => subject.to_owned(),
     };
 
-    Some(json!({
+    json!({
         "id": service.id(),
         "label": label,
         "state": state,
@@ -665,15 +740,26 @@ fn row(service: ServiceId, statuses: &ServiceStatuses) -> Option<Value> {
         // count reads this, and counting amber pixels would be a second
         // definition of "degraded" free to disagree with the first.
         "degraded": component.is_some_and(ComponentStatus::is_degraded),
-    }))
+    })
 }
 
 /// A fixture covering every rendering the Services panel has: one healthy
 /// vendor, one degraded, one in a major outage, one Azure-style "no incidents",
 /// and one never read.
+///
+/// Watches the five built-ins — the fully-configured machine, which is the one
+/// the panel's rows are worth a picture of. The empty and still-loading
+/// renderings are the *absence* of this, and are covered where they belong: in
+/// this module's tests and, for the frontend, by an inline override.
 #[must_use]
 pub fn fixture_statuses() -> ServiceStatuses {
     let mut s = ServiceStatuses::new();
+    s.watching(
+        ServiceId::ALL
+            .iter()
+            .filter_map(|&id| ActiveVendor::builtin(id))
+            .collect(),
+    );
     let status = |c: Option<ComponentStatus>, incident: Option<&str>| ServiceStatus {
         component: c,
         incident: incident.map(|name| Incident {
@@ -753,21 +839,14 @@ pub async fn read(service: ServiceId) -> Result<ServiceStatus, servicestatus::St
 /// Read one watched vendor's status page, whoever configured it.
 ///
 /// The total reader over [`active_vendors`]'s list, and the one the poll pass
-/// should take when it adopts that list: it routes an operator-added vendor to
-/// the page **its record carries**, which is the only place that page exists.
+/// takes: it routes an operator-added vendor to the page **its record
+/// carries**, which is the only place that page exists.
 /// `crates/servicestatus`'s Statuspage adapter is already parameterized by base
 /// URL, so this adds no transport — #284 moves the vendor list from code to
 /// data and nothing else.
 ///
 /// # Errors
 /// [`servicestatus::StatusError`] as each adapter classifies it.
-// Dead for the same reason [`active_vendors`] is, and for exactly as long: the
-// poll pass adopts both together. Plain `expect` rather than `cfg_attr`, unlike
-// the derivation — this one does I/O, so no test calls it either.
-#[expect(
-    dead_code,
-    reason = "the poll pass adopts this alongside active_vendors; see the note on that function"
-)]
 pub async fn read_vendor(
     vendor: &ActiveVendor,
 ) -> Result<ServiceStatus, servicestatus::StatusError> {
@@ -896,6 +975,15 @@ mod tests {
     use super::*;
     use store::{CredentialStore, MemoryCredentialStore, SecretError, StatusVendor, VendorAccount};
     use uuid::Uuid;
+
+    /// The watched set of a fully-configured store: this build's five, in the
+    /// order the panel lists them.
+    fn builtins() -> Vec<ActiveVendor> {
+        ServiceId::ALL
+            .iter()
+            .filter_map(|&id| ActiveVendor::builtin(id))
+            .collect()
+    }
 
     fn reading(status: Option<ComponentStatus>) -> Reading<'static> {
         Reading {
@@ -1251,6 +1339,7 @@ mod tests {
         assert_eq!(vm["trailing"], "2 degraded");
 
         let mut calm = ServiceStatuses::new();
+        calm.watching(builtins());
         for &s in &ServiceId::ALL {
             calm.succeeded(
                 s,
@@ -1305,6 +1394,279 @@ mod tests {
             reading.status, None,
             "a retained value is not a fresh observation"
         );
+    }
+
+    // MARK: - an operator-added vendor, all the way through a pass (#375)
+
+    /// One pass, as `poll_service_status` runs it: declare the watched set,
+    /// fold in what each page said, then hand the readings to the watch.
+    /// Nothing here is the shell's own arithmetic, which is why the shell is
+    /// not needed to exercise it.
+    fn pass(
+        statuses: &mut ServiceStatuses,
+        watch: &mut StatusWatch,
+        vendors: Vec<ActiveVendor>,
+        reads: &[(ServiceId, ComponentStatus)],
+    ) -> Vec<StatusNotice> {
+        statuses.watching(vendors);
+        for &(service, component) in reads {
+            statuses.succeeded(
+                service,
+                ServiceStatus {
+                    component: Some(component),
+                    incident: None,
+                },
+            );
+        }
+        watch.observe(&statuses.readings(), true)
+    }
+
+    fn railway() -> StatusVendor {
+        StatusVendor::new("Railway", "https://status.railway.app", "abc123", "API")
+    }
+
+    /// The bug this slice fixes. Adding a status page in Settings stored it,
+    /// probed it and validated it — and the panel then ignored it forever,
+    /// because the poll pass walked [`ServiceId::ALL`] and both renderers
+    /// filtered on [`ServiceId::label`], which answers `None` for a
+    /// [`ServiceId::Custom`] by design.
+    #[test]
+    fn an_operator_added_vendor_reaches_both_the_panel_and_the_watch() {
+        let vendor = railway();
+        let id = vendor.id;
+        let mut statuses = fixture_statuses();
+        let mut watched = builtins();
+        watched.push(ActiveVendor::from_record(&vendor));
+        statuses.watching(watched);
+        statuses.succeeded(
+            ServiceId::Custom(id),
+            ServiceStatus {
+                component: Some(ComponentStatus::PartialOutage),
+                incident: None,
+            },
+        );
+
+        let vm = view(&statuses);
+        let rows = vm["rows"].as_array().expect("rows");
+        let row = rows
+            .iter()
+            .find(|r| r["id"] == format!("vendor-{id}"))
+            .expect("the operator's vendor has a row");
+        // Named by its record, never by this build and never by its bare id.
+        assert_eq!(row["label"], "Railway");
+        assert_eq!(row["state"], "Partial Outage");
+        assert_eq!(row["degraded"], true);
+        assert_eq!(
+            row["detail"], "Railway API",
+            "the component is qualified by the vendor, like every built-in subject"
+        );
+        assert_eq!(vm["trailing"], "3 degraded", "and it is counted");
+
+        // …and the watch sees it under the same name, so a banner can be worded.
+        let reading = statuses
+            .readings()
+            .into_iter()
+            .find(|r| r.service == ServiceId::Custom(id))
+            .expect("the watch is handed the operator's vendor too");
+        assert_eq!(reading.label, "Railway");
+        assert_eq!(reading.subject, "Railway API");
+    }
+
+    /// The other half of the acceptance: removing it in Settings removes the
+    /// row on the next pass, and takes its retained reading with it.
+    #[test]
+    fn removing_an_operator_added_vendor_removes_its_row() {
+        let vendor = railway();
+        let id = vendor.id;
+        let mut statuses = fixture_statuses();
+        let mut watched = builtins();
+        watched.push(ActiveVendor::from_record(&vendor));
+        statuses.watching(watched);
+        statuses.succeeded(
+            ServiceId::Custom(id),
+            ServiceStatus {
+                component: Some(ComponentStatus::MajorOutage),
+                incident: None,
+            },
+        );
+        assert!(view(&statuses)["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .any(|r| r["id"] == format!("vendor-{id}")));
+
+        // Removed in Settings: the next pass derives the built-ins alone.
+        statuses.watching(builtins());
+        let vm = view(&statuses);
+        assert!(
+            !vm["rows"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .any(|r| r["id"] == format!("vendor-{id}")),
+            "a removed vendor keeps no row: {vm}"
+        );
+        assert!(
+            statuses.get(ServiceId::Custom(id)).is_none(),
+            "…and no retained reading either, or re-adding it would render a \
+             stale outage as though it had just been read"
+        );
+    }
+
+    /// A re-added vendor is read afresh rather than from the value it carried
+    /// when it left — the panel's counterpart to
+    /// [`StatusWatch`]'s seeding rule, and the reason
+    /// [`ServiceStatuses::watching`] forgets rather than merely hides.
+    #[test]
+    fn a_re_added_vendor_does_not_render_the_status_it_had_when_it_left() {
+        let vendor = railway();
+        let id = vendor.id;
+        let active = ActiveVendor::from_record(&vendor);
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(vec![active.clone()]);
+        statuses.succeeded(
+            ServiceId::Custom(id),
+            ServiceStatus {
+                component: Some(ComponentStatus::MajorOutage),
+                incident: None,
+            },
+        );
+
+        statuses.watching(Vec::new());
+        statuses.watching(vec![active]);
+        let row = view(&statuses)["rows"].as_array().expect("rows")[0].clone();
+        assert_eq!(
+            row["state"], "Unknown",
+            "what a page said while nobody was watching is unknown, not the last value we held"
+        );
+    }
+
+    /// #297's rule, now that a vendor can genuinely join a pass mid-session:
+    /// a vendor added while its page is *already* amber is **seeded**, not
+    /// alerted on. Nothing changed on our watch, so there is nothing to say.
+    #[test]
+    fn a_vendor_entering_the_watched_set_seeds_rather_than_alerting() {
+        let vendor = railway();
+        let id = vendor.id;
+        let custom = ActiveVendor::from_record(&vendor);
+        let mut statuses = ServiceStatuses::new();
+        let mut watch = StatusWatch::new();
+
+        // A settled pass over the built-ins alone.
+        pass(
+            &mut statuses,
+            &mut watch,
+            builtins(),
+            &[(ServiceId::GitHub, ComponentStatus::Operational)],
+        );
+
+        // The operator adds a vendor whose page is already degraded.
+        let mut watched = builtins();
+        watched.push(custom.clone());
+        let notices = pass(
+            &mut statuses,
+            &mut watch,
+            watched.clone(),
+            &[(ServiceId::Custom(id), ComponentStatus::DegradedPerformance)],
+        );
+        assert!(
+            notices.is_empty(),
+            "first sight of a vendor is a baseline, not an event: {notices:?}"
+        );
+
+        // A real change *after* that baseline does alert, worded from the record.
+        let notices = pass(
+            &mut statuses,
+            &mut watch,
+            watched,
+            &[(ServiceId::Custom(id), ComponentStatus::MajorOutage)],
+        );
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].title, "Railway · major outage");
+        assert_eq!(notices[0].body, "Railway API: major outage.");
+
+        // Removed, then added back while still in a major outage: seeded again,
+        // because its state while nobody was looking is unknown.
+        pass(&mut statuses, &mut watch, builtins(), &[]);
+        let notices = pass(
+            &mut statuses,
+            &mut watch,
+            vec![custom],
+            &[(ServiceId::Custom(id), ComponentStatus::MajorOutage)],
+        );
+        assert!(
+            notices.is_empty(),
+            "re-adding a vendor re-seeds rather than re-announcing: {notices:?}"
+        );
+    }
+
+    /// The regression guard on the built-ins: adding a vendor appends, and
+    /// changes neither the content nor the order of the five rows that were
+    /// already there.
+    #[test]
+    fn the_five_built_ins_are_unchanged_by_an_operator_adding_a_vendor() {
+        let before = view(&fixture_statuses());
+
+        let vendor = railway();
+        let mut statuses = fixture_statuses();
+        let mut watched = builtins();
+        watched.push(ActiveVendor::from_record(&vendor));
+        statuses.watching(watched);
+        let after = view(&statuses);
+
+        let rows = |vm: &Value| vm["rows"].as_array().expect("rows").clone();
+        assert_eq!(
+            rows(&after)[..5],
+            rows(&before)[..],
+            "the built-ins keep their content and their order"
+        );
+        assert_eq!(rows(&after).len(), 6, "the operator's vendor is appended");
+        assert_eq!(after["rows"][5]["id"], format!("vendor-{}", vendor.id));
+    }
+
+    // MARK: - the panel's three states
+
+    /// Before a pass has derived the watched set the panel has genuinely not
+    /// looked, and must say so. "all clear" over an empty body is the empty
+    /// green panel this area exists to make impossible — and a defaulted state
+    /// is as much a fabrication as a defaulted number.
+    #[test]
+    fn before_the_first_pass_the_panel_says_it_is_reading_rather_than_all_clear() {
+        let vm = view(&ServiceStatuses::new());
+        assert_eq!(vm["rows"].as_array().expect("rows").len(), 0);
+        assert_eq!(vm["trailing"], "");
+        assert_eq!(vm["empty"]["message"], LOADING_MESSAGE);
+        assert_eq!(vm["loading"], true);
+    }
+
+    /// …and a pass that *has* looked and found nothing to watch says a
+    /// different thing again: the watched set is derived from configuration
+    /// (#284), so an unconfigured cockpit watches nothing, and that is not the
+    /// same claim as "everything we watch is fine".
+    #[test]
+    fn a_pass_that_watches_nothing_says_so_rather_than_all_clear() {
+        let mut statuses = ServiceStatuses::new();
+        statuses.watching(Vec::new());
+        let vm = view(&statuses);
+        assert_eq!(vm["rows"].as_array().expect("rows").len(), 0);
+        assert_eq!(vm["trailing"], "");
+        assert_eq!(vm["empty"]["message"], NOTHING_WATCHED_MESSAGE);
+        assert_ne!(
+            vm["empty"]["message"], LOADING_MESSAGE,
+            "\"we have not looked\" and \"there is nothing to look at\" are different facts"
+        );
+        assert_eq!(vm["loading"], false);
+    }
+
+    /// A populated panel carries no empty sentence and is not loading — the
+    /// third of the three, pinned so the pair above cannot start firing on a
+    /// working cockpit.
+    #[test]
+    fn a_populated_panel_carries_no_empty_sentence() {
+        let vm = view(&fixture_statuses());
+        assert!(vm["empty"].is_null(), "{vm}");
+        assert_eq!(vm["loading"], false);
+        assert_eq!(vm["trailing"], "2 degraded");
     }
 
     // MARK: - hosts

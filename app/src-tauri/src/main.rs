@@ -1601,21 +1601,48 @@ fn apply_pass_credential(credential: PassCredential, state: &mut GitHubState) {
     }
 }
 
-/// One read of GitHub's public statuspage, folded into the panel state.
+/// One read of every **watched** vendor's status page, folded into the panel
+/// state.
 ///
-/// A failure is recorded but does **not** drop the last good reading: GitHub's
-/// status does not change on the timescale of one dropped request, and a panel
-/// that flipped from "it's GitHub" back to a red "it's us" on a single timeout
-/// would be the exact misdirection this verdict exists to prevent.
+/// The watched set is [`services::active_vendors`]'s, derived from this store's
+/// own configuration (#284) and **re-derived every pass** — never the five
+/// built-ins this file used to walk. That is what makes a status page added in
+/// Settings actually watched (#375): before it, an operator could add a vendor,
+/// watch the probe succeed and see it listed, while the poll pass went on
+/// reading the same five hardcoded pages and the panel went on rendering only
+/// those. A panel silently claiming coverage it does not have is the failure
+/// `crates/servicestatus` exists to remove.
+///
+/// A failure is recorded but does **not** drop the last good reading: a
+/// vendor's status does not change on the timescale of one dropped request, and
+/// a panel that flipped from "it's GitHub" back to a red "it's us" on a single
+/// timeout would be the exact misdirection that verdict exists to prevent.
 async fn poll_service_status(app: &Arc<App>) {
-    // Concurrently: five independent hosts, and running them in sequence would
-    // make the pass as slow as their sum for no reason. Each carries its own
-    // 8s timeout, so the worst case is one timeout rather than five.
-    let results = futures_util::future::join_all(
-        services::ServiceId::ALL
-            .iter()
-            .map(|&service| async move { (service, services::read(service).await) }),
-    )
+    // Anthropic is the one vendor with no credential to look for, so its
+    // evidence is whether the Usage panel has actually found Claude rollups.
+    // Read here rather than assumed: "not walked yet" must answer `false`, so
+    // the tile appears when the data does rather than ahead of it.
+    let claude_usage_present = {
+        let usage = app.usage.lock().expect("usage state poisoned");
+        usage.claude_present()
+    };
+    // One credential read per vendor per pass — the same re-read discipline as
+    // the token below, and the reason a Save or Clear in Settings applies on the
+    // next pass rather than on the next launch.
+    let vendors = {
+        let store = app.store.lock().expect("store poisoned");
+        services::active_vendors(&store, &*app.credentials, claude_usage_present)
+    };
+
+    // Concurrently: independent hosts, and running them in sequence would make
+    // the pass as slow as their sum for no reason. Each carries its own 8s
+    // timeout, so the worst case is one timeout rather than all of them.
+    let results = futures_util::future::join_all(vendors.iter().map(|vendor| async move {
+        // `read_vendor`, never `read`: an operator-added vendor's page lives on
+        // its own record and nowhere else, and `read` panics rather than
+        // fabricate one.
+        (vendor.service, services::read_vendor(vendor).await)
+    }))
     .await;
 
     // Re-read like the token, so switching the preference off applies on the
@@ -1627,6 +1654,10 @@ async fn poll_service_status(app: &Arc<App>) {
 
     let notices = {
         let mut statuses = app.services.lock().expect("services poisoned");
+        // Before the results are folded in, so a vendor that left the watched
+        // set takes its last reading with it rather than lingering in the map
+        // to be rendered as fresh if it is ever added back.
+        statuses.watching(vendors);
         for (service, result) in results {
             match result {
                 Ok(status) => {
@@ -1677,11 +1708,14 @@ async fn poll_service_status(app: &Arc<App>) {
 /// No lock is ever held across an `await`; each is taken, used and dropped, in
 /// sequence, exactly as [`poll_containers`] does.
 async fn poll_github(app: &Arc<App>) {
-    // GitHub's own availability first, and deliberately **before** the token
-    // gate below. The statuspage needs no credential, and "GitHub Actions is in
-    // a major outage" is most useful precisely when this panel is otherwise
-    // blank — an unauthenticated cockpit that returned early here would be the
-    // one that could not explain itself at all.
+    // The Services pass first, and deliberately **before** the token gate
+    // below: no status page needs a credential, and "GitHub Actions is in a
+    // major outage" is most useful precisely when this panel is otherwise
+    // blank — a cockpit that returned early here would be the one that could
+    // not explain itself at all. Whether *GitHub* is among the vendors that
+    // pass reads is its own question, derived from configuration (#284): a
+    // store with no GitHub account and no stored token has no GitHub data for
+    // an outage to explain, so there is nothing there to annotate either.
     poll_service_status(app).await;
 
     // Re-read every pass rather than captured at startup: that is what makes a
@@ -3097,9 +3131,17 @@ fn services(state: tauri::State<'_, Arc<App>>) -> Value {
         services::view(&statuses)
     };
     FIRST_SERVICES_REQUEST.call_once(|| {
+        // The row count leads, because `trailing` is deliberately empty when
+        // there are none: a smoke line reading `services: first frontend
+        // request ()` would say nothing about whether the boundary carried the
+        // call, which is the only thing it exists to establish.
         eprintln!(
-            "services: first frontend request ({})",
-            payload["trailing"].as_str().unwrap_or_default()
+            "services: first frontend request ({} vendor(s){})",
+            payload["rows"].as_array().map_or(0, Vec::len),
+            match payload["trailing"].as_str().unwrap_or_default() {
+                "" => String::new(),
+                trailing => format!(", {trailing}"),
+            }
         );
     });
     payload
@@ -4500,6 +4542,11 @@ async fn settings_probe_status_vendor(base_url: String) -> Value {
 ///
 /// The four fields are re-validated here rather than trusted from the probe —
 /// every one of them is still editable after an answer lands.
+///
+/// Wakes the GitHub loop, which is where [`poll_service_status`] runs: the
+/// watched set is re-derived every pass, so a vendor added here is polled on the
+/// next one — and cutting that sleep short is the difference between the row
+/// appearing now and appearing up to a full `refresh_interval_secs` later.
 #[tauri::command]
 fn settings_save_status_vendor(
     label: String,
@@ -4518,6 +4565,7 @@ fn settings_save_status_vendor(
             }
             Err(reason) => Some(reason),
         };
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -4540,6 +4588,7 @@ fn settings_set_status_vendor_enabled(
             None => Some("Skipped — unknown status page.".to_owned()),
         }
     };
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -4558,6 +4607,7 @@ fn settings_remove_status_vendor(id: String, state: tauri::State<'_, Arc<App>>) 
             None => Some("Skipped — unknown status page.".to_owned()),
         }
     };
+    wake_github(&state);
     settings_response(&state, status)
 }
 
@@ -5307,7 +5357,17 @@ fn run_dump(args: &[String]) -> bool {
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-services", "sample-services.json") {
-        write_json(&path, &services::view(&services::fixture_statuses()));
+        // `--empty` is a pass that *looked* and found nothing to watch — the
+        // rendering an unconfigured cockpit gets now that the vendor list is
+        // derived (#284/#375), and the one that must never read "all clear".
+        let statuses = if empty {
+            let mut statuses = services::ServiceStatuses::new();
+            statuses.watching(Vec::new());
+            statuses
+        } else {
+            services::fixture_statuses()
+        };
+        write_json(&path, &services::view(&statuses));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-crons", "sample-crons.json") {

@@ -57,10 +57,21 @@ detailed than this file.
   level) are counted and shown with their reason, never dropped; and a **blind
   read** — no monitors at all, or a monitor carrying no environments — is red,
   because an empty green panel is the failure this exists to remove.
-- **Services** — third-party availability for the five vendors this stack
-  depends on (GitHub, Anthropic, Vercel, Neon, Azure), read on the GitHub poll's
-  cadence. Three transports behind one vocabulary (`crates/servicestatus`), and
-  a change in either direction fires a desktop notification.
+- **Services** — third-party availability, read on the GitHub poll's cadence.
+  Three transports behind one vocabulary (`crates/servicestatus`), and a change
+  in either direction fires a desktop notification. **The watched list is
+  derived from configuration, never shipped** (#284, wired up in #375):
+  `services::active_vendors` answers it every pass from the credentials and
+  accounts already in the cockpit — plus Claude rollups, which are Anthropic's
+  only evidence — and appends the operator's own Atlassian Statuspages
+  (`store.json`'s `status_vendors`). `poll_service_status` reads exactly that
+  list through `read_vendor`, and `readings`/`view` render exactly that list, so
+  a vendor cannot be polled and then dropped from the panel. A cockpit with
+  nothing configured watches nothing and **says so** rather than painting an
+  empty body under "all clear". `ServiceStatuses::watching` forgets the readings
+  of a vendor that leaves the set, which is what stops a re-added vendor
+  rendering the status it had when it left — the same rule `StatusWatch` applies
+  to its baseline, and what keeps #297's seed-don't-alert true.
 - **OpenClaw** — an agent farm over a live WebSocket. **Event-driven, on no
   cadence at all**, which is why it is the one panel with no staleness footer.
 

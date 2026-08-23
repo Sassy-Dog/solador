@@ -116,3 +116,29 @@ test("the trailing count agrees with the rows under it", async ({ page, baseURL 
   await gotoWithServices(page, baseURL, calm);
   await expect(page.locator("#servicesTrailing")).toHaveText("all clear");
 });
+
+/**
+ * The watched vendors are the operator's, derived from configuration (#284) and
+ * adopted by the poll pass in #375 — so the panel now has two ways of having no
+ * rows, and they are different facts. Neither may render as an empty body under
+ * a green trailing count, which is the empty-green-panel failure this whole
+ * area exists to remove.
+ */
+test("a cockpit watching nothing says so instead of showing an all-clear", async ({ page, baseURL }) => {
+  const svc = await gotoWithServices(page, baseURL, await fixture(baseURL, "sample-services-empty.json"));
+  expect(svc.rows, "the fixture must be the no-rows rendering").toHaveLength(0);
+  expect(svc.empty, "…carrying Rust's sentence").toBeTruthy();
+
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.locator("#servicesBody .svc-empty")).toHaveText(svc.empty.message);
+  // Never "all clear", and never "0 degraded": both are verdicts about vendors
+  // nobody read.
+  await expect(page.locator("#servicesTrailing")).toHaveText("");
+});
+
+/** …and a populated panel carries no such sentence. */
+test("a panel with rows paints no empty sentence", async ({ page, baseURL }) => {
+  await gotoWithServices(page, baseURL);
+  await expect(rows(page)).not.toHaveCount(0);
+  await expect(page.locator("#servicesBody .svc-empty")).toHaveCount(0);
+});
