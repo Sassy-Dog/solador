@@ -61,9 +61,13 @@ function rowNode(row) {
 function render(payload) {
   $s("servicesTitle").textContent = payload.title;
   $s("servicesTrailing").textContent = payload.trailing || "";
-  $s("servicesBody").replaceChildren(
-    ...(payload.rows || []).map(rowNode)
-  );
+  // One sentence when there are no rows, and it is Rust's: "no pass has looked
+  // yet" and "nothing is configured to watch" are different facts and read
+  // differently. The body is never left blank, because an empty panel under a
+  // green trailing count is the failure this panel exists to remove.
+  const children = (payload.rows || []).map(rowNode);
+  if (payload.empty) children.push(node("p", "svc-empty", payload.empty.message));
+  $s("servicesBody").replaceChildren(...children);
   $s("servicesPanel").hidden = false;
 }
 
@@ -73,12 +77,11 @@ async function refresh() {
     // this one opens in a plain browser and in the Playwright suite.
     const payload = await callRust("services", {}, "sample-services.json");
     if (payload) render(payload);
-    // Every vendor still unknown means no pass has landed yet. Rust does not
-    // publish a `loading` flag here because the panel has no other empty
-    // state: five unknown rows *is* the pre-first-pass rendering.
-    return Boolean(
-      payload && (payload.rows || []).length && (payload.rows || []).every((r) => r.state === "Unknown")
-    );
+    // Rust's own flag, like the Containers panel's. It used to be inferred from
+    // every row reading "Unknown", which stopped being the pre-first-pass
+    // rendering when the watched vendor list became the operator's (#375):
+    // before the first pass there are now no rows at all.
+    return Boolean(payload && payload.loading);
   } catch {
     // A failed poll leaves the last good rows on screen: Rust already retains
     // each vendor's last reading through a bad fetch.

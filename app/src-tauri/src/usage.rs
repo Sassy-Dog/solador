@@ -341,6 +341,21 @@ impl UsageState {
         self.claude_loading = false;
     }
 
+    /// Whether a log walk has actually produced Claude rollups.
+    ///
+    /// The Services panel's evidence that Anthropic is worth watching
+    /// (`services::active_vendors`): Anthropic is the one vendor with no
+    /// credential to look for, so the signal is that this machine has Claude
+    /// usage in it. Deliberately reads the *summary* rather than
+    /// `!claude_loading`: a completed walk that found nothing is a machine that
+    /// does not use Claude, and before the first walk this answers `false`
+    /// rather than guessing — the tile appears when the data does, never ahead
+    /// of it.
+    #[must_use]
+    pub fn claude_present(&self) -> bool {
+        self.claude.is_some()
+    }
+
     pub fn neon_mut(&mut self) -> &mut ProviderState<NeonUsageSummary> {
         &mut self.neon
     }

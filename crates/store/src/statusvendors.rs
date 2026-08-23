@@ -1,19 +1,22 @@
 //! Operator-added status vendors — the Services panel's list, as data.
 //!
-//! The panel's five vendors are a closed enum in `app/src-tauri/src/services.rs`,
-//! so a stack that depends on Railway, Resend or Clerk cannot watch them without
-//! a rebuild — and with releases blocked (#15), "without a rebuild" means "not at
-//! all". This module is the record that moves that list out of code; the epic is
-//! #284, and it adds no transport: `crates/servicestatus`'s Statuspage adapter is
-//! already parameterized by `base_url`.
+//! The panel's vendors used to be a closed enum in
+//! `app/src-tauri/src/services.rs`, so a stack that depended on Railway, Resend
+//! or Clerk could not watch them without a rebuild — and with releases blocked
+//! (#15), "without a rebuild" meant "not at all". This module is the record that
+//! moves that list out of code; the epic is #284, and it adds no transport:
+//! `crates/servicestatus`'s Statuspage adapter is already parameterized by
+//! `base_url`.
 //!
 //! Shaped after [`crate::Host`] and [`crate::VendorAccount`] — a `Uuid`-keyed
 //! entry the operator owns, in the order they arranged it. Unlike both of those
 //! it names **no credential**: a Statuspage summary is public, which is the
 //! property that gives this tier no onboarding ceiling.
 //!
-//! This module is the type alone. The probe that discovers components, the
-//! Settings surface and the panel wiring are later slices of #284.
+//! This module is the type alone. The probe that discovers components
+//! (`crates/servicestatus::discover`), the Settings surface and the panel
+//! wiring (`services::active_vendors` → `poll_service_status`, #375) are the
+//! later slices of #284, and all of them have landed.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

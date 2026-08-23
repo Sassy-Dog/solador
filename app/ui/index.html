@@ -156,11 +156,13 @@
       <div class="panel-body" id="azureBody"></div>
     </section>
 
-    <!-- Services. Third-party availability for the five vendors this stack
-         depends on, each read from whatever that vendor publishes (Atlassian
-         Statuspage, status.io, or an RSS incident feed). Same rules as above:
-         every label, state word and colour is built by services.js from the
-         `services` command. -->
+    <!-- Services. Third-party availability for the vendors this cockpit is
+         already reading, plus any Atlassian Statuspage the operator added — the
+         list is derived from configuration, not shipped. Each is read from
+         whatever that vendor publishes (Atlassian Statuspage, status.io, or an
+         RSS incident feed). Same rules as above: every label, state word and
+         colour is built by services.js from the `services` command, including
+         the sentence that replaces the rows when there are none. -->
     <section class="panel" id="servicesPanel" hidden>
       <header class="panel-hdr">
         <h2 class="panel-title" id="servicesTitle"></h2>

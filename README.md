@@ -38,9 +38,12 @@ server, no token, nothing to configure first:
 - **This machine** — per-core CPU, memory, disk and network rates, GPU and
   battery, sparklined at 1 Hz.
 - **Your containers** — whatever `docker`, `podman` or `tart` you already run.
-- **Vendor status** — GitHub, Anthropic, Vercel, Neon and Azure, read from their
-  public status pages, with a desktop notification when one changes in either
-  direction (on by default, and easy to turn off).
+- **Vendor status** — the public status pages of the vendors your cockpit is
+  already reading, with a desktop notification when one changes in either
+  direction (on by default, and easy to turn off). The list is *derived*, not
+  shipped: connect a GitHub token and GitHub appears, and it is your Claude Code
+  logs — not a key — that put Anthropic there on a fresh install. Add any
+  Atlassian Statuspage of your own in Settings and it is watched alongside them.
 - **Your Claude Code usage** — token rollups folded up from the logs already on
   your disk. No key, no account, nothing leaves the machine.
 
@@ -62,7 +65,7 @@ normal way to run this.
 | **Usage** | Claude Code token rollups, plus Neon, Sentry and Vercel consumption |
 | **Azure Cost** | the daily cost export, month to date |
 | **Sentry Crons** | every cron monitor that is not `ok`, and **how long it has been broken** |
-| **Services** | availability for GitHub, Anthropic, Vercel, Neon and Azure |
+| **Services** | availability for the vendors you already read — GitHub, Anthropic, Vercel, Neon, Azure — plus any Atlassian Statuspage you add |
 | **OpenClaw** | an [OpenClaw](crates/openclaw/) agent farm, over a live WebSocket — the one panel that is event-driven rather than polled |
 
 <details>
@@ -236,11 +239,11 @@ installer, an update check on macOS, and all nine panels.
 - **Windows has no update channel.** The app tells you that instead of
   pretending a check failed; you install the next release over the current one.
 - **Linux runs the agent, not the cockpit.**
-- **Adding your own status vendor is half-landed.** Settings will accept a
-  status page, probe it and store it, but the Services panel still watches
-  only the five vendors above — the last wiring step never shipped
-  ([#375](https://github.com/Sassy-Dog/solador/issues/375)). If you want a
-  vendor watched, say so there and it moves up the list.
+- **The Services panel only watches what you actually read.** The vendor list is
+  derived from your own configuration rather than shipped, so a cockpit with no
+  credentials and no added status pages watches nothing and says so. That is
+  deliberate — five hardcoded vendors are one maintainer's stack — but it does
+  mean the panel fills in as you connect things rather than arriving full.
 - **The Tauri IPC boundary has no automated coverage.** That is a decision, not
   an oversight: `tauri-driver` has no macOS support, so the only automatable
   host would be the Windows CI job — a large harness covering one build path.
