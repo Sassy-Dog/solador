@@ -82,7 +82,23 @@ Notes:
   filtered out of it here.
   - `cpuPercent` is the whole process's — the kernel already reports
     thread-group-wide times in `/proc/<pid>/stat`, so nothing is summed on top —
-    and `memoryMB` is its RSS, listed once.
+    and `memoryMB` is its RSS, listed once. The unit is `sysinfo`'s: **percent
+    of one core**, so a program saturating four cores reads `400`.
+  - `cpuCores` is that same reading as a **core count** (`cpuPercent / 100`),
+    and it is the one a consumer should render (agent ≥ 0.5.0). `400%` beside a
+    machine-wide `totalUsage` of `0%` is two numbers wearing one `%` sign
+    against denominators three orders of magnitude apart; `4.0 cores` is not.
+  - Both figures are averaged over the process sampler's own cadence (~1 min),
+    not the 1s snapshot cadence. That is now true **by construction**: the
+    process refresh has a `sysinfo::System` of its own, so the window its CPU
+    numerator spans is the window its denominator spans (#378).
+  - Agents **before 0.5.0** omit `cpuCores` entirely, and on Linux their
+    `cpuPercent` is inflated by the ratio between those two cadences — 60×,
+    measured on a real host at `210.8%` for a process genuinely using 3.55% of
+    one core, which is why a host card could show `sqlservr` at 220% while its
+    header and all 36 cores read 0%. **The absent key is the version signal**:
+    a consumer renders `—` rather than deriving a core count from a number it
+    knows is wrong. Only redeploying the agent fixes the reading.
   - Agents **before 0.3.1** listed each thread as its own process, so one
     multi-threaded program (a SQL Server engine, say) appeared as several rows
     repeating its full RSS and splitting its CPU, and kernel threads like

@@ -18,7 +18,7 @@
 //! is the mirror-image bug.
 
 use crate::color::{self, ThermalState};
-use crate::format::{fmt, fmt_axis, fmt_rate, memory_label, relative_age};
+use crate::format::{core_label, fmt, fmt_axis, fmt_rate, memory_label, relative_age};
 use crate::history::History;
 use crate::layout::{
     core_block_height, core_column_ladder, core_rung_height, core_visual_rows, CORE_GAP,
@@ -292,6 +292,12 @@ pub fn host_card(
         .collect();
 
     let mut by_cpu: Vec<&wire::Process> = s.processes.iter().collect();
+    // Ordered on `cpu_percent`, *rendered* from `cpu_cores` (#378). The two are
+    // one reading in two units, so the order is the same either way — and
+    // `cpu_percent` is the one every agent sends, including the ones whose
+    // figure is inflated. That inflation is a shared denominator, identical for
+    // every row in the payload, so it scales the list without reordering it: a
+    // card that must print `—` in every value still ranks the hogs correctly.
     by_cpu.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap());
     let mut by_mem: Vec<&wire::Process> = s.processes.iter().collect();
     by_mem.sort_by(|a, b| b.memory_mb.partial_cmp(&a.memory_mb).unwrap());
@@ -401,8 +407,13 @@ pub fn host_card(
         "netUpHistory": h.net_up.values(),
         "volumeCount": s.volumes.len().to_string(),
         "volumes": volumes,
+        // `cpu_cores`, never `cpu_percent`: an agent predating #378 omits the
+        // key and gets the em dash, because its percent is inflated by the
+        // ratio of that agent's two sampler cadences and dividing it by 100
+        // here would relabel a wrong number as a core count. The absent key is
+        // the whole version check.
         "topCpu": by_cpu.iter().take(5).map(|p| json!({
-            "name": p.name, "value": format!("{}%", p.cpu_percent.round() as i64)
+            "name": p.name, "value": or_unknown(p.cpu_cores, core_label)
         })).collect::<Vec<_>>(),
         "topRam": by_mem.iter().take(5).map(|p| json!({
             "name": p.name, "value": memory_label(p.memory_mb)
@@ -660,25 +671,68 @@ mod tests {
         // correlated cpu/mem values and can't distinguish the two sorts.
         let mut s = fixture();
         s.processes = vec![
-            wire::Process {
-                pid: 1,
-                name: "burst".to_string(),
-                cpu_percent: 195.0,
-                memory_mb: 800.0,
-            },
-            wire::Process {
-                pid: 2,
-                name: "hog".to_string(),
-                cpu_percent: 12.0,
-                memory_mb: 6144.0,
-            },
+            wire::Process::from_cpu_percent(1, "burst".to_string(), 195.0, 800.0),
+            wire::Process::from_cpu_percent(2, "hog".to_string(), 12.0, 6144.0),
         ];
         let vm = host_card("ubu-01", &s, &HostHistories::new(), &Connection::Live);
         assert_ne!(vm["topCpu"][0]["name"], vm["topRam"][0]["name"]);
         assert_eq!(vm["topCpu"][0]["name"], "burst");
-        assert_eq!(vm["topCpu"][0]["value"], "195%");
+        assert_eq!(vm["topCpu"][0]["value"], "1.9 cores");
         assert_eq!(vm["topRam"][0]["name"], "hog");
         assert_eq!(vm["topRam"][0]["value"], "6.0 GB");
+    }
+
+    /// The version signal, end to end (#378). An agent that does not send
+    /// `cpuCores` gets the em dash — **not** its `cpuPercent` divided by 100,
+    /// which is the one plausible-looking wrong answer: that percent is the
+    /// inflated figure the field exists to stop rendering.
+    ///
+    /// The row is still *there*, still named, and still in the right place in
+    /// the ranking. Only the value is withheld, because only the value is
+    /// unknown.
+    #[test]
+    fn a_process_without_a_core_count_renders_an_em_dash_rather_than_its_percent() {
+        let mut s = fixture();
+        s.processes = vec![
+            wire::Process {
+                pid: 1,
+                name: "sqlservr".to_string(),
+                // What ubu-3xdv actually reported while using 3.55% of one core.
+                cpu_percent: 210.8,
+                cpu_cores: None,
+                memory_mb: 1900.0,
+            },
+            wire::Process {
+                pid: 2,
+                name: "idle".to_string(),
+                cpu_percent: 0.4,
+                cpu_cores: None,
+                memory_mb: 9.0,
+            },
+        ];
+        let vm = host_card("ubu-3xdv", &s, &HostHistories::new(), &Connection::Live);
+
+        assert_eq!(vm["topCpu"][0]["name"], "sqlservr", "ordering survives");
+        assert_eq!(vm["topCpu"][0]["value"], UNKNOWN);
+        assert_eq!(vm["topCpu"][1]["value"], UNKNOWN);
+        // The row is not blank — RAM was never in doubt.
+        assert_eq!(vm["topRam"][0]["value"], "1.9 GB");
+    }
+
+    /// …and a fixed agent's rows read as core counts, on both sides of one
+    /// core. `4.0 cores` is the assertion that matters: the old rendering of
+    /// the same reading was `400%`, on a card whose header says `0%`.
+    #[test]
+    fn a_reported_core_count_renders_as_cores_above_and_below_one() {
+        let mut s = fixture();
+        s.processes = vec![
+            wire::Process::from_cpu_percent(1, "builder".to_string(), 400.0, 800.0),
+            wire::Process::from_cpu_percent(2, "sqlservr".to_string(), 3.55, 1900.0),
+        ];
+        let vm = host_card("ubu-3xdv", &s, &HostHistories::new(), &Connection::Live);
+
+        assert_eq!(vm["topCpu"][0]["value"], "4.0 cores");
+        assert_eq!(vm["topCpu"][1]["value"], "0.04 cores");
     }
 
     #[test]

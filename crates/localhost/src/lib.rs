@@ -61,6 +61,28 @@ const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 /// `processSampleInterval`: enumerating every process is expensive, and the
 /// question it answers ("what has been hogging this machine?") is a
 /// ~minute-scale one, not a per-second one.
+///
+/// # This crate has the agent's #378 structure and is not (yet) wrong
+///
+/// One `System` ([`LocalSampler`]'s), refreshed for CPU every ~1 s and
+/// for processes every 55 s — exactly the shape that inflated the agent's
+/// per-process CPU by 60× on Linux (#378, `agent/src/metrics.rs`). It is
+/// **latent here, not live**, and the reason is the platform, not the code:
+///
+/// - **macOS** derives a process's CPU window from that process's own
+///   `clock_info.last_update`, advanced only by a process refresh.
+/// - **Windows** does the same through `cpu_calc_values.last_update`.
+/// - **Linux** is the one path that takes the denominator from the `System`'s
+///   *CPU* counters (`update_procs_cpu` → `cpus.get_global_raw_times()`), so a
+///   1 s CPU cadence divides a 55 s numerator by a 1 s window.
+///
+/// The cockpit ships on macOS and Windows only, so today every reading this
+/// crate produces is measured over the window it is reported for. **The day it
+/// samples a Linux box that stops being true** — the same shape as
+/// `process::is_process`'s #211 note, and the fix is the same one the agent
+/// took: give the process refresh a `System` of its own, never a correction
+/// constant. Deliberately recorded rather than fixed speculatively, because a
+/// claim about an absence is the kind that rots without anything failing.
 const PROCESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(55);
 
 /// One sample of the machine this process is running on.

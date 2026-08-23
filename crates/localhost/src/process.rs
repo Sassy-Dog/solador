@@ -112,15 +112,18 @@ pub(crate) fn refresh_kind() -> ProcessRefreshKind {
 /// sibling rows loses no CPU time, and summing them back in would double-count
 /// it. Memory is the same story from the other side: the leader's RSS *is* the
 /// process's RSS, which is why it appeared N times to begin with.
+///
+/// Rows carry both CPU keys, filled by `Process::from_cpu_percent` from the one
+/// reading — `cpuCores` is what the card renders (#378). This crate may fill it
+/// because on the two platforms the cockpit ships on, sysinfo measures a
+/// process's CPU over the window it reports it for; see
+/// `PROCESS_SAMPLE_INTERVAL` for the Linux caveat that has not arrived yet.
 pub(crate) fn top_union(entries: Vec<ProcEntry>, limit: usize) -> Vec<Process> {
     let all: Vec<Process> = entries
         .into_iter()
         .filter(is_process)
-        .map(|entry| Process {
-            pid: entry.pid,
-            name: entry.name,
-            cpu_percent: entry.cpu_percent,
-            memory_mb: entry.memory_mb,
+        .map(|entry| {
+            Process::from_cpu_percent(entry.pid, entry.name, entry.cpu_percent, entry.memory_mb)
         })
         .collect();
 
@@ -335,6 +338,24 @@ mod tests {
 
         let rss_rows = top.iter().filter(|p| p.memory_mb == 1900.0).count();
         assert_eq!(rss_rows, 1, "1.9 GB is one process's RSS, counted once");
+    }
+
+    /// This machine's card renders core counts like every other host's (#378),
+    /// so this collector fills `cpuCores` — it is entitled to, because on the
+    /// platforms the cockpit ships on sysinfo measures a process's CPU over the
+    /// window it reports it for. Leaving it `None` would paint the local card's
+    /// "Top CPU" as five em dashes on a machine where nothing is wrong.
+    #[test]
+    fn every_row_carries_a_core_count_beside_the_percent() {
+        let top = top_union(sqlservr_table(), TOP_LIMIT);
+
+        let engine = top.iter().find(|p| p.pid == 8723).expect("engine survives");
+        assert_eq!(engine.cpu_cores, Some(3.41), "341% of one core is 3.41");
+
+        assert!(
+            top.iter().all(|p| p.cpu_cores.is_some()),
+            "a locally sampled row is never the unknown a pre-#378 agent sends"
+        );
     }
 
     /// Kernel threads (`txg_sync` and the rest of the `[bracketed]` crowd) are

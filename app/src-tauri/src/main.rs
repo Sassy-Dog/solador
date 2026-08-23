@@ -4788,18 +4788,8 @@ fn dump_local_card() -> Value {
             total_gb: 994.0,
         }],
         processes: vec![
-            wire::Process {
-                pid: 501,
-                name: "Xcode".to_string(),
-                cpu_percent: 62.0,
-                memory_mb: 4096.0,
-            },
-            wire::Process {
-                pid: 733,
-                name: "rust-analyzer".to_string(),
-                cpu_percent: 18.5,
-                memory_mb: 2048.0,
-            },
+            wire::Process::from_cpu_percent(501, "Xcode".to_string(), 62.0, 4096.0),
+            wire::Process::from_cpu_percent(733, "rust-analyzer".to_string(), 18.5, 2048.0),
         ],
     };
 

@@ -397,6 +397,80 @@ fn an_unknown_gpu_serialises_to_nothing_while_the_old_zeros_still_serialise() {
     assert_ne!(Gpu::unknown(), Gpu::zeros());
 }
 
+/// #378's version signal, on the decode side. Every agent on the wire before
+/// that fix omits `cpuCores`, and the *only* correct reading of that payload is
+/// "this producer did not answer" — which is what the committed fixture, an
+/// unmodified pre-#378 sample, must decode to.
+///
+/// `cpuPercent` still lands, because it is still sent. The point is that the
+/// two are separate answers: one present and unusable, one absent and honest.
+#[test]
+fn a_pre_378_agents_process_row_has_no_core_count() {
+    let s: Snapshot = serde_json::from_str(FIXTURE).unwrap();
+    let cargo = &s.processes[0];
+
+    assert_eq!(cargo.cpu_percent, 184.0, "the old key still decodes");
+    assert_eq!(
+        cargo.cpu_cores, None,
+        "an omitted cpuCores is unknown, never derived from cpuPercent"
+    );
+    assert!(
+        s.processes.iter().all(|p| p.cpu_cores.is_none()),
+        "one absent key means the whole payload predates #378"
+    );
+}
+
+/// The other direction, and the rule that makes the signal readable: a producer
+/// with no answer OMITS the key. `"cpuCores": null` would decode to the same
+/// `None` here, but it is a different payload — and a stricter consumer than
+/// this crate may not tolerate it. Same pair, same reason, as `Volume::fstype`.
+#[test]
+fn a_process_without_a_core_count_omits_the_key_rather_than_emitting_null() {
+    let unknown = wire::Process {
+        pid: 1,
+        name: "sqlservr".into(),
+        cpu_percent: 210.8,
+        cpu_cores: None,
+        memory_mb: 1900.0,
+    };
+    let json = serde_json::to_value(&unknown).unwrap();
+    assert!(
+        !json.as_object().unwrap().contains_key("cpuCores"),
+        "cpuCores must be omitted, got {json}"
+    );
+    assert_eq!(json["cpuPercent"], 210.8, "the old key is still emitted");
+
+    // …and it survives the round trip as the unknown it was, rather than
+    // reappearing as a zero.
+    let again: wire::Process = serde_json::from_value(json).unwrap();
+    assert_eq!(again, unknown);
+}
+
+/// `from_cpu_percent` is the one place the two CPU keys are derived from each
+/// other, so they cannot disagree — and it is a unit conversion, not a
+/// correction: a saturated core is `1.0`, four of them are `4.0`, and 3.55% of
+/// one core is the `0.0355` that used to reach the panel as `210.8`.
+#[test]
+fn from_cpu_percent_fills_both_keys_from_one_reading() {
+    let four = wire::Process::from_cpu_percent(1, "builder".into(), 400.0, 800.0);
+    assert_eq!(four.cpu_percent, 400.0);
+    assert_eq!(four.cpu_cores, Some(4.0));
+
+    let sliver = wire::Process::from_cpu_percent(2, "sqlservr".into(), 3.55, 1900.0);
+    assert_eq!(sliver.cpu_cores, Some(0.0355));
+
+    // A measured zero is a reading, exactly as everywhere else in this
+    // contract: an idle process is `Some(0.0)`, never the absent key above.
+    let idle = wire::Process::from_cpu_percent(3, "sleeper".into(), 0.0, 4.0);
+    assert_eq!(idle.cpu_cores, Some(0.0));
+
+    let json = serde_json::to_value(&four).unwrap();
+    assert_eq!(json["cpuCores"], 4.0);
+    assert_eq!(json["cpuPercent"], 400.0);
+    let again: wire::Process = serde_json::from_value(json).unwrap();
+    assert_eq!(again, four, "a present core count survives a round trip");
+}
+
 #[test]
 fn deserialises_the_agents_container_list() {
     let cs: Vec<Container> =
