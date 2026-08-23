@@ -1135,6 +1135,36 @@ transition discipline as the statuspage watch, keyed on the same `error` field
 the card renders from so a banner and a red card can never disagree — debounce
 included.
 
+### TOP CPU is a core count, and an old agent gets an em dash
+
+The card's **TOP CPU** column reads `0.04 cores` / `2.2 cores`, never a
+percentage ([#378](https://github.com/Sassy-Dog/solador/issues/378)). The wire
+carries sysinfo's native unit — percent of *one* core — which puts `220%` in a
+five-row list on a card whose header says `0%`: two numbers wearing one `%` sign
+with denominators three orders of magnitude apart. Cores are the denominator the
+core grid on the same card already shows.
+
+The reading itself was also wrong on every Linux agent, and by a lot. The
+agent's sampler refreshed CPU every second and processes every sixty, through
+one `sysinfo::System`; on Linux — and only Linux — that makes a process's CPU a
+60-second numerator over a 1-second denominator. `sqlservr` on ubu-3xdv reported
+220–282% while genuinely using 3.55% of one core, which is 0.099% of that box,
+which is why the header and all 36 cores read `0%` at the same time. The fix is
+structural (the process refresh has a `System` of its own), not a correction
+constant, and it lives in the agent — see [`agent/README.md`](../agent/README.md).
+
+So a cockpit talking to an agent that has not been redeployed still receives the
+inflated figure, and **renders `—`**. The signal is the absent `cpuCores` key,
+not a version string: an agent that cannot report a core count does not send
+one, `wire::Process::cpu_cores` decodes to `None`, and `viewmodel::card` paints
+the em dash. Deriving `cpuPercent / 100` for those rows would relabel the exact
+number the field exists to stop showing, and asking `/v1/health` for a version
+would be a second request answering a question the missing key already answers.
+The row keeps its name and its place in the ranking — the inflation is a shared
+denominator, identical for every row in one payload, so it scales the list
+without reordering it. Only the value is withheld, because only the value is
+unknown. TOP RAM is unaffected throughout.
+
 ### A succeeding poll is not proof the data is current
 
 The card's four states — connecting, live, stale, failed — are facts about

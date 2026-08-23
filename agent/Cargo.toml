@@ -1,5 +1,12 @@
 [package]
 name = "solador-agent"
+# 0.5.0: `processes[].cpuCores` (#378). A minor for the same reason 0.4.0 was:
+# a wire field this agent has never produced before. It also FIXES what
+# `cpuPercent` carries on Linux — the process refresh has its own sysinfo
+# `System` now, so a 60-second numerator is no longer divided by a 1-second
+# denominator (60x, measured at 210.8% for a process using 3.55% of one core).
+# The new key is the version signal a consumer reads: absent means an agent
+# whose `cpuPercent` is still inflated, and the row renders `—`.
 # 0.4.0: `gpu` is measured on hosts with an NVIDIA card, via `nvidia-smi`
 # (#217). A minor, not a patch: this agent produces a wire field it has never
 # produced before. Still omitted everywhere nothing is measured.
@@ -9,7 +16,7 @@ name = "solador-agent"
 # keys are omitted instead. `/v1/health`'s `version` is how you tell a
 # redeployed agent from one still sending the old zeros (or, now, the old
 # fabricated thread rows).
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Per-host metrics agent polled by Solador over Tailscale"
 license = "MIT"

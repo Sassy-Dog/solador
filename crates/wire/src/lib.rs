@@ -214,14 +214,68 @@ impl Volume {
     }
 }
 
+/// One row of `processes[]` — the union of the top-N by CPU and the top-N by
+/// memory, as `GET /v1/snapshot` reports it.
+///
+/// # Two CPU keys, and only one of them is a unit a reader can act on
+///
+/// `cpuPercent` is sysinfo's convention: **percent of one core**, so a program
+/// saturating four cores reads `400`. Beside a machine-wide `totalUsage` that
+/// looks like the same kind of number and is not, that is unreadable — which is
+/// why [`cpu_cores`](Self::cpu_cores) exists and is what a consumer renders
+/// (#378).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Process {
     pub pid: i64,
     pub name: String,
+    /// Percent of **one core**, over the window the producer sampled it.
+    ///
+    /// Kept on the wire, and kept meaning exactly what it has always meant: a
+    /// key this contract already emits is not silently redefined. #378 changed
+    /// what the agent *puts* here on Linux; it did not change the unit.
     #[serde(rename = "cpuPercent")]
     pub cpu_percent: f64,
+    /// How many cores this process is using — `cpuPercent / 100`, and the
+    /// field a consumer should render.
+    ///
+    /// **The absent key is the version signal, and the only one there is.**
+    /// Agents predating #378 do not send it, and on Linux their `cpuPercent`
+    /// is inflated by the ratio between the sampler's two cadences: a
+    /// 60-second numerator over a 1-second denominator, measured at 210.8% for
+    /// a process genuinely using 3.55% of one core. So `None` renders as `—`.
+    /// Deriving a core count from that agent's `cpuPercent` would launder the
+    /// exact number this field was added to replace, and asking `/v1/health`
+    /// for a version would add a request to answer a question the missing key
+    /// already answers — fail-closed, for free.
+    ///
+    /// `default` for lenient decoding, `skip_serializing_if` so a producer
+    /// that cannot answer OMITS the key rather than sending `"cpuCores": null`
+    /// — the same pair, for the same reason, as [`Volume::fstype`].
+    #[serde(rename = "cpuCores", default, skip_serializing_if = "Option::is_none")]
+    pub cpu_cores: Option<f64>,
     #[serde(rename = "memoryMB")]
     pub memory_mb: f64,
+}
+
+impl Process {
+    /// Build a row from a CPU reading in sysinfo's percent-of-one-core, filling
+    /// both CPU keys from it.
+    ///
+    /// The one place the two are derived from each other, so they cannot
+    /// disagree — and it is a **unit conversion, never a correction**. The
+    /// percent handed in is already measured over the window it is reported
+    /// for; a producer that has to scale a reading to make it true has the bug
+    /// #378 fixed structurally, and a constant here would only hide it.
+    #[must_use]
+    pub fn from_cpu_percent(pid: i64, name: String, cpu_percent: f64, memory_mb: f64) -> Self {
+        Process {
+            pid,
+            name,
+            cpu_percent,
+            cpu_cores: Some(cpu_percent / 100.0),
+            memory_mb,
+        }
+    }
 }
 
 /// One container or VM from `GET /v1/containers`.

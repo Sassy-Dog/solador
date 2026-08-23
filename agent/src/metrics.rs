@@ -63,6 +63,20 @@ pub(crate) const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Re-enumerate processes every N ticks (~1 min at the 1s sample interval).
+///
+/// **This is the ratio that made a process using 3.55% of one core read 210.8%
+/// (#378), and the reason [`SamplerSystems`] keeps two `sysinfo::System`
+/// handles rather than one.** sysinfo derives a process's CPU as (its own
+/// `utime`+`stime` since *that process* was last refreshed) over (a window it
+/// takes from the `System`'s CPU counters). Share one `System` between a 1s CPU
+/// cadence and this one, and on Linux the numerator spans a minute while the
+/// denominator spans a second: inflation by exactly this constant, sitting well
+/// under sysinfo's `ncpu * 100` clamp on any real host, so it never looks
+/// saturated — it just looks wrong in a way nothing catches.
+///
+/// Raising or lowering this number is therefore safe *only* while the two
+/// handles stay separate. Merging them back is what re-creates the bug, scaled
+/// to whatever this says.
 const PROCESS_SAMPLE_TICKS: u64 = 60;
 /// Keep the top-N by CPU and by memory.
 const PROCESS_TOP_LIMIT: usize = 5;
@@ -266,16 +280,18 @@ fn is_process(entry: &ProcEntry) -> bool {
 /// 201% + 90% + 26% across three thread rows shows one row at the full figure.
 /// Memory is the same story from the other side — the leader's RSS is the
 /// process's RSS, which is why it appeared N times to begin with.
+///
+/// The row carries **both** CPU keys, filled by `Process::from_cpu_percent`
+/// from the one reading: `cpuPercent` is what this contract has always sent,
+/// `cpuCores` is what a consumer renders (#378). The division there is a unit
+/// conversion and nothing else — the percent reaching it is already measured
+/// over the window it is reported for, because [`SamplerSystems`] samples it
+/// that way.
 fn top_processes(entries: Vec<ProcEntry>, limit: usize) -> Vec<Process> {
     let all: Vec<Process> = entries
         .into_iter()
         .filter(is_process)
-        .map(|e| Process {
-            pid: e.pid,
-            name: e.name,
-            cpu_percent: e.cpu_percent,
-            memory_mb: e.memory_mb,
-        })
+        .map(|e| Process::from_cpu_percent(e.pid, e.name, e.cpu_percent, e.memory_mb))
         .collect();
 
     let cmp_desc = |key: fn(&Process) -> f64| {
@@ -331,6 +347,99 @@ fn process_refresh_kind() -> ProcessRefreshKind {
         .with_disk_usage()
         .with_exe(UpdateKind::OnlyIfNotSet)
         .without_tasks()
+}
+
+// ---------------------------------------------------------------------------
+// The sampler's two sysinfo handles.
+// ---------------------------------------------------------------------------
+
+/// The two `sysinfo::System` handles [`sampler_loop`] samples through — one per
+/// cadence, and **that is the whole point of this type** (#378).
+///
+/// # Why this is not one `System`
+///
+/// It reads like pointless duplication, was one `System` until #378, and
+/// merging it back would silently re-introduce a 60× error that nothing else in
+/// this repo can catch. The mechanism:
+///
+/// - A process's CPU is `(utime + stime) since that process was last refreshed`
+///   divided by a **window taken from the `System`'s own CPU counters**.
+/// - On Linux (`unix/linux/system.rs::update_procs_cpu`) that window is
+///   `cpus.get_global_raw_times()`, refreshed through `refresh_if_needed`, which
+///   declines to re-read `/proc/stat` when the last CPU refresh was under
+///   `MINIMUM_CPU_UPDATE_INTERVAL` (200 ms) ago.
+/// - The loop refreshes CPU every [`SAMPLE_INTERVAL`] (1 s). On a shared
+///   `System` the process refresh lands microseconds after one of those, so the
+///   gate declines, and a **60-second numerator is divided by a 1-second
+///   denominator** — see [`PROCESS_SAMPLE_TICKS`]. Measured on a real host:
+///   210.8% reported for a process using 3.55% of one core, a factor of 59.4.
+///
+/// Giving [`Self::processes`] its own handle makes the two windows the same
+/// window by construction: nothing else ever refreshes *its* CPU counters, so
+/// the 200 ms gate always opens and the denominator spans exactly the interval
+/// since the previous process refresh — the interval the numerator already
+/// spanned. **No correction constant**, which matters because the arithmetic
+/// above is a sysinfo internal: a `/ 60` would be right until the day sysinfo
+/// changed it, and wrong silently thereafter.
+///
+/// macOS and Windows keep the window per *process*
+/// (`clock_info.last_update` / `cpu_calc_values.last_update`), so they were
+/// never wrong — which is why the shipped cockpit's own host card was fine
+/// while every agent card was not. The split is written once here rather than
+/// behind a `cfg`, because a structure that is correct on every platform is
+/// cheaper than one that is correct on two.
+///
+/// # Cost
+///
+/// Unchanged: one process-table walk per [`PROCESS_SAMPLE_TICKS`] ticks, plus
+/// one to prime. [`Self::machine`] is a plain `System::new()` — it is asked for
+/// CPU and memory only, so the process walk `System::new_all()` used to do at
+/// startup (**with** tasks, the expensive kind [`process_refresh_kind`] exists
+/// to avoid) is gone rather than duplicated.
+struct SamplerSystems {
+    /// Refreshed every tick: CPU and memory. Never sees a process.
+    machine: System,
+    /// Refreshed only on the process cadence. Never sees `refresh_cpu_all`,
+    /// which is the invariant the whole type exists to hold.
+    processes: System,
+}
+
+impl SamplerSystems {
+    /// Both handles, primed.
+    ///
+    /// Priming matters on each: sysinfo's first CPU reading and first process
+    /// reading are both meaningless (no previous sample to diff), so the caller
+    /// waits one [`SAMPLE_INTERVAL`] before the first real pass. The process
+    /// prime also seeds *its* CPU counters, which is what makes the first real
+    /// process sample a ~1 s average rather than nothing at all.
+    fn new() -> Self {
+        let mut machine = System::new();
+        machine.refresh_cpu_all();
+
+        let mut processes = System::new();
+        processes.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
+
+        SamplerSystems { machine, processes }
+    }
+
+    /// The per-tick refresh: CPU and memory, nothing else.
+    fn refresh_machine(&mut self) {
+        self.machine.refresh_cpu_all();
+        self.machine.refresh_memory();
+    }
+
+    /// The process-cadence refresh, and the top-`limit` union it yields.
+    ///
+    /// Every reading in the returned rows was measured over the interval since
+    /// the previous call to *this* method — the interval it is reported for.
+    fn refresh_processes(&mut self, limit: usize) -> Vec<Process> {
+        self.processes.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            process_refresh_kind(),
+        );
+        top_processes(process_entries(&self.processes), limit)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -519,8 +628,14 @@ pub fn spawn_sampler() -> MetricsState {
 /// and cadence ([`crate::gpu`]), so this loop's contact with a subprocess is a
 /// mutex lock. A wedged `nvidia-smi` costs a stale GPU reading, not a stalled
 /// snapshot.
+///
+/// **Two cadences, and therefore two `sysinfo::System` handles** — CPU/memory
+/// every [`SAMPLE_INTERVAL`], processes every [`PROCESS_SAMPLE_TICKS`] of them.
+/// The pair lives in [`SamplerSystems`], whose docs carry the 60× reason it is
+/// not one handle; a "simplification" that merges them puts that error back on
+/// every Linux host's TOP CPU list, silently.
 async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
-    let mut sys = System::new_all();
+    let mut sys = SamplerSystems::new();
     let mut networks = Networks::new_with_refreshed_list();
     let mut disks = Disks::new_with_refreshed_list();
 
@@ -528,8 +643,8 @@ async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
     let skip_env = std::env::var(SKIP_FSTYPES_ENV).ok();
     let skip = skip_fstypes(skip_env.as_deref());
 
-    // Prime CPU usage (the first reading is meaningless).
-    sys.refresh_cpu_all();
+    // `SamplerSystems::new` primed both handles; the first reading of anything
+    // sysinfo derives from a delta is meaningless, so wait one interval out.
     tokio::time::sleep(SAMPLE_INTERVAL).await;
 
     // Processes are enumerated on a slow cadence (expensive, and only needed
@@ -539,18 +654,16 @@ async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
 
     loop {
         // Refresh everything; the second+ refresh yields valid deltas/usages.
-        sys.refresh_cpu_all();
-        sys.refresh_memory();
+        sys.refresh_machine();
         networks.refresh(true);
         disks.refresh(true);
 
         if tick.is_multiple_of(PROCESS_SAMPLE_TICKS) {
-            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
-            cached_processes = top_processes(process_entries(&sys), PROCESS_TOP_LIMIT);
+            cached_processes = sys.refresh_processes(PROCESS_TOP_LIMIT);
         }
 
         let snap = compute_snapshot(
-            &sys,
+            &sys.machine,
             &networks,
             &disks,
             SAMPLE_INTERVAL.as_secs_f64(),
@@ -785,10 +898,17 @@ mod tests {
                 total_gb: 100.0,
                 fstype: Some("ext4".to_string()),
             }],
+            // `cpu_cores: None` deliberately: the canonical sample is the
+            // payload agents ALREADY on the wire send, and none of them predates
+            // #378 by knowing about `cpuCores`. The contract lock below is what
+            // proves the new key is omitted rather than emitted as null — see
+            // `linux_snapshot_reports_processes_in_cores` for what this agent
+            // sends today.
             processes: vec![Process {
                 pid: 123,
                 name: "node".to_string(),
                 cpu_percent: 12.5,
+                cpu_cores: None,
                 memory_mb: 256.0,
             }],
         }
@@ -1270,6 +1390,189 @@ mod tests {
             pids,
             vec![1, 2],
             "top-1 by CPU plus top-1 by memory, CPU-sorted"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-process CPU: the window, and the unit (#378).
+    // -----------------------------------------------------------------------
+
+    /// Every row this agent emits carries a core count beside the percent, and
+    /// the two are one reading in two units — `cpuCores` is `cpuPercent / 100`
+    /// exactly, never rounded and never independently sourced.
+    ///
+    /// A consumer reading a row with `cpuPercent` present and `cpuCores` absent
+    /// is looking at an agent that predates this fix, so emitting the key is
+    /// the whole version signal. `canonical_snapshot` pins the other side:
+    /// the payload the fleet already sends, where it is correctly missing.
+    #[test]
+    fn linux_snapshot_reports_processes_in_cores() {
+        let out = top_processes(sqlservr_table(), PROCESS_TOP_LIMIT);
+        let engine = out
+            .iter()
+            .find(|p| p.pid == 8723)
+            .expect("the engine survives");
+
+        assert_eq!(
+            engine.cpu_cores,
+            Some(3.41),
+            "341% of one core is 3.41 cores"
+        );
+
+        let v = serde_json::to_value(&out).unwrap();
+        let row = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["pid"] == 8723)
+            .unwrap();
+        assert_eq!(row["cpuCores"], json!(3.41));
+        assert_eq!(
+            row["cpuPercent"],
+            json!(341.0),
+            "the key this contract has always sent keeps its meaning"
+        );
+    }
+
+    /// The machine handle is a bare `System::new()` now — it never walks the
+    /// process table — so this pins the two things `compute_snapshot` reads out
+    /// of it that only a *first* CPU refresh populates: the per-core list and
+    /// the CPU brand. A `System::new()` that was never primed answers an empty
+    /// core grid and the `"Unknown"` fallback model, on a host where both are
+    /// knowable.
+    #[test]
+    fn the_machine_handle_still_knows_the_cpu_without_ever_walking_processes() {
+        let mut sys = SamplerSystems::new();
+        sys.refresh_machine();
+
+        assert!(
+            !sys.machine.cpus().is_empty(),
+            "the per-core grid comes from this handle"
+        );
+        assert!(
+            !sys.machine.cpus()[0].brand().trim().is_empty(),
+            "the card's cpuModel comes from this handle"
+        );
+        assert!(
+            sys.machine.processes().is_empty(),
+            "the machine handle has no business enumerating processes"
+        );
+    }
+
+    /// **THE #378 REGRESSION.** The process CPU reading must be measured over
+    /// the window it is reported for — and the only structure that makes that
+    /// true on Linux is [`SamplerSystems`] holding a `System` the fast CPU
+    /// cadence never touches.
+    ///
+    /// This drives the production type exactly as [`sampler_loop`] does: many
+    /// machine refreshes, then one process refresh. Reverting to a single
+    /// shared `System` deletes [`SamplerSystems`] and this stops compiling; a
+    /// "simplification" that keeps the type but points both fields at one
+    /// handle makes it fail on Linux, which is where it can fail.
+    ///
+    /// The assertion is a **self-check inside one sysinfo refresh**, so it needs
+    /// no wall-clock tolerance of its own and no assumption about how busy the
+    /// machine is: `accumulated_cpu_time()` is the CPU-milliseconds this process
+    /// has burned since it started (a counter, refreshed by the same call), and
+    /// `cpu_usage()` is sysinfo's percent-of-one-core over its chosen window. If
+    /// the two windows agree, the second is the first divided by elapsed wall
+    /// time. Under the bug the reported figure is that, multiplied by the ratio
+    /// of the two cadences — here 10× — and then clamped to `ncpu * 100`.
+    ///
+    /// The burn is a **duty cycle well under one core** on purpose: at full tilt
+    /// on a single-core box the clamp alone would drag the wrong answer back
+    /// onto the right one, and the test would pass on broken code.
+    ///
+    /// Measured while writing it (macOS, idle): 25.8% reported against 25.7%
+    /// true. The 15-point tolerance below is slack for jiffy quantisation on a
+    /// HZ=100 kernel and a busy runner — the failure it guards is ~175 points
+    /// wide, because the wrong answer saturates at `ncpu * 100`.
+    #[test]
+    fn process_cpu_is_measured_over_the_window_it_is_reported_for() {
+        use std::time::Instant;
+
+        // The fast cadence, scaled down: the real loop runs 60 machine ticks
+        // per process refresh, and any tick over sysinfo's 200ms
+        // `MINIMUM_CPU_UPDATE_INTERVAL` reproduces the mismatch identically.
+        // Ten ticks of 60ms is the same shape in a test-sized 0.6s.
+        const TICKS: u32 = 10;
+        // Burn about a quarter of a core per tick, so neither the true figure
+        // nor the inflated one can hide behind sysinfo's `ncpu * 100` clamp.
+        const BUSY: Duration = Duration::from_millis(15);
+        const IDLE: Duration = Duration::from_millis(45);
+
+        let me = sysinfo::Pid::from_u32(std::process::id());
+        let mut sys = SamplerSystems::new();
+
+        // One warm-up refresh, because sysinfo needs a different number of them
+        // per platform before a per-process CPU delta exists at all, and the
+        // deepest requirement is the one to satisfy. Linux and macOS establish
+        // the baseline on the prime inside `SamplerSystems::new()` and report on
+        // the next refresh; **Windows takes one more** — `compute_cpu_usage`
+        // stamps `last_update` at construction and returns before recording any
+        // baseline on a call under `MINIMUM_CPU_UPDATE_INTERVAL`, so the prime
+        // establishes nothing and the refresh after it computes against zeroed
+        // system times (Windows CI: 0.2% reported for a process burning 25.7%).
+        // Sleeping past that 200ms gate first is what makes this warm-up count.
+        // The agent itself only ever ships on Linux and macOS, where its prime
+        // plus tick 0 is exactly the two refreshes needed.
+        std::thread::sleep(Duration::from_millis(250));
+        sys.refresh_processes(PROCESS_TOP_LIMIT);
+
+        // Everything below is measured from *after* the warm-up, so the counter
+        // and the window it is compared against start together.
+        let started = Instant::now();
+        let before = sys
+            .processes
+            .process(me)
+            .expect("this process is in its own table")
+            .accumulated_cpu_time();
+
+        for _ in 0..TICKS {
+            let spin_until = Instant::now() + BUSY;
+            while Instant::now() < spin_until {
+                std::hint::spin_loop();
+            }
+            std::thread::sleep(IDLE);
+            // Exactly what the loop does every tick, and what used to poison
+            // the denominator below.
+            sys.refresh_machine();
+        }
+
+        let rows = sys.refresh_processes(PROCESS_TOP_LIMIT);
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let refreshed = sys
+            .processes
+            .process(me)
+            .expect("this process is still in its own table");
+        let burned_ms = refreshed.accumulated_cpu_time().saturating_sub(before) as f64;
+
+        assert!(
+            burned_ms >= 20.0,
+            "the test must actually burn CPU or it asserts nothing; got {burned_ms}ms"
+        );
+
+        let truth_percent = burned_ms / elapsed_ms * 100.0;
+        let reported_percent = f64::from(refreshed.cpu_usage());
+
+        // 15 points is generous against jiffy quantisation (10ms per sample on
+        // a HZ=100 kernel) and a loaded machine; the failure this guards is off
+        // by a factor of ten.
+        assert!(
+            (reported_percent - truth_percent).abs() < 15.0,
+            "process CPU must describe the window it is reported for: sysinfo \
+             says {reported_percent:.1}% of one core, but {burned_ms:.0}ms of \
+             CPU over {elapsed_ms:.0}ms of wall clock is {truth_percent:.1}%. \
+             Overshooting by roughly the cadence ratio means the process \
+             refresh took its denominator from the machine handle — see \
+             SamplerSystems."
+        );
+
+        // …and the call the loop actually makes returned a table, so the
+        // agreement above is about the code path that ships.
+        assert!(
+            !rows.is_empty(),
+            "the process refresh must yield the rows the loop publishes"
         );
     }
 

@@ -36,6 +36,28 @@ pub fn memory_label(mb: f64) -> String {
     }
 }
 
+/// A process's CPU as a **core count** — "0.04 cores", "2.2 cores" (#378).
+///
+/// The unit is the point. sysinfo's native figure is percent-of-*one*-core, and
+/// on a 36-core host TOP CPU printed `220%` directly beside a machine-wide `0%`:
+/// two numbers wearing the same `%` sign, measured against denominators three
+/// orders of magnitude apart. Cores are the denominator an operator already has
+/// in their head — the core grid is right there on the same card.
+///
+/// Two decimals below one core, one above: a hog must read `4.0 cores` rather
+/// than `4.00`, and the busiest thing on an idle machine is a fraction that
+/// `{:.1}` would round to `0.0` — a fabricated zero in all but name. The
+/// **unit is always plural**, including at exactly one core: these are five
+/// stacked rows read at a glance, and a column whose width depends on the value
+/// is harder to scan than one that reads `1.0 cores`.
+pub fn core_label(cores: f64) -> String {
+    if cores >= 1.0 {
+        format!("{cores:.1} cores")
+    } else {
+        format!("{cores:.2} cores")
+    }
+}
+
 /// "12s" / "3m" / "1h" / "2d" — one unit, largest that fits.
 ///
 /// The ladder the original spells twice: `PanelStatusFooter.relative` adds " ago" to
@@ -87,6 +109,26 @@ mod tests {
     fn memory_label_switches_unit_at_1024_mb() {
         assert_eq!(memory_label(612.0), "612 MB");
         assert_eq!(memory_label(2150.0), "2.1 GB");
+    }
+
+    /// The unit change #378 is really about: a hog reads `4.0 cores`, never
+    /// `400%`. And the precision has to survive both ends of the range that
+    /// actually occurs on a host card — a build saturating four cores, and the
+    /// SQL Server engine that motivated the issue at 3.55% of one.
+    #[test]
+    fn core_label_reads_as_cores_on_both_sides_of_one() {
+        assert_eq!(core_label(4.0), "4.0 cores");
+        assert_eq!(core_label(2.2), "2.2 cores");
+        assert_eq!(core_label(1.0), "1.0 cores");
+        assert_eq!(core_label(0.0355), "0.04 cores");
+        assert_eq!(core_label(0.35), "0.35 cores");
+    }
+
+    /// A measured zero is a reading and says so; it is the *absent* core count
+    /// that renders `—`, and that decision belongs to the caller, not here.
+    #[test]
+    fn core_label_prints_a_measured_zero_rather_than_hiding_it() {
+        assert_eq!(core_label(0.0), "0.00 cores");
     }
 
     #[test]

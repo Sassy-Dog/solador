@@ -380,11 +380,25 @@ the bundle's floor.
   `GET /v1/containers`, `GET /v1/health`. All require `Authorization: Bearer <token>`.
 - **Unknown is representable.** Every metric a producer may not be able to
   measure (memory used/swap/pressure, thermal state, the GPU fields,
-  disk/network rates) is an `Option` in `crates/wire`: an absent key decodes to
-  `None`, `None` re-encodes as an *omitted* key, and `0` means measured zero.
+  disk/network rates, `processes[].cpuCores`) is an `Option` in `crates/wire`:
+  an absent key decodes to `None`, `None` re-encodes as an *omitted* key, and
+  `0` means measured zero.
   Unmeasured samples never enter a history buffer. Known limit: agents
   predating #183 send literal zeros, which decode as measurements — only the
   agent can fix that.
+- **An added `Option` is also how the wire carries a version (#378).**
+  `processes[].cpuCores` is a core count and the only per-process CPU figure the
+  Hosts card renders; `cpuPercent` stays beside it, unredefined. An agent
+  predating the fix omits the new key and its `cpuPercent` is inflated 60× on
+  Linux (a 60s numerator over a 1s denominator, from sharing one sysinfo
+  `System` between the two sampler cadences), so `None` renders `—` rather than
+  `cpuPercent / 100`. **The absent key is the whole version check** — no version
+  parsing, no extra `/v1/health` request, fails closed. The agent's fix is
+  structural (`SamplerSystems` gives the process refresh its own `System`),
+  never a correction constant, because the arithmetic being corrected is a
+  sysinfo internal. `crates/localhost` has the same two-cadence shape and is not
+  wrong only because macOS and Windows take the denominator from the process
+  refresh; the comment on `PROCESS_SAMPLE_INTERVAL` records that.
 - **Local collection is unknown-first too**, not just the wire: `crates/localhost`
   returns `None` for a reading the kernel declined, and logs the failure on the
   *transition* rather than once per 1 Hz poll. Capacity figures come from
