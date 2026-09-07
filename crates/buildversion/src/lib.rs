@@ -220,12 +220,16 @@ mod tests {
         assert_eq!(normalize_pin(Some("   \t\n".to_string())), None);
     }
 
+    /// Compared as a `Path`, not as a string: `Path::join` emits the
+    /// platform's separator, so Windows produces `/repo\.git/HEAD` and an
+    /// assertion against the literal `"/repo/.git/HEAD"` fails there for a
+    /// reason that has nothing to do with what this function is for. The
+    /// contract is "the relative path was resolved against the root", and a
+    /// `Path` comparison is what states that without pinning a separator.
     #[test]
     fn a_relative_git_path_is_resolved_against_the_repo_root() {
-        assert_eq!(
-            absolutize("/repo", ".git/HEAD"),
-            Some("/repo/.git/HEAD".to_string())
-        );
+        let joined = absolutize("/repo", ".git/HEAD").expect("a relative path resolves to a path");
+        assert_eq!(Path::new(&joined), Path::new("/repo").join(".git/HEAD"));
     }
 
     /// A worktree's `git rev-parse --git-path` answers absolutely — joining
