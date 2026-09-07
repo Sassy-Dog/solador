@@ -39,7 +39,16 @@ export default {
   testIgnore: SCREENSHOTS ? [] : ["**/screenshots.spec.js"],
   use: { baseURL: `http://127.0.0.1:${PORT}` },
   webServer: {
-    command: `python3 csp_server.py ${PORT}`,
+    // `-u`: stdout is a pipe here, not a tty, so Python would otherwise buffer
+    // the startup line past the point it is useful.
+    command: `python3 -u csp_server.py ${PORT}`,
+    // Playwright ignores webServer stdout by default. That default is why two
+    // consecutive 60s timeouts on this branch produced ZERO diagnostic text:
+    // the server says what it bound and what it is serving, and nobody was
+    // listening. stderr is piped by default; it is named here so the pair is
+    // visible together rather than one being an unstated default.
+    stdout: "pipe",
+    stderr: "pipe",
     url: `http://127.0.0.1:${PORT}/index.html`,
     // CI never reuses a server left over from a prior run -- each job starts
     // and owns its own, so a stale/foreign server can never be mistaken for
