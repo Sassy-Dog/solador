@@ -70,8 +70,9 @@ switch did more than it did.
 `SENTRY_DSN` is read at **compile** time, and a `SENTRY_DSN` in your shell at
 *run* time is deliberately ignored — an environment variable that could redirect
 someone's crash reports to a third party is not a thing to leave lying around.
-Wiring it into the release build is **#307**; `scripts/publish.sh` belongs to
-**#15** and still refuses before it reaches this value.
+`scripts/publish.sh` reads it in pre-flight, **before** it mints a tag, and
+`release.yml` sets it from the `prd` environment's secrets — so a release either
+carries a DSN or was told to go without one by an explicit `--skip-sentry`.
 
 **What a report may contain** is an allow-list, not a blocklist — see
 `crates/crashreport/src/scrub.rs`. The event is rebuilt from a fixed set of
