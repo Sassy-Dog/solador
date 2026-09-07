@@ -6,6 +6,9 @@ set -euo pipefail
 #   ./dev agent                      the targets this host can build
 #   ./dev agent --targets "a b"      exactly these triples
 #   ./dev agent --sign               …and minisign each artifact
+#   ./dev agent --sign-only          sign what is already in --out-dir, build
+#                                    nothing (what release.yml runs, so the
+#                                    bytes signed are the bytes verified)
 #   ./dev agent --out-dir DIR        where the named artifacts land
 #                                    (default: target/agent-release/)
 #
@@ -77,7 +80,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            sed -n '5,32p' "$0" | sed -e 's/^# //' -e 's/^#$//'
+            # Everything from the title comment down to the first blank line
+            # after it, found rather than hardcoded: a line range drifts the
+            # moment the header grows, and it drifts silently — the help just
+            # starts saying something else.
+            awk 'NR > 3 && /^#/ { sub(/^# ?/, ""); print; next } NR > 3 { exit }' "$0"
             exit 0
             ;;
         *)
@@ -105,13 +112,16 @@ fi
 # Version
 # ---------------------------------------------------------------------------
 
-# ONE call to the one owner. `agent/build.rs` compiles the same number in (via
-# crates/buildversion, which shells out to this same script), and the artifact
-# is checked against this value below rather than assumed to have got it — the
-# same derive-then-assert standard the macOS bundle's plist keys are held to.
+# ONE call to the one owner, and an explicit MARKETING_VERSION wins over it —
+# the same pin `publish.sh` sets so an artifact carries the version its *tag*
+# carries rather than a fresh re-derive.
 #
-# An explicit MARKETING_VERSION wins here exactly as it does there, because
-# `publish.sh` pins it so the artifact carries the version the *tag* carries.
+# The `export` is load-bearing, not tidiness: `crates/buildversion` honours this
+# variable ahead of deriving, so exporting it is what makes `agent/build.rs`
+# compile in the very number this script names the file after, instead of
+# resolving the CalVer a second time. The build then reads it back OUT of each
+# binary it can execute — the same derive-then-assert standard the macOS
+# bundle's plist keys are held to.
 MARKETING_VERSION="${MARKETING_VERSION:-$(bash "$SCRIPT_DIR/get-version-info.sh" --version)}"
 export MARKETING_VERSION
 if [[ -z "$MARKETING_VERSION" ]]; then
@@ -244,6 +254,26 @@ assert_static() {
     log_success "$(basename "$bin"): $desc"
 }
 
+# The macOS floor, read back out of the Mach-O.
+#
+# Asserted for the same reason `assert_static` is: the number that ends up in
+# LC_BUILD_VERSION comes from an environment variable, and an environment
+# variable that failed to reach cargo produces a binary that looks fine and
+# refuses to launch on the machines it was published for. `vtool` reports what
+# the artifact actually claims.
+assert_macos_floor() {
+    local bin="$1" minos
+
+    command_exists vtool || { log_error "'vtool' not found — cannot verify $bin's macOS floor, and an unverified floor is how a binary advertised for Intel Macs turns out to need macOS 14"; exit 1; }
+    minos="$(vtool -show-build-version "$bin" 2>/dev/null | awk '/^ *minos / { print $2; exit }')"
+    if [[ "$minos" != "$AGENT_MACOS_MIN_VERSION" ]]; then
+        log_error "$(basename "$bin") declares minos '${minos:-<none>}', expected $AGENT_MACOS_MIN_VERSION"
+        log_error "(MACOSX_DEPLOYMENT_TARGET did not reach cargo — .cargo/config.toml's 14.0 is what it falls back to)"
+        exit 1
+    fi
+    log_success "$(basename "$bin"): macOS floor $minos"
+}
+
 # Can this host execute a binary built for `$1`?
 #
 # Used to decide whether the version can be read back HERE. It is not the
@@ -253,7 +283,17 @@ assert_static() {
 host_can_run() {
     local triple="$1" host
     host="$(rustc -vV | awk '/^host: / { print $2 }')"
-    [[ "$triple" == "$host" ]]
+    [[ "$triple" == "$host" ]] && return 0
+    # A statically linked musl binary runs on any Linux of the same
+    # architecture — that is the entire point of linking it that way — so a
+    # gnu-host builder can execute the musl target it just produced. Without
+    # this the x86_64 Linux runner would build `x86_64-unknown-linux-musl` and
+    # then report that it could not try it.
+    case "$triple:$host" in
+        x86_64-unknown-linux-musl:x86_64-unknown-linux-gnu) return 0 ;;
+        aarch64-unknown-linux-musl:aarch64-unknown-linux-gnu) return 0 ;;
+    esac
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -287,8 +327,13 @@ build_targets() {
             # Apple's own toolchain cross-links between the two darwin triples
             # natively, so zig has nothing to add here and would only bring its
             # SDK handling into a path that does not need it.
-            log_info "cargo build --target $triple"
-            cargo build --locked --release \
+            #
+            # MACOSX_DEPLOYMENT_TARGET is set HERE rather than in
+            # .cargo/config.toml: `[env]` yields to an inherited value, which is
+            # exactly what lets the agent keep its own floor without moving the
+            # cockpit's. See AGENT_MACOS_MIN_VERSION in scripts/config.sh.
+            log_info "cargo build --target $triple (macOS floor $AGENT_MACOS_MIN_VERSION)"
+            MACOSX_DEPLOYMENT_TARGET="$AGENT_MACOS_MIN_VERSION" cargo build --locked --release \
                 --manifest-path "$ROOT_DIR/Cargo.toml" -p "$AGENT_PACKAGE" --target "$triple"
         fi
 
@@ -298,7 +343,11 @@ build_targets() {
             exit 1
         fi
 
-        is_linux_target "$triple" && assert_static "$bin"
+        if is_linux_target "$triple"; then
+            assert_static "$bin"
+        else
+            assert_macos_floor "$bin"
+        fi
 
         # Read the version back OUT of the binary wherever this host can run it.
         # `agent/build.rs` compiles it in from git; nothing forces that to equal
@@ -351,6 +400,18 @@ mkdir -p "$OUT_DIR"
 built=()
 
 if [[ "$WANT_SIGN" == true ]]; then
+    # Both checks BEFORE anything is built. A four-target release build is tens
+    # of minutes; discovering then that the key was never passed is the same
+    # class of waste the release workflow's secret preflight exists to prevent.
+    if [[ -z "${SOLADOR_AGENT_SIGNING_KEY:-}" || ! -f "$SOLADOR_AGENT_SIGNING_KEY" ]]; then
+        log_error "--sign needs SOLADOR_AGENT_SIGNING_KEY to point at the agent's minisign secret key file"
+        log_error "the release reads it from the prd environment secret; see docs/AGENT-DISTRIBUTION.md §5"
+        exit 1
+    fi
+    if [[ ! -f "$ROOT_DIR/$AGENT_SIGNING_PUBKEY" ]]; then
+        log_error "missing $AGENT_SIGNING_PUBKEY — the committed public half of the agent keypair"
+        exit 1
+    fi
     ensure_rsign
 fi
 
@@ -366,21 +427,18 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ "$WANT_SIGN" == true ]]; then
-    key="${SOLADOR_AGENT_SIGNING_KEY:-}"
-    if [[ -z "$key" || ! -f "$key" ]]; then
-        log_error "--sign needs SOLADOR_AGENT_SIGNING_KEY to point at the agent's minisign secret key file"
-        log_error "it lives in CI secrets and nowhere else; see docs/AGENT-DISTRIBUTION.md §5"
-        exit 1
-    fi
+    # Both already checked above, before the build.
+    key="$SOLADOR_AGENT_SIGNING_KEY"
     pubkey="$ROOT_DIR/$AGENT_SIGNING_PUBKEY"
-    [[ -f "$pubkey" ]] || { log_error "missing $AGENT_SIGNING_PUBKEY — the committed public half of the agent keypair"; exit 1; }
 
     for artifact in "${built[@]}"; do
         name="$(basename "$artifact")"
         rm -f "$artifact.minisig"
-        # The trusted comment is covered by the signature, so putting the
-        # artifact's identity in it means a signature cannot be lifted onto a
-        # different target's binary and still describe itself correctly.
+        # The trusted comment is covered by the signature. It does not prevent
+        # a signature being lifted onto another binary — the signature over the
+        # CONTENT is what does that — but it makes such a pair self-describing:
+        # a verifier prints "solador-agent-<v>-<triple>" and a human sees
+        # immediately that it does not name the file in front of them.
         #
         # `-W` and `</dev/null`: the CI key is unencrypted (the secret store is
         # the protection), and a signer that falls back to a password prompt on

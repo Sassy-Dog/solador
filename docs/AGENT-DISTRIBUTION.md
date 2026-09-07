@@ -215,7 +215,11 @@ proxy. The signature is what binds the bytes to us.
 - The **public key is compiled into the binary**. Not fetched, not
   trust-on-first-use — a TOFU daemon is defeated by anyone present at install
   time.
-- The private key lives in CI secrets and never leaves them.
+- The private key lives in CI secrets. `scripts/build-agent.sh --sign` will use
+  a local copy if one is pointed at it — that seam is what lets the signing path
+  be exercised without cutting a release — so "never leaves them" is a rule an
+  operator keeps, not a property the tooling enforces. A copy made to provision
+  the secret should be destroyed once it is in Doppler.
 
 **A separate keypair from the app's.** Compromise of the agent key must not
 yield a signed desktop app, and vice versa. The audiences and threat models
@@ -290,8 +294,23 @@ Also required:
 - **Rollback:** a failed post-restart health check restores `.prev` and exits
   non-zero.
 - **Feed parsing** against a locally served fixture; no network in tests.
-- **Platform matrix:** each published binary executes `--version` on a matching
-  runner before the release is published.
+- **Platform matrix — SHIPPED.** Each published binary executes `--version` on a
+  matching runner before the release is published: `release-agent-verify` is a
+  four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
+  `macos-15-intel`, and it runs the *uploaded* file rather than a rebuild.
+
+The signing half of the rejection test is shipped and the verifying half is not,
+which is worth saying precisely rather than letting a checked box imply both:
+
+- `scripts/build-agent.sh --sign` **re-verifies every signature against the
+  committed public key** before a release can attach it, so a signing key that
+  is not the published keypair's private half fails the release. CI then
+  verifies a second time with the reference C `minisign`, a different
+  implementation from the `rsign2` that signed.
+- What is **not** built is the agent-side check. Nothing in the agent verifies a
+  signature yet, so "a tampered binary must fail to install" has no code to test
+  — it arrives with the `update` subcommand, and the proven-to-fail requirement
+  above binds that change, not this one.
 
 ## Open items
 

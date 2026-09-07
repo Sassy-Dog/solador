@@ -36,7 +36,17 @@ binary_version() {
         echo "       unpacked source archive) carries no version; see docs/VERSIONING.md." >&2
         return 1
     }
-    out="$(printf '%s' "$out" | head -n1 | tr -d '[:space:]')"
+    # First line, then all whitespace (a stray CR from a checkout that rewrote
+    # line endings would otherwise become part of the string compared against
+    # /v1/health, and fail with two identical-looking versions on screen).
+    #
+    # Parameter expansion rather than `head -n1`: these scripts run under
+    # `set -o pipefail`, where `head` closing the pipe early can leave the
+    # producer with SIGPIPE and take the whole deploy down over a version
+    # string that parsed perfectly well.
+    out="${out%%
+*}"
+    out="$(printf '%s' "$out" | tr -d '[:space:]')"
     [ -n "$out" ] || { echo "ERROR: $bin --version printed nothing." >&2; return 1; }
     printf '%s\n' "$out"
 }

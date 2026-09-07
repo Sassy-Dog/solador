@@ -103,7 +103,8 @@ coverage it does not have would be worse than the checklist.
   `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, plus the
   `tests/frontend` Playwright e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
-  `shellcheck -S warning` over `agent/deploy/*.sh`; mirrors CI
+  `shellcheck -S warning` over every shell source this repo ships
+  (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`); mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — Clean build artifacts
 - `./dev publish` — mint the CalVer tag, then build a signed, notarized,
@@ -249,6 +250,15 @@ when Windows gains an updater payload, those two lines change together.
 with a detached minisign `.minisig`. One tag, one release, both products;
 deliberately not a second release train. `./dev agent` is the same command
 locally.
+
+**The agent's macOS floor is its own, and it is 11.0** — not the workspace's
+14.0. `.cargo/config.toml` declares that floor for the cockpit's frontend
+(`adoptedStyleSheets`); a daemon with no webview inheriting it would publish a
+binary advertised for Intel Macs that an Intel Mac on macOS 12 or 13 cannot
+launch — a floor arrived at by accident, which is the mistake #335 caught in the
+bundle's architecture. `[env]` yields to an inherited value, so
+`AGENT_MACOS_MIN_VERSION` is exported at the cargo invocation and read back out
+of each Mach-O with `vtool`.
 
 **musl, not gnu, and asserted out of the ELF.** A dynamically linked gnu build
 resolves the *builder's* glibc and dies on any older host with `GLIBC_2.xx not
@@ -670,6 +680,13 @@ share one release and a fixed crash would read as regressed.
   `build_release_binary` *fails* when the workspace target dir is empty: a
   lenient fallback finds the stale pre-#264 binary in `agent/target/release/`
   and deploys it, reporting success.
+- **Those two shell gates now cover `scripts/*.sh` and `dev`/`prd` as well**
+  (#390). `build-agent.sh` runs ONLY on a `v*` tag, so an ungated break there
+  surfaces mid-release — the #269 shape again, on the path with no second
+  chance. The whole directory is covered rather than that one file so the next
+  release script is not equally unguarded. Two comments in `scripts/lint.sh`
+  had to be reworded: a comment opening with the linter's own name is parsed as
+  a directive, and the file refuses to lint.
 
 ## Debugging
 

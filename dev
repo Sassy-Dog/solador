@@ -31,6 +31,7 @@ $(color_yellow "Build Options:")
 $(color_yellow "Agent Options:")
   $(color_green "--targets \"a b\"")  Build exactly these triples $(color_gray "(default: what this host can build)")
   $(color_green "--sign")           Minisign each artifact with the agent's release key
+  $(color_green "--sign-only")      Sign what is already in --out-dir, build nothing
   $(color_green "--out-dir DIR")    Where the named artifacts land $(color_gray "(default: target/agent-release/)")
 
 $(color_yellow "Run Options:")

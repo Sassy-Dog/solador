@@ -19,14 +19,15 @@
 #   * The displaced binary is kept as "<bin>.prev" so a bad build is one
 #     `rollback` away instead of a from-source rebuild on the VM while
 #     monitoring is down.
-#   * After restart we poll /v1/health and assert it reports the version from
-#     Cargo.toml, so a half-applied swap or a stale process can't pass silently.
+#   * After restart we poll /v1/health and assert it reports the version the
+#     binary we just built answers `--version` with, so a half-applied swap or a
+#     stale process can't pass silently.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# crate_version / verify_health are shared with install.sh, which runs the same
-# served-version-vs-source assertion after its own restart.
+# binary_version / verify_health are shared with install.sh, which runs the same
+# served-version-vs-artifact assertion after its own restart.
 # shellcheck source=agent/deploy/lib.sh
 source "$SCRIPT_DIR/lib.sh"
 CRATE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

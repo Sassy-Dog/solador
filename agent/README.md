@@ -184,12 +184,20 @@ any host older than the builder with `GLIBC_2.xx not found`. Every one of the
 four has had `--version` executed on a runner matching its target before the
 release attached it.
 
-Each binary ships with a detached `<asset>.minisig`. Check one before you run it:
+Each binary ships with a detached `<asset>.minisig`. Check it, then make it
+executable — a GitHub release asset carries no unix mode, so a fresh download is
+**not** executable and running it before `chmod` fails with `permission denied`:
 
 ```bash
+curl -LO https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>
+curl -LO https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>.minisig
+
 minisign -Vm solador-agent-<version>-<triple> \
          -x solador-agent-<version>-<triple>.minisig \
          -p agent/release-signing-key.pub
+
+chmod +x solador-agent-<version>-<triple>
+./solador-agent-<version>-<triple> --version
 ```
 
 `agent/release-signing-key.pub` is in this repository (key id
@@ -198,10 +206,16 @@ updater key, on purpose: the app updates on someone's laptop, the agent runs
 unattended as a service on servers, and a compromise of one must not yield the
 other.
 
-The macOS binaries are **not** Developer ID signed or notarized — that is the
-desktop app's path, not this one. Fetch them with `curl` and Gatekeeper's
-quarantine never applies; a browser download needs
-`xattr -d com.apple.quarantine <file>` first.
+The macOS binaries require **macOS 11 (Big Sur) or later**, and that floor is
+the agent's own rather than the cockpit's: `.cargo/config.toml` declares 14.0
+for the workspace because the cockpit's frontend needs it, and the agent — which
+has no frontend — would otherwise inherit a number that quietly excludes every
+Intel Mac still on macOS 12 or 13. `scripts/build-agent.sh` sets 11.0 for these
+two targets and reads it back out of each Mach-O with `vtool`.
+
+They are **not** Developer ID signed or notarized — that is the desktop app's
+path, not this one. Fetch them with `curl` and Gatekeeper's quarantine never
+applies; a browser download needs `xattr -d com.apple.quarantine <file>` first.
 
 There is **no installer for these yet**. `deploy/install.sh` still builds from
 source (below); downloading a signed binary instead is
@@ -245,6 +259,10 @@ bash -n agent/deploy/*.sh
 
 `./dev test` runs the first, `./dev lint` the other two (skipping shellcheck
 with a warning if it isn't installed). All three run unconditionally in CI.
+
+Since #390 both shell gates cover `scripts/*.sh` and `dev`/`prd` too, not just
+`agent/deploy/`: `scripts/build-agent.sh` runs only on a `v*` tag, and an
+ungated break there would be found mid-release.
 
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs `cargo`, `curl` and `sleep`, so it

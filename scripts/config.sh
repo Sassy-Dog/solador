@@ -60,6 +60,22 @@ export AGENT_PACKAGE="solador-agent"
 export AGENT_LINUX_TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
 export AGENT_MACOS_TARGETS="aarch64-apple-darwin x86_64-apple-darwin"
 
+# The agent's own macOS floor, and it is DELIBERATELY not the cockpit's.
+#
+# `.cargo/config.toml` declares `MACOSX_DEPLOYMENT_TARGET = "14.0"` for the
+# workspace, justified there by the frontend's `adoptedStyleSheets` requirement.
+# The agent has no frontend and no webview; inheriting that number would publish
+# a binary advertised for "Intel Macs" that an Intel Mac on macOS 12 or 13
+# cannot execute — a floor arrived at by accident, which is the same mistake
+# #335 caught in the bundle's architecture.
+#
+# 11.0 (Big Sur) is the lowest release both published architectures share:
+# aarch64-apple-darwin does not exist below it. `[env]` in a cargo config yields
+# to an inherited value, so exporting this from build-agent.sh is what puts it
+# in force — measured back out of every artifact with `vtool`, per slice, rather
+# than assumed.
+export AGENT_MACOS_MIN_VERSION="11.0"
+
 # The cross-linker for the Linux targets (#390, resolving the design's open
 # item): zig, driven by cargo-zigbuild. Chosen over `cross` because it needs no
 # Docker on the runner, is faster per target, and musl is precisely its
@@ -73,9 +89,14 @@ export CARGO_ZIGBUILD_VERSION="0.23.4"
 
 # The minisign signer for the agent's published binaries (#390). `rsign2` is
 # minisign's Rust implementation by the same author, so the `.minisig` files it
-# writes are ordinary minisign signatures — verifiable with the `minisign` CLI
-# by anyone who downloads a release, and with `minisign-verify` (already in this
-# workspace, via crates/updatefeed) by the agent itself.
+# writes are ordinary minisign signatures — verifiable today with the `minisign`
+# CLI by anyone who downloads a release, and by the release workflow itself,
+# which re-checks every signature against the committed public key before
+# uploading it.
+#
+# NOTHING IN THE AGENT VERIFIES A SIGNATURE. The compiled-in public key and the
+# two-key rotation window it needs arrive with `solador-agent update`; this
+# issue produces signed artifacts, not a client that checks them.
 #
 # NOT the Tauri signer that produces the app's `.sig`. That one wraps minisign
 # in an extra base64 layer of its own and, more to the point, carries the app's

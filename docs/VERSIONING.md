@@ -262,7 +262,21 @@ is one-way — no semver "1.0 moment" is coming back.
 > `--at <ref>` / pin / fail-closed, and the §6 CalVer-exceeds-`v0.1.1`
 > monotonicity vector.
 >
-> That file was deleted with the original macOS app. The scripts it covered survive
-> because **#15** needs them, so the coverage has to be rebuilt — as a shell
-> or Rust integration test — before the minting logic is trusted to stamp a
-> real release. Restoring it is part of #15's scope.
+> That file was deleted with the original macOS app, and the coverage was never
+> rebuilt. **It was scoped to #15, which has since closed** — releases ship, so
+> the condition this clause was waiting on ("before the minting logic is trusted
+> to stamp a real release") passed without the debt being paid. Saying it is
+> "part of #15's scope" would now point at a closed issue and read as done.
+>
+> So state it plainly instead: **the mint has shipped `v2026.8.110` onward
+> untested**, and every release since — including the agent binaries #390 adds —
+> is named by a script no test exercises. The coverage is still owed, as a shell
+> or Rust integration test over the vectors listed above, and it needs an issue
+> of its own rather than a closed one's coattails.
+>
+> What *is* covered is the consumers: `agent/deploy/lib_test.sh` asserts
+> `binary_version` reads a version back out of a real binary and fails closed
+> without one, `scripts/build-agent.sh` asserts each artifact's compiled-in
+> version against the number it was named with, and `release.yml` asserts the
+> tag against the derived CalVer on every leg. None of that tests the derivation
+> itself.

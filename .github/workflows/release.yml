@@ -231,14 +231,19 @@ jobs:
           DMG: ${{ steps.artifact.outputs.dmg }}
           TARBALL: ${{ steps.artifact.outputs.tarball }}
         run: |
+          # Three legs now race to create this release (#390 added the agent's),
+          # and `gh release create` fails on an existing release rather than
+          # uploading to it — so every leg carries the same fallback.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig" --clobber
             echo "Uploaded to the existing $GITHUB_REF_NAME release."
-          else
-            gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
-              --title "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig"
+          elif gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
+              --title "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig"; then
             echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
             echo "Publishing is what generates and uploads latest.json (publish-feed.yml)."
+          else
+            gh release upload "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig" --clobber
+            echo "Lost the create race to another leg — uploaded to its release."
           fi
 
       # always(): a failed build must not leave the signing identity sitting in
@@ -662,15 +667,13 @@ jobs:
     runs-on: ubuntu-latest
     # The only agent job that declares it, because it is the only one holding a
     # credential — same gate, and same reasoning, as the two cockpit legs.
+    #
+    # RUNBOOK NOTE: this job becomes ready only after build + verify, so `prd`'s
+    # required reviewer is prompted TWICE on a tagged run — once at the start for
+    # the two cockpit legs, and again partway through for this one. That is the
+    # cost of not handing the signing key to the six runners that build and
+    # verify, and it is worth knowing before a release appears to stall.
     environment: prd
-
-    env:
-      # The agent's minisign secret key, and DELIBERATELY not the cockpit's
-      # TAURI_SIGNING_PRIVATE_KEY. A compromise of one must not yield the other:
-      # the app updates on a person's laptop, the agent runs unattended as a
-      # service on servers, which is the higher-value target
-      # (docs/AGENT-DISTRIBUTION.md §5).
-      SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
 
     steps:
       # FIRST, before the key is written anywhere. An unreachable secret
@@ -678,7 +681,19 @@ jobs:
       # cockpit legs' preflights exist for. Without this, a lost
       # `environment: prd` would surface as a signer error that never mentions
       # a secret, or as a release whose binaries carry no signature at all.
-      - name: Preflight — the signing key must be non-empty
+      #
+      # SHAPE, not just presence. A minisign secret key is exactly two lines,
+      # the first an `untrusted comment:` header; a truncated or single-line
+      # value passes a `-z` test and then fails inside the signer with a message
+      # about parsing, which sends whoever reads it to the wrong place. Nothing
+      # here echoes the key.
+      #
+      # The secret is scoped to the two steps that consume it rather than to the
+      # job, so it is not also exported to checkout, download-artifact, apt-get
+      # and gh.
+      - name: Preflight — the signing key must be non-empty and well-shaped
+        env:
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
         run: |
           if [[ -z "${SOLADOR_AGENT_SIGNING_PRIVATE_KEY:-}" ]]; then
             echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY resolved EMPTY"
@@ -688,7 +703,15 @@ jobs:
             echo "docs/AGENT-DISTRIBUTION.md §5." >&2
             exit 1
           fi
-          echo "The agent signing key resolved."
+          lines="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | grep -c '' || true)"
+          first="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | head -n1)"
+          if [[ "$lines" -lt 2 || "$first" != untrusted\ comment:* ]]; then
+            echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY is not a minisign secret key"
+            echo "Expected two lines beginning 'untrusted comment:'; got $lines line(s)." >&2
+            echo "A value that was pasted truncated, or base64-wrapped, lands here." >&2
+            exit 1
+          fi
+          echo "The agent signing key resolved, and has a minisign secret key's shape."
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -733,22 +756,40 @@ jobs:
           echo "All four targets present for $version."
 
       - name: Sign each binary with the agent release key
+        env:
+          # Through the environment, never interpolated into the script body —
+          # the same rule publish-feed.yml states for event fields. `${{ }}`
+          # inside `run:` is substitution before the shell ever sees it, and
+          # this value ultimately comes from a tag name.
+          VERSION: ${{ steps.artifacts.outputs.version }}
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
         run: |
           # A 0600 file in a private temp dir, because the signer takes a path —
           # the same handling the App Store Connect key gets, and removed on
           # every exit path below.
+          #
+          # The trap is armed BEFORE the key is written: installed afterwards, a
+          # failure between the two would leave the directory behind, which is
+          # the one window where cleanup actually matters.
           keydir="$(mktemp -d)"
           chmod 700 "$keydir"
+          trap 'rm -rf "$keydir"' EXIT
           key="$keydir/agent-release.key"
           ( umask 077; printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" > "$key" )
-          trap 'rm -rf "$keydir"' EXIT
 
           # --sign-only signs what is already in --out-dir and builds nothing,
           # so the bytes that get a signature are the bytes that were verified.
           # It also re-verifies each signature against the COMMITTED public key,
           # which is what turns a mis-provisioned secret into a failed release
           # rather than a release full of signatures nobody can check.
-          SOLADOR_AGENT_SIGNING_KEY="$key" ./dev agent --sign-only --out-dir agent-dist
+          #
+          # MARKETING_VERSION is PINNED from the tag, exactly as publish.sh pins
+          # it for the cockpit build: --sign-only selects artifacts by version
+          # prefix, and a second derive here — however unlikely to differ on the
+          # same commit — could select none and fail for a reason that has
+          # nothing to do with signing. build-agent.sh consumes the pin verbatim.
+          MARKETING_VERSION="$VERSION" \
+            SOLADOR_AGENT_SIGNING_KEY="$key" ./dev agent --sign-only --out-dir agent-dist
 
       # An independent second read, by a different implementation of minisign
       # than the one that signed. `rsign` (Rust) wrote these; the reference C
@@ -756,13 +797,14 @@ jobs:
       # agreeing with itself, and it is the exact command the README tells a
       # user to run.
       - name: Verify the signatures with the reference minisign
+        env:
+          VERSION: ${{ steps.artifacts.outputs.version }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends minisign
-          version="${{ steps.artifacts.outputs.version }}"
           for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
                    aarch64-apple-darwin x86_64-apple-darwin; do
-            bin="agent-dist/solador-agent-$version-$t"
+            bin="agent-dist/solador-agent-$VERSION-$t"
             minisign -V -m "$bin" -x "$bin.minisig" -p agent/release-signing-key.pub
           done
           echo "All four signatures verify under agent/release-signing-key.pub."

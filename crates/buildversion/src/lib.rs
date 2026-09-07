@@ -73,8 +73,19 @@ pub fn emit_marketing_version() {
 /// bump ladder first fires)". The same reasoning binds this helper, which is a
 /// consumer of that pin and not a second opinion about it.
 fn pinned_version() -> Option<String> {
-    let v = std::env::var("MARKETING_VERSION").ok()?;
-    let v = v.trim().to_string();
+    normalize_pin(std::env::var("MARKETING_VERSION").ok())
+}
+
+/// The pin's parsing, split out from reading the environment so it can be
+/// tested without a process-wide `set_var` race.
+///
+/// **Whitespace-only is unset, not a version.** A pin arrives through shell and
+/// CI plumbing where an empty value and an absent one are easy to confuse
+/// (`MARKETING_VERSION=` in a job env, a trailing newline from a command
+/// substitution), and treating either as a real pin would stamp an empty string
+/// into a binary — a version that is not merely wrong but unspellable.
+fn normalize_pin(raw: Option<String>) -> Option<String> {
+    let v = raw?.trim().to_string();
     (!v.is_empty()).then_some(v)
 }
 
@@ -111,15 +122,25 @@ fn git_path(rel: &str) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if p.is_empty() {
+    absolutize(&root, String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// Resolve what `git rev-parse --git-path` printed against the repo root.
+///
+/// It answers relatively from an ordinary checkout (`.git/HEAD`) and absolutely
+/// from a worktree, and `cargo:rerun-if-changed=` needs a path cargo can
+/// actually stat — a relative one is resolved against the *crate* directory,
+/// not the repo root, so it would silently watch a file that does not exist and
+/// the version would go stale rather than fail.
+fn absolutize(root: &str, printed: &str) -> Option<String> {
+    if printed.is_empty() {
         return None;
     }
-    let abs = Path::new(&p);
-    Some(if abs.is_absolute() {
-        p
+    let p = Path::new(printed);
+    Some(if p.is_absolute() {
+        printed.to_string()
     } else {
-        Path::new(&root).join(abs).to_string_lossy().into_owned()
+        Path::new(root).join(p).to_string_lossy().into_owned()
     })
 }
 
@@ -170,4 +191,56 @@ fn derive_version() -> Option<String> {
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pin_is_taken_verbatim_once_trimmed() {
+        assert_eq!(
+            normalize_pin(Some("2026.9.3".to_string())),
+            Some("2026.9.3".to_string())
+        );
+        // A command substitution's trailing newline is not part of the version.
+        assert_eq!(
+            normalize_pin(Some("  2026.9.3\n".to_string())),
+            Some("2026.9.3".to_string())
+        );
+    }
+
+    /// `MARKETING_VERSION=` in a job env is *unset*, not a version. Returning
+    /// `Some("")` here would stamp an empty string into a binary and skip the
+    /// derivation that would have produced a real one.
+    #[test]
+    fn an_empty_or_blank_pin_is_absent_rather_than_a_version() {
+        assert_eq!(normalize_pin(None), None);
+        assert_eq!(normalize_pin(Some(String::new())), None);
+        assert_eq!(normalize_pin(Some("   \t\n".to_string())), None);
+    }
+
+    #[test]
+    fn a_relative_git_path_is_resolved_against_the_repo_root() {
+        assert_eq!(
+            absolutize("/repo", ".git/HEAD"),
+            Some("/repo/.git/HEAD".to_string())
+        );
+    }
+
+    /// A worktree's `git rev-parse --git-path` answers absolutely — joining
+    /// that onto the root would produce `/repo//elsewhere/...`, a path nothing
+    /// watches, and the version would then never be recomputed on a commit.
+    #[test]
+    fn an_absolute_git_path_is_left_alone() {
+        assert_eq!(
+            absolutize("/repo", "/elsewhere/.git/worktrees/w/HEAD"),
+            Some("/elsewhere/.git/worktrees/w/HEAD".to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_git_path_is_none_rather_than_the_repo_root() {
+        assert_eq!(absolutize("/repo", ""), None);
+    }
 }

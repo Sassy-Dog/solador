@@ -275,6 +275,20 @@ STUB
     assert_eq "binary_version strips whitespace and CR" \
         "2026.9.3" "$(binary_version "$bin")"
 
+    # More than one line is not a contract violation worth dying over — take the
+    # first and move on. Written with parameter expansion rather than `head -n1`
+    # for a reason this case also guards: under `set -o pipefail`, `head`
+    # closing the pipe early can hand the producer a SIGPIPE and take the whole
+    # deploy down over a version string that parsed perfectly well.
+    bin="$TMP/agent-chatty"
+    cat > "$bin" <<'STUB'
+#!/bin/sh
+printf '2026.9.3\nbuilt from abc1234\nand a third line\n'
+STUB
+    chmod +x "$bin"
+    assert_eq "binary_version takes the first line without a broken pipe" \
+        "2026.9.3" "$(binary_version "$bin")"
+
     # FAIL CLOSED. A binary that cannot name itself exits non-zero and prints
     # nothing; if this returned success with an empty string, verify_health
     # would take the empty form — "just come back online" — and a deploy that
@@ -298,25 +312,50 @@ STUB
     binary_version "$TMP/does-not-exist" >/dev/null 2>&1
     assert_eq "binary_version fails on a missing binary" "1" "$?"
 
-    # The real binary, if this machine has one built. Asserting the shape, not
-    # the number: the number moves every commit, the contract must not.
-    local real
-    real="$(target_dir "$SCRIPT_DIR/.." 2>/dev/null)/release/solador-agent"
-    if [ -x "$real" ]; then
-        local got
-        got="$(binary_version "$real")"
-        case "$got" in
-            [0-9]*.[0-9]*.[0-9]*)
-                pass "binary_version reads the real release binary (got $got)"
-                ;;
-            *)
-                fail "binary_version reads the real release binary" \
-                    "want: a dotted version on one line" "got:  [$got]"
-                ;;
-        esac
+    # The real binary, whichever profile this machine happens to have built.
+    # Debug counts: this asserts the CONTRACT (`--version` prints one dotted
+    # line, or refuses), and the contract does not vary by profile — while the
+    # CI job that runs this suite builds debug, so insisting on release would
+    # make the one case reading a real artifact a permanent skip.
+    #
+    # BOTH outcomes are correct and which one applies is not this suite's to
+    # decide. CI checks out shallow, so the binary there genuinely carries no
+    # version and `binary_version` MUST fail; a full checkout produces a
+    # version and it must parse. Asserting either one unconditionally would
+    # fail a correct build for being built somewhere else — so assert that the
+    # two agree with each other instead.
+    local real td
+    td="$(target_dir "$SCRIPT_DIR/.." 2>/dev/null)"
+    real=""
+    for profile in release debug; do
+        if [ -n "$td" ] && [ -x "$td/$profile/solador-agent" ]; then
+            real="$td/$profile/solador-agent"
+            break
+        fi
+    done
+    if [ -n "$real" ]; then
+        local got rc
+        got="$(binary_version "$real" 2>/dev/null)"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            case "$got" in
+                [0-9]*.[0-9]*.[0-9]*)
+                    pass "binary_version reads the real binary (got $got)"
+                    ;;
+                *)
+                    fail "binary_version reads the real binary" \
+                        "want: a dotted version on one line" "got:  [$got]"
+                    ;;
+            esac
+        elif "$real" --version >/dev/null 2>&1; then
+            fail "binary_version agrees with the binary it asked" \
+                "binary_version refused, but $real --version succeeded"
+        else
+            pass "binary_version fails closed on a real binary that carries no version (shallow checkout)"
+        fi
     else
-        skip "binary_version reads the real release binary" \
-            "no release build at $real (cargo build --release -p solador-agent)"
+        skip "binary_version reads the real binary" \
+            "no solador-agent built under ${td:-<no target dir>} (cargo build -p solador-agent)"
     fi
 
     # Both callers must treat the failure as fatal. Neither may fall through to
