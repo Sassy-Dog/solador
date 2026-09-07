@@ -9,7 +9,7 @@ whole point of this document:
 - **Runtime credentials** — the tokens *you* give the app so it can read your
   GitHub, Neon, Sentry, Vercel and Azure accounts. These live in your OS
   credential store. The app never writes them to disk.
-- **Build-time configuration** — two optional environment variables the
+- **Build-time configuration** — optional environment variables the
   maintainer's *release* build uses. Everything else builds without them.
 
 ## Runtime credentials
@@ -37,8 +37,9 @@ container-scoped, read-only SAS per poll by shelling out to the Azure CLI
 
 ## Build-time configuration
 
-Two values, both **optional**, both read from the **environment**. No build
-script knows where they come from, and no contributor needs to.
+All **optional**, all read from the **environment**. No build script knows where
+they come from, and no contributor needs to. The table is the list — do not
+count them in prose here, because the count is what went stale last time.
 
 | Variable | Needed for | Without it |
 |---|---|---|
@@ -47,8 +48,9 @@ script knows where they come from, and no contributor needs to.
 | `APPLE_ASC_KEY_ID`, `APPLE_ASC_ISSUER_ID`, `APPLE_ASC_KEY_BASE64` | notarizing a release (`./dev build --notarize`, `./dev publish`) | The build **fails before submitting** and names which of the three is unset. Everything short of notarization — including `--sign` — works without them. |
 | `APPLE_SIGNING_IDENTITY` | overriding which certificate signs | The identity is resolved from the keychain by the prefix `Developer ID Application`. Only needed where that is ambiguous or absent (CI). |
 
-Nothing in the day-to-day loop needs either: `./dev`, `./dev test`, `./dev lint`
-and `./dev build` all work on a clean clone with neither set.
+Nothing in the day-to-day loop needs any of them: `./dev`, `./dev test`,
+`./dev lint` and `./dev build` all work on a clean clone with none of them set.
+`./dev publish` is the exception — see `.envrc` and `scripts/publish.sh`.
 
 ### Crash reporting is opt-in and off by default
 
