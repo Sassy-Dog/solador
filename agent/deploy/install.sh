@@ -41,13 +41,16 @@ command -v systemctl >/dev/null 2>&1 || { echo "ERROR: systemctl not found (Linu
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found (needed for health verification)." >&2; exit 1; }
 
 # ---- build -----------------------------------------------------------------
-# Read the source version *before* building: it is what the post-install check
-# asserts the agent is actually serving.
-TARGET_VERSION="$(crate_version "$CRATE_DIR/Cargo.toml")"
-[ -n "$TARGET_VERSION" ] || { echo "ERROR: could not read the [package] version from $CRATE_DIR/Cargo.toml." >&2; exit 1; }
-
-echo "==> Building release binary (target version $TARGET_VERSION)..."
+echo "==> Building release binary..."
 BUILT_BIN="$(build_release_binary "$CRATE_DIR" "$BIN_NAME")" || exit 1
+
+# Asked of the binary that was just built, and it is what the post-install check
+# asserts the agent is actually serving. Since #390 the agent's version is the
+# git-derived CalVer compiled in by build.rs, so the artifact is the only thing
+# that can say which one this build got — `agent/Cargo.toml`'s number names no
+# release.
+TARGET_VERSION="$(binary_version "$BUILT_BIN")" || exit 1
+echo "==> Built version $TARGET_VERSION"
 
 # ---- install binary --------------------------------------------------------
 INSTALL_DIR="/opt/solador-agent"

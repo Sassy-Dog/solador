@@ -4162,6 +4162,7 @@ dependencies = [
  "axum",
  "serde",
  "serde_json",
+ "solador-buildversion",
  "solador-wire",
  "sysinfo",
  "time",
@@ -4184,6 +4185,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solador-azurecost",
+ "solador-buildversion",
  "solador-crashreport",
  "solador-github",
  "solador-localhost",
@@ -4215,6 +4217,10 @@ dependencies = [
  "tokio",
  "wiremock",
 ]
+
+[[package]]
+name = "solador-buildversion"
+version = "0.1.0"
 
 [[package]]
 name = "solador-crashreport"

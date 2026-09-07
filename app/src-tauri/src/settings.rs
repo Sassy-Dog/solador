@@ -191,7 +191,15 @@ pub const fn host_overflow_label(mode: HostOverflowMode) -> &'static str {
 pub fn health_result(result: &Result<wire::Health, AgentError>) -> String {
     match result {
         Ok(info) => {
-            let mut line = format!("✓ {} · agent v{}", info.hostname, info.version);
+            // An agent that could not be built from a full git checkout serves
+            // no `version` at all (#390). Say so with the repo's em dash rather
+            // than printing `agent v` and trailing off, and never substitute
+            // a number the agent did not report.
+            let version = match info.version.as_deref() {
+                Some(v) => format!("v{v}"),
+                None => "version —".to_string(),
+            };
+            let mut line = format!("✓ {} · agent {}", info.hostname, version);
             if info.sampler_stale == Some(true) {
                 line.push_str(" · sampler stale");
             }
@@ -2090,7 +2098,7 @@ mod tests {
         wire::Health {
             status: "ok".to_owned(),
             hostname: hostname.to_owned(),
-            version: version.to_owned(),
+            version: Some(version.to_owned()),
             sample_age_seconds: Some(2),
             sampler_stale: stale,
         }
@@ -2119,6 +2127,25 @@ mod tests {
         assert_eq!(
             health_result(&Ok(health("ubu-01", "0.3.0", None))),
             "✓ ubu-01 · agent v0.3.0"
+        );
+    }
+
+    /// An agent built outside a full git checkout serves no `version` (#390),
+    /// and the row says so with the repo's em dash. It must NOT read
+    /// `agent v` with nothing after it, and it must not borrow a number from
+    /// anywhere — the reachability the ✓ reports is still true.
+    #[test]
+    fn an_agent_that_cannot_name_itself_renders_an_em_dash_not_a_blank() {
+        let unversioned = wire::Health {
+            status: "ok".to_owned(),
+            hostname: "ubu-01".to_owned(),
+            version: None,
+            sample_age_seconds: Some(2),
+            sampler_stale: Some(false),
+        };
+        assert_eq!(
+            health_result(&Ok(unversioned)),
+            "✓ ubu-01 · agent version —"
         );
     }
 

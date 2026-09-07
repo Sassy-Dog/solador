@@ -6,6 +6,9 @@ rust-version.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# The git-derived CalVer, shared with `agent/build.rs` so the two cannot
+# disagree about how a build learns its own version (docs/VERSIONING.md).
+solador-buildversion = { path = "../../crates/buildversion" }
 
 [dependencies]
 solador-wire = { path = "../../crates/wire" }

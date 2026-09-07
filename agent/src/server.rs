@@ -22,7 +22,12 @@ pub struct AppState {
     /// Required bearer token. Requests must present `Authorization: Bearer <token>`.
     pub token: Arc<String>,
     pub hostname: String,
-    pub version: &'static str,
+    /// The CalVer this build ships as, or `None` when it was compiled outside a
+    /// full git checkout and cannot name itself (`crate::VERSION`). `None`
+    /// **omits** the `version` key rather than serving a placeholder — the same
+    /// rule `/v1/snapshot` applies to every metric the host declined to
+    /// measure.
+    pub version: Option<&'static str>,
 }
 
 /// Build the router with all `/v1` routes guarded by the bearer-token middleware.
@@ -94,13 +99,21 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     // distinguish a live host from one that's silently stuck.
     let stale = state.metrics.is_stale();
     let status = if stale { "degraded" } else { "ok" };
-    Json(json!({
+    let mut body = json!({
         "status": status,
         "hostname": state.hostname,
-        "version": state.version,
         "sampleAgeSeconds": state.metrics.sample_age().as_secs(),
         "samplerStale": stale,
-    }))
+    });
+    // Present only when this build knows its own version. Written this way
+    // rather than as `"version": state.version` inside the literal above,
+    // because that would serve an explicit `null` — and a null is a claim
+    // ("there is no version") where an absent key is the honest one ("this
+    // build could not be asked").
+    if let Some(v) = state.version {
+        body["version"] = json!(v);
+    }
+    Json(body)
 }
 
 #[cfg(test)]
@@ -117,7 +130,7 @@ mod tests {
             metrics: MetricsState::fresh_for_test(crate::metrics::empty_snapshot()),
             token: Arc::new(TOKEN.to_string()),
             hostname: "test-host".to_string(),
-            version: "0.0.0-test",
+            version: Some("0.0.0-test"),
         };
         build_router(state)
     }
@@ -173,6 +186,42 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert_eq!(v["samplerStale"], false);
         assert!(v["sampleAgeSeconds"].is_u64());
+        assert_eq!(v["version"], "0.0.0-test");
+    }
+
+    /// A build that cannot name itself omits `version` — it does not serve
+    /// `null`, and it does not serve `agent/Cargo.toml`'s wire-contract number
+    /// in its place. `wire::Health` decodes the absence as `None` and the
+    /// cockpit renders `—`; a placeholder here would instead be indistinguishable
+    /// from a real answer, and `redeploy.sh` would compare against it.
+    #[tokio::test]
+    async fn health_omits_the_version_key_when_the_build_carries_none() {
+        let state = AppState {
+            metrics: MetricsState::fresh_for_test(crate::metrics::empty_snapshot()),
+            token: Arc::new(TOKEN.to_string()),
+            hostname: "test-host".to_string(),
+            version: None,
+        };
+        let request = Request::builder()
+            .uri("/v1/health")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = build_router(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            !v.as_object().unwrap().contains_key("version"),
+            "an unversioned build must omit the key, not null it: {v}"
+        );
+        // …and the rest of the payload is unaffected: an agent with no version
+        // is still a working agent.
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["hostname"], "test-host");
     }
 
     #[tokio::test]
@@ -181,7 +230,7 @@ mod tests {
             metrics: MetricsState::fresh_for_test(crate::metrics::empty_snapshot()),
             token: Arc::new(TOKEN.to_string()),
             hostname: "test-host".to_string(),
-            version: "0.0.0-test",
+            version: Some("0.0.0-test"),
         };
         // Force the sampler stale, as if the background task had died.
         // Derived from the threshold rather than a magic number: one interval

@@ -5994,7 +5994,7 @@ mod tests {
                 "ok".to_string()
             },
             hostname: state.name.clone(),
-            version: "0.0.0-test".to_string(),
+            version: Some("0.0.0-test".to_string()),
             sample_age_seconds: age,
             sampler_stale: stale,
         };

@@ -7,16 +7,54 @@ drift — fix one of them in the same PR.
 
 ## Classification (§7)
 
-**Desktop app row.** One shipping tier: the Solador binary. One declared
-non-tier:
+**Desktop app row.** Two shipping tiers, on **one** number:
 
-- **Rust agent** (`agent/`): **N/A** — an internal artifact hand-deployed to
-  our own hosts by operator-run scripts (`agent/deploy/redeploy.sh`), never
-  published to a registry or distributed externally (the spec's literal
-  "hand-copied agent" N/A case). Its `agent/Cargo.toml` semver is
-  crate-internal (a declared §7 internal-tools semver exception); nothing
-  consumes it as a release version. Revisit at the first artifact that leaves
-  our machines.
+- **Solador** (`app/`): the cockpit — a `.dmg` plus its `.app.tar.gz` updater
+  payload on macOS, an NSIS installer on Windows.
+- **Rust agent** (`agent/`): four cross-compiled, minisigned target binaries
+  (`x86_64`/`aarch64-unknown-linux-musl`, `aarch64`/`x86_64-apple-darwin`), on
+  the **same tag and the same GitHub Release** as the cockpit. One tag, one
+  release, both products — deliberately not a second release train.
+
+**The agent was N/A until [#390](https://github.com/Sassy-Dog/solador/issues/390),
+and this is the revisit that clause asked for.** It read: *"an internal artifact
+hand-deployed to our own hosts by operator-run scripts (`agent/deploy/redeploy.sh`),
+never published to a registry or distributed externally … Revisit at the first
+artifact that leaves our machines."* Those binaries are that artifact. Landing
+#390 without this edit would have left this document asserting the opposite of
+what ships, which its own opening rule forbids.
+
+What changed, concretely:
+
+- The agent's version **is** the marketing CalVer, from the one owner. It
+  reaches the binary the same way the cockpit's does — `agent/build.rs` calls
+  `crates/buildversion`, which shells out to `scripts/get-version-info.sh` and
+  honours a `MARKETING_VERSION` pin ahead of deriving. `crates/buildversion`
+  exists so that plumbing has ONE implementation rather than one per build
+  script.
+- `solador-agent --version` prints it and nothing else, and `/v1/health`'s
+  `version` serves the same string. One binary, one answer.
+- `agent/Cargo.toml`'s `0.5.0` **no longer names a release** and nothing reads
+  it at runtime. It survives as the *wire-contract marker* its comment block has
+  always been — a minor records a key the agent has never produced before, which
+  is what `crates/wire`'s tolerance notes cite. It is now unpublished package
+  metadata in the same sense as `app/src-tauri/Cargo.toml`'s `0.1.0`, and the
+  §7 internal-tools semver exception that used to justify it no longer applies
+  to a release version, because it is not one.
+- Both deploy scripts read the version **out of the built binary**
+  (`agent/deploy/lib.sh`'s `binary_version`, which runs `--version`) instead of
+  parsing `agent/Cargo.toml`. `crate_version()` is gone: it would now assert the
+  wire-contract number against `/v1/health` and blame the agent for the
+  mismatch.
+
+**A build that cannot name itself carries no version at all**, and that is the
+same `Option` the cockpit has. `agent/src/main.rs`'s `VERSION` is
+`option_env!("SOLADOR_MARKETING_VERSION")`; where it is `None`, `--version`
+exits non-zero with the reason, `/v1/health` **omits** the key (never `null`,
+never a stand-in), and the cockpit's Settings row reads `agent version —`.
+`binary_version` fails closed on it, so a deploy cannot fall through to "just
+come back online" and report success without ever proving which binary is
+serving.
 
 ## The two numbers (§1–§3)
 
@@ -50,6 +88,16 @@ Consumers — version is **never** computed anywhere else:
   derive-then-assert standard as the plist keys. MSI is not built at all:
   its `ProductVersion` caps the major field at 255, which CalVer's year
   cannot fit.
+- **`scripts/build-agent.sh`** (`./dev agent`) — the agent's build-time
+  consumer, as of **#390**. It calls `--version` once, names every artifact
+  `solador-agent-<version>-<triple>`, and then reads the version back **out of
+  each binary** on every runner that can execute it — the same derive-then-assert
+  standard the plist keys are held to. `.github/workflows/release.yml` completes
+  that: `--version` is executed for all four targets on runners matching them
+  (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`, `macos-15-intel`) and
+  compared against the tag, before anything is signed or uploaded. An artifact
+  that does not start is worse than no artifact, and a cross-compiled binary
+  links perfectly well on a machine that cannot run one instruction of it.
 - `scripts/publish.sh` consumes the mint's output contract (below) and pins
   the build via `MARKETING_VERSION=<minted>` so the artifact is stamped with
   exactly the tagged version.
@@ -62,7 +110,11 @@ Consumers — version is **never** computed anywhere else:
   as `SOLADOR_MARKETING_VERSION`. It computes nothing of its own, and an
   explicit `MARKETING_VERSION` in the environment wins over deriving — the same
   pin `publish.sh` sets so the artifact carries the version the *tag* carries
-  rather than a fresh re-derive.
+  rather than a fresh re-derive. Since #390 that build script is two lines: the
+  work is `crates/buildversion::emit_marketing_version`, shared verbatim with
+  `agent/build.rs`, because the *plumbing* around the one script (a worktree's
+  `.git` file, the ref file a commit rewrites, the shallow-clone refusal) is
+  fiddly enough that two copies would diverge at the first fix.
 - `settings::VERSION` is an `Option<&str>`, and the `None` arm is load-bearing.
   A **shallow clone cannot be asked** how many commits landed this month: it
   answers `1` rather than failing, which is why the bundle job pins
@@ -97,14 +149,24 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
 
 ## Tags (§5)
 
-Single-tier repo: umbrella `v*` only, no tier tags, no tier-vs-tag change
-detection (nothing to path-scope). Declared stance: **no channel tags yet** —
-builds are unsigned/un-notarized and local-only until
-[#15](https://github.com/Sassy-Dog/solador/issues/15) (signing and
-notarization, [#306](https://github.com/Sassy-Dog/solador/issues/306); the
-update feed, [#308](https://github.com/Sassy-Dog/solador/issues/308)) lands;
-at first external distribution, add `mac-direct/<version>-<build>-<UTCts>` per
-submission.
+Umbrella `v*` only, no tier tags, no tier-vs-tag change detection. The two
+shipping tiers deliberately share **one** number and one tag, so there is
+nothing to path-scope: a tag push builds the cockpit and the agent from the same
+commit into the same release.
+
+The **accepted cost** of that sharing, stated rather than discovered: the agent
+gets a new version on every cockpit-only release, including ones where not a
+byte of `agent/` changed. What stops that becoming a pointless download and
+restart on every host is the update feed's **content hash**, not the version —
+same bytes, stop (`docs/AGENT-DISTRIBUTION.md` §3).
+
+Declared stance: **no channel tags yet.** This clause used to read "builds are
+unsigned/un-notarized and local-only until #15 lands"; that is no longer the
+reason, because [#15](https://github.com/Sassy-Dog/solador/issues/15) has
+landed and external distribution has happened. The reason now is that nothing
+consumes a per-submission channel tag: distribution is direct download plus the
+`latest.json` feed, and no App Store submission exists to date. Add
+`mac-direct/<version>-<build>-<UTCts>` at the first submission that needs one.
 
 ### Mapping onto the update feed
 
@@ -174,12 +236,20 @@ action consumes the minted tag, never `tag_name:`-creates its own).
 
 ## Adoption status (§9)
 
-Pre-release: Solador has not yet shipped an artifact intended to leave a
-developer's machine (publish builds are unsigned; "do NOT distribute
-externally until #15"). Per the §9 adoption-timing rule the scheme is wired
-and active now, so the first distributed build simply uses whatever CalVer
-resolves at that moment. Adoption is one-way — no semver "1.0 moment" is
-coming back.
+**Shipping.** This section read "pre-release: Solador has not yet shipped an
+artifact intended to leave a developer's machine (publish builds are unsigned;
+do NOT distribute externally until #15)" — untrue since
+[#15](https://github.com/Sassy-Dog/solador/issues/15) closed: `release.yml`
+publishes signed, notarized, stapled macOS artifacts
+([#306](https://github.com/Sassy-Dog/solador/issues/306),
+[#307](https://github.com/Sassy-Dog/solador/issues/307)), an Authenticode-signed
+Windows installer ([#341](https://github.com/Sassy-Dog/solador/issues/341),
+[#342](https://github.com/Sassy-Dog/solador/issues/342)), and — since
+[#390](https://github.com/Sassy-Dog/solador/issues/390) — the agent's four
+minisigned binaries. `v2026.8.110` was the first release ever cut. Per the §9
+adoption-timing rule the scheme was wired and active before then, so each
+distributed build simply uses whatever CalVer resolves at that moment. Adoption
+is one-way — no semver "1.0 moment" is coming back.
 
 ## Tests (§3, mandatory)
 

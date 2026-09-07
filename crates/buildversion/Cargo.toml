@@ -1,0 +1,16 @@
+[package]
+# Prefixed like every other member (`solador-wire`, `solador-updatefeed`); the
+# lib below keeps the short import name the two build scripts use.
+name = "solador-buildversion"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "buildversion"
+
+# No dependencies, deliberately — the same rule `crates/fault` states. This is a
+# BUILD dependency of two crates with nothing else in common (`app/src-tauri`,
+# built on macOS/Windows, and `agent`, built for Linux musl), so anything added
+# here is added to both of their build graphs.
+[dependencies]

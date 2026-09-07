@@ -18,6 +18,13 @@ All endpoints require `Authorization: Bearer <token>`. Missing or wrong token �
 | `GET /v1/containers`| Array of containers/VMs from podman, docker, and tart.            |
 | `GET /v1/health`    | `{ "status": "ok", "hostname": "...", "version": "..." }`         |
 
+`version` is the repo's CalVer (`2026.9.3`) — the number the release this binary
+came from carries, **not** `agent/Cargo.toml`'s semver, which since #390 is a
+wire-contract marker naming no release. A binary built outside a full git
+checkout cannot count the commits CalVer is made of, so it **omits the key
+entirely** rather than serving a stand-in; consumers decode that as unknown and
+render `—`.
+
 ### `/v1/snapshot` shape
 
 ```json
@@ -138,6 +145,77 @@ squashfs, overlay, overlayfs, iso9660
 Any `fuse.*` subtype (e.g. `fuse.sshfs`, `fuse.rclone`) is also skipped whenever
 filtering is enabled; `fuseblk` (NTFS via FUSE — a real local disk) is kept.
 
+## Command line
+
+The agent takes no arguments in normal operation — everything is configured from
+the environment above. Two flags exist, and both exit immediately, before the
+token check, so they work on a machine with no token and no tailnet:
+
+```bash
+solador-agent --version   # the version, on one line, and nothing else
+solador-agent --help      # usage plus the environment variables
+```
+
+`--version` printing the bare version is a **contract**, not terseness:
+`agent/deploy/lib.sh` and the release workflow both read it directly, and it is
+what proves a published binary starts at all before a release attaches it. It
+exits non-zero when this build carries no version, rather than printing a
+plausible one.
+
+An argument the agent does not recognise is **refused** (exit 2), never ignored:
+it takes none, so one arriving means something upstream is wrong — a hand-edited
+`ExecStart`, or a wrapper passing flags meant for something else.
+
+## Releases
+
+Since [#390](https://github.com/Sassy-Dog/solador/issues/390) a `v*` tag
+publishes four agent binaries on the **same GitHub Release as the desktop app**:
+
+| Asset | Host |
+|---|---|
+| `solador-agent-<version>-x86_64-unknown-linux-musl` | any x86-64 Linux distro |
+| `solador-agent-<version>-aarch64-unknown-linux-musl` | ARM servers, Pi-class hosts |
+| `solador-agent-<version>-aarch64-apple-darwin` | Apple Silicon Macs |
+| `solador-agent-<version>-x86_64-apple-darwin` | Intel Macs |
+
+The Linux builds are **statically linked musl**, so they need no glibc of any
+particular vintage and no runtime dependency at all — a gnu build would die on
+any host older than the builder with `GLIBC_2.xx not found`. Every one of the
+four has had `--version` executed on a runner matching its target before the
+release attached it.
+
+Each binary ships with a detached `<asset>.minisig`. Check one before you run it:
+
+```bash
+minisign -Vm solador-agent-<version>-<triple> \
+         -x solador-agent-<version>-<triple>.minisig \
+         -p agent/release-signing-key.pub
+```
+
+`agent/release-signing-key.pub` is in this repository (key id
+`03D2D786998D5EE8`). It is a **different keypair from the desktop app's**
+updater key, on purpose: the app updates on someone's laptop, the agent runs
+unattended as a service on servers, and a compromise of one must not yield the
+other.
+
+The macOS binaries are **not** Developer ID signed or notarized — that is the
+desktop app's path, not this one. Fetch them with `curl` and Gatekeeper's
+quarantine never applies; a browser download needs
+`xattr -d com.apple.quarantine <file>` first.
+
+There is **no installer for these yet**. `deploy/install.sh` still builds from
+source (below); downloading a signed binary instead is
+[#392](https://github.com/Sassy-Dog/solador/issues/392), and nothing in the
+agent verifies a signature yet — that is
+[#393](https://github.com/Sassy-Dog/solador/issues/393).
+
+To produce them locally, with the command the release itself runs:
+
+```bash
+./dev agent                                        # every target this host can build
+./dev agent --targets "x86_64-unknown-linux-musl"  # just one
+```
+
 ## Prerequisites
 
 - **Rust** via [rustup](https://rustup.rs). The repo-root `rust-toolchain.toml`
@@ -170,8 +248,10 @@ with a warning if it isn't installed). All three run unconditionally in CI.
 
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs `cargo`, `curl` and `sleep`, so it
-touches no host and takes well under a second. It covers `crate_version`
-(section-awareness), `health_url` (wildcard → loopback, IPv6 bracketing),
+touches no host and takes well under a second. It covers `binary_version` (the
+artifact's own `--version`, including its three fail-closed cases — no version
+compiled in, nothing printed, no such binary), `health_url` (wildcard →
+loopback, IPv6 bracketing),
 `health_version`, `target_dir`, `verify_health` against a stubbed endpoint, and
 three source-level invariants no runtime test can reach: the pre-rename
 `devcanopy-agent` handover, the order the legacy unit is stopped in, and
@@ -219,8 +299,9 @@ The script:
    then `systemctl --user enable --now solador-agent` and enables lingering so
    it starts on boot and survives logout.
 5. **Verifies** by polling `/v1/health` (at the bind/port it just wrote, so this
-   works on a tailnet-only agent) until it reports the `[package]` version from
-   `Cargo.toml`. A healthy unit only proves *a* binary is up — if the version
+   works on a tailnet-only agent) until it reports the version the binary it
+   just built answers `--version` with — read out of the artifact, not parsed
+   from a manifest. A healthy unit only proves *a* binary is up — if the version
    being served isn't the one just built, the script fails loudly naming both
    numbers rather than reporting a successful install over stale code.
 
@@ -279,7 +360,9 @@ of the new commit):
 ```
 
 What it does:
-1. Reads the target version from `Cargo.toml` and builds `--release`.
+1. Builds `--release`, then asks the binary it produced for its version
+   (`--version`) — the artifact is the only thing that can say which CalVer it
+   compiled in.
 2. Preserves the currently-installed binary as `solador-agent.prev` (the
    rollback anchor).
 3. **Atomically swaps** the new binary into place. The running binary can't be
@@ -289,7 +372,7 @@ What it does:
    write is not.
 4. Restarts the user service.
 5. **Verifies** by polling `/v1/health` (using the token/bind/port from the env
-   file) until it reports the version from `Cargo.toml`. If the new binary never
+   file) until it reports the version from step 1. If the new binary never
    reports the expected version, the script fails loudly and tells you to roll
    back — the bad binary is live but you have a one-command escape hatch.
 

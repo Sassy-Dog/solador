@@ -11,28 +11,34 @@
 # (a swap into the wrong prefix, a stale ExecStart, a future script regression)
 # looks identical to success unless the served version is compared to source.
 
-# ---- crate version ----------------------------------------------------------
-# Print the `[package]` version from a Cargo.toml.
+# ---- binary version ---------------------------------------------------------
+# Ask a built agent binary what version it is, and print it.
 #
-# Section-aware on purpose: a bare `grep '^version'` also matches the version
-# inside a `[dependencies.foo]` block, so a manifest that grows one would start
-# asserting some dependency's number against the agent's /v1/health.
-crate_version() {
-    local manifest="$1"
-    [ -f "$manifest" ] || return 1
-    awk '
-        # A new table header ends the [package] section (and may start it).
-        /^[[:space:]]*\[/ {
-            in_pkg = ($0 ~ /^[[:space:]]*\[package\][[:space:]]*$/)
-            next
-        }
-        in_pkg && /^[[:space:]]*version[[:space:]]*=/ {
-            if (match($0, /"[^"]*"/)) {
-                print substr($0, RSTART + 1, RLENGTH - 2)
-                exit
-            }
-        }
-    ' "$manifest"
+# Read out of the ARTIFACT, never out of a manifest. Since #390 the agent's
+# version is the repo's CalVer, derived once by scripts/get-version-info.sh and
+# compiled in by agent/build.rs — `agent/Cargo.toml`'s `[package] version` is a
+# wire-contract marker that names no release and would now assert the wrong
+# number against /v1/health. Asking the binary is also the repo's standing rule
+# for version claims (the macOS bundle re-reads its own Info.plist): it is the
+# only source that cannot disagree with what is about to be installed.
+#
+# `--version` prints the version and nothing else, so this needs no parsing.
+# It FAILS CLOSED — a binary compiled outside a full git checkout carries no
+# version, exits non-zero and prints nothing, and a caller must treat that as
+# fatal rather than verifying against an empty string (which /v1/health would
+# then "match" by also omitting the key).
+binary_version() {
+    local bin="$1" out
+    [ -x "$bin" ] || { echo "ERROR: $bin is not an executable binary." >&2; return 1; }
+    out="$("$bin" --version 2>/dev/null)" || {
+        echo "ERROR: $bin --version failed." >&2
+        echo "       A binary built outside a full git checkout (a shallow clone, or an" >&2
+        echo "       unpacked source archive) carries no version; see docs/VERSIONING.md." >&2
+        return 1
+    }
+    out="$(printf '%s' "$out" | head -n1 | tr -d '[:space:]')"
+    [ -n "$out" ] || { echo "ERROR: $bin --version printed nothing." >&2; return 1; }
+    printf '%s\n' "$out"
 }
 
 # ---- build ------------------------------------------------------------------
@@ -114,8 +120,12 @@ health_version() {
 #   verify_health <env-file> <expected-version>   # require an exact match
 #   verify_health <env-file> ""                   # only require it to answer
 #
-# The empty form is for rollback, where the .prev binary's version can't be
-# known statically (the agent has no --version flag). Never prints the token.
+# The empty form is for rollback, which asserts only that the agent came back.
+# It predates `--version` (#390) and is no longer forced: `.prev` could now be
+# asked with `binary_version`. Tightening rollback to a version assertion is a
+# behaviour change with its own failure mode (a .prev that answers but does not
+# serve), so it stays a deliberate decision rather than a side effect of the
+# flag existing. Never prints the token.
 #
 # Polls once a second, 15 times by default; VERIFY_HEALTH_ATTEMPTS overrides that
 # (it exists so the failure paths can be exercised without a 15s wait).
@@ -173,7 +183,7 @@ verify_health() {
         # code. Name both numbers so the operator doesn't have to go find them.
         echo "ERROR: VERSION MISMATCH — the running agent is not the binary just built." >&2
         echo "         served (per $url): $got" >&2
-        echo "         built  (per Cargo.toml): $expected_version" >&2
+        echo "         built  (per <binary> --version): $expected_version" >&2
         echo "       A stale binary is still serving. Check that the unit's ExecStart" >&2
         echo "       points at the path the binary was installed to:" >&2
         echo "         systemctl --user cat solador-agent | grep ExecStart" >&2

@@ -541,9 +541,27 @@ fn deserialises_the_agents_health_payload() {
     let h: Health = serde_json::from_str(HEALTH_FIXTURE).expect("agent JSON must deserialise");
     assert_eq!(h.status, "ok");
     assert_eq!(h.hostname, "ubu-01");
-    assert_eq!(h.version, "0.4.0");
+    assert_eq!(h.version.as_deref(), Some("0.4.0"));
     assert_eq!(h.sample_age_seconds, Some(2));
     assert_eq!(h.sampler_stale, Some(false));
+}
+
+/// An agent built outside a full git checkout cannot name itself and omits
+/// `version` entirely (#390). That decodes as `None` — never a decode failure,
+/// and never a fabricated string the cockpit would render as a real version.
+/// The round trip must omit it again rather than emitting `"version": null`:
+/// a null is a claim, an absent key is the absence of one.
+#[test]
+fn health_without_a_version_decodes_as_none_and_re_encodes_as_an_absent_key() {
+    let json = r#"{ "status": "ok", "hostname": "dev-box", "sampleAgeSeconds": 1, "samplerStale": false }"#;
+    let h: Health = serde_json::from_str(json).expect("an unversioned agent must decode");
+    assert!(h.version.is_none());
+
+    let back = serde_json::to_value(&h).expect("re-encodes");
+    assert!(
+        !back.as_object().expect("an object").contains_key("version"),
+        "None must omit the key, not null it: {back}"
+    );
 }
 
 /// `sampleAgeSeconds`/`samplerStale` arrived in #35; an agent that predates the

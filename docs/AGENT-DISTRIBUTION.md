@@ -1,12 +1,20 @@
 # Agent Distribution — design
 
-**Status:** design, not yet implemented. Agreed 2026-08-24.
+**Status:** partly implemented. Agreed 2026-08-24; tracked by
+[#381](https://github.com/Sassy-Dog/solador/issues/381), split into five
+children on 2026-09-07.
+
+- **§1 Build and publish — SHIPPED** ([#390](https://github.com/Sassy-Dog/solador/issues/390)).
+- **§3 Versioning — SHIPPED** with it; `docs/VERSIONING.md` carries the
+  reclassification.
+- §2 (the feed), §4 (`solador-agent update`), §6 (`install.sh`) are **not built
+  yet** — #391, #393/#394 and #392. Everything they describe is still design.
 
 How the Solador metrics agent reaches machines that are not ours, and how the
 people running it stay up to date.
 
-This is a **design for a change**, not a description of what exists. Everything
-in "Today" is current; everything under "Design" is not built yet.
+This was written as a **design for a change**. The sections marked SHIPPED above
+now describe what exists; the rest is still design.
 
 ## Why
 
@@ -14,9 +22,14 @@ The desktop app has a real public distribution story. Release `v2026.8.118`
 ships `.dmg`, `_x64-setup.exe` and `.app.tar.gz`, each with a minisign `.sig`,
 plus a `latest.json` update feed that Tauri's updater consumes.
 
-The agent ships **nothing**. Zero binary assets on any release.
+The agent shipped **nothing** — zero binary assets on any release — until #390.
+It now ships four minisigned binaries beside the app's, but the three
+consequences below were the *reason*, and only the first of them is addressed so
+far: publishing an artifact and installing from it are different jobs, and
+`install.sh` still builds from source (#392).
 
-The only way to install or update it is to clone this repository and run
+The state this was written against, and how much of it still holds: the only way
+to install or update the agent was to clone this repository and run
 `cargo build --release` on the target host (`agent/deploy/install.sh`). Three
 consequences, in order of how much they hurt:
 
@@ -78,12 +91,39 @@ and subprocess calls, so static linking is viable.
 Artifacts attach to the **same GitHub Release the app already publishes to** —
 one tag, one release, both products. No second release train to keep in sync.
 
-`aarch64-unknown-linux-musl` requires a cross toolchain in CI
-(`cargo-zigbuild` or `cross`). This is a real cost and is stated here so it is
-not discovered during implementation.
+**Raw binaries, not archives**, named `solador-agent-<version>-<triple>` with a
+detached `<artifact>.minisig` beside each. That is a consequence of §2's content
+hash rather than a packaging preference: the updater compares the published
+artifact's hash against the **installed binary**, and an archive hashes
+differently from the file inside it — so a tarball would force every host to
+download and unpack before it could answer the question the hash exists to
+answer *without* downloading.
+
+**Cross-compilation uses `cargo-zigbuild`** (decided 2026-09-07, resolving what
+was an open item below). Zig as the linker needs no Docker on the runner, is
+faster per target, and musl is precisely its strength. **Both** Linux targets go
+through it, not only the cross one: one code path for Linux is what keeps "it
+worked on the x86 runner" from being a different build than the ARM artifact.
+The two darwin targets use plain `cargo build` — Apple's own toolchain
+cross-links between them natively, so zig would only add SDK handling to a path
+that does not need it. Pinned as `CARGO_ZIGBUILD_VERSION` in
+`scripts/config.sh`, installed from PyPI so one pin brings the driver *and* the
+zig it links with.
 
 **Every built binary must have `--version` executed on a matching runner before
-publish.** An artifact that does not start is worse than no artifact.
+publish.** An artifact that does not start is worse than no artifact — and a
+cross-compiled binary links perfectly well on a machine that cannot execute one
+instruction of it, so this is a claim only a matching machine can make.
+`release.yml` therefore runs it on four: `ubuntu-latest`, `ubuntu-24.04-arm`,
+`macos-latest` and `macos-15-intel`, against the files the build uploaded rather
+than a rebuild. `solador-agent --version` prints the version and nothing else,
+so that comparison needs no parsing.
+
+Staticness is asserted out of the ELF, never inferred from the target name:
+`file` must say `statically linked` (or `static-pie linked` — rustc's musl
+targets can produce either) *and*, where `readelf` is available, the binary must
+carry no `PT_INTERP` segment. "Needs no dynamic loader" is the property that
+actually matters, and it is the one a target-name check does not verify.
 
 ### 2. The feed
 
@@ -110,14 +150,25 @@ updater would download and restart for an identical binary.
 So the updater compares the **content hash**, not the version. Same hash means
 stop — no download, no swap, no restart. The version moves; nothing happens.
 
-**This trips `docs/VERSIONING.md`'s own revisit clause.** That document
-currently classifies the agent as N/A — "an internal artifact hand-deployed to
-our own hosts … never published to a registry or distributed externally" — and
-says to "Revisit at the first artifact that leaves our machines." This design is
-that artifact. Per that document's own rule ("When this doc and the scripts
-disagree, that is drift — fix one of them in the same PR"), the implementing
-change must reclassify the agent as a shipping tier in the same PR. Landing this
-without that edit leaves a spec asserting the opposite of what ships.
+**This tripped `docs/VERSIONING.md`'s own revisit clause, and #390 made the
+edit.** That document classified the agent as N/A — "an internal artifact
+hand-deployed to our own hosts … never published to a registry or distributed
+externally" — and said to "Revisit at the first artifact that leaves our
+machines." These binaries are that artifact, so it now carries **two shipping
+tiers on one number**, and the details of how the agent learns its version
+(`agent/build.rs` → `crates/buildversion` → `scripts/get-version-info.sh`) live
+there rather than here.
+
+Two consequences worth stating where an implementer will hit them:
+
+- `agent/Cargo.toml`'s semver **stopped naming a release**. It survives as the
+  wire-contract marker its comment block always was, and nothing reads it at
+  runtime — both deploy scripts now ask the built binary (`--version`) instead
+  of parsing the manifest.
+- A build made outside a full git checkout **carries no version**, and says so:
+  `--version` exits non-zero, `/v1/health` omits the key, and the cockpit
+  renders `agent version —`. The deploy helper fails closed on it rather than
+  verifying against an empty string that `/v1/health` would then "match".
 
 ### 4. Updating
 
@@ -128,7 +179,8 @@ identically on macOS and Linux, needs no shell, and is testable in Rust.
 1. Fetch `agent-latest.json`; **verify its signature**.
 2. Compare content hash against the installed binary. Equal → stop, report
    "already current", exit 0.
-3. Download the tarball for this platform/arch; **verify signature and hash
+3. Download the binary for this platform/arch (§1 publishes the binary itself,
+   not an archive); **verify signature and hash
    before anything touches disk**.
 4. Write `<bin>.new`; `rename()` over the live path.
 5. Retain the displaced binary as `<bin>.prev`.
@@ -158,7 +210,7 @@ the machine. This section is the security boundary of the whole design.
 It does not survive a compromised release asset, a mirror, or an intercepting
 proxy. The signature is what binds the bytes to us.
 
-- The agent verifies a signature over **both the feed and the tarball**, before
+- The agent verifies a signature over **both the feed and the binary**, before
   writing anything.
 - The **public key is compiled into the binary**. Not fetched, not
   trust-on-first-use — a TOFU daemon is defeated by anyone present at install
@@ -169,6 +221,38 @@ proxy. The signature is what binds the bytes to us.
 yield a signed desktop app, and vice versa. The audiences and threat models
 differ: the app updates on a person's laptop, the agent runs unattended as a
 service on servers, which is the higher-value target.
+
+**Shipped in #390 — the signing half.** The keypair exists: its public half is
+committed at `agent/release-signing-key.pub` (key id `03D2D786998D5EE8`), its
+private half is the `prd` environment secret
+`SOLADOR_AGENT_SIGNING_PRIVATE_KEY`, and it is not the cockpit's
+`TAURI_SIGNING_PRIVATE_KEY`. Signatures are **plain minisign** — the Tauri
+signer's extra base64 wrapper is the app's convention and there is no Tauri here
+— so anyone can check a download with the reference tool:
+
+```sh
+minisign -Vm solador-agent-<version>-<triple> -p agent/release-signing-key.pub
+```
+
+Three properties of the release path, each chosen so a failure is loud:
+
+- The signer is the pinned `rsign2` (`RSIGN_VERSION` in `scripts/config.sh`),
+  minisign's Rust implementation. `scripts/build-agent.sh --sign` is the one
+  implementation, used locally and in CI alike.
+- **Every signature is re-verified against the committed public key** before
+  anything is uploaded. That is what turns a mis-provisioned private key into a
+  failed release instead of a release full of signatures nobody can check.
+- CI then verifies again with the reference **C** `minisign` from apt — a
+  different implementation from the one that signed, so "it verifies" is not
+  merely the signer agreeing with itself.
+
+Signing is its own release job and the **only** agent job holding a credential,
+so the key reaches one runner rather than six, and build/verify start without
+waiting on `prd`'s reviewer.
+
+The two remaining halves of this section — the compiled-in public key and the
+**two**-key rotation window — belong to the `update` child and are **not built
+yet**. Nothing in the agent verifies a signature today.
 
 **Rotation must ship on day one.** A key compiled into a binary cannot be
 rotated by the update path it protects: if it is lost or compromised, every
@@ -194,7 +278,7 @@ The bearer-token prompt and env-file handling are unchanged.
 
 ## Testing
 
-**The signature-rejection test is the load-bearing one.** A tampered tarball
+**The signature-rejection test is the load-bearing one.** A tampered binary
 must fail to install, and that test must be proven to fail against an unsigned
 or modified artifact — not merely observed to pass. A verification step that
 silently accepts everything is indistinguishable from one that works, and a
@@ -211,7 +295,16 @@ Also required:
 
 ## Open items
 
-- Cross-compilation tooling choice for `aarch64-unknown-linux-musl`
-  (`cargo-zigbuild` vs `cross`) — decide during implementation.
-- Whether `agent/deploy/redeploy.sh` is retired once `solador-agent update`
-  exists, or kept as the operator-side path for our own hosts.
+Both were resolved on 2026-09-07, when #381 was split into children. Kept here
+rather than deleted, because the reasoning is what a later reader needs:
+
+- **Cross-compilation uses `cargo-zigbuild`, not `cross`** (recorded in #390,
+  and implemented by it). Zig as the linker needs no Docker on the runner, is
+  faster per target, and musl is precisely its strength. See §1.
+- **`agent/deploy/redeploy.sh` is KEPT**, as the from-source operator path for
+  our own hosts, rather than retired once `solador-agent update` exists
+  (recorded in #392). `install.sh` and `redeploy.sh` share
+  `agent/deploy/lib.sh`, and once `install.sh` stops building, `redeploy.sh`
+  becomes `build_release_binary`'s only caller — retiring both would leave that
+  helper, and `lib_test.sh`'s load-bearing "refuses to fall back" assertion from
+  #269, with no caller at all.

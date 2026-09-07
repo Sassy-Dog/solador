@@ -1,5 +1,18 @@
 [package]
 name = "solador-agent"
+# NOT the version this agent ships under, and not the version it reports.
+#
+# Since #390 the agent is a PUBLISHED artifact on the same GitHub Release as
+# the cockpit, carrying the repo's CalVer — derived by
+# `scripts/get-version-info.sh`, compiled in by `build.rs`, printed by
+# `--version` and served at `/v1/health`. `docs/VERSIONING.md` reclassifies the
+# agent accordingly; this number stopped being a release version there.
+#
+# It survives as the **wire-contract marker** the log below has always been: a
+# minor here records a key this agent has never produced before, which is what
+# `crates/wire`'s tolerance notes cite. Nothing reads it at runtime any more —
+# `crate_version()` left `agent/deploy/lib.sh` with it — so keep bumping it for
+# the contract, never for a release.
 # 0.5.0: `processes[].cpuCores` (#378). A minor for the same reason 0.4.0 was:
 # a wire field this agent has never produced before. It also FIXES what
 # `cpuPercent` carries on Linux — the process refresh has its own sysinfo
@@ -24,6 +37,11 @@ license = "MIT"
 [[bin]]
 name = "solador-agent"
 path = "src/main.rs"
+
+[build-dependencies]
+# The git-derived CalVer, shared with `app/src-tauri/build.rs`. Dependency-free
+# and std-only, so it costs a Linux musl cross-build nothing.
+solador-buildversion = { path = "../crates/buildversion" }
 
 [dependencies]
 axum = "0.8"
