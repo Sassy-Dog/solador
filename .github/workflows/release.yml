@@ -1,11 +1,16 @@
 name: Release
 
 # The release builds: the signed, notarized, stapled macOS bundle (#307, part
-# of #15) and the Authenticode-signed Windows installer (#341, signed via
-# Azure Trusted Signing in #342).
+# of #15), the Authenticode-signed Windows installer (#341, signed via
+# Azure Trusted Signing in #342), and the metrics agent's four minisigned
+# target binaries (#390).
 #
-# These are the ONLY jobs in this repository that declare an environment, and
-# that is the whole security design rather than a detail. Solador is a PUBLIC
+# One tag, one release, both products — there is deliberately no second release
+# train for the agent to keep in sync with this one.
+#
+# The environment-declaring jobs in this repository are ONLY in this file — and
+# only the three that hold a credential — which is the whole security design
+# rather than a detail. Solador is a PUBLIC
 # repo, so the org's `APPLE_*` secrets — which are `private` visibility — are
 # unreachable here and would resolve to the empty string. Environment secrets
 # are repo-scoped, so `private` visibility never applies to them; `prd` also
@@ -226,14 +231,19 @@ jobs:
           DMG: ${{ steps.artifact.outputs.dmg }}
           TARBALL: ${{ steps.artifact.outputs.tarball }}
         run: |
+          # Three legs now race to create this release (#390 added the agent's),
+          # and `gh release create` fails on an existing release rather than
+          # uploading to it — so every leg carries the same fallback.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig" --clobber
             echo "Uploaded to the existing $GITHUB_REF_NAME release."
-          else
-            gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
-              --title "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig"
+          elif gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
+              --title "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig"; then
             echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
             echo "Publishing is what generates and uploads latest.json (publish-feed.yml)."
+          else
+            gh release upload "$GITHUB_REF_NAME" "$DMG" "$TARBALL" "$TARBALL.sig" --clobber
+            echo "Lost the create race to another leg — uploaded to its release."
           fi
 
       # always(): a failed build must not leave the signing identity sitting in
@@ -496,4 +506,331 @@ jobs:
           body="$(gh release view "$GITHUB_REF_NAME" --json body --jq .body)"
           if [[ "$body" != *"Authenticode-signed"* ]]; then
             gh release edit "$GITHUB_REF_NAME" --notes "$note"$'\n\n'"$body"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The agent (#390), on the same tag and into the same release.
+  #
+  # Three stages rather than one, and the split is the acceptance criterion:
+  #
+  #   build   → cross-compile the four targets, prove the Linux ones are static
+  #   verify  → execute `--version` for EACH target on a runner matching it
+  #   publish → sign the exact files that were verified, then upload them
+  #
+  # Only `publish` declares `environment: prd`, because only it needs a secret.
+  # Build and verify hold no credential and start without waiting on the
+  # environment's reviewer — and, more to the point, the signing key touches one
+  # runner instead of six.
+  #
+  # `-p solador-agent` (inside build-agent.sh) is load-bearing on the Linux
+  # runner: a bare `cargo build` would resolve the whole workspace, including
+  # app/src-tauri and its webkit2gtk system dependencies.
+  # ---------------------------------------------------------------------------
+  release-agent-build:
+    name: Agent build (${{ matrix.name }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      # Both legs run to completion: "Linux built, macOS did not" is more
+      # useful on a release than one cancelled job.
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux musl (x86_64 + aarch64)
+            runs-on: ubuntu-latest
+            artifact: agent-linux
+            targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+            rust-targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+          - name: macOS (arm64 + x86_64)
+            runs-on: macos-latest
+            artifact: agent-macos
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # MANDATORY, exactly as in the cockpit jobs above: `agent/build.rs`
+          # compiles the CalVer in by counting git history, and a shallow clone
+          # answers that with 1 rather than failing. At depth 1 every binary
+          # here would carry no version at all and the verify stage would refuse
+          # all four.
+          fetch-depth: 0
+
+      # Same assertion both cockpit legs make, and for the same reason: this leg
+      # publishes artifacts named after the tag, so it has to prove the tag and
+      # the derived version agree before it builds anything.
+      - name: Assert the tag matches the derived CalVer
+        run: |
+          derived="v$(scripts/get-version-info.sh --version)"
+          if [[ "$GITHUB_REF_NAME" != "$derived" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match derived version $derived"
+            exit 1
+          fi
+          echo "Tag and derived version agree: $derived"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        with:
+          workspaces: .
+
+      # The same command a maintainer runs. build-agent.sh installs the pinned
+      # cargo-zigbuild for the musl targets, asserts each Linux binary is
+      # statically linked (a gnu build would die on any host older than this
+      # runner with `GLIBC_2.xx not found`), and reads `--version` back out of
+      # every binary this runner can execute.
+      - name: Build the agent binaries
+        run: ./dev agent --targets "${{ matrix.targets }}" --out-dir target/agent-release
+
+      - name: Upload the unsigned binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          # build-agent.sh's own default, and it is under target/ so a local
+          # run of the same command leaves nothing untracked in the tree.
+          path: target/agent-release/
+          # A silent empty upload here becomes a release with missing assets
+          # three jobs later.
+          if-no-files-found: error
+          retention-days: 1
+
+  release-agent-verify:
+    name: Agent --version (${{ matrix.target }})
+    needs: release-agent-build
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runs-on: ubuntu-latest
+            artifact: agent-linux
+          # GitHub's Linux arm64 runner, free on public repos. A musl binary is
+          # static, so a glibc distro is a legitimate host for it — this proves
+          # exactly that.
+          - target: aarch64-unknown-linux-musl
+            runs-on: ubuntu-24.04-arm
+            artifact: agent-linux
+          - target: aarch64-apple-darwin
+            runs-on: macos-latest
+            artifact: agent-macos
+          # The Intel macOS runner. Not Rosetta on the arm64 image: emulation
+          # would prove the binary runs under translation, which is not the
+          # claim — an Intel Mac is the machine this artifact exists for.
+          - target: x86_64-apple-darwin
+            runs-on: macos-15-intel
+            artifact: agent-macos
+
+    steps:
+      # No checkout. This job's whole job is to run a downloaded binary and
+      # compare what it says to the tag, and neither needs the source tree —
+      # which also means it cannot accidentally verify against a locally
+      # derived number instead of the published one.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: agent-dist
+
+      # THE acceptance criterion: every published binary has `--version`
+      # executed on a runner matching its target before publish. An artifact
+      # that does not start is worse than no artifact — and nothing else in the
+      # pipeline can catch it, because a cross-compiled binary links fine on a
+      # machine that cannot run a single instruction of it.
+      - name: Execute --version on a matching runner
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bin="agent-dist/solador-agent-$version-${{ matrix.target }}"
+          if [[ ! -f "$bin" ]]; then
+            echo "::error::no $bin in the uploaded artifact"
+            ls -la agent-dist
+            exit 1
+          fi
+          # Artifact upload zips the files and does not preserve the executable
+          # bit; the binary is the same bytes, only the mode is lost.
+          chmod +x "$bin"
+
+          got="$("$bin" --version)"
+          if [[ "$got" != "$version" ]]; then
+            echo "::error::$(basename "$bin") reports '$got', expected '$version'"
+            echo "The binary compiled in a different version than the tag names — a" >&2
+            echo "mislabelled artifact is worse than a failed release." >&2
+            exit 1
+          fi
+          echo "$(basename "$bin") runs on $(uname -sm) and reports $got"
+
+  release-agent-publish:
+    name: Sign and attach the agent binaries
+    needs: [release-agent-build, release-agent-verify]
+    runs-on: ubuntu-latest
+    # The only agent job that declares it, because it is the only one holding a
+    # credential — same gate, and same reasoning, as the two cockpit legs.
+    #
+    # RUNBOOK NOTE: this job becomes ready only after build + verify, so `prd`'s
+    # required reviewer is prompted TWICE on a tagged run — once at the start for
+    # the two cockpit legs, and again partway through for this one. That is the
+    # cost of not handing the signing key to the six runners that build and
+    # verify, and it is worth knowing before a release appears to stall.
+    environment: prd
+
+    steps:
+      # FIRST, before the key is written anywhere. An unreachable secret
+      # resolves to the EMPTY STRING and never raises — the same failure the
+      # cockpit legs' preflights exist for. Without this, a lost
+      # `environment: prd` would surface as a signer error that never mentions
+      # a secret, or as a release whose binaries carry no signature at all.
+      #
+      # SHAPE, not just presence. A minisign secret key is exactly two lines,
+      # the first an `untrusted comment:` header; a truncated or single-line
+      # value passes a `-z` test and then fails inside the signer with a message
+      # about parsing, which sends whoever reads it to the wrong place. Nothing
+      # here echoes the key.
+      #
+      # The secret is scoped to the two steps that consume it rather than to the
+      # job, so it is not also exported to checkout, download-artifact, apt-get
+      # and gh.
+      - name: Preflight — the signing key must be non-empty and well-shaped
+        env:
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${SOLADOR_AGENT_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY resolved EMPTY"
+            echo "Most likely cause: this job lost 'environment: prd', or the key was" >&2
+            echo "never provisioned. It is the private half of the keypair whose public" >&2
+            echo "half is committed at agent/release-signing-key.pub; see" >&2
+            echo "docs/AGENT-DISTRIBUTION.md §5." >&2
+            exit 1
+          fi
+          lines="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | grep -c '' || true)"
+          first="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | head -n1)"
+          if [[ "$lines" -lt 2 || "$first" != untrusted\ comment:* ]]; then
+            echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY is not a minisign secret key"
+            echo "Expected two lines beginning 'untrusted comment:'; got $lines line(s)." >&2
+            echo "A value that was pasted truncated, or base64-wrapped, lands here." >&2
+            exit 1
+          fi
+          echo "The agent signing key resolved, and has a minisign secret key's shape."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # build-agent.sh names the artifacts after the derived CalVer even in
+          # --sign-only mode, so this job counts commits too.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # Caches ~/.cargo/bin, where build-agent.sh installs the pinned rsign.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        with:
+          workspaces: .
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agent-linux
+          path: agent-dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agent-macos
+          path: agent-dist
+
+      # These are the SAME FILES the verify jobs executed — downloaded from the
+      # build, not rebuilt here. Rebuilding would produce a second artifact that
+      # nothing had run, which is precisely the claim the verify stage exists to
+      # make.
+      - name: Assert all four verified binaries arrived
+        id: artifacts
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          missing=()
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+                   aarch64-apple-darwin x86_64-apple-darwin; do
+            [[ -f "agent-dist/solador-agent-$version-$t" ]] || missing+=("$t")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::${#missing[@]} target(s) missing from the build artifacts: ${missing[*]}"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "All four targets present for $version."
+
+      - name: Sign each binary with the agent release key
+        env:
+          # Through the environment, never interpolated into the script body —
+          # the same rule publish-feed.yml states for event fields. `${{ }}`
+          # inside `run:` is substitution before the shell ever sees it, and
+          # this value ultimately comes from a tag name.
+          VERSION: ${{ steps.artifacts.outputs.version }}
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          # A 0600 file in a private temp dir, because the signer takes a path —
+          # the same handling the App Store Connect key gets, and removed on
+          # every exit path below.
+          #
+          # The trap is armed BEFORE the key is written: installed afterwards, a
+          # failure between the two would leave the directory behind, which is
+          # the one window where cleanup actually matters.
+          keydir="$(mktemp -d)"
+          chmod 700 "$keydir"
+          trap 'rm -rf "$keydir"' EXIT
+          key="$keydir/agent-release.key"
+          ( umask 077; printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" > "$key" )
+
+          # --sign-only signs what is already in --out-dir and builds nothing,
+          # so the bytes that get a signature are the bytes that were verified.
+          # It also re-verifies each signature against the COMMITTED public key,
+          # which is what turns a mis-provisioned secret into a failed release
+          # rather than a release full of signatures nobody can check.
+          #
+          # MARKETING_VERSION is PINNED from the tag, exactly as publish.sh pins
+          # it for the cockpit build: --sign-only selects artifacts by version
+          # prefix, and a second derive here — however unlikely to differ on the
+          # same commit — could select none and fail for a reason that has
+          # nothing to do with signing. build-agent.sh consumes the pin verbatim.
+          MARKETING_VERSION="$VERSION" \
+            SOLADOR_AGENT_SIGNING_KEY="$key" ./dev agent --sign-only --out-dir agent-dist
+
+      # An independent second read, by a different implementation of minisign
+      # than the one that signed. `rsign` (Rust) wrote these; the reference C
+      # `minisign` reads them here — so "it verifies" is not just the signer
+      # agreeing with itself, and it is the exact command the README tells a
+      # user to run.
+      - name: Verify the signatures with the reference minisign
+        env:
+          VERSION: ${{ steps.artifacts.outputs.version }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends minisign
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+                   aarch64-apple-darwin x86_64-apple-darwin; do
+            bin="agent-dist/solador-agent-$VERSION-$t"
+            minisign -V -m "$bin" -x "$bin.minisig" -p agent/release-signing-key.pub
+          done
+          echo "All four signatures verify under agent/release-signing-key.pub."
+
+      # The same draft release both cockpit legs attach to — one tag, one
+      # release, both products. Same view-then-create-then-fall-back pattern as
+      # the Windows leg, because any of the three legs may get here first.
+      - name: Attach the agent binaries to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.artifacts.outputs.version }}
+        run: |
+          shopt -s nullglob
+          assets=(agent-dist/solador-agent-"$VERSION"-*)
+          if [[ ${#assets[@]} -ne 8 ]]; then
+            echo "::error::expected 8 assets (4 binaries + 4 .minisig), found ${#assets[@]}"
+            printf '%s\n' "${assets[@]}"
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            echo "Uploaded to the existing $GITHUB_REF_NAME release."
+          elif gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
+              --title "$GITHUB_REF_NAME" "${assets[@]}"; then
+            echo "Created draft release $GITHUB_REF_NAME. Publish it when you are happy."
+          else
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            echo "Lost the create race to another leg — uploaded to its release."
           fi

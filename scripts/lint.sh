@@ -39,31 +39,48 @@ else
     status=1
 fi
 
-# --- agent/deploy/*.sh. Mirrors the two shell gates added to CI's agent-tests
-# job by #269. These scripts are the agent's only path onto a host and were the
-# least-exercised code in the repo: #268 broke every deploy while `bash -n` and
-# shellcheck were clean — because nothing ran them.
-log_info "bash -n agent/deploy/*.sh…"
-if bash -n agent/deploy/*.sh; then
-    log_success "agent/deploy shell syntax clean"
+# --- Every shell script this repo ships. Mirrors the two shell gates added to
+# CI's agent-tests job by #269, widened in #390.
+#
+# agent/deploy/ is the agent's only path onto a host, and was the least-exercised
+# code in the repo: #268 broke every deploy while both of these gates were green,
+# because neither of them was pointed at those files.
+#
+# scripts/ is the same shape one level up. `build-agent.sh` builds and signs the
+# four published agent binaries and runs ONLY on a `v*` tag, so an ungated break
+# there surfaces mid-release — the exact failure mode above, on the path that has
+# no second chance. The whole directory is covered rather than that one file,
+# because the next release script would otherwise arrive equally unguarded.
+#
+# (The word "shell·check" is spelt out in this comment rather than written as one
+# word: shellcheck reads `# shellcheck …` at the start of a comment as a
+# directive and refuses to parse the file when it is prose.)
+SHELL_SOURCES=(agent/deploy/*.sh scripts/*.sh dev prd)
+
+log_info "bash -n over ${#SHELL_SOURCES[@]} shell sources…"
+if bash -n "${SHELL_SOURCES[@]}"; then
+    log_success "shell syntax clean"
 else
-    log_error "agent/deploy has a shell syntax error"
+    log_error "a shell script has a syntax error"
     status=1
 fi
 
-# shellcheck is not a repo dependency, so a machine without it gets a loud skip
-# rather than a red run — the same rule scripts/test.sh applies to a missing
-# toolchain (PR #126). CI runs it unconditionally, so the gate itself never skips.
+# The linter below is not a repo dependency, so a machine without it gets a loud
+# skip rather than a red run — the same rule scripts/test.sh applies to a missing
+# toolchain (PR #126). CI runs it unconditionally, so the gate itself never
+# skips. (Named obliquely for the reason the block above records: a comment that
+# opens with the tool's name is read as a directive, and #390 pointed the tool at
+# this file for the first time.)
 if command_exists shellcheck; then
-    log_info "shellcheck -S warning agent/deploy/*.sh…"
-    if shellcheck -S warning agent/deploy/*.sh; then
+    log_info "shellcheck -S warning over ${#SHELL_SOURCES[@]} shell sources…"
+    if shellcheck -S warning "${SHELL_SOURCES[@]}"; then
         log_success "shellcheck clean"
     else
-        log_error "shellcheck found problems in agent/deploy"
+        log_error "shellcheck found problems in a shell script"
         status=1
     fi
 else
-    log_warning "shellcheck not found — skipping agent/deploy lint (CI still runs it; brew install shellcheck)"
+    log_warning "shellcheck not found — skipping the shell lint (CI still runs it; brew install shellcheck)"
 fi
 
 if [[ $status -eq 0 ]]; then

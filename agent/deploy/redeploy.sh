@@ -19,14 +19,15 @@
 #   * The displaced binary is kept as "<bin>.prev" so a bad build is one
 #     `rollback` away instead of a from-source rebuild on the VM while
 #     monitoring is down.
-#   * After restart we poll /v1/health and assert it reports the version from
-#     Cargo.toml, so a half-applied swap or a stale process can't pass silently.
+#   * After restart we poll /v1/health and assert it reports the version the
+#     binary we just built answers `--version` with, so a half-applied swap or a
+#     stale process can't pass silently.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# crate_version / verify_health are shared with install.sh, which runs the same
-# served-version-vs-source assertion after its own restart.
+# binary_version / verify_health are shared with install.sh, which runs the same
+# served-version-vs-artifact assertion after its own restart.
 # shellcheck source=agent/deploy/lib.sh
 source "$SCRIPT_DIR/lib.sh"
 CRATE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -101,8 +102,11 @@ do_rollback() {
 
     restart_unit
 
-    # The agent binary has no --version flag, so we can't statically know which
-    # version .prev embeds. Verify it simply comes back online (status ok).
+    # Rollback asserts only that the agent came back online. `.prev` could be
+    # asked its version now that `--version` exists (#390), but a rollback that
+    # additionally required a version match would fail on the one case rollback
+    # exists for — a .prev the operator cannot describe — so it stays a
+    # liveness check.
     if verify_health "$ENV_FILE" ""; then
         echo "==> Rollback complete. The agent is back online on the previous binary."
         echo "    The binary you rolled back over is now $PREV_BIN (re-run this to roll forward)."
@@ -129,13 +133,15 @@ do_deploy() {
         exit 1
     fi
 
-    local target_version
-    target_version="$(crate_version "$CRATE_DIR/Cargo.toml")"
-    [ -n "$target_version" ] || { echo "ERROR: could not read the [package] version from Cargo.toml." >&2; exit 1; }
-
-    echo "==> Building release binary (target version $target_version)..."
-    local built_bin
+    echo "==> Building release binary..."
+    local built_bin target_version
     built_bin="$(build_release_binary "$CRATE_DIR" "$BIN_NAME")" || exit 1
+
+    # Asked of the binary that was just built, not of a manifest: since #390 the
+    # agent's version is the git-derived CalVer compiled in by build.rs, and the
+    # artifact is the only thing that can say which one it got.
+    target_version="$(binary_version "$built_bin")" || exit 1
+    echo "==> Built version $target_version"
 
     # Preserve the currently-installed binary as .prev (one-command rollback).
     if [ -e "$INSTALL_PATH" ]; then

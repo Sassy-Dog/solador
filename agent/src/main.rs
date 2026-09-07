@@ -12,10 +12,127 @@ use std::sync::Arc;
 
 use server::{build_router, AppState};
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The version this build ships as: the repo's CalVer, derived once by
+/// `scripts/get-version-info.sh` and compiled in by `build.rs` (#390).
+///
+/// `None` is a real state, not an oversight. A build made outside a full git
+/// checkout — a shallow clone, a source tarball — cannot be asked how many
+/// commits landed this month, and this repo does not answer that with a
+/// stand-in: `--version` refuses and `/v1/health` omits the key, exactly as the
+/// cockpit's About row renders `—`. Every *published* binary carries one, and
+/// the release workflow asserts that by executing `--version` on a runner
+/// matching each target before anything is uploaded.
+///
+/// Deliberately NOT `CARGO_PKG_VERSION`. `agent/Cargo.toml`'s number is the
+/// wire-contract marker its comment block describes; it has never named a
+/// release, and falling back to it here would be a defaulted value filling a
+/// gap.
+const VERSION: Option<&str> = option_env!("SOLADOR_MARKETING_VERSION");
+
+/// What argv asked this process to do.
+///
+/// Resolved before anything else happens — before tracing, before the token
+/// check — because `--version` has to work on a machine that has no token and
+/// no tailnet. That is the whole point of the release gate: a binary that
+/// cannot start is worse than no binary, and the check must not be answerable
+/// only by a correctly configured host.
+#[derive(Debug, PartialEq, Eq)]
+enum Invocation {
+    /// No arguments: run the server.
+    Serve,
+    /// `--version` / `-V`.
+    Version,
+    /// `--help` / `-h`.
+    Help,
+    /// Anything else, carried verbatim so the message can name it. Refused
+    /// rather than ignored: the agent takes no arguments, so an argument that
+    /// reaches it is a mistake somewhere (a hand-edited `ExecStart`, a typo in
+    /// a wrapper), and silently serving anyway is how that mistake survives.
+    Unknown(String),
+}
+
+fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Invocation {
+    let mut seen = None;
+    for arg in args {
+        match arg.as_str() {
+            "--version" | "-V" => return Invocation::Version,
+            "--help" | "-h" => return Invocation::Help,
+            other => {
+                seen.get_or_insert_with(|| other.to_string());
+            }
+        }
+    }
+    match seen {
+        Some(a) => Invocation::Unknown(a),
+        None => Invocation::Serve,
+    }
+}
+
+/// `--version` prints the version and **nothing else** — no program name, no
+/// prefix, one line. That is a contract, not terseness: `agent/deploy/lib.sh`'s
+/// `binary_version` and the release workflow both read it directly, and every
+/// decoration is something a future script would have to strip.
+fn print_version() -> i32 {
+    match VERSION {
+        Some(v) => {
+            println!("{v}");
+            0
+        }
+        None => {
+            eprintln!(
+                "solador-agent: this build carries no version. It was compiled outside a full \
+                 git checkout (a shallow clone, or an unpacked source archive), so \
+                 scripts/get-version-info.sh could not count the commits CalVer is made of. \
+                 Published binaries always carry one — see docs/VERSIONING.md."
+            );
+            1
+        }
+    }
+}
+
+/// Written at column zero on purpose: a `\n\` continuation would swallow the
+/// leading spaces of every line after it, and the indentation here is the
+/// output.
+const USAGE: &str = "\
+solador-agent — per-host metrics agent for Solador
+
+Usage: solador-agent [--version | --help]
+
+Takes no arguments in normal operation; it is configured entirely from the
+environment (systemd EnvironmentFile on Linux, launchd on macOS):
+
+  SOLADOR_AGENT_TOKEN  required bearer token; the agent refuses to start without it
+  SOLADOR_AGENT_BIND   bind address (default: the detected Tailscale IP)
+  SOLADOR_AGENT_PORT   listen port (default: 7878)
+
+Options:
+  -V, --version  print the version and nothing else, then exit
+  -h, --help     print this help, then exit
+";
+
+fn usage() -> String {
+    format!(
+        "{USAGE}\nVersion: {}\n",
+        VERSION.unwrap_or("— (this build carries no version)")
+    )
+}
 
 #[tokio::main]
 async fn main() {
+    match parse_args(std::env::args().skip(1)) {
+        Invocation::Serve => {}
+        Invocation::Version => std::process::exit(print_version()),
+        Invocation::Help => {
+            print!("{}", usage());
+            return;
+        }
+        Invocation::Unknown(arg) => {
+            eprintln!("solador-agent: unrecognized argument '{arg}'");
+            eprint!("{}", usage());
+            std::process::exit(2);
+        }
+    }
+
     init_tracing();
 
     // Required bearer token — refuse to start without it.
@@ -70,7 +187,10 @@ async fn main() {
         }
     };
 
-    tracing::info!("solador-agent v{VERSION} listening on {addr} (host={hostname})");
+    tracing::info!(
+        "solador-agent {} listening on {addr} (host={hostname})",
+        VERSION.map_or_else(|| "(no version)".to_string(), |v| format!("v{v}"))
+    );
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("FATAL: server error: {e}");
@@ -199,6 +319,72 @@ fn tailscale_iface_ip() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn no_arguments_means_serve() {
+        assert_eq!(parse_args(args(&[])), Invocation::Serve);
+    }
+
+    #[test]
+    fn version_and_help_are_recognized_in_both_spellings() {
+        for a in ["--version", "-V"] {
+            assert_eq!(parse_args(args(&[a])), Invocation::Version, "{a}");
+        }
+        for a in ["--help", "-h"] {
+            assert_eq!(parse_args(args(&[a])), Invocation::Help, "{a}");
+        }
+    }
+
+    /// An argument the agent does not understand is REFUSED, never ignored.
+    /// The agent takes none in normal operation, so one arriving means
+    /// something upstream is wrong — a hand-edited `ExecStart`, a wrapper
+    /// passing flags meant for something else — and serving anyway is how that
+    /// survives unnoticed.
+    #[test]
+    fn an_unrecognized_argument_is_refused_and_named() {
+        assert_eq!(
+            parse_args(args(&["--serve-everything"])),
+            Invocation::Unknown("--serve-everything".to_string())
+        );
+    }
+
+    /// `--version` must win over the garbage beside it: the release gate runs
+    /// it on four target runners, and a binary that answered "unrecognized
+    /// argument" there would fail the gate for the wrong reason.
+    #[test]
+    fn version_wins_over_an_unrecognized_argument() {
+        assert_eq!(
+            parse_args(args(&["--nonsense", "--version"])),
+            Invocation::Version
+        );
+    }
+
+    /// The one line `--version` prints IS the machine contract — `lib.sh`'s
+    /// `binary_version` and the release workflow both read it verbatim. A
+    /// prefix here would break both silently, so the shape is pinned.
+    #[test]
+    fn a_missing_version_is_reported_as_a_failure_rather_than_a_stand_in() {
+        // The value is compile-time, so this asserts the mapping rather than
+        // the build: whatever `VERSION` is, exit 0 means a version was printed
+        // and exit 1 means none was — never a substitute.
+        let code = print_version();
+        assert_eq!(code, i32::from(VERSION.is_none()));
+    }
+
+    #[test]
+    fn usage_names_the_version_state_it_is_in() {
+        let text = usage();
+        assert!(text.contains("--version"), "{text}");
+        assert!(text.contains("SOLADOR_AGENT_TOKEN"), "{text}");
+        match VERSION {
+            Some(v) => assert!(text.contains(v), "{text}"),
+            None => assert!(text.contains('—'), "{text}"),
+        }
+    }
 
     #[test]
     fn is_tailscale_ipv4_recognizes_cgnat_range() {

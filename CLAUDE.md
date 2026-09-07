@@ -96,11 +96,15 @@ coverage it does not have would be worse than the checklist.
 - `./dev build` — Compile the cockpit binary (plain cargo, no bundle).
   `./dev build --bundle` and `./dev build --release` (= `./prd`) go through
   `cargo tauri build` and produce `Solador.app`; see **Releasing** below
+- `./dev agent` — Cross-compile the metrics agent's four published targets
+  (#390). `--targets "<triples>"` narrows it, `--sign` minisigns each artifact;
+  see **Releasing** below
 - `./dev test` — Root Rust workspace (`cargo test --locked --workspace` —
   `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, plus the
   `tests/frontend` Playwright e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
-  `shellcheck -S warning` over `agent/deploy/*.sh`; mirrors CI
+  `shellcheck -S warning` over every shell source this repo ships
+  (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`); mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — Clean build artifacts
 - `./dev publish` — mint the CalVer tag, then build a signed, notarized,
@@ -239,6 +243,54 @@ check failed"* — on every launch, forever, with nothing broken. The shell's
 reading them, because the app deliberately does not depend on the release tooling;
 when Windows gains an updater payload, those two lines change together.
 
+**The agent ships on the same tag and the same release (#390).**
+`release-agent-build`, `release-agent-verify` and `release-agent-publish` are
+`release.yml`'s third leg, producing four **raw binaries** —
+`x86_64`/`aarch64-unknown-linux-musl`, `aarch64`/`x86_64-apple-darwin` — each
+with a detached minisign `.minisig`. One tag, one release, both products;
+deliberately not a second release train. `./dev agent` is the same command
+locally.
+
+**The agent's macOS floor is its own, and it is 11.0** — not the workspace's
+14.0. `.cargo/config.toml` declares that floor for the cockpit's frontend
+(`adoptedStyleSheets`); a daemon with no webview inheriting it would publish a
+binary advertised for Intel Macs that an Intel Mac on macOS 12 or 13 cannot
+launch — a floor arrived at by accident, which is the mistake #335 caught in the
+bundle's architecture. `[env]` yields to an inherited value, so
+`AGENT_MACOS_MIN_VERSION` is exported at the cargo invocation and read back out
+of each Mach-O with `vtool`.
+
+**musl, not gnu, and asserted out of the ELF.** A dynamically linked gnu build
+resolves the *builder's* glibc and dies on any older host with `GLIBC_2.xx not
+found` — invisible to us, fatal to a stranger's first install. So the build
+checks `file` for `statically linked` (or `static-pie linked`; rustc's musl
+targets emit either) *and*, where readelf exists, for the absence of a
+`PT_INTERP` segment. Cross-compilation is **`cargo-zigbuild`**, not `cross`: no
+Docker on the runner, faster per target, and musl is its strength. Both Linux
+targets go through it, so the ARM artifact is not built by a different path than
+the one the x86 runner exercised.
+
+**Three jobs, not one, and the split is the acceptance criterion.** Build →
+verify → publish. `--version` is executed for **every** target on a runner
+matching it (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`,
+`macos-15-intel`) against the files the build uploaded, because an artifact that
+does not start is worse than no artifact and a cross-compiled binary links
+perfectly well on a machine that cannot run one instruction of it. Only the
+publish job declares `environment: prd`, so the signing key touches one runner
+rather than six and the other two start without waiting on the reviewer.
+
+**The agent keypair is separate from the app's**, and that is the security
+argument, not tidiness: the app updates on a laptop, the agent runs unattended as
+a service on servers, which is the higher-value target. Its public half is
+committed at `agent/release-signing-key.pub` and every signature is re-verified
+against **that file** before upload — a mis-provisioned
+`SOLADOR_AGENT_SIGNING_PRIVATE_KEY` fails the release rather than shipping
+signatures nobody can check — then verified again by the reference C `minisign`,
+a different implementation from the `rsign2` that signed. Signatures are plain
+minisign, not the Tauri signer's double-base64 form, so any user can check a
+download with the stock tool. **Nothing in the agent verifies a signature yet**;
+the compiled-in public key and the two-key rotation window are #393's.
+
 **Updates (#308).** `--sign` also produces the updater payload: a minisigned
 `Solador-<version>.app.tar.gz` beside the `.dmg`. A `.dmg` is not an update —
 macOS applies a tarball — so both ship as release assets. `bundle.
@@ -327,6 +379,11 @@ the bundle's floor.
 ├── crates/
 │   ├── wire/               # Wire-format types shared with the agent's JSON
 │   │                       #   contract (package `solador-wire`, imported as `wire`)
+│   ├── buildversion/       # the git-derived CalVer, published to a crate at
+│   │                       #   build time. A BUILD dependency of both
+│   │                       #   app/src-tauri and agent/, so the plumbing around
+│   │                       #   scripts/get-version-info.sh has one home. NO
+│   │                       #   dependencies, for the same reason fault has none
 │   ├── fault/              # the stock message vocabulary: one sentence per
 │   │                       #   anticipated failure. NO dependencies, deliberately —
 │   │                       #   every vendor crate points at it, so anything added
@@ -378,6 +435,13 @@ the bundle's floor.
 - Remote hosts run the Rust agent (`agent/`), polled over Tailscale.
 - Agent endpoints: `GET /v1/snapshot` (CPU/mem/disk/net/gpu/battery),
   `GET /v1/containers`, `GET /v1/health`. All require `Authorization: Bearer <token>`.
+- **`/v1/health`'s `version` is the repo CalVer, and it is optional (#390).**
+  The agent is a published artifact now, so it carries the same number the
+  release does; `agent/Cargo.toml`'s semver stopped naming a release and
+  survives only as the wire-contract marker its comment block describes. A build
+  made outside a full git checkout cannot count this month's commits, so it
+  **omits** the key — never `null`, never the crate semver as a stand-in — and
+  the Settings row reads `agent version —`.
 - **Unknown is representable.** Every metric a producer may not be able to
   measure (memory used/swap/pressure, thermal state, the GPU fields,
   disk/network rates, `processes[].cpuCores`) is an `Option` in `crates/wire`:
@@ -562,11 +626,22 @@ Never compute a version anywhere else. `app/src-tauri/tauri.conf.json` no
 longer authors a `version` key at all (#303) — the bundle's two plist numbers
 come from those two scripts and are asserted back out of the artifact.
 `app/src-tauri/Cargo.toml`'s `0.1.0` is unpublished package metadata, like the
-nine sibling crates', and nothing reads it any more: `app/src-tauri/build.rs`
+sibling crates', and nothing reads it any more: `app/src-tauri/build.rs`
 publishes the derived CalVer as `SOLADOR_MARKETING_VERSION`, and
 `settings::VERSION` is an `Option<&str>` over it. **The build script derives
 nothing itself** — it shells out to `get-version-info.sh`, honouring an explicit
 `MARKETING_VERSION` pin ahead of it, because the algorithm has exactly one home.
+
+**Two shipping tiers, one number (#390).** The agent takes the same CalVer by
+the same route: `agent/build.rs` calls `crates/buildversion`, the shared helper
+`app/src-tauri/build.rs` now also calls, so the *plumbing* around that one
+script (a worktree's `.git` file, the ref file a commit rewrites, the
+shallow-clone refusal) exists once rather than once per build script.
+`solador-agent --version` prints it and nothing else — a contract both
+`agent/deploy/lib.sh` and `release.yml` read directly — and `/v1/health` serves
+the same string, so one binary gives one answer. `agent/Cargo.toml`'s `0.5.0` is
+now unpublished metadata in exactly the sense `app/src-tauri`'s `0.1.0` is, kept
+as the wire-contract marker and read by nothing at runtime.
 
 **A shallow clone refuses rather than counts.** CalVer's patch is commits this
 month, and a `fetch-depth: 1` checkout answers that question with `1` instead of
@@ -589,6 +664,14 @@ share one release and a fixed crash would read as regressed.
 ### Working on the Agent
 - Rust source in `agent/src/` (`server.rs`, `metrics.rs`, `containers.rs`).
 - Deploy via `agent/deploy`; see `agent/README.md` for endpoints and rollout.
+- **The version comes out of the artifact, not a manifest (#390).**
+  `agent/deploy/lib.sh`'s `binary_version` runs `<bin> --version` and **fails
+  closed**: a binary that cannot name itself exits non-zero and prints nothing,
+  and both deploy scripts abort there. Returning an empty string instead would
+  let `verify_health` fall through to its rollback form — "just come back
+  online" — and report a successful deploy that never proved which binary is
+  serving. `crate_version()` is gone; it would now assert the wire-contract
+  number against `/v1/health`.
 - **`agent/deploy/` is gated too, as of #269**: `agent/deploy/lib_test.sh`
   (dependency-free bash, stubs cargo/curl/sleep) plus `shellcheck`/`bash -n`,
   all three in the `agent-tests` job. Before that the deploy path was the one
@@ -597,6 +680,13 @@ share one release and a fixed crash would read as regressed.
   `build_release_binary` *fails* when the workspace target dir is empty: a
   lenient fallback finds the stale pre-#264 binary in `agent/target/release/`
   and deploys it, reporting success.
+- **Those two shell gates now cover `scripts/*.sh` and `dev`/`prd` as well**
+  (#390). `build-agent.sh` runs ONLY on a `v*` tag, so an ungated break there
+  surfaces mid-release — the #269 shape again, on the path with no second
+  chance. The whole directory is covered rather than that one file so the next
+  release script is not equally unguarded. Two comments in `scripts/lint.sh`
+  had to be reworded: a comment opening with the linter's own name is parsed as
+  a directive, and the file refuses to lint.
 
 ## Debugging
 

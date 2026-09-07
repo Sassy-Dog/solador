@@ -317,7 +317,19 @@ pub struct Health {
     /// therefore serving frozen numbers.
     pub status: String,
     pub hostname: String,
-    pub version: String,
+    /// The agent's CalVer, **omitted** by an agent that cannot name itself
+    /// (#390): one built outside a full git checkout, where
+    /// `scripts/get-version-info.sh` cannot count the commits CalVer is made
+    /// of. Every published binary carries one; a `cargo build` from a shallow
+    /// clone does not, and the agent omits the key rather than serving
+    /// `agent/Cargo.toml`'s wire-contract number as a stand-in.
+    ///
+    /// Optional in both directions, like every other unmeasured field here: an
+    /// absent key decodes to `None`, and `None` re-encodes as an omitted key —
+    /// never `null`. Agents predating #390 always send it, so nothing about
+    /// decoding an older payload changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// Optional because agents older than #35 don't send it — same tolerance
     /// The original decoder gives it (`let sampleAgeSeconds: Int?`). An older
     /// agent must decode, not fail.

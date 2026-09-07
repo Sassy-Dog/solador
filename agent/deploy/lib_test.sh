@@ -226,93 +226,144 @@ make_fake_binary() {
     chmod +x "$1"
 }
 
-# ---- crate_version ----------------------------------------------------------
+# ---- binary_version ---------------------------------------------------------
 
-test_crate_version() {
-    local manifest got
+# Write a stub "agent binary" that answers --version the way the real one does.
+# `printf '%s\n'` and nothing else: the contract is one line carrying the
+# version and no decoration.
+stub_agent_binary() {
+    local path="$1" version="$2"
+    cat > "$path" <<STUB
+#!/bin/sh
+if [ "\$1" = "--version" ]; then
+    printf '%s\n' '$version'
+    exit 0
+fi
+echo "stub agent: unexpected args: \$*" >&2
+exit 2
+STUB
+    chmod +x "$path"
+}
 
-    manifest="$TMP/simple.toml"
-    cat > "$manifest" <<'TOML'
-[package]
-name = "solador-agent"
-version = "0.4.0"
-edition = "2021"
-TOML
-    assert_eq "crate_version reads the [package] version" \
-        "0.4.0" "$(crate_version "$manifest")"
+test_binary_version() {
+    local bin
 
-    # The trap the awk exists for. A bare `grep '^version'` returns the *first*
-    # version line in the file, so a manifest that grows a [dependencies.foo]
-    # table above [package] would have the deploy assert serde's number against
-    # /v1/health — and the mismatch would be blamed on the agent.
-    manifest="$TMP/dep-above.toml"
-    cat > "$manifest" <<'TOML'
-[dependencies.serde]
-version = "1.0.999"
-features = ["derive"]
+    bin="$TMP/agent-ok"
+    stub_agent_binary "$bin" "2026.9.3"
+    assert_eq "binary_version reads --version out of the artifact" \
+        "2026.9.3" "$(binary_version "$bin")"
 
-[package]
-name = "solador-agent"
-version = "0.4.0"
-TOML
-    assert_eq "crate_version ignores a [dependencies.*] version above [package]" \
-        "0.4.0" "$(crate_version "$manifest")"
+    # The version this asserts against /v1/health is the CalVer the build
+    # compiled in, NOT agent/Cargo.toml's number. Those diverged at #390 and the
+    # manifest one names no release, so reading the manifest here would compare
+    # the wrong number and blame the agent for the mismatch.
+    bin="$TMP/agent-calver"
+    stub_agent_binary "$bin" "2026.12.41"
+    assert_eq "binary_version returns the CalVer, not a crate semver" \
+        "2026.12.41" "$(binary_version "$bin")"
 
-    # ...and the section has to *end* at the next table header, or the same
-    # dependency below [package] wins instead.
-    manifest="$TMP/dep-below.toml"
-    cat > "$manifest" <<'TOML'
-[package]
-name = "solador-agent"
-version = "0.4.0"
+    # Trailing whitespace or a stray CR (a binary built on a checkout with
+    # autocrlf, say) must not become part of the string the health check
+    # compares — it would fail with two identical-looking versions on screen.
+    bin="$TMP/agent-crlf"
+    cat > "$bin" <<'STUB'
+#!/bin/sh
+printf '2026.9.3 
+'
+STUB
+    chmod +x "$bin"
+    assert_eq "binary_version strips whitespace and CR" \
+        "2026.9.3" "$(binary_version "$bin")"
 
-[dependencies.serde]
-version = "1.0.999"
-TOML
-    assert_eq "crate_version stops at the next table header" \
-        "0.4.0" "$(crate_version "$manifest")"
+    # More than one line is not a contract violation worth dying over — take the
+    # first and move on. Written with parameter expansion rather than `head -n1`
+    # for a reason this case also guards: under `set -o pipefail`, `head`
+    # closing the pipe early can hand the producer a SIGPIPE and take the whole
+    # deploy down over a version string that parsed perfectly well.
+    bin="$TMP/agent-chatty"
+    cat > "$bin" <<'STUB'
+#!/bin/sh
+printf '2026.9.3\nbuilt from abc1234\nand a third line\n'
+STUB
+    chmod +x "$bin"
+    assert_eq "binary_version takes the first line without a broken pipe" \
+        "2026.9.3" "$(binary_version "$bin")"
 
-    # agent/Cargo.toml carries its changelog as a comment block between the
-    # header and the value, so "the line after [package]" is not the version.
-    manifest="$TMP/commented.toml"
-    cat > "$manifest" <<'TOML'
-[package]
-name = "solador-agent"
-# 0.4.0: gpu is measured on hosts with an NVIDIA card (#217).
-# 0.3.1: processes[] lists processes only (#211).
-version = "0.4.0"  # inline comments are legal TOML too
-TOML
-    assert_eq "crate_version skips comments between the header and the value" \
-        "0.4.0" "$(crate_version "$manifest")"
+    # FAIL CLOSED. A binary that cannot name itself exits non-zero and prints
+    # nothing; if this returned success with an empty string, verify_health
+    # would take the empty form — "just come back online" — and a deploy that
+    # never proved which binary is serving would report success.
+    bin="$TMP/agent-unversioned"
+    cat > "$bin" <<'STUB'
+#!/bin/sh
+echo "solador-agent: this build carries no version." >&2
+exit 1
+STUB
+    chmod +x "$bin"
+    binary_version "$bin" >/dev/null 2>&1
+    assert_eq "binary_version fails when the binary carries no version" "1" "$?"
 
-    # The real manifest, so a restructure that breaks the parser fails here
-    # instead of on a host mid-deploy. Asserting the shape, not the number: the
-    # number moves every release, the parseability must not.
-    got="$(crate_version "$SCRIPT_DIR/../Cargo.toml")"
-    case "$got" in
-        [0-9]*.[0-9]*.[0-9]*)
-            pass "crate_version parses the real agent/Cargo.toml (got $got)"
-            ;;
-        *)
-            fail "crate_version parses the real agent/Cargo.toml" \
-                "want: a semver-shaped version" "got:  [$got]"
-            ;;
-    esac
+    bin="$TMP/agent-silent"
+    printf '#!/bin/sh\nexit 0\n' > "$bin"
+    chmod +x "$bin"
+    binary_version "$bin" >/dev/null 2>&1
+    assert_eq "binary_version fails when --version prints nothing" "1" "$?"
 
-    crate_version "$TMP/does-not-exist.toml" >/dev/null 2>&1
-    assert_eq "crate_version fails on a missing manifest" "1" "$?"
+    binary_version "$TMP/does-not-exist" >/dev/null 2>&1
+    assert_eq "binary_version fails on a missing binary" "1" "$?"
 
-    # Never fabricate: an unreadable version is empty, not a guess. Both deploy
-    # scripts guard on that emptiness and refuse to build — which is the only
-    # reason returning nothing here is safe.
-    manifest="$TMP/no-version.toml"
-    printf '[package]\nname = "solador-agent"\n' > "$manifest"
-    assert_empty "crate_version prints nothing when [package] has no version" \
-        "$(crate_version "$manifest")"
-    assert_file_has "install.sh refuses to build without a version" \
-        "$SCRIPT_DIR/install.sh" '[ -n "$TARGET_VERSION" ]'
-    assert_file_has "redeploy.sh refuses to build without a version" \
-        "$SCRIPT_DIR/redeploy.sh" '[ -n "$target_version" ]'
+    # The real binary, whichever profile this machine happens to have built.
+    # Debug counts: this asserts the CONTRACT (`--version` prints one dotted
+    # line, or refuses), and the contract does not vary by profile — while the
+    # CI job that runs this suite builds debug, so insisting on release would
+    # make the one case reading a real artifact a permanent skip.
+    #
+    # BOTH outcomes are correct and which one applies is not this suite's to
+    # decide. CI checks out shallow, so the binary there genuinely carries no
+    # version and `binary_version` MUST fail; a full checkout produces a
+    # version and it must parse. Asserting either one unconditionally would
+    # fail a correct build for being built somewhere else — so assert that the
+    # two agree with each other instead.
+    local real td
+    td="$(target_dir "$SCRIPT_DIR/.." 2>/dev/null)"
+    real=""
+    for profile in release debug; do
+        if [ -n "$td" ] && [ -x "$td/$profile/solador-agent" ]; then
+            real="$td/$profile/solador-agent"
+            break
+        fi
+    done
+    if [ -n "$real" ]; then
+        local got rc
+        got="$(binary_version "$real" 2>/dev/null)"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            case "$got" in
+                [0-9]*.[0-9]*.[0-9]*)
+                    pass "binary_version reads the real binary (got $got)"
+                    ;;
+                *)
+                    fail "binary_version reads the real binary" \
+                        "want: a dotted version on one line" "got:  [$got]"
+                    ;;
+            esac
+        elif "$real" --version >/dev/null 2>&1; then
+            fail "binary_version agrees with the binary it asked" \
+                "binary_version refused, but $real --version succeeded"
+        else
+            pass "binary_version fails closed on a real binary that carries no version (shallow checkout)"
+        fi
+    else
+        skip "binary_version reads the real binary" \
+            "no solador-agent built under ${td:-<no target dir>} (cargo build -p solador-agent)"
+    fi
+
+    # Both callers must treat the failure as fatal. Neither may fall through to
+    # verify_health with an empty expectation.
+    assert_file_has "install.sh aborts when the built binary has no version" \
+        "$SCRIPT_DIR/install.sh" 'TARGET_VERSION="$(binary_version "$BUILT_BIN")" || exit 1'
+    assert_file_has "redeploy.sh aborts when the built binary has no version" \
+        "$SCRIPT_DIR/redeploy.sh" 'target_version="$(binary_version "$built_bin")" || exit 1'
 }
 
 # ---- health_url -------------------------------------------------------------
@@ -659,9 +710,10 @@ test_verify_health() {
     ) >/dev/null 2>&1
     assert_eq "verify_health fails when the body carries no version" "1" "$?"
 
-    # The rollback form. The .prev binary's version cannot be known statically
-    # (the agent has no --version flag), so any answer at all is the contract —
-    # and an answer without a version reports "unknown", not a number.
+    # The rollback form, which asserts only that the agent came back: any answer
+    # at all is the contract — and an answer without a version reports
+    # "unknown", not a number. (`.prev` could be asked with `binary_version`
+    # since #390; see lib.sh's note on why rollback deliberately does not.)
     out="$(
         PATH="$STUBS:$PATH"
         export VERIFY_HEALTH_ATTEMPTS=1
@@ -754,7 +806,7 @@ test_deploy_script_invariants() {
 
 printf 'agent/deploy/lib.sh\n\n'
 
-test_crate_version
+test_binary_version
 test_health_url
 test_health_version
 test_target_dir

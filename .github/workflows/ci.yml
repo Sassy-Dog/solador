@@ -65,13 +65,20 @@ jobs:
       # No install step for shellcheck: the ubuntu-latest image ships it. If a
       # future image stops doing so this step goes red, which is the correct
       # outcome — a lint gate that silently skips itself is what got us here.
-      - name: Shell syntax check (agent/deploy)
-        run: bash -n agent/deploy/*.sh
+      # Widened past agent/deploy/ in #390. `scripts/build-agent.sh` builds and
+      # signs the four published agent binaries and runs ONLY on a `v*` tag, so
+      # an ungated break there is discovered mid-release — the same shape as
+      # #268, on the path with no second chance. The whole of scripts/ is
+      # covered rather than that one file, so the next release script is not
+      # equally unguarded, and `dev`/`prd` because Git Bash executes them on the
+      # Windows release leg.
+      - name: Shell syntax check
+        run: bash -n agent/deploy/*.sh scripts/*.sh dev prd
 
-      - name: ShellCheck (agent/deploy)
+      - name: ShellCheck
         run: |
           shellcheck --version
-          shellcheck -S warning agent/deploy/*.sh
+          shellcheck -S warning agent/deploy/*.sh scripts/*.sh dev prd
 
       # Sits after the Rust steps because one of its target_dir cases runs the
       # real `cargo locate-project` against a scratch workspace; everything
