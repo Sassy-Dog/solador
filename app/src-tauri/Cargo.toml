@@ -85,7 +85,13 @@ tauri-plugin-notification = "2.3.3"
 # holds the publish-side half at the same `^0.2` requirement, so one verifier
 # resolves for the workspace and the gate that publishes a feed entry cannot
 # disagree with the gate that installs it.
-tauri-plugin-updater = "2.10.1"
+# Keep OS proxy discovery off: updater's `system-proxy` feature also enables it
+# in the shared HTTP stack used by plaintext, bearer-authenticated tailnet agents.
+# Explicit features preserve the prior TLS/archive support without changing routing.
+tauri-plugin-updater = { version = "2.10.1", default-features = false, features = [
+  "rustls-tls",
+  "zip",
+] }
 
 # macOS only, and only to call `set_application` BEFORE the notification plugin
 # does — see `claim_notification_identity` in `src/main.rs` for why that one
