@@ -184,13 +184,15 @@ any host older than the builder with `GLIBC_2.xx not found`. Every one of the
 four has had `--version` executed on a runner matching its target before the
 release attached it.
 
-Each binary ships with a detached `<asset>.minisig`. Check it, then make it
-executable — a GitHub release asset carries no unix mode, so a fresh download is
-**not** executable and running it before `chmod` fails with `permission denied`:
+Each binary ships with a detached `<asset>.minisig`. `deploy/install.sh`
+(below) does all of the following for you; by hand, check the signature, then
+make the file executable — a GitHub release asset carries no unix mode, so a
+fresh download is **not** executable and running it before `chmod` fails with
+`permission denied`:
 
 ```bash
-curl -LO https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>
-curl -LO https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>.minisig
+curl -fLO --proto '=https' https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>
+curl -fLO --proto '=https' https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>.minisig
 
 minisign -Vm solador-agent-<version>-<triple> \
          -x solador-agent-<version>-<triple>.minisig \
@@ -202,10 +204,17 @@ chmod +x solador-agent-<version>-<triple>
 
 `agent/release-signing-key.pub` is in this repository (key id
 `B2E5C62B763FD2C4` — the file is the authority; a test in `crates/updatefeed`
-reads the id out of its bytes). It is a **different keypair from the desktop app's**
-updater key, on purpose: the app updates on someone's laptop, the agent runs
-unattended as a service on servers, and a compromise of one must not yield the
-other.
+reads the id out of its bytes, and it is the id encoded in the base64 line,
+which is what `minisign -V` reports; the `untrusted comment:` line merely
+repeats it). Take the key from a checkout of **`main`** — the branch the
+ruleset protects — rather than from a tag or an archive of one: a tag is the
+least-protected ref in this repository (docs/AGENT-DISTRIBUTION.md §5 records
+that acceptance), and a key that arrived with the release it is meant to
+verify proves nothing.
+
+It is a **different keypair from the desktop app's** updater key, on purpose:
+the app updates on someone's laptop, the agent runs unattended as a service on
+servers, and a compromise of one must not yield the other.
 
 The macOS binaries require **macOS 11 (Big Sur) or later**, and that floor is
 the agent's own rather than the cockpit's: `.cargo/config.toml` declares 14.0
@@ -218,11 +227,19 @@ They are **not** Developer ID signed or notarized — that is the desktop app's
 path, not this one. Fetch them with `curl` and Gatekeeper's quarantine never
 applies; a browser download needs `xattr -d com.apple.quarantine <file>` first.
 
-There is **no installer for these yet**. `deploy/install.sh` still builds from
-source (below); downloading a signed binary instead is
-[#392](https://github.com/Sassy-Dog/solador/issues/392), and nothing in the
-agent verifies a signature yet — that is
-[#393](https://github.com/Sassy-Dog/solador/issues/393).
+`deploy/install.sh` installs these (see **Install** below): it downloads the
+binary for the host it runs on, verifies the signature with the stock
+`minisign` under the committed key, and only then installs and starts it
+([#392](https://github.com/Sassy-Dog/solador/issues/392)). Nothing in the
+agent *binary* verifies a signature yet — an in-binary updater with a
+compiled-in key is
+[#393](https://github.com/Sassy-Dog/solador/issues/393), and unattended
+update jobs are [#394](https://github.com/Sassy-Dog/solador/issues/394).
+
+**The first release to carry these binaries is the first `v*` tag cut after
+#390 landed.** `v2026.9.3` and everything before it publish none, and
+`install.sh` says so — as a failure naming the tag and the asset — rather than
+building from source instead.
 
 To produce them locally, with the command the release itself runs:
 
@@ -232,6 +249,42 @@ To produce them locally, with the command the release itself runs:
 ```
 
 ## Prerequisites
+
+Two different sets, because there are two different ways onto a host.
+
+### To install a release (`deploy/install.sh`)
+
+No Rust toolchain. A supported clean host needs:
+
+- **`curl`** and the stock **`minisign`** — `brew install minisign` (macOS),
+  `apt install minisign` (Debian 12+ / Ubuntu 24.04+ — earlier releases carry
+  no package), `dnf install minisign` (Fedora), or
+  <https://jedisct1.github.io/minisign/>. The installer refuses, and tells you
+  this, when either is missing; it never installs a verifier, a package
+  manager or a toolchain on your behalf. It also checks that what answers to
+  `minisign` *is* minisign (`minisign -v`), because `rsign` — the repo's own
+  signer — treats `-V` as "print the version" and exits 0.
+- **bash** and the usual coreutils (`install`, `mktemp`, `cmp`, `awk`, `sed`, …).
+- **A bind address the cockpit can dial.** By default the installer binds the
+  host's Tailscale IP; a LAN or VPN host without Tailscale must set
+  `SOLADOR_AGENT_BIND=<that address>` (or `0.0.0.0`, only behind a firewall).
+  With neither, the installer refuses in preflight — before any download.
+- **Linux:** systemd with a reachable user manager (`systemctl --user`, so a
+  real login session — not `sudo -u` or `su`). A non-systemd Linux (Alpine's
+  OpenRC, say) is not supported by the installer; the musl binaries still run
+  there, by the manual verify-and-`chmod` steps under **Releases**.
+  **macOS 11 or later:** a login session for the user running the installer —
+  the agent is a LaunchAgent in that user's `gui/<uid>` domain, so it needs
+  someone logged in at the console (or via Screen Sharing), and it does not run
+  before anyone logs in.
+- A checkout of this repository's **`main`** (`git clone`) — for
+  `agent/deploy/*` and `agent/release-signing-key.pub`, not to build anything.
+  There is deliberately no `curl | sh` bootstrap: the public key the download
+  is verified under has to arrive by a path other than the download, and
+  `main` is the ref the repository's ruleset protects (see the note on the key
+  above).
+
+### To build from source (`cargo`, `deploy/redeploy.sh`)
 
 - **Rust** via [rustup](https://rustup.rs). The repo-root `rust-toolchain.toml`
   pins the version (currently 1.96.0, with `rustfmt` and `clippy`); rustup
@@ -266,24 +319,68 @@ Since #390 both shell gates cover `scripts/*.sh` and `dev`/`prd` too, not just
 ungated break there would be found mid-release.
 
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
-already need, no bats and no jq — and stubs `cargo`, `curl` and `sleep`, so it
-touches no host and takes well under a second. It covers `binary_version` (the
-artifact's own `--version`, including its three fail-closed cases — no version
-compiled in, nothing printed, no such binary), `health_url` (wildcard →
-loopback, IPv6 bracketing),
-`health_version`, `target_dir`, `verify_health` against a stubbed endpoint, and
-three source-level invariants no runtime test can reach: the pre-rename
-`devcanopy-agent` handover, the order the legacy unit is stopped in, and
-`redeploy.sh` taking `.prev` before the swap.
+already need, no bats and no jq — and stubs every host command (`cargo`,
+`curl`, `sleep`, `uname`, `sw_vers`, `systemctl`, `loginctl`, `launchctl`,
+`tailscale`), so it touches no host and takes about ten seconds. It covers
+`binary_version` (the artifact's own `--version`, including its three
+fail-closed cases — no version compiled in, nothing printed, no such binary),
+`health_url` (wildcard → loopback, IPv6 bracketing), `health_version`,
+`target_dir`, `verify_health` against a stubbed endpoint, the #392 helpers
+(platform → triple for all four targets and every refusal, release-tag
+validation, the `/releases/latest` redirect, `ExecStart` quoting, XML escaping,
+template rendering), and — since #392 — **`install.sh` itself, run end to end
+against a temporary HOME**: fresh install, re-run (token reused, the running
+binary displaced by rename rather than overwritten, `.prev` kept), the
+pre-rename handover and its stop-before-restart ordering, the `/opt` migration
+gate and `--migrate-from-opt`, a HOME with a space, the macOS flow against a
+stubbed `launchctl`, the launcher on its own, argument refusal, and every
+preflight refusal (unsupported platform, macOS below 11, no login session, no
+`minisign`, no public key, no release, no asset). `redeploy.sh` keeps its
+source-level invariants: taking `.prev` before the swap, and aborting on a
+binary that carries no version.
 
-The load-bearing case is `build_release_binary` **failing** when the workspace
-target dir holds no binary, rather than falling back to a search. Until #268
-both deploy scripts looked in `agent/target/release/`, which #264 had stopped
-writing to — while still holding a stale binary from the last standalone build
-on every already-installed host. A lenient implementation finds that one,
-installs it, and reports a successful deploy of code several releases old.
-End-to-end install against a real host stays out of scope; `verify_health`
-covers that at runtime by asserting the *served* version.
+**The signature gate is tested with the real `minisign`, and that is the
+load-bearing case of #392.** Fixtures are signed with a throwaway keypair the
+suite generates, laid into a copy of the checkout as
+`agent/release-signing-key.pub`, so the installer's own key-resolution path is
+the one exercised (there is no override to reach for). A tampered binary, a
+binary signed by another key, and a binary with no `.minisig` are each
+rejected before the candidate is executed and before any installed state
+changes — and the tamper case is then **re-run with an accept-everything
+`minisign` on PATH**, where it must go through, which is what proves the
+rejection was the verifier's rather than some other failure that happened to
+land first. A last case runs the installer *as it sits in this repository*
+against a throwaway-key fixture and requires the rejection to name
+`release-signing-key.pub`. Without a usable `minisign` on the machine — absent,
+or older than 0.11, which lacks the `-W` the throwaway keys need — every one of
+those reports itself as `SKIP` with the reason, never as a pass, and the cases
+that never reach verification (argument refusal, platform preflight, release
+resolution) run regardless. CI runs the suite twice with
+`SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN=1`, under which those skips are
+**failures** — so removing the minisign step cannot turn a job green with the
+load-bearing cases silently skipped: `agent-tests` (Linux, bash 5, minisign
+from apt) and `rust-workspace` (macOS, stock `/bin/bash` 3.2, minisign from
+Homebrew — the interpreter the installer actually runs under on a Mac, and
+the one leg where the rendered plist meets a real `plutil -lint`). `./dev
+test` on a Mac runs it under `/bin/bash` too.
+
+Two cases stay out of the default run. `build_release_binary`'s real-cargo
+cases skip without a toolchain. And `SOLADOR_DEPLOY_TEST_LAUNCHD=1` (macOS
+only) runs the whole installer against the real `launchctl`, `plutil`, the
+real launcher and a real authenticated health probe — with the download curl
+still stubbed to serve the locally built `solador-agent` under the throwaway
+key — bootstrapping a throwaway label into the invoking user's session and
+booting it out again. It is opt-in because it does touch the host.
+
+The other load-bearing case is `build_release_binary` **failing** when the
+workspace target dir holds no binary, rather than falling back to a search.
+Until #268 both deploy scripts looked in `agent/target/release/`, which #264
+had stopped writing to — while still holding a stale binary from the last
+standalone build on every already-installed host. A lenient implementation
+finds that one, installs it, and reports a successful deploy of code several
+releases old. `redeploy.sh` is that helper's only caller now, and the case
+stays. End-to-end deploy against a real remote host stays out of scope;
+`verify_health` covers that at runtime by asserting the *served* version.
 
 ## Build & run (local)
 
@@ -299,34 +396,95 @@ curl -s -H "Authorization: Bearer secret" localhost:7878/v1/snapshot | jq
 curl -s localhost:7878/v1/snapshot          # -> 401
 ```
 
-## Install on a Linux host (systemd user service)
+## Install (Linux or macOS, from a signed release)
 
-From the crate directory on the target host (e.g. `ubu-01`):
+From the crate directory on the target host:
 
 ```bash
-./deploy/install.sh
+./deploy/install.sh                      # latest published release
+SOLADOR_AGENT_RELEASE=v<version> ./deploy/install.sh   # a specific one
+./deploy/install.sh --help
 ```
 
+A re-run is the update path, and on the unpinned form it **refuses to move
+backwards**: if the binary already installed reports a newer CalVer than the
+release `/releases/latest` resolved to — the one unsigned link in the chain,
+see `docs/AGENT-DISTRIBUTION.md` §6 — the run stops naming both versions.
+Pinning `SOLADOR_AGENT_RELEASE` is how an operator says a downgrade is meant.
+
+Both forms need a **published** release that carries the agent binaries.
+`v2026.9.3` and everything before it carry none, and a draft is neither
+resolvable (`/releases/latest` skips drafts) nor downloadable, so until the
+first post-#390 release is published every install fails at the download step
+— naming the tag and the asset, which is the honest outcome.
+
+No arguments is the normal form. An argument the script does not know is
+refused (exit 2), never ignored; `--enable-timer` in particular is #394's and
+is refused by name. Everything runs as **your user** and nothing uses `sudo`.
+
 The script:
-1. Builds `--release`.
-2. Installs the binary to `/opt/solador-agent/` (falls back to `~/.local/bin`).
-3. Writes `~/.config/solador-agent.env` with the token (prompted **without
-   echo**; press Enter to auto-generate), the detected Tailscale bind address,
-   and the port, mode `600`. The full token is never printed to stdout — the
-   script reports only the env-file path and the token's last 4 characters.
-4. Installs the **user** unit `~/.config/systemd/user/solador-agent.service`,
-   then `systemctl --user enable --now solador-agent` and enables lingering so
-   it starts on boot and survives logout.
-5. **Verifies** by polling `/v1/health` (at the bind/port it just wrote, so this
-   works on a tailnet-only agent) until it reports the version the binary it
-   just built answers `--version` with — read out of the artifact, not parsed
-   from a manifest. A healthy unit only proves *a* binary is up — if the version
-   being served isn't the one just built, the script fails loudly naming both
-   numbers rather than reporting a successful install over stale code.
+1. Detects the platform (`uname -s` / `uname -m`) and maps it onto one of the
+   four published targets; anything else — another OS, another architecture,
+   macOS below 11 — refuses before anything is fetched.
+2. Resolves the latest **published** release from the `/releases/latest`
+   redirect (a draft is invisible there by construction) and validates that
+   the tag is a CalVer tag, or takes `SOLADOR_AGENT_RELEASE` verbatim after the
+   same validation. Then downloads `solador-agent-<version>-<triple>` and its
+   `.minisig` into a private staging directory under `~/.cache`. A release that
+   carries no agent binary — every one up to and including `v2026.9.3` — is a
+   **failure** naming the tag and the asset; there is no source build and no
+   other version behind it.
+3. **Verifies the signature** with the stock `minisign` under
+   `agent/release-signing-key.pub` from this checkout. A download that does
+   not verify is not made executable, not asked its version, not installed,
+   and does not stop or reconfigure anything already running; the staging
+   directory is removed either way.
+4. Only then makes the binary executable and reads its `--version` — which
+   must equal the release's own number — and installs it, user-owned, at
+   **`~/.local/bin/solador-agent`**: staged as `solador-agent.new` beside the
+   live path and renamed over it (a running binary is never overwritten in
+   place), with the displaced binary kept as `solador-agent.prev`. `.prev` is
+   the *last-good* anchor: a re-run that installs the same bytes (the
+   fix-and-retry the failure text recommends) leaves it alone rather than
+   copying the live binary over it.
+5. Writes `~/.config/solador-agent.env` with the token (prompted **without
+   echo**; press Enter to auto-generate; reused on a re-run), the bind address
+   (`SOLADOR_AGENT_BIND`, else the existing file's, else the detected
+   Tailscale IP, else refuse) and the port (`SOLADOR_AGENT_PORT`, else the
+   existing file's, else `7878`), mode `600`, written beside the live file and
+   renamed into place. Any other line already in the file
+   (`SOLADOR_AGENT_SKIP_FSTYPES=`, `RUST_LOG=`) is carried through. The full
+   token is never printed — the script reports only the env-file path and the
+   token's last 4 characters.
+6. Installs and starts the service for the platform (next two sections),
+   rendered with the **actual** binary path — nobody edits an `ExecStart` or a
+   plist by hand.
+7. **Verifies** by polling `/v1/health`, authenticated, at the bind/port it
+   just wrote, until it reports the version the verified binary answered
+   `--version` with. A running service only proves *a* binary is up; if the
+   version being served is not the one just installed, the script exits
+   non-zero naming both numbers rather than reporting a successful install over
+   stale code.
 
-It runs as **your user** (not root) so rootless `podman ps` works.
+To rotate the token on either platform: edit `~/.config/solador-agent.env`,
+then restart the service (commands below).
 
-Manage it:
+### Linux: the systemd user service
+
+`~/.config/systemd/user/solador-agent.service`, with
+`ExecStart=/home/<you>/.local/bin/solador-agent` (double-quoted when the path
+has a space) and `EnvironmentFile=%h/.config/solador-agent.env`. **Every run
+of the installer regenerates that file** from the template (the displaced one
+is kept as `solador-agent.service.prev`), so edits to the file itself do not
+survive an upgrade; put overrides in a drop-in (`systemctl --user edit
+solador-agent`), which does. To rotate the token, edit
+`~/.config/solador-agent.env` — the installer writes bare `KEY=value` lines,
+and both the unit and the installer's own reads also accept a value in one
+pair of quotes. The installer
+runs `daemon-reload`, `enable`, `restart` (not `enable --now`, which would not
+restart a running unit onto the new binary) and enables lingering, best
+effort, so it starts on boot and survives logout. It runs as **your user**
+(not root) so rootless `podman ps` works.
 
 ```bash
 systemctl --user status solador-agent
@@ -334,13 +492,101 @@ systemctl --user restart solador-agent
 journalctl --user -u solador-agent -f
 ```
 
-To rotate the token: edit `~/.config/solador-agent.env`, then
-`systemctl --user restart solador-agent`.
+### macOS: the LaunchAgent
+
+`~/Library/LaunchAgents/app.solador.agent.plist`, label **`app.solador.agent`**,
+bootstrapped into **`gui/<uid>`** — a LaunchAgent running as the user who
+installed it, **not** a LaunchDaemon and not root. It starts at that user's
+login and runs inside that session; a Mac nobody logs in to does not run it,
+and the installer refuses (before changing anything) when there is no login
+session to bootstrap into — an SSH session with nobody at the console is the
+usual way to hit that.
+
+launchd has no `EnvironmentFile=`, and its `EnvironmentVariables` key would put
+the token into the plist. So `ProgramArguments` is a small launcher installed
+at `~/.local/bin/solador-agent-launchd` (a copy of `deploy/run-agent.sh`; the
+checkout can be deleted afterwards) followed by the binary path, the env file
+path and the log path — every path it needs arrives as an argument, so it
+never assumes launchd's HOME is the installer's, and it reads `$HOME` for one
+thing only: extending `PATH` (below). At every start the
+launcher reads the same mode-0600 env file line by line — it never `source`s
+it, so the token is never evaluated as shell — with the same value rules as
+systemd's `EnvironmentFile=` (a trailing CR, surrounding whitespace and one
+pair of quotes stripped; the installer's own reads use the same rules),
+exports exactly the documented keys, and `exec`s the agent. The token appears
+in neither the plist nor the log. The agent's stdout and stderr both go to
+`~/Library/Logs/solador-agent.log`, which nothing rotates for you (that would
+need a `newsyslog.d` rule, i.e. `sudo`): the launcher moves it to `.1` at the
+next start once it passes 10 MB, and reopens its own streams on the fresh
+file — launchd opened the old one before the launcher ran, and a rename alone
+would keep every line of the new run in `.1`. `KeepAlive` restarts it on exit,
+like `Restart=always`.
+
+The plist also sets `PATH` (`/opt/homebrew/bin:/usr/local/bin:/opt/podman/bin`
+ahead of the system directories), and that is load-bearing: launchd starts a
+job with its compiled-in `PATH`, which holds none of `docker`, `tart` or
+`podman`, and an agent that cannot find a runtime reports it as not installed
+— `/v1/containers` would be `[]` forever while `/v1/health` stayed green.
+systemd's user session already inherits a `PATH` with `/usr/local/bin`. The
+launcher then appends `~/.docker/bin`, `~/.orbstack/bin` and `~/.rd/bin`
+(Docker Desktop's, OrbStack's and Rancher Desktop's no-admin installs), which
+the plist cannot name because launchd does not expand `$HOME`.
+
+```bash
+launchctl print gui/$(id -u)/app.solador.agent          # status, pid
+launchctl kickstart -k gui/$(id -u)/app.solador.agent   # restart (e.g. after rotating the token)
+tail -F ~/Library/Logs/solador-agent.log                # -F: the launcher renames it at 10 MB
+launchctl bootout gui/$(id -u)/app.solador.agent        # stop and unload
+```
+
+Re-running the installer boots the loaded service out and bootstraps the
+re-rendered plist rather than `kickstart`ing it, so a changed path takes
+effect immediately instead of at the next login.
+
+`redeploy.sh` and its `rollback` are Linux-only. To roll back on macOS, put
+`solador-agent.prev` back by hand and restart:
+
+```bash
+mv ~/.local/bin/solador-agent ~/.local/bin/solador-agent.bad
+cp -p ~/.local/bin/solador-agent.prev ~/.local/bin/solador-agent
+launchctl kickstart -k gui/$(id -u)/app.solador.agent
+```
+
+### Hosts installed before #392: the `/opt` layout
+
+Earlier installs put the binary at `/opt/solador-agent/solador-agent` (with
+`sudo`) and the unit's `ExecStart` points there. New installs are user-owned
+at `~/.local/bin/solador-agent`, and the installer will **not** move a host
+between the two by itself: when it finds an existing `solador-agent` user unit
+whose `ExecStart` is anything other than `~/.local/bin/solador-agent`, it
+stops before changing anything and prints the explicit step, which is:
+
+```bash
+./deploy/install.sh --migrate-from-opt
+```
+
+That keeps `~/.config/solador-agent.env` (token, bind, port, and any other
+key) exactly as it is, installs the verified binary at
+`~/.local/bin/solador-agent`, **regenerates** the unit from the template with
+that path (the displaced unit is kept as `solador-agent.service.prev`; edits
+you made to the file itself do not survive, drop-ins via `systemctl --user
+edit` do), restarts, and verifies `/v1/health` serves the new version — all as
+your user, with no `sudo`. The `/opt` binary is left where it is, and a copy
+of it becomes `~/.local/bin/solador-agent.prev` so `redeploy.sh rollback`
+has an anchor; once you are satisfied:
+
+```bash
+sudo rm -rf /opt/solador-agent
+```
+
+Nothing here changes `/opt`'s ownership or configures passwordless `sudo`, and
+the unattended paths #393 and #394 add will not use `sudo` either — which is
+why the migration is explicit rather than something an update does one night.
 
 ## Upgrading from the pre-rename agent
 
-Hosts running the old `devcanopy-agent` are handed over automatically by
-`install.sh` — run it exactly as for a fresh install. It will:
+Hosts running the old `devcanopy-agent` (Linux) are handed over automatically
+by `install.sh` — run it exactly as for a fresh install. It will:
 
 1. Stop and disable the `devcanopy-agent` user unit **before** the new one
    starts, because the old one holds the port the new one wants.
@@ -365,11 +611,14 @@ misleading: the new unit crash-loops on `EADDRINUSE` every three seconds while
 the old one keeps serving `/v1/health`, and the installer reports a version
 timeout that names neither the port conflict nor the other unit.
 
-## Redeploy an existing host (upgrade in place)
+## Redeploy an existing host from source (Linux, our own hosts)
 
-Use this once a host is already installed and you want to ship a new agent build.
-It is the unattended counterpart to `install.sh`: it **never prompts for a token**
-and only swaps the binary.
+`redeploy.sh` is the **from-source** path, kept deliberately for our own Linux
+hosts (decision recorded on #392): it builds with `cargo`, so it needs the
+Rust prerequisites above, and it is Linux/systemd-only. To move a host onto a
+published release instead, re-run `install.sh` — since #392 that is the path
+that needs no toolchain. `redeploy.sh` **never prompts for a token** and only
+swaps the binary.
 
 From the crate directory on the target host (e.g. `ubu-01`, on a fresh checkout
 of the new commit):
@@ -397,8 +646,14 @@ What it does:
 
 It requires an existing `~/.config/solador-agent.env` and systemd user unit; if
 the host has never been installed it errors and points you at `install.sh`. It
-honors the same `/opt` → `~/.local/bin` install layout (resolved from the unit's
-`ExecStart`) and uses `sudo` only if the install directory isn't user-writable.
+resolves the live binary from the unit's `ExecStart` — the user-owned
+`~/.local/bin/solador-agent` on a host installed or migrated by #392's
+installer, `/opt/solador-agent/solador-agent` on one that has not been
+migrated — and uses `sudo` only if that directory isn't user-writable. One
+known limit: it reads `ExecStart` with a plain `awk '{print $1}'`, so on a
+host whose HOME contains a space (where `install.sh` renders a double-quoted
+`ExecStart`) `redeploy.sh` and its `rollback` resolve a truncated path and
+fail; re-run `install.sh` on such a host instead.
 
 ## Roll back a bad redeploy
 
@@ -412,19 +667,25 @@ failed), restore the previous binary with one command:
 It atomically swaps `solador-agent.prev` back into place, restarts the service,
 and verifies the agent comes back online via `/v1/health`. The swap is
 reversible: the binary you rolled back over becomes the new `.prev`, so re-running
-`rollback` rolls forward again. (The agent binary has no `--version` flag, so
-rollback verifies the service is reachable rather than asserting an exact
-version.)
+`rollback` rolls forward again. Rollback verifies the service is reachable
+rather than asserting an exact version — a deliberate choice, since #390 gave
+the binary a `--version`, recorded in `deploy/lib.sh`: the one case rollback
+exists for is a `.prev` the operator cannot describe. `install.sh` writes the
+same `.prev` when it replaces a binary, so this works after a download-install
+too.
 
 No cargo or rebuild is needed to roll back — that's the point of keeping the prior
 binary on the host.
 
 ## How Solador connects
 
-- Solador reaches the host over Tailscale at `http://<tailscale-host>:7878`.
+- Solador reaches the host at `http://<the configured bind address>:7878` —
+  the Tailscale IP by default, or whatever `SOLADOR_AGENT_BIND` was set to on
+  a LAN/VPN host.
 - It sends `Authorization: Bearer <token>` (the same token from the env file) on
   every request, polling `/v1/snapshot` and `/v1/containers`.
-- The agent binds the tailnet interface by default (`SOLADOR_AGENT_BIND`), so
-  the port is not served on the public NIC. Verify with
-  `ss -tlnp | grep 7878` — it should show only the `100.x` address. Binding all
-  interfaces (`0.0.0.0`) is opt-in and should only be done behind a firewall.
+- The agent binds only that address (`SOLADOR_AGENT_BIND`), so by default the
+  port is not served on the public NIC. Verify with `ss -tlnp | grep 7878`
+  (Linux) or `lsof -nP -iTCP:7878 -sTCP:LISTEN` (macOS) — it should show only
+  the configured address. Binding all interfaces (`0.0.0.0`) is opt-in and
+  should only be done behind a firewall.
