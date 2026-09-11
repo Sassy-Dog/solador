@@ -146,7 +146,58 @@ jobs:
       # caught solely by this suite, not by the Rust tests above.
       - name: Frontend e2e (Playwright)
         working-directory: tests/frontend
+        # INSTRUMENTATION (#401, temporary): Playwright's own webServer
+        # lifecycle lines (ISO-stamped, stderr) and its git-info plugin's
+        # per-command lines, so the window before the server is spawned is
+        # timed as well as the window after.
+        env:
+          DEBUG: pw:webserver
+          DEBUG_GIT_COMMIT_INFO: '1'
         run: npm test
+
+      # INSTRUMENTATION (#401, temporary): each hypothesis for the readiness
+      # window timed in isolation, AFTER the suite so the sample above is not
+      # warmed by it. Runs even when the suite failed.
+      - name: Startup phase probe (#401)
+        if: always()
+        working-directory: tests/frontend
+        run: |
+          set -u
+          t() {
+            local label="$1"; shift
+            local start end rc
+            start=$(python3 -c 'import time; print(time.time())')
+            "$@" > /tmp/probe.out 2>&1
+            rc=$?
+            end=$(python3 -c 'import time; print(time.time())')
+            printf '%-48s %8.3fs rc=%d :: %s\n' "$label" "$(python3 -c "print($end - $start)")" "$rc" "$(head -c 200 /tmp/probe.out | tr '\n' ' ')"
+          }
+          echo "== interpreter"
+          which -a python3
+          python3 -c 'import sys; print(sys.executable, sys.version.split()[0])'
+          echo "== host identity"
+          hostname
+          scutil --get HostName || true
+          scutil --get LocalHostName || true
+          scutil --get ComputerName || true
+          echo "-- /etc/hosts"
+          cat /etc/hosts
+          echo "-- resolver"
+          scutil --dns | head -40 || true
+          echo "== timings"
+          t "python3 -c pass (1st)" python3 -c pass
+          t "python3 -c pass (2nd)" python3 -c pass
+          t "import http.server json pathlib functools" python3 -c 'import http.server, json, pathlib, functools'
+          t "socket.gethostbyaddr(127.0.0.1)" python3 -c 'import socket; print(socket.gethostbyaddr("127.0.0.1"))'
+          t "socket.getfqdn(127.0.0.1)" python3 -c 'import socket; print(socket.getfqdn("127.0.0.1"))'
+          t "socket.getfqdn(127.0.0.1) (2nd)" python3 -c 'import socket; print(socket.getfqdn("127.0.0.1"))'
+          t "socket.gethostname()" python3 -c 'import socket; print(socket.gethostname())'
+          t "socket.getfqdn() (own hostname)" python3 -c 'import socket; print(socket.getfqdn())'
+          t "HTTPServer bind 127.0.0.1:0" python3 -c 'import http.server; s = http.server.HTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler); print(s.server_name, s.server_port)'
+          t "TCPServer bind (no getfqdn)" python3 -c 'import socketserver; s = socketserver.TCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler); print(s.server_address)'
+          t "csp_server.py end to end (bind, then SIGTERM)" bash -c 'python3 -u csp_server.py 3999 & pid=$!; while ! curl -sf -o /dev/null http://127.0.0.1:3999/index.html; do sleep 0.1; done; kill $pid; wait $pid 2>/dev/null; true'
+          echo "== importtime (top 15 cumulative)"
+          python3 -X importtime -c 'import http.server, json, pathlib, functools' 2>&1 | sort -t'|' -k2 -n -r | head -15
 
   macos-bundle:
     name: macOS bundle (unsigned)

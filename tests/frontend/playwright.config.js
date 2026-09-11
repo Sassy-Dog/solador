@@ -41,7 +41,9 @@ export default {
   webServer: {
     // `-u`: stdout is a pipe here, not a tty, so Python would otherwise buffer
     // the startup line past the point it is useful.
-    command: `python3 -u csp_server.py ${PORT}`,
+    // INSTRUMENTATION (#401, temporary): `-X importtime` prints per-module
+    // import timing to stderr, which is piped below.
+    command: `python3 -X importtime -u csp_server.py ${PORT}`,
     // Playwright ignores webServer stdout by default. That default is why two
     // consecutive 60s timeouts on this branch produced ZERO diagnostic text:
     // the server says what it bound and what it is serving, and nobody was
