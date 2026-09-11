@@ -22,7 +22,9 @@ the CalVer and build number derived from git
 runs that same build on CI against the `prd` environment
 ([#307](https://github.com/Sassy-Dog/solador/issues/307)) and attaches a
 **draft** release; publishing that draft is what generates the signed update
-feed ([#308](https://github.com/Sassy-Dog/solador/issues/308)). The release
+feed ([#308](https://github.com/Sassy-Dog/solador/issues/308)) — and, behind
+one more `prd` approval, the agent's signed `agent-latest.json`
+([#391](https://github.com/Sassy-Dog/solador/issues/391)). The release
 train ([#15](https://github.com/Sassy-Dog/solador/issues/15)) is closed, and
 the root [README](../README.md#download) is where a user is sent to download it.
 

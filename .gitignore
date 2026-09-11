@@ -118,3 +118,7 @@ tests/frontend/__pycache__/
 
 # Assistant tooling output. Kept on the machine that produced it, not shared.
 docs/superpowers/
+
+# A minisign private key regenerated for the agent feed fixtures
+# (tests/fixtures/README.md) must never be committed; only its public half is.
+tests/fixtures/**/*.key

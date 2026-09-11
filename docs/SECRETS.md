@@ -119,8 +119,32 @@ env:
 that is a security property rather than an oversight: this repository is public,
 so a fork's pull request runs CI, and a secret reachable from a fork PR is a
 secret you have given away. `ci.yml` builds and tests — neither needs one.
-Signing and releasing belong in a separate workflow that does not run on
-`pull_request`.
+Signing and releasing belong in workflows that do not run on `pull_request`.
+
+Exactly two workflows hold a credential, and every job that does declares
+`environment: prd` — a required reviewer plus a `v*`-tag-only deployment
+policy, so nothing on `main` or on a fork can reach one:
+
+- `release.yml`, on a `v*` tag push: the Apple, Sentry and Tauri updater
+  secrets for the macOS leg, the `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` /
+  `AZURE_SUBSCRIPTION_ID` identifiers the Windows leg's federated Trusted
+  Signing login is minted from, and `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` for
+  the agent binaries. Three of its five jobs; the agent's build and verify
+  jobs hold nothing.
+- `publish-feed.yml`, on `release: published`: its `agent-feed` job reads
+  `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` — the same key, no new scope — to sign
+  `agent-latest.json`, which cannot be signed at build time because it is
+  assembled from a public release's download URLs (#391). The desktop-feed job
+  beside it reads nothing. A manual replay of that leg has to run *from* the
+  tag, not from `main` with a tag typed in.
+
+`ci.yml`'s `secrets-guard` job (`scripts/secrets-guard.sh`) asserts this rather
+than trusting it: any secret reference outside `release.yml`, or in
+`publish-feed.yml` outside the `agent-feed` job, or in that job without its
+`environment: prd` line, fails CI — and `scripts/secrets-guard-test.sh` runs
+those mutations against the same script on every PR. The same job asserts the
+other deliberate absence in this area, that `agent/` does not resolve the feed
+producer `crates/updatefeed` (`scripts/agent-deps-guard.sh`).
 
 ### Why the Apple team id is here at all
 

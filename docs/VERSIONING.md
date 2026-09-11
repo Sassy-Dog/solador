@@ -177,16 +177,21 @@ commit into the same release.
 
 The **accepted cost** of that sharing, stated rather than discovered: the agent
 gets a new version on every cockpit-only release, including ones where not a
-byte of `agent/` changed. What stops that becoming a pointless download and
-restart on every host is the update feed's **content hash**, not the version —
-same bytes, stop (`docs/AGENT-DISTRIBUTION.md` §3).
+byte of `agent/` changed. What the agent feed offers against that is a
+**content hash** per binary (`agent-latest.json`, #391) — a consumer compares
+bytes, not versions, and same bytes mean stop. How much that buys is bounded
+by this very section: the agent compiles its CalVer in, so a cockpit-only
+release *does* change the agent's bytes today, and the hash rule fires only on
+a rebuild with no change at all (`docs/AGENT-DISTRIBUTION.md` §3 states it
+plainly). Making the agent's bytes version-independent is a separate decision.
 
 Declared stance: **no channel tags yet.** This clause used to read "builds are
 unsigned/un-notarized and local-only until #15 lands"; that is no longer the
 reason, because [#15](https://github.com/Sassy-Dog/solador/issues/15) has
 landed and external distribution has happened. The reason now is that nothing
 consumes a per-submission channel tag: distribution is direct download plus the
-`latest.json` feed, and no App Store submission exists to date. Add
+`latest.json` and `agent-latest.json` feeds, and no App Store submission exists
+to date. Add
 `mac-direct/<version>-<build>-<UTCts>` at the first submission that needs one.
 
 ### Mapping onto the update feed

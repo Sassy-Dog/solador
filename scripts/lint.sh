@@ -83,6 +83,31 @@ else
     log_warning "shellcheck not found — skipping the shell lint (CI still runs it; brew install shellcheck)"
 fi
 
+# --- The secrets guard and its corpus, exactly as CI's `secrets-guard` job
+# runs them (#391). Sub-second, dependency-free, and the one gate whose
+# failure is invisible until a fork PR reads an empty secret.
+log_info "secrets guard…"
+if "$SCRIPT_DIR/secrets-guard.sh" >/dev/null && "$SCRIPT_DIR/secrets-guard-test.sh" >/dev/null; then
+    log_success "secrets guard clean, and its corpus behaves"
+else
+    log_error "the secrets guard, or its self-test, failed — run scripts/secrets-guard.sh and scripts/secrets-guard-test.sh"
+    status=1
+fi
+
+# --- A deliberate absence, asserted: the agent must not depend on the release
+# tooling in crates/updatefeed (#391). The same script CI's `secrets-guard`
+# job runs; see its header for why it lists the tree rather than asking
+# `cargo tree -i`.
+if command_exists cargo; then
+    log_info "cargo tree: agent/ must not resolve crates/updatefeed…"
+    if "$SCRIPT_DIR/agent-deps-guard.sh" >/dev/null; then
+        log_success "agent/ does not resolve solador-updatefeed"
+    else
+        log_error "agent/ resolves solador-updatefeed, or cargo tree failed — run scripts/agent-deps-guard.sh"
+        status=1
+    fi
+fi
+
 if [[ $status -eq 0 ]]; then
     log_success "Lint passed (mirrors CI)"
 else

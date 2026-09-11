@@ -27,8 +27,15 @@
 # should have to re-derive when a fixture is regenerated.
 tests/fixtures/updater/** -text
 
+# The agent feed fixtures (`crates/updatefeed::agent`, #391): four stand-in
+# binaries, their plain-minisign `.minisig` files, the `agent-latest.json` the
+# producer emits from them and the `.minisig` over THAT document's exact bytes —
+# final newline included, which is precisely the byte a CRLF rewrite would move.
+tests/fixtures/agent/** -text
+
 # The same hazard wherever it turns up next. `-text` rather than `binary`:
 # these are base64 documents and a diff of one is still worth reading, so it is
 # the conversion that has to stop, not the diff.
 *.sig -text
+*.minisig -text
 *.pub -text

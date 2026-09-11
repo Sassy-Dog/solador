@@ -14,6 +14,12 @@ name = "updatefeed"
 name = "solador-update-feed"
 path = "src/bin/solador-update-feed.rs"
 
+[[bin]]
+# The agent's counterpart (#391): builds and verifies `agent-latest.json`, run
+# by the same workflow's protected `agent-feed` job.
+name = "solador-agent-feed"
+path = "src/bin/solador-agent-feed.rs"
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,3 +34,8 @@ minisign-verify = "0.2"
 # undoes exactly that before verifying. Same pin it resolves through, so one
 # base64 resolves for the workspace.
 base64 = "0.23"
+# The agent feed's content hash (#391): SHA-256 over each raw binary, the
+# figure an installed agent compares against itself to decide whether a release
+# changed it. Same pin as `crates/openclaw`, so one sha2 resolves.
+sha2 = "0.11"
+hex = "0.4"
