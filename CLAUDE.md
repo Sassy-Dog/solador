@@ -105,7 +105,11 @@ coverage it does not have would be worse than the checklist.
   Playwright e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
   `shellcheck -S warning` over every shell source this repo ships
-  (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`); mirrors CI
+  (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`), the secrets guard and
+  its mutation corpus (`scripts/secrets-guard.sh`, `scripts/secrets-guard-test.sh`),
+  and `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
+  does not resolve `crates/updatefeed` — the three scripts CI's
+  `secrets-guard` job runs; mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — Clean build artifacts
 - `./dev publish` — mint the CalVer tag, then build a signed, notarized,
@@ -156,16 +160,29 @@ in #269.
 `.dmg`** (#306). `./dev publish` is the same thing behind the CalVer mint, and
 its blanket refusal is gone.
 
-`release.yml` (#307) is the same build in CI, and it is **the only workflow in
-this repo that declares an `environment`** — that is the security design, not a
+`release.yml` (#307) is the same build in CI, and **every job that holds a
+credential declares `environment: prd`** — that is the security design, not a
 detail. Solador is public, so the org's `APPLE_*` secrets (visibility `private`)
 resolve to the empty string here; environment secrets are repo-scoped, so that
 visibility never applies to them. `prd` also carries a required reviewer and a
 `v*`-tag-only deployment policy, which is what stops a push to `main` minting a
-signed build. `ci.yml` declares no environment and references zero secrets, and
-the `secrets-guard` job asserts that rather than trusting it. The release is
-attached as a **draft**, which is what makes publish-feed.yml's
-`release: published` trigger meaningful — see **Updates** below.
+signed build. Two workflows declare it: the three credential-holding jobs in
+`release.yml` (the agent's build and verify jobs deliberately do not), and
+exactly one job in `publish-feed.yml` — `agent-feed`, which signs
+`agent-latest.json` at publish time (#391, see **The agent feed** below) with the same
+agent key `release.yml` signs the binaries with. **Publishing a release
+therefore prompts `prd`'s reviewer once more**, after the prompts the tag push
+already made; a publish that looks stalled is waiting on it. `ci.yml` declares
+no environment and references zero secrets, and the `secrets-guard` job
+(`scripts/secrets-guard.sh`) asserts all of that rather than trusting it: it
+allows `publish-feed.yml`'s secret by **job name** and requires the
+`environment: prd` line to be present, so the desktop-feed job beside it, a new
+job, or that job with its environment removed all fail CI —
+`scripts/secrets-guard-test.sh` runs those mutations against the same script
+on every PR, because a guard that has only ever seen the valid tree is
+indistinguishable from one that passes everything. The release is attached as
+a **draft**, which is what makes publish-feed.yml's `release: published`
+trigger meaningful.
 
 **Windows (#341, #342).** `release-windows` is the second leg of `release.yml`, on the
 same `prd` environment behind the same `v*` gate, and it produces an
@@ -292,6 +309,41 @@ minisign, not the Tauri signer's double-base64 form, so any user can check a
 download with the stock tool. **Nothing in the agent verifies a signature yet**;
 the compiled-in public key and the two-key rotation window are #393's.
 
+**The agent feed (#391).** `agent-latest.json` is the agent's counterpart to
+`latest.json` and deliberately **not** an extension of it: Tauri owns that
+schema. It carries `version` (the CalVer, no `v`) and `targets` keyed by the
+full triple — exactly the four — each with `url`, the binary's plain-minisign
+`signature` verbatim, and `sha256` over the raw bytes. **The hash is what lets
+an installed agent skip an app-only release without downloading**; it is
+computed by `crates/updatefeed::agent` from bytes whose signature *already
+verified* under `agent/release-signing-key.pub`, never taken from a caller, and
+a missing, duplicate or unknown target, a foreign signature or a moved byte
+means nothing is written. The document is signed as a whole
+(`agent-latest.json.minisig`, over the **exact served bytes**, trailing newline
+included) by `scripts/agent-signing.sh` — the one signer, sourced by
+`build-agent.sh` for the binaries and run as `agent-signing.sh sign` by the
+workflow for the feed, so the two cannot be signed differently (not a `./dev`
+command: locally the binaries sign through `./dev agent --sign`) — then
+re-verified as a consumer would (bytes first, JSON second, every binary against
+its entry) and by the reference C `minisign` before either half is uploaded.
+Unlike the desktop feed this **needs a credential at publish time**, because the
+feed is assembled from a public release's URLs and no such document exists
+during the draft build; that is why `publish-feed.yml`'s `agent-feed` job is
+the one protected job outside `release.yml`, with a credential-free
+`agent-eligibility` job in front of it that refuses drafts, prereleases,
+releases without the eight agent assets, and a manual replay that is not
+running *at* its tag (the dispatch's `leg` input picks which feed to
+regenerate: `agent` from the tag, `desktop` from `main`). **A `release` event runs `publish-feed.yml` at the
+tagged commit, not from `main`** — measured against this repo's own runs — so
+a tag cut before #391 publishes with its own older copy of the file: a desktop
+feed and no agent leg at all, no red job, nothing to look for. The first
+release that can carry an agent feed is the first tag cut after #391 merged,
+and a fix to that workflow's agent leg reaches a release only through a new
+tag. `agent/` does not depend on `crates/updatefeed` — `scripts/agent-deps-guard.sh`
+asserts the absence with `cargo tree`, in CI's `secrets-guard` job and in
+`./dev lint`; #393's consumer will compile in the public key and verify on its
+own.
+
 **Updates (#308).** `--sign` also produces the updater payload: a minisigned
 `Solador-<version>.app.tar.gz` beside the `.dmg`. A `.dmg` is not an update —
 macOS applies a tarball — so both ship as release assets. `bundle.
@@ -403,9 +455,11 @@ the bundle's floor.
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
 │   │                       #   device identity, the frame→snapshot reducer
 │   ├── updatefeed/         # the `latest.json` manifest + the minisign check
-│   │                       #   that gates publishing it. RELEASE TOOLING — the
-│   │                       #   app does not depend on it; publish-feed.yml runs
-│   │                       #   its `solador-update-feed` binary
+│   │                       #   that gates publishing it, and the agent's
+│   │                       #   `agent-latest.json` (module `agent`, #391).
+│   │                       #   RELEASE TOOLING — neither the app nor the agent
+│   │                       #   depends on it; publish-feed.yml runs its
+│   │                       #   `solador-update-feed` + `solador-agent-feed` bins
 │   └── crashreport/        # opt-in crash reporting: the consent gate, the
 │                           #   payload allow-list, the Sentry SDK. The ONLY
 │                           #   crate carrying the SDK, and only app/src-tauri
@@ -417,7 +471,8 @@ the bundle's floor.
 │   │                       #   `crons`, `openclaw` + `settings_*` (src/settings.rs)
 │   └── ui/                 # Frontend: plain HTML/CSS/JS, no bundler
 ├── agent/                  # Per-host metrics agent (workspace member, Linux CI)
-├── tests/fixtures/           # Wire-contract fixtures shared by agent/ + crates/
+├── tests/fixtures/           # Wire-contract fixtures shared by agent/ + crates/,
+│                           #   plus the two feeds' signed fixtures (updater/, agent/)
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
 ├── brand/                  # Brand assets
 └── docs/                   # Versioning, secrets, PRD

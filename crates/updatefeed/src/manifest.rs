@@ -190,7 +190,10 @@ impl Feed {
 /// not parse as a version at all — which is precisely why
 /// `get-version-info.sh` emits a non-padded month, and why that property is
 /// worth re-asserting on the way into the feed.
-fn is_calver(v: &str) -> bool {
+///
+/// `pub(crate)` because the agent feed carries the same number under the same
+/// rule, and two spellings of one rule is how they drift.
+pub(crate) fn is_calver(v: &str) -> bool {
     let fields: Vec<&str> = v.split('.').collect();
     if fields.len() != 3 {
         return false;

@@ -87,12 +87,13 @@ export AGENT_MACOS_MIN_VERSION="11.0"
 # only half of that and leaves the zig version to whatever is on PATH.
 export CARGO_ZIGBUILD_VERSION="0.23.4"
 
-# The minisign signer for the agent's published binaries (#390). `rsign2` is
-# minisign's Rust implementation by the same author, so the `.minisig` files it
-# writes are ordinary minisign signatures — verifiable today with the `minisign`
-# CLI by anyone who downloads a release, and by the release workflow itself,
-# which re-checks every signature against the committed public key before
-# uploading it.
+# The minisign signer for the agent's published binaries (#390) and for
+# `agent-latest.json` (#391), through the one implementation in
+# scripts/agent-signing.sh. `rsign2` is minisign's Rust implementation by the
+# same author, so the `.minisig` files it writes are ordinary minisign
+# signatures — verifiable today with the `minisign` CLI by anyone who downloads
+# a release, and by the release and feed workflows themselves, which re-check
+# every signature against the committed public key before uploading it.
 #
 # NOTHING IN THE AGENT VERIFIES A SIGNATURE. The compiled-in public key and the
 # two-key rotation window it needs arrive with `solador-agent update`; this
@@ -108,7 +109,9 @@ export RSIGN_VERSION="0.6.6"
 # The public half of that keypair, committed so the signature is checkable —
 # both by CI, which verifies every artifact against this file before uploading
 # it (a mis-provisioned private key fails the release rather than shipping
-# signatures nobody can check), and by anyone who downloads a binary.
+# signatures nobody can check), and by anyone who downloads a binary. It is
+# also the trust root `crates/updatefeed::agent` verifies the feed's inputs
+# under, and the file — not any prose — is the authority on the key's id.
 export AGENT_SIGNING_PUBKEY="agent/release-signing-key.pub"
 
 # Version is NOT configured here (org Versioning spec §3/§10: no hand-maintained

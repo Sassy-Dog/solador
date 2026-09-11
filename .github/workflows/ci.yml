@@ -291,8 +291,13 @@ jobs:
   secrets-guard:
     name: Secrets guard
     # Asserts the security property the rest of the release design rests on
-    # (#307): release.yml is the ONLY workflow permitted to read a secret,
-    # because it is the only one declaring `environment: prd`.
+    # (#307, widened by #391): a secret may be read ONLY by a job that declares
+    # `environment: prd` — the three credential-holding jobs in release.yml
+    # (allowed by file), and exactly one job in publish-feed.yml, `agent-feed`,
+    # which signs `agent-latest.json` when a release is published (allowed by
+    # name, and only with its environment line present). Nothing else. The
+    # desktop feed job beside it stays credential-free, and so does every
+    # other workflow in this repository — this one included.
     #
     # This is a gate rather than a comment because the property is invisible at
     # the point it breaks. Solador is public, so a fork's pull request runs this
@@ -301,35 +306,34 @@ jobs:
     # some unrelated-looking reason — or silently do the wrong thing. Catching
     # it on the PR that adds it is the only cheap moment.
     #
+    # The guard is `scripts/secrets-guard.sh` rather than an inline step so the
+    # SAME bytes can be run over a mutated copy of the workflows: the second
+    # step below proves it refuses a secret in the desktop job, in a new job,
+    # in `agent-feed` with its environment removed, above `jobs:`, in a new
+    # workflow, and in this file. A guard that has only ever seen the valid
+    # tree is indistinguishable from one that passes everything.
+    #
     # Fail-closed: a NEW workflow needing secrets does not silently pass. It
     # trips this gate, and adding it to the allowlist is a deliberate act with a
     # reviewer attached.
+    #
+    # The third step is the same job's other deliberate absence (#391): the
+    # agent must never resolve `crates/updatefeed`, the feed PRODUCER, because
+    # a daemon on strangers' hosts must not carry release tooling and that edge
+    # is the obvious shortcut for the consumer (#393). `cargo tree` resolves
+    # and downloads manifests but compiles nothing, so the Rust toolchain is
+    # needed and webkit2gtk is not. `./dev lint` runs all three scripts.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Only release.yml may reference secrets
-        run: |
-          allow="release.yml"
-          fail=0
-          for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
-            [[ -e "$wf" ]] || continue
-            [[ "$(basename "$wf")" == "$allow" ]] && continue
-            # The escaping matters: this step lives INSIDE a scanned workflow.
-            # Written escaped, the literal strings these patterns search for
-            # never appear on this line, so the guard cannot flag itself. Do
-            # not "simplify" the escapes.
-            hits="$(grep -nE '\$\{\{[[:space:]]*secrets\.|secrets:[[:space:]]*inherit' "$wf" || true)"
-            if [[ -n "$hits" ]]; then
-              echo "::error file=$wf::$wf references secrets; only $allow may"
-              echo "$hits"
-              fail=1
-            fi
-          done
-          if [[ $fail -ne 0 ]]; then
-            echo "A public repo runs this workflow on fork pull requests." >&2
-            echo "If a new workflow genuinely needs credentials, give it its own" >&2
-            echo "environment and add it to the allowlist in this step — on purpose." >&2
-            exit 1
-          fi
-          echo "No workflow outside $allow references a secret."
+      - name: Only release.yml, and publish-feed.yml's protected agent-feed job, may reference secrets
+        run: scripts/secrets-guard.sh
+
+      - name: The guard refuses what it claims to refuse
+        run: scripts/secrets-guard-test.sh
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: agent/ must not resolve crates/updatefeed
+        run: scripts/agent-deps-guard.sh

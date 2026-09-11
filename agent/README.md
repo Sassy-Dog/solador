@@ -201,7 +201,8 @@ chmod +x solador-agent-<version>-<triple>
 ```
 
 `agent/release-signing-key.pub` is in this repository (key id
-`03D2D786998D5EE8`). It is a **different keypair from the desktop app's**
+`B2E5C62B763FD2C4` — the file is the authority; a test in `crates/updatefeed`
+reads the id out of its bytes). It is a **different keypair from the desktop app's**
 updater key, on purpose: the app updates on someone's laptop, the agent runs
 unattended as a service on servers, and a compromise of one must not yield the
 other.

@@ -7,8 +7,11 @@ children on 2026-09-07.
 - **§1 Build and publish — SHIPPED** ([#390](https://github.com/Sassy-Dog/solador/issues/390)).
 - **§3 Versioning — SHIPPED** with it; `docs/VERSIONING.md` carries the
   reclassification.
-- §2 (the feed), §4 (`solador-agent update`), §6 (`install.sh`) are **not built
-  yet** — #391, #393/#394 and #392. Everything they describe is still design.
+- **§2 The feed — SHIPPED, producer side** ([#391](https://github.com/Sassy-Dog/solador/issues/391)):
+  `agent-latest.json` and its signature are generated, verified and published
+  by `publish-feed.yml` when a release is published. Nothing consumes it yet.
+- §4 (`solador-agent update`), §6 (`install.sh`) are **not built yet** —
+  #393/#394 and #392. Everything they describe is still design.
 
 How the Solador metrics agent reaches machines that are not ours, and how the
 people running it stay up to date.
@@ -136,6 +139,78 @@ the app.
 Each entry carries the download URL, the signature, and the **content hash** of
 the binary. The hash is load-bearing — see versioning below.
 
+**Shipped in #391 — the producer.** The wire contract, which #393's consumer
+and this producer are both held to:
+
+- **Discovery.** `https://github.com/Sassy-Dog/solador/releases/latest/download/agent-latest.json`,
+  with the detached signature at the same URL plus `.minisig`. A consumer
+  resolves the *concrete* release behind `latest` first and downloads both
+  files from that tag's `releases/download/<tag>/` URL, so a redirect that
+  moves between two GETs cannot pair one release's feed with another's
+  signature. Tag-specific assets stay on the existing GitHub release; there is
+  no second release train and no hosting service.
+- **Document.** Top-level `version` (the release's `YYYY.M.P` CalVer, no `v`)
+  and `targets`, an object keyed by the full Rust triple. Each target carries
+  `url` (absolute `https://`, naming `solador-agent-<version>-<triple>` on that
+  tag), `signature` (the binary's `.minisig` text verbatim, JSON-escaped) and
+  `sha256` (64 lowercase hex over the raw executable bytes). Exactly the four
+  §1 targets, no more and no fewer; no archives, no app-style `darwin-*`
+  aliases, no Windows agent. Pretty-printed, two-space indent, one trailing
+  newline, byte-stable across runs.
+- **Signature.** `agent-latest.json.minisig` is a plain detached minisign
+  signature over the **exact bytes served**, final newline included, under the
+  same key as the binaries (§5). A consumer verifies those bytes *before*
+  decoding JSON and never verifies a re-serialised object; each binary is then
+  independently signature-verified and hashed. The trust root is the committed
+  `agent/release-signing-key.pub` — never a key fetched from the release, and
+  never `tauri.conf.json`'s. Every signature's **trusted comment is the
+  asset's own file name** (`agent-latest.json`, or
+  `solador-agent-<version>-<triple>`): the signer sets it, the producer refuses
+  a signature that names anything else, and a consumer may hold a download to
+  the same rule — a signature that verifies over its bytes but was made for
+  another file is a mislabelled artifact.
+- **The skip rule is hash equality**, even when the feed's version differs. It
+  is *not* a promise that an app-only release yields identical agent bytes —
+  the build embeds the CalVer — only that equal bytes mean no swap (§3 says
+  what that leaves of the mitigation).
+- **The version is checked too, before the hash rule applies.** A consumer
+  must refuse a feed whose `version` is not the release it resolved
+  (`v<version>` must be the tag it downloaded from) and one that is not newer
+  than the CalVer it is running: every release's feed signature is valid on
+  its own, so an older, validly signed pair copied onto a newer release would
+  otherwise read as "the newest release wants these bytes". The producer's
+  `solador-agent-feed verify --version` is the first of those two checks;
+  the second needs the running agent's own version and is the consumer's.
+- **The fixtures are the contract's executable form.**
+  `tests/fixtures/agent/agent-latest.json`, its `.minisig` and
+  `test-agent-key.pub` are a complete, signed instance of everything above; a
+  consumer's parser must accept that pair under that key, and refuse it after
+  any single byte moves.
+- **Additions are the only change the producer will make.** A future producer
+  may add keys (a rotation-window key id is the obvious one) and will never
+  rename, remove or re-type the ones above. The producer's own `verify` is
+  strict about unknown keys because it checks the document it just wrote; a
+  consumer that wants to update *past* the release that adds a key must not
+  be. That choice is #393's, and this sentence is what it decides against.
+
+Producer-side, `crates/updatefeed::agent` builds the document **only from
+verified inputs**: every binary's signature is checked under the committed key
+before its hash is computed, and a missing, duplicate or unknown target, a
+foreign or lifted signature, a byte that moved after signing, or a URL naming
+the wrong asset is a refusal — nothing is written. `publish-feed.yml`'s
+`agent-feed` job runs the `solador-agent-feed` binary from the tagged commit,
+signs the result with `scripts/agent-signing.sh` (the same signer and key as
+the binaries), re-verifies the pair as a consumer would — exact bytes, then
+shape, then every binary against its entry — has the reference C `minisign`
+read it too, and only then uploads both halves. The job runs when the release
+is **published**, never at build time: a draft's assets are not public, and
+the feed is assembled from the public URLs. A `release` event runs the
+workflow file **at the tagged commit**, so a tag cut before #391 publishes
+with its own older file and gets no agent leg at all; the first feed comes
+from the first tag cut after #391 merged. See
+`.github/workflows/publish-feed.yml` for why that job, and only that job,
+holds a credential outside `release.yml`.
+
 ### 3. Versioning: shared CalVer
 
 The agent adopts the repo's existing marketing version
@@ -149,6 +224,15 @@ updater would download and restart for an identical binary.
 
 So the updater compares the **content hash**, not the version. Same hash means
 stop — no download, no swap, no restart. The version moves; nothing happens.
+
+**How much of that mitigation survives, honestly:** the agent compiles its
+CalVer in (`agent/build.rs`, described just below), so today an app-only release *does*
+produce different agent bytes, and the hash rule fires only when a release is
+rebuilt with no change at all. The rule is still the right one — it is what a
+consumer can check without downloading, and it is what makes a genuinely
+identical binary free — but "the version moves; nothing happens" is a property
+of a build that does not embed the version, and this build does. Making the
+agent's bytes version-independent is a separate decision, not implied here.
 
 **This tripped `docs/VERSIONING.md`'s own revisit clause, and #390 made the
 edit.** That document classified the agent as N/A — "an internal artifact
@@ -227,10 +311,15 @@ differ: the app updates on a person's laptop, the agent runs unattended as a
 service on servers, which is the higher-value target.
 
 **Shipped in #390 — the signing half.** The keypair exists: its public half is
-committed at `agent/release-signing-key.pub` (key id `03D2D786998D5EE8`), its
-private half is the `prd` environment secret
-`SOLADOR_AGENT_SIGNING_PRIVATE_KEY`, and it is not the cockpit's
-`TAURI_SIGNING_PRIVATE_KEY`. Signatures are **plain minisign** — the Tauri
+committed at `agent/release-signing-key.pub`, its private half is the `prd`
+environment secret `SOLADOR_AGENT_SIGNING_PRIVATE_KEY`, and it is not the
+cockpit's `TAURI_SIGNING_PRIVATE_KEY`. **The file is the authority on the key's
+identity**, not this prose: its id is `B2E5C62B763FD2C4`, read out of the key
+bytes by `crates/updatefeed`'s test
+`the_committed_agent_key_is_the_provisioned_one_and_its_comment_agrees` and
+cross-checked against the comment above them. (An earlier revision of this
+paragraph cited an id the file never carried; that is the drift the test
+exists to catch.) Signatures are **plain minisign** — the Tauri
 signer's extra base64 wrapper is the app's convention and there is no Tauri here
 — so anyone can check a download with the reference tool:
 
@@ -241,8 +330,9 @@ minisign -Vm solador-agent-<version>-<triple> -p agent/release-signing-key.pub
 Three properties of the release path, each chosen so a failure is loud:
 
 - The signer is the pinned `rsign2` (`RSIGN_VERSION` in `scripts/config.sh`),
-  minisign's Rust implementation. `scripts/build-agent.sh --sign` is the one
-  implementation, used locally and in CI alike.
+  minisign's Rust implementation, through the one implementation in
+  `scripts/agent-signing.sh` — sourced by `scripts/build-agent.sh --sign` for
+  the binaries, locally and in CI alike, and run directly for the feed (§2).
 - **Every signature is re-verified against the committed public key** before
   anything is uploaded. That is what turns a mis-provisioned private key into a
   failed release instead of a release full of signatures nobody can check.
@@ -250,9 +340,23 @@ Three properties of the release path, each chosen so a failure is loud:
   different implementation from the one that signed, so "it verifies" is not
   merely the signer agreeing with itself.
 
-Signing is its own release job and the **only** agent job holding a credential,
-so the key reaches one runner rather than six, and build/verify start without
-waiting on `prd`'s reviewer.
+Signing is its own release job and the **only** agent job in `release.yml`
+holding a credential, so the key reaches one runner rather than six, and
+build/verify start without waiting on `prd`'s reviewer.
+
+**The feed is signed at publish time, by the same key (#391).** The binaries
+can be signed during the build because they exist then; `agent-latest.json`
+cannot, because it is assembled from the public download URLs of a release that
+is still a draft. So `publish-feed.yml` gained one protected job, `agent-feed`,
+declaring `environment: prd` and reading exactly that one secret, behind the
+same reviewer and the same `v*`-tag-only deployment policy. A credential-free
+`agent-eligibility` job in front of it refuses a draft, a prerelease, a release
+without the eight agent assets, and — for a manual replay — a run that is not
+*at* the tag it was asked about, so a tag typed into an input can never hand a
+`main`-ref job the key. `ci.yml`'s `secrets-guard` allows that job by name and
+requires its environment line; the desktop feed job beside it stays
+credential-free. `scripts/agent-signing.sh` is the one signer for binaries and
+feed alike, so the two cannot be signed differently.
 
 The two remaining halves of this section — the compiled-in public key and the
 **two**-key rotation window — belong to the `update` child and are **not built
@@ -294,6 +398,14 @@ Also required:
 - **Rollback:** a failed post-restart health check restores `.prev` and exits
   non-zero.
 - **Feed parsing** against a locally served fixture; no network in tests.
+  The producer half of this is shipped: `crates/updatefeed::agent`'s tests run
+  over `tests/fixtures/agent/` — four stand-in binaries signed by the pinned
+  `rsign2`, and a feed/signature pair the producer emitted and `rsign` signed —
+  and assert exact SHA-256 over known bytes, byte-for-byte reproduction of the
+  committed document, plain-minisign acceptance, and refusal of a tampered
+  binary, a foreign key, a lifted signature, a missing or fifth target, a feed
+  whose served bytes changed by one character (or lost its final newline), and
+  the app's base64-wrapped signature form in either direction.
 - **Platform matrix — SHIPPED.** Each published binary executes `--version` on a
   matching runner before the release is published: `release-agent-verify` is a
   four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and

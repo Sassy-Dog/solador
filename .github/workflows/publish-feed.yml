@@ -13,49 +13,117 @@ name: Publish update feed
 # It also means the human checkpoint `release.yml` deliberately kept is the same
 # checkpoint that opens the update path. There is one decision, not two.
 #
-# This workflow needs no signing credentials: the `.sig` was produced during the
-# release build (`build.sh`'s `make_updater_archive`) and is a release asset.
-# What happens here is a *verification* — `solador-update-feed` checks the
-# signature against the public key in `app/src-tauri/tauri.conf.json` before it
-# will write a manifest, so a mis-signed artifact fails this run instead of
-# failing silently on every installed app.
+# The desktop job (`feed`) needs no signing credentials: the `.sig` was produced
+# during the release build (`build.sh`'s `make_updater_archive`) and is a
+# release asset. What happens there is a *verification* — `solador-update-feed`
+# checks the signature against the public key in `app/src-tauri/tauri.conf.json`
+# before it will write a manifest, so a mis-signed artifact fails this run
+# instead of failing silently on every installed app.
 #
-# NOTE for the first run: `release` events run the workflow file from the
-# DEFAULT BRANCH, so this file has to be on `main` before publishing a release
-# can trigger it. A release published before that merge gets no feed and needs
-# a `workflow_dispatch` re-run.
+# The agent job (`agent-feed`, #391) is different, and the difference is the
+# design: `agent-latest.json` is a document this workflow ASSEMBLES — URL,
+# plain-minisign signature and SHA-256 per target — so nothing signed it at
+# build time, and it has to be signed here, when the release becomes public.
+# That job therefore declares `environment: prd` and reads exactly one secret,
+# `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` (the same key `release.yml` signs the
+# binaries with). It is the ONLY job outside `release.yml` allowed to, and
+# `ci.yml`'s `secrets-guard` asserts that by job name AND by the presence of
+# the environment, rather than allow-listing this file wholesale. The desktop
+# job stays credential-free; `agent-eligibility` (also credential-free) decides
+# whether the protected job may even start, so `prd`'s reviewer is never asked
+# to approve a run that cannot succeed.
+#
+# WHICH COPY OF THIS FILE RUNS. A `release` event runs the workflow file AT
+# THE TAGGED COMMIT — `GITHUB_SHA` is the last commit in the tagged release
+# and `GITHUB_REF` is the tag — not the copy on `main`. (Measured, not
+# assumed: every `release` run in this repo reports `head_sha` = the tag's
+# commit.) Two consequences worth stating where an operator will meet them:
+#
+# - A tag cut before a change to this file publishes with its OWN, older
+#   copy. v2026.9.8 predates #391, so publishing it runs a file with no agent
+#   jobs at all: a desktop feed, and no red job, no sentence, nothing to look
+#   for. The first release that can carry an agent feed is the first tag cut
+#   after #391 merged. For the AGENT leg a fix to this file reaches a release
+#   only through a NEW tag: its replay must run the tag's own copy (below).
+# - `workflow_dispatch` runs the file at the ref it is started from. For the
+#   DESKTOP leg that is a replay door that does run a newer file against an
+#   older tag's release: start it from `main` with `leg: desktop`, the tag is
+#   checked out and `solador-update-feed` is built from the tag's tree (which
+#   needs `crates/updatefeed`); the agent leg then does not run at all. (A
+#   `main`-ref dispatch with `leg: both` would instead end with
+#   `agent-eligibility` RED at the ref lock below.) For the AGENT leg the
+#   replay must be started FROM the tag with `leg: agent`, so the tag's copy
+#   of this file runs with its own producer beside it and the desktop feed is
+#   left alone.
 
 on:
   release:
     types: [published]
   # The manual door, for a release published before this file existed, or one
-  # whose feed step failed and was fixed.
+  # whose feed run failed for a reason outside this file (a GitHub outage, an
+  # asset uploaded late). A fix to this file itself needs a new tag — see
+  # above.
+  #
+  # For the AGENT leg the manual door has one more lock: run the workflow FROM
+  # the tag (the "Use workflow from" selector, or
+  # `gh workflow run publish-feed.yml --ref vX -f tag=vX -f leg=agent`), not
+  # from `main` with the tag typed into the input. `agent-eligibility` refuses
+  # a run whose ref is not the tag it was asked about, and `prd`'s own
+  # deployment policy (`v*` tags only) refuses the environment to a `main`-ref
+  # job regardless — a tag supplied merely as an input must never be what hands
+  # a job the signing key. The desktop leg has no such lock because it holds
+  # no secret: a `main`-ref replay with `leg: desktop` still regenerates
+  # `latest.json` for any tag.
   workflow_dispatch:
     inputs:
       tag:
         description: 'Release tag to build the feed for (e.g. v2026.8.114)'
         required: true
         type: string
+      # Which feed(s) to regenerate. A dispatch carries no release payload, so
+      # the desktop job re-uploads `latest.json` WITHOUT notes or pub_date;
+      # replaying only the agent leg must not clobber a good desktop feed that
+      # way, and replaying only the desktop leg must not prompt `prd`.
+      leg:
+        description: 'Which feed to regenerate'
+        required: false
+        default: both
+        type: choice
+        options: [both, desktop, agent]
 
-# Uploading latest.json to the release. Everything else in this repo except
-# release.yml stays `contents: read`.
+# Uploading latest.json and agent-latest.json to the release. Everything else
+# in this repo except release.yml stays `contents: read`.
 permissions:
   contents: write
 
-concurrency:
-  # One feed writer at a time: two runs racing on `latest.json` for different
-  # tags would resolve by upload order rather than by version.
-  group: publish-feed
-  cancel-in-progress: false
+# Concurrency is declared PER JOB below, not here. A workflow-level group would
+# make the credential-free desktop job queue behind the agent job's human
+# approval: run A (tag N) waits on `prd`'s reviewer, run B (tag N+1) sits
+# pending with its `latest.json` ungenerated, and run C cancels B. Each leg
+# writes a different file, so each gets its own one-writer-at-a-time group.
 
 jobs:
   feed:
     name: Generate and upload latest.json
+    # One `latest.json` writer at a time: two runs racing on it for different
+    # tags would resolve by upload order rather than by version.
+    concurrency:
+      group: publish-feed-desktop
+      cancel-in-progress: false
     # A prerelease must not become `releases/latest`. GitHub already excludes
     # prereleases from that redirect, so publishing a feed for one would upload
     # an asset nothing reads — and if the exclusion ever changed, it would
-    # quietly offer a prerelease to every stable install.
-    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    # quietly offer a prerelease to every stable install. On a dispatch, only
+    # when this leg was asked for.
+    #
+    # Each event's clause is guarded by its OWN event name. Actions compares
+    # loosely — `null == false` is TRUE — so a bare
+    # `github.event.release.prerelease == false` is satisfied on a dispatch,
+    # where there is no release payload at all, and would run this job
+    # whatever `leg` said.
+    if: >-
+      (github.event_name == 'release' && !github.event.release.prerelease)
+      || (github.event_name == 'workflow_dispatch' && inputs.leg != 'agent')
     runs-on: ubuntu-latest
 
     steps:
@@ -224,3 +292,377 @@ jobs:
           served="$(jq -r '.version' served.json)"
           jq -e '.platforms["darwin-aarch64"].signature and .platforms["darwin-x86_64"].url' served.json >/dev/null
           echo "The configured endpoint currently offers $served."
+
+  # ---------------------------------------------------------------------------
+  # The agent feed (#391): two jobs, and the split is the security design.
+  # ---------------------------------------------------------------------------
+
+  agent-eligibility:
+    name: Agent feed eligibility
+    # Credential-free, deliberately. Everything that can make the protected job
+    # below pointless — a prerelease, a draft, a run started from the wrong
+    # ref, a release with no agent binaries — is decided HERE, before `prd`'s
+    # reviewer is asked to approve anything. A refusal is a red job with a
+    # sentence, never a fabricated feed and never a reclassified asset.
+    #
+    # The same prerelease guard as the desktop job, then the same question asked
+    # of the API rather than of the event: a `workflow_dispatch` carries no
+    # release payload, so the event fields alone would let a draft or prerelease
+    # through the manual door. On a dispatch, only when this leg was asked for
+    # (per-event clauses, for the `null == false` reason the desktop job states).
+    if: >-
+      (github.event_name == 'release' && !github.event.release.prerelease)
+      || (github.event_name == 'workflow_dispatch' && inputs.leg != 'desktop')
+    runs-on: ubuntu-latest
+    # Reads only. The workflow-level `contents: write` is for the two upload
+    # jobs; this one asks the API questions and uploads nothing.
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      eligible: ${{ steps.release.outputs.eligible }}
+
+    steps:
+      - name: Resolve the tag, and require the run to be AT that tag
+        id: tag
+        env:
+          # Through the environment, never interpolated into the script.
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_REF: ${{ github.ref }}
+        run: |
+          tag="${EVENT_TAG:-$INPUT_TAG}"
+          if [[ ! "$tag" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+            echo "::error::'$tag' is not a vYYYY.M.P release tag"
+            exit 1
+          fi
+          # The lock on the manual door. On a `release` event GitHub sets the
+          # ref to the tag already; on `workflow_dispatch` it is whatever ref
+          # the run was started from, and only the tag itself is acceptable.
+          # This is what keeps "type a tag into an input" from turning a
+          # `main`-ref job into one that may enter `prd` — and `prd`'s `v*`
+          # deployment policy is the second lock behind it.
+          if [[ "$RUN_REF" != "refs/tags/$tag" ]]; then
+            echo "::error::this run is at $RUN_REF, not refs/tags/$tag"
+            echo "The agent feed is signed inside the prd environment, so the workflow" >&2
+            echo "has to run FROM the release tag: pick the tag under 'Use workflow" >&2
+            echo "from' with leg=agent, or" >&2
+            echo "'gh workflow run publish-feed.yml --ref $tag -f tag=$tag -f leg=agent'." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "Run is at refs/tags/$tag."
+
+      - name: Require a public, stable release carrying the agent binaries
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          # `releases/tags/<tag>` rather than the event payload, for both
+          # paths: it answers the same question for a manual replay, and it
+          # answers it about the release as it is NOW rather than as it was
+          # when the event fired.
+          if ! release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")"; then
+            echo "::error::no release exists for $TAG"
+            exit 1
+          fi
+          draft="$(jq -r '.draft' <<< "$release")"
+          prerelease="$(jq -r '.prerelease' <<< "$release")"
+          if [[ "$draft" != "false" ]]; then
+            echo "::error::$TAG is still a draft — a draft's assets are not public, so its feed would point every agent at a 404"
+            exit 1
+          fi
+          if [[ "$prerelease" != "false" ]]; then
+            echo "::error::$TAG is a prerelease — releases/latest never resolves to one, so a feed for it would be served to nobody, or to everybody if that ever changed"
+            exit 1
+          fi
+
+          # The eight agent assets: four raw binaries and four .minisig files.
+          # A release without them has no agent feed, full stop. Not "a feed
+          # with the targets it has": a consumer whose triple is missing reads
+          # that as "no update", which is a claim about a release that may well
+          # have one. v2026.9.3 and earlier predate #390; a tag whose
+          # release.yml agent leg failed is in the same state.
+          missing=()
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+                   aarch64-apple-darwin x86_64-apple-darwin; do
+            for name in "solador-agent-$VERSION-$t" "solador-agent-$VERSION-$t.minisig"; do
+              if ! jq -e --arg n "$name" '.assets[] | select(.name == $n)' <<< "$release" >/dev/null; then
+                missing+=("$name")
+              fi
+            done
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::$TAG carries no complete set of agent binaries (${#missing[@]} missing: ${missing[*]})"
+            echo "There is no agent feed to publish for this release. The desktop feed job" >&2
+            echo "is independent of this one and is unaffected." >&2
+            exit 1
+          fi
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "$TAG is a published, stable release carrying all eight agent assets."
+
+  agent-feed:
+    name: Generate, sign and upload agent-latest.json
+    needs: agent-eligibility
+    # Belt and braces with `needs`: a failed or skipped eligibility job already
+    # skips this one, and this reads the verdict explicitly so a future edit
+    # that makes eligibility "succeed" without deciding does not open the door.
+    if: needs.agent-eligibility.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    # One `agent-latest.json` writer at a time, independent of the desktop
+    # leg's group so neither waits on the other.
+    concurrency:
+      group: publish-feed-agent
+      cancel-in-progress: false
+    # The protected job (#391), and the only one in this file. `prd` carries a
+    # required reviewer and a `v*`-tag-only deployment policy, so this job
+    # starts only when a person approves it AND the run is at a release tag —
+    # the same two locks `release.yml`'s three credential-holding jobs sit
+    # behind. `ci.yml`'s `secrets-guard` requires this line to be here: a
+    # secret reference in a job without it fails CI.
+    #
+    # RUNBOOK NOTE: publishing a release therefore prompts `prd`'s reviewer
+    # once more, after the prompts release.yml already made. That is the price
+    # of signing the feed with the release key rather than a weaker one, and it
+    # is worth knowing before a publish appears to stall.
+    environment: prd
+
+    steps:
+      # FIRST, before the key is written anywhere — the same preflight
+      # `release.yml`'s agent publish job runs, for the same reason: an
+      # unreachable secret resolves to the EMPTY STRING and never raises, and
+      # the failure would otherwise surface inside the signer with a message
+      # that never mentions a secret. Shape, not just presence: a minisign
+      # secret key is exactly two lines, the first `untrusted comment:`.
+      # Nothing here echoes the key. The secret is scoped to the two steps
+      # that consume it, never to the job.
+      - name: Preflight — the signing key must be non-empty and well-shaped
+        env:
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${SOLADOR_AGENT_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY resolved EMPTY"
+            echo "Most likely cause: this job lost 'environment: prd', or the key was" >&2
+            echo "never provisioned. It is the private half of the keypair whose public" >&2
+            echo "half is committed at agent/release-signing-key.pub; see" >&2
+            echo "docs/AGENT-DISTRIBUTION.md §5." >&2
+            exit 1
+          fi
+          lines="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | grep -c '' || true)"
+          first="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | head -n1)"
+          if [[ "$lines" -lt 2 || "$first" != untrusted\ comment:* ]]; then
+            echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY is not a minisign secret key"
+            echo "Expected two lines beginning 'untrusted comment:'; got $lines line(s)." >&2
+            exit 1
+          fi
+          echo "The agent signing key resolved, and has a minisign secret key's shape."
+
+      # `github.sha`, not the tag name. Eligibility has already proved this
+      # run is AT `refs/tags/<tag>`, and the reviewer approved a run displayed
+      # at that commit; checking out the tag by NAME would re-resolve it at
+      # fetch time, so a tag moved in between (no ruleset covers tag refs)
+      # would put a different `agent-signing.sh` and a different producer
+      # beside the key. The SHA is what was approved, and the step after
+      # asserts the tag still names it. This is also the commit this workflow
+      # file was read from (see the header), so the producer it builds is the
+      # one that shipped beside this file — by construction, not by check.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          # MANDATORY, for the `git rev-parse refs/tags/<tag>` in the next
+          # step: tags arrive only with a full fetch (depth 0), and a shallow
+          # checkout would fail that assertion with git's `unknown revision`
+          # rather than with a sentence about the tag.
+          fetch-depth: 0
+
+      # Deliberately NOT re-derived against the CalVer here: `get-version-info.sh`
+      # counts this month's commits by TODAY'S date, so a draft tagged on the
+      # 30th and published on the 1st would fail that comparison after the
+      # reviewer had approved it, with no replay that could pass. release.yml
+      # proved tag == derived at tag-push time, and its verify jobs proved every
+      # binary reports the tag's version; what this job has to prove is about
+      # the commit, and it is asserted rather than assumed.
+      - name: Assert the checkout is the approved commit and the tag still names it
+        env:
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+        run: |
+          head="$(git rev-parse HEAD)"
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "::error::checked out $head, but this run was approved at $GITHUB_SHA"
+            exit 1
+          fi
+          tagged="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          if [[ "$tagged" != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG now names $tagged, not the approved $GITHUB_SHA — the tag moved after this run started"
+            exit 1
+          fi
+          echo "HEAD is $GITHUB_SHA and $TAG names it."
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # No rust-cache here, deliberately: it keys on this job's id and the
+      # lockfile, and this job runs only at release tags, so a cache written
+      # here is never restored (measured on the identically shaped release
+      # job: "No cache found"). The producer is a small crate; a cold build is
+      # cheaper than a cache nobody reads.
+
+      # The signer is installed HERE, in a step that holds no secret and
+      # before the key has been written anywhere. `cargo install` runs
+      # crates.io build scripts with a cold registry; the step that signs must
+      # not be the step that compiles third-party code with the key on disk
+      # beside it. (The producer's own `cargo run` below compiles the locked
+      # dependency tree too — `--locked` plus the lockfile's checksums are the
+      # boundary there, the same one `release.yml`'s sign step relies on.)
+      - name: Install the pinned signer (no key present)
+        run: scripts/agent-signing.sh ensure
+
+      - name: Download the release's agent binaries and signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+          VERSION: ${{ needs.agent-eligibility.outputs.version }}
+        run: |
+          mkdir -p agent-dist feed
+          gh release download "$TAG" --dir agent-dist --pattern "solador-agent-$VERSION-*"
+          shopt -s nullglob
+          assets=(agent-dist/solador-agent-"$VERSION"-*)
+          if [[ ${#assets[@]} -ne 8 ]]; then
+            echo "::error::expected 8 agent assets (4 binaries + 4 .minisig) on $TAG, downloaded ${#assets[@]}"
+            printf '%s\n' "${assets[@]}"
+            exit 1
+          fi
+          ls -la agent-dist
+
+      # Verify, then write. `build` refuses on a missing, duplicate or unknown
+      # target, a signature from any key but the committed one, a byte that
+      # moved after signing, and a URL that does not name the asset on this
+      # tag; the SHA-256 in each entry is computed from the bytes that verified.
+      # An output file that exists is a document whose every entry passed.
+      - name: Build and verify agent-latest.json
+        env:
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+          VERSION: ${{ needs.agent-eligibility.outputs.version }}
+          DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
+        run: |
+          cargo run --locked -p solador-updatefeed --bin solador-agent-feed -- build \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --asset-dir agent-dist \
+            --download-base "$DOWNLOAD_BASE" \
+            --pubkey agent/release-signing-key.pub \
+            --out feed/agent-latest.json
+          echo "--- agent-latest.json ---"
+          cat feed/agent-latest.json
+
+      # The same signer, the same key and the same re-verification against the
+      # committed public key that the binaries got in release.yml — one
+      # implementation, `scripts/agent-signing.sh`. The key is a 0600 file in
+      # a private temp dir because the signer takes a path, and it is removed
+      # on every exit path; the trap is armed BEFORE the key is written.
+      - name: Sign agent-latest.json with the agent release key
+        env:
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          keydir="$(mktemp -d)"
+          chmod 700 "$keydir"
+          trap 'rm -rf "$keydir"' EXIT
+          key="$keydir/agent-release.key"
+          ( umask 077; printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" > "$key" )
+          SOLADOR_AGENT_SIGNING_KEY="$key" scripts/agent-signing.sh sign feed/agent-latest.json
+
+      # The consumer's check, run by the producer before anything is uploaded:
+      # the EXACT bytes of the file against its detached signature under the
+      # committed key, then the document's shape, then every binary against
+      # its entry (signature AND hash). Then the reference C `minisign` reads
+      # the same pair — a different implementation from the `rsign2` that
+      # signed, so "it verifies" is not the signer agreeing with itself, and
+      # it is the exact command a user can run on the download.
+      - name: Verify the signed pair — producer check, then reference minisign
+        env:
+          VERSION: ${{ needs.agent-eligibility.outputs.version }}
+        run: |
+          cargo run --locked -p solador-updatefeed --bin solador-agent-feed -- verify \
+            --feed feed/agent-latest.json \
+            --signature feed/agent-latest.json.minisig \
+            --pubkey agent/release-signing-key.pub \
+            --version "$VERSION" \
+            --asset-dir agent-dist
+
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends minisign
+          minisign -V -p agent/release-signing-key.pub \
+            -x feed/agent-latest.json.minisig -m feed/agent-latest.json
+          echo "agent-latest.json verifies under agent/release-signing-key.pub with both implementations."
+
+      # Only a pair that passed both checks above reaches this step, and both
+      # halves go up together: a feed without its signature is unverifiable,
+      # and a signature without its feed is noise.
+      - name: Upload agent-latest.json and its signature to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+        run: |
+          gh release upload "$TAG" feed/agent-latest.json feed/agent-latest.json.minisig --clobber
+          echo "Uploaded agent-latest.json + .minisig to $TAG."
+
+      # Two claims, kept apart. (1) The moving `releases/latest/download/`
+      # endpoint serves an agent feed at all — that redirect is GitHub's, not
+      # ours, and it names the newest stable release, which on a replay of an
+      # older tag is legitimately some other tag. So this step REPORTS the tag
+      # it resolved to and never asserts it equals this run's. (2) The pair on
+      # that concrete tag verifies — fetched from the tag-specific URL, both
+      # files from the same tag, which is the consumer's own procedure and
+      # what stops a redirect that moves between two GETs from pairing one
+      # release's feed with another's signature.
+      - name: Confirm the configured endpoint serves a verifiable agent feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+          ENDPOINT: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/agent-latest.json
+          DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL -o served.json "$ENDPOINT"; then
+              break
+            fi
+            echo "attempt $attempt: not served yet, waiting…"
+            sleep 5
+          done
+          # The concrete release behind `latest`, from the API — the consumer's
+          # own first step. Not parsed out of the redirect: a release asset's
+          # final URL is the objects CDN, which names no tag.
+          latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+          if [[ ! -s served.json ]]; then
+            if [[ "$latest_tag" == "$TAG" ]]; then
+              echo "::error::$ENDPOINT does not serve agent-latest.json, and releases/latest is $TAG"
+              exit 1
+            fi
+            echo "::warning::releases/latest resolves to $latest_tag, which serves no agent feed; this run published $TAG's. $latest_tag needs its own agent-feed run."
+            exit 0
+          fi
+          echo "releases/latest resolves to $latest_tag; the moving endpoint served $(wc -c < served.json) bytes."
+
+          # The consumer's procedure: both files from the ONE concrete tag, and
+          # `cmp` is what ties the moving endpoint's bytes to that tag's asset.
+          curl -fsSL -o pair.json "$DOWNLOAD_BASE/$latest_tag/agent-latest.json"
+          curl -fsSL -o pair.json.minisig "$DOWNLOAD_BASE/$latest_tag/agent-latest.json.minisig"
+          cmp served.json pair.json
+
+          # Verified under THIS tree's public key only when the served feed is
+          # this run's: another tag's pair was signed under the key in ITS
+          # tree, and after a key rotation (#393) a replay of an old tag would
+          # otherwise go red here after a correct upload. That pair was
+          # verified by its own run, under its own key, before it went up.
+          if [[ "$latest_tag" != "$TAG" ]]; then
+            echo "The configured endpoint currently offers $latest_tag's agent feed (this run published $TAG's); both halves are served."
+            exit 0
+          fi
+          minisign -V -p agent/release-signing-key.pub -x pair.json.minisig -m pair.json
+          cargo run --locked -p solador-updatefeed --bin solador-agent-feed -- verify \
+            --feed pair.json --signature pair.json.minisig \
+            --pubkey agent/release-signing-key.pub --version "${latest_tag#v}"
+          echo "The configured endpoint currently offers $latest_tag's agent feed, and its pair verifies."

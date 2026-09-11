@@ -8,18 +8,21 @@ name: Release
 # One tag, one release, both products — there is deliberately no second release
 # train for the agent to keep in sync with this one.
 #
-# The environment-declaring jobs in this repository are ONLY in this file — and
-# only the three that hold a credential — which is the whole security design
-# rather than a detail. Solador is a PUBLIC
-# repo, so the org's `APPLE_*` secrets — which are `private` visibility — are
-# unreachable here and would resolve to the empty string. Environment secrets
-# are repo-scoped, so `private` visibility never applies to them; `prd` also
-# carries a required reviewer and a `v*`-tag-only deployment policy, which is
-# what stops a push to `main` from quietly minting a signed build.
+# Every job in this repository that holds a credential declares `environment:
+# prd` — the three here, plus publish-feed.yml's `agent-feed` job, which signs
+# `agent-latest.json` when a release is published (#391) with the same agent
+# key the third leg below signs the binaries with. That is the whole security
+# design rather than a detail. Solador is a PUBLIC repo, so the org's `APPLE_*`
+# secrets — which are `private` visibility — are unreachable here and would
+# resolve to the empty string. Environment secrets are repo-scoped, so
+# `private` visibility never applies to them; `prd` also carries a required
+# reviewer and a `v*`-tag-only deployment policy, which is what stops a push to
+# `main` from quietly minting a signed build.
 #
 # `ci.yml` declares no environment and references zero secrets, asserted by
-# this repo's `secrets-guard` job rather than assumed. Keep it that way: a
-# fork's pull request runs CI.
+# this repo's `secrets-guard` job rather than assumed — the same job that
+# allows publish-feed.yml's secret by job name and requires its environment
+# line. Keep it that way: a fork's pull request runs CI.
 #
 # Verified end to end by a real tagged run — a green lint on this file proves
 # nothing about signing, because signing needs credentials and makes real

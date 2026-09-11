@@ -37,6 +37,10 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$SCRIPT_DIR/lib.sh"
 source "$SCRIPT_DIR/config.sh"
+# The one signer (#391): `ensure_rsign`, `agent_signing_preflight` and
+# `agent_sign_file`, shared with the feed workflow so the binaries and
+# `agent-latest.json` cannot be signed differently.
+source "$SCRIPT_DIR/agent-signing.sh"
 
 ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 
@@ -182,32 +186,6 @@ ensure_zigbuild() {
     installed="$("$ZIG_VENV/bin/cargo-zigbuild" --version 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
     if [[ "$installed" != "$CARGO_ZIGBUILD_VERSION" ]]; then
         log_error "cargo-zigbuild is '${installed:-<missing>}' after installing $CARGO_ZIGBUILD_VERSION"
-        exit 1
-    fi
-}
-
-# The pinned minisign signer. Same shape as build.sh's `ensure_tauri_cli`: the
-# check is on the INSTALLED version, not on presence, so a machine carrying some
-# other project's rsign does not sign a release with it.
-ensure_rsign() {
-    local installed=""
-    if command_exists rsign; then
-        # `|| true` for the reason ensure_zigbuild states above.
-        installed="$(rsign --version 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
-    fi
-    if [[ "$installed" == "$RSIGN_VERSION" ]]; then
-        log_debug "rsign $installed already installed"
-        return 0
-    fi
-    if [[ -n "$installed" ]]; then
-        log_warning "rsign $installed found, this repo pins $RSIGN_VERSION — replacing it"
-    else
-        log_info "rsign not found — installing the pinned $RSIGN_VERSION"
-    fi
-    cargo install --locked "rsign2@$RSIGN_VERSION"
-    installed="$(rsign --version 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
-    if [[ "$installed" != "$RSIGN_VERSION" ]]; then
-        log_error "rsign is '${installed:-<missing>}' after installing $RSIGN_VERSION — is ~/.cargo/bin on PATH?"
         exit 1
     fi
 }
@@ -400,19 +378,15 @@ mkdir -p "$OUT_DIR"
 built=()
 
 if [[ "$WANT_SIGN" == true ]]; then
-    # Both checks BEFORE anything is built. A four-target release build is tens
-    # of minutes; discovering then that the key was never passed is the same
-    # class of waste the release workflow's secret preflight exists to prevent.
-    if [[ -z "${SOLADOR_AGENT_SIGNING_KEY:-}" || ! -f "$SOLADOR_AGENT_SIGNING_KEY" ]]; then
-        log_error "--sign needs SOLADOR_AGENT_SIGNING_KEY to point at the agent's minisign secret key file"
-        log_error "the release reads it from the prd environment secret; see docs/AGENT-DISTRIBUTION.md §5"
-        exit 1
-    fi
-    if [[ ! -f "$ROOT_DIR/$AGENT_SIGNING_PUBKEY" ]]; then
-        log_error "missing $AGENT_SIGNING_PUBKEY — the committed public half of the agent keypair"
-        exit 1
-    fi
+    # Key, committed public half and pinned signer, all checked BEFORE anything
+    # is built — a four-target release build is tens of minutes. The signer is
+    # installed here if missing: for a local `./dev agent --sign` the
+    # operator's machine already holds the key, and release.yml's `--sign-only`
+    # step also reaches this today (accepted; the feed workflow is the one that
+    # installs the signer in a separate, keyless step, and release.yml can
+    # adopt `agent-signing.sh ensure` the next time it moves).
     ensure_rsign
+    agent_signing_preflight
 fi
 
 if [[ "$SIGN_ONLY" == true ]]; then
@@ -427,35 +401,10 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ "$WANT_SIGN" == true ]]; then
-    # Both already checked above, before the build.
-    key="$SOLADOR_AGENT_SIGNING_KEY"
-    pubkey="$ROOT_DIR/$AGENT_SIGNING_PUBKEY"
-
+    # Preflight already ran above, before the build. Each signature is
+    # re-verified under the COMMITTED public key inside agent_sign_file.
     for artifact in "${built[@]}"; do
-        name="$(basename "$artifact")"
-        rm -f "$artifact.minisig"
-        # The trusted comment is covered by the signature. It does not prevent
-        # a signature being lifted onto another binary — the signature over the
-        # CONTENT is what does that — but it makes such a pair self-describing:
-        # a verifier prints "solador-agent-<v>-<triple>" and a human sees
-        # immediately that it does not name the file in front of them.
-        #
-        # `-W` and `</dev/null`: the CI key is unencrypted (the secret store is
-        # the protection), and a signer that falls back to a password prompt on
-        # a runner hangs until the job times out instead of failing.
-        rsign sign -W -s "$key" -x "$artifact.minisig" \
-            -t "$name" -c "solador-agent release signature" "$artifact" </dev/null >/dev/null
-
-        # Verified against the COMMITTED public key, not against the key that
-        # just signed. That is the whole check: it proves the private key in CI
-        # is the one this repo publishes, so a mis-provisioned secret fails the
-        # release instead of shipping signatures nobody can check.
-        if ! rsign verify -q -p "$pubkey" -x "$artifact.minisig" "$artifact"; then
-            log_error "$name does not verify under $AGENT_SIGNING_PUBKEY"
-            log_error "the signing key is not the published keypair's private half"
-            exit 1
-        fi
-        log_success "Signed $name (verified under $(head -n1 "$pubkey" | sed 's/^untrusted comment: //'))"
+        agent_sign_file "$artifact"
     done
 fi
 

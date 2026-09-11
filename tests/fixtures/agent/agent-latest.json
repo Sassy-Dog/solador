@@ -1,0 +1,25 @@
+{
+  "version": "2026.9.9",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "url": "https://github.com/Sassy-Dog/solador/releases/download/v2026.9.9/solador-agent-2026.9.9-aarch64-apple-darwin",
+      "signature": "untrusted comment: solador-agent release signature\nRUSHmIytwfM60rXFNCrEX/2e2SjL0RKRCoEkVeXh09bbQOf9GKEKztD/a1cVY1C2hBCRZOquT0lW+r/1J8mPPwIwebEmoeQA0w8=\ntrusted comment: solador-agent-2026.9.9-aarch64-apple-darwin\nhB5SAcahY+OyuIoxGp713jbWZdtZs/nAH5UzSjp4nzgstOcs9cbtw4BqY89AYqYtRV9wGmUO/dv/fkPFAl49Bg==\n",
+      "sha256": "17db88422a1b2734d20c0e042dd534c47e20e912f25d00e4955292ef1d757f3e"
+    },
+    "aarch64-unknown-linux-musl": {
+      "url": "https://github.com/Sassy-Dog/solador/releases/download/v2026.9.9/solador-agent-2026.9.9-aarch64-unknown-linux-musl",
+      "signature": "untrusted comment: solador-agent release signature\nRUSHmIytwfM60kgKfjYYTtqlTu1aIz3AGzEfNrz+biMhybWku9F1Fb7G0paoC+KvZpoekr0C0TaJwSpCTzydlKvy6h5NNbIEpgg=\ntrusted comment: solador-agent-2026.9.9-aarch64-unknown-linux-musl\n445swVuqrO1O61aIJFKWQ1+IITAARLCHhWcdztWwd96cSt9xdBcRjif0wopperRTwJkp3VmV9KF/aUqN72ADAw==\n",
+      "sha256": "9a0b0eae62b7037d94b00f1f9cd3f12a88c129873db1ce7091aa14e0fc6055e3"
+    },
+    "x86_64-apple-darwin": {
+      "url": "https://github.com/Sassy-Dog/solador/releases/download/v2026.9.9/solador-agent-2026.9.9-x86_64-apple-darwin",
+      "signature": "untrusted comment: solador-agent release signature\nRUSHmIytwfM60mHHRuvO9h26x21n2Lw0e+cHsd3F8LiGVPPOPiPgmbgLYsmC62tTgBWDvlav1Usu6m9Y2OaRgfj7RHwkt70JcAc=\ntrusted comment: solador-agent-2026.9.9-x86_64-apple-darwin\nfeXjIIYskudpuv/qv4K/pIWULicjL/eCyqkA/TUCiQvjlv5Ka2ejJXNYWu6QbX29b4uE4oxdfAaXzSZ5KMocAQ==\n",
+      "sha256": "65d35441dab36b9c9c0ea8ca34882e6ebeca6c27f783c360ca9c9bf16d2d5f03"
+    },
+    "x86_64-unknown-linux-musl": {
+      "url": "https://github.com/Sassy-Dog/solador/releases/download/v2026.9.9/solador-agent-2026.9.9-x86_64-unknown-linux-musl",
+      "signature": "untrusted comment: solador-agent release signature\nRUSHmIytwfM60qbYn97gU9LPLREs5xfwFlnnGBnOiUSFqF5nnm1kvthA4K6EHolk4chkeZ/bA/gksCDlUY7Ps5J4DNXcIl456A0=\ntrusted comment: solador-agent-2026.9.9-x86_64-unknown-linux-musl\nnxucdOwB4Nq9CWhWJUeLCnfPfTSpbJYgIPCIZpku8dLdoc1bquHlaXyIqsQSx6w7r1onSXfUy4m3sBqT1CqUBQ==\n",
+      "sha256": "062a118edcfad5d43164ad887a68d5a0840ecc8019134140a91f9a9951e19b18"
+    }
+  }
+}

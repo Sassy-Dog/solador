@@ -13,16 +13,30 @@
 //! written.** That is the negative case #308 exists to assert, and it is
 //! asserted here rather than assumed of the toolchain that produced the file.
 //!
-//! # This crate is not linked into the app
+//! # The agent feed lives here too, and shares only the CalVer rule
 //!
-//! Nothing under `app/` depends on it. The running app verifies through
+//! [`agent`] builds `agent-latest.json` (#391): the same verify-before-write
+//! discipline, under a **different key** and a **different signature
+//! convention** — plain minisign, no base64 wrapper — because there is no
+//! Tauri in the agent. The one thing the two feeds share in code is
+//! `manifest::is_calver`, because both carry the release's CalVer under the
+//! same rule. Its consumer is `solador-agent update` (#393, not built yet),
+//! which must not depend on this crate: `agent/` will compile in the public
+//! key and verify with `minisign-verify` on its own, and the wire contract in
+//! [`agent`]'s module docs is what the two agree on.
+//!
+//! # This crate is not linked into the app, or into the agent
+//!
+//! Nothing under `app/` or `agent/` depends on it (`scripts/agent-deps-guard.sh`
+//! asserts the agent half with `cargo tree`, in CI and `./dev lint`). The running app verifies through
 //! `tauri-plugin-updater`, which carries its own copy of the same verifier;
 //! this crate is release tooling, used by
-//! `.github/workflows/publish-feed.yml` through the `solador-update-feed`
-//! binary. The two agreeing is not a coincidence — [`signature::verify`]
+//! `.github/workflows/publish-feed.yml` through the `solador-update-feed` and
+//! `solador-agent-feed` binaries. The two agreeing is not a coincidence — [`signature::verify`]
 //! reproduces the plugin's `verify_signature` step for step, and the
 //! `minisign-verify` requirement in `Cargo.toml` is the plugin's, so cargo
 //! unifies them to one crate.
 
+pub mod agent;
 pub mod manifest;
 pub mod signature;
