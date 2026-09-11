@@ -212,8 +212,7 @@ crates/          The real work: viewmodel, store, github, usage, azurecost,
                  servicestatus, openclaw, localhost, wire, agentclient
 agent/           The per-host metrics agent (workspace member, Linux CI job)
 tests/frontend/  Playwright suite for app/ui
-tests/fixtures/  Wire-contract fixtures both agent/ and crates/ assert against, plus
-                 the two update feeds' signed fixtures (updater/, agent/)
+tests/fixtures/  Wire-contract fixtures both agent/ and crates/ assert against
 ```
 
 Every string and colour a panel paints is decided in Rust and published to the

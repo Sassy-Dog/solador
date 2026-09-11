@@ -153,10 +153,13 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
    "Assert the tag matches the derived CalVer" fails a re-run of the
    prior-month tag for the same reason (observed on `v2026.8.139`, attempt
    2; [#404](https://github.com/Sassy-Dog/solador/issues/404)).
-   `publish-feed.yml` runs the **same assertion at the tag, on both
-   `release: published` and its `workflow_dispatch` door**, so a draft still
-   unpublished when the month rolls cannot get a feed by any in-repo path
-   either: publish within the month, or cut a fresh tag — preferably once
+   `publish-feed.yml`'s desktop `feed` job runs the **same assertion at the
+   tag, on both `release: published` and its `workflow_dispatch` door**, so a
+   draft still unpublished when the month rolls cannot get a `latest.json` by
+   any in-repo path either (its `agent-feed` job deliberately asserts the
+   approved *commit* rather than re-deriving the date — #391 — so the agent
+   feed is the one half that survives a roll): publish within the month, or
+   cut a fresh tag — preferably once
    `main` carries a commit in the new month, because a fresh tag at a
    prior-month HEAD occupies the floor slot `vYYYY.M.1` and the month's first
    real commit then ladder-bumps into the next refusal. **A ladder-bumped tag
