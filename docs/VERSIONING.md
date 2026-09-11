@@ -140,12 +140,33 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
 3. Tests (`scripts/test.sh`, skippable with `--skip-tests`).
 4. **Mint**: probe `git ls-remote --tags origin` (remote-visible, never
    locally-cached tags; annotated tags peeled via `^{}`), then the ladder —
-   tag exists at HEAD → **reuse** (idempotent re-run); exists elsewhere →
+   tag exists at HEAD → **reuse** (idempotent re-run — within the same UTC
+   month, see step 5); exists elsewhere →
    **bump** patch until free (the bumped version IS the version); free →
    **create + push** annotated `vYYYY.M.P`. Probe failure → fail closed,
    never mint blind. Output contract: one `(version, tag, action)` triple.
 5. Release build stamped from the minted version (tag lands before the build
    on purpose: a failed build re-runs into the same-commit reuse branch).
+   **Reuse holds only within the same UTC month.** The derivation is
+   wall-clock (`date -u`), so after a roll the ladder derives a new train at
+   the same HEAD and *creates* rather than reuses — and `release.yml`'s
+   "Assert the tag matches the derived CalVer" fails a re-run of the
+   prior-month tag for the same reason (observed on `v2026.8.139`, attempt
+   2; [#404](https://github.com/Sassy-Dog/solador/issues/404)).
+   `publish-feed.yml` runs the **same assertion at the tag, on both
+   `release: published` and its `workflow_dispatch` door**, so a draft still
+   unpublished when the month rolls cannot get a feed by any in-repo path
+   either: publish within the month, or cut a fresh tag — preferably once
+   `main` carries a commit in the new month, because a fresh tag at a
+   prior-month HEAD occupies the floor slot `vYYYY.M.1` and the month's first
+   real commit then ladder-bumps into the next refusal. **A ladder-bumped tag
+   fails that same assertion on its first run**:
+   every leg compares the tag to the bare derivation, which is the *unbumped*
+   value, so "the bumped version IS the version" in step 4 holds for the mint
+   and not yet for the release — that mismatch is
+   [#404](https://github.com/Sassy-Dog/solador/issues/404).
+   `scripts/publish.sh`'s epilogue states both cases and what to do about
+   each.
 
 ## Tags (§5)
 
@@ -272,7 +293,8 @@ is one-way — no semver "1.0 moment" is coming back.
 > untested**, and every release since — including the agent binaries #390 adds —
 > is named by a script no test exercises. The coverage is still owed, as a shell
 > or Rust integration test over the vectors listed above, and it needs an issue
-> of its own rather than a closed one's coattails.
+> of its own rather than a closed one's coattails —
+> [#405](https://github.com/Sassy-Dog/solador/issues/405) is that issue.
 >
 > What *is* covered is the consumers: `agent/deploy/lib_test.sh` asserts
 > `binary_version` reads a version back out of a real binary and fails closed
