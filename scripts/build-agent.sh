@@ -379,13 +379,14 @@ built=()
 
 if [[ "$WANT_SIGN" == true ]]; then
     # Key, committed public half and pinned signer, all checked BEFORE anything
-    # is built — a four-target release build is tens of minutes. `--install`
-    # lets this script install the signer itself: for a local `./dev agent
-    # --sign` the operator's machine already holds the key, and release.yml's
-    # `--sign-only` step also reaches it today (accepted; the feed workflow is
-    # the one that installs the signer in a separate, keyless step, and
-    # release.yml can adopt `agent-signing.sh ensure` the next time it moves).
-    agent_signing_preflight --install
+    # is built — a four-target release build is tens of minutes. The signer is
+    # installed here if missing: for a local `./dev agent --sign` the
+    # operator's machine already holds the key, and release.yml's `--sign-only`
+    # step also reaches this today (accepted; the feed workflow is the one that
+    # installs the signer in a separate, keyless step, and release.yml can
+    # adopt `agent-signing.sh ensure` the next time it moves).
+    ensure_rsign
+    agent_signing_preflight
 fi
 
 if [[ "$SIGN_ONLY" == true ]]; then

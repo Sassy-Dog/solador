@@ -86,13 +86,11 @@ require_rsign() {
 
 # Everything signing needs, checked BEFORE anything expensive: the key file
 # must exist, the committed public half must exist, and the signer must be the
-# pinned one. A four-target release build is tens of minutes; discovering
-# afterwards that the key was never passed is the class of waste the release
-# workflow's secret preflight exists to prevent.
-#
-# `--install` lets build-agent.sh install the signer as part of a local
-# `./dev agent --sign` (the operator's own key is already on that machine);
-# the `sign` subcommand never passes it.
+# pinned one — ALREADY on PATH; this never installs it. A four-target release
+# build is tens of minutes; discovering afterwards that the key was never
+# passed is the class of waste the release workflow's secret preflight exists
+# to prevent. A caller that may install the signer (build-agent.sh, on the
+# operator's own machine) runs `ensure_rsign` before this.
 agent_signing_preflight() {
     if [[ -z "${SOLADOR_AGENT_SIGNING_KEY:-}" || ! -f "$SOLADOR_AGENT_SIGNING_KEY" ]]; then
         log_error "signing needs SOLADOR_AGENT_SIGNING_KEY to point at the agent's minisign secret key file"
@@ -103,11 +101,7 @@ agent_signing_preflight() {
         log_error "missing $AGENT_SIGNING_PUBKEY — the committed public half of the agent keypair"
         exit 1
     fi
-    if [[ "${1:-}" == "--install" ]]; then
-        ensure_rsign
-    else
-        require_rsign
-    fi
+    require_rsign
 }
 
 # Sign one file to FILE.minisig, then verify that signature under the COMMITTED
