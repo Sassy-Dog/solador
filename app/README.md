@@ -1709,7 +1709,7 @@ cargo run -p solador-app          # from the repo root
 ```
 
 CI builds the same binary the same way — `cargo test --locked --workspace` in both
-the `rust-workspace` (self-hosted macOS) and `windows-tests` jobs — and the
+the `rust-workspace` (hosted macOS) and `windows-tests` jobs — and the
 Playwright suite's `pretest` shells out to it for its fixtures.
 
 ### Configuration
@@ -2400,6 +2400,7 @@ covers the IPC boundary above**:
 
 ```bash
 cargo test --locked --workspace     # crates/* + app/src-tauri unit tests
+cd tests/frontend && python3 -m unittest csp_server_test   # the e2e server binds without a name lookup (#401)
 cd tests/frontend && npm test       # Playwright e2e over app/ui (stubs `invoke`)
 ```
 

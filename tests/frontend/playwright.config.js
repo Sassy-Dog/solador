@@ -41,9 +41,7 @@ export default {
   webServer: {
     // `-u`: stdout is a pipe here, not a tty, so Python would otherwise buffer
     // the startup line past the point it is useful.
-    // INSTRUMENTATION (#401, temporary): `-X importtime` prints per-module
-    // import timing to stderr, which is piped below.
-    command: `python3 -X importtime -u csp_server.py ${PORT}`,
+    command: `python3 -u csp_server.py ${PORT}`,
     // Playwright ignores webServer stdout by default. That default is why two
     // consecutive 60s timeouts on this branch produced ZERO diagnostic text:
     // the server says what it bound and what it is serving, and nobody was
@@ -52,6 +50,14 @@ export default {
     stdout: "pipe",
     stderr: "pipe",
     url: `http://127.0.0.1:${PORT}/index.html`,
+    // The default 60s deadline is left alone on purpose. It was nearly spent
+    // on every hosted-macOS run -- 36-38s to the readiness line, two runs
+    // past 60s -- and all but ~2s of that was a reverse-DNS lookup inside the
+    // stdlib's bind, which csp_server.py's LoopbackServer removes (#401).
+    // The server's own readiness line prints how long it took; read that
+    // before touching this number, because a larger deadline with no
+    // explanation turns a loud failure into a slow one.
+    //
     // CI never reuses a server left over from a prior run -- each job starts
     // and owns its own, so a stale/foreign server can never be mistaken for
     // this run's. Local iterative dev still reuses one already running.

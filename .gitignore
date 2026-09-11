@@ -95,6 +95,8 @@ app/ui/sample-openclaw-unmeasured.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/
+# Bytecode from `python3 -m unittest csp_server_test` (#401)
+tests/frontend/__pycache__/
 
 # Local agent tooling. Everything under .claude/ is per-machine assistant setup
 # -- hooks, settings, and generated config -- and none of it is shared.
