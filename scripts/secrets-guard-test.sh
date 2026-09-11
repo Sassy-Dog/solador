@@ -231,6 +231,10 @@ fresh_copy "$work/wf"
 insert_after "$work/wf/ci.yml" '^jobs:$' "  leak:<NL>    uses: ./.github/workflows/x.yml<NL>    with:<NL>      secrets: inherit"
 expect refuse "secrets: inherit nested one level deeper"
 
+fresh_copy "$work/wf"
+insert_after "$work/wf/ci.yml" '^jobs:$' "  leak:<NL>    uses: ./.github/workflows/x.yml<NL>    \"secrets\": inherit"
+expect refuse "a quoted secrets key with inherit"
+
 # --- the wrong directory is not a clean directory ----------------------------
 rm -rf "$work/wf"
 mkdir -p "$work/wf"

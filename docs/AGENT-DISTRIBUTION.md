@@ -179,7 +179,8 @@ and this producer are both held to:
   than the CalVer it is running: every release's feed signature is valid on
   its own, so an older, validly signed pair copied onto a newer release would
   otherwise read as "the newest release wants these bytes". The producer's
-  `solador-agent-feed verify --version` is exactly that check.
+  `solador-agent-feed verify --version` is the first of those two checks;
+  the second needs the running agent's own version and is the consumer's.
 - **The fixtures are the contract's executable form.**
   `tests/fixtures/agent/agent-latest.json`, its `.minisig` and
   `test-agent-key.pub` are a complete, signed instance of everything above; a

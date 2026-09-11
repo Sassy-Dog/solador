@@ -57,10 +57,11 @@ word='(^|[^a-z0-9_])secrets([^a-z0-9_]|$)'
 opener='[$][{][{]'
 closer='[}][}]'
 # `secrets: inherit` on a reusable-workflow call — anywhere on the line (a
-# job written as a flow mapping puts it mid-line), quoted or not, or with the
-# value on a later line (a trailing comment or blank lines in between).
-inherit='(^|[^a-z0-9_])secrets:[[:space:]]*["'"'"']?inherit'
-inherit_key='(^|[^a-z0-9_])secrets:[[:space:]]*(#.*)?$'
+# job written as a flow mapping puts it mid-line), with the key or the value
+# quoted or not, or with the value on a later line (a trailing comment or
+# blank lines in between).
+inherit='(^|[^a-z0-9_])secrets["'"'"']?:[[:space:]]*["'"'"']?inherit'
+inherit_key='(^|[^a-z0-9_])secrets["'"'"']?:[[:space:]]*(#.*)?$'
 inherit_val='^[[:space:]]*["'"'"']?inherit["'"'"']?[[:space:]]*(#.*)?$'
 skippable='^[[:space:]]*(#.*)?$'
 
