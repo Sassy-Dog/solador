@@ -56,11 +56,13 @@ scoped_job="agent-feed"
 word='(^|[^a-z0-9_])secrets([^a-z0-9_]|$)'
 opener='[$][{][{]'
 closer='[}][}]'
-# `secrets: inherit` on a reusable-workflow call, quoted or not, or with the
-# value on the next line.
-inherit='^[[:space:]]*secrets:[[:space:]]*["'"'"']?inherit'
-inherit_key='^[[:space:]]*secrets:[[:space:]]*$'
-inherit_val='^[[:space:]]*["'"'"']?inherit["'"'"']?[[:space:]]*$'
+# `secrets: inherit` on a reusable-workflow call — anywhere on the line (a
+# job written as a flow mapping puts it mid-line), quoted or not, or with the
+# value on a later line (a trailing comment or blank lines in between).
+inherit='(^|[^a-z0-9_])secrets:[[:space:]]*["'"'"']?inherit'
+inherit_key='(^|[^a-z0-9_])secrets:[[:space:]]*(#.*)?$'
+inherit_val='^[[:space:]]*["'"'"']?inherit["'"'"']?[[:space:]]*(#.*)?$'
+skippable='^[[:space:]]*(#.*)?$'
 
 # report FILE — one line per finding, tab-separated:
 #   secret <line> <job>         a secret reference, and the job it sits in
@@ -73,7 +75,8 @@ inherit_val='^[[:space:]]*["'"'"']?inherit["'"'"']?[[:space:]]*$'
 # and a possible reference. No rule above the test may `next`.
 report() {
     awk -v word="$word" -v opener="$opener" -v closer="$closer" \
-        -v inherit="$inherit" -v inherit_key="$inherit_key" -v inherit_val="$inherit_val" '
+        -v inherit="$inherit" -v inherit_key="$inherit_key" -v inherit_val="$inherit_val" \
+        -v skippable="$skippable" '
         /^jobs:[[:space:]]*$/ { in_jobs = 1; cur = ""; next }
         in_jobs && /^[^[:space:]#]/ { in_jobs = 0; cur = "" }
         in_jobs && /^  [^[:space:]#]/ {
@@ -103,7 +106,11 @@ report() {
             }
             if (line ~ inherit) hit = 1
             if (pending_inherit && line ~ inherit_val) hit = 1
-            pending_inherit = (line ~ inherit_key)
+            # A `secrets:` key with its value still to come stays pending
+            # across comment-only and blank lines, and is cleared by the
+            # first line that carries anything else.
+            if (line ~ inherit_key) pending_inherit = 1
+            else if (line !~ skippable) pending_inherit = 0
             if (hit) print "secret\t" NR "\t" (cur == "" ? "<no job>" : cur)
         }
         in_jobs && cur == job && /^    environment:[[:space:]]*prd[[:space:]]*$/ { print "environment\t" NR "\t" cur }

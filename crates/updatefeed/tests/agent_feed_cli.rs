@@ -104,6 +104,10 @@ fn refused(scratch: &Scratch, (ok, text): (bool, String), needle: &str) {
         "a refusal must write nothing, but {} exists",
         scratch.out().display()
     );
+    assert!(
+        !scratch.out().with_extension("json.partial").exists(),
+        "a refusal must leave no partial file behind"
+    );
 }
 
 #[test]
@@ -131,6 +135,31 @@ fn build_reproduces_the_committed_feed_byte_for_byte() {
     let written = std::fs::read(scratch.out()).expect("the feed was written");
     let committed = std::fs::read(fixtures().join("agent-latest.json")).expect("fixture");
     assert_eq!(written, committed, "the CLI's output is the signed fixture");
+    assert!(
+        !scratch.out().with_extension("json.partial").exists(),
+        "the temp file is renamed away, not left beside the feed"
+    );
+}
+
+/// The write-then-rename path's own failure: something squatting at the
+/// temp name. Deterministic, and it must be a refusal with nothing at --out.
+#[test]
+fn a_directory_squatting_at_the_temp_name_is_a_refusal_not_a_panic() {
+    let scratch = Scratch::with_assets("partial-squatter");
+    std::fs::create_dir_all(scratch.out().with_extension("json.partial")).unwrap();
+    let (ok, text) = build(
+        &scratch,
+        &fixtures().join("test-agent-key.pub"),
+        VERSION,
+        TAG,
+        BASE,
+    );
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("::error::agent feed refused: could not write"),
+        "{text}"
+    );
+    assert!(!scratch.out().exists());
 }
 
 #[test]

@@ -169,7 +169,7 @@ visibility never applies to them. `prd` also carries a required reviewer and a
 signed build. Two workflows declare it: the three credential-holding jobs in
 `release.yml` (the agent's build and verify jobs deliberately do not), and
 exactly one job in `publish-feed.yml` — `agent-feed`, which signs
-`agent-latest.json` at publish time (#391, see **Updates** below) with the same
+`agent-latest.json` at publish time (#391, see **The agent feed** below) with the same
 agent key `release.yml` signs the binaries with. **Publishing a release
 therefore prompts `prd`'s reviewer once more**, after the prompts the tag push
 already made; a publish that looks stalled is waiting on it. `ci.yml` declares
@@ -332,7 +332,8 @@ during the draft build; that is why `publish-feed.yml`'s `agent-feed` job is
 the one protected job outside `release.yml`, with a credential-free
 `agent-eligibility` job in front of it that refuses drafts, prereleases,
 releases without the eight agent assets, and a manual replay that is not
-running *at* its tag. **A `release` event runs `publish-feed.yml` at the
+running *at* its tag (the dispatch's `leg` input picks which feed to
+regenerate: `agent` from the tag, `desktop` from `main`). **A `release` event runs `publish-feed.yml` at the
 tagged commit, not from `main`** — measured against this repo's own runs — so
 a tag cut before #391 publishes with its own older copy of the file: a desktop
 feed and no agent leg at all, no red job, nothing to look for. The first

@@ -35,18 +35,24 @@ source "$AGENT_SIGNING_SCRIPT_DIR/lib.sh"
 source "$AGENT_SIGNING_SCRIPT_DIR/config.sh"
 AGENT_SIGNING_ROOT_DIR="$( cd "$AGENT_SIGNING_SCRIPT_DIR/.." && pwd )"
 
+# The version of the rsign on PATH, or nothing. `|| true`: under `set -euo
+# pipefail` a failing command substitution in an assignment takes the whole
+# script down, silently when its stderr is discarded. An rsign too old to
+# answer `--version` is a case to REPORT and reinstall over, not to die on.
+installed_rsign_version() {
+    local installed=""
+    if command_exists rsign; then
+        installed="$(rsign --version 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
+    fi
+    printf '%s' "$installed"
+}
+
 # The pinned minisign signer. Same shape as build.sh's `ensure_tauri_cli`: the
 # check is on the INSTALLED version, not on presence, so a machine carrying some
 # other project's rsign does not sign a release with it.
 ensure_rsign() {
-    local installed=""
-    if command_exists rsign; then
-        # `|| true`: under `set -euo pipefail` a failing command substitution in
-        # an assignment takes the whole script down, silently when its stderr is
-        # discarded. An rsign too old to answer `--version` is a case to REPORT
-        # and reinstall over, not to die on.
-        installed="$(rsign --version 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
-    fi
+    local installed
+    installed="$(installed_rsign_version)"
     if [[ "$installed" == "$RSIGN_VERSION" ]]; then
         log_debug "rsign $installed already installed"
         return 0
@@ -57,7 +63,7 @@ ensure_rsign() {
         log_info "rsign not found — installing the pinned $RSIGN_VERSION"
     fi
     cargo install --locked "rsign2@$RSIGN_VERSION"
-    installed="$(rsign --version 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
+    installed="$(installed_rsign_version)"
     if [[ "$installed" != "$RSIGN_VERSION" ]]; then
         log_error "rsign is '${installed:-<missing>}' after installing $RSIGN_VERSION — is ~/.cargo/bin on PATH?"
         exit 1
@@ -70,10 +76,8 @@ ensure_rsign() {
 # fallback install would be a policy that holds only while nobody reorders
 # the workflow.
 require_rsign() {
-    local installed=""
-    if command_exists rsign; then
-        installed="$(rsign --version 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
-    fi
+    local installed
+    installed="$(installed_rsign_version)"
     if [[ "$installed" != "$RSIGN_VERSION" ]]; then
         log_error "rsign is '${installed:-<missing>}', this repo pins $RSIGN_VERSION — run 'scripts/agent-signing.sh ensure' first, in a step that holds no key"
         exit 1

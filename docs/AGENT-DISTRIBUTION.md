@@ -173,6 +173,18 @@ and this producer are both held to:
   is *not* a promise that an app-only release yields identical agent bytes —
   the build embeds the CalVer — only that equal bytes mean no swap (§3 says
   what that leaves of the mitigation).
+- **The version is checked too, before the hash rule applies.** A consumer
+  must refuse a feed whose `version` is not the release it resolved
+  (`v<version>` must be the tag it downloaded from) and one that is not newer
+  than the CalVer it is running: every release's feed signature is valid on
+  its own, so an older, validly signed pair copied onto a newer release would
+  otherwise read as "the newest release wants these bytes". The producer's
+  `solador-agent-feed verify --version` is exactly that check.
+- **The fixtures are the contract's executable form.**
+  `tests/fixtures/agent/agent-latest.json`, its `.minisig` and
+  `test-agent-key.pub` are a complete, signed instance of everything above; a
+  consumer's parser must accept that pair under that key, and refuse it after
+  any single byte moves.
 - **Additions are the only change the producer will make.** A future producer
   may add keys (a rotation-window key id is the obvious one) and will never
   rename, remove or re-type the ones above. The producer's own `verify` is

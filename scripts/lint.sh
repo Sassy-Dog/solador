@@ -87,10 +87,12 @@ fi
 # runs them (#391). Sub-second, dependency-free, and the one gate whose
 # failure is invisible until a fork PR reads an empty secret.
 log_info "secrets guard…"
-if "$SCRIPT_DIR/secrets-guard.sh" >/dev/null && "$SCRIPT_DIR/secrets-guard-test.sh" >/dev/null; then
+if guard_out="$("$SCRIPT_DIR/secrets-guard.sh" 2>&1 && "$SCRIPT_DIR/secrets-guard-test.sh" 2>&1)"; then
     log_success "secrets guard clean, and its corpus behaves"
 else
-    log_error "the secrets guard, or its self-test, failed — run scripts/secrets-guard.sh and scripts/secrets-guard-test.sh"
+    # The guard's own lines name the file and job; a bare "failed" would not.
+    echo "$guard_out"
+    log_error "the secrets guard, or its self-test, failed (see above)"
     status=1
 fi
 
@@ -100,10 +102,11 @@ fi
 # `cargo tree -i`.
 if command_exists cargo; then
     log_info "cargo tree: agent/ must not resolve crates/updatefeed…"
-    if "$SCRIPT_DIR/agent-deps-guard.sh" >/dev/null; then
+    if deps_out="$("$SCRIPT_DIR/agent-deps-guard.sh" 2>&1)"; then
         log_success "agent/ does not resolve solador-updatefeed"
     else
-        log_error "agent/ resolves solador-updatefeed, or cargo tree failed — run scripts/agent-deps-guard.sh"
+        echo "$deps_out"
+        log_error "agent/ resolves solador-updatefeed, or cargo tree failed (see above)"
         status=1
     fi
 fi

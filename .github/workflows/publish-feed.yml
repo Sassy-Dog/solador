@@ -47,13 +47,14 @@ name: Publish update feed
 #   only through a NEW tag: its replay must run the tag's own copy (below).
 # - `workflow_dispatch` runs the file at the ref it is started from. For the
 #   DESKTOP leg that is a replay door that does run a newer file against an
-#   older tag's release: start it from `main`, the tag is checked out and
-#   `solador-update-feed` is built from the tag's tree (which needs
-#   `crates/updatefeed`). Such a `main`-ref run ends with `agent-eligibility`
-#   RED, by design — the ref lock below refuses it — and the `feed` job's
-#   status is the one to read. For the AGENT leg the replay must be started
-#   FROM the tag, so the tag's copy of this file runs with its own producer
-#   beside it.
+#   older tag's release: start it from `main` with `leg: desktop`, the tag is
+#   checked out and `solador-update-feed` is built from the tag's tree (which
+#   needs `crates/updatefeed`); the agent leg then does not run at all. (A
+#   `main`-ref dispatch with `leg: both` would instead end with
+#   `agent-eligibility` RED at the ref lock below.) For the AGENT leg the
+#   replay must be started FROM the tag with `leg: agent`, so the tag's copy
+#   of this file runs with its own producer beside it and the desktop feed is
+#   left alone.
 
 on:
   release:
@@ -64,13 +65,15 @@ on:
   # above.
   #
   # For the AGENT leg the manual door has one more lock: run the workflow FROM
-  # the tag (the "Use workflow from" selector, or `gh workflow run --ref vX`),
-  # not from `main` with the tag typed into the input. `agent-eligibility`
-  # refuses a run whose ref is not the tag it was asked about, and `prd`'s own
+  # the tag (the "Use workflow from" selector, or
+  # `gh workflow run publish-feed.yml --ref vX -f tag=vX -f leg=agent`), not
+  # from `main` with the tag typed into the input. `agent-eligibility` refuses
+  # a run whose ref is not the tag it was asked about, and `prd`'s own
   # deployment policy (`v*` tags only) refuses the environment to a `main`-ref
   # job regardless — a tag supplied merely as an input must never be what hands
   # a job the signing key. The desktop leg has no such lock because it holds
-  # no secret: a `main`-ref replay still regenerates `latest.json` for any tag.
+  # no secret: a `main`-ref replay with `leg: desktop` still regenerates
+  # `latest.json` for any tag.
   workflow_dispatch:
     inputs:
       tag:
@@ -112,7 +115,15 @@ jobs:
     # an asset nothing reads — and if the exclusion ever changed, it would
     # quietly offer a prerelease to every stable install. On a dispatch, only
     # when this leg was asked for.
-    if: (github.event_name == 'workflow_dispatch' && inputs.leg != 'agent') || github.event.release.prerelease == false
+    #
+    # Each event's clause is guarded by its OWN event name. Actions compares
+    # loosely — `null == false` is TRUE — so a bare
+    # `github.event.release.prerelease == false` is satisfied on a dispatch,
+    # where there is no release payload at all, and would run this job
+    # whatever `leg` said.
+    if: >-
+      (github.event_name == 'release' && !github.event.release.prerelease)
+      || (github.event_name == 'workflow_dispatch' && inputs.leg != 'agent')
     runs-on: ubuntu-latest
 
     steps:
@@ -297,8 +308,11 @@ jobs:
     # The same prerelease guard as the desktop job, then the same question asked
     # of the API rather than of the event: a `workflow_dispatch` carries no
     # release payload, so the event fields alone would let a draft or prerelease
-    # through the manual door. On a dispatch, only when this leg was asked for.
-    if: (github.event_name == 'workflow_dispatch' && inputs.leg != 'desktop') || github.event.release.prerelease == false
+    # through the manual door. On a dispatch, only when this leg was asked for
+    # (per-event clauses, for the `null == false` reason the desktop job states).
+    if: >-
+      (github.event_name == 'release' && !github.event.release.prerelease)
+      || (github.event_name == 'workflow_dispatch' && inputs.leg != 'desktop')
     runs-on: ubuntu-latest
     # Reads only. The workflow-level `contents: write` is for the two upload
     # jobs; this one asks the API questions and uploads nothing.
@@ -333,7 +347,8 @@ jobs:
             echo "::error::this run is at $RUN_REF, not refs/tags/$tag"
             echo "The agent feed is signed inside the prd environment, so the workflow" >&2
             echo "has to run FROM the release tag: pick the tag under 'Use workflow" >&2
-            echo "from', or 'gh workflow run publish-feed.yml --ref $tag -f tag=$tag'." >&2
+            echo "from' with leg=agent, or" >&2
+            echo "'gh workflow run publish-feed.yml --ref $tag -f tag=$tag -f leg=agent'." >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -489,19 +504,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      # The producer's build cache. It does NOT reliably carry the signer:
-      # rust-cache keys on this job's id and the lockfile, and this job runs
-      # only at release tags, so the pinned rsign is installed below on most
-      # runs — which is exactly why that install is its own step, before the
-      # key exists.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
-        with:
-          workspaces: .
+      # No rust-cache here, deliberately: it keys on this job's id and the
+      # lockfile, and this job runs only at release tags, so a cache written
+      # here is never restored (measured on the identically shaped release
+      # job: "No cache found"). The producer is a small crate; a cold build is
+      # cheaper than a cache nobody reads.
 
       # The signer is installed HERE, in a step that holds no secret and
       # before the key has been written anywhere. `cargo install` runs
-      # crates.io build scripts; the step that signs must not be the step
-      # that compiles third-party code with the key on disk beside it.
+      # crates.io build scripts with a cold registry; the step that signs must
+      # not be the step that compiles third-party code with the key on disk
+      # beside it. (The producer's own `cargo run` below compiles the locked
+      # dependency tree too — `--locked` plus the lockfile's checksums are the
+      # boundary there, the same one `release.yml`'s sign step relies on.)
       - name: Install the pinned signer (no key present)
         run: scripts/agent-signing.sh ensure
 

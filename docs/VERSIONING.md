@@ -197,7 +197,7 @@ consumes a per-submission channel tag: distribution is direct download plus the
 to date. Add
 `mac-direct/<version>-<build>-<UTCts>` at the first submission that needs one.
 
-### Mapping onto the update feed
+### Mapping onto the update feed (the desktop `latest.json`)
 
 The update mechanism is **`tauri-plugin-updater`**, settled in
 [#304](https://github.com/Sassy-Dog/solador/issues/304). Its manifest carries

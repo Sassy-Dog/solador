@@ -115,6 +115,10 @@ insert_after "$work/wf/publish-feed.yml" '^          NOTES: ' "          LEAK: $
 expect refuse "a secret in the desktop feed job"
 
 fresh_copy "$work/wf"
+insert_after "$work/wf/publish-feed.yml" '^          RUN_REF: ' "          LEAK: $SECRET"
+expect refuse "a secret in agent-eligibility (the credential-free gate job)"
+
+fresh_copy "$work/wf"
 insert_after "$work/wf/publish-feed.yml" '^          NOTES: ' "          LEAK: $SECRET_INDEXED"
 expect refuse "a secret via secrets['X'] in the desktop feed job"
 
@@ -210,6 +214,22 @@ expect refuse "secrets: \"inherit\" (quoted) in ci.yml"
 fresh_copy "$work/wf"
 insert_after "$work/wf/ci.yml" '^jobs:$' "  leak:<NL>    uses: ./.github/workflows/x.yml<NL>    secrets:<NL>      inherit"
 expect refuse "secrets: with inherit on the next line, in ci.yml"
+
+fresh_copy "$work/wf"
+insert_after "$work/wf/ci.yml" '^jobs:$' "  leak:<NL>    uses: ./.github/workflows/x.yml<NL>    secrets:  # all of them<NL>      inherit"
+expect refuse "secrets: with a trailing comment, then inherit"
+
+fresh_copy "$work/wf"
+insert_after "$work/wf/ci.yml" '^jobs:$' "  leak:<NL>    uses: ./.github/workflows/x.yml<NL>    secrets:<NL><NL>      inherit"
+expect refuse "secrets: then a blank line, then inherit"
+
+fresh_copy "$work/wf"
+insert_after "$work/wf/ci.yml" '^jobs:$' "  leak: { uses: ./.github/workflows/x.yml, secrets: inherit }"
+expect refuse "a reusable-workflow call written as a flow mapping with secrets: inherit"
+
+fresh_copy "$work/wf"
+insert_after "$work/wf/ci.yml" '^jobs:$' "  leak:<NL>    uses: ./.github/workflows/x.yml<NL>    with:<NL>      secrets: inherit"
+expect refuse "secrets: inherit nested one level deeper"
 
 # --- the wrong directory is not a clean directory ----------------------------
 rm -rf "$work/wf"

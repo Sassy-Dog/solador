@@ -21,7 +21,10 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 
-if ! agent_tree="$(cargo tree --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p solador-agent --prefix none 2>&1)"; then
+# `--target all`: the agent ships for four triples, and a
+# `[target.'cfg(…)'.dependencies]` edge that exists only on Darwin would be
+# invisible to a host-only tree on the Linux runner.
+if ! agent_tree="$(cargo tree --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p solador-agent --target all --prefix none 2>&1)"; then
     echo "::error::cargo tree failed, so the absence could not be asserted: $agent_tree"
     exit 1
 fi
