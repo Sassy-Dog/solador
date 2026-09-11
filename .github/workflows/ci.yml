@@ -136,6 +136,16 @@ jobs:
         working-directory: tests/frontend
         run: npx playwright install chromium
 
+      # The e2e server's bind must resolve no name (#401). The stdlib's
+      # reverse-DNS lookup on the bind address took 35s of a 36.6s readiness
+      # window on THIS runner image -- the VM's NAT resolver never answers the
+      # PTR query -- and answers in milliseconds on a laptop, so it is
+      # asserted here rather than timed anywhere. Stdlib unittest, no
+      # dependencies; python3 is already what serves the suite below.
+      - name: Frontend server bind test (csp_server_test.py)
+        working-directory: tests/frontend
+        run: python3 -m unittest -v csp_server_test
+
       # `npm test`'s `pretest` script builds solador-app and runs its --dump
       # mode to (re)generate the gitignored app/ui/sample.json fixture the
       # suite serves, so the build always happens before Playwright runs

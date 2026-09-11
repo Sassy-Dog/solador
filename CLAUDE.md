@@ -100,8 +100,9 @@ coverage it does not have would be worse than the checklist.
   (#390). `--targets "<triples>"` narrows it, `--sign` minisigns each artifact;
   see **Releasing** below
 - `./dev test` — Root Rust workspace (`cargo test --locked --workspace` —
-  `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, plus the
-  `tests/frontend` Playwright e2e suite
+  `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, the e2e server's
+  bind test (`tests/frontend/csp_server_test.py`), plus the `tests/frontend`
+  Playwright e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
   `shellcheck -S warning` over every shell source this repo ships
   (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`); mirrors CI
@@ -611,8 +612,28 @@ the bundle's floor.
 ```
 
 Runs `cargo test --locked --workspace` (`crates/*`, `app/src-tauri`),
-`agent/deploy/lib_test.sh`, and the `tests/frontend` Playwright suite. Agent
-tests run via `cargo test` in `agent/`.
+`agent/deploy/lib_test.sh`, `tests/frontend/csp_server_test.py`, and the
+`tests/frontend` Playwright suite. Agent tests run via `cargo test` in `agent/`.
+
+**The e2e server binds without a name lookup, and the 60s webServer deadline
+is not the knob (#401).** `tests/frontend/csp_server.py` serves `app/ui` under
+the shipped CSP on a worktree-derived port, and its `LoopbackServer` overrides
+`HTTPServer.server_bind` to skip the `socket.getfqdn()` the stdlib performs on
+the bind address. On GitHub's hosted macOS runners that reverse lookup of
+`127.0.0.1` goes to the VM's NAT resolver, which never answers, and it cost
+**35.0s of a 36.6s readiness window** — measured in place and reproduced in
+isolation, against 0.06s for the same bind without it. A `getfqdn()` of the
+runner's own hostname took 70s on the same resolver, which is the shape of the
+two 60s timeouts that opened the issue — consistent with them, not read out of
+them, since those runs predate piped server output. The lookup answers in
+milliseconds on a laptop, so `csp_server_test.py` **asserts** the bind
+resolves no name (every resolver entry point patched to raise, plus a negative
+control on the stock server) rather than timing anything; it runs from
+`./dev test` and as its own CI step. The server prints a line before the bind
+and one after it, each with its elapsed time, so a timeout names the phase it
+reached and a creep-back is readable from any green run's `[WebServer]` lines.
+Read those before touching the deadline: a larger one with no explanation
+converts a loud failure into a slow one.
 
 ## Versioning (`docs/VERSIONING.md`)
 

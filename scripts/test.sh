@@ -50,6 +50,19 @@ if command_exists npm && command_exists cargo; then
         (cd tests/frontend && npm ci)
     fi
 
+    # The e2e server's bind must resolve no name (#401): the stdlib's
+    # reverse-DNS lookup cost 35s of the readiness window on the hosted macOS
+    # runner and is invisible on a laptop, so this is asserted, not timed.
+    # Stdlib unittest, no dependencies -- python3 is already what serves the
+    # suite. Mirrors CI's "Frontend server bind test" step.
+    log_info "Running frontend server bind test (tests/frontend/csp_server_test.py)…"
+    if (cd tests/frontend && python3 -m unittest -v csp_server_test); then
+        log_success "Frontend server bind test passed"
+    else
+        log_error "Frontend server bind test failed"
+        exit 1
+    fi
+
     log_info "Running frontend e2e tests (tests/frontend)…"
     if (cd tests/frontend && npx playwright install chromium && npm test); then
         log_success "Frontend e2e tests passed"

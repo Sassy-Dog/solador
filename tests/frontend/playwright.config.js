@@ -50,6 +50,14 @@ export default {
     stdout: "pipe",
     stderr: "pipe",
     url: `http://127.0.0.1:${PORT}/index.html`,
+    // The default 60s deadline is left alone on purpose. It was nearly spent
+    // on every hosted-macOS run -- 36-38s to the readiness line, two runs
+    // past 60s -- and all but ~2s of that was a reverse-DNS lookup inside the
+    // stdlib's bind, which csp_server.py's LoopbackServer removes (#401).
+    // The server's own readiness line prints how long it took; read that
+    // before touching this number, because a larger deadline with no
+    // explanation turns a loud failure into a slow one.
+    //
     // CI never reuses a server left over from a prior run -- each job starts
     // and owns its own, so a stale/foreign server can never be mistaken for
     // this run's. Local iterative dev still reuses one already running.
