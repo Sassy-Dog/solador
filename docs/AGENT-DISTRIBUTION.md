@@ -9,9 +9,14 @@ children on 2026-09-07.
   reclassification.
 - **§2 The feed — SHIPPED, producer side** ([#391](https://github.com/Sassy-Dog/solador/issues/391)):
   `agent-latest.json` and its signature are generated, verified and published
-  by `publish-feed.yml` when a release is published. Nothing consumes it yet.
-- §4 (`solador-agent update`), §6 (`install.sh`) are **not built yet** —
-  #393/#394 and #392. Everything they describe is still design.
+  by `publish-feed.yml` when a release is published. Nothing consumes it yet —
+  `install.sh` deliberately does not (§6), and the updater that will is §4's.
+- **§6 Installing — SHIPPED** ([#392](https://github.com/Sassy-Dog/solador/issues/392)):
+  `install.sh` downloads and verifies a published binary and has a macOS
+  LaunchAgent path. The installer-side half of §5's verification shipped with
+  it.
+- §4 (`solador-agent update`) is **not built yet** — #393/#394. What it
+  describes is still design.
 
 How the Solador metrics agent reaches machines that are not ours, and how the
 people running it stay up to date.
@@ -26,10 +31,9 @@ ships `.dmg`, `_x64-setup.exe` and `.app.tar.gz`, each with a minisign `.sig`,
 plus a `latest.json` update feed that Tauri's updater consumes.
 
 The agent shipped **nothing** — zero binary assets on any release — until #390.
-It now ships four minisigned binaries beside the app's, but the three
-consequences below were the *reason*, and only the first of them is addressed so
-far: publishing an artifact and installing from it are different jobs, and
-`install.sh` still builds from source (#392).
+It now ships four minisigned binaries beside the app's, and since #392
+`install.sh` installs from them. The three consequences below were the
+*reason*; the first two are addressed, the third (updating) is not yet.
 
 The state this was written against, and how much of it still holds: the only way
 to install or update the agent was to clone this repository and run
@@ -39,12 +43,14 @@ consequences, in order of how much they hurt:
 1. **Every monitored machine needs a Rust toolchain.** For an Apache-2.0
    project asking strangers to run an agent on their servers, this is the
    barrier that matters. Nobody installs `cargo` on a NAS to try a dashboard.
+   *(Addressed by #392: `install.sh` needs `curl` and `minisign`.)*
 2. **macOS has no install path at all.** `install.sh` hard-fails without
    `systemctl` (`"Linux + systemd required"`), while `agent/README.md` states
    the agent "Runs on Linux … and macOS". Half the stated platform support is
-   undeliverable today.
+   undeliverable today. *(Addressed by #392: a LaunchAgent, §6.)*
 3. **Updating is a manual `git pull` + rebuild** on each host. There is no
-   mechanism by which a user learns a new version exists.
+   mechanism by which a user learns a new version exists. *(Still true;
+   re-running `install.sh` is the update path until §4 lands.)*
 
 ## Non-goals
 
@@ -358,9 +364,17 @@ requires its environment line; the desktop feed job beside it stays
 credential-free. `scripts/agent-signing.sh` is the one signer for binaries and
 feed alike, so the two cannot be signed differently.
 
+**Shipped in #392 — the installer's verifying half.** `install.sh` verifies
+every download with the stock `minisign` under `agent/release-signing-key.pub`
+*from the checkout it runs from* — never a key fetched beside the binary, and
+with no override — before the candidate is made executable, asked its version,
+installed, or allowed to stop anything already running. That is §6's contract,
+and its test is the proven-to-fail one the Testing section below demands.
+
 The two remaining halves of this section — the compiled-in public key and the
 **two**-key rotation window — belong to the `update` child and are **not built
-yet**. Nothing in the agent verifies a signature today.
+yet**. Nothing in the agent *binary* verifies a signature today; the installer
+does.
 
 **Rotation must ship on day one.** A key compiled into a binary cannot be
 rotated by the update path it protects: if it is lost or compromised, every
@@ -373,16 +387,106 @@ GitHub branch rulesets do not cover tag refs. The release trigger is the least
 protected link in this chain. Acceptable for a solo maintainer; it should be a
 known acceptance rather than a later discovery.
 
-### 6. Installing
+### 6. Installing — SHIPPED (#392)
 
-`install.sh` downloads the signed binary for the detected platform and arch
-instead of running `cargo build --release`. This removes the Rust toolchain
-from the requirements — the single largest barrier to a stranger running this.
+`agent/deploy/install.sh` downloads the signed binary for the detected platform
+and architecture instead of running `cargo build --release`. This removes the
+Rust toolchain from the requirements — the single largest barrier to a
+stranger running this. `agent/README.md` is the operator reference; what
+follows is the contract, and why each piece is shaped the way it is.
 
-It must also gain a **launchd path for macOS**, closing the gap where the
-README promises macOS support the installer refuses to deliver.
+**Discovery is the `/releases/latest` redirect**, validated as a CalVer tag,
+or an explicit `SOLADOR_AGENT_RELEASE=vYYYY.M.N`. It needs no API token and no
+JSON, and a draft release is invisible to it by construction — the same
+property that keeps `latest.json` honest (§2, and `publish-feed.yml`'s
+`release: published` trigger). The installer does not read §2's feed and must
+not grow a dependency on it: the feed's job is the hash comparison the
+*updater* needs, and an install has nothing installed to compare against.
 
-The bearer-token prompt and env-file handling are unchanged.
+**Discovery is unsigned, and that is an accepted limit of an *install*.**
+The `/releases/latest` redirect is authenticated by HTTPS only; an
+intercepting proxy could steer a fresh install to an older, validly signed
+release, and every check below would pass. That is the downgrade §4's updater
+is designed to refuse (by hash, against something already installed) — an
+install has nothing installed to compare against, and `SOLADOR_AGENT_RELEASE`
+is the operator's pin when it matters. A *re-run* does have something to
+compare against — the binary already serving — so on the unpinned path it
+refuses to install an older CalVer than the one installed, which closes the
+steer-to-old-release case for every host past its first install; the
+fresh-install window is recorded here beside §5's tag-ruleset acceptance
+rather than solved. The two mechanisms should agree that a pulled release is
+one marked *prerelease*, which both a feed and this redirect skip.
+The public key, meanwhile, must reach the host from a checkout of `main` —
+the protected ref — not from a tag or an archive of one.
+
+**A release without agent binaries is a failure, never a fallback.** Every
+release up to and including `v2026.9.3` predates #390 and carries none; the
+installer names the tag and the asset it looked for and exits non-zero. There
+is no source build behind the download and no quiet selection of some other
+version.
+
+**Verification precedes execution, and precedes every installed-state change.**
+The binary and its `.minisig` are fetched into a private staging directory
+under `~/.cache` (not `/tmp`: a `noexec` `/tmp` would make the verified
+binary's own `--version` fail in a way that reads as "carries no version"),
+verified with the stock `minisign` under the checkout's
+`agent/release-signing-key.pub`, and only then made executable and asked its
+version — which must equal the release's. A rejected candidate is never run,
+nothing is installed, no service is stopped, and the env file is untouched;
+staging is removed on every exit path. Requiring the stock `minisign` rather
+than bundling a verifier is deliberate: the installer never installs a
+verifier, a package manager or a toolchain on the operator's behalf, and the
+key arrives by a path (the checkout) other than the download it verifies.
+
+**Install ownership (decision 2026-09-09).** New installs are user-owned at
+`~/.local/bin/solador-agent`, staged as `.new` beside the live path and
+renamed over it — the ETXTBSY-safe swap this document already required of
+`redeploy.sh` — with the displaced binary kept as `.prev`. Nothing uses
+`sudo`. A host installed before #392 has `ExecStart=/opt/solador-agent/…`;
+the installer detects that, stops before changing anything, and prints the
+explicit step (`--migrate-from-opt`) rather than migrating it silently. The
+migration preserves the env file, installs at the user-owned path, regenerates
+the existing unit from the template (keeping the displaced file as
+`.service.prev`), seeds `.prev` from the `/opt` binary so a rollback has an
+anchor, restarts and verifies; the `/opt` binary stays until the operator
+removes it. #393 and #394 consume exactly this topology — the
+service identities, the binary path, the env path and the no-`sudo` rule —
+so an unattended job never needs a privilege it does not have.
+
+**Both services render the actual paths.** The systemd unit is a template
+whose `ExecStart` is rendered with the chosen absolute path (double-quoted
+when it needs to be), and `EnvironmentFile=%h/.config/solador-agent.env` is
+unchanged. On macOS the service is a **LaunchAgent** —
+`~/Library/LaunchAgents/app.solador.agent.plist`, label `app.solador.agent`,
+domain `gui/<uid>`, running as the invoking user, never a LaunchDaemon —
+whose `ProgramArguments` is a launcher (`~/.local/bin/solador-agent-launchd`,
+a copy of `deploy/run-agent.sh`) plus the binary and env-file paths. The
+launcher exists because launchd has no `EnvironmentFile=` and its
+`EnvironmentVariables` key would put the token into the plist; it reads the
+same mode-0600 env file line by line at every start, exports the documented
+keys only, never `source`s the file, and `exec`s the agent. So token rotation
+is "edit the file, restart the service" on both platforms, and the token
+appears in neither the plist nor the log. The plist does set `PATH`
+(`/opt/homebrew/bin:/usr/local/bin:/opt/podman/bin` ahead of the system
+directories), and that is load-bearing rather than tidy: launchd starts a job
+with its compiled-in `PATH`, which holds none of `docker`, `tart` or `podman`,
+and the agent maps a runtime it cannot find to "not installed" — so without
+it every macOS install would serve `/v1/containers` as `[]` forever under a
+green `/v1/health`, the empty-panel-as-all-clear failure this project exists
+to remove. `PATH` is not a secret, so the argument against
+`EnvironmentVariables` does not apply to it. A LaunchAgent is login-session
+coverage, not boot coverage, and the installer says so: with no `gui/<uid>`
+domain to bootstrap into it refuses, actionably, before touching anything.
+
+**The bearer-token prompt, the env-file contract, and the pre-rename
+`devcanopy-agent` handover are unchanged**, with one addition: an existing
+port in the env file is now kept on a re-run, the way the bind already was.
+Success still means the authenticated `/v1/health` reports the verified
+artifact's own version, and anything else is non-zero.
+
+The from-source path is deliberately still there: `redeploy.sh` builds with
+`cargo` for our own Linux hosts and is `build_release_binary`'s only caller
+now. See "Open items".
 
 ## Testing
 
@@ -411,18 +515,30 @@ Also required:
   four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
   `macos-15-intel`, and it runs the *uploaded* file rather than a rebuild.
 
-The signing half of the rejection test is shipped and the verifying half is not,
-which is worth saying precisely rather than letting a checked box imply both:
+Which halves of the rejection test exist is worth saying precisely rather
+than letting a checked box imply all of them:
 
 - `scripts/build-agent.sh --sign` **re-verifies every signature against the
   committed public key** before a release can attach it, so a signing key that
   is not the published keypair's private half fails the release. CI then
   verifies a second time with the reference C `minisign`, a different
-  implementation from the `rsign2` that signed.
-- What is **not** built is the agent-side check. Nothing in the agent verifies a
-  signature yet, so "a tampered binary must fail to install" has no code to test
-  — it arrives with the `update` subcommand, and the proven-to-fail requirement
-  above binds that change, not this one.
+  implementation from the `rsign2` that signed. (#390)
+- **The installer-side check is built and tested the way this section
+  demands** (#392). `agent/deploy/lib_test.sh` runs `install.sh` end to end
+  against fixtures signed with a throwaway key, using the *real* `minisign`:
+  a tampered binary, one signed by another key, and one with no `.minisig`
+  are each rejected before the candidate is executed and before any installed
+  state changes — and the tamper case is then re-run with an accept-everything
+  `minisign` on `PATH`, where it must go through. That second run is the
+  proof: the rejection is the verifier's, not another failure landing first.
+  A further case runs the installer as it sits in the repository and requires
+  a throwaway-key fixture to be rejected under the committed key. Without
+  `minisign` the cases report as `SKIP`, never as passes; both CI legs that
+  run the suite (`agent-tests` on Linux, `rust-workspace` under macOS stock
+  bash 3.2) install it and make those skips failures.
+- What is **not** built is the agent-side check. Nothing in the agent *binary*
+  verifies a signature yet — that arrives with the `update` subcommand, and
+  the same proven-to-fail requirement binds that change.
 
 ## Open items
 
@@ -435,7 +551,7 @@ rather than deleted, because the reasoning is what a later reader needs:
 - **`agent/deploy/redeploy.sh` is KEPT**, as the from-source operator path for
   our own hosts, rather than retired once `solador-agent update` exists
   (recorded in #392). `install.sh` and `redeploy.sh` share
-  `agent/deploy/lib.sh`, and once `install.sh` stops building, `redeploy.sh`
-  becomes `build_release_binary`'s only caller — retiring both would leave that
-  helper, and `lib_test.sh`'s load-bearing "refuses to fall back" assertion from
-  #269, with no caller at all.
+  `agent/deploy/lib.sh`, and now that `install.sh` no longer builds (#392),
+  `redeploy.sh` *is* `build_release_binary`'s only caller — retiring both would
+  leave that helper, and `lib_test.sh`'s load-bearing "refuses to fall back"
+  assertion from #269, with no caller at all. #392 left `redeploy.sh` untouched.

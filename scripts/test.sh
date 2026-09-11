@@ -29,9 +29,22 @@ fi
 
 # --- agent/deploy helper tests. Mirrors CI's agent-tests job (#269). Needs
 # nothing but bash: cargo, curl and sleep are stubbed, and the two cases that
-# use the real cargo report themselves as skipped when it is absent.
-log_info "Running agent deploy helper tests (agent/deploy/lib_test.sh)…"
-if bash agent/deploy/lib_test.sh; then
+# use the real cargo report themselves as skipped when it is absent. Since
+# #392 the signature-rejection cases need the real minisign the same way, and
+# skip — loudly, in the summary — without it; CI requires it.
+if ! command_exists minisign; then
+    log_warning "minisign not found — the install.sh signature cases will report SKIP (brew install minisign)"
+fi
+#
+# On a Mac the suite runs under stock /bin/bash 3.2 — the interpreter the
+# installer and its launcher actually execute under there — rather than
+# whatever newer bash Homebrew put first on PATH; CI's macOS job does the same.
+DEPLOY_TEST_SHELL="bash"
+if [[ "$(uname -s)" == "Darwin" && -x /bin/bash ]]; then
+    DEPLOY_TEST_SHELL="/bin/bash"
+fi
+log_info "Running agent deploy helper tests (agent/deploy/lib_test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" agent/deploy/lib_test.sh; then
     log_success "Agent deploy helper tests passed"
 else
     log_error "Agent deploy helper tests failed"

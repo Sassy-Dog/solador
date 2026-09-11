@@ -80,10 +80,29 @@ jobs:
           shellcheck --version
           shellcheck -S warning agent/deploy/*.sh scripts/*.sh dev prd
 
+      # The reference minisign, so the suite's signature-rejection cases run
+      # here rather than reporting themselves SKIPPED (#392). They are the
+      # load-bearing tests of the download install — a tampered binary must be
+      # rejected by the REAL verifier, and the suite then proves it was the
+      # verifier by feeding the same fixture through an accept-all stub — and a
+      # gate that quietly skips itself in CI is the #268 shape again.
+      - name: Install minisign (for the signature-rejection cases)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends minisign
+          minisign -v
+
       # Sits after the Rust steps because one of its target_dir cases runs the
       # real `cargo locate-project` against a scratch workspace; everything
-      # else stubs cargo/curl/sleep and touches no host.
-      - name: Deploy helper tests (agent/deploy/lib.sh)
+      # else stubs cargo/curl/sleep/uname/systemctl/launchctl and touches no
+      # host.
+      #
+      # REQUIRE_MINISIGN turns the suite's "minisign not installed" skips into
+      # failures. Without it, dropping the apt step above would leave the
+      # tamper cases skipped and this job green.
+      - name: Deploy helper tests (agent/deploy/lib.sh + install.sh)
+        env:
+          SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN: "1"
         run: bash agent/deploy/lib_test.sh
 
   rust-workspace:
@@ -118,6 +137,35 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace
+
+      # The deploy suite once more, under the bash this repo actually promises
+      # to run the installer on: macOS stock /bin/bash 3.2 (#392). agent-tests
+      # runs it on Linux under bash 5, where a 3.2-only parse failure — a
+      # `case` pattern inside `$( )`, say — is invisible. This is also the one
+      # leg where the rendered plist meets a real `plutil -lint`. Same
+      # REQUIRE_MINISIGN as agent-tests, for the same reason. The real launchd
+      # bootstrap (SOLADOR_DEPLOY_TEST_LAUNCHD=1) is deliberately NOT opted into
+      # here: it loads a service into the runner's gui session and needs a
+      # versioned agent binary, which this shallow checkout cannot produce. Its
+      # SKIP line in this job's output is a decision, not an omission.
+      #
+      # Two steps, like the Linux leg: a Homebrew failure must red the install
+      # step, not the gate, or a red "Deploy helper tests" reads as a suite
+      # failure the suite never ran.
+      - name: Install minisign (for the signature-rejection cases)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          brew install minisign
+          minisign -v
+
+      - name: Deploy helper tests under macOS bash 3.2
+        env:
+          SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN: "1"
+        run: |
+          /bin/bash --version | head -n1
+          /bin/bash agent/deploy/lib_test.sh
 
       # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
       # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does

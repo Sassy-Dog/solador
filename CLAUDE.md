@@ -306,8 +306,9 @@ against **that file** before upload — a mis-provisioned
 signatures nobody can check — then verified again by the reference C `minisign`,
 a different implementation from the `rsign2` that signed. Signatures are plain
 minisign, not the Tauri signer's double-base64 form, so any user can check a
-download with the stock tool. **Nothing in the agent verifies a signature yet**;
-the compiled-in public key and the two-key rotation window are #393's.
+download with the stock tool — and `agent/deploy/install.sh` does exactly that
+(#392). **Nothing in the agent binary verifies a signature yet**; the
+compiled-in public key and the two-key rotation window are #393's.
 
 **The agent feed (#391).** `agent-latest.json` is the agent's counterpart to
 `latest.json` and deliberately **not** an extension of it: Tauri owns that
@@ -740,6 +741,28 @@ share one release and a fixed crash would read as regressed.
 ### Working on the Agent
 - Rust source in `agent/src/` (`server.rs`, `metrics.rs`, `containers.rs`).
 - Deploy via `agent/deploy`; see `agent/README.md` for endpoints and rollout.
+- **`install.sh` downloads and verifies; `redeploy.sh` builds (#392).**
+  `agent/deploy/install.sh` needs no Rust: it maps `uname` onto one of the
+  four published triples, resolves the latest *published* release off the
+  `/releases/latest` redirect (or `SOLADOR_AGENT_RELEASE`), downloads the raw
+  binary plus `.minisig` into private staging under `~/.cache`, verifies with
+  the stock `minisign` under the checkout's `agent/release-signing-key.pub`,
+  and only then makes it executable, reads `--version`, and installs
+  **user-owned at `~/.local/bin/solador-agent`** (staged `.new`, renamed over
+  the live path, `.prev` kept — no `sudo` anywhere). A rejected signature runs
+  nothing, installs nothing, stops nothing. A release without agent assets
+  (`v2026.9.3` and earlier) is a **failure naming the tag**, never a source
+  build. The Linux unit is a template rendered with the actual path; macOS is a
+  **LaunchAgent** (`~/Library/LaunchAgents/app.solador.agent.plist`, label
+  `app.solador.agent`, `gui/<uid>`) whose `ProgramArguments` is a launcher
+  (`~/.local/bin/solador-agent-launchd`, from `deploy/run-agent.sh`) that reads
+  the same 0600 env file line by line — never `source`d — so the token is in
+  neither plist nor log; the plist sets `PATH` because launchd's compiled-in
+  one has no `docker`/`tart`/`podman`, and an agent that cannot find a runtime
+  serves `/v1/containers` as `[]` under a green `/v1/health`. An existing unit pointing at `/opt` stops the install
+  with the explicit `--migrate-from-opt` step rather than migrating silently.
+  `redeploy.sh` is untouched, Linux-only, and now `build_release_binary`'s
+  only caller. Service identities here are #393's restart contract.
 - **The version comes out of the artifact, not a manifest (#390).**
   `agent/deploy/lib.sh`'s `binary_version` runs `<bin> --version` and **fails
   closed**: a binary that cannot name itself exits non-zero and prints nothing,
@@ -749,13 +772,27 @@ share one release and a fixed crash would read as regressed.
   serving. `crate_version()` is gone; it would now assert the wire-contract
   number against `/v1/health`.
 - **`agent/deploy/` is gated too, as of #269**: `agent/deploy/lib_test.sh`
-  (dependency-free bash, stubs cargo/curl/sleep) plus `shellcheck`/`bash -n`,
-  all three in the `agent-tests` job. Before that the deploy path was the one
-  place where "all green" carried no information — #268 broke every deploy and
-  nothing could have caught it. The load-bearing assertion is that
-  `build_release_binary` *fails* when the workspace target dir is empty: a
-  lenient fallback finds the stale pre-#264 binary in `agent/target/release/`
-  and deploys it, reporting success.
+  (dependency-free bash; stubs cargo/curl/sleep and, since #392, every host
+  command `install.sh` drives — uname, sw_vers, systemctl, launchctl — and
+  runs the installer end to end against a temporary HOME) plus
+  `shellcheck`/`bash -n`, all three in the `agent-tests` job. Before that the
+  deploy path was the one place where "all green" carried no information —
+  #264 broke every deploy (fixed in #268) and nothing could have caught it. Two assertions are
+  load-bearing. `build_release_binary` *fails* when the workspace target dir is
+  empty: a lenient fallback finds the stale pre-#264 binary in
+  `agent/target/release/` and deploys it, reporting success. And the
+  signature gate is proven with the **real `minisign`** (#392): a tampered
+  fixture is rejected before it is executed, then the same fixture is fed
+  through an accept-everything `minisign` stub and must *go through* — which is
+  what shows the rejection was the verifier's. A stubbed success is never the
+  security proof; without `minisign` those cases `SKIP` loudly, and CI installs
+  it and sets `SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN=1` so that there the skip
+  is a failure — in `agent-tests` (Linux, bash 5) and again in
+  `rust-workspace` under macOS stock `/bin/bash` 3.2, the interpreter the
+  installer and launcher actually run under on a Mac; `./dev test` on a Mac
+  uses `/bin/bash` for the same reason. `SOLADOR_DEPLOY_TEST_LAUNCHD=1` opts
+  into a real launchd bootstrap under a throwaway label (macOS only) and is
+  deliberately not run in CI.
 - **Those two shell gates now cover `scripts/*.sh` and `dev`/`prd` as well**
   (#390). `build-agent.sh` runs ONLY on a `v*` tag, so an ungated break there
   surfaces mid-release — the #269 shape again, on the path with no second
