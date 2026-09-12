@@ -349,7 +349,12 @@ asserts the absence with `cargo tree`, in CI's `secrets-guard` job and in
 keys in and verifies with `minisign-verify` on its own.
 
 **Updates (#308).** `--sign` also produces the updater payload: a minisigned
-`Solador-<version>.app.tar.gz` beside the `.dmg`. A `.dmg` is not an update —
+`Solador-<version>.app.tar.gz` beside the `.dmg`. The key is
+`TAURI_SIGNING_PRIVATE_KEY` plus `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (must be
+set; empty only for an unencrypted key), from Doppler `solador/prd`;
+`release.yml` has both from the `prd` environment, and a local `./dev publish`
+requires both **in pre-flight, before the mint** (#402), the same way it
+requires `SENTRY_DSN`. A `.dmg` is not an update —
 macOS applies a tarball — so both ship as release assets. `bundle.
 createUpdaterArtifacts` is deliberately **off**: the CLI builds that tarball
 *during* bundling, which is before the `CFBundleVersion` stamp, before the

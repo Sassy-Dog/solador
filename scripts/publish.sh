@@ -39,13 +39,17 @@ source "$SCRIPT_DIR/config.sh"
 # and nothing to keep in sync — the old semver --bump flow and the
 # config.sh/project.yml verified-in-sync duplicate pair are gone (issue #98).
 #
-# Flow: pre-flight guards → CI-green check → Sentry DSN → tests → mint
-# (probe/reuse/bump ladder, creates + pushes the vYYYY.M.P tag) → Release build
-# stamped with the MINTED version. The tag lands before the build on purpose: if
-# the build fails, re-running publish reuses the same tag idempotently (§4
-# same-commit reuse — within the same UTC month; the derivation is wall-clock,
-# so after a roll it mints a new train instead) — the same order a CI mint
-# would use.
+# Flow: pre-flight guards → CI-green check → Sentry DSN → updater signing key
+# → tests → mint (probe/reuse/bump ladder, creates + pushes the vYYYY.M.P tag)
+# → Release build stamped with the MINTED version. Two credentials are gated
+# before the mint (#402) — the Sentry DSN and the updater signing key pair — so
+# a missing one costs a re-run, never a pushed tag; the App Store Connect
+# triple and the Developer ID identity are still build.sh's to check, after
+# the mint — a gap of the same shape, deliberately outside #402's scope. The
+# tag lands before the build on purpose: if the build
+# fails, re-running publish reuses the same tag idempotently (§4 same-commit
+# reuse — within the same UTC month; the derivation is wall-clock, so after a
+# roll it mints a new train instead) — the same order a CI mint would use.
 
 # Default values
 SKIP_TESTS=0
@@ -171,6 +175,57 @@ fi
 # with, and crashreport's build.rs declares the rerun dependency so changing the
 # value actually rebuilds the crate rather than reusing a cached one.
 export SENTRY_DSN
+
+# Resolve the updater signing key (issue #402).
+#
+# `build.sh --release --notarize` always builds the updater payload — the
+# minisigned `.app.tar.gz` (#308) — and `make_updater_archive` refuses without
+# `TAURI_SIGNING_PRIVATE_KEY`. That refusal is correct: a tarball the feed
+# cannot verify is not an update. But it lands LAST — after the tag is minted
+# and pushed, after the universal build, after signing, after notarization was
+# accepted, and after both the .dmg and the .app were stapled and validated.
+# That is where `v2026.9.8` found out on 2026-09-11, under a `doppler run
+# --only-secrets` that named every variable `.envrc` and `docs/SECRETS.md`
+# listed — and the list did not carry this one.
+#
+# So it is checked here, in the same place and the same shape as SENTRY_DSN:
+# fail closed before `get-version-info.sh --tag --push`, where a missing key
+# costs nothing but a re-run. build.sh's own check stays as the last line of
+# defence; this one is what keeps a local publish from ever reaching it.
+#
+# There is deliberately no `--skip-updater-signing`. A publish without the key
+# cannot finish either way — the only question was when it found out — so a
+# third opt-out would only defer the identical failure back to build.sh.
+# `--skip-mint` remains the rehearsal seam, and it is gated identically: it
+# builds the same signed artifact.
+#
+# The key must be non-empty; the password must be SET, and may be empty. An
+# unencrypted key has no password, and build.sh exports an empty one for the
+# reason its comment gives (unset, an encrypted key makes the signer prompt on
+# a tty). But "unset" here is not "unencrypted key" — it is the operator's
+# `--only-secrets` list missing a name, the exact shape of the #402 failure —
+# and release.yml's preflight requires this password non-empty for the prd
+# key, so a local run without it would fail in make_updater_archive, after
+# everything. An unencrypted key says so explicitly:
+# `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""`. Neither is defaulted here; build.sh
+# keeps its own default as the last line of defence. Nothing in this script
+# assigns either name, so they reach build.sh exactly as the environment
+# delivered them — no `export` needed, unlike SENTRY_DSN, which `--skip-sentry`
+# assigns above. Never log either value.
+SIGNING_RECIPE="doppler run --project solador --config prd --no-fallback --only-secrets SENTRY_DSN,APPLE_ASC_KEY_ID,APPLE_ASC_ISSUER_ID,APPLE_ASC_KEY_BASE64,TAURI_SIGNING_PRIVATE_KEY,TAURI_SIGNING_PRIVATE_KEY_PASSWORD -- ./dev publish"
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+    log_error "the updater payload needs the minisign signing key: TAURI_SIGNING_PRIVATE_KEY unset"
+    log_error "source it from Doppler solador/prd (#305): $SIGNING_RECIPE"
+    log_error "Checked in pre-flight, so this cost a re-run and no tag was minted."
+    exit 1
+fi
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD+set}" ]]; then
+    log_error "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is unset; the signer needs it SET (empty is allowed, for an unencrypted key)."
+    log_error "source it from Doppler solador/prd beside the key (#305): $SIGNING_RECIPE"
+    log_error "Checked in pre-flight, so this cost a re-run and no tag was minted."
+    exit 1
+fi
+log_info "Using TAURI_SIGNING_PRIVATE_KEY and its password from the environment"
 
 # Run tests unless skipped
 if [[ $SKIP_TESTS -eq 0 ]]; then

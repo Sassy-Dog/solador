@@ -47,10 +47,29 @@ count them in prose here, because the count is what went stale last time.
 | `DEVELOPMENT_TEAM` | picking a specific Apple signing team | `codesign` falls back to an ad-hoc signature. `./dev build` works either way. |
 | `APPLE_ASC_KEY_ID`, `APPLE_ASC_ISSUER_ID`, `APPLE_ASC_KEY_BASE64` | notarizing a release (`./dev build --notarize`, `./dev publish`) | The build **fails before submitting** and names which of the three is unset. Everything short of notarization — including `--sign` — works without them. |
 | `APPLE_SIGNING_IDENTITY` | overriding which certificate signs | The identity is resolved from the keychain by the prefix `Developer ID Application`. Only needed where that is ambiguous or absent (CI). |
+| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | minisigning the updater payload (`./dev build --sign`, `--notarize`, `./dev publish`) — Doppler `solador/prd` (#305) | `./dev publish` **fails in pre-flight**, before any tag is minted, when the key is empty **or the password is unset** (#402); `./dev build --sign` fails in `make_updater_archive`, after the bundle is signed. The password must be *set*: empty is valid only for an unencrypted key (say so with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""`), and the `prd` key needs its password — `release.yml`'s preflight requires it non-empty. The raw signer would prompt on a tty for an unset password; `build.sh` substitutes empty, so the observable failure is a wrong-password error, late. Unset is what an `--only-secrets` list missing the name looks like. Plain `./dev build` never needs either. |
 
 Nothing in the day-to-day loop needs any of them: `./dev`, `./dev test`,
 `./dev lint` and `./dev build` all work on a clean clone with none of them set.
-`./dev publish` is the exception — see `.envrc` and `scripts/publish.sh`.
+`./dev publish` is the exception — see `.envrc` and `scripts/publish.sh`. Its
+pre-flight checks `SENTRY_DSN` and the `TAURI_SIGNING_PRIVATE_KEY` /
+`_PASSWORD` pair **before the mint**, so a missing one costs a re-run and never
+a pushed tag; the three
+`APPLE_ASC_*` values are checked by `build.sh` before it submits for
+notarization. The recipe an operator uses, sourcing all of them from Doppler
+into that one process tree and nowhere else (`--no-fallback`, because by
+default `doppler run` also writes an encrypted fallback copy of every fetched
+secret under `~/.doppler/`):
+
+```sh
+doppler run --project solador --config prd --no-fallback \
+  --only-secrets SENTRY_DSN,APPLE_ASC_KEY_ID,APPLE_ASC_ISSUER_ID,APPLE_ASC_KEY_BASE64,TAURI_SIGNING_PRIVATE_KEY,TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+  -- ./dev publish
+```
+
+That `--only-secrets` list is the whole set: `v2026.9.8` (2026-09-11) was cut
+with the two `TAURI_SIGNING_*` names missing from it, and found out after the
+tag, the build, the notarization and the staple (#402).
 
 ### Crash reporting is opt-in and off by default
 
@@ -100,10 +119,16 @@ gitignored. Put real values there:
 # .envrc.local
 export SENTRY_DSN="https://…@….ingest.sentry.io/…"
 export DEVELOPMENT_TEAM="XXXXXXXXXX"
+# NOT the updater signing key pair: TAURI_SIGNING_PRIVATE_KEY and its password
+# reach `./dev publish` through the `doppler run --only-secrets` recipe above,
+# scoped to that one process tree, rather than sitting in a file direnv exports
+# into every shell opened in this checkout.
 ```
 
-Then `direnv allow` once. If you pull these from a secret manager, do that in
-`.envrc.local` too — the build scripts never see the difference.
+Then `direnv allow` once. If you pull `SENTRY_DSN` or `DEVELOPMENT_TEAM` from
+a secret manager, do that in `.envrc.local` too — the build scripts never see
+the difference. The release inputs (the signing pair, the `APPLE_ASC_*` triple)
+go through the `doppler run` recipe above instead.
 
 ### In CI — workflow secrets
 
