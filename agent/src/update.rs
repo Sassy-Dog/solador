@@ -1397,19 +1397,59 @@ fn unix_time_now() -> u64 {
 // Running a binary's --version
 // ---------------------------------------------------------------------------
 
+/// How long a freshly written executable is retried for on `ETXTBSY`
+/// before that is reported as the reason (see [`spawn_version_probe`]).
+const ETXTBSY_RETRY_BUDGET: Duration = Duration::from_secs(2);
+
+/// Spawn `<path> --version`, retrying on **`ETXTBSY`** for a bounded while.
+///
+/// Linux refuses to exec a file that any process still holds open for
+/// writing. Every write handle this crate takes on a candidate is flushed,
+/// synced and dropped before the spawn (`stage_candidate`) — but a child
+/// process *forked by another thread* during that write window inherits
+/// the descriptor, and `O_CLOEXEC` closes it only at the child's own exec,
+/// not at fork. So the first spawn of a just-written file can race such a
+/// child and fail with `ETXTBSY` on Linux; macOS has no such check, which
+/// is why the race never showed locally and did in CI. The metrics service
+/// manager spawning the fake agent in the test suite is one such child;
+/// in production, anything on the host that spawns while staging runs is.
+/// `cargo` (`cargo_util::paths::open` / its `ETXTBSY` retry in
+/// `cargo-util/src/process_builder.rs`) and `rustup` (`utils::raw::open_file`
+/// retries around `exec`) carry the same bounded retry for the same reason.
+/// A file that stays busy past the budget is reported as busy — never
+/// waited on forever, never silently skipped.
+fn spawn_version_probe(path: &Path) -> Result<std::process::Child, String> {
+    let started = Instant::now();
+    loop {
+        match Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && started.elapsed() < ETXTBSY_RETRY_BUDGET =>
+            {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => {
+                return Err(format!("could not execute {}: {e}", path.display()));
+            }
+        }
+    }
+}
+
 /// Ask an executable its version — `--version` prints one line and nothing
 /// else — with a bound. `Err` names why there is none: it could not be
-/// started (`Exec format error`, a `noexec` mount), exited non-zero (a
-/// build from a shallow checkout refuses), printed nothing, or did not
-/// answer in time. An unknown version, with its reason, never a stand-in.
+/// started (`Exec format error`, a `noexec` mount, still busy after the
+/// `ETXTBSY` retry budget), exited non-zero (a build from a shallow checkout
+/// refuses), printed nothing, or did not answer in time. An unknown
+/// version, with its reason, never a stand-in.
 pub fn binary_version(path: &Path, timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not execute {}: {e}", path.display()))?;
+    let mut child = spawn_version_probe(path)?;
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -2242,6 +2282,12 @@ fn stage_candidate(new_path: &Path, bytes: &[u8]) -> Result<(), UpdateError> {
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|e| io(format!("writing {}", new_path.display()), e))?;
+    // Closed HERE, explicitly, before any caller can exec the file: a write
+    // handle still open at the spawn is `ETXTBSY` on Linux, and the only
+    // handle this crate ever holds on a candidate is this one. (A child
+    // forked by another thread inside this function's window can still
+    // inherit it until its own exec; `spawn_version_probe` covers that.)
+    drop(file);
     Ok(())
 }
 
@@ -2841,6 +2887,76 @@ mod tests {
             }
             _ => assert!(matches!(err, UpdateError::UnsupportedPlatform { .. })),
         }
+    }
+
+    /// The Linux `ETXTBSY` race, made deterministic: a helper process holds
+    /// the executable open for writing for a moment (what a child forked
+    /// mid-write does until its exec), and the probe has to wait it out
+    /// rather than report "could not execute". On Linux the first raw spawn
+    /// is shown to fail with `ExecutableFileBusy` while the holder lives —
+    /// that is what makes this a regression test rather than a pass by
+    /// construction; macOS has no such check and only the retry-path result
+    /// is asserted there.
+    #[cfg(unix)]
+    #[test]
+    fn a_freshly_written_executable_held_open_by_another_process_is_retried_not_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("agent");
+        fs::write(&exe, "#!/bin/sh\nprintf '2026.9.9\\n'\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        // `>>` keeps the contents; the holder keeps fd 3 open for 0.6s.
+        let mut holder = Command::new("sh")
+            .arg("-c")
+            .arg("exec 3>>\"$0\"; sleep 0.6")
+            .arg(&exe)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        if cfg!(target_os = "linux") {
+            let raw = Command::new(&exe).arg("--version").output();
+            assert!(
+                matches!(&raw, Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy),
+                "on Linux the raw spawn must hit ETXTBSY while the holder lives: {raw:?}"
+            );
+        }
+        let got = binary_version(&exe, Duration::from_secs(5));
+        let _ = holder.wait();
+        assert_eq!(got.unwrap(), "2026.9.9");
+    }
+
+    /// And a file that stays busy past the budget is reported as busy, not
+    /// waited on forever. Linux only: elsewhere the exec simply succeeds.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_executable_that_stays_busy_is_reported_after_the_retry_budget() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("agent");
+        fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut holder = Command::new("sh")
+            .arg("-c")
+            .arg("exec 3>>\"$0\"; sleep 4")
+            .arg(&exe)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let started = Instant::now();
+        let err = binary_version(&exe, Duration::from_secs(5)).unwrap_err();
+        let _ = holder.kill();
+        let _ = holder.wait();
+        assert!(err.contains("could not execute"), "{err}");
+        assert!(
+            err.contains("busy") || err.contains("Text file busy"),
+            "{err}"
+        );
+        assert!(
+            started.elapsed() >= ETXTBSY_RETRY_BUDGET,
+            "the retry budget was spent before giving up"
+        );
     }
 
     // --- The lock -------------------------------------------------------------

@@ -1299,8 +1299,10 @@ async fn the_updater_refuses_to_run_as_the_service_it_would_restart() {
     assert!(rig.requests().is_empty());
     let err = h.rollback().await.unwrap_err();
     assert!(matches!(err, UpdateError::IsTheService { .. }), "{err}");
-    // Some other pid is fine.
-    h.service.set_pid(Some(1));
+    // Some other pid is fine. Not a literal: inside a container this test
+    // process can itself be pid 1.
+    h.service
+        .set_pid(Some(std::process::id().wrapping_add(7919)));
     let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
     assert!(matches!(outcome, UpdateOutcome::Updated { .. }));
 }
@@ -1630,7 +1632,13 @@ fn the_cli_refuses_an_empty_home_and_an_unknown_argument_before_doing_anything()
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{cmd}: {stderr}");
         assert!(stderr.starts_with("ERROR: "), "{cmd}: {stderr}");
-        assert!(stderr.contains("install.sh"), "{cmd}: {stderr}");
+        // Root is refused before the install is even looked for; a CI
+        // runner is not root, a container often is, and both are honest.
+        if unsafe { libc::geteuid() } == 0 {
+            assert!(stderr.contains("running as root"), "{cmd}: {stderr}");
+        } else {
+            assert!(stderr.contains("install.sh"), "{cmd}: {stderr}");
+        }
         assert!(
             fs::read_dir(home.path()).unwrap().next().is_none(),
             "{cmd} wrote into an empty HOME"
