@@ -11,6 +11,7 @@ mod server;
 use std::sync::Arc;
 
 use server::{build_router, AppState};
+use solador_agent::update;
 
 /// The version this build ships as: the repo's CalVer, derived once by
 /// `scripts/get-version-info.sh` and compiled in by `build.rs` (#390).
@@ -44,27 +45,41 @@ enum Invocation {
     Version,
     /// `--help` / `-h`.
     Help,
+    /// `update`: replace the installed agent with the latest published
+    /// release, verified, atomically, with automatic rollback (#393).
+    Update,
+    /// `rollback`: put the previous binary back, offline (#393).
+    Rollback,
     /// Anything else, carried verbatim so the message can name it. Refused
-    /// rather than ignored: the agent takes no arguments, so an argument that
-    /// reaches it is a mistake somewhere (a hand-edited `ExecStart`, a typo in
-    /// a wrapper), and silently serving anyway is how that mistake survives.
+    /// rather than ignored: the agent takes no arguments in normal operation,
+    /// so an argument that reaches it is a mistake somewhere (a hand-edited
+    /// `ExecStart`, a typo in a wrapper), and silently serving anyway is how
+    /// that mistake survives. The two subcommands take no arguments of their
+    /// own either, for the same reason: `update --force` is refused, not
+    /// ignored into an unforced update.
     Unknown(String),
 }
 
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Invocation {
-    let mut seen = None;
+    let mut command = None;
+    let mut unknown = None;
     for arg in args {
         match arg.as_str() {
             "--version" | "-V" => return Invocation::Version,
             "--help" | "-h" => return Invocation::Help,
+            "update" | "rollback" if command.is_none() && unknown.is_none() => {
+                command = Some(arg);
+            }
             other => {
-                seen.get_or_insert_with(|| other.to_string());
+                unknown.get_or_insert_with(|| other.to_string());
             }
         }
     }
-    match seen {
-        Some(a) => Invocation::Unknown(a),
-        None => Invocation::Serve,
+    match (command.as_deref(), unknown) {
+        (_, Some(a)) => Invocation::Unknown(a),
+        (Some("update"), None) => Invocation::Update,
+        (Some("rollback"), None) => Invocation::Rollback,
+        (_, None) => Invocation::Serve,
     }
 }
 
@@ -96,7 +111,7 @@ fn print_version() -> i32 {
 const USAGE: &str = "\
 solador-agent — per-host metrics agent for Solador
 
-Usage: solador-agent [--version | --help]
+Usage: solador-agent [update | rollback | --version | --help]
 
 Takes no arguments in normal operation; it is configured entirely from the
 environment (systemd EnvironmentFile on Linux, launchd on macOS):
@@ -104,6 +119,22 @@ environment (systemd EnvironmentFile on Linux, launchd on macOS):
   SOLADOR_AGENT_TOKEN  required bearer token; the agent refuses to start without it
   SOLADOR_AGENT_BIND   bind address (default: the detected Tailscale IP)
   SOLADOR_AGENT_PORT   listen port (default: 7878)
+
+Commands (run from a shell, never as the service itself):
+  update    replace the installed agent with the latest published release:
+            verify the signed feed and binary under the compiled-in keys,
+            skip when the installed bytes already match, stage beside the
+            live path, swap atomically (previous kept as .prev), restart the
+            service and require /v1/health to report the new version — or
+            restore .prev automatically and exit non-zero
+  rollback  put .prev back and restart, offline; refuses when there is none
+
+Exit codes: 0 updated, or already current and serving; 1 failed with nothing
+changed (for rollback also: swapped but not back, or half done — both say so);
+3 failed AND the previous binary could not be restored — inspect the service;
+4 no applicable release (the feed is not newer than what is installed);
+5 failed, the previous binary is back and serving; 75 another update/rollback
+holds the lock; 2 usage.
 
 Options:
   -V, --version  print the version and nothing else, then exit
@@ -126,6 +157,11 @@ async fn main() {
             print!("{}", usage());
             return;
         }
+        // Dispatched HERE — before tracing, before the token check, before a
+        // sampler or a listener exists — because the updater is a separate
+        // process from the service it restarts, and must never become one.
+        Invocation::Update => std::process::exit(run_maintenance(Maintenance::Update).await),
+        Invocation::Rollback => std::process::exit(run_maintenance(Maintenance::Rollback).await),
         Invocation::Unknown(arg) => {
             eprintln!("solador-agent: unrecognized argument '{arg}'");
             eprint!("{}", usage());
@@ -195,6 +231,95 @@ async fn main() {
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("FATAL: server error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Maintenance {
+    Update,
+    Rollback,
+}
+
+/// `solador-agent update` / `rollback`, wired to the real host: this user's
+/// HOME, the service #392 installed, the env file it reads, the production
+/// release base and the compiled-in trust set. Everything that can refuse
+/// refuses before anything changes, and the exit code says which outcome
+/// this was (see `USAGE`).
+///
+/// The token read from the env file goes to exactly one place, the
+/// `Authorization` header of the local health probe; it is never printed
+/// and `update::Serving`'s `Debug` redacts it.
+async fn run_maintenance(what: Maintenance) -> i32 {
+    let mut report = |line: &str| println!("{line}");
+    let outcome = async {
+        // Never as root: the install and the service are one user's, and
+        // `sudo solador-agent update` would leave root-owned files beside
+        // that user's binary and restart root's (nonexistent) service.
+        update::refuse_privileged(update::current_euid())?;
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|h| h.is_absolute())
+            .ok_or_else(|| {
+                update::UpdateError::Install(
+                    "HOME is not set to an absolute path; the installed service is resolved \
+                     under it"
+                        .to_string(),
+                )
+            })?;
+        // The same override install.sh honours, so the test harness can
+        // drive a throwaway LaunchAgent; validated the same way.
+        let label = std::env::var("SOLADOR_AGENT_LAUNCHD_LABEL")
+            .ok()
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| update::LAUNCHD_LABEL.to_string());
+        let target = update::host_target()?;
+        let trust = update::Trust::compiled_in()?;
+        let install = update::resolve_install(&home, &label)?;
+        let serving = update::read_serving(&install.env_file)?;
+        let service = install.service.clone();
+        let mut ctx = update::Context {
+            release_base: update::RELEASE_BASE.to_string(),
+            trust,
+            install,
+            serving,
+            service: &service,
+            target,
+            running_version: VERSION.map(str::to_string),
+            health_attempts: update::HEALTH_ATTEMPTS,
+            health_interval: update::HEALTH_INTERVAL,
+            report: &mut report,
+        };
+        match what {
+            Maintenance::Update => update::run_update(&mut ctx).await.map(|o| match o {
+                update::UpdateOutcome::AlreadyCurrent { version, .. } => {
+                    format!("==> Done: already current ({version}); nothing changed.")
+                }
+                update::UpdateOutcome::Updated { from, to, key } => format!(
+                    "==> Done: updated {from} -> {to} (binary verified under key {key}) and serving."
+                ),
+            }),
+            Maintenance::Rollback => update::run_rollback(&mut ctx).await.map(|o| {
+                format!(
+                    "==> Done: rolled back to {} and serving{}.",
+                    o.restored_version.as_deref().unwrap_or("a binary carrying no version"),
+                    o.served_version
+                        .as_deref()
+                        .map(|v| format!(" (reports {v})"))
+                        .unwrap_or_default()
+                )
+            }),
+        }
+    }
+    .await;
+    match outcome {
+        Ok(line) => {
+            println!("{line}");
+            0
+        }
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            e.exit_code()
+        }
     }
 }
 
@@ -361,6 +486,37 @@ mod tests {
             parse_args(args(&["--nonsense", "--version"])),
             Invocation::Version
         );
+        assert_eq!(
+            parse_args(args(&["update", "--version"])),
+            Invocation::Version
+        );
+        assert_eq!(parse_args(args(&["rollback", "-h"])), Invocation::Help);
+    }
+
+    /// The two maintenance commands (#393) dispatch before serving, and take
+    /// no arguments of their own: an option nobody defined is refused rather
+    /// than ignored into an unforced update, and a second command word is
+    /// refused rather than the first one winning.
+    #[test]
+    fn update_and_rollback_are_commands_and_take_nothing_else() {
+        assert_eq!(parse_args(args(&["update"])), Invocation::Update);
+        assert_eq!(parse_args(args(&["rollback"])), Invocation::Rollback);
+        assert_eq!(
+            parse_args(args(&["update", "--force"])),
+            Invocation::Unknown("--force".to_string())
+        );
+        assert_eq!(
+            parse_args(args(&["update", "rollback"])),
+            Invocation::Unknown("rollback".to_string())
+        );
+        assert_eq!(
+            parse_args(args(&["--yes", "update"])),
+            Invocation::Unknown("--yes".to_string())
+        );
+        assert_eq!(
+            parse_args(args(&["Update"])),
+            Invocation::Unknown("Update".to_string())
+        );
     }
 
     /// The one line `--version` prints IS the machine contract — `lib.sh`'s
@@ -380,6 +536,9 @@ mod tests {
         let text = usage();
         assert!(text.contains("--version"), "{text}");
         assert!(text.contains("SOLADOR_AGENT_TOKEN"), "{text}");
+        assert!(text.contains("update"), "{text}");
+        assert!(text.contains("rollback"), "{text}");
+        assert!(text.contains("75"), "{text}");
         match VERSION {
             Some(v) => assert!(text.contains(v), "{text}"),
             None => assert!(text.contains('—'), "{text}"),

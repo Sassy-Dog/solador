@@ -95,9 +95,10 @@ export CARGO_ZIGBUILD_VERSION="0.23.4"
 # a release, and by the release and feed workflows themselves, which re-check
 # every signature against the committed public key before uploading it.
 #
-# NOTHING IN THE AGENT VERIFIES A SIGNATURE. The compiled-in public key and the
-# two-key rotation window it needs arrive with `solador-agent update`; this
-# issue produces signed artifacts, not a client that checks them.
+# The agent VERIFIES these signatures itself since #393: `solador-agent update`
+# checks the feed and the downloaded binary under the public key(s) its
+# `build.rs` compiles in from the two files named below — `minisign-verify`,
+# the same crate the producer uses, never a copy of this signer.
 #
 # NOT the Tauri signer that produces the app's `.sig`. That one wraps minisign
 # in an extra base64 layer of its own and, more to the point, carries the app's
@@ -112,6 +113,13 @@ export RSIGN_VERSION="0.6.6"
 # signatures nobody can check), and by anyone who downloads a binary. It is
 # also the trust root `crates/updatefeed::agent` verifies the feed's inputs
 # under, and the file — not any prose — is the authority on the key's id.
+#
+# Its sibling `agent/release-signing-key-next.pub` is the STANDBY (#393): a
+# second key the agent's updater also trusts, provisioned by
+# `scripts/agent-standby-key.sh` into a Doppler config that syncs nowhere, so
+# a lost or compromised active key is a release rather than a recall. The
+# release signs under THIS file only; the standby's name is deliberately not a
+# variable here, because nothing in the release path may reach for it.
 export AGENT_SIGNING_PUBKEY="agent/release-signing-key.pub"
 
 # Version is NOT configured here (org Versioning spec §3/§10: no hand-maintained

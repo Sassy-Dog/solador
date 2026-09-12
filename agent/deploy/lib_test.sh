@@ -15,8 +15,9 @@
 # (build_release_binary refusing to fall back), plus the source-level
 # invariants that no runtime test can reach — and, since #392, the install
 # flow itself, run end to end against a temporary HOME with every host command
-# stubbed (curl, systemctl, launchctl, uname, sw_vers, …). Nothing here talks to
-# a host or a network. What is NOT stubbed is the signature verifier: the
+# stubbed (curl, systemctl, launchctl, uname, sw_vers, …), and, since #393,
+# scripts/agent-standby-key.sh against a file-backed `doppler` stub. Nothing
+# here talks to a host or a network. What is NOT stubbed is the signature verifier: the
 # tamper-rejection cases run the real `minisign` against fixtures signed with a
 # throwaway key, and report themselves as SKIPPED when it is not installed,
 # because a stubbed verifier that always says yes would make those cases prove
@@ -421,7 +422,7 @@ TOOLBIN="$TMP/toolbin"
 TOOLBIN_NOVERIFIER="$TMP/toolbin-noverifier"
 mkdir -p "$TOOLBIN" "$TOOLBIN_NOVERIFIER"
 for tool in awk sed grep cut head tr od cat mkdir rm cp mv install chmod mktemp cmp \
-            id dirname basename ls seq openssl env sh bash; do
+            id dirname basename ls seq openssl env sh bash date sort; do
     real="$(command -v "$tool" 2>/dev/null || true)"
     if [ -n "$real" ]; then
         ln -s "$real" "$TOOLBIN/$tool"
@@ -2446,8 +2447,17 @@ STUB
     # the two: every SOLADOR_AGENT_* the Rust source names must be in the
     # launcher, or a key added to the agent reaches Linux (EnvironmentFile=
     # passes everything) and is silently dropped on macOS.
+    #
+    # One named exception, and it is a positive list so the next key still
+    # trips this: SOLADOR_AGENT_LAUNCHD_LABEL is read by `solador-agent
+    # update`/`rollback` (#393) from the MAINTENANCE command's own
+    # environment — the same test seam install.sh honours, so a throwaway
+    # LaunchAgent can be updated beside a real one — and never from the env
+    # file. The metrics service does not read it, so the launcher has
+    # nothing to export.
     local agent_keys launcher_keys
-    agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u | tr '\n' ' ')"
+    agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u \
+        | grep -vx 'SOLADOR_AGENT_LAUNCHD_LABEL' | tr '\n' ' ')"
     launcher_keys="$(grep -oE 'SOLADOR_AGENT_[A-Z_]+=\*' "$launcher" | sed 's/=\*$//' | sort -u | tr '\n' ' ')"
     assert_eq "the launcher allow-lists every SOLADOR_AGENT_* key the agent reads" \
         "$agent_keys" "$launcher_keys"
@@ -2563,6 +2573,503 @@ STUB
     fi
 }
 
+# ---- scripts/agent-standby-key.sh (#393 §A) -----------------------------------
+#
+# The custody script, run for real against a copy of the checkout with
+# `doppler`, `gh` and `cargo` stubbed (a file-backed secret store, fixed name
+# lists, a recorder) and `rsign` stubbed as a thin wrapper over the REAL
+# `minisign` — so the keypair generated, the value "uploaded", the value
+# "retrieved" and the custody proof are real cryptography, and only the
+# network is fake. No production key is anywhere near this; every key is
+# minted into the temp dir and dies with it. What is asserted is what the
+# script promises: nothing secret on argv, in the output or left on disk;
+# a re-run that reuses rather than rotates; every half-state and every
+# misplacement refused before anything changes.
+
+STANDBY_CHECKOUT="$TMP/standby-checkout"
+STANDBY_STORE="$TMP/doppler-store"
+STANDBY_OUT="$TMP/standby.out"
+STANDBY_TMPDIR="$TMP/standby-tmpdir"
+
+make_standby_stubs() {
+    local dir="$TMP/stubs-standby"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+
+    # rsign: the pinned signer's three verbs, translated onto the stock
+    # minisign. `--version` answers the pin so require_rsign passes.
+    cat > "$dir/rsign" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_RSIGN_ARGV:-}" ]; then
+    printf '%s\n' "$*" >> "$STUB_RSIGN_ARGV"
+fi
+case "${1:-}" in
+    --version) printf 'rsign2 %s\n' "${RSIGN_VERSION:-0.0.0}"; exit 0 ;;
+esac
+verb="$1"; shift
+pub=""; sec=""; sig=""; tc=""; uc=""; file=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -p) pub="$2"; shift ;;
+        -s) sec="$2"; shift ;;
+        -x) sig="$2"; shift ;;
+        -t) tc="$2"; shift ;;
+        -c) uc="$2"; shift ;;
+        -W | -f | -q) ;;
+        *) file="$1" ;;
+    esac
+    shift
+done
+case "$verb" in
+    generate) exec minisign -G -W -f -p "$pub" -s "$sec" -c "$uc" ;;
+    sign) exec minisign -S -W -s "$sec" -x "$sig" -t "$tc" -c "$uc" -m "$file" ;;
+    verify) exec minisign -Vq -p "$pub" -x "$sig" -m "$file" ;;
+    *) echo "rsign stub: unknown verb $verb" >&2; exit 2 ;;
+esac
+STUB
+
+    # doppler: a directory per config under STUB_DOPPLER_STORE, a file per
+    # secret. Only the invocations the script makes are understood; anything
+    # else is a failure, so a new call shape cannot pass unnoticed.
+    cat > "$dir/doppler" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_DOPPLER_ARGV:-}" ]; then
+    printf '%s\n' "$*" >> "$STUB_DOPPLER_ARGV"
+fi
+store="${STUB_DOPPLER_STORE:?}"
+group="$1"; verb="${2:-}"
+project=""; config=""; name=""; json=false; only_names=false; plain=false; page=1
+args=("$@")
+i=0
+for a in "${args[@]}"; do
+    case "$a" in
+        --project) project="${args[$((i + 1))]}" ;;
+        --config) config="${args[$((i + 1))]}" ;;
+        --page) page="${args[$((i + 1))]}" ;;
+        --json) json=true ;;
+        --only-names) only_names=true ;;
+        --plain) plain=true ;;
+    esac
+    i=$((i + 1))
+done
+case "$group $verb" in
+    "configs get")
+        [ -d "$store/$3" ] || exit 1
+        printf '{"name":"%s","project":"%s"}\n' "$3" "$project"
+        ;;
+    "configs logs")
+        # STUB_DOPPLER_LOGS_EXIT: an unreadable log. Pages: .logs.json is
+        # page 1, .logs.pageN.json page N, anything else is empty.
+        [ "${STUB_DOPPLER_LOGS_EXIT:-0}" = 0 ] || exit "$STUB_DOPPLER_LOGS_EXIT"
+        if [ "$page" = 1 ]; then f="$store/$config/.logs.json"; else f="$store/$config/.logs.page$page.json"; fi
+        if [ -f "$f" ]; then cat "$f"; else echo '[]'; fi
+        ;;
+    "secrets set")
+        name="$3"
+        [ -d "$store/$config" ] || exit 1
+        cat > "$store/$config/$name"
+        ;;
+    "secrets get")
+        name="$3"
+        if [ -n "${STUB_DOPPLER_GET_OVERRIDE:-}" ]; then cat "$STUB_DOPPLER_GET_OVERRIDE"; exit 0; fi
+        [ -f "$store/$config/$name" ] || exit 1
+        cat "$store/$config/$name"
+        ;;
+    "secrets "*|"secrets")
+        [ "$only_names" = true ] && [ "$json" = true ] || exit 2
+        [ -d "$store/$config" ] || exit 1
+        printf '{'
+        first=true
+        for f in "$store/$config"/*; do
+            [ -f "$f" ] || continue
+            [ "$first" = true ] || printf ','
+            printf '"%s":{}' "$(basename "$f")"
+            first=false
+        done
+        printf '}\n'
+        ;;
+    *) echo "doppler stub: unsupported: $*" >&2; exit 2 ;;
+esac
+STUB
+
+    # gh: secret-name lists for the three scopes the script checks. It models
+    # GitHub's paging the way the real API does it — 30 names a page,
+    # alphabetical — so a listing asked for WITHOUT `--paginate` is the first
+    # thirty and nothing else. That is the shape the round-2 review measured
+    # on the real organisation (64 secrets), and the case that asserts it is
+    # what keeps `--paginate` on every call.
+    cat > "$dir/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_GH_ARGV:-}" ]; then
+    printf '%s\n' "$*" >> "$STUB_GH_ARGV"
+fi
+paginate=false
+case " $* " in *" --paginate "*) paginate=true ;; esac
+page() {
+    # Sorted, then the first page only unless --paginate was given.
+    if [ "$paginate" = true ]; then sort; else sort | head -n 30; fi
+}
+case "$*" in
+    *"/environments/prd/secrets"*)
+        [ "${STUB_GH_PRD_EXIT:-0}" = 0 ] || exit "$STUB_GH_PRD_EXIT"
+        [ -n "${STUB_GH_PRD_NAMES-SOLADOR_AGENT_SIGNING_PRIVATE_KEY}" ] && printf '%s\n' "${STUB_GH_PRD_NAMES-SOLADOR_AGENT_SIGNING_PRIVATE_KEY}" | page; exit 0 ;;
+    *"orgs/"*"/actions/secrets"*)
+        [ "${STUB_GH_ORG_EXIT:-0}" = 0 ] || exit "$STUB_GH_ORG_EXIT"
+        [ -n "${STUB_GH_ORG_NAMES:-}" ] && printf '%s\n' "$STUB_GH_ORG_NAMES" | page; exit 0 ;;
+    *"/actions/secrets"*)
+        [ "${STUB_GH_REPO_EXIT:-0}" = 0 ] || exit "$STUB_GH_REPO_EXIT"
+        [ -n "${STUB_GH_REPO_NAMES:-}" ] && printf '%s\n' "$STUB_GH_REPO_NAMES" | page; exit 0 ;;
+    *) exit 1 ;;
+esac
+STUB
+
+    # cargo: records its argv and, because a cargo invocation runs
+    # third-party build scripts, whether any private key was still on disk
+    # under TMPDIR when it ran.
+    cat > "$dir/cargo" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_CARGO_ARGV:-}" ]; then
+    printf '%s\n' "$*" >> "$STUB_CARGO_ARGV"
+    if ls "${TMPDIR:-/nonexistent}"/*/*.key >/dev/null 2>&1; then
+        printf 'KEYS_STILL_ON_DISK\n' >> "$STUB_CARGO_ARGV"
+    fi
+fi
+exit "${STUB_CARGO_EXIT:-0}"
+STUB
+    chmod +x "$dir"/*
+    printf '%s\n' "$dir"
+}
+
+# A copy of the four scripts the custody script needs, plus the throwaway
+# "current" key as agent/release-signing-key.pub.
+make_standby_checkout() {
+    local current_pub="$1"
+    rm -rf "$STANDBY_CHECKOUT"
+    mkdir -p "$STANDBY_CHECKOUT/scripts" "$STANDBY_CHECKOUT/agent"
+    cp "$SCRIPT_DIR/../../scripts/agent-standby-key.sh" "$SCRIPT_DIR/../../scripts/agent-signing.sh" \
+       "$SCRIPT_DIR/../../scripts/lib.sh" "$SCRIPT_DIR/../../scripts/config.sh" "$STANDBY_CHECKOUT/scripts/"
+    cp "$current_pub" "$STANDBY_CHECKOUT/agent/release-signing-key.pub"
+}
+
+# run_standby [args...]: the script under stubs, output (both streams) to
+# STANDBY_OUT, status in STANDBY_STATUS. TMPDIR is a fresh directory so the
+# "every temp copy removed" assertion has something to look at.
+STANDBY_STATUS=""
+run_standby() {
+    rm -rf "$STANDBY_TMPDIR"
+    mkdir -p "$STANDBY_TMPDIR"
+    (
+        export PATH="$STANDBY_STUBS:$TOOLBIN"
+        export TMPDIR="$STANDBY_TMPDIR"
+        export STUB_DOPPLER_STORE="$STANDBY_STORE"
+        export STUB_DOPPLER_ARGV="$TMP/doppler-argv"
+        export STUB_RSIGN_ARGV="$TMP/rsign-argv"
+        export STUB_GH_ARGV="$TMP/gh-argv"
+        export STUB_CARGO_ARGV="$TMP/cargo-argv"
+        unset DEBUG
+        cd "$TMP" || exit 99
+        "$BASH" "$STANDBY_CHECKOUT/scripts/agent-standby-key.sh" "$@"
+    ) >"$STANDBY_OUT" 2>&1
+    STANDBY_STATUS=$?
+    : > "$TMP/.standby-ran"
+    return "$STANDBY_STATUS"
+}
+
+reset_standby_logs() {
+    : > "$TMP/doppler-argv"
+    : > "$TMP/rsign-argv"
+    : > "$TMP/gh-argv"
+    : > "$TMP/cargo-argv"
+}
+
+test_standby_key_script() {
+    local name="agent-standby-key.sh"
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "$name provisions, uploads and proves custody (real minisign behind an rsign stub)"
+        skip_needs_minisign "$name re-run reuses the standby rather than rotating it"
+        skip_needs_minisign "$name refuses every half-state and misplacement without changing anything"
+        return
+    fi
+    STANDBY_STUBS="$(make_standby_stubs)"
+    local next_pub="$STANDBY_CHECKOUT/agent/release-signing-key-next.pub"
+    local secret="$STANDBY_STORE/custody/SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY"
+    local out
+
+    # ---- fresh run -----------------------------------------------------------
+    make_standby_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$STANDBY_STORE"
+    mkdir -p "$STANDBY_STORE/custody" "$STANDBY_STORE/prd"
+    : > "$STANDBY_STORE/prd/SOLADOR_AGENT_SIGNING_PRIVATE_KEY"
+    reset_standby_logs
+    run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: a fresh run exits 0" "0" "$STANDBY_STATUS"
+    assert_output_has "$name: generated with the pinned signer" "$out" "generating a fresh keypair"
+    assert_output_has "$name: wrote the public half" "$out" "Wrote agent/release-signing-key-next.pub"
+    assert_output_has "$name: uploaded the private half" "$out" "Uploaded SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY"
+    assert_output_has "$name: proved custody with the RETRIEVED value" "$out" "custody proven: a signature made with the RETRIEVED standby"
+    assert_output_has "$name: showed the identities are distinct" "$out" "does NOT verify under the current key"
+    assert_output_has "$name: showed an unrelated key is rejected" "$out" "unrelated key's signature is rejected"
+    assert_output_has "$name: checked the GitHub prd environment by name" "$out" "GitHub prd environment: SOLADOR_AGENT_SIGNING_PRIVATE_KEY present, SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY absent"
+    assert_output_has "$name: ran the updater's trust-set test" "$out" "as two distinct trusted keys"
+    if [ -f "$next_pub" ] && [ "$(grep -c '' "$next_pub")" = 2 ] \
+        && sed -n '1p' "$next_pub" | grep -qE '^untrusted comment: minisign public key: [0-9A-F]{16} — Solador agent release signing STANDBY key'; then
+        pass "$name: the public file has the committed shape (two lines, id on line 1)"
+    else
+        fail "$name: the public file has the committed shape (two lines, id on line 1)" "$(cat "$next_pub" 2>/dev/null)"
+    fi
+    if [ "$(sed -n '2p' "$next_pub")" != "$(sed -n '2p' "$TEST_KEY_DIR/a.pub")" ]; then
+        pass "$name: the standby is not the current key"
+    else
+        fail "$name: the standby is not the current key"
+    fi
+    if [ -f "$secret" ] && [ "$(grep -c '' "$secret")" -ge 2 ] && head -n1 "$secret" | grep -q '^untrusted comment:'; then
+        pass "$name: the store holds a minisign secret key"
+    else
+        fail "$name: the store holds a minisign secret key"
+    fi
+    # The independent check: the stored private key signs, the committed
+    # public file verifies — with nothing from the script in between.
+    printf 'independent\n' > "$TMP/standby-indep"
+    if minisign -S -W -s "$secret" -m "$TMP/standby-indep" -x "$TMP/standby-indep.minisig" </dev/null >/dev/null 2>&1 \
+        && minisign -Vq -m "$TMP/standby-indep" -x "$TMP/standby-indep.minisig" -p "$next_pub" \
+        && ! minisign -Vq -m "$TMP/standby-indep" -x "$TMP/standby-indep.minisig" -p "$TEST_KEY_DIR/a.pub" 2>/dev/null; then
+        pass "$name: the stored private half and the committed public half are a pair (and not the current key)"
+    else
+        fail "$name: the stored private half and the committed public half are a pair (and not the current key)"
+    fi
+    local key_line
+    key_line="$(sed -n '2p' "$secret")"
+    if [ -n "$key_line" ] && ! grep -qF -- "$key_line" "$STANDBY_OUT" "$TMP/doppler-argv" "$TMP/rsign-argv" "$TMP/gh-argv" "$TMP/cargo-argv"; then
+        pass "$name: the private key is in no output and on no argv"
+    else
+        fail "$name: the private key is in no output and on no argv"
+    fi
+    if grep -q '^secrets set SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY --project solador --config custody --silent$' "$TMP/doppler-argv"; then
+        pass "$name: the upload named the secret and the custody config on argv, and nothing else"
+    else
+        fail "$name: the upload named the secret and the custody config on argv, and nothing else" "$(cat "$TMP/doppler-argv")"
+    fi
+    if [ -z "$(ls -A "$STANDBY_TMPDIR")" ]; then
+        pass "$name: every temporary copy was removed"
+    else
+        fail "$name: every temporary copy was removed" "$(ls -A "$STANDBY_TMPDIR")"
+    fi
+    assert_file_has "$name: the trust-set test was the one asked for" "$TMP/cargo-argv" \
+        "the_compiled_in_trust_set_is_the_committed_key_files_and_they_are_distinct"
+    if grep -q 'KEYS_STILL_ON_DISK' "$TMP/cargo-argv"; then
+        fail "$name: no private key is on disk when cargo runs" "a .key under TMPDIR outlived the custody proof"
+    else
+        pass "$name: no private key is on disk when cargo runs"
+    fi
+    assert_output_has "$name: checked the organisation's secrets too" "$out" "GitHub organisation secrets: SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY absent"
+
+    # ---- re-run: reuse, never rotate --------------------------------------------
+    local before after
+    before="$(cat "$secret")"
+    reset_standby_logs
+    run_standby
+    out="$(cat "$STANDBY_OUT")"
+    after="$(cat "$secret")"
+    assert_eq "$name: a re-run exits 0" "0" "$STANDBY_STATUS"
+    assert_output_has "$name: a re-run reuses the existing standby" "$out" "already exists"
+    assert_eq "$name: a re-run leaves the stored key as it was" "$before" "$after"
+    if grep -q 'next\.key' "$TMP/rsign-argv"; then
+        fail "$name: a re-run generates no standby" "$(grep 'next\.key' "$TMP/rsign-argv")"
+    else
+        pass "$name: a re-run generates no standby"
+    fi
+    if grep -q '^secrets set' "$TMP/doppler-argv"; then
+        fail "$name: a re-run uploads nothing"
+    else
+        pass "$name: a re-run uploads nothing"
+    fi
+    assert_output_has "$name: a re-run still proves custody" "$out" "custody proven"
+
+    # ---- half-states: refused, nothing changed --------------------------------
+    local kept="$TMP/standby-next.pub.kept"
+    cp "$next_pub" "$kept"
+    rm -f "$next_pub"
+    reset_standby_logs
+    run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: secret without public file is refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …and names the recovery" "$out" "refusing to guess"
+    [ -f "$next_pub" ] && fail "$name: …and writes no public file" || pass "$name: …and writes no public file"
+    assert_eq "$name: …and leaves the stored key alone" "$before" "$(cat "$secret")"
+
+    cp "$kept" "$next_pub"
+    mv "$secret" "$TMP/standby-secret.kept"
+    reset_standby_logs
+    run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: public file without secret is refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …as worthless" "$out" "worthless"
+    grep -q '^secrets set' "$TMP/doppler-argv" && fail "$name: …and uploads nothing" || pass "$name: …and uploads nothing"
+    mv "$TMP/standby-secret.kept" "$secret"
+
+    # ---- a synced config is refused before generation -----------------------------
+    make_standby_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$STANDBY_STORE"
+    mkdir -p "$STANDBY_STORE/custody"
+    printf '[{"text":"Added GitHub, Actions: Sassy-Dog / solador / custody integration","created_at":"2026-09-12T00:00:00Z"},{"text":"Removed GitHub, Actions: old integration","created_at":"2026-09-01T00:00:00Z"}]\n' \
+        > "$STANDBY_STORE/custody/.logs.json"
+    reset_standby_logs
+    run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: a config with an active sync is refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …naming the sync" "$out" "has an active sync"
+    [ -f "$next_pub" ] && fail "$name: …before any key is generated" || pass "$name: …before any key is generated"
+    grep -q 'generate' "$TMP/rsign-argv" && fail "$name: …rsign was not asked to generate" || pass "$name: …rsign was not asked to generate"
+    # The same log with the sync since removed (newest first) is fine.
+    printf '[{"text":"Removed GitHub, Actions: Sassy-Dog / solador / custody integration","created_at":"2026-09-12T00:00:00Z"},{"text":"Added GitHub, Actions: Sassy-Dog / solador / custody integration","created_at":"2026-09-01T00:00:00Z"}]\n' \
+        > "$STANDBY_STORE/custody/.logs.json"
+    reset_standby_logs
+    run_standby
+    assert_eq "$name: a config whose sync was removed is accepted" "0" "$STANDBY_STATUS"
+
+    # The gate walks EVERY page: an integration event older than the first
+    # page of secret edits is still the newest integration event.
+    make_standby_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$STANDBY_STORE"
+    mkdir -p "$STANDBY_STORE/custody"
+    {
+        printf '['
+        for i in $(seq 1 25); do
+            [ "$i" -gt 1 ] && printf ','
+            printf '{"text":"Updated secret NOISE_%s","created_at":"2026-09-12T00:00:%02dZ"}' "$i" "$((i % 60))"
+        done
+        printf ']\n'
+    } > "$STANDBY_STORE/custody/.logs.json"
+    printf '[{"text":"Added GitHub, Actions: Sassy-Dog / solador / custody integration","created_at":"2026-09-01T00:00:00Z"}]\n' \
+        > "$STANDBY_STORE/custody/.logs.page2.json"
+    reset_standby_logs
+    run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: an Added integration event on the second log page is still refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …naming the sync" "$out" "has an active sync"
+    grep -q '^secrets set' "$TMP/doppler-argv" && fail "$name: …before any upload" || pass "$name: …before any upload"
+    [ -f "$next_pub" ] && fail "$name: …and before any key" || pass "$name: …and before any key"
+
+    # A newest integration event with a verb the script does not classify
+    # is refused, not read as clean: the verdict is a positive list.
+    printf '[{"text":"Updated GitHub, Actions: Sassy-Dog / solador / custody integration","created_at":"2026-09-12T00:00:00Z"}]\n' \
+        > "$STANDBY_STORE/custody/.logs.json"
+    rm -f "$STANDBY_STORE/custody/.logs.page2.json"
+    reset_standby_logs
+    run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: an integration event the script does not classify is refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …and printed" "$out" "does not classify"
+    grep -q 'generate' "$TMP/rsign-argv" && fail "$name: …before any key" || pass "$name: …before any key"
+
+    # A log that cannot be read is a refusal, never "no sync".
+    rm -f "$STANDBY_STORE/custody/.logs.json" "$STANDBY_STORE/custody/.logs.page2.json"
+    reset_standby_logs
+    STUB_DOPPLER_LOGS_EXIT=1 run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: an unreadable audit log is refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …rather than assumed clean" "$out" "refusing to assume it syncs nowhere"
+    grep -q '^secrets set' "$TMP/doppler-argv" && fail "$name: …with no upload" || pass "$name: …with no upload"
+
+    # ---- prd, a missing config, a misplaced secret, a failed proof --------------
+    make_standby_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$STANDBY_STORE"
+    mkdir -p "$STANDBY_STORE/custody" "$STANDBY_STORE/prd"
+    reset_standby_logs
+    run_standby --config prd
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: --config prd is refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …because prd holds the ACTIVE key" "$out" "holds the ACTIVE key"
+
+    reset_standby_logs
+    run_standby --config nowhere
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: a missing config is refused" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …with the command that creates it" "$out" "doppler environments create"
+    grep -q 'generate' "$TMP/rsign-argv" && fail "$name: …and generates nothing" || pass "$name: …and generates nothing"
+
+    reset_standby_logs
+    STUB_GH_PRD_NAMES=$'SOLADOR_AGENT_SIGNING_PRIVATE_KEY\nSOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY' run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: the standby appearing in GitHub's prd environment is a failure" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …that says so" "$out" "IS in Sassy-Dog/solador's prd environment"
+
+    # A repository- or organisation-level copy, or a listing that cannot be
+    # read, each stop the run after the upload (the check is post-upload by
+    # nature — the sync is what would copy it — so the assertion is the exit
+    # status and the message, not "no upload").
+    make_standby_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$STANDBY_STORE"
+    mkdir -p "$STANDBY_STORE/custody" "$STANDBY_STORE/prd"
+    reset_standby_logs
+    STUB_GH_REPO_NAMES="SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY" run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: the standby appearing as a repository secret is a failure" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …that says so" "$out" "IS a repository Actions secret"
+    reset_standby_logs
+    STUB_GH_ORG_NAMES="SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY" run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: the standby appearing as an organisation secret is a failure" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …that says so" "$out" "IS an organisation Actions secret"
+    reset_standby_logs
+    STUB_GH_REPO_EXIT=1 run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: an unreadable repository secret listing is a failure" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …not an absence" "$out" "refusing to assume the standby is absent"
+    reset_standby_logs
+    STUB_GH_ORG_EXIT=1 run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: an unreadable organisation secret listing is a failure" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …not an absence" "$out" "refusing to assume the standby is absent"
+    # The standby sorted PAST the first page of thirty: the real organisation
+    # holds more than thirty secrets, and a listing that stops at page one
+    # would print "absent" for the one name this scan exists to find.
+    local filler=""
+    for i in $(seq -w 1 30); do
+        filler="${filler}AAAA_FILLER_${i}"$'\n'
+    done
+    reset_standby_logs
+    STUB_GH_ORG_NAMES="${filler}SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY" run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: the standby on the second page of the organisation listing is still found" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …and refused" "$out" "IS an organisation Actions secret"
+    if grep -q '^api ' "$TMP/gh-argv" && ! grep '^api ' "$TMP/gh-argv" | grep -qv -- '--paginate'; then
+        pass "$name: every GitHub listing is paginated"
+    else
+        fail "$name: every GitHub listing is paginated" "$(grep '^api ' "$TMP/gh-argv" | grep -v -- '--paginate')"
+    fi
+    reset_standby_logs
+    STUB_GH_PRD_NAMES="" run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: an EMPTY prd environment is a failure, not an absence" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …that names the broken sync" "$out" "lists NO secrets"
+    reset_standby_logs
+    STUB_GH_PRD_EXIT=1 run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: an unreadable prd listing is a failure" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …not an absence" "$out" "refusing to assume the standby is absent"
+    reset_standby_logs
+    STUB_CARGO_EXIT=1 run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: a failing trust-set test is a failure" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …that says not to commit" "$out" "do not commit"
+
+    make_standby_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$STANDBY_STORE"
+    mkdir -p "$STANDBY_STORE/custody" "$STANDBY_STORE/prd"
+    reset_standby_logs
+    STUB_DOPPLER_GET_OVERRIDE="$TEST_KEY_DIR/b.key" run_standby
+    out="$(cat "$STANDBY_OUT")"
+    assert_eq "$name: a retrieved value that is not the committed key's pair fails the proof" "1" "$STANDBY_STATUS"
+    assert_output_has "$name: …loudly" "$out" "CUSTODY PROOF FAILED"
+    if [ -z "$(ls -A "$STANDBY_TMPDIR")" ]; then
+        pass "$name: temporary copies are removed on the failure path too"
+    else
+        fail "$name: temporary copies are removed on the failure path too" "$(ls -A "$STANDBY_TMPDIR")"
+    fi
+}
+
 # ---- source-level invariants ------------------------------------------------
 #
 # These are not reachable at runtime without a real host, and each one breaks
@@ -2652,6 +3159,7 @@ test_install_linux_flow
 test_install_macos_flow
 test_launchd_launcher
 test_launchd_smoke
+test_standby_key_script
 test_deploy_script_invariants
 
 printf '\npassed %d, failed %d, skipped %d\n' "$PASSED" "$FAILED" "$SKIPPED"
