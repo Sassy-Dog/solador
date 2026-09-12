@@ -388,7 +388,9 @@ enable, or the updater plist failing its lint, is a failed opt-in that
 names the half that failed; and an unmigrated `/opt` host, an unwritable
 install directory, root, and a metrics install that did not verify each
 create nothing. The launcher's update mode has its own cases with a stubbed
-clock, wake time and boot time (**Unattended updates** above lists them).
+clock, wake time and boot time, and the Linux guard has the mirror set with
+its manager reads, clock and kernel counter stubbed (**Unattended updates**
+below lists both).
 `redeploy.sh` keeps its source-level invariants: taking `.prev` before the
 swap, and aborting on a binary that carries no version.
 
@@ -850,45 +852,88 @@ explicit `--migrate-from-opt` first — both flags together do it in one run.
 The job is also only ever created *after* the metrics install verified, so a
 failed install never records consent.
 
-### Linux: `solador-agent-update.timer` + `.service`
+### Linux: `solador-agent-update.timer` + `.service` + the guard
 
-Two user units beside the metrics one in `~/.config/systemd/user/`: a
-`oneshot` whose `ExecStart` is the rendered binary path plus `update` (no
-`EnvironmentFile=` — the updater reads `~/.config/solador-agent.env` itself,
-under the same rules, so the token is in its process for exactly one header),
-with `SuccessExitStatus=4` so a day with nothing newer does not paint the
-unit red; and a **monotonic** timer, `OnActiveSec=24h` + `OnUnitActiveSec=24h`.
-Monotonic is what carries the no-catch-up property on Linux: the first
-firing is a day after the timer starts, each later one a day after the last
-run *started*, and the monotonic clock pauses through suspend
-(`systemd.timer(5)`), so in ordinary operation a wake never finds an elapsed
-deadline. An `OnCalendar=` timer would fire on resume when its time passed
-during sleep, and `Persistent=` would replay a firing missed across a
-stopped manager — neither is used, nor `WakeSystem=`. **One caveat is open
-and tracked as
-[#411](https://github.com/Sassy-Dog/solador/issues/411)**: a source trace
-of systemd's `timer.c` suggests that a `daemon-reload` after the timer's
-first day (every installer re-run does one) can re-arm the one-shot
-`OnActiveSec=` such that the *next* suspend/resume fires it once at wake.
-That has not been observed on a real user manager — nothing here runs one
-— and it is nil on a lingering server that never sleeps; on an opted-in
-Linux laptop it may mean one check at wake after a re-run. Unlike macOS,
-the Linux job has no launcher-side guard yet; #411 is where one lands if
-the observation confirms the trace.
+Two user units beside the metrics one in `~/.config/systemd/user/`, plus
+one script beside the binary. The units: a `oneshot` whose `ExecStart` is
+the rendered binary path plus `update` (no `EnvironmentFile=` — the updater
+reads `~/.config/solador-agent.env` itself, under the same rules, so the
+token is in its process for exactly one header), with `SuccessExitStatus=4`
+so a day with nothing newer does not paint the unit red; and a **monotonic**
+timer, `OnActiveSec=24h` + `OnUnitActiveSec=24h`. Monotonic is what carries
+the no-catch-up property on Linux in ordinary operation: the first firing
+is a day after the timer starts, each later one a day after the last run
+*started*, and the monotonic clock pauses through suspend
+(`systemd.timer(5)`), so a wake never finds an elapsed deadline. An
+`OnCalendar=` timer would fire on resume when its time passed during sleep,
+and `Persistent=` would replay a firing missed across a stopped manager —
+neither is used, nor `WakeSystem=`.
+
+**The guard is what holds the property where the clock does not**
+([#411](https://github.com/Sassy-Dog/solador/issues/411)). A source trace
+of systemd's `timer.c` found that a `daemon-reload` after the timer's first
+day (every installer re-run does one) re-arms the one-shot `OnActiveSec=`
+such that the *next* suspend/resume fires it once, seconds after wake — the
+coalesced catch-up the cadence forbids, and on a laptop whose network is
+not back yet a failed attempt that costs the day. So the oneshot carries
+`ExecCondition=~/.local/bin/solador-agent-update-guard %n` (installed by
+`--enable-timer` from `agent/deploy/update-guard.sh`), which the manager
+runs before `ExecStart` on **every** activation — the timer's, or a
+`systemctl --user start` by hand — and which applies the same two rules as
+the macOS launcher: a firing within **five minutes of the last resume** (or
+of the boot, on a boot that has not slept) is skipped, and so is one within
+**23 hours of the last attempt**, recorded in the same one-line stamp,
+`~/.config/solador-agent-update.last-attempt` (mode 0600, written *before*
+the attempt, so a failed run is not retried until tomorrow). Its exit
+status is `ExecCondition=`'s own contract: **0** runs `update`; **1** skips
+it cleanly — the unit ends `inactive` with `Result=success`, not in
+`--failed`, and one line in the journal says why; **255** *fails* the unit
+— listed by `systemctl --user --failed` — because an input the guard needs
+could not be read or the stamp could not be written, and a hold that read
+as a quiet day would be a fabricated state. Every usage error (wrong
+argument shape, not under a unit, no `HOME`) is a hold for the same reason.
+
+Where "seconds since the last resume" comes from, unprivileged: the guard
+reads this activation's `InactiveExitTimestampMonotonic` from your user
+manager (`systemctl --user show … %n`) and the last resume's
+`InactiveEnterTimestampMonotonic` from the **system** manager's
+`sleep.target` (`systemctl show … sleep.target`, a read-only property fetch
+every user may make — every systemd sleep path pulls that target in and
+stops it after the resume), both on `CLOCK_MONOTONIC`. A zero from the
+manager means "this boot has not slept" — or a masked or absent
+`sleep.target` — so `/sys/power/suspend_stats/success`, the kernel's own
+count, corroborates it: suspends the kernel counted that the manager never
+recorded are a resume the guard cannot place in time, and it holds. Absent
+(no `CONFIG_PM_SLEEP`, or a kernel before 5.4) the counter is not
+consulted. Nothing here needs the journal, logind's D-Bus, or root; the
+guard's header records each reading as observed on a real user manager.
+`ExecCondition=` itself needs systemd ≥ 243 (2019); on an older manager
+the installer **refuses the opt-in** rather than let the key be ignored and
+the updater run unguarded. One more thing the guard's presence check
+covers: a condition binary that is *not there* is exec failure 203, inside
+the skip range, so a unit whose guard was deleted would skip every day,
+green — the oneshot's `AssertFileIsExecutable=` on the guard's path turns
+that into an error line in the journal and a failed `start`, and the
+installer writes the guard before the unit that names it.
 
 ```bash
 systemctl --user list-timers solador-agent-update.timer      # next and last firing
-systemctl --user status solador-agent-update.service         # last result (exit 4 = nothing newer)
-journalctl --user -u solador-agent-update -n 50 --no-pager   # the updater's own output
-systemctl --user start solador-agent-update.service          # check NOW, by hand (your explicit choice)
+systemctl --user status solador-agent-update.service         # last result: exit 4 = nothing newer; "Skipped due to 'exec-condition'" = the guard discarded it; failed = held, see the journal
+journalctl --user -u solador-agent-update -n 50 --no-pager   # the updater's own output, or the guard's one line
+cat ~/.config/solador-agent-update.last-attempt              # epoch seconds of the last attempt
+systemctl --user start solador-agent-update.service          # check NOW, by hand (the guard still applies; `solador-agent update` does not)
 
 systemctl --user disable --now solador-agent-update.timer    # pause: stop scheduling; files stay, metrics keeps running
 systemctl --user disable --now solador-agent-update.timer \
   && rm ~/.config/systemd/user/solador-agent-update.{timer,service} \
-  && systemctl --user daemon-reload                          # remove entirely (disable first, or the running manager keeps a dangling timer)
+  && systemctl --user daemon-reload \
+  && rm -f ~/.local/bin/solador-agent-update-guard \
+           ~/.config/solador-agent-update.last-attempt      # remove entirely: units first (disable first, or the running manager keeps a dangling timer), then the guard and the stamp
 ```
 
-Neither of the last two touches `solador-agent.service`.
+Neither of the last two touches `solador-agent.service`. Remove the units
+before the guard, not after: a unit left behind without its guard is the
+silent-skip shape above.
 
 ### macOS: `app.solador.agent.update`
 
@@ -943,22 +988,36 @@ launchctl bootout gui/$(id -u)/app.solador.agent.update; \
 Neither touches `gui/<uid>/app.solador.agent`, which keeps serving.
 
 **What was observed and what was not.** `agent/deploy/lib_test.sh` drives
-every guard rule with a stubbed clock, wake time and boot time — a firing
-30 s after wake, one 30 s after boot, a second one inside the interval, the
-23 h and 5 min boundaries, a clock that fails or prints garbage, an
-unreadable stamp, an unwritable stamp, a clock that moved backwards — and,
-opted in with `SOLADOR_DEPLOY_TEST_LAUNCHD=1`, bootstraps a real throwaway
-updater beside a real throwaway metrics agent, sees it loaded and not run,
-fires it by hand and watches it run the real `update` read-only (exit 4
-against the published feed, or 1 with no route to github.com — never a
-swap) without restarting the metrics service, fires it again and watches
-the guard discard it, and removes it with the commands above while the
-metrics service keeps its pid. What no test here observes is a 24-hour
-sleep on a real Mac, or a systemd timer at all (the suite runs systemd
-stubbed on macOS and, in CI, on a Linux runner with no user session); the
-Linux behaviour rests on `systemd.timer(5)`'s statement about the monotonic
-clock, with the reload-then-resume caveat open as #411, and the macOS one
-on the guard.
+every rule of both guards with stubbed inputs. macOS: a stubbed clock, wake
+time and boot time — a firing 30 s after wake, one 30 s after boot, a
+second one inside the interval, the 23 h and 5 min boundaries, a clock that
+fails or prints garbage, an unreadable stamp, an unwritable stamp, a clock
+that moved backwards — and, opted in with `SOLADOR_DEPLOY_TEST_LAUNCHD=1`,
+a real throwaway updater bootstrapped beside a real throwaway metrics
+agent, seen loaded and not run, fired by hand into the real `update`
+read-only (exit 4 against the published feed, or 1 with no route to
+github.com — never a swap) without restarting the metrics service, fired
+again to watch the guard discard it, and removed with the commands above
+while the metrics service keeps its pid. Linux: the guard run directly with
+its two manager reads, the clock and the kernel's counter stubbed (the
+counter under an override root, never this machine's `/sys`) — the same
+boundaries, a firing 30 s after resume and 30 s after boot, a laptop that
+slept last night and runs anyway, a server that never sleeps running on
+three consecutive days without a hold, an unreachable system or user
+manager, a manager that does not show the unit activating, a counter that
+contradicts the manager, a resume dated after the activation, and every
+usage error, each asserted to hold with exit 255 and to leave the stamp
+alone — plus the installer's actions: guard installed only with the flag,
+before the unit, mode 0755, named on both the `ExecCondition=` and the
+`AssertFileIsExecutable=` lines, preserved by a no-flag re-run, not
+re-created after removal, and the opt-in refused on systemd 242 and
+accepted on 243. The three exit mappings and the manager readings the
+guard depends on were observed once on a real user manager (systemd 256,
+uid 501, in a VM) while it was designed. What no test observes is a
+24-hour sleep on a real Mac, or a real systemd timer through a
+`daemon-reload` and a suspend/resume — the reload-then-resume case is a
+source trace, not an observation, and the guard is what holds the cadence
+whether or not the trace is right.
 
 ## Upgrading from the pre-rename agent
 
