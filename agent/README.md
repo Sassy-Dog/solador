@@ -726,7 +726,17 @@ The output names each step, the release, the key id that verified, and the
 health URL; the token appears nowhere, and every failure that leaves a
 service to look at ends with the manager's status command and the log path
 (the same `launchctl print` / `tail` and `systemctl --user status` /
-`journalctl` lines the service sections above give). From its own
+`journalctl` lines the service sections above give). That output is the
+process's own stdout (progress) and stderr (the one `ERROR:` line); **the
+command writes no log file of its own** — the only log path it ever names
+is the *service's* (the plist's `ProgramArguments[3]`, or the installer's
+default `~/Library/Logs/solador-agent.log` when the plist names none), and
+only inside that `tail` hint. Two values in that output look
+like secrets to a scanner and are not: the numeric uid in `gui/<uid>` (the
+launchd domain the operator types into `launchctl`, the same number `id -u`
+prints) and a rejected signature's *trusted comment* (the asset name the
+release signer put there — public, signed metadata, the string `minisign
+-V` prints for anyone). From its own
 environment the command reads `HOME`, the standard proxy variables for the
 `github.com` client only (the probe of this host's own service ignores
 proxies), and `SOLADOR_AGENT_LAUNCHD_LABEL`, which picks a different
