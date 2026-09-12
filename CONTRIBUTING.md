@@ -32,8 +32,8 @@ must match `ci.yml`'s `name:` values exactly):
 
 | Job | Runs |
 |---|---|
-| `Rust agent` | fmt, clippy, build and test inside `agent/`, plus `bash -n`, ShellCheck and `lib_test.sh` over `agent/deploy/` |
-| `Rust workspace + frontend e2e` | the root workspace, then Playwright |
+| `Rust agent` | fmt, clippy, build and test inside `agent/`, plus `bash -n`, ShellCheck and `lib_test.sh` over `agent/deploy/`, and the release-tag assertion fixture (`scripts/assert-release-tag-test.sh`) |
+| `Rust workspace + frontend e2e` | the root workspace, `lib_test.sh` and the release-tag fixture under macOS `/bin/bash` 3.2, then Playwright |
 | `macOS bundle (unsigned)` | assembles a real `Solador.app` on every PR, so bundling cannot break unnoticed. Deliberately unsigned and secret-free, so it runs on fork PRs too |
 | `Windows workspace tests` | the workspace on `windows-latest` |
 | `Secrets guard` | asserts that no workflow references a secret except `release.yml` and `publish-feed.yml`'s `agent-feed` job (allowed by name, and only with its `environment: prd` line present), runs that guard's mutation corpus, and asserts `agent/` does not resolve `crates/updatefeed` |

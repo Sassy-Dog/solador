@@ -105,6 +105,16 @@ jobs:
           SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN: "1"
         run: bash agent/deploy/lib_test.sh
 
+      # The release workflows' tag assertion (#404), proven against a
+      # temporary bare origin: a tag minted before the UTC month rolled and a
+      # ladder-bumped tag pass, a hand-made tag on the wrong commit is refused
+      # with every cause named. Git only — it mints into the scratch origin
+      # with the real `get-version-info.sh --tag --push` and pushes nowhere
+      # else. Like build-agent.sh, the script under test otherwise runs ONLY on
+      # a `v*` tag, where a break surfaces mid-release.
+      - name: Release-tag assertion fixture (scripts/assert-release-tag.sh)
+        run: bash scripts/assert-release-tag-test.sh
+
   rust-workspace:
     name: Rust workspace + frontend e2e
     # macOS is required, not preferred: app/src-tauri only builds on
@@ -166,6 +176,13 @@ jobs:
         run: |
           /bin/bash --version | head -n1
           /bin/bash agent/deploy/lib_test.sh
+
+      # The same fixture the Linux leg runs (#404), under the bash a macOS
+      # release runner and a maintainer's `./dev publish` actually execute.
+      # The harness runs the script under test and the mint with "$BASH", so
+      # this is 3.2 all the way down, not just the harness.
+      - name: Release-tag assertion fixture under macOS bash 3.2
+        run: /bin/bash scripts/assert-release-tag-test.sh
 
       # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
       # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does
