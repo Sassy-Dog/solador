@@ -190,7 +190,7 @@ configs are ruled out because they are a different ownership axis (developer
 custody script deliberately refuses to:
 
 ```sh
-doppler environments create "Custody (never synced)" custody --project solador
+doppler environments create "Custody - never synced" custody --project solador   # Doppler rejects parentheses in environment names
 ```
 
 That creates the environment and its root config, both named `custody`.
