@@ -306,7 +306,12 @@ runs, and every step refuses before the next one changes anything:
    binary, `flock`-style, non-blocking. A competing `update` or `rollback`
    on the same install (a manual run racing #394's scheduled one) reports
    *busy*, exits **75**, and changes nothing; the lock dies with the
-   process, so a crashed run cannot wedge the next. It serialises these two
+   process, so a crashed run cannot wedge the next. The one busy that
+   is waited out (2 s, bounded) is a lock whose note names *this very
+   process*: a `flock` outlives its `File` while any child forked in the
+   window between fork and exec still holds an inherited reference, and
+   that is a stale reference to our own lock, not another transaction — a
+   note naming any other pid is busy at once. It serialises these two
    commands against each other only — `install.sh` and `redeploy.sh` write
    the same `.new`/`.prev` without it, so they are not to be run during an
    update. Then the **service manager must answer** (`systemctl --user

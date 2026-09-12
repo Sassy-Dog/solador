@@ -1340,18 +1340,56 @@ pub struct TransactionLock {
     pub path: PathBuf,
 }
 
+/// How long a lock whose note names THIS process is retried for before
+/// it is reported busy (see [`TransactionLock::acquire`]).
+const STALE_OWN_LOCK_RETRY_BUDGET: Duration = Duration::from_secs(2);
+
 impl TransactionLock {
-    /// Take the lock, or report busy without waiting. The file is created if
-    /// absent and never removed: a lock file that is unlinked while another
-    /// process holds a lock on it is how two processes come to hold "the"
-    /// lock at once.
+    /// Take the lock, or report busy without waiting for another process.
+    /// The file is created if absent and never removed: a lock file that is
+    /// unlinked while another process holds a lock on it is how two
+    /// processes come to hold "the" lock at once.
+    ///
+    /// **One kind of busy is waited out**: a `flock` lives as long as *any*
+    /// reference to its open file description does, and a child process
+    /// forked by another thread while our own lock's descriptor was open
+    /// inherits such a reference until its exec (or exit) — `CLOEXEC` closes
+    /// at exec, not at fork. So a lock this process released a moment ago
+    /// can still read as held, with our own pid in its note. That is not
+    /// another transaction; it is our stale reference, and it is retried
+    /// with a short bounded backoff — the same shape, for the same reason,
+    /// as the `ETXTBSY` retry in [`spawn_version_probe`] that `cargo` and
+    /// `rustup` carry. A note naming any *other* pid, or none, is another
+    /// process's transaction and stays an immediate busy: the
+    /// cross-process guarantee is untouched.
     pub fn acquire(path: PathBuf) -> Result<Self, UpdateError> {
+        let started = Instant::now();
+        loop {
+            match Self::try_acquire(&path)? {
+                Ok(lock) => return Ok(lock),
+                Err(holder) => {
+                    let ours = holder
+                        .as_deref()
+                        .is_some_and(|h| h.starts_with(&format!("pid={} ", std::process::id())));
+                    if ours && started.elapsed() < STALE_OWN_LOCK_RETRY_BUDGET {
+                        std::thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+                    return Err(UpdateError::Busy { lock: path, holder });
+                }
+            }
+        }
+    }
+
+    /// One attempt. The outer `Ok(Err(holder))` is "held by someone", with
+    /// the note read out of the file.
+    fn try_acquire(path: &Path) -> Result<Result<Self, Option<String>>, UpdateError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&path)
+            .open(path)
             .map_err(|e| UpdateError::Io {
                 what: format!("cannot open the transaction lock {}", path.display()),
                 reason: e.to_string(),
@@ -1368,14 +1406,17 @@ impl TransactionLock {
                 });
                 let _ = writeln!(file, "pid={} since={}", std::process::id(), unix_time_now());
                 let _ = file.sync_all();
-                Ok(TransactionLock { _file: file, path })
+                Ok(Ok(TransactionLock {
+                    _file: file,
+                    path: path.to_path_buf(),
+                }))
             }
             Err(std::fs::TryLockError::WouldBlock) => {
-                let holder = fs::read_to_string(&path)
+                let holder = fs::read_to_string(path)
                     .ok()
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());
-                Err(UpdateError::Busy { lock: path, holder })
+                Ok(Err(holder))
             }
             Err(std::fs::TryLockError::Error(e)) => Err(UpdateError::Io {
                 what: format!("cannot lock {}", path.display()),
@@ -2974,6 +3015,74 @@ mod tests {
         assert_eq!(err.exit_code(), 75);
         drop(first);
         TransactionLock::acquire(path).expect("free again");
+    }
+
+    /// The in-process race the macOS CI leg hit: a child forked while the
+    /// lock's descriptor is open inherits a reference to the same open file
+    /// description, and a `flock` lives as long as ANY such reference does —
+    /// so the lock's `File` being dropped here does not release it until
+    /// that child execs or exits. In the test binary the child is another
+    /// test's `sh` helper caught between fork and exec; on a host it is
+    /// anything that spawns while `update` holds the lock. Made
+    /// deterministic: the descriptor is `dup`ed WITHOUT `CLOEXEC` (`dup`
+    /// clears the flag) so a `sleep` child keeps it past its exec for a
+    /// moment. The note in the file names this process, so `acquire` must
+    /// recognise its own stale lock and wait it out — and a note naming
+    /// someone else must stay an immediate busy.
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_reference_to_our_own_lock_held_by_a_child_is_waited_out_not_reported_busy() {
+        use std::os::fd::AsRawFd as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("solador-agent.update.lock");
+        let first = TransactionLock::acquire(path.clone()).expect("first holder");
+        // SAFETY: dup of a valid descriptor; the result is closed below.
+        let inherited = unsafe { libc::dup(first._file.as_raw_fd()) };
+        assert!(inherited >= 0);
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 0.7"])
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("sleep child");
+        // Our copies are gone; the child's inherited one is not.
+        // SAFETY: closing the descriptor dup() returned, once.
+        unsafe { libc::close(inherited) };
+        drop(first);
+        let started = Instant::now();
+        let again = TransactionLock::acquire(path.clone());
+        let waited = started.elapsed();
+        let _ = child.wait();
+        let again = again.expect("our own stale lock is waited out, not reported busy");
+        assert!(
+            waited >= Duration::from_millis(300),
+            "the second acquire had to wait for the child ({waited:?})"
+        );
+        drop(again);
+
+        // A note naming ANOTHER pid is somebody else's transaction: busy at
+        // once, no waiting.
+        let mut other = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        other.try_lock().unwrap();
+        writeln!(
+            other,
+            "pid={} since=1",
+            std::process::id().wrapping_add(7919)
+        )
+        .unwrap();
+        other.sync_all().unwrap();
+        let started = Instant::now();
+        let err = TransactionLock::acquire(path).expect_err("someone else holds it");
+        assert!(matches!(err, UpdateError::Busy { .. }), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "no waiting on another pid"
+        );
     }
 
     // --- Exit codes are distinct where the caller needs them distinct -------

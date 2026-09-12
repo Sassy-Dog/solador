@@ -1416,15 +1416,36 @@ async fn a_competing_transaction_reports_busy_without_a_request_or_a_change() {
     let candidate = fake_agent(Some(NEW), "new");
     let h = Harness::new(&installed, "127.0.0.1").await;
     let rig = release_for(NEW, &candidate, &key_a()).await;
-    let held = update::TransactionLock::acquire(h.install.sibling(".update.lock")).unwrap();
+    // The competing transaction is ANOTHER process's: the lock is held
+    // through a plain handle whose note names a foreign pid, which is what
+    // a second `update`/`rollback` on the host writes. (A note naming our
+    // own pid is the stale-inherited-reference case `acquire` waits out.)
+    let foreign_pid = std::process::id().wrapping_add(7919);
+    let mut held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(h.install.sibling(".update.lock"))
+        .unwrap();
+    held.try_lock().unwrap();
+    {
+        use std::io::Write as _;
+        writeln!(held, "pid={foreign_pid} since=1").unwrap();
+        held.sync_all().unwrap();
+    }
 
+    let started = std::time::Instant::now();
     let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
     assert!(matches!(err, UpdateError::Busy { .. }), "{err}");
     assert_eq!(err.exit_code(), 75);
     assert!(
-        err.to_string()
-            .contains(&format!("pid={}", std::process::id())),
+        err.to_string().contains(&format!("pid={foreign_pid}")),
         "the busy line names the holder: {err}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "another process's lock is busy at once, never waited on"
     );
     h.assert_untouched(&installed, "busy");
     assert!(
