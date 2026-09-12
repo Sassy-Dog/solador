@@ -137,15 +137,20 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
 2. **CI-green check** (mode-2 requirement): a completed, successful `CI`
    workflow run must exist for HEAD (`gh run list --commit`); fails closed
    without `gh` or without a verdict.
-3. Tests (`scripts/test.sh`, skippable with `--skip-tests`).
-4. **Mint**: probe `git ls-remote --tags origin` (remote-visible, never
+3. **Build credentials** (#402): `SENTRY_DSN` (or an explicit `--skip-sentry`)
+   and the `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` pair (password set;
+   empty only for an unencrypted key) — all from Doppler `solador/prd`, see
+   `docs/SECRETS.md` — fail closed here, before the mint, so a missing one
+   costs a re-run and never a pushed tag.
+4. Tests (`scripts/test.sh`, skippable with `--skip-tests`).
+5. **Mint**: probe `git ls-remote --tags origin` (remote-visible, never
    locally-cached tags; annotated tags peeled via `^{}`), then the ladder —
    tag exists at HEAD → **reuse** (idempotent re-run — within the same UTC
-   month, see step 5); exists elsewhere →
+   month, see step 6); exists elsewhere →
    **bump** patch until free (the bumped version IS the version); free →
    **create + push** annotated `vYYYY.M.P`. Probe failure → fail closed,
    never mint blind. Output contract: one `(version, tag, action)` triple.
-5. Release build stamped from the minted version (tag lands before the build
+6. Release build stamped from the minted version (tag lands before the build
    on purpose: a failed build re-runs into the same-commit reuse branch).
    **Reuse holds only within the same UTC month.** The derivation is
    wall-clock (`date -u`), so after a roll the ladder derives a new train at
@@ -165,7 +170,7 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
    real commit then ladder-bumps into the next refusal. **A ladder-bumped tag
    fails that same assertion on its first run**:
    every leg compares the tag to the bare derivation, which is the *unbumped*
-   value, so "the bumped version IS the version" in step 4 holds for the mint
+   value, so "the bumped version IS the version" in step 5 holds for the mint
    and not yet for the release — that mismatch is
    [#404](https://github.com/Sassy-Dog/solador/issues/404).
    `scripts/publish.sh`'s epilogue states both cases and what to do about
