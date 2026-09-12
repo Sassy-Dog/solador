@@ -1,8 +1,9 @@
 # Agent Distribution — design
 
-**Status:** implemented except for unattended scheduling (#394). Agreed
-2026-08-24; tracked by [#381](https://github.com/Sassy-Dog/solador/issues/381),
-split into five children on 2026-09-07.
+**Status:** implemented. Agreed 2026-08-24; tracked by
+[#381](https://github.com/Sassy-Dog/solador/issues/381), split into five
+children on 2026-09-07, the last of which (#394, unattended scheduling)
+shipped 2026-09-12.
 
 - **§1 Build and publish — SHIPPED** ([#390](https://github.com/Sassy-Dog/solador/issues/390)).
 - **§3 Versioning — SHIPPED** with it; `docs/VERSIONING.md` carries the
@@ -17,26 +18,28 @@ split into five children on 2026-09-07.
   `install.sh` downloads and verifies a published binary and has a macOS
   LaunchAgent path. The installer-side half of §5's verification shipped with
   it.
-- **§4 Updating — SHIPPED, the manual command** ([#393](https://github.com/Sassy-Dog/solador/issues/393)):
+- **§4 Updating — SHIPPED, both halves** ([#393](https://github.com/Sassy-Dog/solador/issues/393),
+  [#394](https://github.com/Sassy-Dog/solador/issues/394)):
   `solador-agent update` and `solador-agent rollback` are in the binary, with
-  the automatic restore on a failed verification. **Unattended checking** —
-  the timer / launchd job that runs `update` on a cadence — is
-  [#394](https://github.com/Sassy-Dog/solador/issues/394) and is not built.
-- **§5 Signing and trust — SHIPPED, less one operator step** (#393): the
-  public keys are compiled into the agent, and the two-key rotation window
-  exists as a provisioning procedure (`scripts/agent-standby-key.sh`) plus
-  the second file it writes, `agent/release-signing-key-next.pub`. Until the
-  operator has run that script and committed the file, a build carries the
-  current key alone — a one-key trust set, which the tests cover as such,
-  and which the first `v*` tag after this merges must not be cut on
-  (`docs/SECRETS.md` says when).
+  the automatic restore on a failed verification; **unattended checking** is
+  `install.sh --enable-timer` — a systemd user timer + oneshot on Linux, a
+  second LaunchAgent on macOS — off by default, daily, no catch-up, with the
+  scheduling policy recorded in §4's last paragraph.
+- **§5 Signing and trust — SHIPPED** (#393): both public keys are compiled
+  into the agent. The standby, `agent/release-signing-key-next.pub`, was
+  provisioned by `scripts/agent-standby-key.sh` and is committed (it landed
+  with #410), so every build since carries the two-key trust set; the
+  private half's custody is `docs/SECRETS.md`'s. (The tests still cover the
+  one-key shape, which is what a checkout with the file removed builds.)
 
 How the Solador metrics agent reaches machines that are not ours, and how the
 people running it stay up to date.
 
-This was written as a **design for a change**. The sections marked SHIPPED above
-now describe what exists; what is still design is the unattended job in §4's
-last paragraph (#394).
+This was written as a **design for a change**. Every section above is marked
+SHIPPED and now describes what exists; where the built thing settled
+something the design left open (the cadence and missed-check policy in §4,
+the unprivileged-ownership rule in §6), the paragraph says which decision
+and when.
 
 ## Why
 
@@ -47,8 +50,8 @@ plus a `latest.json` update feed that Tauri's updater consumes.
 The agent shipped **nothing** — zero binary assets on any release — until #390.
 It now ships four minisigned binaries beside the app's, and since #392
 `install.sh` installs from them. The three consequences below were the
-*reason*; all three are addressed, the third by #393 (manually) with #394
-still to schedule it.
+*reason*; all three are addressed, the third by #393 (the command) and #394
+(the opt-in schedule that runs it).
 
 The state this was written against, and how much of it still holds: the only way
 to install or update the agent was to clone this repository and run
@@ -66,8 +69,9 @@ consequences, in order of how much they hurt:
 3. **Updating is a manual `git pull` + rebuild** on each host. There is no
    mechanism by which a user learns a new version exists. *(Addressed by
    #393: `solador-agent update` fetches, verifies, swaps and verifies the
-   restart, and restores the previous binary itself if that fails. Nobody
-   is told a version exists until #394 schedules the check.)*
+   restart, and restores the previous binary itself if that fails; #394
+   schedules that check daily for hosts that opt in with `--enable-timer`,
+   and a host that does not opt in is still told nothing — by design.)*
 
 ## Non-goals
 
@@ -304,7 +308,7 @@ runs, and every step refuses before the next one changes anything:
    a privilege it does not have.
 2. **Take the transaction lock** — `<bin>.update.lock` beside the resolved
    binary, `flock`-style, non-blocking. A competing `update` or `rollback`
-   on the same install (a manual run racing #394's scheduled one) reports
+   on the same install (a manual run racing the scheduled one) reports
    *busy*, exits **75**, and changes nothing; the lock dies with the
    process, so a crashed run cannot wedge the next. The one busy that
    is waited out (2 s, bounded) is a lock whose note names *this very
@@ -382,7 +386,7 @@ name one — and **liveness only** where it cannot, saying so, because the one
 case rollback exists for is a source-built `.prev` from a shallow checkout
 that carries no version.
 
-Exit codes are a contract for #394's scheduled job: `0` updated, or
+Exit codes are a contract for the scheduled job: `0` updated, or
 already current and serving; `1` failed with nothing changed (and a
 `rollback` that did not come back or was left half done — both its own,
 named states); `3` failed *and* not restored; `4` no applicable release —
@@ -412,10 +416,91 @@ one. Every failure that leaves a service to look at ends with the manager's
 status command and the log path.
 
 **Unattended checking ships off by default**, opt-in at install
-(`--enable-timer`): a systemd timer on Linux, a launchd agent on macOS. People
-running a monitoring agent on their own servers should not get surprise
-restarts; those who want hands-off can ask. **That is #394 and is not built**;
-`install.sh` refuses `--enable-timer` by name until it is.
+(`--enable-timer`, SHIPPED, #394): a systemd user timer + oneshot on Linux
+(`solador-agent-update.timer` / `.service`), a second LaunchAgent on macOS
+(`<metrics label>.update`). People running a monitoring agent on their own
+servers should not get surprise restarts; those who want hands-off can ask.
+A default install creates no job and makes no check; a re-run without the
+flag leaves an earlier opt-in exactly as it is, and only the documented
+disable/remove commands revoke it (`agent/README.md`, **Unattended
+updates**). The job is **separate from the metrics service** on both
+platforms, because `update` restarts that service and then verifies and,
+on failure, restores it — a job inside the service's cgroup or launchd job
+would be killed by its own restart. It runs the installed binary's `update`
+with no `sudo`, no checkout, no prompt and no second copy of the token
+(the oneshot has no `EnvironmentFile=`, the plist no secret; the updater
+reads the env file itself), and is refused before anything is created as
+root, on an install directory this user cannot write to, and on an
+unmigrated `/opt` host (both flags together migrate and opt in). Its exit
+codes are `update`'s: `4` (nothing newer) is `SuccessExitStatus` on Linux
+and documented as normal on macOS; every other non-zero exit is a visibly
+failed run, never retried before the next day. On macOS the launcher adds
+two of its own for the firings it does not hand to `update`: `0` for one it
+discarded by design, `6` for one it **held** because it could not read a
+clock or its stamp — distinct from every code the agent uses, so a
+permanently held job cannot read as a good day in `launchctl print`. The
+installer itself exits `3`, not `1`, when the metrics install verified but
+the opt-in failed, and prints the install's `Done` block before the opt-in
+runs, so a scripted caller can tell the two apart.
+
+**Scheduling policy — decided 2026-09-09 on #394: daily, no catch-up.** One
+check per 24 hours while the user session/manager is up; never a check at
+enable, boot, login or wake to recover a missed interval; a missed check is
+discarded outright — no replay, no coalescing of several misses into one
+late run; a session restart begins a fresh day; no boot-without-login
+promise on macOS. On Linux the property is the timer's clock:
+`OnActiveSec=24h` + `OnUnitActiveSec=24h` are **monotonic**, the first
+firing is a day after the timer starts, later ones a day after the last run
+started, and the monotonic clock pauses through suspend
+(`systemd.timer(5)`) — an `OnCalendar=` timer would fire on resume once its
+time had passed during sleep, and `Persistent=` would replay a firing
+missed across a stopped manager, so neither is used, nor `WakeSystem=`.
+**One Linux caveat is open, [#411](https://github.com/Sassy-Dog/solador/issues/411)**:
+a source trace of systemd's `timer.c` during #394's review found that a
+`daemon-reload` after the timer's first day (every installer re-run does
+one) re-bases the one-shot `OnActiveSec=` without re-disabling it, and the
+clock-change notification a resume delivers then recomputes that deadline
+from the timer's original activation — in the past — so the next resume
+may fire the job once at wake. Not observed on a real user manager; nil on
+a lingering server that never sleeps; the Linux job has no launcher-side
+guard, and #411 is where one lands if observation confirms the trace. A
+second, benign effect of the same re-basing: a reload before the first
+firing delays that first check to a day after the reload — later, never
+sooner. On
+macOS the plist's `StartInterval=86400` with no `RunAtLoad` gives the
+cadence, and **the launcher is the guard**: `launchd.plist(5)` says a
+`StartInterval` firing that falls during sleep is missed, and
+`StartCalendarInterval` (which coalesces missed firings into one run at
+wake) is not used — but the property is enforced rather than trusted. In
+update mode `solador-agent-launchd` refuses, exit 0 with a reason in the
+updater's log, any firing within five minutes of the last wake or boot
+(`kern.waketime` / `kern.boottime`) or within 23 hours of the last attempt
+(a stamp beside the env file, written *before* the attempt), and holds
+(exit 6) rather than runs when it cannot read a clock or the stamp, or
+cannot write the stamp. Its `PATH` is the four system directories only —
+no `/opt/homebrew/bin`, which is group-writable on a stock Homebrew
+install, in front of a process that reads the token and renames a binary
+over the service. The 23 h is
+24 h less the drift a `StartInterval` firing can carry; the five minutes is
+generous against launchd's post-wake delivery, and the daily firing it
+would occasionally coincide with is exactly the discarded check the policy
+allows. This guard never touches the metrics path: three arguments is the
+metrics service, four with the literal `update` is the updater, and the
+metrics path reads no clock and writes no stamp.
+
+**What has been observed and what has not.** The guard's every rule is
+driven in `agent/deploy/lib_test.sh` with a stubbed clock, wake and boot
+time; the opt-in `SOLADOR_DEPLOY_TEST_LAUNCHD=1` run bootstraps a real
+throwaway updater beside a real throwaway agent, sees it loaded with zero
+runs, fires it by hand into a read-only `update` (exit 4 against the
+published feed, or 1 with no route to github.com — never a swap; metrics
+pid unchanged), fires it again to watch the guard discard it, and removes
+it while the metrics service keeps running. Not observed: a 24-hour sleep
+on a real Mac (whether current launchd delivers a `StartInterval` firing at
+wake at all — the guard makes the answer immaterial), and any systemd timer
+at all (the suite stubs `systemctl`, and CI's Linux runner has no user
+session); the Linux claim rests on `systemd.timer(5)`'s statement about the
+monotonic clock, with the reload-then-resume caveat above open as #411.
 
 ### 5. Signing and trust
 
@@ -645,7 +730,12 @@ the existing unit from the template (keeping the displaced file as
 anchor, restarts and verifies; the `/opt` binary stays until the operator
 removes it. #393 and #394 consume exactly this topology — the
 service identities, the binary path, the env path and the no-`sudo` rule —
-so an unattended job never needs a privilege it does not have.
+so an unattended job never needs a privilege it does not have; and #394
+records that as the **unprivileged-ownership decision (2026-09-09)**:
+`--enable-timer` is refused before creating anything on an unmigrated `/opt`
+host, on an install directory or binary the user cannot write to, and as
+root, and neither the timer nor the job ever invokes `sudo`, configures it,
+or acquires a helper.
 
 **Both services render the actual paths.** The systemd unit is a template
 whose `ExecStart` is rendered with the chosen absolute path (double-quoted
@@ -722,6 +812,23 @@ Also required:
   matching runner before the release is published: `release-agent-verify` is a
   four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
   `macos-15-intel`, and it runs the *uploaded* file rather than a rebuild.
+- **Off by default, and no catch-up — SHIPPED (#394).** `lib_test.sh` asserts
+  the default install's *actions* on both platforms: no timer, oneshot or
+  updater plist written, nothing said to the service manager about one, no
+  check made; and, for `--enable-timer`, that the job is created without
+  being started or kickstarted, that a no-flag re-run touches neither its
+  files nor the manager, that a repeated opt-in makes one job, and that
+  root, an unwritable install directory, an unmigrated `/opt` host and an
+  unverified metrics install each create nothing. The launcher's guard has
+  its own cases with the clock, wake time and boot time stubbed: a firing
+  30 s after wake or boot is discarded, a second firing inside the interval
+  is discarded, a failed attempt is not retried, a clock that fails or
+  prints garbage, an unreadable stamp and an unwritable stamp each hold
+  with exit 6, and the metrics path reads no clock. "No update check" is
+  asserted on the fixture agent's recorded argv, not on curl's. The opt-in
+  launchd smoke does the same against real launchd, read-only. What no test
+  observes is a day of sleep on a real Mac or a real systemd timer (§4,
+  #411).
 
 Which halves of the rejection test exist is worth saying precisely rather
 than letting a checked box imply all of them:

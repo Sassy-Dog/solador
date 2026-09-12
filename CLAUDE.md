@@ -811,7 +811,8 @@ share one release and a fixed crash would read as regressed.
   when recovery worked, **3** when recovery also failed (naming what is at
   the live path now) — never a "rolled back" claim over a service that is
   not back; **4** is "no applicable release" (not newer), which a from-source
-  host ahead of the last tag answers every day and #394 must not alert on;
+  host ahead of the last tag answers every day and the scheduled job (#394,
+  next bullet) does not alert on;
   1 is every refusal with nothing changed. `rollback` is the offline form:
   refuses with no `.prev` and touches nothing; otherwise swaps live and
   `.prev` so it is itself reversible, and verifies the restored version where
@@ -834,9 +835,67 @@ share one release and a fixed crash would read as regressed.
   the github.com client (the health probe ignores proxies), and
   `SOLADOR_AGENT_LAUNCHD_LABEL` — the one `SOLADOR_AGENT_*` it reads that the
   metrics service does not, which `lib_test.sh`'s launcher allow-list test
-  names as the exception. The lock serialises `update`/`rollback` (and
-  #394's job) against each other only; `install.sh` and `redeploy.sh` write
-  the same `.new`/`.prev` without it, so do not run them during an update.
+  names as the exception. The lock serialises `update`/`rollback` (and the
+  scheduled job, which is `update`) against each other only; `install.sh`
+  and `redeploy.sh` write the same `.new`/`.prev` without it, so do not run
+  them during an update.
+- **Unattended updating is opt-in, off by default, daily, and never catches
+  up (#394).** `install.sh --enable-timer` — and only that flag — installs a
+  job **separate from the metrics service** that runs the installed
+  `solador-agent update`: a systemd user timer + oneshot on Linux
+  (`agent/deploy/solador-agent-update.{timer,service}`, the oneshot's
+  `ExecStart` rendered like the metrics unit's plus `update`, no
+  `EnvironmentFile=`, `SuccessExitStatus=4`), a second LaunchAgent on macOS
+  (`agent/deploy/app.solador.agent.update.plist`, label `<metrics
+  label>.update`, `StartInterval=86400`, no `RunAtLoad`, `ProgramArguments`
+  = the same launcher plus the literal `update`). Separate because `update`
+  restarts the metrics service and then verifies and restores it; inside
+  that service it would kill its own verifier. A default install creates
+  **nothing** and makes no check; a re-run without the flag leaves an
+  earlier opt-in exactly as it is (files, enablement, phase) and says so —
+  revocation is only the documented disable/remove commands
+  (`agent/README.md`, **Unattended updates**). The job is created only
+  *after* the metrics install verified, and refused before anything is
+  created as root, on an unwritable install directory or binary, and on an
+  unmigrated `/opt` host (`--migrate-from-opt --enable-timer` does both).
+  **Cadence is the recorded decision, daily with no catch-up**, and each
+  platform holds it differently: on Linux the timer is **monotonic**
+  (`OnActiveSec=24h` + `OnUnitActiveSec=24h`; the clock pauses through
+  suspend, so in ordinary operation a wake finds no elapsed deadline —
+  never `OnCalendar`, `Persistent` or `WakeSystem`; **#411** holds the one
+  open caveat, a source-traced, unobserved case where a `daemon-reload`
+  after the first day re-arms `OnActiveSec` and the next resume fires it
+  once at wake — a Linux guard lands there if a real user manager confirms
+  it), on macOS **the launcher is the guard**: in update mode
+  `run-agent.sh` exports nothing from the env file (the updater reads it
+  itself) and refuses, exit 0 with a logged reason, a firing within 5 min
+  of the last wake or boot (`kern.waketime` / `kern.boottime`) or within
+  23 h of the last attempt (`~/.config/solador-agent-update.last-attempt`,
+  stamped *before* the attempt so a failure is not retried until tomorrow),
+  and **holds with exit 6** — a code the agent never uses, so a permanent
+  hold cannot read as a good day — when a clock or the stamp is unreadable
+  or the stamp unwritable. `launchd.plist(5)` says a `StartInterval` firing
+  that falls during sleep is missed and `StartCalendarInterval` is the key
+  that coalesces missed firings at wake; the guard is what makes the
+  property true either way. The fourth launcher argument is a one-word
+  allow-list; three arguments is the metrics path, which reads no clock and
+  writes no stamp. The updater plist pins `HOME` (the updater resolves the
+  metrics plist under *its* HOME, which launchd need not set to the
+  installer's), names the metrics label in `SOLADOR_AGENT_LAUNCHD_LABEL`,
+  and carries the four system directories as `PATH` and nothing else (no
+  group-writable `/opt/homebrew/bin` in front of a process that reads the
+  token and renames a binary over the service). The installer exits **3**,
+  not 1, when the metrics install verified but the opt-in failed, and
+  prints the Done block first; its summary line asks the manager
+  (`is-enabled` / `launchctl print`) rather than checking file presence, so
+  a paused job is never reported as scheduled. `lib_test.sh` observes all
+  of it as installer *actions* on both platforms ("no update check" is
+  asserted on the fixture agent's recorded argv), drives the guard with a
+  stubbed clock/wake/boot, and the opt-in launchd smoke fires a real
+  throwaway updater by hand (read-only: exit 4, or 1 with no network;
+  metrics pid unchanged) and watches the guard discard the second firing.
+  **Not observed anywhere**: a day of sleep on a real Mac, or a real
+  systemd timer — the Linux claim rests on `systemd.timer(5)`, caveat #411.
 - **The standby key is provisioned by `scripts/agent-standby-key.sh`, never
   by hand (#393 §A).** Non-printing, idempotent, refuses every half-state; the
   private half goes to Doppler `solador/custody` (a config with **no** sync)

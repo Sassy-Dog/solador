@@ -4,6 +4,7 @@
 #
 # Usage:
 #   ./deploy/install.sh                     # download, verify, install, start, verify
+#   ./deploy/install.sh --enable-timer      # ...and opt in to a daily unattended update check
 #   ./deploy/install.sh --migrate-from-opt  # re-point an existing /opt install (Linux)
 #   ./deploy/install.sh --help
 #
@@ -29,6 +30,20 @@
 #      LaunchAgent (gui/<uid>) on macOS, each rendered with the actual paths.
 #   7. Verifies /v1/health, authenticated, reports the verified binary's own
 #      version. A running service alone proves nothing about which binary.
+#   8. ONLY with --enable-timer (#394): installs a separate, daily unattended
+#      update job — a systemd user timer + oneshot on Linux, a second
+#      LaunchAgent (<label>.update) on macOS — that runs the installed
+#      `solador-agent update`. Off by default: a default install creates no
+#      updater job and makes no update check. Daily, no catch-up: the first
+#      check is a day after enabling, a missed one is discarded, never made
+#      up at wake or login. A re-run WITHOUT the flag leaves an earlier
+#      opt-in exactly as it is; it is revoked only by the disable/remove
+#      commands in agent/README.md.
+#
+# Exit status: 0 installed and serving (and, with the flag, scheduled); 1 the
+# install failed or was refused, nothing is serving that this run put there;
+# 2 usage; 3 the metrics service IS installed and serving but the
+# --enable-timer opt-in failed — the "Done" block above the error is true.
 #
 # Re-running is safe: it reuses the token, replaces the binary and restarts.
 # Nothing here uses sudo. redeploy.sh remains the from-source path for our own
@@ -69,6 +84,23 @@ LAUNCHER_SRC="$SCRIPT_DIR/run-agent.sh"
 LAUNCHER_DST="$INSTALL_DIR/${BIN_NAME}-launchd"
 LOG_FILE="$HOME/Library/Logs/${BIN_NAME}.log"
 
+# The opt-in unattended update job (#394): its own units and its own label,
+# never a property of the metrics service. On Linux a user timer + oneshot;
+# on macOS a second LaunchAgent, <metrics label>.update, so the updater is
+# always the metrics label's sibling — including under the harness's
+# throwaway label — and `launchctl kickstart -k` of one never touches the
+# other. Its log is separate too: `tail` of one file answers "did the check
+# run last night" without the metrics agent's lines in between.
+UPDATE_NAME="${BIN_NAME}-update"
+UPDATE_UNIT_SRC="$SCRIPT_DIR/${UPDATE_NAME}.service"
+UPDATE_UNIT_DST="$HOME/.config/systemd/user/${UPDATE_NAME}.service"
+UPDATE_TIMER_SRC="$SCRIPT_DIR/${UPDATE_NAME}.timer"
+UPDATE_TIMER_DST="$HOME/.config/systemd/user/${UPDATE_NAME}.timer"
+UPDATE_LABEL="${LAUNCHD_LABEL}.update"
+UPDATE_PLIST_SRC="$SCRIPT_DIR/app.solador.agent.update.plist"
+UPDATE_PLIST_DST="$HOME/Library/LaunchAgents/${UPDATE_LABEL}.plist"
+UPDATE_LOG_FILE="$HOME/Library/Logs/${UPDATE_NAME}.log"
+
 # The pre-rename install. Everything below that mentions these exists to hand a
 # host over from the old agent without the operator noticing anything except a
 # version bump.
@@ -86,20 +118,20 @@ usage() {
 }
 
 MIGRATE_FROM_OPT=false
+# Consent, and nothing else, turns the updater on. false here means "do not
+# touch unattended updating either way": neither create it nor revoke an
+# earlier opt-in.
+ENABLE_TIMER=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --migrate-from-opt) MIGRATE_FROM_OPT=true ;;
+        --enable-timer) ENABLE_TIMER=true ;;
         -h | --help | help)
             usage
             exit 0
             ;;
-        --enable-timer)
-            echo "ERROR: --enable-timer is not implemented; unattended updating is #394." >&2
-            echo "       This installer starts the metrics service only." >&2
-            exit 2
-            ;;
         *)
-            echo "ERROR: unknown argument '$1'. Use: [--migrate-from-opt] [--help]" >&2
+            echo "ERROR: unknown argument '$1'. Use: [--enable-timer] [--migrate-from-opt] [--help]" >&2
             exit 2
             ;;
     esac
@@ -148,6 +180,9 @@ case "$OS" in
         fi
         [ -f "$PLIST_SRC" ] || { echo "ERROR: $PLIST_SRC not found — this checkout is incomplete." >&2; exit 1; }
         [ -f "$LAUNCHER_SRC" ] || { echo "ERROR: $LAUNCHER_SRC not found — this checkout is incomplete." >&2; exit 1; }
+        if [ "$ENABLE_TIMER" = true ]; then
+            [ -f "$UPDATE_PLIST_SRC" ] || { echo "ERROR: $UPDATE_PLIST_SRC not found — this checkout is incomplete." >&2; exit 1; }
+        fi
         ;;
     Linux)
         command -v systemctl >/dev/null 2>&1 || { echo "ERROR: systemctl not found (Linux + systemd required)." >&2; exit 1; }
@@ -164,8 +199,38 @@ case "$OS" in
             exit 1
         fi
         [ -f "$UNIT_SRC" ] || { echo "ERROR: $UNIT_SRC not found — this checkout is incomplete." >&2; exit 1; }
+        if [ "$ENABLE_TIMER" = true ]; then
+            [ -f "$UPDATE_UNIT_SRC" ] || { echo "ERROR: $UPDATE_UNIT_SRC not found — this checkout is incomplete." >&2; exit 1; }
+            [ -f "$UPDATE_TIMER_SRC" ] || { echo "ERROR: $UPDATE_TIMER_SRC not found — this checkout is incomplete." >&2; exit 1; }
+        fi
         ;;
 esac
+
+# The opt-in's own refusals, before a byte is downloaded (the owner decision
+# on #394: unprivileged ownership). `solador-agent update` refuses to run as
+# root and refuses an install directory it cannot write to, so a job created
+# past either of these would fail on its first firing and every one after —
+# a consent recorded for something that can never happen. Neither check
+# applies to a default install, which creates no job.
+if [ "$ENABLE_TIMER" = true ]; then
+    if [ "$(id -u)" = "0" ]; then
+        echo "ERROR: --enable-timer is refused as root: the install is user-owned and the updater" >&2
+        echo "       refuses to run as root, so a job created now would fail on every firing." >&2
+        echo "       Run the installer as the user the agent should run as. Nothing has been changed." >&2
+        exit 1
+    fi
+    if [ -e "$INSTALL_DIR" ] && [ ! -w "$INSTALL_DIR" ]; then
+        echo "ERROR: --enable-timer is refused: $INSTALL_DIR is not writable by $(id -un), and" >&2
+        echo "       the updater must be able to stage and rename a binary there. Nothing has been" >&2
+        echo "       changed; fix the directory's ownership (no sudo is used here) and re-run." >&2
+        exit 1
+    fi
+    if [ -e "$DEST_BIN" ] && [ ! -w "$DEST_BIN" ]; then
+        echo "ERROR: --enable-timer is refused: $DEST_BIN is not writable by $(id -un)." >&2
+        echo "       Nothing has been changed; fix its ownership (no sudo is used here) and re-run." >&2
+        exit 1
+    fi
+fi
 
 # The label becomes a filename under ~/Library/LaunchAgents and a rendered
 # plist value; it is a test seam, not a place for a path or a placeholder.
@@ -233,6 +298,11 @@ if [ "$OS" = "Linux" ]; then
             echo "       and verifies /v1/health serves the new version. The old binary is not" >&2
             echo "       touched and no sudo is used; remove it by hand once you are satisfied" >&2
             echo "       (e.g. sudo rm -rf /opt/solador-agent)." >&2
+            if [ "$ENABLE_TIMER" = true ]; then
+                echo "       --enable-timer needs that migration first: the updater it schedules cannot" >&2
+                echo "       replace a binary this user does not own. Both flags together do it in" >&2
+                echo "       one run:  $0 --migrate-from-opt --enable-timer" >&2
+            fi
             exit 1
         fi
     elif [ "$MIGRATE_FROM_OPT" = true ]; then
@@ -520,6 +590,93 @@ install_failure_epilogue() {
     echo "       script reuses it, so a fix-and-retry costs you nothing." >&2
 }
 
+# stage_launch_agent_plist <template> <destination> <label> <log file>
+# Render a LaunchAgent template with the paths this run chose, lint it, and
+# move it into place — the one path both the metrics plist and the updater's
+# take, so the two cannot be rendered by different rules. Every placeholder
+# either template uses is offered; a template that lacks one is unchanged by
+# it. Rendered and linted in staging, then moved: a lint failure must leave
+# the previous, valid plist where it was rather than a broken one beside a
+# bootout'd service. Asserted out of the file, not assumed from the template:
+# a path that broke the XML would otherwise surface as launchctl's
+# "Bootstrap failed: 5: Input/output error". 0644 explicitly: launchd refuses
+# a group- or world-writable plist in a gui domain, and the operator's umask
+# is not ours to assume.
+stage_launch_agent_plist() {
+    local template="$1" dest="$2" label="$3" log_file="$4" staged
+    staged="$STAGE/$(basename "$dest")"
+    render_template "$template" \
+        "@LABEL@" "$(xml_escape "$label")" \
+        "@METRICS_LABEL@" "$(xml_escape "$LAUNCHD_LABEL")" \
+        "@LAUNCHER@" "$(xml_escape "$LAUNCHER_DST")" \
+        "@BINARY@" "$(xml_escape "$DEST_BIN")" \
+        "@ENV_FILE@" "$(xml_escape "$ENV_FILE")" \
+        "@LOG_FILE@" "$(xml_escape "$log_file")" \
+        "@HOME@" "$(xml_escape "$HOME")" \
+        > "$staged"
+    if ! plutil -lint -s "$staged"; then
+        echo "ERROR: the rendered plist is not valid; $dest was not touched." >&2
+        return 1
+    fi
+    chmod 0644 "$staged"
+    mv -f "$staged" "$dest"
+}
+
+# bootstrap_launch_agent <label> <plist>
+# Load a rendered plist into this user's gui domain, replacing a loaded copy.
+# bootout + bootstrap rather than kickstart: kickstart restarts the process
+# but keeps the plist launchd already parsed, so a changed path would not
+# take effect until the next login. On failure, launchd's own words are
+# printed and the caller says what state that leaves.
+bootstrap_launch_agent() {
+    local label="$1" plist="$2" service disabled_list label_re booted err
+    service="gui/$(id -u)/$label"
+    if launchctl print "$service" >/dev/null 2>&1; then
+        echo "==> Stopping the running $label"
+        launchctl bootout "$service" 2>/dev/null || true
+    fi
+    # A service once disabled (the legacy `launchctl unload -w` idiom leaves
+    # that flag behind) fails every bootstrap with "Service is disabled".
+    # Cleared only when launchd actually reports it: an unconditional
+    # `enable` writes a permanent override record for a label that never had
+    # one. `=> disabled` since Ventura; Big Sur and Monterey — inside the
+    # agent's 11.0 floor — print `=> true` for the same state.
+    #
+    # Captured first, then grepped from a here-string — NOT piped straight
+    # into `grep -q`: under `set -o pipefail`, grep -q exits on the matching
+    # line, the producer's next write takes SIGPIPE, and the pipeline reads
+    # as "not disabled" — a real race with launchctl's multi-KB output and a
+    # measured 1-in-5 flake in the suite. The label's dots are escaped so
+    # `app-solador-agent` cannot satisfy a pattern meant for
+    # `app.solador.agent`.
+    disabled_list="$(launchctl print-disabled "gui/$(id -u)" 2>/dev/null || true)"
+    label_re="${label//./\\.}"
+    if grep -qE "\"$label_re\" => (disabled|true)" <<< "$disabled_list"; then
+        echo "==> $label was disabled in launchd; re-enabling it"
+        launchctl enable "$service"
+    fi
+    # bootout returns before the service is fully torn down on some releases,
+    # and a bootstrap that races it fails with "service already loaded"; a
+    # few retries cover that. Each attempt's stderr is kept so the failure
+    # can say what launchd said, without a further attempt whose success
+    # would then be reported as failure.
+    booted=false
+    err="$STAGE/bootstrap.err"
+    for _ in 1 2 3 4 5; do
+        if launchctl bootstrap "gui/$(id -u)" "$plist" 2>"$err"; then
+            booted=true
+            break
+        fi
+        sleep 1
+    done
+    if [ "$booted" != true ]; then
+        echo "ERROR: launchctl bootstrap gui/$(id -u) $plist failed:" >&2
+        sed 's/^/       /' "$err" >&2
+        return 1
+    fi
+    echo "==> Bootstrapped $service"
+}
+
 case "$OS" in
     Linux)
         mkdir -p "$(dirname "$UNIT_DST")"
@@ -557,80 +714,15 @@ case "$OS" in
         # The launcher is copied out of the checkout, so deleting the clone
         # later does not stop the agent.
         install -m 0755 "$LAUNCHER_SRC" "$LAUNCHER_DST"
-        # Rendered and linted in staging, then moved into place: a lint
-        # failure must leave the previous, valid plist where it was rather
-        # than a broken one beside a bootout'd service.
-        PLIST_STAGED="$STAGE/$(basename "$PLIST_DST")"
-        render_template "$PLIST_SRC" \
-            "@LABEL@" "$(xml_escape "$LAUNCHD_LABEL")" \
-            "@LAUNCHER@" "$(xml_escape "$LAUNCHER_DST")" \
-            "@BINARY@" "$(xml_escape "$DEST_BIN")" \
-            "@ENV_FILE@" "$(xml_escape "$ENV_FILE")" \
-            "@LOG_FILE@" "$(xml_escape "$LOG_FILE")" \
-            > "$PLIST_STAGED"
-        # Asserted out of the file, not assumed from the template: a path
-        # that broke the XML would otherwise surface as launchctl's
-        # "Bootstrap failed: 5: Input/output error".
-        if ! plutil -lint -s "$PLIST_STAGED"; then
-            echo "ERROR: the rendered plist is not valid; $PLIST_DST was not touched." >&2
+        if ! stage_launch_agent_plist "$PLIST_SRC" "$PLIST_DST" "$LAUNCHD_LABEL" "$LOG_FILE"; then
             install_failure_epilogue
             exit 1
         fi
-        # 0644 explicitly: launchd refuses a group- or world-writable plist in
-        # a gui domain, and the operator's umask is not ours to assume.
-        chmod 0644 "$PLIST_STAGED"
-        mv -f "$PLIST_STAGED" "$PLIST_DST"
-        LAUNCHD_SERVICE="gui/$(id -u)/$LAUNCHD_LABEL"
-        # bootout + bootstrap rather than kickstart: kickstart restarts the
-        # process but keeps the plist launchd already parsed, so a changed
-        # path would not take effect until the next login.
-        if launchctl print "$LAUNCHD_SERVICE" >/dev/null 2>&1; then
-            echo "==> Stopping the running $LAUNCHD_LABEL"
-            launchctl bootout "$LAUNCHD_SERVICE" 2>/dev/null || true
-        fi
-        # A service once disabled (the legacy `launchctl unload -w` idiom
-        # leaves that flag behind) fails every bootstrap with "Service is
-        # disabled". Cleared only when launchd actually reports it: an
-        # unconditional `enable` writes a permanent override record for a
-        # label that never had one.
-        # `=> disabled` since Ventura; Big Sur and Monterey — inside the
-        # agent's 11.0 floor — print `=> true` for the same state.
-        #
-        # Captured first, then grepped from a here-string — NOT piped straight
-        # into `grep -q`: under `set -o pipefail`, grep -q exits on the
-        # matching line, the producer's next write takes SIGPIPE, and the
-        # pipeline reads as "not disabled" — a real race with launchctl's
-        # multi-KB output and a measured 1-in-5 flake in the suite. The
-        # label's dots are escaped so `app-solador-agent` cannot satisfy a
-        # pattern meant for `app.solador.agent`.
-        DISABLED_LIST="$(launchctl print-disabled "gui/$(id -u)" 2>/dev/null || true)"
-        LABEL_RE="${LAUNCHD_LABEL//./\\.}"
-        if grep -qE "\"$LABEL_RE\" => (disabled|true)" <<< "$DISABLED_LIST"; then
-            echo "==> $LAUNCHD_LABEL was disabled in launchd; re-enabling it"
-            launchctl enable "$LAUNCHD_SERVICE"
-        fi
-        # bootout returns before the service is fully torn down on some
-        # releases, and a bootstrap that races it fails with "service already
-        # loaded"; a few retries cover that. Each attempt's stderr is kept so
-        # the failure can say what launchd said, without a further attempt
-        # whose success would then be reported as failure.
-        booted=false
-        BOOTSTRAP_ERR="$STAGE/bootstrap.err"
-        for _ in 1 2 3 4 5; do
-            if launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" 2>"$BOOTSTRAP_ERR"; then
-                booted=true
-                break
-            fi
-            sleep 1
-        done
-        if [ "$booted" != true ]; then
-            echo "ERROR: launchctl bootstrap gui/$(id -u) $PLIST_DST failed:" >&2
-            sed 's/^/       /' "$BOOTSTRAP_ERR" >&2
+        if ! bootstrap_launch_agent "$LAUNCHD_LABEL" "$PLIST_DST"; then
             echo "       The service is not loaded; the binary and plist are in place." >&2
             install_failure_epilogue
             exit 1
         fi
-        echo "==> Bootstrapped $LAUNCHD_SERVICE"
         ;;
 esac
 
@@ -658,6 +750,131 @@ case "$OS" in
         echo "    It starts at this user's login; it does not run before anyone logs in."
         ;;
 esac
+
+# ---- the unattended update job (#394) ------------------------------------------
+# After the metrics service is verified AND reported, never before: a job
+# that updates a service this run could not bring up would be consent
+# recorded against a broken install, and a caller scripting this must be
+# able to read "the agent is installed and serving" above any failure below.
+# That is also why a failed opt-in exits OPT_IN_FAILED_EXIT rather than 1: 1
+# is "the install failed", and this is not that.
+#
+# Off by default. The no-flag run touches nothing about the updater: an
+# earlier opt-in is left exactly as it is (the files, the enablement, the
+# timer's phase), and it is revoked only by the documented disable/remove
+# commands — never by a re-run. The summary line at the end reports what the
+# service manager says, not what files exist, so a paused job (the
+# documented `disable --now` / `bootout`, which leave the files) is not
+# reported as scheduled.
+#
+# The first firing is a day away on both platforms: systemd's OnActiveSec
+# starts counting when the timer starts, launchd's StartInterval when the
+# job loads, and neither is asked to run the service now. No `systemctl
+# start` of the oneshot, no `kickstart`, no network check on enable.
+OPT_IN_FAILED_EXIT=3
+
+update_failure_epilogue() {
+    echo "       The metrics service is installed and serving $TARGET_VERSION; only the" >&2
+    echo "       unattended update job failed (exit $OPT_IN_FAILED_EXIT). Re-run with" >&2
+    echo "       --enable-timer once fixed. Installed binary: $DEST_BIN" >&2
+}
+
+# The Linux opt-in as one function, so any step failing lands in the caller's
+# `if !` and reaches the epilogue — under `set -e` a bare `mv` or
+# `daemon-reload` failing would otherwise end the run with raw stderr and
+# no statement that the metrics service is fine.
+install_update_timer_linux() {
+    # The oneshot carries the same rendered ExecStart as the metrics unit
+    # plus the word `update`; the timer has nothing to render and is copied
+    # as it is. Both regenerated on every opt-in run: drop-ins survive, edits
+    # do not. (No .prev is kept for these — unlike the metrics unit they
+    # carry nothing an operator wrote.)
+    render_template "$UPDATE_UNIT_SRC" "@SOLADOR_AGENT_BIN@" "$EXEC_START" > "$UPDATE_UNIT_DST.new" || return 1
+    mv -f "$UPDATE_UNIT_DST.new" "$UPDATE_UNIT_DST" || return 1
+    cp "$UPDATE_TIMER_SRC" "$UPDATE_TIMER_DST.new" || return 1
+    mv -f "$UPDATE_TIMER_DST.new" "$UPDATE_TIMER_DST" || return 1
+    if ! systemctl --user daemon-reload; then
+        echo "ERROR: systemctl --user daemon-reload failed after writing $UPDATE_NAME.{service,timer}." >&2
+        return 1
+    fi
+    # `enable --now` on the TIMER, and deliberately not `restart`. A timer
+    # that has already fired keeps its OnUnitActiveSec schedule (a repeated
+    # opt-in is not a reason to check sooner); one that has not yet fired
+    # is re-based by the daemon-reload above to now — a first check LATER
+    # than it would have been, never sooner, and never one on enable. A
+    # stopped timer starts counting a fresh day from here. The oneshot
+    # itself is never started by this script.
+    if ! systemctl --user enable --now "$UPDATE_NAME.timer"; then
+        echo "ERROR: could not enable $UPDATE_NAME.timer." >&2
+        echo "       Inspect:  systemctl --user status $UPDATE_NAME.timer" >&2
+        return 1
+    fi
+}
+
+install_update_agent_macos() {
+    mkdir -p "$(dirname "$UPDATE_PLIST_DST")" "$(dirname "$UPDATE_LOG_FILE")" || return 1
+    stage_launch_agent_plist "$UPDATE_PLIST_SRC" "$UPDATE_PLIST_DST" "$UPDATE_LABEL" "$UPDATE_LOG_FILE" || return 1
+    # A repeated opt-in boots the loaded job out and in again, which
+    # restarts its 24 h interval — an update is a day away either way, and
+    # a re-rendered plist must be the one launchd holds.
+    if ! bootstrap_launch_agent "$UPDATE_LABEL" "$UPDATE_PLIST_DST"; then
+        echo "       The update job is not loaded; its plist is in place." >&2
+        return 1
+    fi
+}
+
+if [ "$ENABLE_TIMER" = true ]; then
+    case "$OS" in
+        Linux)
+            if ! install_update_timer_linux; then
+                update_failure_epilogue
+                exit "$OPT_IN_FAILED_EXIT"
+            fi
+            echo "==> Unattended updates: enabled ($UPDATE_NAME.timer, daily, no catch-up; first check in 24h)"
+            ;;
+        Darwin)
+            if ! install_update_agent_macos; then
+                update_failure_epilogue
+                exit "$OPT_IN_FAILED_EXIT"
+            fi
+            echo "==> Unattended updates: enabled (gui/$(id -u)/$UPDATE_LABEL, daily, no catch-up; first check in 24h)"
+            ;;
+    esac
+fi
+
+# What the manager says about the job, in three states — enabled, present
+# but not scheduled, off — read-only, and the same line on every run.
+update_scheduling_summary() {
+    local state
+    case "$OS" in
+        Linux)
+            if [ ! -f "$UPDATE_TIMER_DST" ]; then
+                echo "    Unattended updates: off (opt in with: $0 --enable-timer)"
+                return
+            fi
+            state="$(systemctl --user is-enabled "$UPDATE_NAME.timer" 2>/dev/null || true)"
+            if [ "$state" = "enabled" ]; then
+                echo "    Unattended updates: enabled ($UPDATE_NAME.timer; systemctl --user list-timers $UPDATE_NAME.timer)"
+            else
+                echo "    Unattended updates: $UPDATE_NAME.timer is present but not enabled (systemd says '${state:-<nothing>}');"
+                echo "      re-enable with:  systemctl --user enable --now $UPDATE_NAME.timer   (or re-run with --enable-timer)"
+            fi
+            ;;
+        Darwin)
+            if [ ! -f "$UPDATE_PLIST_DST" ]; then
+                echo "    Unattended updates: off (opt in with: $0 --enable-timer)"
+                return
+            fi
+            if launchctl print "gui/$(id -u)/$UPDATE_LABEL" >/dev/null 2>&1; then
+                echo "    Unattended updates: loaded (gui/$(id -u)/$UPDATE_LABEL; log $UPDATE_LOG_FILE)"
+            else
+                echo "    Unattended updates: $UPDATE_PLIST_DST is present but not loaded (a bootout, or launchd disabled it);"
+                echo "      it reloads at the next login, or re-run with --enable-timer to load it now"
+            fi
+            ;;
+    esac
+}
+update_scheduling_summary
 echo
 echo "Verify locally (the token reaches curl on stdin, not its argv, and the env"
 echo "file is read, never sourced — its contents are yours to type and not shell):"
