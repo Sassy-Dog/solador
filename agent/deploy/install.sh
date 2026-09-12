@@ -31,14 +31,15 @@
 #   7. Verifies /v1/health, authenticated, reports the verified binary's own
 #      version. A running service alone proves nothing about which binary.
 #   8. ONLY with --enable-timer (#394): installs a separate, daily unattended
-#      update job — a systemd user timer + oneshot on Linux, a second
-#      LaunchAgent (<label>.update) on macOS — that runs the installed
-#      `solador-agent update`. Off by default: a default install creates no
-#      updater job and makes no update check. Daily, no catch-up: the first
-#      check is a day after enabling, a missed one is discarded, never made
-#      up at wake or login. A re-run WITHOUT the flag leaves an earlier
-#      opt-in exactly as it is; it is revoked only by the disable/remove
-#      commands in agent/README.md.
+#      update job — a systemd user timer + oneshot on Linux (plus the
+#      oneshot's ExecCondition= guard, ~/.local/bin/solador-agent-update-guard,
+#      #411), a second LaunchAgent (<label>.update) on macOS — that runs the
+#      installed `solador-agent update`. Off by default: a default install
+#      creates no updater job and makes no update check. Daily, no catch-up:
+#      the first check is a day after enabling, a missed one is discarded,
+#      never made up at wake or login. A re-run WITHOUT the flag leaves an
+#      earlier opt-in exactly as it is; it is revoked only by the
+#      disable/remove commands in agent/README.md.
 #
 # Exit status: 0 installed and serving (and, with the flag, scheduled); 1 the
 # install failed or was refused, nothing is serving that this run put there;
@@ -96,6 +97,15 @@ UPDATE_UNIT_SRC="$SCRIPT_DIR/${UPDATE_NAME}.service"
 UPDATE_UNIT_DST="$HOME/.config/systemd/user/${UPDATE_NAME}.service"
 UPDATE_TIMER_SRC="$SCRIPT_DIR/${UPDATE_NAME}.timer"
 UPDATE_TIMER_DST="$HOME/.config/systemd/user/${UPDATE_NAME}.timer"
+# The oneshot's ExecCondition= guard (#411): the Linux stand-in for the
+# launcher's update mode, copied out of the checkout beside the binary so
+# deleting the clone does not break the job. Linux only — on macOS the
+# launcher is the guard. ExecCondition= itself exists since systemd 243; an
+# older manager logs "Unknown key" and runs the updater UNGUARDED, which is
+# not the opt-in that was asked for, so the opt-in is refused below that.
+GUARD_SRC="$SCRIPT_DIR/update-guard.sh"
+GUARD_DST="$INSTALL_DIR/${UPDATE_NAME}-guard"
+SYSTEMD_MIN_FOR_GUARD=243
 UPDATE_LABEL="${LAUNCHD_LABEL}.update"
 UPDATE_PLIST_SRC="$SCRIPT_DIR/app.solador.agent.update.plist"
 UPDATE_PLIST_DST="$HOME/Library/LaunchAgents/${UPDATE_LABEL}.plist"
@@ -202,6 +212,27 @@ case "$OS" in
         if [ "$ENABLE_TIMER" = true ]; then
             [ -f "$UPDATE_UNIT_SRC" ] || { echo "ERROR: $UPDATE_UNIT_SRC not found — this checkout is incomplete." >&2; exit 1; }
             [ -f "$UPDATE_TIMER_SRC" ] || { echo "ERROR: $UPDATE_TIMER_SRC not found — this checkout is incomplete." >&2; exit 1; }
+            [ -f "$GUARD_SRC" ] || { echo "ERROR: $GUARD_SRC not found — this checkout is incomplete." >&2; exit 1; }
+            # `systemd 256 (256.11-1.fc41)` is the first line on every
+            # distro; the second word is the version. Anything else is
+            # "cannot tell", and an opt-in whose guard the manager might
+            # ignore is not made on a guess.
+            SYSTEMD_VERSION="$(systemctl --version 2>/dev/null | head -n1 | awk '$1 == "systemd" { print $2 }')"
+            case "$SYSTEMD_VERSION" in
+                '' | *[!0-9]*)
+                    echo "ERROR: --enable-timer is refused: cannot read the systemd version (systemctl --version" >&2
+                    echo "       said '${SYSTEMD_VERSION:-<nothing>}'). The update job's guard is an ExecCondition=, which" >&2
+                    echo "       needs systemd >= $SYSTEMD_MIN_FOR_GUARD; an older manager would ignore it and run the" >&2
+                    echo "       updater unguarded. Nothing has been changed." >&2
+                    exit 1
+                    ;;
+            esac
+            if [ "$SYSTEMD_VERSION" -lt "$SYSTEMD_MIN_FOR_GUARD" ]; then
+                echo "ERROR: --enable-timer is refused: systemd $SYSTEMD_VERSION is older than $SYSTEMD_MIN_FOR_GUARD, the first" >&2
+                echo "       version with ExecCondition=, which the update job's guard needs. An older manager" >&2
+                echo "       would ignore the guard and run the updater unguarded. Nothing has been changed." >&2
+                exit 1
+            fi
         fi
         ;;
 esac
@@ -784,12 +815,34 @@ update_failure_epilogue() {
 # `daemon-reload` failing would otherwise end the run with raw stderr and
 # no statement that the metrics service is fine.
 install_update_timer_linux() {
+    # The guard FIRST, and the oneshot only once it is in place (#411). A
+    # unit whose ExecCondition= names a binary that is not there skips every
+    # firing as exec failure 203 — inside ExecCondition's skip range — with
+    # Result=success and nothing in `--failed` (observed on systemd 256), so
+    # this order is what keeps a run interrupted between the two writes from
+    # leaving a green, silent job; the unit's AssertFileIsExecutable= on the
+    # same path is the second half of that. Copied out of the checkout like
+    # the macOS launcher, so deleting the clone later does not stop the job;
+    # 0755 explicitly, and asserted back rather than assumed from `install`.
+    install -m 0755 "$GUARD_SRC" "$GUARD_DST" || return 1
+    if [ ! -x "$GUARD_DST" ]; then
+        echo "ERROR: $GUARD_DST is not executable after install." >&2
+        return 1
+    fi
+    local exec_guard
+    exec_guard="$(systemd_exec_path "$GUARD_DST")" || return 1
     # The oneshot carries the same rendered ExecStart as the metrics unit
-    # plus the word `update`; the timer has nothing to render and is copied
-    # as it is. Both regenerated on every opt-in run: drop-ins survive, edits
-    # do not. (No .prev is kept for these — unlike the metrics unit they
-    # carry nothing an operator wrote.)
-    render_template "$UPDATE_UNIT_SRC" "@SOLADOR_AGENT_BIN@" "$EXEC_START" > "$UPDATE_UNIT_DST.new" || return 1
+    # plus the word `update`, the guard on its ExecCondition= (Exec-quoted)
+    # and on its AssertFileIsExecutable= (a bare path; Assert lines take no
+    # quoting, and check_install_path has already refused every character
+    # that would matter); the timer has nothing to render and is copied as
+    # it is. All regenerated on every opt-in run: drop-ins survive, edits do
+    # not. (No .prev is kept for these — unlike the metrics unit they carry
+    # nothing an operator wrote.)
+    render_template "$UPDATE_UNIT_SRC" \
+        "@SOLADOR_AGENT_BIN@" "$EXEC_START" \
+        "@SOLADOR_AGENT_GUARD@" "$exec_guard" \
+        "@SOLADOR_AGENT_GUARD_PATH@" "$GUARD_DST" > "$UPDATE_UNIT_DST.new" || return 1
     mv -f "$UPDATE_UNIT_DST.new" "$UPDATE_UNIT_DST" || return 1
     cp "$UPDATE_TIMER_SRC" "$UPDATE_TIMER_DST.new" || return 1
     mv -f "$UPDATE_TIMER_DST.new" "$UPDATE_TIMER_DST" || return 1
@@ -830,7 +883,7 @@ if [ "$ENABLE_TIMER" = true ]; then
                 update_failure_epilogue
                 exit "$OPT_IN_FAILED_EXIT"
             fi
-            echo "==> Unattended updates: enabled ($UPDATE_NAME.timer, daily, no catch-up; first check in 24h)"
+            echo "==> Unattended updates: enabled ($UPDATE_NAME.timer, daily, no catch-up, guarded by $GUARD_DST; first check in 24h)"
             ;;
         Darwin)
             if ! install_update_agent_macos; then

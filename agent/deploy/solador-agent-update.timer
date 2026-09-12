@@ -28,17 +28,26 @@
 #     manager. WakeSystem= stays off for the same reason: it would swap in
 #     the clock that keeps counting through suspend.
 #
-# One caveat is open as #411: a `daemon-reload` (every installer re-run does
-# one) re-bases OnActiveSec to the reload time — a first check that has not
-# yet fired moves later, never sooner — and a source trace of systemd's
-# timer.c suggests that after the first day a reload plus the next
-# suspend/resume can fire the one-shot once at wake. Not observed on a real
-# user manager; nil on a server that never sleeps. Unlike macOS there is no
-# launcher-side guard in front of this unit yet.
+# What the clock does NOT hold, and what holds it instead (#411). A
+# `daemon-reload` (every installer re-run does one) re-bases OnActiveSec to
+# the reload time — a first check that has not yet fired moves later, never
+# sooner — and a source trace of systemd v255's timer.c found that after the
+# first day a reload leaves that one-shot re-armed, and the CLOCK_REALTIME
+# change the next resume delivers recomputes its deadline from the timer's
+# ORIGINAL activation, in the past: one firing seconds after wake. Nil on a
+# server that never sleeps; real on an opted-in laptop; not observed on a
+# real suspend-capable user manager (nothing in this repo runs one). So the
+# oneshot this timer starts carries an ExecCondition= guard,
+# ~/.local/bin/solador-agent-update-guard, that applies the cadence to every
+# firing however the manager arrived at it: a firing within five minutes of
+# the last resume (or boot), or within 23 h of the last attempt, is skipped
+# cleanly with its reason in the journal; a guard that cannot read its
+# inputs fails the unit rather than guess. The timer file is what it was —
+# the guard is the property's enforcement, not a change to its schedule.
 #
 # The launchd counterpart is app.solador.agent.update.plist, whose
-# StartInterval carries the same 24 h, with the launcher's guard standing in
-# for the property the monotonic clock provides here.
+# StartInterval carries the same 24 h, with the launcher's update mode
+# standing where the guard stands here.
 
 [Unit]
 Description=Solador metrics agent: daily unattended update check
