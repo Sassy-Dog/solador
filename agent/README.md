@@ -162,9 +162,33 @@ what proves a published binary starts at all before a release attaches it. It
 exits non-zero when this build carries no version, rather than printing a
 plausible one.
 
+Two **commands** exist as well
+([#393](https://github.com/Sassy-Dog/solador/issues/393)), dispatched at the
+same point — before tracing, the token check, the sampler or a listener — so
+they are always a separate process from the service they act on:
+
+```bash
+solador-agent update      # move this install to the latest published release, verified; see Updating
+solador-agent rollback    # put the previous binary back, offline; see Roll back
+```
+
+Neither takes arguments of its own: `update --force` is refused, not ignored
+into an unforced update. Their exit codes are a contract (the scheduled job
+#394 adds will read them): `0` updated, or already current *and serving*;
+`1` failed with nothing changed (a refusal, a network error, a rejected
+signature — and, for `rollback`, a swap that did not come back or was left
+half done, both named); `3` failed **and** the previous binary could not be
+restored — inspect the service; `4` no applicable release (the feed is not
+newer than what is installed — the normal answer on a from-source host
+running ahead of the last tag, and nothing to page anyone for); `5` failed,
+and the previous binary is back and serving — nothing is broken, but a human
+should look at why; `75` another `update`/`rollback` holds the lock (the
+line names the holder's pid and start time); `2` usage.
+
 An argument the agent does not recognise is **refused** (exit 2), never ignored:
-it takes none, so one arriving means something upstream is wrong — a hand-edited
-`ExecStart`, or a wrapper passing flags meant for something else.
+it takes none in normal operation, so one arriving means something upstream is
+wrong — a hand-edited `ExecStart`, or a wrapper passing flags meant for
+something else.
 
 ## Releases
 
@@ -230,11 +254,18 @@ applies; a browser download needs `xattr -d com.apple.quarantine <file>` first.
 `deploy/install.sh` installs these (see **Install** below): it downloads the
 binary for the host it runs on, verifies the signature with the stock
 `minisign` under the committed key, and only then installs and starts it
-([#392](https://github.com/Sassy-Dog/solador/issues/392)). Nothing in the
-agent *binary* verifies a signature yet — an in-binary updater with a
-compiled-in key is
-[#393](https://github.com/Sassy-Dog/solador/issues/393), and unattended
-update jobs are [#394](https://github.com/Sassy-Dog/solador/issues/394).
+([#392](https://github.com/Sassy-Dog/solador/issues/392)). **The agent binary
+verifies too** ([#393](https://github.com/Sassy-Dog/solador/issues/393)):
+`solador-agent update` checks the release's `agent-latest.json` and the
+binary it names under public keys compiled in at build time — this file and,
+once it is committed, `agent/release-signing-key-next.pub`, a **standby**
+whose private half is held in a Doppler config that syncs nowhere
+(`docs/SECRETS.md`). Two trusted keys are what make a lost or compromised
+signing key a release rather than a recall: the next release is signed under
+the standby every deployed agent already trusts. They do not revoke a key
+and they are not anti-replay; the updater's newer-than rule is what refuses
+a replayed older feed. Unattended update jobs are
+[#394](https://github.com/Sassy-Dog/solador/issues/394).
 
 **The first release to carry these binaries is the first `v*` tag cut after
 #390 landed.** `v2026.9.3` and everything before it publish none, and
@@ -372,6 +403,39 @@ still stubbed to serve the locally built `solador-agent` under the throwaway
 key — bootstrapping a throwaway label into the invoking user's session and
 booting it out again. It is opt-in because it does touch the host.
 
+Since #393 the same suite also runs **`scripts/agent-standby-key.sh`** end to
+end — the custody script that mints the standby signing key — against a
+file-backed `doppler` stub, a `gh` stub answering fixed secret-name lists, a
+`cargo` recorder, and `rsign` stubbed onto the real `minisign`, so the key
+generated, the value "uploaded" and "retrieved", and the custody proof are
+real cryptography with only the network faked. It asserts what the script
+promises: a fresh run writes a two-line public file whose line 1 carries the
+id its bytes encode, uploads a minisign secret key on stdin with only the
+name and config on argv, proves custody with the retrieved value, leaves the
+private key in no output and on no argv, and removes every temp file; a
+re-run reuses rather than rotates; and each half-state (secret without file,
+file without secret), `--config prd`, a missing config, a config whose audit
+log shows an active sync, a standby that turns up in GitHub's `prd`
+environment, and a retrieved value that is not the committed file's pair are
+each refused loudly. Without `minisign` those cases `SKIP` like the signature
+cases do, and CI requires them the same way.
+
+**`solador-agent update` and `rollback` are tested in Rust**, not here:
+`agent/tests/update_flow.rs` runs the whole transaction against a loopback
+release server, a temporary install tree and a fake service manager that
+does what a real restart does (executes the live path's `--version` and
+serves it on a real authenticated loopback `/v1/health`), with keys minted
+in-test — every refusal asserted to change nothing, every recovery asserted
+on the bytes at the live path and at `.prev`. `SOLADOR_DEPLOY_TEST_LAUNCHD=1
+cargo test -p solador-agent --test update_flow launchd_smoke` is the opt-in
+real thing on macOS: a throwaway LaunchAgent running the real built agent, a
+failed update rolled back on it automatically, two explicit `rollback`s
+through the CLI; `SOLADOR_AGENT_SMOKE_NEWER_BINARY=<path>` (a second build
+with a newer pinned `MARKETING_VERSION`) adds the successful-update path, and
+`SOLADOR_AGENT_SMOKE_REAL_FEED=1` adds a read-only `solador-agent update`
+against the real github.com feed under the compiled-in production key. None
+of that runs in CI.
+
 The other load-bearing case is `build_release_binary` **failing** when the
 workspace target dir holds no binary, rather than falling back to a search.
 Until #268 both deploy scripts looked in `agent/target/release/`, which #264
@@ -406,8 +470,9 @@ SOLADOR_AGENT_RELEASE=v<version> ./deploy/install.sh   # a specific one
 ./deploy/install.sh --help
 ```
 
-A re-run is the update path, and on the unpinned form it **refuses to move
-backwards**: if the binary already installed reports a newer CalVer than the
+A re-run is one update path — `solador-agent update` (**Updating**, below)
+is the in-binary one, and the one #394's scheduled job will use — and on the
+unpinned form it **refuses to move backwards**: if the binary already installed reports a newer CalVer than the
 release `/releases/latest` resolved to — the one unsigned link in the chain,
 see `docs/AGENT-DISTRIBUTION.md` §6 — the run stops naming both versions.
 Pinning `SOLADOR_AGENT_RELEASE` is how an operator says a downgrade is meant.
@@ -543,13 +608,12 @@ Re-running the installer boots the loaded service out and bootstraps the
 re-rendered plist rather than `kickstart`ing it, so a changed path takes
 effect immediately instead of at the next login.
 
-`redeploy.sh` and its `rollback` are Linux-only. To roll back on macOS, put
-`solador-agent.prev` back by hand and restart:
+`redeploy.sh` and its `rollback` are Linux-only. On macOS the in-binary
+command is the rollback path — it reads this plist, swaps the binaries,
+kickstarts the label and verifies (see **Roll back** below):
 
 ```bash
-mv ~/.local/bin/solador-agent ~/.local/bin/solador-agent.bad
-cp -p ~/.local/bin/solador-agent.prev ~/.local/bin/solador-agent
-launchctl kickstart -k gui/$(id -u)/app.solador.agent
+~/.local/bin/solador-agent rollback
 ```
 
 ### Hosts installed before #392: the `/opt` layout
@@ -580,8 +644,110 @@ sudo rm -rf /opt/solador-agent
 ```
 
 Nothing here changes `/opt`'s ownership or configures passwordless `sudo`, and
-the unattended paths #393 and #394 add will not use `sudo` either — which is
-why the migration is explicit rather than something an update does one night.
+neither does `solador-agent update`: on a host whose unit starts a binary in
+a directory this user cannot write to — the root-owned `/opt` layout is the
+usual case — it stops before changing anything and prints this same
+`--migrate-from-opt` step (#394's scheduled job will inherit that refusal) —
+which is why the migration is explicit rather than something an update does
+one night.
+
+## Updating (`solador-agent update`)
+
+From any shell on the host, as the user the service runs as — never as the
+service's own `ExecStart`, and never with `sudo`:
+
+```bash
+~/.local/bin/solador-agent update
+```
+
+It is the download-install's update path moved into the binary, with one
+thing the installer does not do: **it undoes itself when the new binary does
+not come up.** In order, each step refusing before the next changes anything:
+
+1. Reads where the service is (nothing changes yet): the binary from the
+   systemd unit's `ExecStart=` or the plist's `ProgramArguments`, the env
+   file beside it, and the token/bind/port from that file with the same
+   rules the service starts under (never `source`d). `SOLADOR_AGENT_BIND`
+   must be in that file (the installer always writes it): with no bind the
+   service listens on a tailnet address this command could not dial, and a
+   probe of loopback would swap, fail, restore and exit 3 on a healthy host,
+   so its absence is refused instead. Running as root is refused; an install
+   this user cannot replace — the pre-#392 `/opt` layout — is refused with
+   the migration step above.
+2. Takes the transaction lock (`solador-agent.update.lock` beside the
+   binary). A second `update` or `rollback` on the same install — yours
+   racing a scheduled one, say — reports *busy* (exit 75) and changes
+   nothing; the lock dies with the process, so a crashed run cannot wedge
+   the next. (The lock covers these two commands and #394's job; `install.sh`
+   and `redeploy.sh` do not take it, so do not run those during an update.)
+   Then the service manager must answer — `systemctl --user` or the
+   `gui/<uid>` domain — before anything is downloaded, so a session with no
+   manager (an `ssh` with nobody logged in, a `sudo -u` shell) is refused
+   here rather than discovered at the restart.
+3. Resolves the latest **published** release from the `/releases/latest`
+   redirect, fetches *that tag's* `agent-latest.json` and `.minisig`, verifies
+   the feed's exact bytes under the compiled-in keys before decoding it, and
+   requires its `version` to be the tag's.
+4. Hashes the installed binary. **Equal to the feed's entry means already
+   current: nothing downloaded, nothing restarted** — even when the feed's
+   version differs. It then asks `/v1/health` for the version those bytes
+   claim (their own `--version`): serving it is exit 0; serving something
+   else, or not answering, is a distinct failure (exit 1) that tells you to
+   restart the service — the state an earlier run leaves if it was
+   interrupted between its swap and its restart.
+5. Otherwise the feed must be **newer** than the installed CalVer (read from
+   the installed binary's own `--version`). An older feed — a replay, or a
+   downgrade — is refused; a downgrade you mean is
+   `SOLADOR_AGENT_RELEASE=v<version> ./deploy/install.sh`. An installed binary
+   that carries no version cannot be compared and is refused rather than
+   assumed older; re-run `install.sh` to move it onto a published release.
+6. Downloads the binary into memory and verifies its signature **and** its
+   SHA-256 against the feed entry before anything touches disk.
+7. Stages it as `solador-agent.new` (mode 0755), runs the staged candidate's
+   `--version`, and requires the feed's CalVer back; a candidate that cannot
+   name it is removed unrun.
+8. Keeps the live binary as `solador-agent.prev` and **renames** `.new` over
+   the live path — never an in-place overwrite, and the live path is never
+   absent for an instant.
+9. Restarts the service (`systemctl --user restart solador-agent` /
+   `launchctl kickstart -k gui/<uid>/app.solador.agent`) and polls the
+   authenticated `/v1/health` — at the bind and port the env file says,
+   loopback for a wildcard bind — until it reports the new version. A running
+   service reporting the old version, or none, is **not** a success.
+10. If the restart or that check fails, **restores `.prev` the same way,
+    restarts, and requires the previous version back.** The command then
+    exits `5` — a failed update is a failure even when recovery worked — and
+    `3` if recovery also failed, naming both failures *and what is at the
+    live path now* (the candidate, when the restore's own rename failed; the
+    previous binary, when its restart or health check did), so a service
+    that is down is never reported as rolled back.
+
+The output names each step, the release, the key id that verified, and the
+health URL; the token appears nowhere, and every failure that leaves a
+service to look at ends with the manager's status command and the log path
+(the same `launchctl print` / `tail` and `systemctl --user status` /
+`journalctl` lines the service sections above give). That output is the
+process's own stdout (progress) and stderr (the one `ERROR:` line); **the
+command writes no log file of its own** — the only log path it ever names
+is the *service's* (the plist's `ProgramArguments[3]`, or the installer's
+default `~/Library/Logs/solador-agent.log` when the plist names none), and
+only inside that `tail` hint. Two values in that output look
+like secrets to a scanner and are not: the numeric uid in `gui/<uid>` (the
+launchd domain the operator types into `launchctl`, the same number `id -u`
+prints) and a rejected signature's *trusted comment* (the asset name the
+release signer put there — public, signed metadata, the string `minisign
+-V` prints for anyone). From its own
+environment the command reads `HOME`, the standard proxy variables for the
+`github.com` client only (the probe of this host's own service ignores
+proxies), and `SOLADOR_AGENT_LAUNCHD_LABEL`, which picks a different
+LaunchAgent label (the same test seam the installer honours).
+
+It needs nothing installed beyond the agent itself — no `curl`, no
+`minisign`, no checkout: the verifier and the keys are in the binary, which
+is the point of doing this in Rust rather than in `install.sh`. What it does
+need is a host that can reach `github.com` over HTTPS and a service installed
+by `install.sh` (or migrated by it). `redeploy.sh` remains the from-source
+path for our own Linux hosts and is unchanged.
 
 ## Upgrading from the pre-rename agent
 
@@ -655,27 +821,72 @@ host whose HOME contains a space (where `install.sh` renders a double-quoted
 `ExecStart`) `redeploy.sh` and its `rollback` resolve a truncated path and
 fail; re-run `install.sh` on such a host instead.
 
-## Roll back a bad redeploy
+## Roll back
 
-If a redeploy ships a broken build (or `redeploy.sh` reports the health check
-failed), restore the previous binary with one command:
+Every path that replaces the binary — `install.sh`, `redeploy.sh`,
+`solador-agent update` — keeps the displaced one as `solador-agent.prev`, and
+two commands put it back. Both swap `.prev` into place through a staged
+sibling and an atomic rename, restart the service, verify it came back, and
+are **reversible**: the binary you rolled back over becomes the new `.prev`,
+so running the same command again rolls forward. Neither needs cargo, a
+checkout, or the network — that is the point of keeping the prior binary on
+the host. With no `.prev` both refuse without touching the live binary.
+
+**In the binary, on either platform** (#393):
+
+```bash
+~/.local/bin/solador-agent rollback
+```
+
+It verifies the restored **version** on `/v1/health` when the previous binary
+can name one (`--version`), and **liveness only** when it cannot — a
+source-built `.prev` from a shallow checkout — and its output says which.
+Under liveness, an answer that *does* carry a version is held as the
+displaced process still holding the socket, not accepted as "back". It takes
+the same transaction lock as `update`, so it cannot interleave with one. Two
+failures are its own, both exit `1`: *rollback swapped the binaries but the
+service did not come back* (the swap stands and is reversible — run
+`rollback` again to swap back), and *rollback half done* — the previous
+binary is live but the displaced one could not be moved into `.prev`, so it
+sits at `solador-agent.rollback-displaced` and nothing was restarted; the
+message names all three files and the `mv` that finishes it.
+
+**The from-source script, Linux only**:
 
 ```bash
 ./deploy/redeploy.sh rollback
 ```
 
-It atomically swaps `solador-agent.prev` back into place, restarts the service,
-and verifies the agent comes back online via `/v1/health`. The swap is
-reversible: the binary you rolled back over becomes the new `.prev`, so re-running
-`rollback` rolls forward again. Rollback verifies the service is reachable
-rather than asserting an exact version — a deliberate choice, since #390 gave
-the binary a `--version`, recorded in `deploy/lib.sh`: the one case rollback
-exists for is a `.prev` the operator cannot describe. `install.sh` writes the
-same `.prev` when it replaces a binary, so this works after a download-install
-too.
+It verifies liveness only, by the decision recorded in `deploy/lib.sh`: the
+one case that script's rollback exists for is a `.prev` the operator cannot
+describe. `install.sh` writes the same `.prev` when it replaces a binary, so
+either command works after a download-install too.
 
-No cargo or rebuild is needed to roll back — that's the point of keeping the prior
-binary on the host.
+After `solador-agent update` restores `.prev` on its own (exit `5`), `.prev`
+still holds the same last-good binary as the live path — the failed
+candidate is not kept — so a `rollback` right after an automatic recovery is
+a no-op swap. If `update` reported exit `3`, read the line that says what is
+at the live path: *the candidate* means the restore's own rename failed, and
+`rollback` is the fix; *the previous binary* means it is back but did not
+come up, so `rollback` would only swap the same bytes — inspect the service
+with the commands the message ends with.
+
+Two edges worth knowing. A `.prev` from before #393 has no `rollback`
+subcommand of its own (it exits 2 on the word), which does not matter — it
+is the *live* binary that runs the command, and it is what you roll back
+*to*. And if the live binary itself is the one that is broken beyond running
+`rollback` — the case that command cannot cover — the swap is the same
+moves by hand, staged so the live path is never absent: copy the broken
+binary aside (a copy, not a move — the live path must stay populated for a
+`KeepAlive`/`Restart=always` respawn), then rename the staged copy over it:
+
+```bash
+cp -p ~/.local/bin/solador-agent ~/.local/bin/solador-agent.bad          # keep it, for the bug report
+cp -p ~/.local/bin/solador-agent.prev ~/.local/bin/solador-agent.new
+mv -f ~/.local/bin/solador-agent.new ~/.local/bin/solador-agent          # the one atomic step
+launchctl kickstart -k gui/$(id -u)/app.solador.agent     # macOS
+systemctl --user restart solador-agent                    # Linux
+```
 
 ## How Solador connects
 

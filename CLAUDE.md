@@ -306,9 +306,12 @@ against **that file** before upload — a mis-provisioned
 signatures nobody can check — then verified again by the reference C `minisign`,
 a different implementation from the `rsign2` that signed. Signatures are plain
 minisign, not the Tauri signer's double-base64 form, so any user can check a
-download with the stock tool — and `agent/deploy/install.sh` does exactly that
-(#392). **Nothing in the agent binary verifies a signature yet**; the
-compiled-in public key and the two-key rotation window are #393's.
+download with the stock tool — `agent/deploy/install.sh` does exactly that
+(#392), and so does **the agent binary itself** (#393): `solador-agent
+update` verifies the feed and the downloaded binary under the public keys its
+`build.rs` compiles in from `agent/release-signing-key.pub` and, once
+committed, `agent/release-signing-key-next.pub` — the standby that makes a
+rotation a release rather than a recall. See **Working on the Agent** below.
 
 **The agent feed (#391).** `agent-latest.json` is the agent's counterpart to
 `latest.json` and deliberately **not** an extension of it: Tauri owns that
@@ -342,8 +345,8 @@ release that can carry an agent feed is the first tag cut after #391 merged,
 and a fix to that workflow's agent leg reaches a release only through a new
 tag. `agent/` does not depend on `crates/updatefeed` — `scripts/agent-deps-guard.sh`
 asserts the absence with `cargo tree`, in CI's `secrets-guard` job and in
-`./dev lint`; #393's consumer will compile in the public key and verify on its
-own.
+`./dev lint`; the consumer (`agent/src/update.rs`, #393) compiles the public
+keys in and verifies with `minisign-verify` on its own.
 
 **Updates (#308).** `--sign` also produces the updater payload: a minisigned
 `Solador-<version>.app.tar.gz` beside the `.dmg`. A `.dmg` is not an update —
@@ -472,6 +475,14 @@ the bundle's floor.
 │   │                       #   `crons`, `openclaw` + `settings_*` (src/settings.rs)
 │   └── ui/                 # Frontend: plain HTML/CSS/JS, no bundler
 ├── agent/                  # Per-host metrics agent (workspace member, Linux CI)
+│   ├── src/main.rs         #   the daemon. `src/lib.rs` exists for one module:
+│   ├── src/update.rs       #   `solador-agent update`/`rollback` (#393) — the
+│   │                       #   compiled-in trust set, the feed consumer, the
+│   │                       #   stage/swap/restart/verify/restore transaction
+│   ├── tests/              #   update_flow.rs: that transaction end to end over
+│   │                       #   a loopback release + fakes; opt-in launchd smoke
+│   └── release-signing-key.pub  # the trust set's first key; a committed
+│                           #   release-signing-key-next.pub is its second
 ├── tests/fixtures/           # Wire-contract fixtures shared by agent/ + crates/,
 │                           #   plus the two feeds' signed fixtures (updater/, agent/)
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
@@ -762,7 +773,78 @@ share one release and a fixed crash would read as regressed.
   serves `/v1/containers` as `[]` under a green `/v1/health`. An existing unit pointing at `/opt` stops the install
   with the explicit `--migrate-from-opt` step rather than migrating silently.
   `redeploy.sh` is untouched, Linux-only, and now `build_release_binary`'s
-  only caller. Service identities here are #393's restart contract.
+  only caller. Service identities here are the restart contract
+  `solador-agent update` consumes.
+- **`solador-agent update` / `rollback` are in the binary (#393), and the
+  order of operations is the security design.** `agent/src/update.rs`:
+  refuse root; resolve #392's install — reading only — from the unit's
+  `ExecStart=` or the plist's `ProgramArguments` and read the env file with
+  `EnvironmentFile=` semantics, never `source`d (an install directory this
+  user cannot write to is refused with the installer's migration step); take
+  the transaction lock beside the resolved binary (`<bin>.update.lock`,
+  non-blocking — a competing manual or scheduled run reports *busy*, exit
+  75, and changes nothing) and require the service manager to **answer**
+  before any download (a manager found unreachable at the restart is the
+  half-applied update); resolve the **concrete** release behind
+  `/releases/latest` and fetch that tag's `agent-latest.json` + `.minisig`;
+  verify the **exact served bytes** under the compiled-in trust set *before*
+  decoding; require the feed's `version` to be the tag's; hash the installed
+  executable — equal to the feed's entry means **no download, no restart,
+  even when the version differs**, and exit 0 once `/v1/health` confirms the
+  service is serving those bytes' own version (bytes on disk are not a
+  running service: an earlier run interrupted between its swap and its
+  restart is a distinct, non-zero "current but not serving"); otherwise the
+  feed must be **newer** than the installed CalVer (a replayed older feed is
+  refused; an installed binary that carries no version, or a non-CalVer one,
+  is refused rather than assumed older); download into memory and verify **signature and
+  SHA-256** before a byte reaches disk; stage `<bin>.new` (0755) and execute
+  its `--version`, which must be the feed's; copy the live binary to
+  `<bin>.prev` through a sibling+rename; `rename()` `.new` over the live
+  path (never overwrite in place — Linux `ETXTBSY`, arm64 macOS kills a
+  process whose signed pages change); restart the **metrics** service
+  (`systemctl --user restart` / `launchctl kickstart -k gui/<uid>/…`, never
+  the updater's own process, which refuses if the manager says it *is* the
+  service); poll the authenticated `/v1/health` until it reports the new
+  CalVer — an HTTP 200 with a stale or absent `version` is **not** a success;
+  on any failure after the swap, restore `.prev` the same way, restart, and
+  require the previous version back. **Exit non-zero either way**: **5**
+  when recovery worked, **3** when recovery also failed (naming what is at
+  the live path now) — never a "rolled back" claim over a service that is
+  not back; **4** is "no applicable release" (not newer), which a from-source
+  host ahead of the last tag answers every day and #394 must not alert on;
+  1 is every refusal with nothing changed. `rollback` is the offline form:
+  refuses with no `.prev` and touches nothing; otherwise swaps live and
+  `.prev` so it is itself reversible, and verifies the restored version where
+  it can name one, liveness where it cannot (a source build). The trust set
+  is `build.rs`'s `TRUSTED_PUBLIC_KEYS`: `agent/release-signing-key.pub`
+  (missing = build failure) plus `agent/release-signing-key-next.pub` when
+  present; one key listed twice is refused, and the feed's unknown JSON keys
+  are tolerated so a consumer can update past the release that adds one.
+  `tests/update_flow.rs` drives all of it against a loopback release, a
+  temporary install tree and a fake manager that mimics a real restart, with
+  keys minted in-test; `SOLADOR_DEPLOY_TEST_LAUNCHD=1` opts into the same on
+  a throwaway real LaunchAgent (`SOLADOR_AGENT_SMOKE_NEWER_BINARY` adds the
+  success path, `SOLADOR_AGENT_SMOKE_REAL_FEED=1` a read-only run against
+  github.com through the CLI). The negative control — bypass `Trust::verify`
+  and watch nine tests go red — is recorded on the PR that shipped it, and
+  the same proven-to-fail rule binds any change here. Every failure that
+  leaves a service to look at ends with the manager's status command and the
+  log path (`ServiceControl::inspect_hint`, the plist's `ProgramArguments[3]`
+  on macOS). The maintenance command reads `HOME`, the proxy variables for
+  the github.com client (the health probe ignores proxies), and
+  `SOLADOR_AGENT_LAUNCHD_LABEL` — the one `SOLADOR_AGENT_*` it reads that the
+  metrics service does not, which `lib_test.sh`'s launcher allow-list test
+  names as the exception. The lock serialises `update`/`rollback` (and
+  #394's job) against each other only; `install.sh` and `redeploy.sh` write
+  the same `.new`/`.prev` without it, so do not run them during an update.
+- **The standby key is provisioned by `scripts/agent-standby-key.sh`, never
+  by hand (#393 §A).** Non-printing, idempotent, refuses every half-state; the
+  private half goes to Doppler `solador/custody` (a config with **no** sync)
+  on stdin, the public half to `agent/release-signing-key-next.pub`, and
+  custody is proven with the value *retrieved back* from Doppler under the
+  stock `minisign`. `docs/SECRETS.md` has the topology and the procedure;
+  `lib_test.sh` runs the script against a file-backed `doppler` stub with the
+  real `minisign` behind an `rsign` stub.
 - **The version comes out of the artifact, not a manifest (#390).**
   `agent/deploy/lib.sh`'s `binary_version` runs `<bin> --version` and **fails
   closed**: a binary that cannot name itself exits non-zero and prints nothing,

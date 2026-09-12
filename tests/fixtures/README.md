@@ -65,7 +65,11 @@ bytes a signature covers.
   `agent-latest.json.minisig` pair that `solador-agent-feed build` produced
   from them and `rsign` then signed. The tests assert `build()` reproduces the
   committed document byte for byte, so **regenerate the pair together, never
-  edit either half**:
+  edit either half**. The pair is also the contract's executable form for the
+  **consumer** (#393): `agent/src/update.rs`'s tests accept it under
+  `test-agent-key.pub`, refuse it after one character moves or the final
+  newline goes, and refuse it under the production key — so regenerating it
+  moves both suites at once, which is the point of sharing it.
 
   ```sh
   cd tests/fixtures/agent   # everything below is relative to here

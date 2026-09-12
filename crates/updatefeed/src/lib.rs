@@ -20,10 +20,11 @@
 //! convention** — plain minisign, no base64 wrapper — because there is no
 //! Tauri in the agent. The one thing the two feeds share in code is
 //! `manifest::is_calver`, because both carry the release's CalVer under the
-//! same rule. Its consumer is `solador-agent update` (#393, not built yet),
-//! which must not depend on this crate: `agent/` will compile in the public
-//! key and verify with `minisign-verify` on its own, and the wire contract in
-//! [`agent`]'s module docs is what the two agree on.
+//! same rule. Its consumer is `solador-agent update` (`agent/src/update.rs`,
+//! #393), which does not depend on this crate: `agent/` compiles the public
+//! keys in and verifies with `minisign-verify` on its own, and the wire
+//! contract in [`agent`]'s module docs is what the two agree on
+//! (`scripts/agent-deps-guard.sh` asserts the absence of the edge).
 //!
 //! # This crate is not linked into the app, or into the agent
 //!

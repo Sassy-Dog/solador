@@ -1,28 +1,42 @@
 # Agent Distribution — design
 
-**Status:** partly implemented. Agreed 2026-08-24; tracked by
-[#381](https://github.com/Sassy-Dog/solador/issues/381), split into five
-children on 2026-09-07.
+**Status:** implemented except for unattended scheduling (#394). Agreed
+2026-08-24; tracked by [#381](https://github.com/Sassy-Dog/solador/issues/381),
+split into five children on 2026-09-07.
 
 - **§1 Build and publish — SHIPPED** ([#390](https://github.com/Sassy-Dog/solador/issues/390)).
 - **§3 Versioning — SHIPPED** with it; `docs/VERSIONING.md` carries the
   reclassification.
-- **§2 The feed — SHIPPED, producer side** ([#391](https://github.com/Sassy-Dog/solador/issues/391)):
+- **§2 The feed — SHIPPED, both sides** (producer
+  [#391](https://github.com/Sassy-Dog/solador/issues/391), consumer
+  [#393](https://github.com/Sassy-Dog/solador/issues/393)):
   `agent-latest.json` and its signature are generated, verified and published
-  by `publish-feed.yml` when a release is published. Nothing consumes it yet —
-  `install.sh` deliberately does not (§6), and the updater that will is §4's.
+  by `publish-feed.yml` when a release is published, and `solador-agent
+  update` consumes them. `install.sh` deliberately does not (§6).
 - **§6 Installing — SHIPPED** ([#392](https://github.com/Sassy-Dog/solador/issues/392)):
   `install.sh` downloads and verifies a published binary and has a macOS
   LaunchAgent path. The installer-side half of §5's verification shipped with
   it.
-- §4 (`solador-agent update`) is **not built yet** — #393/#394. What it
-  describes is still design.
+- **§4 Updating — SHIPPED, the manual command** ([#393](https://github.com/Sassy-Dog/solador/issues/393)):
+  `solador-agent update` and `solador-agent rollback` are in the binary, with
+  the automatic restore on a failed verification. **Unattended checking** —
+  the timer / launchd job that runs `update` on a cadence — is
+  [#394](https://github.com/Sassy-Dog/solador/issues/394) and is not built.
+- **§5 Signing and trust — SHIPPED, less one operator step** (#393): the
+  public keys are compiled into the agent, and the two-key rotation window
+  exists as a provisioning procedure (`scripts/agent-standby-key.sh`) plus
+  the second file it writes, `agent/release-signing-key-next.pub`. Until the
+  operator has run that script and committed the file, a build carries the
+  current key alone — a one-key trust set, which the tests cover as such,
+  and which the first `v*` tag after this merges must not be cut on
+  (`docs/SECRETS.md` says when).
 
 How the Solador metrics agent reaches machines that are not ours, and how the
 people running it stay up to date.
 
 This was written as a **design for a change**. The sections marked SHIPPED above
-now describe what exists; the rest is still design.
+now describe what exists; what is still design is the unattended job in §4's
+last paragraph (#394).
 
 ## Why
 
@@ -33,7 +47,8 @@ plus a `latest.json` update feed that Tauri's updater consumes.
 The agent shipped **nothing** — zero binary assets on any release — until #390.
 It now ships four minisigned binaries beside the app's, and since #392
 `install.sh` installs from them. The three consequences below were the
-*reason*; the first two are addressed, the third (updating) is not yet.
+*reason*; all three are addressed, the third by #393 (manually) with #394
+still to schedule it.
 
 The state this was written against, and how much of it still holds: the only way
 to install or update the agent was to clone this repository and run
@@ -49,8 +64,10 @@ consequences, in order of how much they hurt:
    the agent "Runs on Linux … and macOS". Half the stated platform support is
    undeliverable today. *(Addressed by #392: a LaunchAgent, §6.)*
 3. **Updating is a manual `git pull` + rebuild** on each host. There is no
-   mechanism by which a user learns a new version exists. *(Still true;
-   re-running `install.sh` is the update path until §4 lands.)*
+   mechanism by which a user learns a new version exists. *(Addressed by
+   #393: `solador-agent update` fetches, verifies, swaps and verifies the
+   restart, and restores the previous binary itself if that fails. Nobody
+   is told a version exists until #394 schedules the check.)*
 
 ## Non-goals
 
@@ -197,7 +214,13 @@ and this producer are both held to:
   rename, remove or re-type the ones above. The producer's own `verify` is
   strict about unknown keys because it checks the document it just wrote; a
   consumer that wants to update *past* the release that adds a key must not
-  be. That choice is #393's, and this sentence is what it decides against.
+  be. **The consumer tolerates them** (#393): `agent/src/update.rs`'s
+  `Feed` carries no `deny_unknown_fields`, a test adds a key at each level and
+  the document still parses, and a malformed *known* field is still refused.
+  Extra target triples are likewise ignored — a host reads its own entry —
+  provided every entry is well-formed; a malformed entry for *any* triple
+  refuses the whole document, because a feed the producer could not have
+  written is not one to pick the good parts out of.
 
 Producer-side, `crates/updatefeed::agent` builds the document **only from
 verified inputs**: every binary's signature is checked under the committed key
@@ -260,35 +283,139 @@ Two consequences worth stating where an implementer will hit them:
   renders `agent version —`. The deploy helper fails closed on it rather than
   verifying against an empty string that `/v1/health` would then "match".
 
-### 4. Updating
+### 4. Updating — SHIPPED (#393)
 
 `solador-agent update`, a subcommand of the binary — not a shell script.
 `redeploy.sh` is bash and systemd-shaped; an in-binary command behaves
 identically on macOS and Linux, needs no shell, and is testable in Rust.
+`agent/src/update.rs` is the implementation; `agent/README.md` is the
+operator reference. What follows is the contract as built, in the order it
+runs, and every step refuses before the next one changes anything:
 
-1. Fetch `agent-latest.json`; **verify its signature**.
-2. Compare content hash against the installed binary. Equal → stop, report
-   "already current", exit 0.
-3. Download the binary for this platform/arch (§1 publishes the binary itself,
-   not an archive); **verify signature and hash
-   before anything touches disk**.
-4. Write `<bin>.new`; `rename()` over the live path.
-5. Retain the displaced binary as `<bin>.prev`.
-6. Restart the service; poll `/v1/health`; assert the reported version matches
-   what was installed.
-7. **On failed verification, restore `.prev` automatically and exit non-zero.**
+1. **Resolve the installed service through #392's contract** — reading
+   only: the executable from the systemd user unit's `ExecStart=` (Linux)
+   or the LaunchAgent plist's `ProgramArguments` (macOS, read back through
+   `plutil`; its fourth argument, the log file, is kept for the failure
+   messages), the env file beside it, and the token/bind/port from that
+   file — read with `EnvironmentFile=` semantics, never `source`d. Running
+   as root is refused outright. An install directory this user cannot write
+   to (the pre-#392 root-owned `/opt` layout is the usual case) is refused
+   with the installer's `--migrate-from-opt` step; the command never takes
+   a privilege it does not have.
+2. **Take the transaction lock** — `<bin>.update.lock` beside the resolved
+   binary, `flock`-style, non-blocking. A competing `update` or `rollback`
+   on the same install (a manual run racing #394's scheduled one) reports
+   *busy*, exits **75**, and changes nothing; the lock dies with the
+   process, so a crashed run cannot wedge the next. The one busy that
+   is waited out (2 s, bounded) is a lock whose note names *this very
+   process*: a `flock` outlives its `File` while any child forked in the
+   window between fork and exec still holds an inherited reference, and
+   that is a stale reference to our own lock, not another transaction — a
+   note naming any other pid is busy at once. It serialises these two
+   commands against each other only — `install.sh` and `redeploy.sh` write
+   the same `.new`/`.prev` without it, so they are not to be run during an
+   update. Then the **service manager must answer** (`systemctl --user
+   show-environment` / `launchctl print gui/<uid>`) and must not name this
+   process as the service: a manager discovered unreachable at the restart,
+   after the swap, is the half-applied update this design exists to prevent,
+   and restarting the service must never kill the process that owes the
+   health check and the rollback.
+3. **Resolve the concrete release** behind `/releases/latest` and fetch
+   *that tag's* `agent-latest.json` and `.minisig`, so two independently
+   moving redirects can never pair one release's feed with another's
+   signature. The feed's **exact served bytes** are verified under the
+   compiled-in trust set (§5) before they are decoded, and its `version`
+   must be the tag's.
+4. **Hash the installed executable** and compare it with the feed's entry for
+   this host's triple. Equal bytes mean *already current*: no binary
+   download, no `.new`, no `.prev`, no restart — even when the feed's version
+   differs (§3 explains why that can happen). Bytes on disk are not a running
+   service, though: the endpoint is asked for the version those bytes claim
+   (their own `--version`, not the feed's), and "current *and* serving" is
+   exit 0, while "current but the service reports something else" — an
+   earlier run interrupted between its swap and its restart — is a distinct
+   non-zero outcome whose remedy is a restart, never a download.
+5. Otherwise **the feed must be newer** than the installed CalVer (read by
+   executing the installed binary's `--version`). Every release's feed
+   signature is valid on its own, so an older, validly signed pair replayed
+   onto a newer release would otherwise read as "the newest release wants
+   these bytes". An installed binary that carries no version cannot be
+   compared and is **refused**, not assumed older — re-running `install.sh`
+   is the way onto a published release from there. A deliberate downgrade is
+   `install.sh`'s pinned form, never this command's.
+6. **Download into memory** and verify the binary's plain minisign signature
+   under either trusted key **and** its SHA-256 against the authenticated
+   entry, before a byte reaches disk. Both: the signature says we published
+   these bytes, the hash says they are the bytes this feed entry is about,
+   and a valid signature over the wrong binary fails the second.
+7. **Stage** `<bin>.new` (mode 0755, beside the live path) and execute the
+   staged candidate's `--version`; it must be the feed's CalVer. A candidate
+   that cannot name it is removed, never installed.
+8. **Copy the live executable to `<bin>.prev`** (through a sibling and a
+   rename, so a crash mid-copy cannot leave a truncated rollback anchor), then
+   **`rename()` `.new` over the live path.** A running executable is never
+   overwritten in place — Linux answers `ETXTBSY`, and arm64 macOS kills a
+   process whose signed pages change under it — and the live path is never
+   absent for even an instant, so a `KeepAlive`/`Restart=always` respawn in
+   that window cannot fail to exec.
+9. **Restart the metrics service** — `systemctl --user restart solador-agent`
+   or `launchctl kickstart -k gui/<uid>/app.solador.agent` — and **poll the
+   authenticated `/v1/health`** (the same wildcard→loopback and bracketed-IPv6
+   rules as `lib.sh`, fifteen one-second polls) until it reports the
+   installed CalVer. A service-manager success, or an HTTP 200 carrying a
+   stale or absent `version`, is **not** an installed update.
+10. **On any failure after step 8, restore `.prev`** through the same
+    stage-and-rename, restart, and require the *previous* version back. The
+    command exits non-zero **either way** — **5** when recovery worked (the
+    host is on its previous binary and needs a human to look at why), **3**
+    when recovery also failed (both failures named, and what is at the live
+    path now — the candidate, or the previous binary restored but not
+    verified; the service may be down). A recovery that failed is never
+    reported as a rollback.
 
-Step 7 is the only behavioural addition. Today's `redeploy.sh` verifies and
-reports, leaving a bad binary in place for a human to roll back. On a stranger's
-unattended host there is no human, and "verified, failed, left it broken" is how
-a monitoring outage becomes a silent one.
+`solador-agent rollback` is the explicit, **offline** form of step 10: no
+feed request, no key needed. It refuses when there is no `.prev`, touching
+nothing; otherwise it swaps the live binary and `.prev` (so the binary rolled
+back over becomes the new `.prev`, and a second `rollback` rolls forward),
+restarts, and verifies the restored version where the previous binary can
+name one — and **liveness only** where it cannot, saying so, because the one
+case rollback exists for is a source-built `.prev` from a shallow checkout
+that carries no version.
 
-`solador-agent rollback` remains available as an explicit command.
+Exit codes are a contract for #394's scheduled job: `0` updated, or
+already current and serving; `1` failed with nothing changed (and a
+`rollback` that did not come back or was left half done — both its own,
+named states); `3` failed *and* not restored; `4` no applicable release —
+the feed is not newer than what is installed, which a from-source host
+running ahead of the last tag answers every day and is not an alert; `5`
+failed with the previous binary back and serving; `75` busy (naming the
+holder's pid and start time); `2` usage.
+
+**The release base is compiled in** (`RELEASE_BASE`, `agent/src/update.rs`)
+and every URL — discovery, feed, binary — is constructed from it and
+checked against it, so a feed cannot send a download elsewhere. The
+corollary is that **renaming the repository or the organisation strands
+every installed agent** at discovery until it is reinstalled from a
+checkout; that has happened once already (`devcanopy` → `solador`), and a
+second time is a fleet recall, not a rename.
+
+**What is fed to `update` never reaches a shell**: the env file is parsed, the
+token goes into exactly one `Authorization` header (the local health probe),
+and it appears in no output. From the host's own environment the command
+reads `HOME` (where the install is resolved under), the standard proxy
+variables for the github.com client only (the health probe of this host's
+own service is deliberately proxy-free, so an `HTTP_PROXY` without a
+`NO_PROXY` cannot roll back every update), and `SOLADOR_AGENT_LAUNCHD_LABEL`
+— the same throwaway-label seam `install.sh` honours, validated the same
+way — so the test harness can update a disposable LaunchAgent beside a real
+one. Every failure that leaves a service to look at ends with the manager's
+status command and the log path.
 
 **Unattended checking ships off by default**, opt-in at install
 (`--enable-timer`): a systemd timer on Linux, a launchd agent on macOS. People
 running a monitoring agent on their own servers should not get surprise
-restarts; those who want hands-off can ask.
+restarts; those who want hands-off can ask. **That is #394 and is not built**;
+`install.sh` refuses `--enable-timer` by name until it is.
 
 ### 5. Signing and trust
 
@@ -371,16 +498,83 @@ with no override — before the candidate is made executable, asked its version,
 installed, or allowed to stop anything already running. That is §6's contract,
 and its test is the proven-to-fail one the Testing section below demands.
 
-The two remaining halves of this section — the compiled-in public key and the
-**two**-key rotation window — belong to the `update` child and are **not built
-yet**. Nothing in the agent *binary* verifies a signature today; the installer
-does.
+**Shipped in #393 — the agent's own verifying half, and the rotation window.**
+`agent/build.rs` compiles the trust set in from two files:
+`agent/release-signing-key.pub` (its absence is a build failure — an updater
+that trusts nothing would call every feed forged) and, when it is committed,
+`agent/release-signing-key-next.pub`. `agent/src/update.rs` decodes them with
+`minisign-verify` — the crate the producer already uses, so consumer and
+producer cannot disagree about what verifies — and holds every signature it
+checks (the feed's, the binary's) to the same rules the producer applies: a
+prehashed plain-minisign signature whose trusted comment is the asset's own
+name, under **either** trusted key. A key listed twice is refused as a trust
+set (one key twice is one key), and a signature from a third key names the
+ids it did trust in the refusal. Nothing is fetched, nothing is read from disk
+at run time, and there is no override: a loopback release base exists for the
+tests and cannot be configured into a shipped binary.
 
 **Rotation must ship on day one.** A key compiled into a binary cannot be
 rotated by the update path it protects: if it is lost or compromised, every
 deployed agent is stranded and every user must reinstall by hand. The agent
 therefore accepts **two** valid public keys from the first release, so rotation
 is a release rather than a recall.
+
+**The standby, and where its halves live.** `docs/SECRETS.md` is the
+authority on the topology; in one line: the active key's private half is
+Doppler `solador/prd` → `SOLADOR_AGENT_SIGNING_PRIVATE_KEY`, synced to the
+GitHub `prd` environment and read by the two release jobs; the standby's is
+Doppler `solador/custody` → `SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY`, in a
+config that syncs **nowhere**, read by nothing. It is provisioned exactly
+once by `scripts/agent-standby-key.sh` — non-printing, idempotent, custody
+proven with the value retrieved back from Doppler under the stock `minisign`
+— and its public half is committed as `agent/release-signing-key-next.pub`.
+
+**Staged rotation, when the day comes** — each step a separate, authorised
+decision, and #393 performs only the first:
+
+1. **Ship trust in both keys.** Every agent from this release on verifies
+   under the active key *or* the standby. (Done: this is what #393 built.)
+2. **Verify fleet uptake.** A host still running a one-key agent will reject
+   a release signed under the standby; the update feed's hash rule means it
+   will simply stop at "signature does not verify" and keep serving. Confirm
+   the hosts that matter report a two-key version (`/v1/health`'s `version`)
+   before anything switches.
+3. **Switch the active signer, in one release** — separately authorised.
+   The trust set has exactly two slots, so a switch that kept the old
+   active key trusted "for the window" would need a third; instead the
+   release that switches also **replaces the standby**, and hosts that
+   updated under the old key still verify it because they already trust the
+   (old) standby that is now signing. One PR, naming everything it moves:
+   `agent/release-signing-key.pub` ← the old `-next.pub` (the standby S
+   becomes the active key); `solador/prd`'s
+   `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` ← S's private half, moved out of
+   `solador/custody` (delete it there — the custody secret is then empty);
+   `agent/release-signing-key-next.pub` removed; then
+   `scripts/agent-standby-key.sh` run once to mint S2 into the empty custody
+   secret and commit its public half as the new `-next.pub`; and the three
+   pins of the old active id updated — `crates/updatefeed`'s
+   `the_committed_agent_key_is_the_provisioned_one_and_its_comment_agrees`,
+   `agent/src/update.rs`'s trust-set test, and
+   `agent/tests/update_flow.rs`'s real-feed assertion. The custody script is
+   *unusable* between those steps by design (it refuses a secret without a
+   file and a file without a secret), which is why they are one PR.
+   `scripts/build-agent.sh --sign`'s re-verification against the committed
+   file is what catches a half-done switch at release time.
+4. **Confirm the new window.** The release cut from that PR ships trust in
+   {S, S2}; hosts that updated under the old active key A before the switch
+   trust {A, S} and verify it under S; a host still on a pre-#393 build
+   trusts nothing and updates through `install.sh`. A is retired the moment
+   no host needs it — which the fleet's `/v1/health` versions tell you.
+
+**What two accepted keys do and do not give, stated so nobody reads more
+into them.** They give **continuity**: as long as one of the two private
+halves is controlled, a release can be cut that every deployed agent
+verifies. They do **not** revoke a compromised key — an agent accepts either
+until a release ships that stops listing it, and that release must itself be
+signed under a key the agent still trusts. And they are **not** an
+anti-replay mechanism: every release's signatures stay valid forever, and it
+is §4's *newer-than* rule, not the key count, that stops an older validly
+signed feed being replayed onto a host.
 
 **Accepted risk, stated explicitly:** a tag push publishes a release, and
 GitHub branch rulesets do not cover tag refs. The release trigger is the least
@@ -407,7 +601,7 @@ not grow a dependency on it: the feed's job is the hash comparison the
 The `/releases/latest` redirect is authenticated by HTTPS only; an
 intercepting proxy could steer a fresh install to an older, validly signed
 release, and every check below would pass. That is the downgrade §4's updater
-is designed to refuse (by hash, against something already installed) — an
+refuses (by its newer-than rule, against the CalVer already installed) — an
 install has nothing installed to compare against, and `SOLADOR_AGENT_RELEASE`
 is the operator's pin when it matters. A *re-run* does have something to
 compare against — the binary already serving — so on the unpinned path it
@@ -498,9 +692,18 @@ green test suite is exactly how that survives review.
 
 Also required:
 
-- **Hash-skip:** same content, different version → no swap, no restart.
-- **Rollback:** a failed post-restart health check restores `.prev` and exits
-  non-zero.
+- **Hash-skip — SHIPPED (#393):** same content, different version → no swap,
+  no restart. `agent/tests/update_flow.rs` serves a feed whose entry hashes
+  to the installed bytes under a newer version and asserts exit 0, no
+  request for the binary, no `.new`, no `.prev`, no restart.
+- **Rollback — SHIPPED (#393):** a failed post-restart health check restores
+  `.prev` and exits non-zero. The same suite drives a stale version after
+  restart, a service that never comes up, a manager that refuses the
+  restart, and a manager that refuses the *recovery's* restart too —
+  asserting the bytes at the live path and at `.prev` afterwards, the
+  restart count, and that the last case is a distinct exit code (3) that
+  never claims a rollback. The opt-in `launchd_smoke` does the first of
+  those on a real throwaway LaunchAgent with the real built agent.
 - **Feed parsing** against a locally served fixture; no network in tests.
   The producer half of this is shipped: `crates/updatefeed::agent`'s tests run
   over `tests/fixtures/agent/` — four stand-in binaries signed by the pinned
@@ -509,7 +712,12 @@ Also required:
   committed document, plain-minisign acceptance, and refusal of a tampered
   binary, a foreign key, a lifted signature, a missing or fifth target, a feed
   whose served bytes changed by one character (or lost its final newline), and
-  the app's base64-wrapped signature form in either direction.
+  the app's base64-wrapped signature form in either direction. **The consumer
+  half is shipped too** (#393): the agent's own tests read the same committed
+  pair, accept it under its key, refuse it after one character moves or the
+  final newline goes, and refuse it under the production key; and the
+  end-to-end suite serves feeds it builds and signs in-test from a loopback
+  axum server.
 - **Platform matrix — SHIPPED.** Each published binary executes `--version` on a
   matching runner before the release is published: `release-agent-verify` is a
   four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
@@ -536,9 +744,22 @@ than letting a checked box imply all of them:
   `minisign` the cases report as `SKIP`, never as passes; both CI legs that
   run the suite (`agent-tests` on Linux, `rust-workspace` under macOS stock
   bash 3.2) install it and make those skips failures.
-- What is **not** built is the agent-side check. Nothing in the agent *binary*
-  verifies a signature yet — that arrives with the `update` subcommand, and
-  the same proven-to-fail requirement binds that change.
+- **The agent-side check is built and proven the same way** (#393).
+  `agent/tests/update_flow.rs` mints keys from fixed seeds in-test and signs
+  in the documented minisign format (a self-test first proves the shipped
+  verifier accepts those signatures and rejects a moved byte), then drives
+  `update` against a tampered feed, a tampered binary, a third key, a valid
+  signature over the wrong binary, a feed naming another release, a missing
+  target and a malformed document — each asserted to leave the live path,
+  `.prev`, `.new` and the restart count untouched, with no binary request
+  where the feed was the thing refused. The proven-to-fail step was done on
+  the PR that shipped it: with `Trust::verify` short-circuited to accept
+  everything, nine tests went red — four unit tests (the moved byte, the
+  untrusted key, the mislabelled signature, the hash mismatch) and five
+  end-to-end (the tampered feed, the tampered binary, the third key, the
+  signer's own self-test, and — because the reported key id stopped being
+  the signer's — the either-key test) — and green again with the guard
+  restored. Any change to that function is held to the same experiment.
 
 ## Open items
 

@@ -65,7 +65,53 @@ time = { version = "0.3", features = ["formatting", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# --- `solador-agent update` / `rollback` (#393) ---------------------------
+# The updater verifies the feed and the downloaded binary IN THIS BINARY, under
+# the public key(s) `build.rs` compiles in from `agent/release-signing-key*.pub`.
+# It does NOT depend on `crates/updatefeed` — that crate is the feed PRODUCER,
+# release tooling, and `scripts/agent-deps-guard.sh` fails CI on that edge — so
+# the verifier is `minisign-verify` used directly, at the same `^0.2` the
+# producer and `tauri-plugin-updater` resolve, so one implementation exists in
+# the workspace and the consumer cannot disagree with the producer about what
+# verifies.
+minisign-verify = "0.2"
+# SHA-256 over the installed executable, compared against the feed's per-target
+# hash to decide whether a release changed the agent at all. Same pin as
+# crates/openclaw and crates/updatefeed, so one sha2 resolves.
+sha2 = "0.11"
+hex = "0.4"
+# Only to read the key id out of a compiled-in public key's base64 line, the
+# way `minisign -V` prints it, so a refusal can name which key it did not
+# match. 0.23 is what crates/openclaw and crates/updatefeed resolve; reqwest's
+# own tree brings 0.22 beside it regardless, so this adds no third copy.
+base64 = "0.23"
+# HTTPS to github.com for the feed and the binary, plain HTTP to the agent's
+# own bind address for the post-restart health probe. `rustls-tls` bundles the
+# webpki roots, so a statically linked musl build on a distro with no CA store
+# still verifies GitHub's certificate; same reqwest/TLS stack the workspace's
+# other crates resolve, no `json` feature (serde_json decodes the two bodies).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[target.'cfg(unix)'.dependencies]
+# `getuid` for the launchd `gui/<uid>` domain and `access(W_OK)` for the
+# install-directory writability refusal. Already a transitive dependency of
+# tokio; this is a new edge, not a new package.
+libc = "0.2"
+
 [dev-dependencies]
 # `ServiceExt::oneshot` drives the router in auth middleware tests.
 tower = { version = "0.5", features = ["util"] }
+# Deterministic minisign signing for the updater's tests (#393): keypairs from
+# fixed seeds, signatures assembled in the documented minisign format (Ed25519
+# over BLAKE2b-512 of the payload, then a global signature over sig+trusted
+# comment). Test-only — the shipped binary VERIFIES and never signs. dalek v3
+# is what crates/openclaw already resolves; blake2 is the one new package, and
+# it is the prehash minisign specifies. 0.10, not 0.11, on a count: 0.10 sits
+# on the `digest 0.10` the lock already carries (via sha2 0.10, tauri's) and
+# adds exactly one package; 0.11 adds `cmov` and `ctutils` beside it (measured
+# with `cargo update -p blake2`).
+ed25519-dalek = "3"
+blake2 = "0.10"
+# Loopback "release server" and temp install trees for the transaction tests.
+tempfile = "3"
 
