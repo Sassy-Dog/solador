@@ -50,6 +50,8 @@ unset STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS STUB_CURL_REDIRECT STUB_CURL_BODY
 unset STUB_LAUNCHCTL_DOMAIN_EXIT STUB_LAUNCHCTL_LOADED_EXIT STUB_LAUNCHCTL_BOOTSTRAP_EXIT
 unset STUB_LAUNCHCTL_DISABLED_LABEL STUB_LAUNCHCTL_DISABLED_WORD STUB_PLUTIL_EXIT
 unset STUB_SYSTEMCTL_USER_EXIT STUB_TAILSCALE_IP STUB_CURL_FIXTURES
+unset STUB_SYSTEMCTL_TIMER_EXIT STUB_SYSTEMCTL_IS_ENABLED STUB_PLUTIL_FAIL_MATCH STUB_PROBE_EXIT
+unset STUB_DATE_EPOCH STUB_DATE_EXIT STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SYSCTL_EXIT STUB_SYSCTL_ARGV
 
 # ---- harness ----------------------------------------------------------------
 
@@ -225,7 +227,18 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/solador-deploy-test.XXXXXX")" || exit 1
 # symlink (/var -> /private/var), so a literal comparison would fail on a
 # difference that is not one.
 TMP="$(cd "$TMP" && pwd -P)"
-cleanup() { rm -rf "$TMP"; }
+# The opt-in launchd smoke registers the throwaway services it bootstraps
+# here (space-separated `gui/<uid>/<label>` ids), so an interrupted run —
+# Ctrl-C mid-poll — does not leave a KeepAlive job respawning a binary from
+# a $TMP that is about to be removed.
+SMOKE_SERVICES=""
+cleanup() {
+    local svc
+    for svc in $SMOKE_SERVICES; do
+        launchctl bootout "$svc" >/dev/null 2>&1 || true
+    done
+    rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 STUBS="$TMP/stubs"
@@ -333,7 +346,10 @@ printf '%s\n' "${STUB_SW_VERS-15.6}"
 STUB
 
 # systemctl: `--user show-environment` (the reachability preflight) answers
-# STUB_SYSTEMCTL_USER_EXIT; everything else succeeds.
+# STUB_SYSTEMCTL_USER_EXIT; `is-enabled` prints STUB_SYSTEMCTL_IS_ENABLED
+# (default `enabled`, exit 1 for anything else, like the real one); enabling
+# the update timer answers STUB_SYSTEMCTL_TIMER_EXIT; everything else
+# succeeds.
 cat > "$STUBS/systemctl" <<'STUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_SYSTEMCTL_ARGV:-}" ]; then
@@ -341,6 +357,14 @@ if [ -n "${STUB_SYSTEMCTL_ARGV:-}" ]; then
 fi
 case "${2:-}" in
     show-environment) exit "${STUB_SYSTEMCTL_USER_EXIT:-0}" ;;
+    is-enabled)
+        printf '%s\n' "${STUB_SYSTEMCTL_IS_ENABLED:-enabled}"
+        [ "${STUB_SYSTEMCTL_IS_ENABLED:-enabled}" = "enabled" ] && exit 0
+        exit 1
+        ;;
+esac
+case "$*" in
+    *"solador-agent-update.timer"*) exit "${STUB_SYSTEMCTL_TIMER_EXIT:-0}" ;;
 esac
 exit 0
 STUB
@@ -392,17 +416,62 @@ STUB
 
 # plutil: real where it exists (macOS), so the rendered plist is genuinely
 # linted there; a yes-man on Linux, which has no plutil to lint with.
-# STUB_PLUTIL_EXIT forces a lint verdict, for the failure path.
+# STUB_PLUTIL_EXIT forces a lint verdict, for the failure path;
+# STUB_PLUTIL_FAIL_MATCH fails only a lint whose argv contains that string,
+# so the updater plist can fail its lint while the metrics plist passes.
 cat > "$STUBS/plutil" <<'STUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_PLUTIL_EXIT:-}" ]; then
     exit "$STUB_PLUTIL_EXIT"
+fi
+if [ -n "${STUB_PLUTIL_FAIL_MATCH:-}" ]; then
+    case "$*" in
+        *"$STUB_PLUTIL_FAIL_MATCH"*) exit 1 ;;
+    esac
 fi
 if [ -x /usr/bin/plutil ]; then
     exec /usr/bin/plutil "$@"
 fi
 exit 0
 STUB
+
+# The two clocks the launcher's update-mode guard reads (#394), in their own
+# directory so they are on PATH only for the launcher cases that need them.
+# `date +%s` answers STUB_DATE_EPOCH (anything else — the launcher's own log
+# timestamps — goes to the real date); `sysctl -n kern.waketime` and
+# `kern.boottime` print launchd's `{ sec = N, usec = M } …` shape from
+# STUB_WAKETIME_SEC / STUB_BOOTTIME_SEC, or fail with STUB_SYSCTL_EXIT, and
+# record every call in STUB_SYSCTL_ARGV so a test can prove the metrics path
+# never asked.
+STUBS_CLOCK="$TMP/stubs-clock"
+mkdir -p "$STUBS_CLOCK"
+REAL_DATE="$(command -v date)"
+cat > "$STUBS_CLOCK/date" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = "+%s" ] && [ -n "\${STUB_DATE_EXIT:-}" ]; then
+    exit "\$STUB_DATE_EXIT"
+fi
+if [ "\${1:-}" = "+%s" ] && [ -n "\${STUB_DATE_EPOCH:-}" ]; then
+    printf '%s\\n' "\$STUB_DATE_EPOCH"
+    exit 0
+fi
+exec "$REAL_DATE" "\$@"
+STUB
+cat > "$STUBS_CLOCK/sysctl" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_SYSCTL_ARGV:-}" ]; then
+    printf '%s\n' "$*" >> "$STUB_SYSCTL_ARGV"
+fi
+if [ -n "${STUB_SYSCTL_EXIT:-}" ]; then
+    exit "$STUB_SYSCTL_EXIT"
+fi
+case "${2:-}" in
+    kern.waketime) printf '{ sec = %s, usec = 550946 } Fri Sep 11 16:17:31 2026\n' "${STUB_WAKETIME_SEC:-0}" ;;
+    kern.boottime) printf '{ sec = %s, usec = 442275 } Wed Aug 26 17:39:31 2026\n' "${STUB_BOOTTIME_SEC:-0}" ;;
+    *) exit 1 ;;
+esac
+STUB
+chmod +x "$STUBS_CLOCK"/*
 
 
 cat > "$STUBS/tailscale" <<'STUB'
@@ -1313,15 +1382,20 @@ make_checkout() {
     mkdir -p "$CHECKOUT/agent/deploy"
     cp "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR/run-agent.sh" \
        "$SCRIPT_DIR/solador-agent.service" "$SCRIPT_DIR/app.solador.agent.plist" \
+       "$SCRIPT_DIR/solador-agent-update.service" "$SCRIPT_DIR/solador-agent-update.timer" \
+       "$SCRIPT_DIR/app.solador.agent.update.plist" \
        "$CHECKOUT/agent/deploy/"
     cp "$pubkey" "$CHECKOUT/agent/release-signing-key.pub"
 }
 
 # make_fixture <version> <triple> <seckey|-> [exec-marker]
 # Writes FIXTURES/solador-agent-<version>-<triple> — a stub agent that answers
-# --version, and that records having been EXECUTED by touching <exec-marker>
-# (the canary the rejection cases assert on) — plus its .minisig, unless the
+# --version, that records having been EXECUTED by touching <exec-marker>
+# (the canary the rejection cases assert on), and that appends its argv to
+# AGENT_ARGV (so "no update check was made" is asserted on what the binary
+# was actually asked, not on curl's argv) — plus its .minisig, unless the
 # key is "-".
+AGENT_ARGV="$TMP/agent-argv"
 make_fixture() {
     local version="$1" triple="$2" seckey="$3" marker="${4:-}" f
     mkdir -p "$FIXTURES"
@@ -1329,6 +1403,7 @@ make_fixture() {
     cat > "$f" <<STUB
 #!/bin/sh
 [ -n "$marker" ] && : > "$marker"
+printf '%s\\n' "\$*" >> "$AGENT_ARGV"
 if [ "\$1" = "--version" ]; then
     printf '%s\n' '$version'
     exit 0
@@ -1378,6 +1453,42 @@ systemctl_mutated() {
     grep -qE "(daemon-reload|enable|restart|stop|disable|start)" "$STUB_SYSTEMCTL_ARGV" 2>/dev/null
 }
 
+# Does any unattended-update job exist under this HOME — the Linux timer or
+# oneshot, or a macOS updater plist (under any label)? The default install's
+# contract (#394) is that the answer is no, and this is the one place that
+# spells out what "no" covers.
+updater_installed() {
+    local home="$1"
+    [ -e "$home/.config/systemd/user/solador-agent-update.timer" ] && return 0
+    [ -e "$home/.config/systemd/user/solador-agent-update.service" ] && return 0
+    ls "$home/Library/LaunchAgents"/*.update.plist >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# Did the installer ask a service manager to CHANGE anything about the
+# updater? A default install and a no-flag re-run must not — no enable, no
+# disable, no start, no bootstrap, no bootout, no kickstart — or "off by
+# default" and "an earlier opt-in is left alone" are claims about source
+# text rather than behaviour. Read-only queries (`is-enabled`, `print`) are
+# how the summary line reports the job's state and are not changes.
+manager_changed_updater() {
+    # Captured, then matched — not `grep | grep -q`, which can take SIGPIPE
+    # under pipefail (the flake install.sh's own comments record).
+    local lines
+    lines="$(grep -E '^--user (enable|disable|start|stop|restart)' "$STUB_SYSTEMCTL_ARGV" 2>/dev/null || true)"
+    case "$lines" in *solador-agent-update*) return 0 ;; esac
+    lines="$(grep -E '^(bootstrap|bootout|enable|disable|kickstart) ' "$STUB_LAUNCHCTL_ARGV" 2>/dev/null || true)"
+    case "$lines" in *.update*) return 0 ;; esac
+    return 1
+}
+
+# Was the installed agent ever asked to `update`? The default install, the
+# no-flag re-run and the opt-in itself must never make an update check; the
+# fixture binary records every argv it is invoked with.
+agent_asked_to_update() {
+    grep -qx 'update' "$AGENT_ARGV" 2>/dev/null
+}
+
 # Reset the argv logs the assertions read.
 reset_argv_logs() {
     export STUB_CURL_ARGV="$TMP/curl-argv"
@@ -1386,6 +1497,7 @@ reset_argv_logs() {
     : > "$STUB_CURL_ARGV"
     : > "$STUB_SYSTEMCTL_ARGV"
     : > "$STUB_LAUNCHCTL_ARGV"
+    : > "$AGENT_ARGV"
 }
 
 # assert_untouched <name> <home>: no env file, no binary, no unit, no plist,
@@ -1396,6 +1508,7 @@ assert_untouched() {
     [ -e "$home/.local/bin/solador-agent" ] && problems="$problems binary"
     [ -e "$home/.config/systemd/user/solador-agent.service" ] && problems="$problems unit"
     [ -e "$home/Library/LaunchAgents/app.solador.agent.plist" ] && problems="$problems plist"
+    updater_installed "$home" && problems="$problems updater"
     systemctl_mutated && problems="$problems systemctl-was-called"
     grep -qE '^(bootstrap|bootout)' "$STUB_LAUNCHCTL_ARGV" 2>/dev/null && problems="$problems launchctl-was-called"
     if [ -z "$problems" ]; then
@@ -1423,10 +1536,20 @@ test_install_arguments() {
         pass "an unknown argument downloads nothing"
     fi
 
-    # #394's flag, named so the refusal can point at it.
-    run_install "$home" --enable-timer
-    assert_eq "install.sh refuses --enable-timer (it is #394's)" "2" "$?"
-    assert_output_has "the refusal names #394" "$(cat "$INSTALL_OUT")" "#394"
+    # #394's flag is accepted — and an unknown argument beside it is still
+    # refused before anything happens, in either order. "Unknown options
+    # fail before installation" has to hold for the run that opts in, or the
+    # opt-in is what a typo turns into.
+    reset_argv_logs
+    run_install "$home" --enable-timer --frobnicate
+    assert_eq "install.sh refuses an unknown argument beside --enable-timer" "2" "$?"
+    assert_untouched "an unknown argument beside --enable-timer changes nothing" "$home"
+    reset_argv_logs
+    run_install "$home" --frobnicate --enable-timer
+    assert_eq "install.sh refuses an unknown argument ahead of --enable-timer" "2" "$?"
+    assert_untouched "an unknown argument ahead of --enable-timer changes nothing" "$home"
+    assert_output_has "the unknown-argument refusal lists --enable-timer as a known one" \
+        "$(cat "$INSTALL_OUT")" "[--enable-timer]"
 
     run_install "$home" --help
     assert_eq "install.sh --help exits 0" "0" "$?"
@@ -2297,6 +2420,578 @@ PY
     unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS
 }
 
+# ---- the unattended update job (#394) ----------------------------------------
+#
+# Off by default, opt-in with --enable-timer, preserved by a re-run without
+# it, revoked only by the documented commands — each observed as what the
+# installer did and did not do to the temporary HOME and to the stubbed
+# service manager, not read out of the script. The metrics service is
+# installed and running in every one of these; only the updater varies.
+
+test_install_update_timer_linux() {
+    local home="$TMP/home-timer" env_file unit bin out update_unit update_timer
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh: --enable-timer (Linux)"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
+    export STUB_TAILSCALE_IP="100.64.0.9"
+
+    env_file="$home/.config/solador-agent.env"
+    unit="$home/.config/systemd/user/solador-agent.service"
+    update_unit="$home/.config/systemd/user/solador-agent-update.service"
+    update_timer="$home/.config/systemd/user/solador-agent-update.timer"
+    bin="$home/.local/bin/solador-agent"
+
+    # ---- a fresh default install: metrics yes, updater no, no check ----
+    reset_argv_logs
+    INSTALL_STDIN="fresh-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: fresh default install (Linux, no --enable-timer)" "0" "$INSTALL_STATUS"
+    assert_file_has "the default install still enables the metrics unit" "$STUB_SYSTEMCTL_ARGV" "--user enable solador-agent"
+    assert_file_has "the default install still restarts the metrics unit" "$STUB_SYSTEMCTL_ARGV" "--user restart solador-agent"
+    if updater_installed "$home"; then
+        fail "a default install writes no updater unit or timer" "$(ls "$home/.config/systemd/user")"
+    else
+        pass "a default install writes no updater unit or timer"
+    fi
+    if manager_changed_updater; then
+        fail "a default install asks systemd to change nothing about an updater" "$(grep update "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a default install asks systemd to change nothing about an updater"
+    fi
+    if agent_asked_to_update; then
+        fail "a default install never asks the agent to update" "$(cat "$AGENT_ARGV")"
+    else
+        pass "a default install never asks the agent to update"
+    fi
+    assert_file_has "the fixture agent records its argv, so the assertion above is live" "$AGENT_ARGV" "--version"
+    assert_output_has "the default install reports unattended updates as off, naming the flag" \
+        "$out" "Unattended updates: off (opt in with"
+
+    # ---- opting in: a timer and a oneshot, enabled, and nothing fired ----
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home" --enable-timer
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: --enable-timer (Linux)" "0" "$INSTALL_STATUS"
+    [ -f "$update_unit" ] && pass "--enable-timer writes the update oneshot" \
+        || fail "--enable-timer writes the update oneshot" "$out"
+    [ -f "$update_timer" ] && pass "--enable-timer writes the update timer" \
+        || fail "--enable-timer writes the update timer" "$out"
+    assert_file_has "the oneshot runs the absolute installed binary with 'update'" \
+        "$update_unit" "ExecStart=$bin update"
+    assert_file_has "the oneshot is Type=oneshot" "$update_unit" "Type=oneshot"
+    assert_file_has "the oneshot treats exit 4 (not newer) as success" "$update_unit" "SuccessExitStatus=4"
+    if grep -q '^EnvironmentFile=' "$update_unit"; then
+        fail "the oneshot does not load the env file into its own environment" "EnvironmentFile= is in $update_unit"
+    else
+        pass "the oneshot does not load the env file into its own environment"
+    fi
+    if grep -q '@SOLADOR_AGENT_BIN@' "$update_unit"; then
+        fail "the oneshot's placeholder was rendered" "@SOLADOR_AGENT_BIN@ survived"
+    else
+        pass "the oneshot's placeholder was rendered"
+    fi
+    if grep -q 'fresh-tok-MUST-NOT-BE-PRINTED' "$update_unit" "$update_timer"; then
+        fail "the token is in neither the oneshot nor the timer" "it is"
+    else
+        pass "the token is in neither the oneshot nor the timer"
+    fi
+    # The cadence: monotonic, daily, first firing a day after the timer
+    # starts; no realtime OnCalendar (fires on resume when its time passed
+    # during sleep), no Persistent (would replay a missed firing), no
+    # WakeSystem (would select the clock that runs through suspend).
+    assert_file_has "the timer's first firing is 24h after it starts" "$update_timer" "OnActiveSec=24h"
+    assert_file_has "the timer then fires 24h after each run" "$update_timer" "OnUnitActiveSec=24h"
+    if grep -qE '^(OnCalendar|Persistent|WakeSystem|OnBootSec|OnStartupSec)=' "$update_timer"; then
+        fail "the timer uses no realtime, persistent or wake-capable trigger" \
+            "$(grep -E '^(OnCalendar|Persistent|WakeSystem|OnBootSec|OnStartupSec)=' "$update_timer")"
+    else
+        pass "the timer uses no realtime, persistent or wake-capable trigger"
+    fi
+    assert_eq "the timer is installed verbatim from the template" \
+        "$(cat "$SCRIPT_DIR/solador-agent-update.timer")" "$(cat "$update_timer")"
+    assert_file_has "the timer is enabled and started" "$STUB_SYSTEMCTL_ARGV" "--user enable --now solador-agent-update.timer"
+    if grep -qE '^--user (start|restart) solador-agent-update(\.service)?$' "$STUB_SYSTEMCTL_ARGV"; then
+        fail "opting in never starts the oneshot itself (no check on enable)" \
+            "$(grep -E 'solador-agent-update(\.service)?$' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "opting in never starts the oneshot itself (no check on enable)"
+    fi
+    if grep -qE '^--user restart solador-agent-update.timer$' "$STUB_SYSTEMCTL_ARGV"; then
+        fail "opting in enables the timer without restarting it" "restart would reset a running interval"
+    else
+        pass "opting in enables the timer without restarting it"
+    fi
+    # Consent is recorded after the metrics install verified, never before.
+    assert_before "the timer is enabled only after the metrics service was restarted" \
+        "$STUB_SYSTEMCTL_ARGV" "--user restart solador-agent" "enable --now solador-agent-update.timer"
+    assert_file_has "the metrics unit is still enabled on the opt-in run" "$STUB_SYSTEMCTL_ARGV" "--user enable solador-agent"
+    assert_output_has "the opt-in run says the first check is a day away" "$out" "first check in 24h"
+    assert_output_has "the opt-in run names the cadence" "$out" "daily, no catch-up"
+    if agent_asked_to_update; then
+        fail "opting in never asks the agent to update" "$(cat "$AGENT_ARGV")"
+    else
+        pass "opting in never asks the agent to update"
+    fi
+    # The "Done" block precedes the opt-in, so a scripted caller can read
+    # that the agent is serving before anything the opt-in says.
+    assert_before "the opt-in run reports the verified install before the opt-in" \
+        "$INSTALL_OUT" "installed and serving" "Unattended updates: enabled"
+
+    # ---- a re-run WITHOUT the flag preserves the opt-in, byte for byte ----
+    local unit_before timer_before
+    unit_before="$(cat "$update_unit")"
+    timer_before="$(cat "$update_timer")"
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a no-flag re-run over an opted-in host" "0" "$INSTALL_STATUS"
+    assert_eq "a no-flag re-run leaves the oneshot as it was" "$unit_before" "$(cat "$update_unit")"
+    assert_eq "a no-flag re-run leaves the timer as it was" "$timer_before" "$(cat "$update_timer")"
+    if manager_changed_updater; then
+        fail "a no-flag re-run asks systemd to change nothing about the updater (no disable, no enable)" \
+            "$(grep update "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a no-flag re-run asks systemd to change nothing about the updater (no disable, no enable)"
+    fi
+    if agent_asked_to_update; then
+        fail "a no-flag re-run never asks the agent to update" "$(cat "$AGENT_ARGV")"
+    else
+        pass "a no-flag re-run never asks the agent to update"
+    fi
+    assert_file_has "a no-flag re-run still restarts the metrics unit" "$STUB_SYSTEMCTL_ARGV" "--user restart solador-agent"
+    assert_file_has "a no-flag re-run asks systemd whether the timer is enabled" "$STUB_SYSTEMCTL_ARGV" "--user is-enabled solador-agent-update.timer"
+    assert_output_has "a no-flag re-run reports the opt-in as enabled, from systemd's answer" "$out" "Unattended updates: enabled (solador-agent-update.timer"
+    # The documented pause (`disable --now`, files stay) must not be
+    # reported as scheduled on the next no-flag re-run.
+    reset_argv_logs
+    STUB_SYSTEMCTL_IS_ENABLED=disabled INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a no-flag re-run over a paused timer" "0" "$?"
+    assert_output_has "a paused timer is reported as present but not enabled" \
+        "$(cat "$INSTALL_OUT")" "present but not enabled (systemd says 'disabled')"
+    assert_output_has "a paused timer's report names the re-enable command" \
+        "$(cat "$INSTALL_OUT")" "systemctl --user enable --now solador-agent-update.timer"
+    if manager_changed_updater; then
+        fail "a no-flag re-run does not re-enable a paused timer (consent is the operator's)" "$(grep update "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a no-flag re-run does not re-enable a paused timer (consent is the operator's)"
+    fi
+
+    # ---- a repeated opt-in: still one timer, one enable, nothing fired ----
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home" --enable-timer
+    assert_eq "install.sh: a repeated --enable-timer" "0" "$?"
+    assert_eq "a repeated opt-in enables the timer exactly once more" \
+        "1" "$(grep -c 'enable --now solador-agent-update.timer' "$STUB_SYSTEMCTL_ARGV")"
+    assert_eq "a repeated opt-in leaves exactly one timer file" \
+        "1" "$(find "$home/.config/systemd/user" -name 'solador-agent-update.timer*' | wc -l | tr -d ' ')"
+    if grep -qE '^--user (start|restart) solador-agent-update(\.service)?$' "$STUB_SYSTEMCTL_ARGV"; then
+        fail "a repeated opt-in never starts the oneshot either" "it did"
+    else
+        pass "a repeated opt-in never starts the oneshot either"
+    fi
+
+    # ---- the documented removal: only the updater goes ----
+    # `systemctl --user disable --now` is stubbed; what the test can observe
+    # is that a no-flag re-run after the files are removed does not bring
+    # them back.
+    rm -f "$update_unit" "$update_timer"
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a no-flag re-run after the updater was removed" "0" "$?"
+    if updater_installed "$home"; then
+        fail "a no-flag re-run does not re-create a removed updater" "it did"
+    else
+        pass "a no-flag re-run does not re-create a removed updater"
+    fi
+    assert_output_has "a no-flag re-run after removal reports the updater as off" \
+        "$(cat "$INSTALL_OUT")" "Unattended updates: off"
+
+    # ---- the timer failing to enable is a failed opt-in — exit 3, not 1 ----
+    # 1 is "the install failed"; this install succeeded and says so first.
+    reset_argv_logs
+    STUB_SYSTEMCTL_TIMER_EXIT=1 INSTALL_STDIN="" run_install "$home" --enable-timer
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a timer that cannot be enabled is a failed opt-in (exit 3)" "3" "$INSTALL_STATUS"
+    assert_output_has "the failed opt-in says the metrics service is fine" "$out" "only the"
+    assert_output_has "the failed opt-in names the timer to inspect" "$out" "systemctl --user status solador-agent-update.timer"
+    assert_before "the failed opt-in still reported the verified install first" \
+        "$INSTALL_OUT" "installed and serving" "unattended update job failed"
+
+    # ---- a failed metrics verification records no consent ----
+    rm -f "$update_unit" "$update_timer"
+    reset_argv_logs
+    STUB_CURL_BODY="" INSTALL_STDIN="" run_install "$home" --enable-timer
+    assert_eq "install.sh: --enable-timer over a metrics service that never answers" "1" "$?"
+    if updater_installed "$home"; then
+        fail "no updater is written when the metrics install did not verify" "it was"
+    else
+        pass "no updater is written when the metrics install did not verify"
+    fi
+    if manager_changed_updater; then
+        fail "no timer is enabled when the metrics install did not verify" "$(grep update "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "no timer is enabled when the metrics install did not verify"
+    fi
+
+    # ---- a HOME with a space: the oneshot's ExecStart is quoted ----
+    local spaced="$TMP/home timer space"
+    rm -rf "$spaced"
+    mkdir -p "$spaced"
+    reset_argv_logs
+    INSTALL_STDIN="
+" run_install "$spaced" --enable-timer
+    assert_eq "install.sh --enable-timer handles a HOME with a space (Linux)" "0" "$?"
+    assert_file_has "a spaced path is double-quoted in the oneshot's ExecStart, then 'update'" \
+        "$spaced/.config/systemd/user/solador-agent-update.service" \
+        "ExecStart=\"$spaced/.local/bin/solador-agent\" update"
+
+    # ---- an unmigrated /opt install refuses the opt-in, before anything ----
+    rm -rf "$home"
+    mkdir -p "$home/.config/systemd/user" "$home/.config"
+    local opt_bin="$TMP/fake-opt-timer/solador-agent/solador-agent"
+    mkdir -p "$(dirname "$opt_bin")"
+    printf '#!/bin/sh\necho opt-2026.8.1\n' > "$opt_bin"
+    chmod +x "$opt_bin"
+    printf '[Service]\nExecStart=%s\nEnvironmentFile=%%h/.config/solador-agent.env\n' "$opt_bin" > "$unit"
+    printf 'SOLADOR_AGENT_TOKEN=opt-tok-MUST-NOT-BE-PRINTED\nSOLADOR_AGENT_BIND=100.64.0.3\nSOLADOR_AGENT_PORT=7979\n' > "$env_file"
+    chmod 600 "$env_file"
+    reset_argv_logs
+    run_install "$home" --enable-timer
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: --enable-timer on an unmigrated /opt install is refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the /opt opt-in refusal names the combined step" "$out" "--migrate-from-opt --enable-timer"
+    if updater_installed "$home"; then
+        fail "the /opt opt-in refusal creates no updater" "it did"
+    else
+        pass "the /opt opt-in refusal creates no updater"
+    fi
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the /opt opt-in refusal downloads nothing" "curl was invoked"
+    else
+        pass "the /opt opt-in refusal downloads nothing"
+    fi
+    if systemctl_mutated; then
+        fail "the /opt opt-in refusal touches no service" "systemctl was called"
+    else
+        pass "the /opt opt-in refusal touches no service"
+    fi
+    # Both flags: migrate, then opt in, in one run.
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
+    reset_argv_logs
+    run_install "$home" --migrate-from-opt --enable-timer
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --migrate-from-opt --enable-timer migrates and opts in" "0" "$INSTALL_STATUS"
+    assert_file_has "after the migration the oneshot runs the user-owned binary" "$update_unit" "ExecStart=$bin update"
+    assert_file_has "after the migration the metrics unit runs the user-owned binary" "$unit" "ExecStart=$bin"
+    assert_file_has "after the migration the timer is enabled" "$STUB_SYSTEMCTL_ARGV" "enable --now solador-agent-update.timer"
+    case "$out" in
+        *"opt-tok-MUST-NOT-BE-PRINTED"*) fail "the migrate-and-opt-in run never prints the token" "it did" ;;
+        *) pass "the migrate-and-opt-in run never prints the token" ;;
+    esac
+
+    # ---- an install directory this user cannot write to refuses the opt-in ----
+    if [ "$(id -u)" = "0" ]; then
+        skip "install.sh: --enable-timer refuses an unwritable install directory" "running as root, which can write anywhere"
+    else
+        rm -rf "$home"
+        mkdir -p "$home/.local/bin"
+        chmod 555 "$home/.local/bin"
+        reset_argv_logs
+        run_install "$home" --enable-timer
+        out="$(cat "$INSTALL_OUT")"
+        assert_eq "install.sh: --enable-timer refuses an unwritable install directory" "1" "$INSTALL_STATUS"
+        assert_output_has "the unwritable refusal names the directory" "$out" "$home/.local/bin is not writable"
+        if [ -s "$STUB_CURL_ARGV" ]; then
+            fail "the unwritable refusal downloads nothing" "curl was invoked"
+        else
+            pass "the unwritable refusal downloads nothing"
+        fi
+        chmod 755 "$home/.local/bin"
+        # Without the flag the same directory is not this script's concern
+        # here: the install itself fails later on its own terms, and that is
+        # #392's behaviour, unchanged.
+
+        # A writable directory holding a binary this user cannot write —
+        # the shape a `sudo install` leaves — is refused the same way.
+        printf '#!/bin/sh\nexit 0\n' > "$home/.local/bin/solador-agent"
+        chmod 555 "$home/.local/bin/solador-agent"
+        reset_argv_logs
+        run_install "$home" --enable-timer
+        out="$(cat "$INSTALL_OUT")"
+        assert_eq "install.sh: --enable-timer refuses an unwritable installed binary" "1" "$INSTALL_STATUS"
+        assert_output_has "the unwritable-binary refusal names the binary" "$out" "$home/.local/bin/solador-agent is not writable"
+        if [ -s "$STUB_CURL_ARGV" ]; then
+            fail "the unwritable-binary refusal downloads nothing" "curl was invoked"
+        else
+            pass "the unwritable-binary refusal downloads nothing"
+        fi
+        chmod 755 "$home/.local/bin/solador-agent"
+    fi
+
+    # ---- as root, the opt-in is refused: the updater will not run as root ----
+    local root_stubs="$TMP/stubs-root"
+    mkdir -p "$root_stubs"
+    cat > "$root_stubs/id" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+    -u) echo 0 ;;
+    *) exec "$(command -v id)" "\$@" ;;
+esac
+STUB
+    chmod +x "$root_stubs/id"
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    INSTALL_PATH="$root_stubs:$STUBS:$TOOLBIN" run_install "$home" --enable-timer
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: --enable-timer as root is refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the root refusal says why" "$out" "refused as root"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the root refusal downloads nothing" "curl was invoked"
+    else
+        pass "the root refusal downloads nothing"
+    fi
+    INSTALL_PATH=""
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
+}
+
+test_install_update_timer_macos() {
+    local home="$TMP/home mac timer & co" plist update_plist launcher env_file bin out
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh: --enable-timer (macOS, stubbed launchctl)"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.8 aarch64-apple-darwin "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"mac","version":"2026.9.8"}'
+    export STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 STUB_SW_VERS=15.6
+
+    env_file="$home/.config/solador-agent.env"
+    plist="$home/Library/LaunchAgents/app.solador.agent.plist"
+    update_plist="$home/Library/LaunchAgents/app.solador.agent.update.plist"
+    launcher="$home/.local/bin/solador-agent-launchd"
+    bin="$home/.local/bin/solador-agent"
+    local update_log="$home/Library/Logs/solador-agent-update.log"
+
+    # ---- a fresh default install: the metrics LaunchAgent, and no updater ----
+    reset_argv_logs
+    INSTALL_STDIN="mac-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: fresh default install (macOS, no --enable-timer)" "0" "$INSTALL_STATUS"
+    assert_file_has "the default install still bootstraps the metrics LaunchAgent" \
+        "$STUB_LAUNCHCTL_ARGV" "bootstrap gui/$(id -u) $plist"
+    if updater_installed "$home"; then
+        fail "a default macOS install writes no updater plist" "$(ls "$home/Library/LaunchAgents")"
+    else
+        pass "a default macOS install writes no updater plist"
+    fi
+    if manager_changed_updater; then
+        fail "a default macOS install asks launchd to change nothing about an updater" "$(grep update "$STUB_LAUNCHCTL_ARGV")"
+    else
+        pass "a default macOS install asks launchd to change nothing about an updater"
+    fi
+    if agent_asked_to_update; then
+        fail "a default macOS install never asks the agent to update" "$(cat "$AGENT_ARGV")"
+    else
+        pass "a default macOS install never asks the agent to update"
+    fi
+    assert_output_has "the default macOS install reports unattended updates as off" "$out" "Unattended updates: off"
+
+    # ---- opting in: a second LaunchAgent, loaded, and not run ----
+    reset_argv_logs
+    INSTALL_UMASK=002 INSTALL_STDIN="" run_install "$home" --enable-timer
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: --enable-timer (macOS, stubbed launchctl)" "0" "$INSTALL_STATUS"
+    [ -f "$update_plist" ] && pass "--enable-timer writes the updater plist beside the metrics one" \
+        || fail "--enable-timer writes the updater plist beside the metrics one" "$out"
+    assert_eq "the updater plist is mode 0644 even under umask 002" "644" "$(file_mode "$update_plist")"
+    assert_file_has "the updater plist carries the sibling label" "$update_plist" "<string>app.solador.agent.update</string>"
+    assert_file_has "the updater plist names the metrics label it maintains" "$update_plist" \
+        "<string>app.solador.agent</string>"
+    assert_file_has "the updater plist ends ProgramArguments with the word update" "$update_plist" "<string>update</string>"
+    assert_file_has "the updater plist fires on a 24h interval" "$update_plist" "<integer>86400</integer>"
+    assert_file_has "the updater plist pins HOME to the install's, XML-escaped" "$update_plist" \
+        "<string>$(xml_escape "$home")</string>"
+    if grep -qE '<key>(RunAtLoad|KeepAlive|StartCalendarInterval)</key>' "$update_plist"; then
+        fail "the updater plist has no RunAtLoad, KeepAlive or StartCalendarInterval" \
+            "$(grep -E '<key>(RunAtLoad|KeepAlive|StartCalendarInterval)</key>' "$update_plist")"
+    else
+        pass "the updater plist has no RunAtLoad, KeepAlive or StartCalendarInterval"
+    fi
+    if grep -q "mac-tok-MUST-NOT-BE-PRINTED" "$update_plist"; then
+        fail "the token is not in the updater plist" "it is"
+    else
+        pass "the token is not in the updater plist"
+    fi
+    if grep -q '@[A-Z_]*@' "$update_plist"; then
+        fail "every updater plist placeholder was rendered" "$(grep -o '@[A-Z_]*@' "$update_plist" | head -n3 | tr '\n' ' ')"
+    else
+        pass "every updater plist placeholder was rendered"
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        local parsed
+        parsed="$(python3 - "$update_plist" "$launcher" "$bin" "$env_file" "$update_log" "$home" <<'PY' 2>&1
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    d = plistlib.load(f)
+env = d.get("EnvironmentVariables", {})
+ok = (
+    d.get("Label") == "app.solador.agent.update"
+    and d.get("ProgramArguments") == [sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], "update"]
+    and d.get("StandardOutPath") == sys.argv[5]
+    and d.get("StandardErrorPath") == sys.argv[5]
+    and d.get("StartInterval") == 86400
+    and "RunAtLoad" not in d
+    and "KeepAlive" not in d
+    and "StartCalendarInterval" not in d
+    and d.get("ProcessType") == "Background"
+    and env.get("PATH") == "/usr/bin:/bin:/usr/sbin:/sbin"
+    and env.get("HOME") == sys.argv[6]
+    and env.get("SOLADOR_AGENT_LAUNCHD_LABEL") == "app.solador.agent"
+    and "SOLADOR_AGENT_TOKEN" not in env
+)
+print("ok" if ok else "mismatch: " + repr(d))
+PY
+)"
+        assert_eq "the rendered updater plist parses and carries exactly the expected keys" "ok" "$parsed"
+    else
+        skip "the rendered updater plist parses and carries exactly the expected keys" "python3 not on PATH"
+    fi
+    assert_file_has "the updater plist is bootstrapped into gui/<uid>" "$STUB_LAUNCHCTL_ARGV" \
+        "bootstrap gui/$(id -u) $update_plist"
+    if grep -q "kickstart" "$STUB_LAUNCHCTL_ARGV"; then
+        fail "opting in never kickstarts the updater (no check on enable)" "$(grep kickstart "$STUB_LAUNCHCTL_ARGV")"
+    else
+        pass "opting in never kickstarts the updater (no check on enable)"
+    fi
+    if grep -q "^bootout gui/$(id -u)/app.solador.agent.update" "$STUB_LAUNCHCTL_ARGV"; then
+        fail "a first opt-in does not bootout an updater that is not loaded" "it did"
+    else
+        pass "a first opt-in does not bootout an updater that is not loaded"
+    fi
+    assert_before "the updater is bootstrapped only after the metrics LaunchAgent was" \
+        "$STUB_LAUNCHCTL_ARGV" "bootstrap gui/$(id -u) $plist" "bootstrap gui/$(id -u) $update_plist"
+    assert_output_has "the macOS opt-in run says the first check is a day away" "$out" "first check in 24h"
+    # The metrics plist is untouched by the opt-in beyond its own re-render.
+    assert_file_has "the metrics plist still names only the metrics label" "$plist" "<string>app.solador.agent</string>"
+    if grep -q "<string>update</string>" "$plist"; then
+        fail "the metrics plist did not become the updater" "it carries the update argument"
+    else
+        pass "the metrics plist did not become the updater"
+    fi
+
+    # ---- a re-run WITHOUT the flag: the updater is left exactly as it is ----
+    local update_before
+    update_before="$(cat "$update_plist")"
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=0 INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a no-flag macOS re-run over an opted-in host" "0" "$?"
+    assert_eq "a no-flag macOS re-run leaves the updater plist byte for byte" "$update_before" "$(cat "$update_plist")"
+    if manager_changed_updater; then
+        fail "a no-flag macOS re-run asks launchd to change nothing about the updater" "$(grep update "$STUB_LAUNCHCTL_ARGV")"
+    else
+        pass "a no-flag macOS re-run asks launchd to change nothing about the updater"
+    fi
+    if agent_asked_to_update; then
+        fail "a no-flag macOS re-run never asks the agent to update" "$(cat "$AGENT_ARGV")"
+    else
+        pass "a no-flag macOS re-run never asks the agent to update"
+    fi
+    assert_file_has "a no-flag macOS re-run still re-bootstraps the metrics LaunchAgent" \
+        "$STUB_LAUNCHCTL_ARGV" "bootstrap gui/$(id -u) $plist"
+    assert_output_has "a no-flag macOS re-run reports the opt-in as loaded, from launchd's answer" \
+        "$(cat "$INSTALL_OUT")" "Unattended updates: loaded (gui/$(id -u)/app.solador.agent.update"
+    # The documented pause (`bootout`, plist stays) is reported as such, and
+    # not re-loaded by a no-flag re-run.
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a no-flag macOS re-run over a booted-out updater" "0" "$?"
+    assert_output_has "a booted-out updater is reported as present but not loaded" \
+        "$(cat "$INSTALL_OUT")" "is present but not loaded"
+    if manager_changed_updater; then
+        fail "a no-flag macOS re-run does not re-load a booted-out updater" "$(grep update "$STUB_LAUNCHCTL_ARGV")"
+    else
+        pass "a no-flag macOS re-run does not re-load a booted-out updater"
+    fi
+
+    # ---- a repeated opt-in over a loaded updater: bootout, then bootstrap ----
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=0 INSTALL_STDIN="" run_install "$home" --enable-timer
+    assert_eq "install.sh: a repeated macOS --enable-timer" "0" "$?"
+    assert_before "a repeated opt-in boots the loaded updater out before bootstrapping it again" \
+        "$STUB_LAUNCHCTL_ARGV" "bootout gui/$(id -u)/app.solador.agent.update" "bootstrap gui/$(id -u) $update_plist"
+    assert_eq "a repeated opt-in bootstraps the updater exactly once" \
+        "1" "$(grep -c "^bootstrap gui/$(id -u) $update_plist" "$STUB_LAUNCHCTL_ARGV")"
+    assert_eq "a repeated opt-in leaves exactly one updater plist" \
+        "1" "$(find "$home/Library/LaunchAgents" -name '*.update.plist*' | wc -l | tr -d ' ')"
+
+    # ---- the documented removal, then a no-flag re-run: it stays gone ----
+    rm -f "$update_plist"
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=0 INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a no-flag macOS re-run after the updater was removed" "0" "$?"
+    if updater_installed "$home"; then
+        fail "a no-flag macOS re-run does not re-create a removed updater" "it did"
+    else
+        pass "a no-flag macOS re-run does not re-create a removed updater"
+    fi
+
+    # ---- the updater plist failing its lint: the metrics half is intact ----
+    reset_argv_logs
+    STUB_PLUTIL_FAIL_MATCH="app.solador.agent.update.plist" INSTALL_STDIN="" run_install "$home" --enable-timer
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: an updater plist that fails the lint is a failed opt-in (exit 3)" "3" "$INSTALL_STATUS"
+    assert_before "the failed macOS opt-in still reported the verified install first" \
+        "$INSTALL_OUT" "installed and serving" "unattended update job failed"
+    assert_file_has "a failed updater lint still bootstrapped the metrics LaunchAgent first" \
+        "$STUB_LAUNCHCTL_ARGV" "bootstrap gui/$(id -u) $plist"
+    if grep -q "^bootstrap gui/$(id -u) $update_plist" "$STUB_LAUNCHCTL_ARGV"; then
+        fail "nothing is bootstrapped for an updater plist that failed the lint" "it was"
+    else
+        pass "nothing is bootstrapped for an updater plist that failed the lint"
+    fi
+    [ -e "$update_plist" ] && fail "a failed updater lint leaves no updater plist behind" "$update_plist exists" \
+        || pass "a failed updater lint leaves no updater plist behind"
+    assert_output_has "the failed opt-in says only the update job failed" "$out" "only the"
+
+    # ---- a failed metrics verification records no consent (macOS) ----
+    reset_argv_logs
+    STUB_CURL_BODY="" INSTALL_STDIN="" run_install "$home" --enable-timer
+    assert_eq "install.sh: --enable-timer over a macOS service that never answers" "1" "$?"
+    if updater_installed "$home"; then
+        fail "no updater plist is written when the macOS metrics install did not verify" "it was"
+    else
+        pass "no updater plist is written when the macOS metrics install did not verify"
+    fi
+
+    # ---- the throwaway-label seam: the updater is always the metrics label's sibling ----
+    export STUB_CURL_BODY='{"status":"ok","hostname":"mac","version":"2026.9.8"}'
+    reset_argv_logs
+    SOLADOR_AGENT_LAUNCHD_LABEL=app.solador.agent.deploytest INSTALL_STDIN="" run_install "$home" --enable-timer
+    assert_eq "install.sh: --enable-timer under an overridden label" "0" "$?"
+    local override_plist="$home/Library/LaunchAgents/app.solador.agent.deploytest.update.plist"
+    [ -f "$override_plist" ] && pass "the updater under an overridden label is <label>.update" \
+        || fail "the updater under an overridden label is <label>.update" "$(ls "$home/Library/LaunchAgents")"
+    assert_file_has "the overridden updater names the overridden metrics label" "$override_plist" \
+        "<string>app.solador.agent.deploytest</string>"
+    assert_file_has "the overridden updater is bootstrapped" "$STUB_LAUNCHCTL_ARGV" "bootstrap gui/$(id -u) $override_plist"
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS
+}
+
 # The launcher, on its own: it must export exactly the documented keys, never
 # evaluate the file as shell, and exec the binary. Run under a temporary HOME
 # so nothing it does can touch the invoking user's own ~/Library.
@@ -2463,12 +3158,205 @@ STUB
         "$agent_keys" "$launcher_keys"
 }
 
+# The launcher in update mode (#394): forwards exactly `update` to the binary,
+# exports nothing from the env file, and stands between launchd and the
+# updater as the no-catch-up guard — with the clock, the wake time and the
+# boot time all stubbed, so "a firing seconds after wake" and "a second
+# firing inside the interval" are states the test sets rather than waits
+# for. The decision on #394 forbids a check made at wake to recover a missed
+# interval; launchd.plist(5) says a StartInterval firing that falls during
+# sleep is missed, and this guard is what holds either way.
+test_launchd_launcher_update() {
+    local launcher="$SCRIPT_DIR/run-agent.sh" env_file="$TMP/launcher-update.env" probe="$TMP/launcher-update-probe"
+    local lhome="$TMP/launcher-update-home" log stamp ran
+    mkdir -p "$lhome/Library/Logs"
+    log="$lhome/Library/Logs/solador-agent-update.log"
+    stamp="$TMP/solador-agent-update.last-attempt"
+    ran="$TMP/launcher-update-ran"
+    printf 'SOLADOR_AGENT_TOKEN=upd-tok-MUST-NOT-BE-EXPORTED\nSOLADOR_AGENT_BIND=127.0.0.1\nSOLADOR_AGENT_PORT=7878\n' > "$env_file"
+    # The probe records that it ran, with what, and whether the env file's
+    # keys reached its environment; its exit status is STUB_PROBE_EXIT.
+    cat > "$probe" <<STUB
+#!/bin/sh
+printf 'ARGS=%s\\nTOKEN=%s\\nBIND=%s\\n' "\$*" "\${SOLADOR_AGENT_TOKEN:-<unset>}" "\${SOLADOR_AGENT_BIND:-<unset>}" > "$ran"
+exit "\${STUB_PROBE_EXIT:-0}"
+STUB
+    chmod +x "$probe"
+    export STUB_SYSCTL_ARGV="$TMP/sysctl-argv"
+    # run_update_launcher [args...]: the launcher with the clock stubs ahead
+    # of PATH; stdout to $INSTALL_OUT, stderr to $STDERR, status returned.
+    run_update_launcher() {
+        rm -f "$ran"
+        ( export HOME="$lhome"; export PATH="$STUBS_CLOCK:$PATH"; "$BASH" "$launcher" "$@" ) >"$INSTALL_OUT" 2>"$STDERR"
+    }
+    local now=1789237294   # an arbitrary epoch second
+    export STUB_DATE_EPOCH="$now"
+
+    # ---- a scheduled firing well after wake, no earlier attempt: it runs ----
+    rm -f "$stamp"
+    export STUB_WAKETIME_SEC=$((now - 86400)) STUB_BOOTTIME_SEC=$((now - 200000))
+    run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: a firing a day after wake, with no earlier attempt, runs the updater" "0" "$?"
+    assert_eq "update mode: the binary is invoked with exactly 'update' and nothing from the env file" \
+        "$(printf 'ARGS=update\nTOKEN=<unset>\nBIND=<unset>')" "$(cat "$ran" 2>/dev/null)"
+    assert_eq "update mode: the attempt is stamped with the clock's time" "$now" "$(cat "$stamp" 2>/dev/null)"
+    assert_output_has "update mode: the run is logged with its clock context" "$(cat "$STDERR")" "update: running $probe update (last wake 86400s ago)"
+    [ -e "$stamp.new" ] && fail "update mode: no stamp .new is left behind" "$stamp.new exists" \
+        || pass "update mode: no stamp .new is left behind"
+
+    # ---- the same firing again (a coalesced or duplicate one): discarded ----
+    run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: a second firing inside the interval exits 0" "0" "$?"
+    [ -e "$ran" ] && fail "update mode: a second firing inside the interval never runs the updater" "the probe ran" \
+        || pass "update mode: a second firing inside the interval never runs the updater"
+    assert_output_has "update mode: the discarded firing says why" "$(cat "$STDERR")" "last attempt was 0s ago"
+    assert_eq "update mode: a discarded firing does not move the stamp" "$now" "$(cat "$stamp")"
+
+    # ---- the interval boundary: 23h less a second holds, 23h runs ----
+    printf '%s\n' "$((now - 82799))" > "$stamp"
+    run_update_launcher "$probe" "$env_file" "$log" update
+    [ -e "$ran" ] && fail "update mode: 82799s since the last attempt is inside the interval" "the probe ran" \
+        || pass "update mode: 82799s since the last attempt is inside the interval"
+    printf '%s\n' "$((now - 82800))" > "$stamp"
+    run_update_launcher "$probe" "$env_file" "$log" update
+    [ -e "$ran" ] && pass "update mode: 82800s since the last attempt runs the updater" \
+        || fail "update mode: 82800s since the last attempt runs the updater" "$(cat "$STDERR")"
+
+    # ---- a firing seconds after wake, a day since the last attempt: the
+    # wake-time catch-up the decision forbids, and it is discarded ----
+    printf '%s\n' "$((now - 90000))" > "$stamp"
+    export STUB_WAKETIME_SEC=$((now - 30))
+    run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: a firing 30s after wake exits 0" "0" "$?"
+    [ -e "$ran" ] && fail "update mode: a firing 30s after wake never runs the updater (no catch-up at wake)" "the probe ran" \
+        || pass "update mode: a firing 30s after wake never runs the updater (no catch-up at wake)"
+    assert_output_has "update mode: the wake-time refusal names the cadence" "$(cat "$STDERR")" "woke or booted 30s ago"
+    assert_eq "update mode: a wake-time refusal does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
+    # 299s is still "just woke"; 300s is not.
+    export STUB_WAKETIME_SEC=$((now - 299))
+    run_update_launcher "$probe" "$env_file" "$log" update
+    [ -e "$ran" ] && fail "update mode: 299s after wake is still a wake-time firing" "the probe ran" \
+        || pass "update mode: 299s after wake is still a wake-time firing"
+    export STUB_WAKETIME_SEC=$((now - 300))
+    run_update_launcher "$probe" "$env_file" "$log" update
+    [ -e "$ran" ] && pass "update mode: 300s after wake is a scheduled firing" \
+        || fail "update mode: 300s after wake is a scheduled firing" "$(cat "$STDERR")"
+
+    # ---- a firing seconds after boot (a wake time older than the boot) ----
+    printf '%s\n' "$((now - 90000))" > "$stamp"
+    export STUB_WAKETIME_SEC=$((now - 90000)) STUB_BOOTTIME_SEC=$((now - 30))
+    run_update_launcher "$probe" "$env_file" "$log" update
+    [ -e "$ran" ] && fail "update mode: a firing 30s after boot never runs the updater" "the probe ran" \
+        || pass "update mode: a firing 30s after boot never runs the updater"
+    export STUB_BOOTTIME_SEC=$((now - 200000))
+
+    # ---- the clocks the guard cannot read HOLD the check: exit 6, a code the
+    # updater never uses, so a permanent hold cannot read as a good day ----
+    printf '%s\n' "$((now - 90000))" > "$stamp"
+    STUB_SYSCTL_EXIT=1 run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: an unreadable wake time exits 6 (held)" "6" "$?"
+    [ -e "$ran" ] && fail "update mode: an unreadable wake time holds the check rather than running it" "the probe ran" \
+        || pass "update mode: an unreadable wake time holds the check rather than running it"
+    assert_output_has "update mode: the held check names the clock it could not read" "$(cat "$STDERR")" "kern.waketime"
+    STUB_DATE_EPOCH="not-a-number" run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: a clock that prints garbage exits 6 (held)" "6" "$?"
+    [ -e "$ran" ] && fail "update mode: an unreadable clock holds the check" "the probe ran" \
+        || pass "update mode: an unreadable clock holds the check"
+    # A `date` that FAILS (rather than prints garbage) must reach the same
+    # hold, not die under `set -e` with no log line.
+    STUB_DATE_EXIT=1 run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: a clock that fails exits 6 (held), not set -e's 1" "6" "$?"
+    assert_output_has "update mode: a clock that fails is logged as a hold" "$(cat "$STDERR")" "cannot read the clock"
+    printf 'garbage\n' > "$stamp"
+    run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: an unreadable stamp exits 6 (held)" "6" "$?"
+    [ -e "$ran" ] && fail "update mode: an unreadable stamp holds the check" "the probe ran" \
+        || pass "update mode: an unreadable stamp holds the check"
+    assert_output_has "update mode: the held check names the stamp file to remove" "$(cat "$STDERR")" "Remove that file"
+    assert_eq "update mode: a held check does not rewrite the stamp" "garbage" "$(cat "$stamp")"
+    # A clock that moved backwards past the last attempt is discarded (exit
+    # 0): tomorrow's firing resolves it by itself.
+    printf '%s\n' "$((now + 100))" > "$stamp"
+    run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: a clock behind the last attempt exits 0 (discarded)" "0" "$?"
+    [ -e "$ran" ] && fail "update mode: a clock behind the last attempt holds the check" "the probe ran" \
+        || pass "update mode: a clock behind the last attempt holds the check"
+    assert_output_has "update mode: the backwards clock is named" "$(cat "$STDERR")" "moved backwards"
+    # A stamp that cannot be written holds too: an attempt that cannot be
+    # recorded is the retry loop the stamp exists to prevent.
+    if [ "$(id -u)" = "0" ]; then
+        skip "update mode: an unwritable stamp directory exits 6 (held)" "running as root, which can write anywhere"
+    else
+        local ro_dir="$TMP/launcher-update-ro"
+        mkdir -p "$ro_dir"
+        cp "$env_file" "$ro_dir/solador-agent.env"
+        chmod 555 "$ro_dir"
+        run_update_launcher "$probe" "$ro_dir/solador-agent.env" "$log" update
+        assert_eq "update mode: an unwritable stamp directory exits 6 (held)" "6" "$?"
+        [ -e "$ran" ] && fail "update mode: an unwritable stamp holds the check" "the probe ran" \
+            || pass "update mode: an unwritable stamp holds the check"
+        assert_output_has "update mode: the unwritable stamp is named" "$(cat "$STDERR")" "could not write $ro_dir/solador-agent-update.last-attempt"
+        [ -e "$ro_dir/solador-agent-update.last-attempt.new" ] && fail "update mode: no stamp .new is left after a failed write" "it is" \
+            || pass "update mode: no stamp .new is left after a failed write"
+        chmod 755 "$ro_dir"
+    fi
+
+    # ---- the updater's exit status is launchd's, not a wrapper's ----
+    rm -f "$stamp"
+    STUB_PROBE_EXIT=4 run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: the updater's exit 4 (not newer) is the launcher's exit status" "4" "$?"
+    rm -f "$stamp"
+    STUB_PROBE_EXIT=5 run_update_launcher "$probe" "$env_file" "$log" update
+    assert_eq "update mode: the updater's exit 5 (recovered) is the launcher's exit status" "5" "$?"
+    # ...and a failed attempt is still an attempt: no retry inside the interval.
+    run_update_launcher "$probe" "$env_file" "$log" update
+    [ -e "$ran" ] && fail "update mode: a failed attempt is not retried inside the interval" "the probe ran" \
+        || pass "update mode: a failed attempt is not retried inside the interval"
+
+    # ---- the fourth argument is an allow-list of one word ----
+    rm -f "$stamp"
+    run_update_launcher "$probe" "$env_file" "$log" rollback
+    assert_eq "the launcher refuses a fourth argument that is not 'update'" "2" "$?"
+    [ -e "$ran" ] && fail "a refused fourth argument runs nothing" "the probe ran" || pass "a refused fourth argument runs nothing"
+    [ -e "$stamp" ] && fail "a refused fourth argument stamps nothing" "$stamp exists" || pass "a refused fourth argument stamps nothing"
+    run_update_launcher "$probe" "$env_file" "$log" update extra
+    assert_eq "the launcher refuses a fifth argument" "2" "$?"
+    run_update_launcher "$probe" "$TMP/no-such.env" "$log" update
+    assert_eq "update mode: a missing env file is refused before the guard" "1" "$?"
+    [ -e "$stamp" ] && fail "update mode: a missing env file stamps nothing" "$stamp exists" || pass "update mode: a missing env file stamps nothing"
+
+    # ---- the metrics path is untouched by any of this ----
+    : > "$STUB_SYSCTL_ARGV"
+    rm -f "$stamp"
+    cat > "$probe" <<STUB
+#!/bin/sh
+printf 'ARGS=%s\\nTOKEN=%s\\n' "\$*" "\${SOLADOR_AGENT_TOKEN:-<unset>}" > "$ran"
+STUB
+    run_update_launcher "$probe" "$env_file" "$log"
+    assert_eq "the metrics path (three arguments) still runs the binary" "0" "$?"
+    assert_eq "the metrics path still exports the env file and passes no argument" \
+        "$(printf 'ARGS=\nTOKEN=upd-tok-MUST-NOT-BE-EXPORTED')" "$(cat "$ran" 2>/dev/null)"
+    [ -s "$STUB_SYSCTL_ARGV" ] && fail "the metrics path never reads the wake or boot time" "$(cat "$STUB_SYSCTL_ARGV")" \
+        || pass "the metrics path never reads the wake or boot time"
+    [ -e "$stamp" ] && fail "the metrics path never writes the update stamp" "$stamp exists" \
+        || pass "the metrics path never writes the update stamp"
+
+    unset STUB_DATE_EPOCH STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SYSCTL_ARGV
+}
+
 # A REAL launchd bootstrap, opt-in: the whole installer against a temporary
 # HOME, a throwaway label, the real launchctl, the real plutil, the real
 # launcher, and the real curl for the health probe — with the download curl
 # still stubbed to serve the locally built agent (signed with the throwaway
 # key). This is the platform smoke #392 asks for, kept out of the default run
 # because it bootstraps a service into the invoking user's session.
+#
+# Since #394 it continues into the updater: the same install re-run with
+# --enable-timer, the sibling job observed loaded and NOT run, fired by hand
+# once (a read-only `update` against the real feed under the throwaway
+# label, which finds nothing newer or no network — never a swap), fired a
+# second time to watch the guard discard it, then removed with the
+# documented commands while the metrics service keeps serving.
 test_launchd_smoke() {
     local name="install.sh bootstraps a real LaunchAgent (SOLADOR_DEPLOY_TEST_LAUNCHD=1)"
     if [ "${SOLADOR_DEPLOY_TEST_LAUNCHD:-}" != "1" ]; then
@@ -2528,31 +3416,39 @@ esac
 STUB
     chmod +x "$smoke_stubs/curl"
 
-    local status out
-    (
-        export HOME="$home"
-        # The real uname, sw_vers, launchctl, plutil and sleep, behind the
-        # download stub: this is the one test where the host is the point.
-        export PATH="$smoke_stubs:$TOOLBIN:/usr/bin:/bin:/usr/sbin:/sbin"
-        export STUB_CURL_FIXTURES="$FIXTURES"
-        export SOLADOR_AGENT_RELEASE="v$version"
-        export SOLADOR_AGENT_LAUNCHD_LABEL="$label"
-        export SOLADOR_AGENT_BIND="127.0.0.1"
-        export SOLADOR_AGENT_PORT="$port"
-        printf 'smoke-tok-MUST-NOT-BE-PRINTED\n' | "$BASH" "$CHECKOUT/agent/deploy/install.sh"
-    ) >"$INSTALL_OUT" 2>&1
+    # smoke_install [args...]: the installer for real under the temp HOME.
+    smoke_install() {
+        (
+            export HOME="$home"
+            # The real uname, sw_vers, launchctl, plutil and sleep, behind the
+            # download stub: this is the one test where the host is the point.
+            export PATH="$smoke_stubs:$TOOLBIN:/usr/bin:/bin:/usr/sbin:/sbin"
+            export STUB_CURL_FIXTURES="$FIXTURES"
+            export SOLADOR_AGENT_RELEASE="v$version"
+            export SOLADOR_AGENT_LAUNCHD_LABEL="$label"
+            export SOLADOR_AGENT_BIND="127.0.0.1"
+            export SOLADOR_AGENT_PORT="$port"
+            printf '%s' "$INSTALL_STDIN" | "$BASH" "$CHECKOUT/agent/deploy/install.sh" "$@"
+        ) >"$INSTALL_OUT" 2>&1
+    }
+    # launchd_field <service> <field>: one `field = value` line of launchctl print.
+    launchd_field() {
+        launchctl print "$1" 2>/dev/null | sed -n "s/^[[:space:]]*$2 = //p" | head -n1
+    }
+
+    local status out update_service update_plist update_log stamp
+    update_service="$service.update"
+    update_plist="$home/Library/LaunchAgents/$label.update.plist"
+    update_log="$home/Library/Logs/solador-agent-update.log"
+    stamp="$home/.config/solador-agent-update.last-attempt"
+    SMOKE_SERVICES="$service $update_service"
+    INSTALL_STDIN='smoke-tok-MUST-NOT-BE-PRINTED
+' smoke_install
     status=$?
     out="$(cat "$INSTALL_OUT")"
 
-    # Whatever happened, take the throwaway service down again.
-    local loaded_after=false
-    if launchctl print "$service" >/dev/null 2>&1; then
-        loaded_after=true
-        launchctl bootout "$service" >/dev/null 2>&1 || true
-    fi
-
     assert_eq "$name" "0" "$status"
-    if [ "$loaded_after" = true ]; then
+    if launchctl print "$service" >/dev/null 2>&1; then
         pass "the real LaunchAgent was loaded in gui/$(id -u) after install"
     else
         fail "the real LaunchAgent was loaded in gui/$(id -u) after install" "$out"
@@ -2566,10 +3462,140 @@ STUB
     [ -f "$home/Library/Logs/solador-agent.log" ] \
         && pass "the agent's log landed under ~/Library/Logs" \
         || fail "the agent's log landed under ~/Library/Logs" "no log file"
+    # A default install loads no updater — observed from launchd, not the script.
+    if launchctl print "$update_service" >/dev/null 2>&1; then
+        fail "a default install loads no updater LaunchAgent" "$update_service is loaded"
+    else
+        pass "a default install loads no updater LaunchAgent"
+    fi
+
+    # ---- opt in, for real ----
+    INSTALL_STDIN='' smoke_install --enable-timer
+    status=$?
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --enable-timer bootstraps a real updater LaunchAgent" "0" "$status"
+    # The opt-in re-run re-bootstraps the metrics service like any re-run
+    # (a new pid); from here on that pid must not change again.
+    local metrics_pid
+    metrics_pid="$(launchd_field "$service" pid)"
+    if launchctl print "$update_service" >/dev/null 2>&1; then
+        pass "the updater is loaded in gui/$(id -u) as the metrics label's .update sibling"
+    else
+        fail "the updater is loaded in gui/$(id -u) as the metrics label's .update sibling" "$out"
+    fi
+    # Loaded is not run: launchd's own counters say it has never started.
+    assert_eq "the updater has not run on load (launchd reports zero runs)" "0" "$(launchd_field "$update_service" runs)"
+    [ -e "$stamp" ] && fail "no attempt is stamped on enable" "$stamp exists" || pass "no attempt is stamped on enable"
+
+    # ---- fire it by hand: the launcher runs the real `solador-agent update` ----
+    # A read-only run: the throwaway install holds this checkout's own build,
+    # which the published feed is never newer than (exit 4), or the host has
+    # no route to github.com (exit 1). Neither swaps a binary or restarts the
+    # metrics service, and that is asserted rather than assumed.
+    #
+    # The real guard applies to this firing too: within five minutes of the
+    # Mac's last wake it would discard the check (exit 0), which is the
+    # guard working, not the updater. Wait that window out first.
+    local woke_at settle
+    woke_at="$(sysctl -n kern.waketime 2>/dev/null | sed -n 's/^{ sec = \([0-9][0-9]*\),.*/\1/p')"
+    if [ -n "$woke_at" ]; then
+        settle=$((300 - ($(date +%s) - woke_at)))
+        if [ "$settle" -gt 0 ]; then
+            printf 'note  the Mac woke %ss ago; waiting %ss for the guard'"'"'s wake-settle window\n' "$((300 - settle))" "$settle"
+            /bin/sleep "$settle"
+        fi
+    fi
+    launchctl kickstart "$update_service" >/dev/null 2>&1
+    local waited=0 exit_code=""
+    while [ "$waited" -lt 90 ]; do
+        exit_code="$(launchd_field "$update_service" "last exit code")"
+        case "$exit_code" in
+            "" | "(never exited)") ;;
+            *) break ;;
+        esac
+        /bin/sleep 1
+        waited=$((waited + 1))
+    done
+    case "$exit_code" in
+        1 | 4) pass "a hand-fired updater ran 'solador-agent update' and exited $exit_code (not newer, or no network)" ;;
+        "" | "(never exited)") fail "a hand-fired updater ran and exited" "no exit after ${waited}s: $(tail -n 20 "$update_log" 2>/dev/null)" ;;
+        *) fail "a hand-fired updater exited 1 or 4, never a swap" "exit $exit_code: $(tail -n 20 "$update_log" 2>/dev/null)" ;;
+    esac
+    assert_file_has "the launcher logged the update-mode run to the updater's own log" \
+        "$update_log" "solador-agent-launchd: update: running $home/.local/bin/solador-agent update"
+    if grep -qE '^(==> Latest published release:|ERROR:)' "$update_log" 2>/dev/null; then
+        pass "the real updater resolved the throwaway install and reached its first report line"
+    else
+        fail "the real updater resolved the throwaway install and reached its first report line" "$(tail -n 20 "$update_log" 2>/dev/null)"
+    fi
+    if grep -q "smoke-tok-MUST-NOT-BE-PRINTED" "$update_log" 2>/dev/null; then
+        fail "the updater's log never carries the token" "it does"
+    else
+        pass "the updater's log never carries the token"
+    fi
+    [ -f "$stamp" ] && pass "the hand-fired attempt was stamped" || fail "the hand-fired attempt was stamped" "no $stamp"
+    [ -e "$home/.local/bin/solador-agent.prev" ] && fail "the read-only run minted no .prev" "$home/.local/bin/solador-agent.prev exists" \
+        || pass "the read-only run minted no .prev"
+    assert_eq "the metrics service was not restarted by the read-only run" "$metrics_pid" "$(launchd_field "$service" pid)"
+
+    # ---- fire it again: the guard discards a second firing inside the interval ----
+    # launchd counts the run at the kickstart and spawns it after its 10 s
+    # throttle (measured on a throwaway job), so "it ran" is the launcher's
+    # own line landing in the log, not the counter moving.
+    local lines_before
+    lines_before="$(grep -c 'solador-agent-launchd: update:' "$update_log" 2>/dev/null || echo 0)"
+    launchctl kickstart "$update_service" >/dev/null 2>&1
+    waited=0
+    while [ "$waited" -lt 40 ] \
+        && [ "$(grep -c 'solador-agent-launchd: update:' "$update_log" 2>/dev/null || echo 0)" = "$lines_before" ]; do
+        /bin/sleep 1
+        waited=$((waited + 1))
+    done
+    /bin/sleep 1
+    waited=0
+    while [ "$waited" -lt 30 ] && [ "$(launchd_field "$update_service" state)" = "running" ]; do
+        /bin/sleep 1
+        waited=$((waited + 1))
+    done
+    if grep -q "not running this check" "$update_log" 2>/dev/null; then
+        pass "a second firing inside the interval is discarded by the launcher's guard"
+    else
+        fail "a second firing inside the interval is discarded by the launcher's guard" \
+            "launcher lines before/after: $lines_before/$(grep -c 'solador-agent-launchd: update:' "$update_log" 2>/dev/null)" \
+            "$(tail -n 12 "$update_log" 2>/dev/null)"
+    fi
+    assert_eq "the discarded firing did not run the updater (one 'running' line, not two)" \
+        "1" "$(grep -c 'solador-agent-launchd: update: running' "$update_log" 2>/dev/null)"
+    assert_eq "the discarded firing exits 0" "0" "$(launchd_field "$update_service" "last exit code")"
+    assert_eq "the metrics service was not restarted by the discarded firing" "$metrics_pid" "$(launchd_field "$service" pid)"
+
+    # ---- the documented removal: only the updater goes ----
+    launchctl bootout "$update_service" >/dev/null 2>&1 || true
+    rm -f "$update_plist"
+    if launchctl print "$update_service" >/dev/null 2>&1; then
+        fail "the documented removal unloads the updater" "$update_service is still loaded"
+    else
+        pass "the documented removal unloads the updater"
+    fi
+    if launchctl print "$service" >/dev/null 2>&1; then
+        pass "removing the updater leaves the metrics service loaded"
+    else
+        fail "removing the updater leaves the metrics service loaded" "$service is gone"
+    fi
+    assert_eq "removing the updater leaves the metrics service running, same pid" "$metrics_pid" "$(launchd_field "$service" pid)"
+
+    # Whatever happened, take the throwaway services down again.
+    launchctl bootout "$update_service" >/dev/null 2>&1 || true
+    launchctl bootout "$service" >/dev/null 2>&1 || true
     if launchctl print "$service" >/dev/null 2>&1; then
         fail "the throwaway service was unloaded again" "$service is still loaded — launchctl bootout $service"
     else
         pass "the throwaway service was unloaded again"
+    fi
+    if launchctl print "$update_service" >/dev/null 2>&1; then
+        fail "the throwaway updater was unloaded again" "$update_service is still loaded — launchctl bootout $update_service"
+    else
+        pass "the throwaway updater was unloaded again"
     fi
 }
 
@@ -3157,7 +4183,10 @@ test_install_release_resolution
 test_install_signature_gate
 test_install_linux_flow
 test_install_macos_flow
+test_install_update_timer_linux
+test_install_update_timer_macos
 test_launchd_launcher
+test_launchd_launcher_update
 test_launchd_smoke
 test_standby_key_script
 test_deploy_script_invariants

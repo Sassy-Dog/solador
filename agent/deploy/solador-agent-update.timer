@@ -1,0 +1,51 @@
+# Solador metrics agent: the daily unattended update timer (user unit, #394).
+#
+# Installed verbatim by deploy/install.sh --enable-timer beside
+# solador-agent-update.service (there is nothing to render). Present only on a
+# host whose operator opted in.
+#
+# The cadence is the decision recorded on #394: DAILY, NO CATCH-UP. Once per
+# 24 hours while this user's manager is running; never at enable, boot, login
+# or wake to make up for an interval that was missed; a missed check is
+# discarded, not replayed and not coalesced into one delayed run.
+#
+# That is why these are MONOTONIC timers and not OnCalendar=daily:
+#
+#   * OnActiveSec=24h — the first firing is 24 h after the timer unit itself
+#     starts, so `enable --now` (and the manager starting at boot under
+#     linger, or at login without it) never fires immediately, and a session
+#     restart begins a fresh interval.
+#   * OnUnitActiveSec=24h — every later firing is 24 h after the update
+#     service last STARTED, whatever it exited with, so a failed run is not
+#     retried until tomorrow.
+#   * The monotonic clock pauses while the system is suspended
+#     (systemd.timer(5), "OnActiveSec=…: If the computer is temporarily
+#     suspended, the monotonic clock generally pauses, too"), so a wake
+#     cannot find an elapsed deadline waiting. An OnCalendar= timer keys off
+#     the realtime clock and DOES fire on resume when its time passed during
+#     sleep — the coalesced wake-time check this cadence forbids — and
+#     Persistent= only governs missed firings across a full stop of the
+#     manager. WakeSystem= stays off for the same reason: it would swap in
+#     the clock that keeps counting through suspend.
+#
+# One caveat is open as #411: a `daemon-reload` (every installer re-run does
+# one) re-bases OnActiveSec to the reload time — a first check that has not
+# yet fired moves later, never sooner — and a source trace of systemd's
+# timer.c suggests that after the first day a reload plus the next
+# suspend/resume can fire the one-shot once at wake. Not observed on a real
+# user manager; nil on a server that never sleeps. Unlike macOS there is no
+# launcher-side guard in front of this unit yet.
+#
+# The launchd counterpart is app.solador.agent.update.plist, whose
+# StartInterval carries the same 24 h, with the launcher's guard standing in
+# for the property the monotonic clock provides here.
+
+[Unit]
+Description=Solador metrics agent: daily unattended update check
+
+[Timer]
+OnActiveSec=24h
+OnUnitActiveSec=24h
+
+[Install]
+WantedBy=timers.target

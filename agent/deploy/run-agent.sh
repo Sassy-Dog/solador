@@ -1,11 +1,26 @@
 #!/bin/bash
 #
-# launchd launcher for the Solador metrics agent (macOS, #392).
+# launchd launcher for the Solador metrics agent (macOS, #392) and, since
+# #394, for its opt-in unattended update job.
 #
 # Installed by deploy/install.sh as ~/.local/bin/solador-agent-launchd and named
 # in app.solador.agent.plist's ProgramArguments as:
 #
 #   <launcher> <path-to-solador-agent> <path-to-solador-agent.env> <log file>
+#
+# and, only on a host that opted in with --enable-timer, in
+# app.solador.agent.update.plist's as:
+#
+#   <launcher> <path-to-solador-agent> <path-to-solador-agent.env> <log file> update
+#
+# The fourth argument is a positive allow-list of exactly one word. With it the
+# launcher runs `solador-agent update` behind the scheduling guard described
+# at the bottom of this file, and does NOT export the env file — the updater
+# reads it by itself, under the same rules, and the token then reaches one
+# place only. Without it the launcher is what it was: the metrics service's
+# environment loader. The two paths share the argument checks and the log
+# rotation and nothing else; the update path never touches the metrics
+# service and the metrics path never reads a clock or a stamp.
 #
 # Why a launcher exists at all: systemd has EnvironmentFile=, launchd does not.
 # Its EnvironmentVariables key would put the bearer token into the plist —
@@ -39,10 +54,26 @@ log() {
     printf '%s solador-agent-launchd: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
-if [ "$#" -ne 3 ]; then
-    log "usage: $0 <solador-agent binary> <env file> <log file>"
-    exit 2
-fi
+# Three arguments is the metrics service; four, the last of which must be
+# the word `update`, is the updater. Anything else — a different word, a
+# fifth argument — is refused, not read as "probably the metrics service":
+# a plist that got here with the wrong shape is a plist somebody edited.
+mode=agent
+case "$#" in
+    3) ;;
+    4)
+        if [ "$4" = "update" ]; then
+            mode=update
+        else
+            log "usage: $0 <solador-agent binary> <env file> <log file> [update] — got '$4', which is not 'update'"
+            exit 2
+        fi
+        ;;
+    *)
+        log "usage: $0 <solador-agent binary> <env file> <log file> [update]"
+        exit 2
+        ;;
+esac
 
 bin="$1"
 env_file="$2"
@@ -84,6 +115,119 @@ fi
 if [ ! -f "$env_file" ]; then
     log "$env_file not found; re-run deploy/install.sh."
     exit 1
+fi
+
+# ---- the update job (#394) --------------------------------------------------
+# Everything below this block is the metrics path and is not reached in
+# update mode; everything inside it is never reached by the metrics path.
+#
+# The cadence decision on #394 is DAILY, NO CATCH-UP: one check per 24 h
+# while the session is up, never one fired at wake, login or boot to make up
+# for an interval that fell during sleep, and no coalescing of missed
+# firings into one late run. The plist's StartInterval gives the 24 h;
+# launchd.plist(5) says a StartInterval firing that falls during sleep is
+# missed, and StartCalendarInterval — the key that coalesces missed firings
+# into one run at wake — is deliberately not used. This guard is what makes
+# the property hold rather than the man page, and it is applied to every
+# firing, however launchd arrived at it:
+#
+#   1. Not within WAKE_SETTLE_SECS of the last wake or the boot (kern.waketime
+#      / kern.boottime, whichever is later). A firing launchd delivers because
+#      an interval elapsed while the lid was closed arrives seconds after the
+#      wake; a firing at a random point in the day almost never does, and the
+#      one that does is discarded, as the decision says — tomorrow's is a day
+#      away.
+#   2. Not within MIN_INTERVAL_SECS of the last attempt, recorded in a stamp
+#      beside the env file. Belt to the first rule's braces: a re-bootstrap,
+#      a manual `launchctl kickstart`, or any launchd behaviour that delivers
+#      two firings closer together than the interval, runs `update` once.
+#      The stamp is written BEFORE the attempt, so a failed update is not
+#      retried until tomorrow either — no rapid retry loop.
+#
+# Two kinds of not-running, told apart by exit status because `launchctl
+# print` shows nothing else. A DISCARDED firing (too soon after a wake or
+# boot, inside the interval, or a clock that went backwards past the stamp
+# — all of which tomorrow's firing resolves by itself) is exit 0: the
+# deliberate no-op the cadence describes. A HELD check — the clock, the
+# wake time or the stamp unreadable, or the stamp unwritable — is exit
+# HOLD_EXIT, distinct from every code `solador-agent update` uses (0, 1, 3,
+# 4, 5, 75): it does not resolve by itself, so a green "last exit code = 0"
+# over it every day would be a fabricated state. Both write one line saying
+# why. An operator who wants a check NOW runs `solador-agent update`
+# directly, which this guard does not cover.
+#
+# Hand-inspecting: `launchctl print gui/$(id -u)/app.solador.agent.update`
+# shows the last exit status; the log file this job writes to has the
+# updater's own lines, or this launcher's one-line reason for not running it.
+if [ "$mode" = "update" ]; then
+    HOLD_EXIT=6
+    WAKE_SETTLE_SECS=300
+    MIN_INTERVAL_SECS=82800   # 23 h: a full day less the drift a StartInterval firing can carry
+    stamp_file="$(dirname "$env_file")/solador-agent-update.last-attempt"
+
+    is_epoch() {
+        case "${1:-}" in
+            '' | *[!0-9]*) return 1 ;;
+        esac
+    }
+
+    # `{ sec = 1789165051, usec = 550946 } Fri Sep 11 16:17:31 2026` is what
+    # sysctl prints for both keys; the first integer after `sec =` is the
+    # value. Anything else is "unreadable", never "zero".
+    sysctl_epoch() {
+        sysctl -n "$1" 2>/dev/null | sed -n 's/^{ sec = \([0-9][0-9]*\),.*/\1/p' | head -n1
+    }
+
+    # `|| true` on each read: under `set -e` a command substitution that fails
+    # ends the script with no log line, and is_epoch is the one that decides.
+    now="$(date +%s 2>/dev/null || true)"
+    if ! is_epoch "$now"; then
+        log "update: HELD — cannot read the clock (date +%s said '${now:-<nothing>}'); not running an update it cannot place in time. Exit $HOLD_EXIT."
+        exit "$HOLD_EXIT"
+    fi
+    woke="$(sysctl_epoch kern.waketime || true)"
+    booted="$(sysctl_epoch kern.boottime || true)"
+    if ! is_epoch "$woke" || ! is_epoch "$booted"; then
+        log "update: HELD — cannot read kern.waketime/kern.boottime (got '${woke:-<nothing>}' / '${booted:-<nothing>}'); cannot tell a scheduled firing from a wake-time one, so not running this check. Exit $HOLD_EXIT."
+        exit "$HOLD_EXIT"
+    fi
+    [ "$booted" -gt "$woke" ] && woke="$booted"
+    since_wake=$((now - woke))
+    if [ "$since_wake" -lt "$WAKE_SETTLE_SECS" ]; then
+        log "update: the system woke or booted ${since_wake}s ago; a check this close to a wake is a missed interval being made up, which the daily/no-catch-up cadence discards. Not running it; the next scheduled firing is a day away."
+        exit 0
+    fi
+    last=""
+    since_last=""
+    if [ -e "$stamp_file" ]; then
+        last="$(head -n1 "$stamp_file" 2>/dev/null | tr -d '[:space:]')"
+        if ! is_epoch "$last"; then
+            log "update: HELD — $stamp_file does not hold a timestamp; cannot tell when the last attempt was, so not running this check. Remove that file to resume unattended checks. Exit $HOLD_EXIT."
+            exit "$HOLD_EXIT"
+        fi
+        since_last=$((now - last))
+        if [ "$since_last" -lt 0 ]; then
+            log "update: the clock has moved backwards since the last attempt (recorded $last, now $now); not running this check."
+            exit 0
+        fi
+        if [ "$since_last" -lt "$MIN_INTERVAL_SECS" ]; then
+            log "update: the last attempt was ${since_last}s ago and the interval is ${MIN_INTERVAL_SECS}s; not running this check (a second firing inside the interval is a made-up one, and the cadence discards it)."
+            exit 0
+        fi
+    fi
+    # Stamped before the attempt, through a sibling and a rename: a failed
+    # update is still an attempt, and a crash between the two writes must
+    # not leave a half-written file that holds every later run.
+    if ! printf '%s\n' "$now" > "$stamp_file.new" 2>/dev/null || ! mv -f "$stamp_file.new" "$stamp_file" 2>/dev/null; then
+        log "update: HELD — could not write $stamp_file; not running an update whose attempt could not be recorded. Exit $HOLD_EXIT."
+        rm -f "$stamp_file.new" 2>/dev/null || true
+        exit "$HOLD_EXIT"
+    fi
+    log "update: running $bin update (last wake ${since_wake}s ago${last:+, last attempt ${since_last}s ago})"
+    # exec, so the exit status launchd records is the updater's own — 0, 1,
+    # 3, 4, 5 or 75, exactly as agent/README.md documents them — and not a
+    # wrapper's paraphrase of it.
+    exec "$bin" update
 fi
 
 # The keys agent/README.md documents, and no others. An allow-list: a key the
