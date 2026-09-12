@@ -32,17 +32,52 @@ async function gotoApp(page) {
 }
 
 /**
- * Stubs `window.__TAURI__.core.invoke("cockpit")` with Rust-dumped payloads
- * (there is no real Tauri IPC in a browser context), returning each in turn
- * and repeating the last one forever.
+ * Stubs `window.__TAURI__.core.invoke` with Rust-dumped payloads (there is no
+ * real Tauri IPC in a browser context). Every command — `cockpit` and the
+ * panels' own — is answered alike with the CURRENT frame, and the frame only
+ * moves when the test says so: the returned `advance()` steps the stub to the
+ * next payload, after which the app's own 1s poll (`setInterval` in app.js,
+ * armed only when `window.__TAURI__` exists) delivers it.
+ *
+ * The frame is test-advanced, not call-counted, because of #407. The stub used
+ * to answer frame N to the Nth `invoke`, so frame 1 was gone the moment the
+ * cockpit's second poll fired. A test that asserted on frame 1 after `gotoApp`
+ * was therefore racing the app's 1000ms cadence with Playwright's own latency,
+ * which a loaded merge-group runner lost (14 retries, every one already
+ * `stale`). Under this stub frame 1 is served for as long as the test keeps
+ * looking at it; only the frame-2 assertion waits on the poll, and its timeout
+ * already covers the interval. Do not "simplify" this back to a call counter —
+ * a longer timeout cannot help once frame 1 has been served for the last time.
+ * (The panel scripts' own startup invokes counted too under the old stub; with
+ * two payloads that handed them frame 2 as *their* payload without moving the
+ * cockpit's, but a three-frame stub would have lost a frame to them.)
+ *
+ * `advance()` past the last payload throws, so a test that steps further than
+ * it has frames fails on the step rather than quietly repeating the last one.
+ * The frame is per-document: `addInitScript` re-runs on every navigation, so
+ * a `goto`/`reload` after `advance()` starts over at the first payload.
  */
 async function stubCockpit(page, payloads) {
   await page.addInitScript((vms) => {
-    let calls = 0;
+    let frame = 0;
+    window.__COCKPIT_STUB__ = {
+      advance: () => {
+        if (frame + 1 >= vms.length) {
+          throw new Error(
+            `stubCockpit: advance() past the last frame (frame ${frame + 1} of ${vms.length} is already current)`
+          );
+        }
+        frame += 1;
+        return frame;
+      },
+    };
     window.__TAURI__ = {
-      core: { invoke: async () => vms[Math.min(calls++, vms.length - 1)] },
+      core: { invoke: async () => vms[frame] },
     };
   }, payloads);
+  return {
+    advance: () => page.evaluate(() => window.__COCKPIT_STUB__.advance()),
+  };
 }
 
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
@@ -81,7 +116,8 @@ async function stubPanels(page, baseURL, cockpit) {
     window.__TAURI__ = {
       core: {
         // `azure_cost` is the command; `azure` is the fixture. Anything else
-        // (`settings_*`) answers null, exactly as `stubCockpit` does.
+        // (`settings_*`) answers null -- unlike `stubCockpit`, which answers
+        // every command with its current cockpit frame.
         invoke: async (command) =>
           vms[command === "azure_cost" ? "azure" : command] ?? null,
       },
@@ -341,22 +377,25 @@ test("a host that fails after connecting blanks its card and says it cannot be c
   // rather than the second being hand-built here from the first: a hand-built
   // copy can't notice viewmodel's own state string or message format drifting
   // out from under it (see finding M4).
-  await stubCockpit(page, [
+  const frames = await stubCockpit(page, [
     await fixture(baseURL, "sample.json"),
     await fixture(baseURL, "sample-unreachable.json"),
   ]);
 
   await gotoApp(page);
 
-  // First poll: live and green, real numbers on screen.
+  // First poll: live and green, real numbers on screen. The stub keeps serving
+  // this frame until `advance()` below, so these assertions are not racing the
+  // app's 1s poll (#407).
   await expect(page.locator(".connDot")).toHaveAttribute("data-state", "live");
   const cpuBefore = await page.locator(".cpuValue").textContent();
   expect(cpuBefore).not.toBe("—");
   await expect(page.locator(".cores .core").first()).toBeVisible();
 
-  // The app's own poll `setInterval` (only armed when `window.__TAURI__`
-  // exists) drives the second poll -- wait for that real transition rather
-  // than calling into app.js internals directly.
+  // Release the second frame. The app's own poll `setInterval` (only armed
+  // when `window.__TAURI__` exists) delivers it -- wait for that real
+  // transition rather than calling into app.js internals directly.
+  await frames.advance();
   await expect(page.locator(".connDot")).toHaveAttribute("data-state", "unreachable", {
     timeout: 5000,
   });
@@ -389,18 +428,22 @@ test("a host whose agent stopped sampling loses the green dot even though every 
   // Both fixtures come from the real binary (`--dump` / `--dump-sampler-stale`)
   // over the identical snapshot, so this asserts the "only the badge changes"
   // rule against a state whose badge nothing coordinator-side produced.
-  await stubCockpit(page, [
+  const frames = await stubCockpit(page, [
     await fixture(baseURL, "sample.json"),
     await fixture(baseURL, "sample-sampler-stale.json"),
   ]);
 
   await gotoApp(page);
 
+  // Frame 1 is served until `advance()`, so observing `live` does not depend
+  // on out-racing the 1s poll -- the race that ejected #406 from the merge
+  // queue (#407).
   await expect(page.locator(".connDot")).toHaveAttribute("data-state", "live");
   const cpuBefore = await page.locator(".cpuValue").textContent();
   expect(cpuBefore).not.toBe("—");
 
-  // The app's own poll interval drives the second frame.
+  // Release the second frame; the app's own poll interval delivers it.
+  await frames.advance();
   await expect(page.locator(".connDot")).toHaveAttribute("data-state", "stale", { timeout: 5000 });
 
   // Real data, kept.
@@ -707,7 +750,7 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
     "the narrow fixture must actually reflow, or this test proves nothing"
   ).not.toEqual(wide.panelRows.map((r) => r.length));
 
-  await stubCockpit(page, [wide, narrow]);
+  const frames = await stubCockpit(page, [wide, narrow]);
   await gotoApp(page);
 
   const sections = [
@@ -727,9 +770,13 @@ test("a reflow re-parents every panel without losing one", async ({ page, baseUR
       .map((row) => row.filter((p) => p.id !== "hosts").length)
       .filter((count) => count);
   const rows = page.locator("#panelRows .panel-row");
+  // The wide frame is served until `advance()`, so this count is not racing
+  // the 1s poll (#407).
   await expect(rows).toHaveCount(shapeOf(wide).length);
 
-  // The app's own 1s poll delivers the narrow payload; wait for the reflow.
+  // Release the narrow payload; the app's own 1s poll delivers it. Wait for
+  // the reflow.
+  await frames.advance();
   await expect(rows).toHaveCount(shapeOf(narrow).length, { timeout: 5000 });
   for (const id of sections) {
     await expect(page.locator(`#${id}`), `${id} survived the reflow`).toHaveCount(1);
@@ -974,11 +1021,14 @@ test("stack keeps every host on screen, and leaves no tab bar behind", async ({ 
   // over a full grid is worse than never having had one.
   const tabbed = await fixture(baseURL, "sample-cockpit-tabs.json");
   const stacked = await fixture(baseURL, "sample-cockpit-stacked.json");
-  await stubCockpit(page, [tabbed, stacked]);
+  const frames = await stubCockpit(page, [tabbed, stacked]);
   await gotoApp(page);
 
+  // The tabbed frame is served until `advance()`, so this is not racing the
+  // 1s poll (#407).
   await expect(page.locator("#hostTabs")).toBeVisible();
-  // The app's own 1s poll delivers the stacked payload.
+  // Release the stacked payload; the app's own 1s poll delivers it.
+  await frames.advance();
   await expect(page.locator("#hostTabs")).toBeHidden({ timeout: 5000 });
 
   const cards = page.locator(".cockpit .card");
@@ -1003,8 +1053,16 @@ test("a cockpit with no hosts says so instead of rendering an empty page", async
   // string invented here: an unconfigured app must read as unconfigured, never
   // as broken.
   const empty = await fixture(baseURL, "sample-cockpit-empty.json");
-  await stubCockpit(page, [await fixture(baseURL, "sample.json"), empty]);
+  const populated = await fixture(baseURL, "sample.json");
+  const frames = await stubCockpit(page, [populated, empty]);
   await gotoApp(page);
+
+  // The populated frame is served until `advance()` (#407). Both frames render
+  // exactly one card, so the gate is the remote host's NAME -- absent from the
+  // empty payload -- which is what makes the replacement below an observed
+  // teardown rather than an assumed one.
+  await expect(page.locator(".cockpit .card .hostName")).toHaveText(populated.hosts[0].hostName);
+  await frames.advance();
 
   // Every *remote* card is torn down when its host leaves the payload. The
   // local one stays: this machine is always there, so "nothing configured" is a
@@ -1077,13 +1135,18 @@ test("a host that leaves the payload takes its chart bookkeeping with it", async
   // tick.
   const many = await fixture(baseURL, "sample-cockpit.json");
   const one = await fixture(baseURL, "sample.json");
-  await stubCockpit(page, [many, one]);
+  const frames = await stubCockpit(page, [many, one]);
   await gotoApp(page);
 
   const cards = page.locator(".cockpit .card");
+  // The three-host frame is served until `advance()`, so `before` is read off
+  // three rendered cards rather than whichever frame the 1s poll reached
+  // first (#407).
   await expect(cards).toHaveCount(many.hosts.length);
   const before = await page.evaluate(() => window.__SOLADOR_TEST__.chartCount());
 
+  // Release the one-host payload; the app's own interval delivers it.
+  await frames.advance();
   await expect(cards).toHaveCount(1, { timeout: 5000 });
   const after = await page.evaluate(() => window.__SOLADOR_TEST__.chartCount());
 
