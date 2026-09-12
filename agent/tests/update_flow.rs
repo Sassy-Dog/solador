@@ -31,7 +31,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+// Consumed only by the macOS launchd smoke below; gated like it, so the
+// Linux clippy leg (`-D unused-imports`) sees no unused import.
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,9 +45,11 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+#[cfg(target_os = "macos")]
+use solador_agent::update::Expect;
 use solador_agent::update::{
-    self, asset_name, sha256_hex, Context, Expect, Install, RollbackOutcome, Service,
-    ServiceControl, Trust, UpdateError, UpdateOutcome, FEED_ASSET,
+    self, asset_name, sha256_hex, Context, Install, RollbackOutcome, Service, ServiceControl,
+    Trust, UpdateError, UpdateOutcome, FEED_ASSET,
 };
 
 // ---------------------------------------------------------------------------
