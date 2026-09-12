@@ -702,6 +702,17 @@ reached and a creep-back is readable from any green run's `[WebServer]` lines.
 Read those before touching the deadline: a larger one with no explanation
 converts a loud failure into a slow one.
 
+**A multi-frame cockpit stub is advanced by the test, never by call count
+(#407).** `layout.spec.js`'s `stubCockpit(page, [frame1, frame2])` serves
+frame 1 to every `invoke` until the test calls the returned `advance()`; only
+then does the app's own 1s poll deliver frame 2. The call-counted stub it
+replaced handed out frame 2 from the second `invoke` on, so every frame-1
+assertion after `gotoApp` was racing the 1000ms cadence against Playwright's
+latency, and a loaded merge-group runner lost that race and ejected #406.
+The window is intra-test and independent of #401's server-startup one. A
+longer timeout on the frame-1 assertion cannot help — once frame 2 has been
+served, frame 1 is gone — so do not reach for one; hold the frame instead.
+
 ## Versioning (`docs/VERSIONING.md`)
 
 Two decoupled numbers, both derived from git — never hand-maintained:
