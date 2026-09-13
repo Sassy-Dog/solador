@@ -100,8 +100,10 @@ coverage it does not have would be worse than the checklist.
   (#390). `--targets "<triples>"` narrows it, `--sign` minisigns each artifact;
   see **Releasing** below
 - `./dev test` — Root Rust workspace (`cargo test --locked --workspace` —
-  `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, the release-tag
-  assertion fixture (`scripts/assert-release-tag-test.sh`, #404), the e2e
+  `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, the versioning
+  suite (`scripts/versioning-test.sh`, #405 — the CalVer derivation, the
+  mint and its output contract, the build number, and #404's release-tag
+  assertion, against temporary bare origins), the e2e
   server's bind test (`tests/frontend/csp_server_test.py`), plus the
   `tests/frontend` Playwright e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
@@ -685,10 +687,15 @@ the bundle's floor.
 ```
 
 Runs `cargo test --locked --workspace` (`crates/*`, `app/src-tauri`),
-`agent/deploy/lib_test.sh`, `scripts/assert-release-tag-test.sh` (the release
-workflows' tag assertion, against a temporary bare origin — #404),
-`tests/frontend/csp_server_test.py`, and the `tests/frontend` Playwright
-suite. Agent tests run via `cargo test` in `agent/`.
+`agent/deploy/lib_test.sh`, `scripts/versioning-test.sh` (the versioning
+scripts — #405 — against temporary bare origins: `get-version-info.sh`'s
+derivation and §4 mint with the `action ∈ {create, reuse}` and
+reuse-pushes-nothing contract, `get-build-number.sh`, and the release
+workflows' tag assertion from #404; ~160 cases, run under bash 5, macOS
+`/bin/bash` 3.2 and Git Bash in CI), `tests/frontend/csp_server_test.py`,
+and the
+`tests/frontend` Playwright suite. Agent tests run via `cargo test` in
+`agent/`.
 
 **The e2e server binds without a name lookup, and the 60s webServer deadline
 is not the knob (#401).** `tests/frontend/csp_server.py` serves `app/ui` under

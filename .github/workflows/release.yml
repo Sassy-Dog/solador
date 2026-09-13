@@ -114,7 +114,7 @@ jobs:
       # a re-run after the UTC month rolled (v2026.8.139, attempt 2, derived
       # v2026.9.1 at the unchanged commit) and a ladder-bumped tag on its first
       # run. The script's header carries the argument; scripts/
-      # assert-release-tag-test.sh proves all three outcomes on a bare origin.
+      # versioning-test.sh proves all three outcomes on a bare origin.
       # Unlike the inline comparison it replaced, this makes a live
       # `git ls-remote origin`: a network failure here fails closed with
       # nothing built, and the remedy for that one is a re-run, nothing else.

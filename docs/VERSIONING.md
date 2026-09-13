@@ -210,7 +210,7 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
    door: a `main`-ref dispatch reads the assertion script from the ref it was
    started from (a second checkout into `.tooling`, with the mint run against
    the tag checkout), so it still regenerates `latest.json` for a tag older
-   than #404, whose tree has no such script. `scripts/assert-release-tag-test.sh`
+   than #404, whose tree has no such script. `scripts/versioning-test.sh`
    proves the three outcomes against a temporary bare origin;
    `scripts/publish.sh`'s epilogue states the remedy.
 
@@ -333,48 +333,95 @@ is one-way — no semver "1.0 moment" is coming back.
 
 ## Tests (§3, mandatory)
 
-> **These scripts have PARTIAL test coverage** — the #404 fixture described
-> below, and nothing else in this repo today (the earlier
-> `VersioningScriptTests` were deleted with the macOS app, as the next
-> paragraphs record); the full vector list is owed to #405. Their only tests
-> before that were
-> `VersioningScriptTests`, which ran hermetic bare-origin
-> git fixtures (real `ls-remote` probes) over: patch floor, month-roll reset,
-> §2 idempotency, the §4 collision replay (prior-month-commit release →
-> first-commit-of-month release → two distinct versions), same-commit mint
-> reuse, pin-never-auto-bumps, probe fail-closed, build-number totality /
-> `--at <ref>` / pin / fail-closed, and the §6 CalVer-exceeds-`v0.1.1`
-> monotonicity vector.
->
-> That file was deleted with the original macOS app, and the coverage was never
-> rebuilt. **It was scoped to #15, which has since closed** — releases ship, so
-> the condition this clause was waiting on ("before the minting logic is trusted
-> to stamp a real release") passed without the debt being paid. Saying it is
-> "part of #15's scope" would now point at a closed issue and read as done.
->
-> So state it plainly instead: **the mint shipped `v2026.8.110` onward
-> untested**, and every release since — including the agent binaries #390 adds
-> — is named by a script the fixture below exercises only in part. The full
-> coverage is still owed, as a shell or Rust integration test over the vectors
-> listed above, and it needs an issue of its own rather than a closed one's
-> coattails — [#405](https://github.com/Sassy-Dog/solador/issues/405) is that
-> issue.
->
-> **Partly paid by #404**, and #405 absorbs it: `scripts/assert-release-tag-test.sh`
-> builds a bare origin and drives the real `--tag --push` through the
-> month-roll reuse vector and the §4 collision replay (prior-month-commit
-> release → first-commit-of-month release → two distinct tags), then runs the
-> workflows' assertion script over the result. It exists to prove that
-> assertion, so it exercises only the ladder vectors that assertion depends
-> on — the patch floor (the post-roll floor slot), the month-roll reset,
-> same-commit reuse, the collision bump, and probe fail-closed as the
-> assertion sees it (an unreachable origin is a refusal, never a pass). Still
-> uncovered: `--version`'s §2 idempotency on its own, pin-never-auto-bumps
-> (the fixture scrubs pins rather than exercising one), every build-number
-> vector, and the §6 monotonicity vector.
->
-> What *is* covered is the consumers: `agent/deploy/lib_test.sh` asserts
-> `binary_version` reads a version back out of a real binary and fails closed
-> without one, `scripts/build-agent.sh` asserts each artifact's compiled-in
-> version against the number it was named with, and `release.yml` asserts on
-> every leg that the tag is the mint's own answer at that commit (#404, above).
+**These scripts are covered by `scripts/versioning-test.sh`** (#405) —
+roughly 160 cases, dependency-free bash in the shape of
+`agent/deploy/lib_test.sh`, against temporary bare-origin git repositories
+with real `ls-remote` probes; nothing pushes anywhere but the scratch
+origin. It runs from `./dev test` and in three CI jobs, each under the
+interpreter that leg's release path can be run under: `agent-tests` (Linux,
+bash 5), `rust-workspace` (macOS stock `/bin/bash` 3.2 — the oldest bash a
+macOS release runner or `./dev publish` can resolve, since every script is
+`#!/usr/bin/env bash` and a Homebrew bash ahead on `PATH` is newer) and
+`windows-tests` (Git Bash, the Windows release leg's). The scripts under
+test and the mint run under `"$BASH"`, so each leg tests them under its own
+bash and not whichever is first on `PATH` — with one exception the mint
+itself carries: `get-version-info.sh --build` delegates to
+`get-build-number.sh` through a bare `bash`, so that one call resolves
+`PATH`.
+
+What it holds, against the vector list the deleted `VersioningScriptTests`
+once covered (that Swift file went with the original macOS app, and the
+mint shipped `v2026.8.110` through `v2026.9.12` on #404's partial fixture or
+none at all):
+
+- **Derivation** (`--version`): the patch floor (a month with no commits
+  derives `.1`, at any distance past the last commit), the month-roll reset
+  (September restarts at 1 while the August count keeps growing at the same
+  commit), §2 idempotency, the non-padded month, both seams
+  (`VERSION_DATE_OVERRIDE`, `VERSION_PATCH_OVERRIDE`, a pinned `0` still
+  floored), `MARKETING_VERSION` emitted verbatim, and the §6 migration
+  vector — a derived CalVer orders above `0.1.1`, and the post-roll `.1`
+  above the pre-roll `.5`, under the per-component numeric rule. The
+  comparison itself is `viewmodel::update::is_newer`, tested in Rust; the
+  shell vector asserts only the derived string.
+- **Build number** (`get-build-number.sh`): totality (`rev-list --count`),
+  monotonic across the month roll, `--at <ref>` with an annotated tag
+  peeled, the `BUILD_NUMBER` pin (verbatim, and it wins over `--at`), the
+  delegation from `get-version-info.sh --build`, both usage errors, and
+  fail-closed: an unresolvable ref and a directory outside any checkout exit
+  1 with an **empty stdout**.
+- **Mint** (`--tag`): the **output contract** — exactly three lines,
+  `version=` / `tag=` (`v` + version) / `action=` ∈ {`create`, `reuse`} —
+  asserted on every mint that exits 0, because `scripts/publish.sh`'s epilogue (#395)
+  branches on it with a fail-closed `*` arm; a dry run creates nothing; a
+  `--push` creates an annotated tag whose peeled commit is `HEAD`; the same
+  commit re-run answers `reuse` and **performs no push** (the origin's tag
+  advertisement is snapshotted before and after); the §4 collision replay
+  (the floor slot `v2026.9.1` minted at the August commit, then the first
+  September commit derives `2026.9.1`, finds it there, and is bumped to
+  `v2026.9.2`, `create`); a pin is never auto-bumped (exit 1, no contract on
+  stdout, nothing tagged) but reuses at its own commit and resolves
+  verbatim when free (a dry run — nothing tagged); a failed remote probe
+  refuses to mint blind; with no origin the probe reads local tags, as
+  documented; a stray argument is exit 2. The no-push property is observed
+  two ways, because a snapshot of the origin's refs cannot see an
+  idempotent re-push of a tag it already has: the snapshot (fail-closed,
+  and asserted to name the tag just created) *and* a `git` shim on the
+  mint's `PATH` that records every invocation — the create must record
+  exactly one `push`, the reuse none.
+- **The release-tag assertion** (`assert-release-tag.sh`, #404), absorbed
+  from the fixture that first proved it: the month-roll and ladder-bump
+  passes, and every refusal — a hand-made tag on the wrong commit, a
+  prior-month tag at a later commit, a local-only tag, nine malformed
+  shapes, a tag after the current UTC month, an unreachable origin, no
+  origin, a shallow clone, a directory outside a checkout — with every cause
+  named and the pre-mint refusals asserted to land before the mint runs.
+
+**Proven to bite** — six mutations, each run by hand and recorded on the PR
+that shipped this file, the scripts restored byte-for-byte after each:
+`git push` added to the mint's `reuse` arm (an idempotent re-push, which a
+ref snapshot cannot see) → 2 red, both the shim's no-push assertions; the
+snapshot helper pointed at a nonexistent git dir → 2 red (it names the
+tag it expects, so a dead observation cannot read as "no tags"); the
+ordering helper replaced by lexical `[[ > ]]` → 1 red (`2026.10.1` below
+`2026.9.5`); the `create`-only push guard widened to any `--push` → 8 red
+(`git tag -a` on the existing tag exits 128, and the reuse contract,
+the no-`git tag` assertion and the pin-at-own-commit reuse go with it);
+the `action` token renamed to `created` → red on the first mint's contract
+(and the run ends as a `FAIL fixture:` line, not a `set -e` abort); the
+build-number script's fail-closed `exit 1` plus its message replaced by
+`echo 1` / `exit 0` → 5 red. A suite that has only ever seen the scripts
+pass is indistinguishable from one that passes everything.
+
+**Not here, on purpose.** The shallow-clone refusal of the *build scripts*
+lives in `crates/buildversion` (`is_shallow`, Rust), not in the shell mint,
+which has no such check — its test is #417. The assertion script's "output
+contract was violated" branch is unreachable from a suite that runs the real
+mint, for the reason its own header gives.
+
+The consumers of the derived number are covered separately, as before:
+`agent/deploy/lib_test.sh` asserts `binary_version` reads a version back out
+of a real binary and fails closed without one, `scripts/build-agent.sh`
+asserts each artifact's compiled-in version against the number it was named
+with, and `release.yml` asserts on every leg that the tag is the mint's own
+answer at that commit (#404, above).
