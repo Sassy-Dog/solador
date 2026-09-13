@@ -51,6 +51,17 @@ else
     exit 1
 fi
 
+# --- The release workflows' tag assertion (#404), against a temporary bare
+# origin: git only, pushes nowhere but that scratch origin. Mirrors the step
+# both CI legs run, under the same shell as above for the same reason.
+log_info "Running release-tag assertion fixture (scripts/assert-release-tag-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/assert-release-tag-test.sh; then
+    log_success "Release-tag assertion fixture passed"
+else
+    log_error "Release-tag assertion fixture failed"
+    exit 1
+fi
+
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
 # Needs BOTH npm and cargo: the suite's `pretest` shells out to

@@ -49,7 +49,9 @@ name: Publish update feed
 #   DESKTOP leg that is a replay door that does run a newer file against an
 #   older tag's release: start it from `main` with `leg: desktop`, the tag is
 #   checked out and `solador-update-feed` is built from the tag's tree (which
-#   needs `crates/updatefeed`); the agent leg then does not run at all. (A
+#   needs `crates/updatefeed`), while the tag assertion (#404) is read from
+#   the DISPATCHING ref through a second checkout into `.tooling`, so a tag
+#   older than that script still replays; the agent leg then does not run at all. (A
 #   `main`-ref dispatch with `leg: both` would instead end with
 #   `agent-eligibility` RED at the ref lock below.) For the AGENT leg the
 #   replay must be started FROM the tag with `leg: agent`, so the tag's copy
@@ -150,26 +152,49 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.tag.outputs.tag }}
-          # MANDATORY, for the reason release.yml states: the CalVer assertion
-          # below counts commits, and `get-version-info.sh` REFUSES on a shallow
-          # clone rather than answering with 1.
+          # MANDATORY, for the reason release.yml states: the assertion below
+          # counts commits, and a shallow clone answers "commits this month"
+          # with 1 rather than failing — so `assert-release-tag.sh` refuses a
+          # shallow checkout outright.
           fetch-depth: 0
 
-      # The acceptance item, asserted rather than assumed: the version in the
-      # feed must equal `scripts/get-version-info.sh --version`. The tag is what
-      # names the assets and the manifest's `version` is derived from it, so if
-      # the two ever disagree the feed would advertise a version whose artifact
-      # is a different build.
-      - name: Assert the tag matches the derived CalVer
+      # The acceptance item, asserted rather than assumed: the tag is what
+      # names the assets and the manifest's `version` is derived from it, so
+      # the tag has to be the one the mint produced at this commit, or the feed
+      # would advertise a version whose artifact is a different build.
+      #
+      # Asked of the MINT, not of a bare `--version` (#404): the script re-runs
+      # publish.sh's ladder read-only, pinned to the tag's own month, and
+      # requires `reuse` of exactly this tag. The bare comparison this replaced
+      # was month-bound — a draft tagged on the 30th and published on the 1st
+      # failed here after the reviewer had approved it, and `releases/latest`
+      # then served a release with no `latest.json` for every installed cockpit
+      # to 404 on, with no replay that could pass. This job builds nothing
+      # versioned (the manifest's `version` is `${tag#v}` above), so there is
+      # no MARKETING_VERSION pin to set here.
+      #
+      # The script comes from the ref this run was STARTED from, not from the
+      # tag's tree — a second checkout, into a side directory the tag checkout
+      # never looks at. On `release: published` the two are the same commit
+      # (see the header). On the desktop replay door they are not: a
+      # `main`-ref dispatch exists precisely so a newer copy of this file can
+      # regenerate `latest.json` for an OLDER tag, and every tag cut before
+      # #404 has no `scripts/assert-release-tag.sh` in its tree — the step
+      # would die with `No such file` for exactly the releases the door is
+      # for. The mint beside the script runs against the tag checkout (cwd),
+      # so what is asserted is still the tag at its own commit; only the
+      # asserting code is current. Depth 1 is enough here: the script checks
+      # shallowness of the repo it runs IN (the tag checkout above), not of
+      # the directory it is read from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .tooling
+
+      - name: Assert the tag is the mint's own
         env:
           TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          derived="v$(scripts/get-version-info.sh --version)"
-          if [[ "$TAG" != "$derived" ]]; then
-            echo "::error::tag $TAG does not match derived version $derived"
-            exit 1
-          fi
-          echo "Tag and derived version agree: $derived"
+        run: .tooling/scripts/assert-release-tag.sh "$TAG"
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
@@ -479,13 +504,15 @@ jobs:
           # rather than with a sentence about the tag.
           fetch-depth: 0
 
-      # Deliberately NOT re-derived against the CalVer here: `get-version-info.sh`
-      # counts this month's commits by TODAY'S date, so a draft tagged on the
-      # 30th and published on the 1st would fail that comparison after the
-      # reviewer had approved it, with no replay that could pass. release.yml
-      # proved tag == derived at tag-push time, and its verify jobs proved every
-      # binary reports the tag's version; what this job has to prove is about
-      # the commit, and it is asserted rather than assumed.
+      # Deliberately NOT re-asserted against the CalVer here. release.yml proved
+      # the tag is the mint's own at this commit (the pinned-month ladder
+      # re-run, #404 — before that, a bare `--version` comparison, which is why
+      # this job never carried one: it counted this month's commits by TODAY'S
+      # date, so a draft tagged on the 30th and published on the 1st would
+      # have failed it after the reviewer had approved it, with no replay that
+      # could pass), and its verify jobs proved every binary reports the tag's
+      # version; what this job has to prove is about the commit, and it is
+      # asserted rather than assumed.
       - name: Assert the checkout is the approved commit and the tag still names it
         env:
           TAG: ${{ needs.agent-eligibility.outputs.tag }}

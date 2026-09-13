@@ -154,27 +154,65 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
    on purpose: a failed build re-runs into the same-commit reuse branch).
    **Reuse holds only within the same UTC month.** The derivation is
    wall-clock (`date -u`), so after a roll the ladder derives a new train at
-   the same HEAD and *creates* rather than reuses — and `release.yml`'s
-   "Assert the tag matches the derived CalVer" fails a re-run of the
-   prior-month tag for the same reason (observed on `v2026.8.139`, attempt
-   2; [#404](https://github.com/Sassy-Dog/solador/issues/404)).
-   `publish-feed.yml`'s desktop `feed` job runs the **same assertion at the
-   tag, on both `release: published` and its `workflow_dispatch` door**, so a
-   draft still unpublished when the month rolls cannot get a `latest.json` by
-   any in-repo path either (its `agent-feed` job deliberately asserts the
-   approved *commit* rather than re-deriving the date — #391 — so the agent
-   feed is the one half that survives a roll): publish within the month, or
-   cut a fresh tag — preferably once
-   `main` carries a commit in the new month, because a fresh tag at a
-   prior-month HEAD occupies the floor slot `vYYYY.M.1` and the month's first
-   real commit then ladder-bumps into the next refusal. **A ladder-bumped tag
-   fails that same assertion on its first run**:
-   every leg compares the tag to the bare derivation, which is the *unbumped*
-   value, so "the bumped version IS the version" in step 5 holds for the mint
-   and not yet for the release — that mismatch is
-   [#404](https://github.com/Sassy-Dog/solador/issues/404).
-   `scripts/publish.sh`'s epilogue states both cases and what to do about
-   each.
+   the same HEAD and *creates* the new month's floor slot `vYYYY.M.1` rather
+   than reusing — a second release of the same commit. So a failed CI leg
+   after a roll is redone by **re-running that workflow run**, not by
+   re-running `./dev publish`; and a fresh tag is best cut once `main` carries
+   a commit in the new month, because a floor slot taken at a prior-month HEAD
+   is what makes the month's first real commit ladder-bump.
+7. **The workflows assert the tag by asking the mint, not by re-deriving**
+   ([#404](https://github.com/Sassy-Dog/solador/issues/404)). Every leg of
+   `release.yml` and `publish-feed.yml`'s desktop `feed` job (on both
+   `release: published` and its `workflow_dispatch` door) run
+   `scripts/assert-release-tag.sh <tag>` at the tag: it re-runs `--tag`
+   **without `--push`** (read-only), pinned to the 1st of the tag's own month
+   through `VERSION_DATE_OVERRIDE`, and requires the ladder to answer
+   `action=reuse` for exactly that tag. A re-run after the month rolls
+   derives the original number again and passes (`v2026.8.139`, attempt 2,
+   had failed the bare `--version` comparison this replaced); a ladder-bumped
+   tag walks up to its bumped number and passes, so "the bumped version IS
+   the version" in step 5 now holds for the release as well as the mint; a
+   hand-made tag on the wrong commit derives a number the ladder never walks
+   *down* from and is refused with every cause named. Refused before the mint
+   runs, because these are shapes the ladder cannot see: a name that is not
+   `vYYYY.M.P`; a month after the current UTC month (the mint's clock never
+   reaches it, and pinned there the ladder *would* reuse a floor slot at any
+   commit); a month that **ended before HEAD's committer date** (the mint
+   tags HEAD with the month it runs in, never earlier — and pinned to a past
+   month the ladder counts every commit up to a later HEAD, so a hand-pushed
+   `vYYYY.M.K` with the right `K` would reuse; September's floor slot at an
+   August commit survives, its month is *later*); a shallow clone (it counts
+   `1`); and no `origin` remote (the probe would read local tags). The replay
+   seams are scrubbed from the mint's environment so an inherited pin cannot
+   make the check compare the tag to itself. The probe is a live `ls-remote`,
+   so a network failure fails the step closed; the remedy for that is a
+   re-run and nothing else. Each `release.yml` build leg then **pins
+   `MARKETING_VERSION=<tag's version>`** for its build — the same pin
+   `publish.sh` sets locally — because `build.sh`, `build-agent.sh` and
+   `crates/buildversion` all derive with the wall clock otherwise, and in the
+   two passing cases above that re-derivation would be the mislabelled
+   artifact the assertion exists to prevent; and each leg's validate step
+   then reads the version **back out of the artifact** (`Info.plist` in the
+   updater tarball, the NSIS `VERSIONINFO`, the agent's `--version`) and
+   compares it to the **tag**, never to a derivation, so a pin that failed
+   to reach the build is a red run rather than a mislabelled release.
+   `publish-feed.yml` builds nothing versioned (the manifest's `version` is
+   the tag's) and sets no pin; its `agent-feed` job asserts the approved
+   *commit* rather than the tag (#391), as before. What is still true of a
+   **draft**: its assets are not public until it is published, and publishing
+   is what triggers the feed — but the month no longer matters to either
+   workflow. **Only tags cut after #404 merged get this assertion**: both
+   workflows run the copy of themselves at the tagged commit
+   (`publish-feed.yml`'s header records the measurement), so a re-run or a
+   publish of a tag cut *before* still runs that tag's bare comparison, and
+   the recipe in #404's comments is how such a tag is retired. The one
+   exception is `publish-feed.yml`'s desktop replay
+   door: a `main`-ref dispatch reads the assertion script from the ref it was
+   started from (a second checkout into `.tooling`, with the mint run against
+   the tag checkout), so it still regenerates `latest.json` for a tag older
+   than #404, whose tree has no such script. `scripts/assert-release-tag-test.sh`
+   proves the three outcomes against a temporary bare origin;
+   `scripts/publish.sh`'s epilogue states the remedy.
 
 ## Tags (§5)
 
@@ -261,12 +299,20 @@ artifact-only.
 
 ## CI (§8) — before the mint ever moves to CI
 
-The mint is local-only today; `ci.yml` computes no versions, so it needs no
-special checkout. **If the mint (or any version computation) ever moves into
-a workflow**: that job MUST check out with `fetch-depth: 0` **and** fetch
-tags (two distinct requirements — tags present, and the §4 probe actually
-performed), keep UTC dates, and remain the single mint site (a CI release
-action consumes the minted tag, never `tag_name:`-creates its own).
+The mint's create/push half is local-only; `ci.yml` computes no versions, so
+it needs no special checkout. **If the mint (or any version computation) ever
+moves into a workflow**: that job MUST check out with `fetch-depth: 0` **and**
+fetch tags (two distinct requirements — tags present, and the §4 probe
+actually performed), keep UTC dates, and remain the single mint site (a CI
+release action consumes the minted tag, never `tag_name:`-creates its own).
+
+One thing that *does* run in CI, by design and not in breach of the above:
+`release.yml` and `publish-feed.yml` re-run the ladder **read-only** (`--tag`
+without `--push`, §4 step 7 / #404) under `fetch-depth: 0` with the month
+deliberately **pinned** to the tag's through `VERSION_DATE_OVERRIDE`. That is
+not the mint moving to CI and it is not a UTC-date violation to "fix": the
+pin is what lets a tag be asserted in the month it was minted rather than the
+month the run happens to land in, and it creates nothing.
 
 ## Adoption status (§9)
 
@@ -287,7 +333,11 @@ is one-way — no semver "1.0 moment" is coming back.
 
 ## Tests (§3, mandatory)
 
-> **These scripts currently have NO test coverage.** Their only tests were
+> **These scripts have PARTIAL test coverage** — the #404 fixture described
+> below, and nothing else in this repo today (the earlier
+> `VersioningScriptTests` were deleted with the macOS app, as the next
+> paragraphs record); the full vector list is owed to #405. Their only tests
+> before that were
 > `VersioningScriptTests`, which ran hermetic bare-origin
 > git fixtures (real `ls-remote` probes) over: patch floor, month-roll reset,
 > §2 idempotency, the §4 collision replay (prior-month-commit release →
@@ -302,16 +352,29 @@ is one-way — no semver "1.0 moment" is coming back.
 > to stamp a real release") passed without the debt being paid. Saying it is
 > "part of #15's scope" would now point at a closed issue and read as done.
 >
-> So state it plainly instead: **the mint has shipped `v2026.8.110` onward
-> untested**, and every release since — including the agent binaries #390 adds —
-> is named by a script no test exercises. The coverage is still owed, as a shell
-> or Rust integration test over the vectors listed above, and it needs an issue
-> of its own rather than a closed one's coattails —
-> [#405](https://github.com/Sassy-Dog/solador/issues/405) is that issue.
+> So state it plainly instead: **the mint shipped `v2026.8.110` onward
+> untested**, and every release since — including the agent binaries #390 adds
+> — is named by a script the fixture below exercises only in part. The full
+> coverage is still owed, as a shell or Rust integration test over the vectors
+> listed above, and it needs an issue of its own rather than a closed one's
+> coattails — [#405](https://github.com/Sassy-Dog/solador/issues/405) is that
+> issue.
+>
+> **Partly paid by #404**, and #405 absorbs it: `scripts/assert-release-tag-test.sh`
+> builds a bare origin and drives the real `--tag --push` through the
+> month-roll reuse vector and the §4 collision replay (prior-month-commit
+> release → first-commit-of-month release → two distinct tags), then runs the
+> workflows' assertion script over the result. It exists to prove that
+> assertion, so it exercises only the ladder vectors that assertion depends
+> on — the patch floor (the post-roll floor slot), the month-roll reset,
+> same-commit reuse, the collision bump, and probe fail-closed as the
+> assertion sees it (an unreachable origin is a refusal, never a pass). Still
+> uncovered: `--version`'s §2 idempotency on its own, pin-never-auto-bumps
+> (the fixture scrubs pins rather than exercising one), every build-number
+> vector, and the §6 monotonicity vector.
 >
 > What *is* covered is the consumers: `agent/deploy/lib_test.sh` asserts
 > `binary_version` reads a version back out of a real binary and fails closed
 > without one, `scripts/build-agent.sh` asserts each artifact's compiled-in
-> version against the number it was named with, and `release.yml` asserts the
-> tag against the derived CalVer on every leg. None of that tests the derivation
-> itself.
+> version against the number it was named with, and `release.yml` asserts on
+> every leg that the tag is the mint's own answer at that commit (#404, above).

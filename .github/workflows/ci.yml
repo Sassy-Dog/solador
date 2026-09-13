@@ -105,6 +105,16 @@ jobs:
           SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN: "1"
         run: bash agent/deploy/lib_test.sh
 
+      # The release workflows' tag assertion (#404), proven against a
+      # temporary bare origin: a tag minted before the UTC month rolled and a
+      # ladder-bumped tag pass, a hand-made tag on the wrong commit is refused
+      # with every cause named. Git only — it mints into the scratch origin
+      # with the real `get-version-info.sh --tag --push` and pushes nowhere
+      # else. Like build-agent.sh, the script under test otherwise runs ONLY on
+      # a `v*` tag, where a break surfaces mid-release.
+      - name: Release-tag assertion fixture (scripts/assert-release-tag.sh)
+        run: bash scripts/assert-release-tag-test.sh
+
   rust-workspace:
     name: Rust workspace + frontend e2e
     # macOS is required, not preferred: app/src-tauri only builds on
@@ -166,6 +176,13 @@ jobs:
         run: |
           /bin/bash --version | head -n1
           /bin/bash agent/deploy/lib_test.sh
+
+      # The same fixture the Linux leg runs (#404), under the bash a macOS
+      # release runner and a maintainer's `./dev publish` actually execute.
+      # The harness runs the script under test and the mint with "$BASH", so
+      # this is 3.2 all the way down, not just the harness.
+      - name: Release-tag assertion fixture under macOS bash 3.2
+        run: /bin/bash scripts/assert-release-tag-test.sh
 
       # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
       # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does
@@ -313,7 +330,22 @@ jobs:
     # the tests.
     runs-on: windows-latest
     steps:
+      # BEFORE checkout, exactly as release.yml's Windows leg does and for the
+      # same reason: the runner image sets core.autocrlf=true, and the fixture
+      # step below runs scripts/*.sh under Git Bash, which reads a CRLF file
+      # with a literal \r on every line. Rust does not care either way.
+      - name: Check out with LF line endings
+        run: git config --global core.autocrlf input
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The release-tag assertion (#404) runs under Git Bash on the Windows
+      # release leg — the one interpreter the Linux and macOS fixture runs do
+      # not cover — so the same fixture runs here too, before the long Rust
+      # build. Git only; it pushes nowhere but a scratch bare origin.
+      - name: Release-tag assertion fixture under Git Bash
+        shell: bash
+        run: bash scripts/assert-release-tag-test.sh
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 

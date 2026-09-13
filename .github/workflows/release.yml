@@ -66,9 +66,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # MANDATORY, not an optimization. Both version numbers are derived by
-          # counting git history, and `get-version-info.sh` REFUSES on a shallow
-          # clone rather than answering "commits this month" with 1. At depth 1
-          # this job would emit no version at all.
+          # counting git history, and a shallow clone answers "commits this
+          # month" with 1 rather than failing: `assert-release-tag.sh` below
+          # refuses a shallow checkout for exactly that reason, and the build
+          # (`crates/buildversion`) emits no version at all on one.
           fetch-depth: 0
 
       # FIRST, before anything expensive, and before the keychain exists.
@@ -105,16 +106,31 @@ jobs:
       # v2026.8.5 at a commit whose derived CalVer is 2026.8.109 publishes a
       # release called v2026.8.5 containing Solador-2026.8.109.dmg — a
       # mislabelled artifact is worse than a failed release.
-      - name: Assert the tag matches the derived CalVer
+      #
+      # Asserted by asking the MINT, not by re-deriving (#404): the script
+      # re-runs publish.sh's own ladder read-only, pinned to the tag's month,
+      # and requires it to answer `reuse` for exactly this tag. A bare
+      # `--version` here refused two tags the mint had legitimately produced —
+      # a re-run after the UTC month rolled (v2026.8.139, attempt 2, derived
+      # v2026.9.1 at the unchanged commit) and a ladder-bumped tag on its first
+      # run. The script's header carries the argument; scripts/
+      # assert-release-tag-test.sh proves all three outcomes on a bare origin.
+      # Unlike the inline comparison it replaced, this makes a live
+      # `git ls-remote origin`: a network failure here fails closed with
+      # nothing built, and the remedy for that one is a re-run, nothing else.
+      #
+      # Then the build is PINNED to the tag's number, exactly as publish.sh pins
+      # the minted version locally. Every derive downstream — build.sh's
+      # `--config` overlay, `app/src-tauri/build.rs` via crates/buildversion —
+      # honours MARKETING_VERSION ahead of the wall clock; without the pin the
+      # two cases above would pass the assertion and then build the mislabelled
+      # artifact it exists to prevent. The validate step after the build reads
+      # the version back out of the artifact and compares it to the TAG, so a
+      # pin that failed to reach the build is a red run, not a mislabel.
+      - name: Assert the tag is the mint's own, and pin the build to it
         run: |
-          derived="v$(scripts/get-version-info.sh --version)"
-          if [[ "$GITHUB_REF_NAME" != "$derived" ]]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match derived version $derived"
-            echo "Tags are minted by scripts/publish.sh so these agree. A hand-made" >&2
-            echo "tag, or a tag on the wrong commit, lands here." >&2
-            exit 1
-          fi
-          echo "Tag and derived version agree: $derived"
+          scripts/assert-release-tag.sh "$GITHUB_REF_NAME"
+          echo "MARKETING_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -215,8 +231,44 @@ jobs:
             echo "(TAURI_SIGNING_PRIVATE_KEY resolved empty, or the signer failed)" >&2
             exit 1
           fi
+
+          # Against the TAG, not against a derivation (#404). build.sh asserts
+          # the plist against its own derived number, so an unpinned build is
+          # self-consistent and green; the only thing that ties these files to
+          # the release they are attached to is the MARKETING_VERSION pin the
+          # assertion step set, and a pin is a thing that can be lost. So the
+          # version is read back out of the artifact and compared to the name
+          # of the release it ships under — the same claim the agent's verify
+          # jobs make of every binary.
+          want="${GITHUB_REF_NAME#v}"
+          # The bundle's name, from where build.sh reads it, so a rename fails
+          # here with a sentence rather than as a `tar` member-not-found.
+          product="$(plutil -extract productName raw -o - app/src-tauri/tauri.conf.json)"
+          extracted="$(mktemp -d)"
+          if ! tar -xzf "$tarball" -C "$extracted" "$product.app/Contents/Info.plist"; then
+            echo "::error::$(basename "$tarball") carries no $product.app/Contents/Info.plist"
+            exit 1
+          fi
+          got="$(plutil -extract CFBundleShortVersionString raw -o - "$extracted/$product.app/Contents/Info.plist")"
+          rm -rf "$extracted"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::the updater payload carries CFBundleShortVersionString '$got', but this release is $GITHUB_REF_NAME"
+            echo "The build derived a version other than the tag's — the MARKETING_VERSION" >&2
+            echo "pin set by the assertion step did not reach it. Attaching this would" >&2
+            echo "publish a mislabelled artifact." >&2
+            exit 1
+          fi
+          for f in "$dmg" "$tarball"; do
+            case "$(basename "$f")" in
+              "$product-$want."*) ;;
+              *)
+                echo "::error::$(basename "$f") is not named for $GITHUB_REF_NAME"
+                exit 1
+                ;;
+            esac
+          done
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-          echo "Validated $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) + .sig"
+          echo "Validated $(basename "$tarball") ($(du -h "$tarball" | cut -f1)) + .sig; both artifacts carry $want"
 
       # DRAFT deliberately. The reviewer gate approved exposing credentials, not
       # publishing to users — a draft is deletable, a public release has to be
@@ -343,17 +395,13 @@ jobs:
 
       # Same assertion as the macOS job, and it must run on BOTH legs: each
       # publishes an artifact under the tag's name, so each has to prove the
-      # tag and the derived version agree.
-      - name: Assert the tag matches the derived CalVer
+      # tag is the mint's own (#404) — and pin its own build to it, since job
+      # env does not cross jobs. The pin reaches build.sh's overlay, the
+      # version-resource re-read below, and crates/buildversion alike.
+      - name: Assert the tag is the mint's own, and pin the build to it
         run: |
-          derived="v$(bash scripts/get-version-info.sh --version)"
-          if [[ "$GITHUB_REF_NAME" != "$derived" ]]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match derived version $derived"
-            echo "Tags are minted by scripts/publish.sh so these agree. A hand-made" >&2
-            echo "tag, or a tag on the wrong commit, lands here." >&2
-            exit 1
-          fi
-          echo "Tag and derived version agree: $derived"
+          bash scripts/assert-release-tag.sh "$GITHUB_REF_NAME"
+          echo "MARKETING_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -440,7 +488,12 @@ jobs:
           # An independent second read of the version resource — the fixed
           # VS_FIXEDFILEINFO block carries the marketing version in words 1-3
           # and the build number in word 4 (see build.sh's Windows section).
-          want="$(bash scripts/get-version-info.sh --version).$(bash scripts/get-build-number.sh)"
+          # The marketing part is the TAG's, not a re-derivation (#404): with
+          # MARKETING_VERSION pinned in the job env a `--version` here would
+          # only read the pin back, and with the pin lost it would agree with
+          # the equally unpinned build — green either way, and mislabelled in
+          # the second. The build number is not pinned and is read as before.
+          want="${GITHUB_REF_NAME#v}.$(bash scripts/get-build-number.sh)"
           got="$(powershell.exe -NoProfile -Command \
             "\$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo('$(cygpath -w "$exe")'); '{0}.{1}.{2}.{3}' -f \$v.ProductMajorPart, \$v.ProductMinorPart, \$v.ProductBuildPart, \$v.ProductPrivatePart" \
             | tr -d '\r')"
@@ -560,16 +613,14 @@ jobs:
           fetch-depth: 0
 
       # Same assertion both cockpit legs make, and for the same reason: this leg
-      # publishes artifacts named after the tag, so it has to prove the tag and
-      # the derived version agree before it builds anything.
-      - name: Assert the tag matches the derived CalVer
+      # publishes artifacts named after the tag, so it has to prove the tag is
+      # the mint's own (#404) before it builds anything — and pin the build to
+      # it, which build-agent.sh and agent/build.rs both honour, so the verify
+      # jobs' `--version` == tag check is a check and not a coincidence.
+      - name: Assert the tag is the mint's own, and pin the build to it
         run: |
-          derived="v$(scripts/get-version-info.sh --version)"
-          if [[ "$GITHUB_REF_NAME" != "$derived" ]]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match derived version $derived"
-            exit 1
-          fi
-          echo "Tag and derived version agree: $derived"
+          scripts/assert-release-tag.sh "$GITHUB_REF_NAME"
+          echo "MARKETING_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -787,10 +838,12 @@ jobs:
           # rather than a release full of signatures nobody can check.
           #
           # MARKETING_VERSION is PINNED from the tag, exactly as publish.sh pins
-          # it for the cockpit build: --sign-only selects artifacts by version
-          # prefix, and a second derive here — however unlikely to differ on the
-          # same commit — could select none and fail for a reason that has
-          # nothing to do with signing. build-agent.sh consumes the pin verbatim.
+          # it for the cockpit build and as every build job above pins its own
+          # (#404): --sign-only selects artifacts by version prefix, and a
+          # second derive here — which DOES differ on the same commit once the
+          # UTC month rolls, or after a ladder bump — could select none and
+          # fail for a reason that has nothing to do with signing.
+          # build-agent.sh consumes the pin verbatim.
           MARKETING_VERSION="$VERSION" \
             SOLADOR_AGENT_SIGNING_KEY="$key" ./dev agent --sign-only --out-dir agent-dist
 
