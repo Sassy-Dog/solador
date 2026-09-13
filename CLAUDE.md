@@ -881,11 +881,28 @@ share one release and a fixed crash would read as regressed.
   platform holds it differently: on Linux the timer is **monotonic**
   (`OnActiveSec=24h` + `OnUnitActiveSec=24h`; the clock pauses through
   suspend, so in ordinary operation a wake finds no elapsed deadline —
-  never `OnCalendar`, `Persistent` or `WakeSystem`; **#411** holds the one
-  open caveat, a source-traced, unobserved case where a `daemon-reload`
-  after the first day re-arms `OnActiveSec` and the next resume fires it
-  once at wake — a Linux guard lands there if a real user manager confirms
-  it), on macOS **the launcher is the guard**: in update mode
+  never `OnCalendar`, `Persistent` or `WakeSystem`) **and the oneshot's
+  `ExecCondition=` is the guard (#411)**: `agent/deploy/update-guard.sh`,
+  installed as `~/.local/bin/solador-agent-update-guard` and run with `%n`
+  before every `ExecStart`, because a source trace of `timer.c` found that
+  a `daemon-reload` after the first day re-arms `OnActiveSec` and the next
+  resume fires it once at wake. It applies the launcher's two rules — skip
+  within 5 min of the last resume (this activation's
+  `InactiveExitTimestampMonotonic` from the user manager against
+  `sleep.target`'s `InactiveEnterTimestampMonotonic` from the system
+  manager, both unprivileged; a zero corroborated by
+  `/sys/power/suspend_stats/success`) or within 23 h of a stamp of the
+  launcher's format at the launcher's path (written 0600 here) — with
+  `ExecCondition=`'s own mapping: **1 skips cleanly
+  (`Result=exec-condition`), 255 fails the unit** (the hold; a permanent
+  one is in `--failed`, never a quiet day), and never a
+  `SuccessExitStatus=` value, which a condition exit would *run* on. A
+  missing guard binary is exec failure 203, *inside* the skip range, so
+  the unit also carries `AssertFileIsExecutable=` on it (an error line and
+  a failed `start`; assertions change no unit state), the installer writes
+  the guard before the unit, and the opt-in is refused when the *running*
+  manager is < 243, where the key would be ignored. On macOS
+  **the launcher is the guard**: in update mode
   `run-agent.sh` exports nothing from the env file (the updater reads it
   itself) and refuses, exit 0 with a logged reason, a firing within 5 min
   of the last wake or boot (`kern.waketime` / `kern.boottime`) or within
@@ -909,12 +926,16 @@ share one release and a fixed crash would read as regressed.
   (`is-enabled` / `launchctl print`) rather than checking file presence, so
   a paused job is never reported as scheduled. `lib_test.sh` observes all
   of it as installer *actions* on both platforms ("no update check" is
-  asserted on the fixture agent's recorded argv), drives the guard with a
-  stubbed clock/wake/boot, and the opt-in launchd smoke fires a real
-  throwaway updater by hand (read-only: exit 4, or 1 with no network;
-  metrics pid unchanged) and watches the guard discard the second firing.
-  **Not observed anywhere**: a day of sleep on a real Mac, or a real
-  systemd timer — the Linux claim rests on `systemd.timer(5)`, caveat #411.
+  asserted on the fixture agent's recorded argv), drives both guards with
+  stubbed inputs (clock/wake/boot on macOS; the two manager reads, the
+  clock and the kernel counter under an override root on Linux), and the
+  opt-in launchd smoke fires a real throwaway updater by hand (read-only:
+  exit 4, or 1 with no network; metrics pid unchanged) and watches the
+  guard discard the second firing. **Not observed anywhere**: a day of
+  sleep on a real Mac, or a real systemd timer taken through a
+  `daemon-reload` and a suspend/resume — `docs/AGENT-DISTRIBUTION.md` §4
+  records that as the observation still owed; the guard holds the cadence
+  either way.
 - **The standby key is provisioned by `scripts/agent-standby-key.sh`, never
   by hand (#393 §A).** Non-printing, idempotent, refuses every half-state; the
   private half goes to Doppler `solador/custody` (a config with **no** sync)
