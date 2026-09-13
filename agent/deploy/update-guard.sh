@@ -20,26 +20,36 @@
 #
 #   0    run `solador-agent update`.
 #   1    DISCARD this firing. ExecStart is skipped, the unit ends inactive
-#        with Result=success — not in `systemctl --user --failed` — and the
-#        reason is one line in the journal. Tomorrow's firing resolves it by
-#        itself: this is the deliberate no-op the cadence describes.
+#        with Result=exec-condition ("Skipped due to 'exec-condition'" in the
+#        journal; not in `systemctl --user --failed`) and the reason is one
+#        line in the journal. Tomorrow's firing resolves it by itself: this
+#        is the deliberate no-op the cadence describes.
 #   255  HOLD. ExecStart is skipped and the unit FAILS — Result=exit-code,
-#        listed by `systemctl --user --failed` — because an input the
-#        decision needs could not be read, or the stamp could not be written.
-#        A hold does not resolve by itself, so a green unit over it every day
-#        would be a fabricated state; the journal line names what to fix.
-#        This is the macOS launcher's exit 6, in the manager's own vocabulary.
+#        listed by `systemctl --user --failed` until its next activation or
+#        a `reset-failed` — because an input the decision needs could not be
+#        read, or the stamp could not be written. A hold over a host property
+#        (no bus, a masked sleep.target the kernel contradicts) recurs every
+#        day, and a green unit over that would be a fabricated state; the
+#        journal line names what to fix. This is the macOS launcher's exit 6,
+#        in the manager's own vocabulary.
 #
-# The one status this mapping gets wrong is the guard NOT BEING THERE: the
-# manager's exec failure is exit 203, which is inside the skip range, so a
-# unit whose guard was deleted would skip every firing forever, green (this
-# was observed — Result=success, nothing in --failed). That is why the unit
-# also carries AssertFileIsExecutable= on this path (a failed assertion is an
-# error line in the journal and a failed `start`), why install.sh installs
-# this file BEFORE it renders the unit, and why the documented removal takes
-# the units out before this file. Every usage error below is a HOLD for the
-# same reason: a unit that reaches this script with the wrong shape is a unit
-# somebody edited, and a skip would read as a quiet day.
+# Two more facts of that contract shape what this script may exit with.
+# First, ExecCondition= honours SuccessExitStatus= too: an exit matching it
+# RUNS ExecStart (observed — a condition exit of 4, the oneshot's
+# SuccessExitStatus, ran the updater). So DISCARD_EXIT and HOLD_EXIT must
+# never be a value that line names, and lib_test.sh asserts they are not.
+# Second, the guard NOT BEING THERE is the one status the mapping gets wrong:
+# the manager's exec failure is exit 203, inside the skip range, so a unit
+# whose guard was deleted would skip every firing forever with
+# Result=exec-condition (observed). That is why the unit also carries
+# AssertFileIsExecutable= on this path — a failed assertion is an error line
+# in the journal and a failed `start`, though systemd.unit(5) is explicit
+# that it changes no unit state, so it is NOT in `--failed` either — why
+# install.sh installs this file BEFORE it renders the unit, and why the
+# documented removal takes the units out before this file. Every usage
+# error below is a HOLD for the same reason: a unit that reaches this script
+# with the wrong shape is a unit somebody edited, and a skip would read as a
+# quiet day.
 #
 # Why a monotonic timer still needs a guard. solador-agent-update.timer is
 # OnActiveSec=24h + OnUnitActiveSec=24h, and CLOCK_MONOTONIC pauses through
@@ -60,9 +70,10 @@
 #      boot that has not slept. A firing delivered because a deadline was
 #      recomputed at wake arrives seconds after it; a scheduled one almost
 #      never does, and the one that does is discarded, as the decision says.
-#   2. Not within MIN_INTERVAL_SECS of the last attempt, recorded in the same
-#      one-line stamp the macOS launcher keeps, at the same path
-#      (~/.config/solador-agent-update.last-attempt, mode 0600). Belt to the
+#   2. Not within MIN_INTERVAL_SECS of the last attempt, recorded in a
+#      one-line stamp of the macOS launcher's format at the same path
+#      (~/.config/solador-agent-update.last-attempt; this guard writes it
+#      mode 0600, which the launcher does not). Belt to the
 #      first rule's braces: two firings closer together than the interval —
 #      a re-enable, a manual start, a manager behaviour this trace missed —
 #      run `update` once. The stamp is written BEFORE the attempt, so a
@@ -104,8 +115,11 @@
 #     kernel older than 5.4) it is not consulted; present and unreadable it
 #     is a hold like any other input.
 #   * The wall clock, `date +%s`, for the interval rule and the stamp: the
-#     same clock, the same file and the same 23 h as the macOS launcher, so
-#     the two guards answer the same question the same way.
+#     same clock, the same stamp format and path, and the same 23 h as the
+#     macOS launcher, so the two guards answer the same question the same
+#     way. Every value read here goes into arithmetic as `10#…`: a
+#     hand-edited stamp of `09` is otherwise an octal error that ends the
+#     script under `set -e` with status 1 — a clean skip with no log line.
 #
 # Out, deliberately: the system journal (readable only in the
 # systemd-journal group) and logind's D-Bus (PrepareForSleep is a signal,
@@ -113,17 +127,22 @@
 #
 # What this reads and does NOT do: no env file (the updater reads it by
 # itself; the token never enters this process), no export, no request, no
-# touch of solador-agent.service. It resolves `systemctl` and `date` on the
-# PATH the user manager gives the unit — the same PATH the updater resolves
-# `systemctl` under a moment later — and reads $HOME for the stamp, as the
-# updater reads it for the env file. SOLADOR_AGENT_UPDATE_GUARD_ROOT is the
-# test harness's seam: when set, the sysfs counter is read under that prefix
-# instead of /, so the suite never reads this machine's kernel. It is not a
-# privilege boundary — the environment here is the user's own manager's.
+# touch of solador-agent.service. It resolves `bash`, `systemctl`, `date`
+# and the coreutils it uses on the unit's PATH, which the oneshot pins to the
+# system directories (the macOS updater plist's decision, #394: not
+# ~/.local/bin — the directory the installer writes to — in front of a
+# process that decides whether a binary is renamed over the service), and
+# reads $HOME for the stamp, as the updater reads it for the env file.
+# SOLADOR_AGENT_UPDATE_GUARD_ROOT is the test harness's seam: when set, the
+# sysfs counter is read under that prefix instead of /, so the suite never
+# reads this machine's kernel. The oneshot UnsetEnvironment=s it, so under
+# the unit it is never set; it is not a privilege boundary either way — the
+# environment here is the user's own manager's.
 #
 # Hand-inspecting on a host:
-#   systemctl --user status solador-agent-update.service    # last result; "Skipped due to 'exec-condition'" is a discard, "failed" a hold
-#   journalctl --user -u solador-agent-update -n 20          # this guard's one line, or the updater's own
+#   systemctl --user status solador-agent-update.service    # "Skipped due to 'exec-condition'" is a discard; "failed" + a HELD line below is a hold; "failed" + an updater exit 3 means check solador-agent.service
+#   journalctl --user -u solador-agent-update -g 'solador-agent-update-guard:' -n 20   # this guard's lines
+#   systemctl --user reset-failed solador-agent-update.service   # after fixing what a hold named
 #   cat ~/.config/solador-agent-update.last-attempt          # epoch seconds of the last attempt
 # An operator who wants a check NOW runs `solador-agent update` directly,
 # which this guard does not cover (a `systemctl --user start` of the oneshot
@@ -145,7 +164,7 @@ log() {
 }
 
 hold() {
-    log "HELD — $* Exit $HOLD_EXIT (the unit fails; see the line above)."
+    log "HELD — $* Exit $HOLD_EXIT: the unit is failed until its next activation or a reset-failed."
     exit "$HOLD_EXIT"
 }
 
@@ -187,7 +206,7 @@ fi
 # "the manager does not show $unit activating" — a hand run with
 # INVOCATION_ID exported, or a stale unit object — and is a hold, not "now".
 mono_now_us="$(systemctl --user show -p InactiveExitTimestampMonotonic --value "$unit" 2>/dev/null || true)"
-if ! is_count "$mono_now_us" || [ "$mono_now_us" -eq 0 ]; then
+if ! is_count "$mono_now_us" || [ "$((10#$mono_now_us))" -eq 0 ]; then
     hold "cannot read this activation's time from the user manager (systemctl --user show -p InactiveExitTimestampMonotonic $unit said '${mono_now_us:-<nothing>}'); cannot tell a scheduled firing from a wake-time one."
 fi
 
@@ -205,17 +224,17 @@ if [ -e "$SUSPEND_COUNTER" ]; then
     if ! is_count "$suspends"; then
         hold "cannot read $SUSPEND_COUNTER (got '${suspends:-<nothing>}'); it exists, so the kernel keeps the count, and without it a zero from the manager cannot be trusted."
     fi
-    if [ "$suspends" -gt 0 ] && [ "$resume_us" -eq 0 ]; then
+    if [ "$((10#$suspends))" -gt 0 ] && [ "$((10#$resume_us))" -eq 0 ]; then
         hold "the kernel counts $suspends completed suspend(s) this boot but the system manager recorded no $SLEEP_UNIT cycle (masked, or slept outside systemd?); the last resume cannot be placed in time."
     fi
 fi
 
-since_resume=$(( (mono_now_us - resume_us) / 1000000 ))
+since_resume=$(( (10#$mono_now_us - 10#$resume_us) / 1000000 ))
 if [ "$since_resume" -lt 0 ]; then
     hold "the system manager's last resume (${resume_us}µs) is later than this activation (${mono_now_us}µs) on the same clock; the inputs do not agree."
 fi
 if [ "$since_resume" -lt "$WAKE_SETTLE_SECS" ]; then
-    if [ "$resume_us" -eq 0 ]; then
+    if [ "$((10#$resume_us))" -eq 0 ]; then
         log "the system booted ${since_resume}s ago; a check this close to a boot is a missed interval being made up, which the daily/no-catch-up cadence discards. Not running it; the next scheduled firing is a day away."
     else
         log "the system resumed ${since_resume}s ago; a check this close to a wake is a missed interval being made up, which the daily/no-catch-up cadence discards. Not running it; the next scheduled firing is a day away."
@@ -231,7 +250,7 @@ if [ -e "$stamp_file" ]; then
     if ! is_count "$last"; then
         hold "$stamp_file does not hold a timestamp; cannot tell when the last attempt was, so not running this check. Remove that file to resume unattended checks."
     fi
-    since_last=$((now - last))
+    since_last=$((10#$now - 10#$last))
     if [ "$since_last" -lt 0 ]; then
         log "the clock has moved backwards since the last attempt (recorded $last, now $now); not running this check."
         exit "$DISCARD_EXIT"
@@ -252,7 +271,7 @@ if ! ( umask 077 && printf '%s\n' "$now" > "$stamp_file.new" ) 2>/dev/null \
     rm -f "$stamp_file.new" 2>/dev/null || true
     hold "could not write $stamp_file; not running an update whose attempt could not be recorded."
 fi
-if [ "$resume_us" -eq 0 ]; then
+if [ "$((10#$resume_us))" -eq 0 ]; then
     log "letting $unit run: this boot has not slept, up ${since_resume}s${last:+, last attempt ${since_last}s ago}."
 else
     log "letting $unit run: last resume ${since_resume}s ago${last:+, last attempt ${since_last}s ago}."

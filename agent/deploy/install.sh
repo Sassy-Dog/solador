@@ -213,17 +213,22 @@ case "$OS" in
             [ -f "$UPDATE_UNIT_SRC" ] || { echo "ERROR: $UPDATE_UNIT_SRC not found — this checkout is incomplete." >&2; exit 1; }
             [ -f "$UPDATE_TIMER_SRC" ] || { echo "ERROR: $UPDATE_TIMER_SRC not found — this checkout is incomplete." >&2; exit 1; }
             [ -f "$GUARD_SRC" ] || { echo "ERROR: $GUARD_SRC not found — this checkout is incomplete." >&2; exit 1; }
-            # `systemd 256 (256.11-1.fc41)` is the first line on every
-            # distro; the second word is the version. Anything else is
+            # The RUNNING user manager's version — `systemctl --user show -p
+            # Version` answers from the daemon (`256.11-1.fc41`, `249.11-
+            # 0ubuntu3.12`; the leading integer is the version) — not
+            # `systemctl --version`, which describes the client on this
+            # PATH: a package upgraded without a daemon-reexec, or a
+            # toolbox's systemctl, passes that and yields exactly the
+            # unguarded opt-in this refuses. Anything unparseable is
             # "cannot tell", and an opt-in whose guard the manager might
             # ignore is not made on a guess.
-            SYSTEMD_VERSION="$(systemctl --version 2>/dev/null | head -n1 | awk '$1 == "systemd" { print $2 }')"
+            SYSTEMD_VERSION="$(systemctl --user show -p Version --value 2>/dev/null | head -n1 | sed -n 's/^\([0-9][0-9]*\).*/\1/p')"
             case "$SYSTEMD_VERSION" in
                 '' | *[!0-9]*)
-                    echo "ERROR: --enable-timer is refused: cannot read the systemd version (systemctl --version" >&2
-                    echo "       said '${SYSTEMD_VERSION:-<nothing>}'). The update job's guard is an ExecCondition=, which" >&2
-                    echo "       needs systemd >= $SYSTEMD_MIN_FOR_GUARD; an older manager would ignore it and run the" >&2
-                    echo "       updater unguarded. Nothing has been changed." >&2
+                    echo "ERROR: --enable-timer is refused: cannot read the running systemd version (systemctl --user" >&2
+                    echo "       show -p Version said '$(systemctl --user show -p Version --value 2>/dev/null | head -n1)'). The update job's guard" >&2
+                    echo "       is an ExecCondition=, which needs systemd >= $SYSTEMD_MIN_FOR_GUARD; an older manager would ignore" >&2
+                    echo "       it and run the updater unguarded. Nothing has been changed." >&2
                     exit 1
                     ;;
             esac
@@ -907,7 +912,17 @@ update_scheduling_summary() {
             fi
             state="$(systemctl --user is-enabled "$UPDATE_NAME.timer" 2>/dev/null || true)"
             if [ "$state" = "enabled" ]; then
-                echo "    Unattended updates: enabled ($UPDATE_NAME.timer; systemctl --user list-timers $UPDATE_NAME.timer)"
+                # A host that opted in before #411 keeps a oneshot with no
+                # ExecCondition= — the no-flag re-run leaves it exactly as
+                # it is — and it must not read the same as a guarded one:
+                # "enabled" is not "guarded", and the re-run with the flag
+                # is how the guard arrives.
+                if grep -q '^ExecCondition=' "$UPDATE_UNIT_DST" 2>/dev/null && [ -x "$GUARD_DST" ]; then
+                    echo "    Unattended updates: enabled, guarded by $GUARD_DST ($UPDATE_NAME.timer; systemctl --user list-timers $UPDATE_NAME.timer)"
+                else
+                    echo "    Unattended updates: enabled but UNGUARDED ($UPDATE_NAME.timer; a pre-#411 unit, or the guard $GUARD_DST is missing);"
+                    echo "      a firing at wake is not discarded — re-run with --enable-timer to install the guard"
+                fi
             else
                 echo "    Unattended updates: $UPDATE_NAME.timer is present but not enabled (systemd says '${state:-<nothing>}');"
                 echo "      re-enable with:  systemctl --user enable --now $UPDATE_NAME.timer   (or re-run with --enable-timer)"

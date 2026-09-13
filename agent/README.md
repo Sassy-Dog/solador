@@ -837,7 +837,10 @@ The disable/remove commands below are the only way it goes away. A fresh
 install without the flag never has one. One timing effect of any re-run on
 Linux: the installer's `daemon-reload` re-bases a timer that has **not yet
 fired** to the reload time, so a first check due in an hour becomes one due
-in a day — later, never sooner, and never one on enable.
+in a day — later, never sooner, and never one on enable. A host that opted
+in **before #411** keeps its unguarded oneshot across no-flag re-runs; the
+summary line then reads `enabled but UNGUARDED` rather than `enabled`, and
+one re-run *with* the flag is how the guard arrives.
 
 **Exit status.** The installer exits `0` when the agent is installed and
 serving (and, with the flag, scheduled); `1` when the install failed or was
@@ -876,19 +879,22 @@ day (every installer re-run does one) re-arms the one-shot `OnActiveSec=`
 such that the *next* suspend/resume fires it once, seconds after wake — the
 coalesced catch-up the cadence forbids, and on a laptop whose network is
 not back yet a failed attempt that costs the day. So the oneshot carries
-`ExecCondition=~/.local/bin/solador-agent-update-guard %n` (installed by
-`--enable-timer` from `agent/deploy/update-guard.sh`), which the manager
-runs before `ExecStart` on **every** activation — the timer's, or a
-`systemctl --user start` by hand — and which applies the same two rules as
-the macOS launcher: a firing within **five minutes of the last resume** (or
-of the boot, on a boot that has not slept) is skipped, and so is one within
-**23 hours of the last attempt**, recorded in the same one-line stamp,
-`~/.config/solador-agent-update.last-attempt` (mode 0600, written *before*
-the attempt, so a failed run is not retried until tomorrow). Its exit
-status is `ExecCondition=`'s own contract: **0** runs `update`; **1** skips
-it cleanly — the unit ends `inactive` with `Result=success`, not in
-`--failed`, and one line in the journal says why; **255** *fails* the unit
-— listed by `systemctl --user --failed` — because an input the guard needs
+`ExecCondition=/home/<you>/.local/bin/solador-agent-update-guard %n` (the
+absolute path, rendered; installed by `--enable-timer` from
+`agent/deploy/update-guard.sh`), which the manager runs before `ExecStart`
+on **every** activation — the timer's, or a `systemctl --user start` by
+hand — and which applies the same two rules as the macOS launcher: a firing
+within **five minutes of the last resume** (or of the boot, on a boot that
+has not slept) is skipped, and so is one within **23 hours of the last
+attempt**, recorded in a one-line stamp of the launcher's format at the
+same path, `~/.config/solador-agent-update.last-attempt` (this guard writes
+it mode 0600; written *before* the attempt, so a failed run is not retried
+until tomorrow). Its exit status is `ExecCondition=`'s own contract: **0**
+runs `update`; **1** skips it cleanly — the unit ends `inactive` with
+`Result=exec-condition`, not in `--failed`, and one line in the journal
+says why; **255** *fails* the unit — `Result=exit-code`, listed by
+`systemctl --user --failed` until its next activation or a `reset-failed`
+— because an input the guard needs
 could not be read or the stamp could not be written, and a hold that read
 as a quiet day would be a fabricated state. Every usage error (wrong
 argument shape, not under a unit, no `HOME`) is a hold for the same reason.
@@ -907,20 +913,33 @@ recorded are a resume the guard cannot place in time, and it holds. Absent
 (no `CONFIG_PM_SLEEP`, or a kernel before 5.4) the counter is not
 consulted. Nothing here needs the journal, logind's D-Bus, or root; the
 guard's header records each reading as observed on a real user manager.
-`ExecCondition=` itself needs systemd ≥ 243 (2019); on an older manager
-the installer **refuses the opt-in** rather than let the key be ignored and
-the updater run unguarded. One more thing the guard's presence check
-covers: a condition binary that is *not there* is exec failure 203, inside
-the skip range, so a unit whose guard was deleted would skip every day,
-green — the oneshot's `AssertFileIsExecutable=` on the guard's path turns
-that into an error line in the journal and a failed `start`, and the
-installer writes the guard before the unit that names it.
+`ExecCondition=` itself needs systemd ≥ 243 (2019); the installer reads the
+**running** user manager's version (`systemctl --user show -p Version`,
+not the client's `--version`) and on an older one **refuses the opt-in**
+rather than let the key be ignored and the updater run unguarded. Two
+more facts of that contract shape the unit. `ExecCondition=` honours
+`SuccessExitStatus=` too — a condition exit of `4` would *run* the updater
+— so the guard's `1` and `255` are asserted to stay off that line. And a
+condition binary that is *not there* is exec failure 203, inside the skip
+range, so a unit whose guard was deleted would skip every day with
+`Result=exec-condition`; the oneshot's `AssertFileIsExecutable=` on the
+guard's path turns that into an error line in the journal and a failed
+`start` (no more — an assertion changes no unit state, so it is not in
+`--failed` either), the installer writes the guard before the unit that
+names it, and the remove recipe below takes the units out first. The
+unit also pins `PATH` to the system directories (the macOS updater
+plist's decision — not `~/.local/bin`, the directory the installer writes
+to, in front of a process that renames a binary over the service) and
+unsets the guard's test seam.
 
 ```bash
 systemctl --user list-timers solador-agent-update.timer      # next and last firing
-systemctl --user status solador-agent-update.service         # last result: exit 4 = nothing newer; "Skipped due to 'exec-condition'" = the guard discarded it; failed = held, see the journal
+systemctl --user status solador-agent-update.service         # exit 4 = nothing newer; "Skipped due to 'exec-condition'" = the guard discarded it
+                                                             # failed + a "solador-agent-update-guard: HELD" line = held, nothing changed; failed + an updater exit 3 = check solador-agent.service
 journalctl --user -u solador-agent-update -n 50 --no-pager   # the updater's own output, or the guard's one line
-cat ~/.config/solador-agent-update.last-attempt              # epoch seconds of the last attempt
+journalctl --user -u solador-agent-update -g 'solador-agent-update-guard:'   # just the guard's lines: a month of discards and a month of exit-4 days look alike in status
+date -d @"$(cat ~/.config/solador-agent-update.last-attempt)" # the last attempt; older than two days while list-timers shows daily triggers = the guard is discarding every firing
+systemctl --user reset-failed solador-agent-update.service   # after fixing what a hold named
 systemctl --user start solador-agent-update.service          # check NOW, by hand (the guard still applies; `solador-agent update` does not)
 
 systemctl --user disable --now solador-agent-update.timer    # pause: stop scheduling; files stay, metrics keeps running
@@ -1007,17 +1026,15 @@ three consecutive days without a hold, an unreachable system or user
 manager, a manager that does not show the unit activating, a counter that
 contradicts the manager, a resume dated after the activation, and every
 usage error, each asserted to hold with exit 255 and to leave the stamp
-alone — plus the installer's actions: guard installed only with the flag,
-before the unit, mode 0755, named on both the `ExecCondition=` and the
-`AssertFileIsExecutable=` lines, preserved by a no-flag re-run, not
-re-created after removal, and the opt-in refused on systemd 242 and
-accepted on 243. The three exit mappings and the manager readings the
-guard depends on were observed once on a real user manager (systemd 256,
-uid 501, in a VM) while it was designed. What no test observes is a
-24-hour sleep on a real Mac, or a real systemd timer through a
-`daemon-reload` and a suspend/resume — the reload-then-resume case is a
-source trace, not an observation, and the guard is what holds the cadence
-whether or not the trace is right.
+alone; a hand-edited stamp with a leading zero, padding or a CRLF read as
+decimal, an empty one held — plus the installer's actions: guard installed
+only with the flag, before the unit, mode 0755, named on both the
+`ExecCondition=` and the `AssertFileIsExecutable=` lines, preserved by a
+no-flag re-run, a pre-#411 unit reported `UNGUARDED` and retrofitted only
+by the flag, not re-created after removal, and the opt-in refused on a
+running systemd 242 or a bare `219` and accepted on 243. What no test
+observes, and what was observed by hand instead, is recorded once, in
+`docs/AGENT-DISTRIBUTION.md` §4.
 
 ## Upgrading from the pre-rename agent
 

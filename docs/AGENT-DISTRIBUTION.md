@@ -471,12 +471,17 @@ exactly the catch-up the policy forbids — so the oneshot runs
 `agent/deploy/update-guard.sh`, installed by `--enable-timer`) before
 `ExecStart` on every activation, applying the launcher's two rules: skip a
 firing within five minutes of the last resume (or boot) and one within
-23 h of the last attempt, recorded in the same one-line 0600 stamp at the
-same path. The exit mapping is `ExecCondition=`'s own — 0 run, 1 skip
-cleanly (unit inactive, `Result=success`, reason in the journal), 255 fail
-the unit (an input unreadable or the stamp unwritable, listed by
-`--failed`) — and each of the three was observed on a real user manager
-(systemd 256, uid 501) while the guard was designed. "Seconds since the
+23 h of the last attempt, recorded in a one-line stamp of the launcher's
+format at the same path (the Linux guard writes it 0600; the launcher does
+not). The exit mapping is `ExecCondition=`'s own — 0 run, 1 skip cleanly
+(unit inactive, `Result=exec-condition`, reason in the journal), 255 fail
+the unit (an input unreadable or the stamp unwritable; `Result=exit-code`,
+listed by `--failed` until the next activation or a `reset-failed`) — and
+each of the three was observed on a real user manager (systemd 256, uid
+501) while the guard was designed, along with a fourth fact that shapes
+the unit: a condition exit matching `SuccessExitStatus=` *runs*
+`ExecStart` (a condition exit of 4 ran the updater), so `lib_test.sh`
+asserts the guard's two codes stay off that line. "Seconds since the
 last resume" is the difference of two `CLOCK_MONOTONIC` readings, both
 unprivileged: this activation's `InactiveExitTimestampMonotonic` from the
 user manager and `sleep.target`'s `InactiveEnterTimestampMonotonic` from
@@ -488,12 +493,18 @@ recorded as a `sleep.target` cycle are a resume the guard cannot place, and
 it holds. Out, deliberately: the journal and logind's D-Bus, neither of
 which is unprivileged on every host. Two traps found and closed on the
 way: a condition binary that is *not there* is exec failure 203, which is
-inside the skip range, so a deleted guard would skip every day, green —
-the unit's `AssertFileIsExecutable=` on the guard's path makes that an
-error line and a failed `start`, the installer writes the guard before the
-unit, and the removal recipe takes the units out first; and `ExecCondition=`
-exists only from systemd 243, so the installer refuses the opt-in on an
-older manager rather than let the key be ignored. A second, benign effect
+inside the skip range, so a deleted guard would skip every day with
+`Result=exec-condition` — the unit's `AssertFileIsExecutable=` on the
+guard's path makes that an error line and a failed `start` (no more: an
+assertion changes no unit state, so the unit is not in `--failed`), the
+installer writes the guard before the unit, the removal recipe takes the
+units out first, and a pre-#411 opt-in that a no-flag re-run preserves is
+reported `enabled but UNGUARDED` until a flagged re-run retrofits it; and
+`ExecCondition=` exists only from systemd 243, so the installer reads the
+*running* user manager's `Version` property and refuses the opt-in on an
+older one rather than let the key be ignored. The unit also pins `PATH`
+to the system directories (the macOS updater plist's decision) and unsets
+the guard's test seam. A second, benign effect
 of the same re-basing: a reload before the first firing delays that first
 check to a day after the reload — later, never sooner. On
 macOS the plist's `StartInterval=86400` with no `RunAtLoad` gives the
