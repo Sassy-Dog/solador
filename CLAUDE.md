@@ -888,13 +888,17 @@ share one release and a fixed crash would read as regressed.
   `InactiveExitTimestampMonotonic` from the user manager against
   `sleep.target`'s `InactiveEnterTimestampMonotonic` from the system
   manager, both unprivileged; a zero corroborated by
-  `/sys/power/suspend_stats/success`) or within 23 h of the same 0600
-  stamp — with `ExecCondition=`'s own mapping: **1 skips cleanly, 255
-  fails the unit** (the hold; a permanent one is in `--failed`, never a
-  quiet day). A missing guard binary is exec failure 203, *inside* the
-  skip range, so the unit also carries `AssertFileIsExecutable=` on it,
-  the installer writes the guard before the unit, and the opt-in is
-  refused on systemd < 243, where the key would be ignored. On macOS
+  `/sys/power/suspend_stats/success`) or within 23 h of a stamp of the
+  launcher's format at the launcher's path (written 0600 here) — with
+  `ExecCondition=`'s own mapping: **1 skips cleanly
+  (`Result=exec-condition`), 255 fails the unit** (the hold; a permanent
+  one is in `--failed`, never a quiet day), and never a
+  `SuccessExitStatus=` value, which a condition exit would *run* on. A
+  missing guard binary is exec failure 203, *inside* the skip range, so
+  the unit also carries `AssertFileIsExecutable=` on it (an error line and
+  a failed `start`; assertions change no unit state), the installer writes
+  the guard before the unit, and the opt-in is refused when the *running*
+  manager is < 243, where the key would be ignored. On macOS
   **the launcher is the guard**: in update mode
   `run-agent.sh` exports nothing from the env file (the updater reads it
   itself) and refuses, exit 0 with a logged reason, a firing within 5 min

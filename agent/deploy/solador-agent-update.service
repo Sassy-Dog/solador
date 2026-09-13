@@ -30,16 +30,20 @@
 # timer file has the trace). Its exit status is systemd's own contract:
 # 0 runs `update`; 1 skips it cleanly (a firing within five minutes of the
 # last resume or boot, or within 23 h of the last attempt — the unit ends
-# inactive, not failed, with the reason in the journal); 255 fails the unit
-# (an input the guard could not read, or a stamp it could not write — visible
-# in `systemctl --user --failed`, because a hold does not resolve by itself).
-# `%n` hands the guard this unit's name, which is how it reads its own
-# activation time back from the manager. AssertFileIsExecutable= is the
-# guard's presence check: a condition binary that is NOT THERE is exec
-# failure 203, which is inside ExecCondition's skip range, and a unit whose
-# guard was deleted would otherwise skip every firing forever with
-# Result=success; the assertion makes that an error line in the journal and
-# a failed `start` instead. ExecCondition= needs systemd >= 243; the installer
+# inactive with Result=exec-condition, not failed, with the reason in the
+# journal); 255 fails the unit (an input the guard could not read, or a
+# stamp it could not write — Result=exit-code, in `systemctl --user --failed`
+# until the next activation or a reset-failed, and a hold over a host
+# property recurs every day). `%n` hands the guard this unit's name, which
+# is how it reads its own activation time back from the manager.
+# AssertFileIsExecutable= is the guard's presence check: a condition binary
+# that is NOT THERE is exec failure 203, which is inside ExecCondition's skip
+# range, and a unit whose guard was deleted would otherwise skip every firing
+# forever with Result=exec-condition; the assertion makes that an error line
+# in the journal and a failed `start` instead — no more than that, since an
+# assertion changes no unit state (systemd.unit(5)), so it is not in
+# `--failed`; the installer's write order and the removal recipe are the
+# real controls. ExecCondition= needs systemd >= 243; the installer
 # refuses the opt-in on an older manager rather than let the line be ignored.
 
 [Unit]
@@ -50,6 +54,15 @@ AssertFileIsExecutable=@SOLADOR_AGENT_GUARD_PATH@
 
 [Service]
 Type=oneshot
+# The system directories and nothing else — the decision the macOS updater
+# plist records (#394): not ~/.local/bin, the directory the installer writes
+# to, in front of a process that reads the token and renames a binary over
+# the service. The guard resolves bash, systemctl, date and the coreutils it
+# uses here; the updater resolves systemctl here a moment later.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The guard's test seam (its sysfs root override) never reaches it from the
+# manager's environment.
+UnsetEnvironment=SOLADOR_AGENT_UPDATE_GUARD_ROOT
 ExecCondition=@SOLADOR_AGENT_GUARD@ %n
 ExecStart=@SOLADOR_AGENT_BIN@ update
 # Exit 4 is "no applicable release" — the feed is not newer than what is
@@ -57,7 +70,9 @@ ExecStart=@SOLADOR_AGENT_BIN@ update
 # every single day. It is not a failure and must not paint the unit red or
 # land in `systemctl --failed`; the updater's own line saying so is still in
 # the journal. Every other non-zero exit (1 refused, 3 not recovered, 5
-# recovered, 75 busy) stays a failed run, visible as one. (This maps
-# ExecStart's status only; the guard's 1 and 255 are ExecCondition's own.)
+# recovered, 75 busy) stays a failed run, visible as one. This line binds
+# ExecCondition= too: a condition exit matching it RUNS ExecStart (observed
+# on systemd 256), so the guard's discard (1) and hold (255) must never be a
+# value named here — lib_test.sh asserts that.
 SuccessExitStatus=4
 NoNewPrivileges=true
