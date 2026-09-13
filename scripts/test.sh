@@ -51,14 +51,16 @@ else
     exit 1
 fi
 
-# --- The release workflows' tag assertion (#404), against a temporary bare
-# origin: git only, pushes nowhere but that scratch origin. Mirrors the step
-# both CI legs run, under the same shell as above for the same reason.
-log_info "Running release-tag assertion fixture (scripts/assert-release-tag-test.sh, under $DEPLOY_TEST_SHELL)…"
-if "$DEPLOY_TEST_SHELL" scripts/assert-release-tag-test.sh; then
-    log_success "Release-tag assertion fixture passed"
+# --- The versioning scripts (#405): the CalVer derivation, the §4 mint and
+# its output contract, the build number, and the release workflows' tag
+# assertion (#404), against temporary bare origins: git only, pushes nowhere
+# but those scratch origins. Mirrors the step all three CI legs run, under
+# the same shell as above for the same reason.
+log_info "Running versioning suite (scripts/versioning-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/versioning-test.sh; then
+    log_success "Versioning suite passed"
 else
-    log_error "Release-tag assertion fixture failed"
+    log_error "Versioning suite failed"
     exit 1
 fi
 

@@ -85,7 +85,7 @@ set -euo pipefail
 # and the artifact validation after the build reads the version back out of
 # the file and compares it to the tag, so a lost pin is red, not mislabelled.
 #
-# scripts/assert-release-tag-test.sh drives all of it against a temporary
+# scripts/versioning-test.sh (§4 of it) drives all of it against a temporary
 # bare origin — nothing here ever pushes a tag, and no case there does either.
 # One branch it cannot reach: the "output contract was violated" refusal
 # below, because the mint is the sibling script and always prints its three

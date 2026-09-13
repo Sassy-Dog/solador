@@ -122,3 +122,6 @@ docs/superpowers/
 # A minisign private key regenerated for the agent feed fixtures
 # (tests/fixtures/README.md) must never be committed; only its public half is.
 tests/fixtures/**/*.key
+
+# Throwaway artifacts (screenshots, scratch scripts, review copies) — never committed.
+tmp/
