@@ -414,8 +414,9 @@ build-number script's fail-closed `exit 1` plus its message replaced by
 pass is indistinguishable from one that passes everything.
 
 **Not here, on purpose.** The shallow-clone refusal of the *build scripts*
-lives in `crates/buildversion` (`is_shallow`, Rust), not in the shell mint,
-which has no such check — its test is #417. The assertion script's "output
+lives in `crates/buildversion` (the `Shallow` arm of its `resolve`, in Rust),
+not in the shell mint, which has no such check — it is tested there (#417).
+The assertion script's "output
 contract was violated" branch is unreachable from a suite that runs the real
 mint, for the reason its own header gives.
 
