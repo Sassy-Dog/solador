@@ -70,8 +70,9 @@ set -euo pipefail
 #      failure.
 #
 # Not here, on purpose: the shallow-clone REFUSAL of the build scripts lives
-# in crates/buildversion (Rust, `is_shallow`), not in the shell mint, which
-# has no such check — it is #417's. The comparison the §6 vector cites is
+# in crates/buildversion (the `Shallow` arm of its `resolve`, in Rust), not
+# in the shell mint, which has no such check — it is tested there (#417).
+# The comparison the §6 vector cites is
 # Rust (`viewmodel::update::is_newer`). And the assertion script's "output
 # contract was violated" branch is unreachable from here for the reason its
 # own header gives: the mint is the sibling script and always prints its

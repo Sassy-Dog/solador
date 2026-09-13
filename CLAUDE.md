@@ -760,11 +760,14 @@ as the wire-contract marker and read by nothing at runtime.
 **A shallow clone refuses rather than counts.** CalVer's patch is commits this
 month, and a `fetch-depth: 1` checkout answers that question with `1` instead of
 failing — CI's bundle job already pins `fetch-depth: 0` for exactly this reason,
-and the other three jobs are still shallow. So the build script checks
+and the other jobs are still shallow. So the build script checks
 `--is-shallow-repository` and emits *no* version there; About renders `Version —`
 and the Sentry release is omitted entirely. Sentry groups and regresses by
 release, so a placeholder is worse than nothing: every un-nameable build would
-share one release and a fixed crash would read as regressed.
+share one release and a fixed crash would read as regressed. The refusal, and the rule that a
+`MARKETING_VERSION` pin is consulted before the checkout is looked at, are
+tested in `crates/buildversion` against real `--depth 1` and full clones the
+tests build (#417); the crate still has zero dependencies.
 
 ## Common Tasks
 
