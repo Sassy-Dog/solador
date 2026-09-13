@@ -90,9 +90,6 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-# Resolved, because git reports resolved paths (macOS's /var is a symlink to
-# /private/var) and the git-dir control below compares against this prefix.
-work="$( cd "$work" && pwd -P )"
 
 # A `git` shim, first on the mint's PATH only: records every invocation's
 # argv to $work/git.calls and execs the real git. This is how "reuse pushes
@@ -354,9 +351,15 @@ for i in 1 2 3 4 5; do commit "$repo" "$AUG-0$i" "aug $i"; done
 aug_head="$( cd "$repo" && git rev-parse HEAD )"
 
 control "2026.8.5" "$(bare_version "$repo" "$AUG-20")" "fixture: August HEAD derives 2026.8.5 in August"
-case "$( cd "$repo" && git rev-parse --absolute-git-dir )" in
-    "$work"/*) echo "ok   fixture: the fixture's git dir is under \$work, not an inherited GIT_DIR"; pass=$((pass + 1)) ;;
-    *) echo "FAIL fixture: the fixture's git dir is outside \$work — an inherited GIT_DIR reached the real checkout"; fail=$((fail + 1)); exit 1 ;;
+# Asked in git's own terms rather than by path prefix: from a repository's
+# top level `--git-dir` answers the relative `.git` for the repository's own
+# dir, and an inherited GIT_DIR answers with that path instead. (A prefix
+# compare against $work is not portable — git.exe reports `D:/a/...` where
+# Git Bash's pwd says `/d/a/...`, and that read a healthy fixture as
+# poisoned on the Windows leg.)
+case "$( cd "$repo" && git rev-parse --git-dir )" in
+    .git) echo "ok   fixture: the fixture's git dir is its own .git, not an inherited GIT_DIR"; pass=$((pass + 1)) ;;
+    *) echo "FAIL fixture: the fixture's git dir is '$( cd "$repo" && git rev-parse --git-dir )' — an inherited GIT_DIR reached the real checkout"; fail=$((fail + 1)); exit 1 ;;
 esac
 
 # =============================================================================
