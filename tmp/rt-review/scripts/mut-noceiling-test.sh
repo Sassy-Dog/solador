@@ -313,7 +313,7 @@ expect_absent "Re-running the mint" "     ...before the mint ran"
 # would otherwise run the real mint against a real origin from a unit test.
 notrepo="$work/notrepo"
 mkdir -p "$notrepo"
-expect refuse "outside any git checkout" "$notrepo" "$tag_a" GIT_CEILING_DIRECTORIES="$work"
+expect refuse "outside any git checkout" "$notrepo" "$tag_a"
 expect_mentions "not inside a git checkout" "     ...naming the missing checkout"
 
 # --- usage ------------------------------------------------------------------------

@@ -241,9 +241,15 @@ jobs:
           # of the release it ships under — the same claim the agent's verify
           # jobs make of every binary.
           want="${GITHUB_REF_NAME#v}"
+          # The bundle's name, from where build.sh reads it, so a rename fails
+          # here with a sentence rather than as a `tar` member-not-found.
+          product="$(plutil -extract productName raw -o - app/src-tauri/tauri.conf.json)"
           extracted="$(mktemp -d)"
-          tar -xzf "$tarball" -C "$extracted" Solador.app/Contents/Info.plist
-          got="$(plutil -extract CFBundleShortVersionString raw -o - "$extracted/Solador.app/Contents/Info.plist")"
+          if ! tar -xzf "$tarball" -C "$extracted" "$product.app/Contents/Info.plist"; then
+            echo "::error::$(basename "$tarball") carries no $product.app/Contents/Info.plist"
+            exit 1
+          fi
+          got="$(plutil -extract CFBundleShortVersionString raw -o - "$extracted/$product.app/Contents/Info.plist")"
           rm -rf "$extracted"
           if [[ "$got" != "$want" ]]; then
             echo "::error::the updater payload carries CFBundleShortVersionString '$got', but this release is $GITHUB_REF_NAME"
@@ -254,7 +260,7 @@ jobs:
           fi
           for f in "$dmg" "$tarball"; do
             case "$(basename "$f")" in
-              "Solador-$want."*) ;;
+              "$product-$want."*) ;;
               *)
                 echo "::error::$(basename "$f") is not named for $GITHUB_REF_NAME"
                 exit 1

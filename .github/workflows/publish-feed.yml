@@ -49,7 +49,9 @@ name: Publish update feed
 #   DESKTOP leg that is a replay door that does run a newer file against an
 #   older tag's release: start it from `main` with `leg: desktop`, the tag is
 #   checked out and `solador-update-feed` is built from the tag's tree (which
-#   needs `crates/updatefeed`); the agent leg then does not run at all. (A
+#   needs `crates/updatefeed`), while the tag assertion (#404) is read from
+#   the DISPATCHING ref through a second checkout into `.tooling`, so a tag
+#   older than that script still replays; the agent leg then does not run at all. (A
 #   `main`-ref dispatch with `leg: both` would instead end with
 #   `agent-eligibility` RED at the ref lock below.) For the AGENT leg the
 #   replay must be started FROM the tag with `leg: agent`, so the tag's copy

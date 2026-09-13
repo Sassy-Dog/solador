@@ -201,11 +201,12 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
    *commit* rather than the tag (#391), as before. What is still true of a
    **draft**: its assets are not public until it is published, and publishing
    is what triggers the feed — but the month no longer matters to either
-   workflow. **For tags cut after #404 merged**: both workflows run the copy
-   of themselves at the tagged commit (`publish-feed.yml`'s header records
-   the measurement), so a re-run or a publish of an earlier tag still runs
-   that tag's bare comparison, and the recipe in #404's comments is how such
-   a tag is retired. The one exception is `publish-feed.yml`'s desktop replay
+   workflow. **Only tags cut after #404 merged get this assertion**: both
+   workflows run the copy of themselves at the tagged commit
+   (`publish-feed.yml`'s header records the measurement), so a re-run or a
+   publish of a tag cut *before* still runs that tag's bare comparison, and
+   the recipe in #404's comments is how such a tag is retired. The one
+   exception is `publish-feed.yml`'s desktop replay
    door: a `main`-ref dispatch reads the assertion script from the ref it was
    started from (a second checkout into `.tooling`, with the mint run against
    the tag checkout), so it still regenerates `latest.json` for a tag older
@@ -333,8 +334,10 @@ is one-way — no semver "1.0 moment" is coming back.
 ## Tests (§3, mandatory)
 
 > **These scripts have PARTIAL test coverage** — the #404 fixture described
-> below, and nothing before it; the full vector list is owed to #405. Their
-> only tests before that were
+> below, and nothing else in this repo today (the earlier
+> `VersioningScriptTests` were deleted with the macOS app, as the next
+> paragraphs record); the full vector list is owed to #405. Their only tests
+> before that were
 > `VersioningScriptTests`, which ran hermetic bare-origin
 > git fixtures (real `ls-remote` probes) over: patch floor, month-roll reset,
 > §2 idempotency, the §4 collision replay (prior-month-commit release →
