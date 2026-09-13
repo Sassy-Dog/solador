@@ -487,11 +487,25 @@ unprivileged: this activation's `InactiveExitTimestampMonotonic` from the
 user manager and `sleep.target`'s `InactiveEnterTimestampMonotonic` from
 the *system* manager (a read-only property fetch over the system bus, which
 every user may make; every systemd sleep path pulls that target in and
-stops it after the resume). A zero from the manager is corroborated by the
-kernel's `/sys/power/suspend_stats/success`: suspends counted but never
-recorded as a `sleep.target` cycle are a resume the guard cannot place, and
-it holds. Out, deliberately: the journal and logind's D-Bus, neither of
-which is unprivileged on every host. Two traps found and closed on the
+stops it after the resume). The second reading is **advisory** (decided
+2026-09-13, on the review of #416): the
+manager garbage-collects `sleep.target` after every cycle (it is
+`StopWhenUnneeded=` and nothing else references it on a stock
+distribution), so a later `show` reads `0` — measured on systemd 256 in the
+same second the journal recorded the target stopping. The kernel's
+`/sys/power/suspend_stats/success` tells that `0` apart from a boot that
+has not slept, and when the kernel counted a suspend the manager no longer
+has, the guard logs one line and falls through to the 23 h rule rather
+than hold: the first cut held there, and on a laptop after its first
+suspend that was a failed unit on every daily firing until reboot — a job
+that never runs, found by the review of #416. Holds are the launcher's own
+set (the clock, this activation's time, the stamp, `HOME`), the kernel's
+counter when present but unreadable, every usage error, plus an `EXIT` trap
+that turns a `set -e` death into a hold, because the status such a death
+carries is `1`, the discard. Out, deliberately: the journal (it would
+survive the collection, but is readable only in `adm`/`wheel`, which a
+dedicated service user is not in) and logind's D-Bus, neither of which is
+unprivileged on every host. Two traps found and closed on the
 way: a condition binary that is *not there* is exec failure 203, which is
 inside the skip range, so a deleted guard would skip every day with
 `Result=exec-condition` — the unit's `AssertFileIsExecutable=` on the
@@ -881,10 +895,13 @@ Also required:
   with exit 6, and the metrics path reads no clock. The Linux guard (#411)
   has the mirror set — its two manager reads, the clock and the kernel's
   suspend counter stubbed — plus the manager-shaped cases the platform
-  adds: an unreachable system or user manager, a manager that does not
-  show the unit activating, a counter contradicting the manager, a resume
-  dated after the activation, and every usage error, each holding with
-  exit 255; a server that never sleeps runs three days running; and the
+  adds: a laptop whose manager forgot its resume runs three days running
+  with exactly one `NOTE` line each and never holds, and so do an unreachable
+  system manager, an unparseable resume and a resume dated after the
+  activation; an unreachable user manager, a manager that does not show
+  the unit activating, an unreadable kernel counter and every usage error
+  each hold with exit 255, and so does a death the guard did not decide; a
+  server that never sleeps runs three days running; and the
   installer's guard actions (only with the flag, before the unit, on both
   unit lines, preserved, not re-created, refused on systemd 242). "No
   update check" is asserted on the fixture agent's recorded argv, not on

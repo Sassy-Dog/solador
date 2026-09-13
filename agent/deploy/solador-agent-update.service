@@ -31,16 +31,21 @@
 # 0 runs `update`; 1 skips it cleanly (a firing within five minutes of the
 # last resume or boot, or within 23 h of the last attempt — the unit ends
 # inactive with Result=exec-condition, not failed, with the reason in the
-# journal); 255 fails the unit (an input the guard could not read, or a
-# stamp it could not write — Result=exit-code, in `systemctl --user --failed`
-# until the next activation or a reset-failed, and a hold over a host
-# property recurs every day). `%n` hands the guard this unit's name, which
-# is how it reads its own activation time back from the manager.
+# journal); 255 fails the unit (the clock, its own activation time or the
+# stamp unreadable, the stamp unwritable, the kernel's suspend counter
+# present but unreadable, or a usage error — Result=exit-code, in
+# `systemctl --user --failed` until the next activation or a reset-failed).
+# The last resume is advisory, not a hold: the system manager forgets
+# sleep.target's timestamps once a cycle ends, so on most hosts it reads 0
+# after the first suspend, and the guard then says so once and lets the 23 h
+# rule alone decide. `%n` hands the guard this unit's name, which is how it
+# reads its own activation time back from the manager.
 # AssertFileIsExecutable= is the guard's presence check: a condition binary
 # that is NOT THERE is exec failure 203, which is inside ExecCondition's skip
 # range, and a unit whose guard was deleted would otherwise skip every firing
-# forever with Result=exec-condition; the assertion makes that an error line
-# in the journal and a failed `start` instead — no more than that, since an
+# forever with Result=exec-condition; the assertion makes that a
+# warning-level line in the journal ("Assertion failed for …", which
+# `journalctl -p err` does not show) and a failed `start` instead — no more than that, since an
 # assertion changes no unit state (systemd.unit(5)), so it is not in
 # `--failed`; the installer's write order and the removal recipe are the
 # real controls. ExecCondition= needs systemd >= 243; the installer
@@ -61,8 +66,11 @@ Type=oneshot
 # uses here; the updater resolves systemctl here a moment later.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # The guard's test seam (its sysfs root override) never reaches it from the
-# manager's environment.
-UnsetEnvironment=SOLADOR_AGENT_UPDATE_GUARD_ROOT
+# manager's environment — nor does a BASH_ENV/ENV a desktop session may
+# have imported into the user manager, which a non-interactive bash would
+# source before the guard's first line (the suite uses exactly that seam to
+# kill the guard mid-run).
+UnsetEnvironment=SOLADOR_AGENT_UPDATE_GUARD_ROOT BASH_ENV ENV
 ExecCondition=@SOLADOR_AGENT_GUARD@ %n
 ExecStart=@SOLADOR_AGENT_BIN@ update
 # Exit 4 is "no applicable release" — the feed is not newer than what is

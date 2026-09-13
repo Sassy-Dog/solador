@@ -823,13 +823,19 @@ install_update_timer_linux() {
     # The guard FIRST, and the oneshot only once it is in place (#411). A
     # unit whose ExecCondition= names a binary that is not there skips every
     # firing as exec failure 203 — inside ExecCondition's skip range — with
-    # Result=success and nothing in `--failed` (observed on systemd 256), so
+    # Result=exec-condition and nothing in `--failed` (observed on systemd 256), so
     # this order is what keeps a run interrupted between the two writes from
     # leaving a green, silent job; the unit's AssertFileIsExecutable= on the
     # same path is the second half of that. Copied out of the checkout like
     # the macOS launcher, so deleting the clone later does not stop the job;
     # 0755 explicitly, and asserted back rather than assumed from `install`.
-    install -m 0755 "$GUARD_SRC" "$GUARD_DST" || return 1
+    # Staged beside the live path and renamed over it, like the binary and
+    # the units: a firing that lands mid-copy runs the old guard or the new
+    # one, never a half-written file (which would be exec failure 203 — a
+    # skip, per the comment above).
+    rm -f "$GUARD_DST.new"
+    install -m 0755 "$GUARD_SRC" "$GUARD_DST.new" || return 1
+    mv -f "$GUARD_DST.new" "$GUARD_DST" || { rm -f "$GUARD_DST.new"; return 1; }
     if [ ! -x "$GUARD_DST" ]; then
         echo "ERROR: $GUARD_DST is not executable after install." >&2
         return 1
@@ -917,10 +923,19 @@ update_scheduling_summary() {
                 # it is — and it must not read the same as a guarded one:
                 # "enabled" is not "guarded", and the re-run with the flag
                 # is how the guard arrives.
-                if grep -q '^ExecCondition=' "$UPDATE_UNIT_DST" 2>/dev/null && [ -x "$GUARD_DST" ]; then
-                    echo "    Unattended updates: enabled, guarded by $GUARD_DST ($UPDATE_NAME.timer; systemctl --user list-timers $UPDATE_NAME.timer)"
+                if grep -q '^ExecCondition=' "$UPDATE_UNIT_DST" 2>/dev/null; then
+                    if [ -x "$GUARD_DST" ]; then
+                        echo "    Unattended updates: enabled, guarded by $GUARD_DST ($UPDATE_NAME.timer; systemctl --user list-timers $UPDATE_NAME.timer)"
+                    else
+                        # The opposite of unguarded: the unit names a guard
+                        # that is not there, so its AssertFileIsExecutable=
+                        # fails every start and NO check runs, at wake or
+                        # otherwise.
+                        echo "    Unattended updates: enabled but its guard $GUARD_DST is MISSING ($UPDATE_NAME.timer);"
+                        echo "      every start fails the unit's assertion and no check runs — re-run with --enable-timer to reinstall the guard"
+                    fi
                 else
-                    echo "    Unattended updates: enabled but UNGUARDED ($UPDATE_NAME.timer; a pre-#411 unit, or the guard $GUARD_DST is missing);"
+                    echo "    Unattended updates: enabled but UNGUARDED ($UPDATE_NAME.timer; a pre-#411 unit with no ExecCondition=);"
                     echo "      a firing at wake is not discarded — re-run with --enable-timer to install the guard"
                 fi
             else

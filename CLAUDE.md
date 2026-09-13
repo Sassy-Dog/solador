@@ -890,13 +890,27 @@ share one release and a fixed crash would read as regressed.
   within 5 min of the last resume (this activation's
   `InactiveExitTimestampMonotonic` from the user manager against
   `sleep.target`'s `InactiveEnterTimestampMonotonic` from the system
-  manager, both unprivileged; a zero corroborated by
-  `/sys/power/suspend_stats/success`) or within 23 h of a stamp of the
+  manager, both unprivileged) or within 23 h of a stamp of the
   launcher's format at the launcher's path (written 0600 here) — with
   `ExecCondition=`'s own mapping: **1 skips cleanly
   (`Result=exec-condition`), 255 fails the unit** (the hold; a permanent
   one is in `--failed`, never a quiet day), and never a
-  `SuccessExitStatus=` value, which a condition exit would *run* on. A
+  `SuccessExitStatus=` value, which a condition exit would *run* on.
+  **The resume reading is advisory, never a hold** — `sleep.target` is
+  `StopWhenUnneeded=` with no other referrer on stock distributions, so the
+  system manager collects it after every cycle and a later `show` reads
+  `0` (measured on systemd 256: reached and stopped at monotonic
+  28446.57 s by the journal, `0` from `show` in the same second). The
+  kernel's `/sys/power/suspend_stats/success` tells that `0` apart from a
+  boot that has not slept; when the kernel counted a suspend the manager
+  no longer has, the guard logs one line and the 23 h rule alone decides.
+  The first cut held on that reading, and on a laptop after its first
+  suspend that is a red unit every day until reboot — not fail-closed, a
+  job that never runs (the review of #416). Holds are the launcher's own —
+  the clock, this activation's time, the stamp — plus the kernel counter
+  when present but unreadable, every usage error, and an `EXIT` trap that
+  turns a `set -e` death into a HELD 255, because the status such a death
+  carries is `1`, the discard, and would read as a quiet day forever. A
   missing guard binary is exec failure 203, *inside* the skip range, so
   the unit also carries `AssertFileIsExecutable=` on it (an error line and
   a failed `start`; assertions change no unit state), the installer writes

@@ -52,6 +52,8 @@ unset STUB_LAUNCHCTL_DISABLED_LABEL STUB_LAUNCHCTL_DISABLED_WORD STUB_PLUTIL_EXI
 unset STUB_SYSTEMCTL_USER_EXIT STUB_TAILSCALE_IP STUB_CURL_FIXTURES
 unset STUB_SYSTEMCTL_TIMER_EXIT STUB_SYSTEMCTL_IS_ENABLED STUB_PLUTIL_FAIL_MATCH STUB_PROBE_EXIT
 unset STUB_DATE_EPOCH STUB_DATE_EXIT STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SYSCTL_EXIT STUB_SYSCTL_ARGV
+unset STUB_MONO_NOW_US STUB_RESUME_US STUB_GUARD_SYSTEMCTL_ARGV GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
+unset STUB_SYSTEMD_VERSION
 
 # ---- harness ----------------------------------------------------------------
 
@@ -2573,7 +2575,11 @@ test_install_update_timer_linux() {
     local optin_body="$TMP/install-optin-linux.sh"
     extract_function "$CHECKOUT/agent/deploy/install.sh" "install_update_timer_linux" > "$optin_body"
     assert_before "install.sh installs the guard before it renders the oneshot" \
-        "$optin_body" 'install -m 0755 "$GUARD_SRC" "$GUARD_DST"' 'render_template "$UPDATE_UNIT_SRC"'
+        "$optin_body" 'mv -f "$GUARD_DST.new" "$GUARD_DST"' 'render_template "$UPDATE_UNIT_SRC"'
+    assert_before "install.sh stages the guard beside the live path before renaming it over" \
+        "$optin_body" 'install -m 0755 "$GUARD_SRC" "$GUARD_DST.new"' 'mv -f "$GUARD_DST.new" "$GUARD_DST"'
+    [ -e "$guard.new" ] && fail "install.sh leaves no guard .new behind" "$guard.new exists" \
+        || pass "install.sh leaves no guard .new behind"
     assert_before "install.sh renders the oneshot before it reloads the manager" \
         "$optin_body" 'render_template "$UPDATE_UNIT_SRC"' 'systemctl --user daemon-reload'
     if grep -q 'fresh-tok-MUST-NOT-BE-PRINTED' "$update_unit" "$update_timer"; then
@@ -2894,7 +2900,7 @@ STUB
     assert_eq "install.sh: --enable-timer on systemd 243 (the floor) proceeds" "0" "$?"
     [ -x "$guard" ] && pass "systemd 243 gets the guard" || fail "systemd 243 gets the guard" "$(cat "$INSTALL_OUT")"
     assert_file_has "the oneshot pins PATH to the system directories" "$update_unit" "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    assert_file_has "the oneshot unsets the guard's test seam" "$update_unit" "UnsetEnvironment=SOLADOR_AGENT_UPDATE_GUARD_ROOT"
+    assert_file_has "the oneshot unsets the guard's test seam, and bash's own startup-file seam" "$update_unit" "UnsetEnvironment=SOLADOR_AGENT_UPDATE_GUARD_ROOT BASH_ENV ENV"
     assert_output_has "an opted-in, guarded host is reported as guarded" "$(cat "$INSTALL_OUT")" "enabled, guarded by $guard"
 
     # ---- a pre-#411 opt-in (no ExecCondition=) is reported as UNGUARDED ----
@@ -2917,6 +2923,26 @@ STUB
     assert_eq "install.sh: --enable-timer over a pre-#411 opt-in" "0" "$?"
     assert_file_has "the flagged re-run retrofits the guard" "$update_unit" "ExecCondition=$guard %n"
     assert_output_has "the retrofitted host is reported as guarded" "$(cat "$INSTALL_OUT")" "enabled, guarded by $guard"
+
+    # ---- a #411 unit whose guard file is gone is the OPPOSITE state ----
+    # AssertFileIsExecutable= fails every start, so nothing runs — not
+    # "unguarded", and the summary must not say a firing at wake would
+    # run. Only the guard is removed; the unit still names it.
+    rm -f "$guard"
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a no-flag re-run over a unit whose guard is missing" "0" "$?"
+    assert_output_has "a missing guard is reported as MISSING, not unguarded" "$(cat "$INSTALL_OUT")" "its guard $guard is MISSING"
+    assert_output_has "the MISSING report says no check runs" "$(cat "$INSTALL_OUT")" "every start fails the unit's assertion and no check runs"
+    if grep -q 'UNGUARDED' "$INSTALL_OUT"; then
+        fail "a missing guard is not reported as UNGUARDED" "it is"
+    else
+        pass "a missing guard is not reported as UNGUARDED"
+    fi
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home" --enable-timer
+    assert_eq "install.sh: --enable-timer reinstalls a missing guard" "0" "$?"
+    [ -x "$guard" ] && pass "the flagged re-run reinstalls the missing guard" || fail "the flagged re-run reinstalls the missing guard" "$(cat "$INSTALL_OUT")"
 
     unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
 }
@@ -3529,12 +3555,19 @@ test_update_guard_linux() {
     # the sysfs root overridden — under umask 022, so a 0600 stamp is the
     # guard's doing. Both streams to $INSTALL_OUT; the status is returned.
     # GUARD_NO_INVOCATION=1 leaves INVOCATION_ID unset; GUARD_HOME overrides
-    # HOME (the word "unset" unsets it).
+    # HOME (the word "unset" unsets it); GUARD_BASH_ENV names a file bash
+    # sources before the script (BASH_ENV, bash(1)) — the one way to make the
+    # guard die somewhere it did not plan for without a hook in the guard.
     run_guard() {
         : > "$STUB_GUARD_SYSTEMCTL_ARGV"
         (
             export SOLADOR_AGENT_UPDATE_GUARD_ROOT="$root"
             export PATH="$STUBS_CLOCK:$PATH"
+            if [ -n "${GUARD_BASH_ENV:-}" ]; then
+                export BASH_ENV="$GUARD_BASH_ENV"
+            else
+                unset BASH_ENV
+            fi
             if [ "${GUARD_NO_INVOCATION:-}" = 1 ]; then
                 unset INVOCATION_ID
             else
@@ -3554,7 +3587,7 @@ test_update_guard_linux() {
     assert_guard_only_read() {
         local name="$1" lines
         lines="$(grep -cve '^\(--user \)\?show -p ' "$STUB_GUARD_SYSTEMCTL_ARGV" 2>/dev/null || true)"
-        if [ "${lines:-0}" -eq 0 ] && [ "$(wc -l < "$STUB_GUARD_SYSTEMCTL_ARGV" | tr -d ' ')" -le 2 ]; then
+        if [ "${lines:-0}" -eq 0 ] && [ "$(wc -l < "$STUB_GUARD_SYSTEMCTL_ARGV" | tr -d ' ')" -eq 2 ]; then
             pass "$name"
         else
             fail "$name" "$(cat "$STUB_GUARD_SYSTEMCTL_ARGV")"
@@ -3562,6 +3595,7 @@ test_update_guard_linux() {
     }
     local now=1789237294   # an arbitrary epoch second
     local day_us=86400000000
+    unset STUB_MONO_NOW_US STUB_RESUME_US STUB_DATE_EXIT GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
     export STUB_DATE_EPOCH="$now"
 
     # ---- a host that has never slept, first firing, no earlier attempt: it runs ----
@@ -3574,7 +3608,7 @@ test_update_guard_linux() {
     assert_eq "guard: a scheduled firing on a boot that has not slept, no earlier attempt, exits 0 (run)" "0" "$?"
     assert_eq "guard: the attempt is stamped with the clock's time" "$now" "$(cat "$stamp" 2>/dev/null)"
     assert_eq "guard: the stamp is mode 0600 under umask 022" "600" "$(file_mode "$stamp" 2>/dev/null)"
-    assert_output_has "guard: the run line says the boot has not slept" "$(cat "$INSTALL_OUT")" "this boot has not slept, up 216000s"
+    assert_output_has "guard: the run line says no suspend was counted this boot" "$(cat "$INSTALL_OUT")" "RUN — letting $unit run: no suspend counted this boot, up 216000s"
     assert_output_has "guard: the run line names the unit it lets run" "$(cat "$INSTALL_OUT")" "letting $unit run"
     [ -e "$stamp.new" ] && fail "guard: no stamp .new is left behind" "$stamp.new exists" \
         || pass "guard: no stamp .new is left behind"
@@ -3606,7 +3640,7 @@ test_update_guard_linux() {
     export STUB_RESUME_US=$((STUB_MONO_NOW_US - 30 * 1000000))
     run_guard "$unit"
     assert_eq "guard: a firing 30s after resume exits 1 (skip)" "1" "$?"
-    assert_output_has "guard: the wake-time skip names the cadence" "$(cat "$INSTALL_OUT")" "resumed 30s ago"
+    assert_output_has "guard: the wake-time skip names the cadence and the threshold" "$(cat "$INSTALL_OUT")" "DISCARD — the system resumed 30s ago; a check within 300s of a wake"
     assert_output_has "guard: the wake-time skip says the next firing is a day away" "$(cat "$INSTALL_OUT")" "next scheduled firing is a day away"
     assert_eq "guard: a wake-time skip does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
     # 299s is still "just resumed"; 300s is not.
@@ -3632,7 +3666,7 @@ test_update_guard_linux() {
     export STUB_RESUME_US=0 STUB_MONO_NOW_US=$((30 * 1000000))
     run_guard "$unit"
     assert_eq "guard: a firing 30s after boot exits 1 (skip)" "1" "$?"
-    assert_output_has "guard: the boot-time skip says so" "$(cat "$INSTALL_OUT")" "booted 30s ago"
+    assert_output_has "guard: the boot-time skip says so, with the threshold" "$(cat "$INSTALL_OUT")" "DISCARD — the system booted 30s ago and the kernel counts no suspend since; a check within 300s of a boot"
     export STUB_MONO_NOW_US=$((300 * 1000000))
     run_guard "$unit"
     assert_eq "guard: 300s after boot is a scheduled firing (exit 0)" "0" "$?"
@@ -3644,6 +3678,18 @@ test_update_guard_linux() {
     assert_eq "guard: a clock behind the last attempt exits 1 (skip)" "1" "$?"
     assert_output_has "guard: the backwards clock is named" "$(cat "$INSTALL_OUT")" "moved backwards"
     assert_eq "guard: a backwards-clock skip does not move the stamp" "$((now + 100))" "$(cat "$stamp")"
+    # A stamp a whole interval in the future would discard every firing
+    # until the calendar reached it: one interval ahead still discards (the
+    # clock catches up within a day), one second more is a hold naming the file.
+    printf '%s\n' "$((now + 82800))" > "$stamp"
+    run_guard "$unit"
+    assert_eq "guard: a stamp exactly one interval ahead still exits 1 (skip)" "1" "$?"
+    printf '%s\n' "$((now + 82801))" > "$stamp"
+    run_guard "$unit"
+    assert_eq "guard: a stamp more than one interval ahead exits 255 (hold)" "255" "$?"
+    assert_output_has "guard: the far-future stamp is named with its lead" "$(cat "$INSTALL_OUT")" "82801s in the future"
+    assert_output_has "guard: the far-future stamp hold says to remove the file" "$(cat "$INSTALL_OUT")" "Remove that file"
+    assert_eq "guard: the far-future stamp hold does not rewrite the stamp" "$((now + 82801))" "$(cat "$stamp")"
 
     # ---- a hand-edited stamp: leading zeros, padding, CRLF are read as decimal ----
     # `09` is an octal error in bash arithmetic, and under `set -e` that
@@ -3674,6 +3720,11 @@ test_update_guard_linux() {
     printf '%s\n' "$((now - 90000))" > "$stamp"
     run_guard "$unit"
     assert_eq "guard: an absent suspend counter is not consulted (exit 0)" "0" "$?"
+    assert_output_has "guard: with no counter the settle rule counts from the boot, and says so" "$(cat "$INSTALL_OUT")" "no suspend counted this boot, up 216000s"
+    export STUB_MONO_NOW_US=$((30 * 1000000))
+    run_guard "$unit"
+    assert_eq "guard: with no counter a firing 30s after boot is still discarded (exit 1)" "1" "$?"
+    export STUB_MONO_NOW_US=$((216000 * 1000000))
     printf '0\n' > "$counter"
 
     # ---- a server that never sleeps: three consecutive days, three runs, no hold ----
@@ -3694,48 +3745,112 @@ test_update_guard_linux() {
     assert_eq "guard: a host that never sleeps never holds" "0" "$held"
     assert_eq "guard: the stamp follows the last of those attempts" "$((now + 2 * 86400))" "$(cat "$stamp")"
 
-    # ---- HOLDS: exit 255, the unit fails, the reason names the input ----
+    # ---- the last resume is ADVISORY: a host that cannot place it runs on
+    # the interval rule alone, says so once, and never holds ----
+    # The case the review of #416 found: on stock distributions the system
+    # manager garbage-collects sleep.target after every cycle (nothing else
+    # references it), so after a laptop's first suspend `show` reads 0 while
+    # the kernel counts the suspend. That host was holding on every daily
+    # firing until reboot; it must run.
+    printf '%s\n' "$((now - 90000))" > "$stamp"
+    printf '2\n' > "$counter"
+    STUB_RESUME_US=0 run_guard "$unit"
+    assert_eq "guard: suspends the kernel counted that the manager no longer has: exit 0 (run)" "0" "$?"
+    assert_output_has "guard: the forgotten resume is logged as the manager forgetting, not as a contradiction" \
+        "$(cat "$INSTALL_OUT")" "the kernel counts 2 completed suspend(s) this boot but the system manager reads 0 for sleep.target"
+    assert_output_has "guard: the forgotten resume names the rule that governs instead" "$(cat "$INSTALL_OUT")" "NOTE — the last resume is not available on this host (the kernel counts"
+    assert_output_has "guard: the forgotten resume is a NOTE, not a fault" "$(cat "$INSTALL_OUT")" "the 23 h interval rule alone governs this firing"
+    assert_output_has "guard: the run line says the resume was not available" "$(cat "$INSTALL_OUT")" "RUN — letting $unit run: last resume not available on this host, last attempt 90000s ago"
+    assert_eq "guard: the forgotten-resume run logs exactly one NOTE about it" "1" "$(grep -c 'NOTE — ' "$INSTALL_OUT")"
+    assert_eq "guard: the forgotten-resume run stamps the attempt" "$now" "$(cat "$stamp")"
+    # And a second firing inside the interval on that host is still discarded
+    # — the interval rule is what carries the cadence there.
+    STUB_RESUME_US=0 run_guard "$unit"
+    assert_eq "guard: on that host a second firing inside the interval still exits 1 (skip)" "1" "$?"
+    # Three days on a laptop that slept once and whose manager forgot: runs
+    # each day, never holds — the mirror of the never-sleeps loop above.
+    rm -f "$stamp"
+    held=0; ran=0; clock="$now"; mono="$STUB_MONO_NOW_US"
+    local noted=0
+    for _day in 1 2 3; do
+        STUB_DATE_EPOCH="$clock" STUB_MONO_NOW_US="$mono" STUB_RESUME_US=0 run_guard "$unit"
+        status=$?
+        [ "$status" -eq 0 ] && ran=$((ran + 1))
+        [ "$status" -eq 255 ] && held=$((held + 1))
+        [ "$(grep -c 'NOTE — ' "$INSTALL_OUT")" -eq 1 ] && noted=$((noted + 1))
+        clock=$((clock + 86400))
+        mono=$((mono + day_us))
+    done
+    assert_eq "guard: a laptop whose manager forgot its resume runs on each of three consecutive days" "3" "$ran"
+    assert_eq "guard: a laptop whose manager forgot its resume never holds" "0" "$held"
+    assert_eq "guard: each of those days logs exactly one NOTE" "3" "$noted"
+    printf '0\n' > "$counter"
+    # The other ways the reading can be unavailable: the same fall-through.
     printf '%s\n' "$((now - 90000))" > "$stamp"
     STUB_RESUME_US=FAIL run_guard "$unit"
-    assert_eq "guard: an unreachable system manager exits 255 (hold)" "255" "$?"
-    assert_output_has "guard: the held check names the system manager's read" "$(cat "$INSTALL_OUT")" "cannot read the last resume from the system manager"
-    assert_eq "guard: a held check does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
+    assert_eq "guard: an unreachable system manager exits 0 (run) on the interval rule" "0" "$?"
+    assert_output_has "guard: the unreachable system manager is logged with its own words" "$(cat "$INSTALL_OUT")" "could not be asked (systemctl show -p InactiveEnterTimestampMonotonic sleep.target failed: 'Failed to connect to system scope bus"
+    assert_eq "guard: the unreachable-system-manager run stamps the attempt" "$now" "$(cat "$stamp")"
+    printf '%s\n' "$((now - 90000))" > "$stamp"
+    STUB_RESUME_US=garbage run_guard "$unit"
+    assert_eq "guard: a resume time that is not a number exits 0 (run) on the interval rule" "0" "$?"
+    assert_output_has "guard: the unparseable resume is logged with the manager's answer" "$(cat "$INSTALL_OUT")" "answered 'garbage'"
+    printf '%s\n' "$((now - 90000))" > "$stamp"
+    STUB_RESUME_US=$((STUB_MONO_NOW_US + 1000000)) run_guard "$unit"
+    assert_eq "guard: a resume later than this activation exits 0 (run) on the interval rule" "0" "$?"
+    assert_output_has "guard: the later-than-activation reading is logged as unusable" "$(cat "$INSTALL_OUT")" "later than this activation"
+    # A resume the manager DOES still have is not affected by any of this:
+    # the settle rule above already proved 30 s / 299 s / 300 s.
+
+    # ---- HOLDS: exit 255, the unit fails, the reason names the input ----
+    printf '%s\n' "$((now - 90000))" > "$stamp"
     STUB_MONO_NOW_US=FAIL run_guard "$unit"
     assert_eq "guard: an unreachable user manager exits 255 (hold)" "255" "$?"
     assert_output_has "guard: the held check names the user manager's read" "$(cat "$INSTALL_OUT")" "cannot read this activation's time from the user manager"
+    assert_output_has "guard: the held check carries the manager's own error text" "$(cat "$INSTALL_OUT")" "failed: 'Failed to connect to user scope bus"
     assert_eq "guard: the user-manager hold does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
+    assert_output_has "guard: a hold says how long the unit stays failed" "$(cat "$INSTALL_OUT")" "failed until its next activation or a reset-failed"
     STUB_MONO_NOW_US=0 run_guard "$unit"
     assert_eq "guard: a manager that does not show the unit activating (0) exits 255 (hold)" "255" "$?"
     assert_eq "guard: the not-activating hold does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
     STUB_MONO_NOW_US=not-a-number run_guard "$unit"
     assert_eq "guard: an activation time that is not a number exits 255 (hold)" "255" "$?"
-    STUB_RESUME_US=garbage run_guard "$unit"
-    assert_eq "guard: a resume time that is not a number exits 255 (hold)" "255" "$?"
     STUB_DATE_EXIT=1 run_guard "$unit"
     assert_eq "guard: a clock that fails exits 255 (hold), not set -e's 1" "255" "$?"
     assert_output_has "guard: a clock that fails is logged as a hold" "$(cat "$INSTALL_OUT")" "cannot read the clock"
     STUB_DATE_EPOCH="not-a-number" run_guard "$unit"
     assert_eq "guard: a clock that prints garbage exits 255 (hold)" "255" "$?"
     assert_eq "guard: the clock holds do not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
-    # The kernel counting suspends the manager never recorded: a resume the
-    # guard cannot place in time, so it holds rather than reads "never
-    # slept" off a masked or absent sleep.target.
-    printf '2\n' > "$counter"
-    STUB_RESUME_US=0 run_guard "$unit"
-    assert_eq "guard: suspends the kernel counted but the manager did not record exit 255 (hold)" "255" "$?"
-    assert_output_has "guard: the contradiction names both sources" "$(cat "$INSTALL_OUT")" "counts 2 completed suspend(s) this boot but the system manager recorded no sleep.target cycle"
-    assert_eq "guard: the contradiction hold does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
+    # The kernel's counter present but unreadable is still a hold: a file
+    # the kernel keeps, named in the line, not a property of the host.
     printf 'garbage\n' > "$counter"
     run_guard "$unit"
     assert_eq "guard: a counter that exists but cannot be read exits 255 (hold)" "255" "$?"
     assert_output_has "guard: the unreadable counter is named" "$(cat "$INSTALL_OUT")" "cannot read $counter"
+    assert_eq "guard: the unreadable-counter hold does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
     printf '0\n' > "$counter"
-    # A resume the manager dates AFTER this activation: the inputs disagree.
-    STUB_RESUME_US=$((STUB_MONO_NOW_US + 1000000)) run_guard "$unit"
-    assert_eq "guard: a resume later than this activation exits 255 (hold)" "255" "$?"
-    assert_output_has "guard: the disagreement is named" "$(cat "$INSTALL_OUT")" "do not agree"
-    assert_eq "guard: the disagreement hold does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
-    assert_output_has "guard: a hold says how long the unit stays failed" "$(cat "$INSTALL_OUT")" "failed until its next activation or a reset-failed"
+    # An end the guard did not decide — a `set -e` death — is a HOLD, not the
+    # discard its status would otherwise read as. BASH_ENV makes a script
+    # variable readonly before the guard starts, so its own assignment to it
+    # is fatal half-way through, after the manager reads.
+    printf 'readonly since_resume=poisoned\n' > "$TMP/guard-poison.env"
+    GUARD_BASH_ENV="$TMP/guard-poison.env" run_guard "$unit"
+    assert_eq "guard: a death the guard did not decide exits 255 (hold), not set -e's status" "255" "$?"
+    assert_output_has "guard: the undecided death is logged as a HELD line" "$(cat "$INSTALL_OUT")" "HELD — the guard ended with status"
+    assert_output_has "guard: the undecided death says why a skip would be wrong" "$(cat "$INSTALL_OUT")" "a skip nobody decided would read as a quiet day"
+    assert_eq "guard: the undecided death does not move the stamp" "$((now - 90000))" "$(cat "$stamp")"
+    # A hold with nowhere to write its line — journald gone, stdout closed —
+    # is still a hold: `log` may not abort `hold` before `finish`, or the
+    # printf builtin's 1 (the discard) would be the exit.
+    local closed_rc=0
+    ( export SOLADOR_AGENT_UPDATE_GUARD_ROOT="$root" PATH="$STUBS_CLOCK:$PATH" HOME="$ghome" INVOCATION_ID="53c52280aec6457493cabd9c3b09eb66"
+      "$BASH" "$guard" 2>/dev/null >&- ) || closed_rc=$?
+    assert_eq "guard: a hold with stdout closed still exits 255, not printf's 1" "255" "$closed_rc"
+    closed_rc=0
+    ( export SOLADOR_AGENT_UPDATE_GUARD_ROOT="$root" PATH="$STUBS_CLOCK:$PATH" HOME="$ghome" INVOCATION_ID="53c52280aec6457493cabd9c3b09eb66"
+      export BASH_ENV="$TMP/guard-poison.env"
+      "$BASH" "$guard" "$unit" 2>/dev/null >&- ) || closed_rc=$?
+    assert_eq "guard: an undecided death with stdout closed still exits 255" "255" "$closed_rc"
     # The stamp.
     printf 'garbage\n' > "$stamp"
     run_guard "$unit"
@@ -3751,7 +3866,9 @@ test_update_guard_linux() {
         chmod 555 "$ro_home/.config"
         GUARD_HOME="$ro_home" run_guard "$unit"
         assert_eq "guard: an unwritable stamp directory exits 255 (hold)" "255" "$?"
-        assert_output_has "guard: the unwritable stamp is named" "$(cat "$INSTALL_OUT")" "could not write $ro_home/.config/solador-agent-update.last-attempt"
+        assert_output_has "guard: the unwritable stamp is named" "$(cat "$INSTALL_OUT")" "could not write $ro_home/.config/solador-agent-update.last-attempt ("
+        assert_output_has "guard: the unwritable stamp hold carries the OS's own reason" "$(cat "$INSTALL_OUT")" "Permission denied)"
+        assert_output_has "guard: the unwritable stamp hold says what to check" "$(cat "$INSTALL_OUT")" "Check that $ro_home/.config is writable by"
         [ -e "$ro_home/.config/solador-agent-update.last-attempt.new" ] && fail "guard: no stamp .new is left after a failed write" "it is" \
             || pass "guard: no stamp .new is left after a failed write"
         chmod 755 "$ro_home/.config"
@@ -3795,6 +3912,12 @@ test_update_guard_linux() {
     success_statuses="$(sed -n 's/^SuccessExitStatus=//p' "$SCRIPT_DIR/solador-agent-update.service")"
     assert_eq "guard: DISCARD_EXIT is 1 (inside ExecCondition's skip range)" "1" "$discard_exit"
     assert_eq "guard: HOLD_EXIT is 255 (the one code that fails the unit)" "255" "$hold_exit"
+    # The trap that turns an undecided end into a hold is armed, and the only
+    # bare `exit`s in the script are the two inside finish and the trap
+    # itself — every other exit goes through finish, or the trap would fire
+    # on a decided one.
+    assert_eq "guard: the EXIT trap is armed" "1" "$(grep -c '^trap on_exit EXIT$' "$guard")"
+    assert_eq "guard: only finish and the trap exit directly" "2" "$(grep -c '^[[:space:]]*exit ' "$guard")"
     assert_eq "the oneshot names SuccessExitStatus= exactly once" "1" "$(grep -c '^SuccessExitStatus=' "$SCRIPT_DIR/solador-agent-update.service")"
     for code in $success_statuses; do
         if [ "$code" = "$discard_exit" ] || [ "$code" = "$hold_exit" ]; then
@@ -3807,6 +3930,7 @@ test_update_guard_linux() {
     [ -n "$success_statuses" ] && pass "the oneshot's SuccessExitStatus= ($success_statuses) shares no value with the guard's exits"
 
     unset STUB_DATE_EPOCH STUB_MONO_NOW_US STUB_RESUME_US STUB_GUARD_SYSTEMCTL_ARGV
+    unset STUB_DATE_EXIT GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
 }
 
 # A REAL launchd bootstrap, opt-in: the whole installer against a temporary

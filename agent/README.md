@@ -850,8 +850,11 @@ error is true, and a script calling this can read it as such.
 
 **Refused before anything is created**: as root (the updater refuses to run
 as root, so the job would fail every day); on an install directory or binary
-your user cannot write to; and on an unmigrated `/opt` host, which needs the
-explicit `--migrate-from-opt` first — both flags together do it in one run.
+your user cannot write to; on an unmigrated `/opt` host, which needs the
+explicit `--migrate-from-opt` first — both flags together do it in one run;
+and, on Linux, when the *running* user manager is older than systemd 243
+(RHEL 8, Ubuntu 18.04) or will not say its version, because `ExecCondition=`
+would be ignored there and the updater would run unguarded.
 The job is also only ever created *after* the metrics install verified, so a
 failed install never records consent.
 
@@ -905,14 +908,34 @@ manager (`systemctl --user show … %n`) and the last resume's
 `InactiveEnterTimestampMonotonic` from the **system** manager's
 `sleep.target` (`systemctl show … sleep.target`, a read-only property fetch
 every user may make — every systemd sleep path pulls that target in and
-stops it after the resume), both on `CLOCK_MONOTONIC`. A zero from the
-manager means "this boot has not slept" — or a masked or absent
-`sleep.target` — so `/sys/power/suspend_stats/success`, the kernel's own
-count, corroborates it: suspends the kernel counted that the manager never
-recorded are a resume the guard cannot place in time, and it holds. Absent
-(no `CONFIG_PM_SLEEP`, or a kernel before 5.4) the counter is not
-consulted. Nothing here needs the journal, logind's D-Bus, or root; the
+stops it after the resume), both on `CLOCK_MONOTONIC`. **That second
+reading is advisory.** `sleep.target` is `StopWhenUnneeded=` and nothing
+else references it on a stock distribution, so the system manager
+garbage-collects it once the cycle ends and a later `show` loads it fresh
+and prints `0` — measured on systemd 256, in the same second the journal
+recorded the target stopping. So `0` means "this boot has not slept" *or*
+"it slept and the manager has forgotten when", and
+`/sys/power/suspend_stats/success`, the kernel's own count, tells the two
+apart: no suspends counted and the settle rule counts from the boot; one or
+more counted and the guard logs one line — *the last resume cannot be
+placed in time; the 23 h interval rule alone governs this firing* — and
+falls through. It never holds on that reading (nor on a system manager it
+cannot reach, nor on an answer it cannot parse), because "forgotten" is the
+normal state of every laptop after its first suspend and a guard that holds
+on the normal state is a job that never runs, with a red unit every day
+teaching the operator to stop reading `--failed`. The interval rule needs
+no resume and carries the cadence on its own; what the settle rule adds —
+not while the network is still coming back after a wake — costs, when it
+is unavailable, one attempt on a bad day, which the stamp then charges to
+that day. Absent (no `CONFIG_PM_SLEEP`, or a kernel before 5.4) the counter
+is not consulted; present and unreadable it is a hold, since that is a file
+the kernel keeps and the line names it. Nothing here needs the journal
+(which would survive the collection, but is readable only in `adm`/`wheel`,
+which a dedicated service user is not in), logind's D-Bus, or root; the
 guard's header records each reading as observed on a real user manager.
+A `set -e` death anywhere in the guard is turned into a hold by an `EXIT`
+trap, because the status such a death carries is `1` — the discard — and
+would otherwise read as a quiet day, forever.
 `ExecCondition=` itself needs systemd ≥ 243 (2019); the installer reads the
 **running** user manager's version (`systemctl --user show -p Version`,
 not the client's `--version`) and on an older one **refuses the opt-in**
@@ -938,7 +961,7 @@ systemctl --user status solador-agent-update.service         # exit 4 = nothing 
                                                              # failed + a "solador-agent-update-guard: HELD" line = held, nothing changed; failed + an updater exit 3 = check solador-agent.service
 journalctl --user -u solador-agent-update -n 50 --no-pager   # the updater's own output, or the guard's one line
 journalctl --user -u solador-agent-update -g 'solador-agent-update-guard:'   # just the guard's lines: a month of discards and a month of exit-4 days look alike in status
-date -d @"$(cat ~/.config/solador-agent-update.last-attempt)" # the last attempt; older than two days while list-timers shows daily triggers = the guard is discarding every firing
+date -d @"$(cat ~/.config/solador-agent-update.last-attempt)" # the last attempt; older than two days while list-timers shows daily triggers = the guard is discarding every firing, holding every firing (is-failed says which), or the unit's assertion is failing (the guard file is gone)
 systemctl --user reset-failed solador-agent-update.service   # after fixing what a hold named
 systemctl --user start solador-agent-update.service          # check NOW, by hand (the guard still applies; `solador-agent update` does not)
 
@@ -1022,13 +1045,21 @@ its two manager reads, the clock and the kernel's counter stubbed (the
 counter under an override root, never this machine's `/sys`) — the same
 boundaries, a firing 30 s after resume and 30 s after boot, a laptop that
 slept last night and runs anyway, a server that never sleeps running on
-three consecutive days without a hold, an unreachable system or user
-manager, a manager that does not show the unit activating, a counter that
-contradicts the manager, a resume dated after the activation, and every
-usage error, each asserted to hold with exit 255 and to leave the stamp
-alone; a hand-edited stamp with a leading zero, padding or a CRLF read as
-decimal, an empty one held — plus the installer's actions: guard installed
-only with the flag, before the unit, mode 0755, named on both the
+three consecutive days without a hold, a laptop whose manager forgot its
+resume (the kernel counts a suspend, the manager reads 0) running on three
+consecutive days with exactly one `NOTE` line each and never a hold, an
+unreachable system manager, an unparseable resume and a resume dated after
+the activation each running on the interval rule, an unreachable user
+manager, a manager that does not show the unit activating, an unreadable
+kernel counter and every usage error, each asserted to hold with exit 255
+and to leave the stamp alone; a death the guard did not decide (a script
+variable made readonly through `BASH_ENV` before it starts) held with 255
+rather than exiting with `set -e`'s 1; a hand-edited stamp with a leading
+zero, padding or a CRLF read as decimal, an empty one held, a stamp up to
+one interval (23 h) ahead of the clock discarded and a second more held —
+plus the
+installer's actions: guard installed only with the flag, staged as `.new`
+and renamed over, before the unit, mode 0755, named on both the
 `ExecCondition=` and the `AssertFileIsExecutable=` lines, preserved by a
 no-flag re-run, a pre-#411 unit reported `UNGUARDED` and retrofitted only
 by the flag, not re-created after removal, and the opt-in refused on a
