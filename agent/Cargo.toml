@@ -105,13 +105,10 @@ tower = { version = "0.5", features = ["util"] }
 # fixed seeds, signatures assembled in the documented minisign format (Ed25519
 # over BLAKE2b-512 of the payload, then a global signature over sig+trusted
 # comment). Test-only — the shipped binary VERIFIES and never signs. dalek v3
-# is what crates/openclaw already resolves; blake2 is the one new package, and
-# it is the prehash minisign specifies. 0.10, not 0.11, on a count: 0.10 sits
-# on the `digest 0.10` the lock already carries (via sha2 0.10, tauri's) and
-# adds exactly one package; 0.11 adds `cmov` and `ctutils` beside it (measured
-# with `cargo update -p blake2`).
+# is what crates/openclaw already resolves; blake2 provides the prehash
+# minisign specifies.
 ed25519-dalek = "3"
-blake2 = "0.10"
+blake2 = "0.11"
 # Loopback "release server" and temp install trees for the transaction tests.
 tempfile = "3"
 
