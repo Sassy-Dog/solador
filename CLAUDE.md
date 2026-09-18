@@ -103,9 +103,10 @@ coverage it does not have would be worse than the checklist.
   `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, the versioning
   suite (`scripts/versioning-test.sh`, #405 — the CalVer derivation, the
   mint and its output contract, the build number, and #404's release-tag
-  assertion, against temporary bare origins), the e2e
-  server's bind test (`tests/frontend/csp_server_test.py`), plus the
-  `tests/frontend` Playwright e2e suite
+  assertion, against temporary bare origins), the local run/signing helper
+  suite (`scripts/run-test.sh`), the e2e server's bind test
+  (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
+  e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
   `shellcheck -S warning` over every shell source this repo ships
   (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`), the secrets guard and
@@ -692,9 +693,9 @@ scripts — #405 — against temporary bare origins: `get-version-info.sh`'s
 derivation and §4 mint with the `action ∈ {create, reuse}` and
 reuse-pushes-nothing contract, `get-build-number.sh`, and the release
 workflows' tag assertion from #404; ~160 cases, run under bash 5, macOS
-`/bin/bash` 3.2 and Git Bash in CI), `tests/frontend/csp_server_test.py`,
-and the
-`tests/frontend` Playwright suite. Agent tests run via `cargo test` in
+`/bin/bash` 3.2 and Git Bash in CI), `scripts/run-test.sh` (the exact-identity
+certificate trust gate behind `./dev run`), `tests/frontend/csp_server_test.py`,
+and the `tests/frontend` Playwright suite. Agent tests run via `cargo test` in
 `agent/`.
 
 **The e2e server binds without a name lookup, and the 60s webServer deadline

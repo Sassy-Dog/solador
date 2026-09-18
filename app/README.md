@@ -1695,12 +1695,18 @@ entry point:
 ```
 
 That builds the same package plain cargo does and then, on macOS, re-signs the
-binary with the stable `Apple Development` identity (team `the maintainer's Apple team id`) before
-launching it. That step is the whole reason to prefer it: cargo stamps a *fresh
-ad-hoc* signature on every relink, and each new identity invalidates the Keychain
-ACLs on the app's stored credentials — so a bare-cargo launch re-prompts for every
-stored item on every rebuild. Where no identity is installed (CI, a non-macOS
-machine) the step is skipped silently and you get the bare-cargo behaviour.
+binary with a trusted `Apple Development` identity (team `the maintainer's
+Apple team id`) before launching it. That step is the whole reason to prefer it:
+cargo stamps a *fresh ad-hoc* signature on every relink, and each new identity
+invalidates the Keychain ACLs on the app's stored credentials — so a bare-cargo
+launch re-prompts for every stored item on every rebuild. The script resolves
+each candidate by its exact SHA-1, then requires code-signing trust and a
+positive OCSP response because `security find-identity` can still list a
+revoked certificate as valid. Signing with one makes AMFI kill the app and
+Gatekeeper call it malware. Untrusted identities are named and skipped. Where
+no usable identity is installed, or trust cannot be established (CI, an offline
+Mac, a non-macOS machine), signing is skipped and you get the bare-cargo
+behaviour.
 
 The bare command still works and is what everything non-interactive uses:
 

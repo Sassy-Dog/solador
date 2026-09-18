@@ -21,3 +21,9 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+# Proc macros are host tools loaded by rustc while compiling this profile.
+# Stripping them removes their registrar symbols on macOS (Rust 1.96 reports
+# the dependent crate as missing), so only shipped target artifacts are stripped.
+[profile.release.build-override]
+strip = "none"
