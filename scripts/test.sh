@@ -64,6 +64,17 @@ else
     exit 1
 fi
 
+# --- Local macOS run/signing helpers. The suite stubs `security`, so it runs
+# on every host while proving code-signing trust is checked against the exact
+# SHA-1 identity rather than another same-name renewal.
+log_info "Running local run helper tests (scripts/run-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/run-test.sh; then
+    log_success "Local run helper tests passed"
+else
+    log_error "Local run helper tests failed"
+    exit 1
+fi
+
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
 # Needs BOTH npm and cargo: the suite's `pretest` shells out to

@@ -114,8 +114,23 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         TEAM_LINES="$(printf '%s\n' "$SIGN_LINES" | grep -F "($DEVELOPMENT_TEAM)" || true)"
         [[ -n "$TEAM_LINES" ]] && SIGN_LINES="$TEAM_LINES"
     fi
-    # The SHA-1, not the name: a hash names exactly one certificate.
-    SIGN_ID="$(printf '%s\n' "$SIGN_LINES" | head -n1 | awk '{print $2}')"
+    # The SHA-1, not the name: a hash names exactly one certificate. Walk every
+    # candidate because an unusable identity may sort ahead of its replacement.
+    # `security find-identity` can still label a revoked certificate "valid",
+    # and codesign accepts it too, but AMFI kills the result at launch and
+    # Gatekeeper reports it as malware. Require code-signing trust and a
+    # positive OCSP response for that exact certificate first.
+    SIGN_ID=""
+    while IFS= read -r SIGN_LINE; do
+        CANDIDATE_ID="$(printf '%s\n' "$SIGN_LINE" | awk '{print $2}')"
+        CANDIDATE_NAME="$(printf '%s\n' "$SIGN_LINE" | sed -n 's/.*"\(.*\)".*/\1/p')"
+        [[ -n "$CANDIDATE_ID" && -n "$CANDIDATE_NAME" ]] || continue
+        if apple_certificate_is_usable "$CANDIDATE_ID"; then
+            SIGN_ID="$CANDIDATE_ID"
+            break
+        fi
+        log_warning "Ignoring untrusted signing identity: $CANDIDATE_NAME"
+    done <<< "$SIGN_LINES"
     if [[ -n "$SIGN_ID" ]]; then
         # Sign the BUNDLE, not the loose binary — signing the copy inside it
         # is what the ACLs will be matched against at launch.

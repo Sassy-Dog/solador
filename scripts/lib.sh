@@ -25,6 +25,39 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# `security find-identity` gives codesign's SHA-1 identity. Resolve the
+# certificate by that exact hash before evaluating code-signing trust: renewals
+# may reuse a common name, so a name lookup can validate one certificate and
+# sign another.
+apple_certificate_is_usable() {
+    local candidate_id="$1"
+    local certificate
+
+    certificate="$(
+        security find-certificate -a -Z -p 2>/dev/null |
+            awk -v candidate_id="$candidate_id" '
+                /^SHA-1 hash:/ {
+                    wanted = ($3 == candidate_id)
+                    in_certificate = 0
+                }
+                wanted && /^-----BEGIN CERTIFICATE-----$/ {
+                    in_certificate = 1
+                }
+                in_certificate {
+                    print
+                }
+                in_certificate && /^-----END CERTIFICATE-----$/ {
+                    in_certificate = 0
+                    wanted = 0
+                }
+            '
+    )"
+    [[ -n "$certificate" ]] || return 1
+    printf '%s\n' "$certificate" |
+        security verify-cert -c /dev/stdin -p codeSign -R ocsp -R require \
+            >/dev/null 2>&1
+}
+
 # Ensure we're in the project root
 ensure_project_root() {
     if [[ ! -f "Cargo.toml" || ! -d "app/src-tauri" ]]; then
@@ -66,5 +99,5 @@ ensure_main_branch() {
 # Export functions for use in other scripts
 export -f color_red color_green color_yellow color_blue color_cyan color_gray
 export -f log_info log_success log_warning log_error log_debug
-export -f command_exists ensure_project_root ensure_clean_working_tree
+export -f apple_certificate_is_usable
 export -f get_current_branch ensure_main_branch

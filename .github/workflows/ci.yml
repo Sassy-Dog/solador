@@ -184,6 +184,12 @@ jobs:
       - name: Versioning suite under macOS bash 3.2
         run: /bin/bash scripts/versioning-test.sh
 
+      # `security find-identity` may list a revoked Apple Development
+      # certificate ahead of its renewal. The helper suite stubs `security` and
+      # proves the selected SHA-1 and trust-checked PEM stay identical.
+      - name: Local run signing helpers under macOS bash 3.2
+        run: /bin/bash scripts/run-test.sh
+
       # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
       # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does
       # for cargo above.
