@@ -671,6 +671,21 @@ fn labels() -> Value {
         ("scope", "Show"),
         ("presentation", "Presentation"),
         ("width", "Width"),
+        ("position", "Position"),
+        ("positionCurrent", "Keep current position"),
+        ("positionStart", "At the beginning"),
+        ("positionEnd", "At the end"),
+        ("positionAfter", "After {title}"),
+        ("placementPreview", "Dashboard placement"),
+        (
+            "placementHint",
+            "Preview the order and widths. Your tile is highlighted.",
+        ),
+        ("positionMissing", "Position no longer available"),
+        (
+            "positionUnavailable",
+            "That tile is no longer visible. Choose another position.",
+        ),
         ("summary", "Summary"),
         ("detailed", "Detailed"),
         ("small", "Small"),
@@ -690,7 +705,7 @@ fn labels() -> Value {
         ("tilePreview", "Tile preview"),
         (
             "previewHint",
-            "Current readings · saves at the end of your dashboard",
+            "Current readings · saves in your chosen position",
         ),
         ("previewLoading", "Updating preview…"),
         (
