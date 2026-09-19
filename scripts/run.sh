@@ -131,6 +131,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         fi
         log_warning "Ignoring untrusted signing identity: $CANDIDATE_NAME"
     done <<< "$SIGN_LINES"
+    if [[ -n "$SIGN_LINES" && -z "$SIGN_ID" ]]; then
+        log_error "Could not verify an installed development signing identity. Retry when certificate verification is available; the app was not launched, so its saved credentials keep their existing access."
+        exit 1
+    fi
     if [[ -n "$SIGN_ID" ]]; then
         # Sign the BUNDLE, not the loose binary — signing the copy inside it
         # is what the ACLs will be matched against at launch.
@@ -146,9 +150,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         # A real bundled release will sign as app.solador.desktop and pay
         # that one-time cost then, deliberately, rather than surprising
         # someone mid-dev-loop.
-        codesign --force --identifier "$TAURI_PACKAGE" --sign "$SIGN_ID" \
-            "$SIGN_TARGET" >/dev/null 2>&1 ||
-            log_warning "Could not re-sign $TAURI_PACKAGE — the Keychain may re-prompt"
+        if ! codesign --force --identifier "$TAURI_PACKAGE" --sign "$SIGN_ID" \
+            "$SIGN_TARGET" >/dev/null 2>&1; then
+            log_error "Could not sign $TAURI_PACKAGE. The app was not launched; retry to preserve saved credential access."
+            exit 1
+        fi
     fi
 fi
 
