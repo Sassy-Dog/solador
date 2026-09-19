@@ -36,12 +36,14 @@ placement lives in **Edit dashboard**.
 The dashboard tests cover these rules with real Rust panel fixtures and temporary
 stores. Browser tests cover editing, persistence through an IPC double, failed
 saves, delayed reads, navigation and responsive layout under the app's CSP. They
-do not exercise native Tauri IPC. `SOLADOR_STORE_DIR` isolates settings only;
-native test builds also need a separate credential service to avoid accessing
-saved credentials and triggering Keychain prompts. For a native smoke check, use
-the scratch-store procedure below, then hide/restore a tile, duplicate Machines with a Remote
-machines scope, relaunch, and verify the saved view. Open Details and connection
-settings, and confirm Back to overview returns correctly. The existing full-panel
+do not exercise native Tauri IPC. Native checks can reuse saved credentials via
+`./dev run` with a trusted, stable signing identity. `SOLADOR_STORE_DIR` isolates
+settings only; it still uses the normal credential service. A separate credential
+service is needed only for a deliberately credential-free run. Ad-hoc builds do
+not preserve Keychain recognition across rebuilds. For a native smoke check, use
+the scratch-store procedure below, then hide/restore a tile, duplicate Machines
+with a Remote machines scope, relaunch, and verify the saved view. Open Details
+and connection settings, and confirm Overview returns correctly. The existing full-panel
 smoke checklist starts from **All detailed panels**. The macOS dashboard smoke
 passed on 2026-09-18 with real IPC, a scratch store and an empty, isolated
 credential service in the test build. It covered hide/restore, duplication and
