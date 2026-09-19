@@ -232,8 +232,13 @@
       <span class="status" id="settingsStatus" role="status"></span>
       <button class="btn" id="settingsClose" type="button"></button>
     </div>
-    <nav class="tabs" id="settingsTabs"></nav>
-    <div class="settings-body" id="settingsBody"></div>
+    <div class="settings-shell">
+      <nav class="tabs settings-nav" id="settingsTabs"></nav>
+      <div class="settings-content">
+        <div id="settingsConfirm" hidden></div>
+        <div class="settings-body" id="settingsBody"></div>
+      </div>
+    </div>
   </section>
 
   <!-- One card per host, cloned from here. Hooks are classes, not ids: with N

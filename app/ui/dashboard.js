@@ -28,6 +28,7 @@
     initialized = false;
   let pointerDrag = null;
   let loadFailed = false;
+  let previewTimer = null, previewVersion = 0;
   const tiles = new Map();
   const q = (selector) => root.querySelector(selector);
   const text = (el, value) => {
@@ -130,12 +131,12 @@
       wrap.append(colored("p", "db-warning", v.text, v.color));
     return wrap;
   }
-  function makeRow(row, t, detail = false) {
+  function makeRow(row, t, detail = false, interactive = true) {
     const wrap = node(
       "div",
       row.metrics?.length ? "db-host" : "db-compact-row",
     );
-    const b = button("", "row", row.id, "db-item");
+    const b = interactive ? button("", "row", row.id, "db-item") : node("div", "db-item");
     b.dataset.source = t.source;
     const name = node("span", "db-row-label"),
       dot = node("span", "db-dot");
@@ -233,7 +234,15 @@
       if (force || fresh || (!editing && !dragged)) {
         const content = el.querySelector(".db-tile-content");
         content.replaceChildren(warnings(t.warnings));
-        if (!t.rows.length) content.append(node("p", "db-sub", t.empty));
+        if (!t.rows.length) {
+          content.append(node("p", "db-sub", t.empty));
+          if (t.emptyAction) {
+            const action = button(L(t.emptyAction === "configure" ? "editScope" : "manage"), t.emptyAction, t.id, "db-empty-action");
+            action.dataset.source = t.source;
+            action.dataset.scope = tile(t.id).scope;
+            content.append(action);
+          }
+        }
         for (const row of t.rows)
           content.append(makeRow(row, t, t.presentation === "detailed"));
         if (t.moreCount) {
@@ -378,10 +387,10 @@
     head.append(copy, button(L("close"), "close"));
     box.append(head, node("div", "db-inspector-body"));
     if (next.kind === "configure") {
-      const t = tile(next.id),
+      const t = next.draft || tile(next.id),
         s = source(t.source);
-      text(copy.children[0], L("configure"));
-      text(copy.children[1], s.title);
+      text(copy.children[0], L(next.draft ? "add" : "configure"));
+      text(copy.children[1], s.hint);
       const form = node("form");
       form.id = "dashboardForm";
       const fields = node("div", "db-fields");
@@ -417,12 +426,19 @@
       );
       const actions = node("div", "db-form-actions");
       actions.append(
-        button(L("apply"), "apply", null, "db-primary"),
-        button(L("duplicate"), "duplicate", t.id),
+        button(L(next.draft ? "add" : "apply"), "apply", null, "db-primary"),
+        button(L("manage"), "manage", t.source),
         node("span", "db-muted", L("scopeNote")),
       );
+      if (!next.draft) actions.insertBefore(button(L("duplicate"), "duplicate", t.id), actions.children[1]);
       form.append(fields, actions);
       box.querySelector(".db-inspector-body").append(form);
+      const preview = node("section", "db-preview");
+      preview.setAttribute("aria-label", L("tilePreview"));
+      preview.append(node("h3", "", L("tilePreview")), node("p", "db-sub", next.draft ? L("previewHint") : s.title), node("div", "db-preview-grid"));
+      box.querySelector(".db-inspector-body").append(preview);
+      form.addEventListener("input", schedulePreview);
+      schedulePreview();
       input.focus();
     } else if (next.kind === "catalog") {
       text(copy.children[0], L("catalog"));
@@ -431,8 +447,11 @@
         catalog = node("div", "db-catalog");
       for (const t of model.layout.tiles.filter((t) => t.hidden))
         catalog.append(button(`${L("restore")} ${t.title}`, "restore", t.id));
-      for (const s of model.sources)
-        catalog.append(button(`+ ${s.title}`, "add", s.id));
+      for (const s of model.sources) {
+        const choose = button("", "add", s.id);
+        choose.append(node("strong", "", s.title), node("span", "db-sub", s.hint));
+        catalog.append(choose);
+      }
       body.append(catalog);
     } else {
       const actions = node("div", "db-form-actions");
@@ -444,6 +463,46 @@
       fillDetails();
       box.querySelector('[data-action="close"]').focus({ preventScroll: true });
     }
+  }
+  function formTile() {
+    const form = q("#dashboardForm");
+    if (!form || active?.kind !== "configure") return null;
+    const original = active.draft || tile(active.id);
+    if (!original) return null;
+    const fields = new FormData(form);
+    return { ...original, title: String(fields.get("title")).trim(), scope: fields.get("scope"), presentation: fields.get("presentation"), width: fields.get("width") };
+  }
+  function schedulePreview() {
+    clearTimeout(previewTimer);
+    const version = ++previewVersion;
+    const target = q(".db-preview-grid");
+    if (!target) return;
+    if (!target.childElementCount) target.append(node("p", "db-sub", L("previewLoading")));
+    target.setAttribute("aria-busy", "true");
+    previewTimer = setTimeout(async () => {
+      const draft = formTile();
+      if (!draft) return;
+      try {
+        const next = await callRust("dashboard_preview", { tile: { ...draft, title: draft.title || source(draft.source).title }, width: root.clientWidth || innerWidth });
+        if (version !== previewVersion || !target.isConnected) return;
+        if (!next || !Array.isArray(next.rows)) throw new Error();
+        const card = node("article", "db-preview-tile");
+        card.dataset.width = next.width;
+        const head = node("header", "db-tile-head"), heading = node("div");
+        heading.append(node("h3", "db-tile-title", next.title), node("p", "db-tile-note", `${next.scopeLabel} · ${L(next.presentation)}`));
+        head.append(heading);
+        card.append(head, warnings(next.warnings));
+        if (!next.rows.length) card.append(node("p", "db-sub", next.empty));
+        for (const row of next.rows) card.append(makeRow(row, next, next.presentation === "detailed", false));
+        if (next.moreCount) card.append(node("p", "db-sub", next.moreLabel));
+        card.append(node("footer", "db-tile-footer", next.footer));
+        target.replaceChildren(card);
+      } catch {
+        if (version === previewVersion && target.isConnected) target.replaceChildren(node("p", "db-sub", L("previewFailed")));
+      } finally {
+        if (version === previewVersion) target.removeAttribute("aria-busy");
+      }
+    }, 150);
   }
   function selectedRows(s) {
     if (active.row) return s.rows.filter((r) => r.id === active.row);
@@ -462,7 +521,8 @@
       s = source(active.source);
     if (!s) return;
     const rows = selectedRows(s);
-    const signature = JSON.stringify([rows, s.warnings, s.message, s.trailing]);
+    const selected = active.tile && model.tiles.find(t => t.id === active.tile);
+    const signature = JSON.stringify([rows, s.warnings, s.message, s.trailing, selected?.empty]);
     if (active.signature === signature) return;
     active.signature = signature;
     text(
@@ -472,7 +532,7 @@
     text(box.querySelector(".db-inspector-head .db-sub"), s.trailing || "");
     const body = box.querySelector(".db-inspector-body");
     body.replaceChildren(warnings(s.warnings));
-    if (s.message) body.append(node("p", "db-detail-copy", s.message));
+    if (s.message && rows.length) body.append(node("p", "db-detail-copy", s.message));
     const list = node("div", "db-detail-grid");
     for (const row of rows) {
       const item = node("div", "db-detail-resource"),
@@ -505,13 +565,20 @@
         open.dataset.source = s.id;
         item.append(open);
       }
+      if (!active.row) {
+        const manage = button(L("manage"), "manage-resource", s.id);
+        manage.dataset.scope = `item:${row.id}`;
+        item.append(manage);
+      }
       list.append(item);
     }
-    if (!rows.length && !s.message)
-      list.append(node("p", "db-muted", L("missingScope")));
+    if (!rows.length)
+      list.append(node("p", "db-muted", selected?.empty || s.message || L("missingReading")));
     body.append(list);
   }
   function closeInspector() {
+    clearTimeout(previewTimer);
+    previewVersion++;
     active = null;
     q(".db-inspector").hidden = true;
     q(".db-inspector").replaceChildren();
@@ -568,24 +635,17 @@
   async function apply() {
     const form = q("#dashboardForm");
     if (!form || !form.reportValidity() || busy) return;
-    const fields = new FormData(form),
-      next = copyLayout(),
-      t = next.tiles.find((t) => t.id === active.id);
-    if (!t) {
+    const next = copyLayout(), draft = formTile();
+    if (!draft) {
       status(L("missingScope"), true);
       return;
     }
-    Object.assign(t, {
-      title: String(fields.get("title")).trim(),
-      scope: fields.get("scope"),
-      presentation: fields.get("presentation"),
-      width: fields.get("width"),
-    });
+    if (active.draft) next.tiles.push(draft);
+    else Object.assign(next.tiles.find(t => t.id === draft.id), draft);
     await save(next);
   }
-  async function add(id, duplicate = false) {
-    const next = copyLayout(),
-      original = duplicate ? tile(id) : null,
+  function add(id, duplicate = false) {
+    const original = duplicate ? tile(id) : null,
       s = source(original?.source || id);
     const newTile = original
       ? {
@@ -594,17 +654,8 @@
           title: (original.title + L("duplicateSuffix")).slice(0, 64),
           hidden: false,
         }
-      : {
-          id: crypto.randomUUID(),
-          source: s.id,
-          title: s.title,
-          scope: s.id === "sentryCrons" ? "active" : "all",
-          presentation: "summary",
-          width: "small",
-          hidden: false,
-        };
-    next.tiles.push(newTile);
-    if (await save(next)) openInspector({ kind: "configure", id: newTile.id });
+      : { ...s.defaultTile, id: crypto.randomUUID() };
+    openInspector({ kind: "configure", id: newTile.id, draft: newTile });
   }
   async function showOverview() {
     mode = "overview";
@@ -665,8 +716,11 @@
       await fullPanel(id);
       return;
     }
-    if (action === "manage") {
-      window.soladorSettings.open(source(id).settingsTab);
+    if (action === "manage" || action === "manage-resource") {
+      const draft = formTile();
+      const sourceId = b.dataset.source || draft?.source || id;
+      const scope = b.dataset.scope || draft?.scope || (active?.row ? `item:${active.row}` : (active?.tile && tile(active.tile)?.scope)) || "all";
+      window.soladorSettings.open({ source: sourceId, scope });
       return;
     }
     if (action === "openRepo") {
@@ -692,6 +746,8 @@
       return;
     }
     if (action === "configure") {
+      editing = true;
+      render(true);
       openInspector({ kind: "configure", id });
       return;
     }
@@ -738,8 +794,9 @@
   });
   root.addEventListener("submit", (e) => {
     if (e.target.id === "dashboardForm") {
+      // WebKit can submit implicitly when Return commits a native picker.
+      // Saving is an explicit Add/Apply button action, including keyboard use.
       e.preventDefault();
-      apply();
     }
   });
   document.addEventListener("keydown", (e) => {
@@ -815,7 +872,20 @@
     } else {
       root.hidden = mode !== "overview";
       legacy.hidden = mode === "overview";
-      refresh(true);
+      refresh(true).then(() => {
+        const draft = formTile();
+        if (!draft) return;
+        const select = q("#dashboard-scope"), s = source(draft.source);
+        const choices = s.scopes.slice();
+        if (!choices.some(c => c.value === draft.scope)) choices.push({value:draft.scope, label:L("missingScope")});
+        select.replaceChildren(...choices.map(c => {
+          const option = node("option", "", c.label);
+          option.value = c.value;
+          option.selected = c.value === draft.scope;
+          return option;
+        }));
+        schedulePreview();
+      });
     }
   });
   registerPanelRefresh(() => refresh(true));

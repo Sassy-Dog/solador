@@ -29,10 +29,10 @@ async function openDashboard(page, baseURL) {
         JSON.parse(localStorage.getItem("test-dashboard") || "null") ||
         original.layout;
       window.__CALLS__ = [];
-      function project() {
+      function project(previewTile) {
         const view = structuredClone(original);
         view.layout = structuredClone(layout);
-        view.tiles = layout.tiles
+        view.tiles = (previewTile ? [previewTile] : layout.tiles)
           .filter((t) => !t.hidden)
           .map((t) => {
             const source = view.sources.find((s) => s.id === t.source);
@@ -66,6 +66,15 @@ async function openDashboard(page, baseURL) {
         core: {
           invoke: async (command, args) => {
             window.__CALLS__.push({ command, args });
+            if (command === "dashboard_preview") {
+              const preview = project(args.tile).tiles[0];
+              if (window.__HOLD_PREVIEW__) {
+                window.__HOLD_PREVIEW__ = false;
+                return await new Promise(resolve => { window.__RELEASE_PREVIEW__ = () => resolve(preview); });
+              }
+              return preview;
+            }
+            if (command === "settings_view" && args?.route) return { ...fixtures.settings_view, connectionRoute: window.__SETTINGS_ROUTE__ };
             if (command === "dashboard_view") {
               if (window.__FAIL_READ__) throw new Error("Reading unavailable");
               const snapshot = project();
@@ -203,6 +212,86 @@ test("hidden tiles survive reopening, keep alerts, and can be restored", async (
   expect((await savedLayout(page)).revision).toBe(2);
 });
 
+test("adding a tile waits for its name, scope and size before saving", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await action(page, "catalog").click();
+  await page.locator('[data-action="add"][data-id="hosts"]').click();
+  await expect(page.locator("#dashboardForm")).toBeVisible();
+  expect(await savedLayout(page)).toBeNull();
+  await expect(page.locator(".db-grid > .db-tile")).toHaveCount(5);
+  await page.locator("#dashboard-title").fill("Remote build machines");
+  await page.locator("#dashboard-scope").selectOption("remote");
+  await page.locator("#dashboard-width").selectOption("wide");
+  await expect(page.locator(".db-preview-tile")).toHaveAttribute("data-width", "wide");
+  await expect(page.locator(".db-preview-tile .db-tile-title")).toHaveText("Remote build machines");
+  await expect(page.locator(".db-preview-tile .db-item")).toHaveCount(3);
+  await page.locator("#dashboard-scope").press("Enter");
+  expect(await savedLayout(page)).toBeNull();
+  await action(page, "apply").click();
+  expect((await savedLayout(page)).tiles.at(-1)).toMatchObject({
+    title: "Remote build machines", source: "hosts", scope: "remote", width: "wide",
+  });
+  await expect(page.locator(".db-grid > .db-tile")).toHaveCount(6);
+  await action(page, "catalog").click();
+  await page.locator('[data-action="add"][data-id="claudeUsage"]').click();
+  await action(page, "close").click();
+  expect((await savedLayout(page)).tiles).toHaveLength(6);
+});
+
+test("a connection detour keeps a new tile's draft and returns to its preview", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await page.evaluate(() => {
+    window.__SETTINGS_ROUTE__ = { editor: { kind: "local", entityId: null }, kinds: ["local"] };
+  });
+  await action(page, "edit").click();
+  await action(page, "catalog").click();
+  await page.locator('[data-action="add"][data-id="hosts"]').click();
+  await page.locator("#dashboard-title").fill("My workstation");
+  await page.locator("#dashboard-scope").selectOption("local");
+  await action(page, "manage").click();
+  await expect(page.locator("#settings .connection-heading h2")).toHaveText("This machine");
+  expect(await page.evaluate(() => window.__CALLS__.find(c => c.command === "settings_view").args)).toEqual({route:{source:"hosts",scope:"local"}});
+  await page.locator("#settingsClose").click();
+  await expect(page.locator("#dashboard-title")).toHaveValue("My workstation");
+  await expect(page.locator("#dashboard-scope")).toHaveValue("local");
+  await expect(page.locator(".db-preview-tile .db-item")).toHaveCount(1);
+  expect(await savedLayout(page)).toBeNull();
+});
+
+test("resource details open their editor while aggregate links show only relevant connections", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await page.evaluate(() => { window.__SETTINGS_ROUTE__ = {editor:null,kinds:["account"],heading:"GitHub connections",help:"Choose a connection."}; });
+  await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
+  await action(page, "manage").click();
+  await expect(page.locator("#settingsBody > .connection-heading h2")).toHaveText("GitHub connections");
+  await expect(page.locator(".connection-row:not([data-kind='account'])")).toHaveCount(0);
+  await page.locator("#settingsClose").click();
+  await page.evaluate(() => { window.__SETTINGS_ROUTE__ = {editor:{kind:"sentry"},kinds:["sentry"]}; });
+  await action(page, "close").click();
+  await tile(page, "sentryCrons").locator('[data-action="row"]').first().click();
+  await action(page, "manage").click();
+  await expect(page.locator("#sentry-org-slug")).toBeVisible();
+  await expect(page.locator("#neon-org-id")).toHaveCount(0);
+  expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === "settings_view").at(-1).args.route.source)).toBe("sentryCrons");
+});
+
+test("a late preview cannot replace a newer scope choice", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  await expect(page.locator(".db-preview-tile .db-item")).toHaveCount(4);
+  await page.evaluate(() => { window.__HOLD_PREVIEW__ = true; });
+  await page.locator("#dashboard-scope").selectOption("remote");
+  await expect.poll(() => page.evaluate(() => typeof window.__RELEASE_PREVIEW__)).toBe("function");
+  await page.locator("#dashboard-scope").selectOption("local");
+  await expect(page.locator(".db-preview-tile .db-item")).toHaveCount(1);
+  await page.evaluate(() => window.__RELEASE_PREVIEW__());
+  await expect(page.locator(".db-preview-tile .db-item")).toHaveCount(1);
+  await expect(page.locator(".db-preview-tile .db-tile-note")).toContainText("This machine");
+  expect(await savedLayout(page)).toBeNull();
+});
+
 test("a duplicate has an independent scope, width and draft that polling preserves", async ({
   page,
   baseURL,
@@ -211,7 +300,7 @@ test("a duplicate has an independent scope, width and draft that polling preserv
   await action(page, "edit").click();
   await tile(page, "hosts").locator('[data-action="configure"]').click();
   await action(page, "duplicate").click();
-  await expect(page.locator(".db-tile")).toHaveCount(6);
+  await expect(page.locator(".db-tile")).toHaveCount(5);
   await page.locator("#dashboard-title").fill("Remote machines only");
   await page.locator("#dashboard-scope").selectOption("remote");
   await page.locator("#dashboard-width").selectOption("wide");
@@ -231,6 +320,8 @@ test("a duplicate has an independent scope, width and draft that polling preserv
     "Remote machines only",
   );
   await page.locator("#dashboard-title").press("Enter");
+  await expect(page.locator("#dashboardInspector")).toBeVisible();
+  await action(page, "apply").click();
   await expect(page.locator("#dashboardInspector")).toBeHidden();
   const layout = await savedLayout(page),
     duplicate = layout.tiles.at(-1);
@@ -387,8 +478,9 @@ test("details reach the existing full panel and the source's connection settings
   await action(page, "manage").click();
   await expect(page.locator("#settings")).toBeVisible();
   await expect(
-    page.locator('#settings .tab[data-tab="accounts"]'),
+    page.locator('#settings .tab[data-tab="connections"]'),
   ).toHaveAttribute("data-active", "true");
+  await expect(page.locator('#settings .connection-row[data-kind="account"]').first()).toBeVisible();
   await expect(page.locator("#dashboardOverview")).toBeHidden();
   await page.locator("#settingsClose").click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();

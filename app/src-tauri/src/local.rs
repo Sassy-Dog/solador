@@ -21,6 +21,7 @@
 //! disk, a cool CPU) and treating it as absent is the mirror-image bug.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use viewmodel::card::{host_card, pending_card, Connection, HostHistories, Pending, UNKNOWN};
@@ -57,14 +58,12 @@ pub fn display_name(raw: Option<String>) -> String {
         .unwrap_or_else(|| FALLBACK_NAME.to_owned())
 }
 
-/// The local machine's poll state: the sampler (which must outlive one sample —
-/// every rate is a delta between two of them), the histories the charts plot,
-/// and the most recent sample.
+/// Readings shared with the UI. The sampler belongs to the background loop:
+/// macOS volume enumeration can block, so it must never hold this lock.
 pub struct LocalHostState {
     name: String,
-    sampler: localhost::LocalSampler,
     histories: HostHistories,
-    latest: Option<localhost::LocalSnapshot>,
+    latest: Option<(localhost::LocalSnapshot, Instant)>,
 }
 
 impl LocalHostState {
@@ -72,16 +71,9 @@ impl LocalHostState {
     pub fn new() -> Self {
         LocalHostState {
             name: display_name(localhost::host_name()),
-            sampler: localhost::LocalSampler::new(),
             histories: HostHistories::new(),
             latest: None,
         }
-    }
-
-    /// Takes one sample and folds it into the state.
-    pub fn sample(&mut self) {
-        let snapshot = self.sampler.sample();
-        self.record(snapshot);
     }
 
     /// Folds an already-taken sample into the state.
@@ -93,7 +85,7 @@ impl LocalHostState {
     /// still flattens to `0.0`: pushing that would draw a dip to a floor nobody
     /// measured, so a sample with no CPU reading is not plotted at all.
     ///
-    /// Separate from [`sample`](Self::sample) so the rule above is reachable
+    /// Separate from the sampler so the rule above is reachable
     /// from a test: a real sampler cannot be made to report unknown rates on
     /// demand, and a test that re-implemented this guard inline would pass
     /// against a version that had dropped it.
@@ -101,18 +93,39 @@ impl LocalHostState {
         if snapshot.cpu.usage.is_some() {
             self.histories.record(&snapshot.to_wire());
         }
-        self.latest = Some(snapshot);
+        self.latest = Some((snapshot, Instant::now()));
     }
 
     /// The card, ready to paint.
     ///
-    /// The connection dot is **always green**: this process *is* the host, so
-    /// there is no link to lose and no staleness to report. That is
-    /// `ConnectionState.local` in the original, which shares the green of `.connected`.
+    /// A stalled local sampler is no more current than a stalled remote one.
+    /// Use monotonic time so clock adjustments cannot make an old sample live.
     #[must_use]
     pub fn card(&self) -> Value {
+        self.card_at(Instant::now())
+    }
+
+    fn card_at(&self, now: Instant) -> Value {
         match &self.latest {
-            Some(snapshot) => card_from(&self.name, snapshot, &self.histories),
+            Some((snapshot, sampled)) => {
+                let age = now.saturating_duration_since(*sampled);
+                let connection = if age >= Duration::from_secs(5) {
+                    Connection::SamplerStale {
+                        sample_age_secs: Some(age.as_secs()),
+                    }
+                } else {
+                    Connection::Live
+                };
+                let mut card = host_card(
+                    &self.name,
+                    &snapshot.to_wire(),
+                    &self.histories,
+                    &connection,
+                );
+                lower_unknowns(&mut card, snapshot);
+                card["id"] = json!(CARD_ID);
+                card
+            }
             // Before the first sample there is nothing to show — the same
             // amber "waiting" card a remote host gets, for the same reason.
             None => {
@@ -177,24 +190,76 @@ fn lower_unknowns(card: &mut Value, snapshot: &localhost::LocalSnapshot) {
 pub async fn poll_loop(state: Arc<Mutex<LocalHostState>>, interval: std::time::Duration) {
     let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Keep delta baselines across samples, without sharing the slow sampler
+    // with UI reads. Construction also stays off the main thread.
+    let mut sampler: Option<localhost::LocalSampler> = None;
     loop {
         tick.tick().await;
         let handle = Arc::clone(&state);
-        // The lock lives entirely inside the blocking task, so it is never held
-        // across the await and the `cockpit` command never waits on a sample.
-        if let Err(e) = tokio::task::spawn_blocking(move || {
-            handle.lock().expect("local state poisoned").sample()
+        match tokio::task::spawn_blocking(move || {
+            let mut sampler = sampler.unwrap_or_default();
+            sample_and_publish(&handle, || sampler.sample());
+            sampler
         })
         .await
         {
-            eprintln!("local metrics sampling failed: {e}");
+            Ok(next) => sampler = Some(next),
+            Err(e) => {
+                eprintln!("local metrics sampling failed: {e}");
+                sampler = None;
+            }
         }
     }
+}
+
+fn sample_and_publish(
+    state: &Mutex<LocalHostState>,
+    sample: impl FnOnce() -> localhost::LocalSnapshot,
+) {
+    let snapshot = sample();
+    state.lock().expect("local state poisoned").record(snapshot);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blocked_sampler_does_not_lock_the_readings_used_by_the_window() {
+        let state = Arc::new(Mutex::new(LocalHostState::new()));
+        let (started, receiving) = std::sync::mpsc::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let worker_state = Arc::clone(&state);
+        let worker = std::thread::spawn(move || {
+            sample_and_publish(&worker_state, || {
+                started.send(()).unwrap();
+                waiting.recv().unwrap();
+                snapshot()
+            })
+        });
+        receiving.recv_timeout(Duration::from_secs(2)).unwrap();
+        let readable = state.try_lock().map(|s| s.card()).ok();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(readable.unwrap()["connection"]["state"], "connecting");
+        assert_eq!(state.lock().unwrap().card()["connection"]["state"], "live");
+    }
+
+    #[test]
+    fn old_local_samples_are_marked_stale_and_recover_after_sampling() {
+        let mut state = LocalHostState::new();
+        state.record(snapshot());
+        let sampled = state.latest.as_ref().unwrap().1;
+        let stale = state.card_at(sampled + Duration::from_secs(6));
+        assert_eq!(stale["connection"]["state"], "stale");
+        assert_eq!(stale["connection"]["color"], color::hex(color::RED));
+        assert!(stale["connection"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("6s ago"));
+        state.record(snapshot());
+        assert_eq!(state.card()["connection"]["state"], "live");
+    }
 
     fn snapshot() -> localhost::LocalSnapshot {
         localhost::LocalSnapshot {
@@ -337,10 +402,9 @@ mod tests {
         assert_eq!(card_for(s), plain);
     }
 
-    /// The local machine cannot be unreachable from inside itself, so the dot
-    /// is green and there is no stale message to render.
+    /// A freshly taken local sample uses the same live rendering as a remote.
     #[test]
-    fn the_local_connection_dot_is_always_green() {
+    fn a_fresh_local_sample_has_a_green_connection_dot() {
         let card = card_for(snapshot());
         assert_eq!(card["connection"]["state"], "live");
         assert_eq!(card["connection"]["color"], color::hex(color::GREEN));
@@ -353,7 +417,6 @@ mod tests {
     fn before_the_first_sample_the_card_waits_rather_than_showing_zeros() {
         let state = LocalHostState {
             name: "mac-studio".to_owned(),
-            sampler: localhost::LocalSampler::new(),
             histories: HostHistories::new(),
             latest: None,
         };
@@ -370,12 +433,11 @@ mod tests {
     fn the_card_id_is_stable_across_the_pending_and_live_states() {
         let mut state = LocalHostState {
             name: "mac-studio".to_owned(),
-            sampler: localhost::LocalSampler::new(),
             histories: HostHistories::new(),
             latest: None,
         };
         let pending = state.card();
-        state.latest = Some(snapshot());
+        state.record(snapshot());
         let live = state.card();
         assert_eq!(pending["id"], live["id"]);
         assert_eq!(live["hostName"], "mac-studio");
@@ -387,7 +449,6 @@ mod tests {
     fn an_unmeasured_sample_is_shown_but_not_plotted() {
         let mut state = LocalHostState {
             name: "mac-studio".to_owned(),
-            sampler: localhost::LocalSampler::new(),
             histories: HostHistories::new(),
             latest: None,
         };
@@ -420,7 +481,6 @@ mod tests {
     fn a_sample_with_no_cpu_reading_is_shown_but_never_plotted_as_zero() {
         let mut state = LocalHostState {
             name: "mac-studio".to_owned(),
-            sampler: localhost::LocalSampler::new(),
             histories: HostHistories::new(),
             latest: None,
         };

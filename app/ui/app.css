@@ -722,7 +722,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    than opening a differently-styled window. Every control below is created by
    settings.js; nothing here may set a colour that carries meaning (green =
    good, red = error) -- those still come from Rust, as they do on the cards. */
-.settings { display:flex; flex-direction:column; gap:var(--cockpit-gap, 16px); }
+.settings { display:flex; flex-direction:column; gap:var(--cockpit-gap, 16px); background:var(--panel); }
 .settings .status { font-size:10px; color:var(--muted); }
 .btn { font:inherit; font-size:11px; font-weight:700; color:var(--ink);
   background:var(--panelAlt); border:1px solid var(--line); border-radius:6px;
@@ -732,6 +732,70 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .tabs { display:flex; flex-wrap:wrap; gap:6px; }
 .tab[data-active] { border-color:var(--green); color:var(--green); }
 .settings-body { display:flex; flex-direction:column; gap:var(--cockpit-gap, 16px); }
+.settings-shell { display:grid; grid-template-columns:180px minmax(0, 1fr); min-height:580px;
+  border-top:1px solid var(--line); }
+.settings-nav { flex-direction:column; flex-wrap:nowrap; align-items:stretch; gap:5px;
+  padding:20px 12px 20px 0; border-right:1px solid var(--line); position:sticky;
+  top:12px; align-self:start; height:calc(100vh - 110px); min-height:280px; }
+.settings-nav .btn { display:flex; align-items:center; text-align:left; gap:8px;
+  min-height:36px; background:transparent; border-color:transparent; color:var(--muted); }
+.settings-nav .tab[data-active] { background:var(--panelAlt); color:var(--ink); border-color:transparent; }
+.settings-nav .tab[data-tab="about"] { margin-top:auto; }
+.connection-count { margin-left:auto; color:var(--amber); }
+.settings-content { min-width:0; padding:24px; }
+.settings-content .group { background:transparent; border:0; border-radius:0; padding:0; gap:14px; }
+.settings-content .group + .group { border-top:1px solid var(--line); padding-top:18px; }
+.settings-content .help { font-size:11px; line-height:1.55; }
+.settings-content .input { min-width:0; width:100%; min-height:34px; }
+.settings-content .field { gap:6px; }
+.settings-content .btn { min-height:31px; font-weight:500; }
+.settings .primary { background:var(--ink); color:var(--panel); border-color:var(--ink); }
+.connection-heading { margin-bottom:6px; }
+.connection-heading h2 { font-size:19px; font-weight:600; margin:0 0 4px; }
+.connection-list { border-top:1px solid var(--line); }
+.settings .connection-row { display:flex; align-items:center; justify-content:space-between;
+  gap:18px; width:100%; padding:13px 0; border:0; border-bottom:1px solid var(--line);
+  background:transparent; text-align:left; border-radius:0; min-height:62px; }
+.settings .connection-row:hover { background:var(--panelAlt); }
+.connection-copy { min-width:0; display:block; }
+.connection-title { font-size:12px; }
+.connection-identity { color:var(--muted); font-size:11px; margin-left:10px; overflow-wrap:anywhere; }
+.connection-feeds { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
+.connection-state { font-size:11px; display:inline-flex; align-items:center; gap:7px; flex-shrink:0; }
+.connection-state::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+.connection-automatic { margin-top:8px; }
+.connection-automatic h3 { font-size:11px; font-weight:500; color:var(--muted); margin:0 0 12px; }
+.connection-auto-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
+.connection-catalog { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
+.settings .connection-option { padding:13px; text-align:left; white-space:normal; background:var(--panelAlt); }
+.settings .connection-back { align-self:flex-start; padding:0; border:0; background:transparent;
+  color:var(--muted); margin-bottom:2px; }
+.connection-orphans { margin-top:15px; }
+.connection-fields { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
+.host-details { gap:16px; padding-bottom:18px; }
+.connection-toggle { display:flex; align-items:center; gap:8px; font-size:11px; }
+.credential-summary { padding:15px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.credential-editor { gap:12px; padding:14px; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
+.connection-advanced { border-top:1px solid var(--line); padding-top:14px; }
+.connection-advanced summary { font-size:11px; color:var(--muted); cursor:pointer; margin-bottom:14px; }
+.connection-advanced > .field { margin-bottom:12px; }
+#settingsConfirm { background:var(--panel); border:1px solid var(--amber); border-radius:6px;
+  padding:16px; margin-bottom:20px; }
+#settingsConfirm .help { margin:6px 0 13px; }
+@media (max-width:800px) {
+  .settings-shell { grid-template-columns:155px minmax(0,1fr); }
+  .settings-content { padding:20px 16px; }
+  .connection-auto-grid { grid-template-columns:1fr; }
+}
+@media (max-width:580px) {
+  .settings-shell { display:block; min-height:0; }
+  .settings-nav { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); padding:12px 0;
+    border-right:0; border-bottom:1px solid var(--line); position:static; height:auto; min-height:0; }
+  .settings-content { padding:20px 0; }
+  .connection-fields, .connection-catalog { grid-template-columns:1fr; }
+  .settings .connection-row { align-items:flex-start; flex-direction:column; gap:8px; padding:13px 0; }
+  .connection-identity { margin-left:0; display:block; margin-top:3px; }
+}
 .group { padding:14px 18px; background:var(--panel); border:1px solid var(--line);
   border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
 .group-hdr { font-size:13px; font-weight:700; margin:0; }

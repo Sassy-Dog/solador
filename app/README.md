@@ -17,7 +17,8 @@ visible tile. The source order remains stable as readings change. Summary rows
 are capped, with a count and a Details link for the remaining resources; omitted
 problems are named in that count. A resource scope that disappears stays empty.
 
-Edits save immediately; **Undo** reverses successful edits in the current session.
+Placement and visibility edits save immediately; configuration saves with
+**Add tile** or **Apply**. **Undo** reverses successful edits in the current session.
 Failed writes preserve the previous layout and the editable form. Hidden tiles
 can be restored from **Add tile**. Layout and connections are separate: the
 optional `dashboard` store field holds tile identities, scopes and order, plus a
@@ -32,6 +33,20 @@ atomic disk write fails, and returns the persisted overview. The frontend keeps
 configuration drafts intact during refreshes and rejects older revisions.
 **Settings → Detailed layout** applies to **All detailed panels**; overview
 placement lives in **Edit dashboard**.
+
+**Add tile** and **Duplicate tile** open an unsaved draft. Choose a name,
+scope, presentation and width against a preview of current cached readings;
+**Add tile** then saves it at the end of the dashboard. Closing the draft makes
+no layout change. Preview responses cannot replace a newer scope choice.
+**Manage connection** preserves the draft while Settings is open and refreshes
+the available scopes on return. Resource links resolve a host or repository's
+saved owner; aggregate links show the relevant connection types. Ambiguous or
+removed owners stay a choice instead of silently selecting another account.
+Empty filtered tiles offer **Choose scope** and retain their original scope.
+Saving uses the explicit **Add tile** / **Apply** button, so Return in a native
+picker cannot save a draft. Local sampling runs outside the lock used to read
+cards; a slow volume lookup leaves the window responsive and marks readings
+stale after five seconds without a completed sample.
 
 The dashboard tests cover these rules with real Rust panel fixtures and temporary
 stores. Browser tests cover editing, persistence through an IPC double, failed
@@ -53,7 +68,42 @@ That run did not test authenticated providers. On 2026-09-19 a fresh, normally
 signed build reused saved credentials without a Keychain prompt and displayed
 live data in the overview and full panels. Windows remains unverified. The fix
 for dragging a tile to the last position was checked in Chromium and WebKit on
-2026-09-19; native dragging was not repeated. See the recorded runs below.
+2026-09-19; native dragging was not repeated. A further native check that day
+verified scoped previews, width changes, Return without saving, the exact host
+connection editor, and returning with the draft intact. Explicit Add followed
+by Undo restored the original five tiles. No saved connection was changed and
+no password prompt appeared. A paused-sampler regression test verifies window
+reads stay available; the rebuilt native window also remained responsive during
+the tile check. See the recorded runs below.
+
+### Settings and connections
+
+Settings opens on **Connections**, with one entry per GitHub account, remote
+host, configured usage provider, Azure export, OpenClaw gateway or custom status
+page. Each entry names the panels it feeds. GitHub repos and runners share the
+account editor; Sentry usage and scheduled jobs share the Sentry editor.
+**Add connection** opens the appropriate source form. Providers with one saved
+configuration reopen that same configuration. Local monitoring, Claude Code
+logs and automatic provider status are listed separately under Automatic sources.
+
+Configuration badges describe the available evidence: **Configured** means setup
+exists, not that the last network request succeeded. OpenClaw uses its live
+session state. Host **Test** reports the actual health probe. Stored credentials
+are shown as presence badges; an input appears only after **Replace…** or
+**Add credential…**. Unsaved fields are protected when leaving an editor.
+
+Remote hosts can be renamed or moved to another address/port without changing
+their persisted id, token key, enabled state or hidden-volume selections.
+Replacing a host token restarts only that host's client; ordinary renames retain
+its history. Existing settings and credentials require no migration. Preferences,
+Detailed layout and About remain available in the side navigation.
+
+Settings tests cover source routing, credential replacement, unsaved drafts,
+responsive layout and host edits with temporary stores. The macOS Settings
+smoke check passed on 2026-09-19 using saved connections: the remote-host
+health check succeeded, stored credentials remained available without a
+password prompt, and Keep editing / Discard changes preserved the expected
+draft and saved values. No saved connection was changed during that check.
 
 It began as a walking skeleton (one host card, one command) beside a macOS-only
 original macOS app. [#150](https://github.com/Sassy-Dog/solador/issues/150) took it to
@@ -75,6 +125,9 @@ the root [README](../README.md#download) is where a user is sent to download it.
 
 `./dev run` remains the *development* loop: a debug build, re-signed locally so
 the Keychain does not re-prompt on every launch.
+If an installed development identity cannot be verified, or signing fails, the
+launcher stops before opening the app. Retrying preserves the trusted identity
+instead of silently launching an ad-hoc build against existing credentials.
 
 > Notes below that compare a behaviour to "the original panel" or "the original's
 > `X`" are **provenance**: they record which decision was ported and why,
@@ -368,7 +421,7 @@ folding rows.
 
 **Order is the contract** for whatever you do configure: matching is
 first-match-wins, so a hide rule above a collapse rule changes what the panel
-shows. Rules are edited under [Settings → Hosts](#settings), beside the host
+shows. Rules are edited under [Settings → Connections → This machine](#settings), beside the host
 list whose names scope them.
 
 ## The `repos` and `runners` commands
@@ -779,7 +832,7 @@ known count: a bar drawn at a defaulted zero would read "comfortably under quota
 when the truth is "nobody measured". A measured `0` does get its bar, empty.
 
 **The two Neon cost rows are priced by the operator, never by us.** `NEON EST.
-CHARGES (MTD)` is consumption × the rates entered under **Settings → Usage** —
+CHARGES (MTD)` is consumption × the rates entered under **Settings → Connections** —
 `$ per CU-hour` and `$ per GiB-month storage`, both plain non-secret preferences
 — multiplied by `usage::neon::estimate_usd`, which reproduces the Neon console's
 own "Charges to date" arithmetic. The app ships **no price table on purpose**: a
@@ -1030,7 +1083,7 @@ await window.__TAURI__.core.invoke("openclaw");
     // At most one of the next three, mirroring the original panel's if/else chain:
     "pairing": null,            // {title, command, device, blinking, …}
     "connection": null,         // {"text": "connecting…", "dotColor": …}
-    "hint": null,               // {"text": "add a gateway URL in Settings → OpenClaw"}
+    "hint": null,               // {"text": "add a gateway URL in Settings → Connections → OpenClaw"}
     "agents": {"header": "AGENTS (3)", "rows": [
       {"dot": {"color": "#e09a26", "opacity": 1.0}, "emoji": "🦀",
        "name": "Sebastian", "detail": "anthropic/claude-opus-4-8",
@@ -1093,7 +1146,7 @@ pending, and the **literal** line to paste:
 openclaw devices approve req-7f31
 ```
 
-It is rendered selectable in both the panel and Settings → OpenClaw, and it is
+It is rendered selectable in both the panel and Settings → Connections → OpenClaw, and it is
 built in Rust. A frontend that assembled it from a request id would be a second
 implementation of the one string whose entire value is being exactly right.
 
@@ -1133,8 +1186,10 @@ name, mirroring the original coordinator's `SortDescriptor(\.name)`.
 The first card is the local machine, matching `HostsPanel.hosts` in the original
 (`[local] + remoteHosts`). It is sampled in-process by
 [`crates/localhost`](../crates/localhost) on the same 1s cadence, and its
-connection dot is **always green**: this process *is* the host, so there is no
-link to lose and no staleness to report (`ConnectionState.local`). Its name is
+connection dot is green after a fresh sample. If no sample completes for five
+seconds, it reports sampler staleness while retaining the last measured values.
+Sampling and volume enumeration run outside the shared readings lock so a slow
+platform lookup cannot block the window. Its name is
 the platform host name minus macOS's cosmetic `.local`, exactly as
 `LocalHostMetricsService` derives it.
 
@@ -1752,10 +1807,11 @@ launch re-prompts for every stored item on every rebuild. The script resolves
 each candidate by its exact SHA-1, then requires code-signing trust and a
 positive OCSP response because `security find-identity` can still list a
 revoked certificate as valid. Signing with one makes AMFI kill the app and
-Gatekeeper call it malware. Untrusted identities are named and skipped. Where
-no usable identity is installed, or trust cannot be established (CI, an offline
-Mac, a non-macOS machine), signing is skipped and you get the bare-cargo
-behaviour.
+Gatekeeper call it malware. Untrusted identities are named and skipped. If
+development identities are installed but none passes verification, or signing
+fails, the launcher stops before opening the app. Retry after trust verification
+is available. Machines with no development identity installed, and non-macOS
+machines, retain the unsigned bare-cargo behaviour.
 
 The bare command still works and is what everything non-interactive uses:
 
@@ -2047,18 +2103,18 @@ and that immediacy is itself the check on the corresponding wake:
 
 | Touched | Do | Expect |
 |---|---|---|
-| `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Accounts (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
-| `settings_set_account_org` / Runners | under Settings → Accounts, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Accounts". Watching the same org from a second account is refused with the owner named |
+| `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Connections → GitHub (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
+| `settings_set_account_org` / Runners | under Settings → Connections → GitHub, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Connections → GitHub". Watching the same org from a second account is refused with the owner named |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
-| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Accounts (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
+| the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Connections → GitHub (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
-| the rules editor | under Settings → Hosts, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
-| the tabs mode, per breakpoint | with two hosts configured, set Settings → **Layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
-| `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
-| `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
-| `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **General** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
+| the rules editor | under Settings → Connections → This machine, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
+| the tabs mode, per breakpoint | with two hosts configured, set Settings → **Detailed layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
+| `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Detailed layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
+| `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Detailed layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
+| `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
-| `openclaw_wake` | put a gateway URL under Settings → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
+| `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 
 ### Procedure
@@ -2205,7 +2261,7 @@ and that immediacy is itself the check on the corresponding wake:
    above it — also a pass, and the two are different Rust sentences.
 
    To exercise the provider half, save a Neon org API key (plus its org id under
-   Settings → Usage) and/or a Sentry `org:read` token and slug. Both apply
+   Settings → Connections) and/or a Sentry `org:read` token and slug. Both apply
    without a relaunch — `settings_save_secret` wakes the usage loop *and* forces
    its hourly half — so the sections should appear within seconds. That
    immediacy is itself the check on the wake. A key with no org id is the
@@ -2228,7 +2284,7 @@ and that immediacy is itself the check on the corresponding wake:
    except a successful `invoke("openclaw")`. Idle is deliberately not
    "disconnected": nothing was attempted.
 
-   To exercise the live path, put a gateway URL under **Settings → OpenClaw**
+   To exercise the live path, put a gateway URL under **Settings → Connections → OpenClaw**
    (`ws://host:7878` or `wss://host`) and press **Save**. It applies without a
    relaunch — the save cuts the *session* short, not a sleep — so the panel
    should move to `connecting…` (amber) within a second or two, and that
@@ -2244,7 +2300,7 @@ and that immediacy is itself the check on the corresponding wake:
    connection line naming the rejection, which is the right answer and also a
    pass for the boundary.
 
-   Settings → OpenClaw should show a 64-character **Device ID** once a key
+   Settings → Connections → OpenClaw should show a 64-character **Device ID** once a key
    exists, or `Device key is generated on first connect.` before one does — and
    never a blank row, which would claim an identity that has not been minted.
 
@@ -2288,7 +2344,7 @@ and that immediacy is itself the check on the corresponding wake:
     *after* that is diffed against a baseline that never contained it.
 
     So — with the panel already populated — add a repo whose CI has a run parked
-    at a deployment-protection gate under Settings → Accounts. Saving wakes the
+    at a deployment-protection gate under Settings → Connections → GitHub. Saving wakes the
     loop, and the pass that first sees the gate is not the seeding pass, so it
     delivers: one banner reading `{repo} · needs approval`, body
     `{workflow} · {branch} is parked at an approval gate.` Watch two more passes
@@ -2372,7 +2428,7 @@ zero-credential state — the same argument a sixth and seventh time.
 
 Step 9 passes when `openclaw: first frontend request …` prints and the panel
 carries a heading plus *either* its runtime sections, its connection line, its
-pairing banner, or the muted `add a gateway URL in Settings → OpenClaw` hint —
+pairing banner, or the muted `add a gateway URL in Settings → Connections → OpenClaw` hint —
 the same argument an eighth time. Every one of those strings is
 `openclaw::view`'s, reachable only through `invoke("openclaw")`. A machine with
 no gateway configured passes; a missing panel does not.
@@ -2412,7 +2468,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | Both panels render, but every LOCAL and WT cell is `—` on a machine that definitely has the repos checked out. | The boundary is fine; the *scan* is not. It looks only under `~/Repos`, three levels deep, and joins by name with punctuation and case stripped — a checkout somewhere else is invisible, and a directory renamed away from its slug will not match. `—` is the honest answer to both, which is why it is not a zero. |
 | The Runners panel shows `⚠ couldn't read runners — token needs org self-hosted runners (read)`. | Not a boundary failure — the round-trip worked and that string is `github::RUNNERS_ERROR_MESSAGE`. The PAT is missing the org self-hosted-runners read permission, which is a separate grant from the repo-scoped ones. The Repos panel beside it should still be populated. |
 | The **Usage** or **Azure Cost** panel is missing entirely, and its `first frontend request …` line never prints. | That half of the boundary is broken: an unregistered `usage`/`azure_cost` command, or a script error in `usage.js`/`azure.js`. Both stay hidden until a payload arrives, so this cannot be mistaken for "nothing configured" — that state renders a visible panel with a sentence in it. Check the webview console. |
-| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Usage shows **Stored** for the credential; if it does, the hourly read has not run yet — saving wakes it, so re-save to force a pass. |
+| The Usage panel shows Claude tokens but no Neon or Sentry section on a machine where those credentials *are* saved. | Not a boundary failure. A blank key reads as unconfigured by design, and the section is *absent* rather than empty. Check Settings → Connections shows **Stored** for the credential; if it does, the hourly read has not run yet — saving wakes it, so re-save to force a pass. |
 | Neon or Sentry shows `—` for every figure with a message under it. | Also not a failure — the round-trip worked and the API answered. `Add your Neon org ID in Settings` means the id is missing; `no Neon consumption reported …` means the org measured nothing (empty org, wrong id, or a plan without consumption history). The em dash is the honest answer to all of them, which is why it is not a zero. |
 | The **OpenClaw** panel is missing entirely, and `openclaw: first frontend request …` never prints. | That half of the boundary is broken: an unregistered `openclaw` command, or a script error in `openclaw.js`. The panel stays hidden until a payload arrives, so this cannot be mistaken for "no gateway configured" — that state renders a visible panel with one muted sentence in it. Check the webview console. |
 | The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |
