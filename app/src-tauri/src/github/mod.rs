@@ -981,6 +981,17 @@ fn repo_row(
         "name": health.short_name(),
         "dotColor": color::hex(status_color(status)),
         "blinking": status_blinks(status),
+        "status": match status {
+            RepoStatus::Unreachable => "unreadable", RepoStatus::Failed => "failed",
+            RepoStatus::NeedsApproval => "approval", RepoStatus::Running => "running",
+            RepoStatus::Healthy => "healthy",
+        },
+        "statusLabel": match status {
+            RepoStatus::Unreachable => "Unreadable", RepoStatus::Failed => "Failed",
+            RepoStatus::NeedsApproval => "Needs approval", RepoStatus::Running => "Running",
+            RepoStatus::Healthy => "Healthy",
+        },
+        "attention": !matches!(status, RepoStatus::Healthy | RepoStatus::Running),
         // The row's click target. Present on every row, including an
         // unreachable one: not being able to read a repo's runs is precisely
         // when you want to go and look at them.
@@ -1328,6 +1339,12 @@ fn os_chips(summary: RunnerSummary) -> Vec<Value> {
 /// orgs share must only be forgotten where the operator clicked), so the org
 /// is data on every row while `showOrgTags` decides whether it is *painted*.
 fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
+    let attention = match row {
+        GhRunnerDisplayRow::Registered(_) => false,
+        GhRunnerDisplayRow::Absent(absence) => {
+            matches!(absence.state, PresenceState::Missing { .. })
+        }
+    };
     let (kind, status, tint) = match row {
         GhRunnerDisplayRow::Registered(runner) => (
             "registered",
@@ -1346,6 +1363,7 @@ fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
     json!({
         "kind": kind,
         "org": org,
+        "attention": attention,
         "name": row.name(),
         "os": row.os().label().to_uppercase(),
         "dotColor": color::hex(tint),

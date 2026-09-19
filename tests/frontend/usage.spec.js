@@ -52,7 +52,7 @@ async function gotoWithUsage(page, baseURL, name = "sample-usage.json") {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const usage = await fixture(baseURL, name);
   await stubIpc(page, { cockpit, usage });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   return usage;
 }
 
@@ -437,7 +437,7 @@ async function gotoWithColumns(page, baseURL, columns, mutate) {
   const usage = await fixture(baseURL, "sample-usage.json");
   if (mutate) mutate(usage);
   await stubIpc(page, { cockpit, usage });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   return usage;
 }
 
@@ -474,7 +474,7 @@ test("a narrow card stacks the providers under the rollups, dividers and all", a
   expect(narrow.panelRows.flat().find((p) => p.id === "claudeUsage").columns).toBe(1);
   const usage = await fixture(baseURL, "sample-usage.json");
   await stubIpc(page, { cockpit: narrow, usage });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
 
   const claude = await page.locator("#usageBody .usage-main").boundingBox();
   const providers = await page.locator("#usageBody .usage-providers").boundingBox();

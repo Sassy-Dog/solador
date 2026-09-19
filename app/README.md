@@ -1,12 +1,59 @@
 # Solador Cross-Platform Cockpit (`app/`)
 
-The macOS/Windows cockpit: a [Tauri v2](https://v2.tauri.app) app rendering the
-local card plus one card per configured Solador [agent](../agent/README.md),
-then the **Containers/VMs**, **GitHub Repos**, **GitHub Runners**, **Usage**
-(Claude + Neon + Sentry + Vercel), **Azure Cost**, **Sentry Crons**,
-**Services** and **OpenClaw** panels — reflowed into rows for the measured
-width, and configured from an in-app **Settings** surface backed by the OS
-credential store.
+The macOS/Windows cockpit: a [Tauri v2](https://v2.tauri.app) app opening on a
+compact overview of **Machines**, **GitHub repos**, **Runners**, **Service health**
+and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
+presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
+and OpenClaw. Each tile opens its readings and the existing full panel; **All
+detailed panels** opens the original cockpit. Connections and credentials remain
+in **Settings**, backed by the OS credential store.
+
+### Dashboard tiles
+
+A tile is a saved view of a source. Duplicates can have independent names, scopes,
+widths and Summary/Detailed presentations. Hiding a tile leaves its source
+monitored, and **Needs attention** covers every source, including ones with no
+visible tile. The source order remains stable as readings change. Summary rows
+are capped, with a count and a Details link for the remaining resources; omitted
+problems are named in that count. A resource scope that disappears stays empty.
+
+Edits save immediately; **Undo** reverses successful edits in the current session.
+Failed writes preserve the previous layout and the editable form. Hidden tiles
+can be restored from **Add tile**. Layout and connections are separate: the
+optional `dashboard` store field holds tile identities, scopes and order, plus a
+revision that rejects stale saves. Stores without it receive the default five
+tiles. An intentionally empty layout stays empty. Existing connections,
+credentials, preferences and the full-panel layout are retained.
+
+`dashboard_view` composes the existing cached panel readings; it starts no new
+pollers. Rust owns attention, scope filtering, truncation and the rendered text.
+`dashboard_save` validates and saves the whole layout, rolls memory back if the
+atomic disk write fails, and returns the persisted overview. The frontend keeps
+configuration drafts intact during refreshes and rejects older revisions.
+**Settings → Detailed layout** applies to **All detailed panels**; overview
+placement lives in **Edit dashboard**.
+
+The dashboard tests cover these rules with real Rust panel fixtures and temporary
+stores. Browser tests cover editing, persistence through an IPC double, failed
+saves, delayed reads, navigation and responsive layout under the app's CSP. They
+do not exercise native Tauri IPC. Native checks can reuse saved credentials via
+`./dev run` with a trusted, stable signing identity. `SOLADOR_STORE_DIR` isolates
+settings only; it still uses the normal credential service. A separate credential
+service is needed only for a deliberately credential-free run. Ad-hoc builds do
+not preserve Keychain recognition across rebuilds. For a native smoke check, use
+the scratch-store procedure below, then hide/restore a tile, duplicate Machines
+with a Remote machines scope, relaunch, and verify the saved view. Open Details
+and connection settings, and confirm Overview returns correctly. The existing full-panel
+smoke checklist starts from **All detailed panels**. The macOS dashboard smoke
+passed on 2026-09-18 with real IPC, a scratch store and an empty, isolated
+credential service in the test build. It covered hide/restore, duplication and
+independent scope, rename, width, presentation, arrow ordering, Undo, pointer
+dragging, relaunch persistence, full-panel navigation and connection settings.
+That run did not test authenticated providers. On 2026-09-19 a fresh, normally
+signed build reused saved credentials without a Keychain prompt and displayed
+live data in the overview and full panels. Windows remains unverified. The fix
+for dragging a tile to the last position was checked in Chromium and WebKit on
+2026-09-19; native dragging was not repeated. See the recorded runs below.
 
 It began as a walking skeleton (one host card, one command) beside a macOS-only
 original macOS app. [#150](https://github.com/Sassy-Dog/solador/issues/150) took it to
@@ -39,6 +86,7 @@ the Keychain does not re-prompt on every launch.
 app/
 ├── src-tauri/            # Rust shell
 │   ├── src/main.rs       # per-host poll tasks + the `#[tauri::command]` surface
+│   ├── src/dashboard.rs  # compact views, tile scopes and attention
 │   ├── src/settings.rs   # the Settings view-model and its pure rules
 │   ├── src/panel.rs      # the refresh-health warning + progress bar every panel
 │   │                     #   shares (`footer` in the payload, painted in the header)
@@ -57,6 +105,7 @@ app/
 │   └── tauri.conf.json   # window, CSP, `frontendDist: ../ui`
 └── ui/                   # frontend: plain HTML/CSS/JS, no bundler
     ├── app.js            # the cockpit (host grid + the panel-row layout)
+    ├── dashboard.js      # overview and persisted tile editing
     ├── settings.js       # the Settings view
     ├── containers.js     # the Containers/VMs panel
     ├── github.js         # the Repos + GitHub Runners panels
@@ -1224,7 +1273,7 @@ live. The gap is now this app's alone to close.
 
 ## Settings
 
-The **Settings** button opens an in-app view over the cockpit: General, Layout,
+The **Settings** button opens an in-app view over the cockpit: General, Detailed layout,
 Accounts, Hosts, Azure Cost, Usage, Services, OpenClaw and About — the
 original window's tabs plus **Layout** and **Services**, which have no
 original counterpart, and minus **GitHub** and **Portfolio**, which both
@@ -2390,6 +2439,8 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
+| 2026-09-19 | Compact dashboard with saved credentials | **Pass for the rebuilt app's signing identity.** `./dev run` selected the valid replacement Apple Development certificate, rejected the revoked predecessor, and preserved the existing `solador-app` designated requirement across the rebuild. The rebuilt bundle passed strict signature verification. The prior instance was closed before launching this debug bundle with the normal store and credential service. | **Pass on a fresh native launch.** Saved connections loaded without a password prompt during the check. The overview showed live remote-host metrics, GitHub repositories and runners, service status and Sentry cron readings. All detailed panels also displayed live container, Neon/Sentry usage, Azure Cost and OpenClaw data. Returning to Overview worked. No connection settings or tile layout were edited. This verifies credential reuse on macOS with the current trusted identity; Windows remains untested. |
+| 2026-09-18 | Compact dashboard and tile configuration | **Pass for dashboard IPC and persistence.** Fixture files were absent from the native build. The test used a scratch `SOLADOR_STORE_DIR`, a distinctive `dashboard-smoke` host without a token, and an empty credential service selected only in the test build; the production credential factory was restored afterward. Actual edits advanced the saved dashboard revision and survived relaunch. This run used UI observations and the scratch store, not the older terminal-log checklist. | **Pass on macOS.** Hiding Machines retained its attention alert; restoration succeeded. A duplicate retained its own name, Remote machines scope, Detailed presentation and Wide size across relaunch, while the original stayed unchanged. Arrow moves, Undo and dragging saved the order. Native dragging exposed an HTML drop-event problem; pointer capture fixed it and was retested in the native window. Details opened the existing full panel, Overview returned, and Manage connection opened Hosts settings with a working return path. No provider credentials were entered in the isolated run; authenticated-provider behavior and Windows remain unverified. Earlier attempts with the normal credential service triggered Keychain prompts; isolating only the settings file was insufficient. |
 | 2026-08-13 | **Step 11, both halves — the first time either has been observed.** Operator at the Mac, real portfolio and PAT. Prompted by the notification-identity fix (`claim_notification_identity`). | **Pass.** All nine `first frontend request …` lines printed on the fixed build (`cockpit … (1 host(s), 968pt)`, `containers … (2 section(s))`, `repos`, `runners`, `usage`, `azure_cost`, `services … (all clear)`, `crons … (2 not ok)`, `openclaw … (trailing: "1 agent")`), and **no** `could not claim the notification identity` line — so the claim succeeded against LaunchServices. Unrelated pre-existing line seen and left alone: `secrets: could not adopt pre-rename credentials … openclaw_device_key`. | **Pass — and it closes the oldest gap in this table.** **11a (tap-to-open):** operator confirms clicking a Repos row opens the run's Actions page. `open_url` has now crossed the IPC boundary, which means **the granted `opener:allow-open-url` scope is enforced at runtime, not merely written** — the check [#123](https://github.com/Sassy-Dog/solador/issues/123) named as the only one that could establish that. **11b (banner):** observed, and it is what exposed the bug — banners were arriving with the content replaced by the placeholder text `notification`, and under `com.apple.Terminal` were dropped entirely. After the fix a banner renders in full with the Solador icon, title `widget · needs approval` and body `Release · main is parked at an approval gate.` Operator also set Solador → Alert Style *Persistent* and Show previews *Always*; previews had been *Default*, which was necessary but not sufficient — it configures the Solador entry, which the app never posted under. |
 | 2026-08-01 | **Live-gateway + credentialed session** ([#186](https://github.com/Sassy-Dog/solador/issues/186)) — human at the unlocked Mac, real credentials end to end: seeded agent token (ubu-01), fine-grained PAT, OpenClaw gateway `ws://127.0.0.1:18789` + bearer. | **Pass — and it found three real defects, each fixed + pinned by a test in the same session:** (1) the hand-built upgrade request sent none of the mandatory WebSocket headers (`ws.rs` — tungstenite passes prebuilt requests through verbatim; rejected with `sec-websocket-key` before this fix); (2) the gateway's connect gate requires protocol **v4** for UI-mode clients (`PROTOCOL_VERSION` was 3, ported faithfully from original code that has never run live — the original app shares this bug); (3) no `User-Agent` — GitHub 403s every request regardless of token permissions (reqwest sends none by default; URLSession always does, which is why the original never hit it). | **Performed.** Host card live (volumes, top processes), Containers live (23 incl. the tart runner VMs), OpenClaw **connected end to end** — pairing status, persisted device identity, live agent rendered — Repos live with real counts (honest `—` on gadget's local columns, running/failed dots per the original), Runners 12/12 with busy/idle. Keychain prompt storm fixed by re-signing debug builds with the stable team identity (now part of #190's scope). **Still unobserved:** step 11 (tap-to-open click + notification banner) and the Neon/Sentry/Azure sections (credentials not configured this session). |
 | 2026-08-01 | Tap-to-open + needs-approval notifications, and **the first non-empty ACL** ([#187](https://github.com/Sassy-Dog/solador/issues/187)) | **Partial pass — every terminal line, neither new seam.** Fixtures absent, scratch `SOLADOR_STORE_DIR`, no seeded host, no credentials. All **seven** `first frontend request …` lines printed (`cockpit … (0 host(s), 968pt)`, `containers … (1 section(s))`, `repos … (0 repo row(s))`, `runners`, `usage`, `azure_cost … (headline: false)`, `openclaw … (trailing: "")`). That is the regression this change most risked: `permissions` went from `[]` to a real entry, and the app-defined commands still all carry. **What was NOT performed is step 11 — both halves.** With no PAT the Repos table is empty, so no row was clickable, no `open_url` has ever crossed the boundary, and no banner has been observed in Notification Center. Both features are therefore *implemented, unit-tested, and unverified end to end*, and **step 11a remains the only check that the granted scope is enforced rather than merely written**. Verified either side of the boundary instead: `actions_url_is_the_only_shape_the_granted_scope_admits` reads the real capability file and asserts the glob admits every URL `github::actions_url` produces and refuses eight it must not (About links, `http://`, `github.com.evil.example`, `file://`, `javascript:`) — with a negative control, narrowing the glob to `https://github.com/*` and confirming the test fails; four Playwright specs assert the click, the Enter key, the `role`/`aria-label`/`tabIndex`, and that the URL handed to `plugin:opener|open_url` is Rust's own string byte for byte, IPC stubbed as always; eight unit tests cover the notification transition, the seeding pass, the disabled-but-still-advancing baseline and re-entry. **Still untouched by any of it:** whether Tauri enforces the scope at runtime, whether `notify-rust` shows anything on this machine, and the macOS notification prompt (an unbundled dev build notifies as Terminal — #15 owns packaging). Needs a human at a Mac with a PAT. | **Not performed** — headless run, no screen read. |

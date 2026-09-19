@@ -220,6 +220,7 @@ function renderOpenClaw(payload) {
 }
 
 async function refresh() {
+  if (overviewOpen) return false;
   try {
     const payload = await callRust("openclaw", {}, "sample-openclaw.json");
     if (payload) renderOpenClaw(payload);

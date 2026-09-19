@@ -10,8 +10,10 @@
      but the frontend suite and `csp_server.py` serve this page in a real tab. -->
 <link rel="icon" href="mark.svg" />
 <link rel="stylesheet" href="app.css" />
+<link rel="stylesheet" href="dashboard.css" />
 </head>
 <body>
+  <section id="dashboardOverview" hidden aria-label="Solador overview"></section>
   <!-- The Hosts panel. Its title comes from Rust's panel table, like every
        other string on the page; the grid's column count comes from the same
        payload's `hostColumns`. -->
@@ -320,5 +322,6 @@
   <script src="services.js"></script>
   <script src="cronmonitors.js"></script>
   <script src="openclaw.js"></script>
+  <script src="dashboard.js"></script>
 </body>
 </html>

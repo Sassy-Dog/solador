@@ -77,7 +77,7 @@ async function openSettings(page, baseURL, probe, updates, discover) {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const settings = await fixture(baseURL, "sample-settings.json");
   await stubIpc(page, cockpit, settings, probe, updates, discover);
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   await expect(page.locator("#settingsToggle")).toBeVisible();
   await page.locator("#settingsToggle").click();
   await expect(page.locator("#settings")).toBeVisible();
@@ -386,7 +386,7 @@ test("a breakpoint can be added by width and removed unless it is the last", asy
   const settings = await fixture(baseURL, "sample-settings.json");
   settings.layout = only;
   await stubIpc(page, await fixture(baseURL, "sample-cockpit.json"), settings);
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   await page.locator("#settingsToggle").click();
   await tab(page, "layout").click();
   await expect(page.locator(".btn.delete", { hasText: t.removeLabel })).toBeDisabled();
@@ -434,7 +434,7 @@ test("Reset is offered on a customised layout and disabled on the default", asyn
   const settings = await fixture(baseURL, "sample-settings.json");
   settings.layout.isDefault = true;
   await stubIpc(page, await fixture(baseURL, "sample-cockpit.json"), settings);
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   await page.locator("#settingsToggle").click();
   await tab(page, "layout").click();
   await expect(page.locator(".btn.delete", { hasText: t.resetLabel })).toBeDisabled();
@@ -780,7 +780,7 @@ test("the repo modal checkboxes the grants and two-steps a costly untrack", asyn
     reason: null,
   };
   await stubIpc(page, cockpit, settings, null, null, discover);
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   await page.locator("#settingsToggle").click();
   await tab(page, "accounts").click();
 

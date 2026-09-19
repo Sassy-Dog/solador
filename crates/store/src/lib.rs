@@ -34,6 +34,7 @@ use uuid::Uuid;
 
 pub mod accounts;
 pub mod containers;
+pub mod dashboard;
 pub mod hosts;
 pub mod layout;
 pub mod repos;
@@ -47,6 +48,7 @@ pub use containers::{
     matches_glob, presence_key, records_for_host, seeded_rules, ContainerGroupRule,
     ContainerPresenceRecord, ContainerRuleAction, DEFAULT_GRACE_SECS, LOCAL_HOST_SCOPE,
 };
+pub use dashboard::{DashboardLayout, DashboardTile};
 pub use hosts::{Host, DEFAULT_AGENT_PORT};
 pub use layout::{LayoutProfile, LayoutSlot};
 pub use repos::{seeded_repos, TrackedRepo};
@@ -220,6 +222,10 @@ pub struct StoreData {
     /// profile at width 0 (see [`layout::lenient_layout`]).
     #[serde(default, deserialize_with = "layout::lenient_layout")]
     pub layout: Option<Vec<LayoutProfile>>,
+    /// Overview composition. The detailed layout above remains independently
+    /// available; introducing the overview never rewrites an existing board.
+    #[serde(default)]
+    pub dashboard: Option<DashboardLayout>,
 }
 
 impl Default for StoreData {
@@ -239,6 +245,7 @@ impl Default for StoreData {
             container_presence: BTreeMap::new(),
             runner_roster: Vec::new(),
             layout: None,
+            dashboard: None,
         }
     }
 }
@@ -644,6 +651,21 @@ impl Store {
     #[must_use]
     pub fn layout(&self) -> Option<&[LayoutProfile]> {
         self.data.layout.as_deref()
+    }
+
+    pub fn dashboard(&self) -> Option<&DashboardLayout> {
+        self.data.dashboard.as_ref()
+    }
+
+    /// Commit only after the atomic file write succeeds. Unlike a hopeful UI
+    /// update, a failed save leaves both readers and the next launch unchanged.
+    pub fn save_dashboard(&mut self, layout: DashboardLayout) -> Result<(), StoreError> {
+        let previous = self.data.dashboard.replace(layout);
+        if let Err(error) = self.save() {
+            self.data.dashboard = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Replaces every profile. Call [`Store::save`] to persist.

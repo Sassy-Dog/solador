@@ -7,7 +7,7 @@ vendor status, agents — read at a glance from a second monitor.
 
 <br clear="left">
 
-![The Solador cockpit](docs/assets/screenshots/cockpit.png)
+![The Solador overview](docs/assets/screenshots/overview.png)
 
 The mark is a tiler's 3×3 grid with **one tile out of true**, and the name is
 Spanish: *solar* — to floor, to pave, to tile — plus *-dor*, the tradesperson
@@ -53,8 +53,10 @@ not failure*, and the code says so in as many words.
 
 ## What it shows
 
-Nine panels. Every one is independent, so using three of them is a perfectly
-normal way to run this.
+The app opens on five compact tiles. **Edit dashboard** lets you move, hide,
+duplicate and scope them, or add a view of any of the nine sources below.
+**Needs attention** includes hidden sources. Open a tile's **Details** for more,
+or **All detailed panels** for the full cockpit. Connections stay in **Settings**.
 
 | Panel | Reads |
 |---|---|

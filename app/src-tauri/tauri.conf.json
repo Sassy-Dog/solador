@@ -11,8 +11,8 @@
       {
         "label": "main",
         "title": "Solador",
-        "width": 1000,
-        "height": 1120,
+        "width": 1024,
+        "height": 768,
         "resizable": true,
         "minWidth": 200,
         "minHeight": 400

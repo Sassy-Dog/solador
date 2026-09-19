@@ -97,6 +97,7 @@ function renderPanel(payload) {
 }
 
 async function refresh() {
+  if (overviewOpen) return false;
   try {
     // Offline (no Tauri), the dumped-fixture path the cockpit and Settings
     // both use, so the panel can be opened in a plain browser and by the

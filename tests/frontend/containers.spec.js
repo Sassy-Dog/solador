@@ -49,7 +49,7 @@ async function stubIpc(page, { cockpit, containers }) {
 
 /** Loads the app and waits for the panel to have been painted at least once. */
 async function gotoApp(page) {
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   await expect(page.locator("#containersPanel")).toBeVisible();
 }
 
@@ -217,7 +217,7 @@ test("a failed load leaves no invented panel chrome on screen", async ({ page, b
       },
     };
   }, cockpit);
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
 
   // The cockpit still painted, so the page is alive...
   await expect(page.locator("#cockpit .card").first()).toBeVisible();

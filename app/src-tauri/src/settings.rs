@@ -719,7 +719,7 @@ pub fn view(
         // no counterpart for — beside the other cockpit-shaping preferences.
         "tabs": [
             { "id": "general", "title": "General" },
-            { "id": "layout", "title": "Layout" },
+            { "id": "layout", "title": "Detailed layout" },
             // Before the portfolio it attributes: an account is read
             // left-to-right as "the token, then which repos it fetches". The
             // GitHub tab that used to precede it is retired — accounts are the
@@ -1559,8 +1559,8 @@ fn layout_tab(stored: Option<&[store::LayoutProfile]>, seed_overflow: HostOverfl
         .map(|mode| json!({ "value": mode.as_str(), "label": host_overflow_label(mode) }))
         .collect();
     json!({
-        "heading": "Cockpit Layout",
-        "help": "Panels fill a row four quarters at a time, in this order — a full-width panel takes a row to itself. Each breakpoint is one arrangement plus the cockpit width it starts applying at; the widest one the window clears wins. A window too narrow for a row still splits it, so a breakpoint is the widest arrangement for its band, not a promise about every size.",
+        "heading": "Detailed panel layout",
+        "help": "These preferences arrange the full panels. Use Edit dashboard on the overview to configure tiles. Panels fill a row four quarters at a time, in this order — a full-width panel takes a row to itself. Each breakpoint is one arrangement plus the cockpit width it starts applying at; the widest one the window clears wins. A window too narrow for a row still splits it, so a breakpoint is the widest arrangement for its band, not a promise about every size.",
         "spanLabel": "Width",
         "spanOptions": PanelSpan::ALL
             .iter()

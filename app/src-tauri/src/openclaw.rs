@@ -377,6 +377,8 @@ pub fn trailing(snapshots: &[AgentRuntimeSnapshot]) -> String {
 /// One agent row: dot, optional emoji, name, model, and the `running` badge.
 fn agent_row(item: &AgentRollupItem) -> Value {
     json!({
+        "id": item.id,
+        "status": item.status.as_str(),
         "dot": dot(item.status),
         "emoji": item.emoji,
         "name": item.name,
@@ -392,6 +394,8 @@ fn agent_row(item: &AgentRollupItem) -> Value {
 
 fn channel_row(channel: &ChannelStatus) -> Value {
     json!({
+        "id": channel.id,
+        "status": channel.status.as_str(),
         "dot": dot(channel.status),
         "name": channel.name,
         "nameColor": color::hex(color::INK),

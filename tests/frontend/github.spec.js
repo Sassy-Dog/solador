@@ -54,7 +54,7 @@ async function gotoWithFixtures(page, baseURL, overrides = {}) {
   const repos = overrides.repos ?? (await fixture(baseURL, "sample-repos.json"));
   const runners = overrides.runners ?? (await fixture(baseURL, "sample-runners.json"));
   await stubIpc(page, { cockpit, repos, runners });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   return { repos, runners };
 }
 
@@ -630,7 +630,7 @@ test("a loading panel is re-asked promptly, and settles once it is not", async (
     },
     { cockpit, loading, settled }
   );
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
 
   // Four asks inside a couple of seconds is only reachable on the fast cadence:
   // at the settled 10s the fourth would be half a minute away.
@@ -836,7 +836,7 @@ test("a narrow panel keeps every list in one column", async ({ page, baseURL }) 
   const repos = await fixture(baseURL, "sample-repos.json");
   const runners = await fixture(baseURL, "sample-runners.json");
   await stubIpc(page, { cockpit: narrow, repos, runners });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
 
   await expect(page.locator("#reposPanel")).toHaveAttribute("data-cols", "1");
   await expect(page.locator("#reposBody .gh-col")).toHaveCount(1);

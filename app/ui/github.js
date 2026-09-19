@@ -382,6 +382,7 @@ function renderRunners(payload) {
 }
 
 async function refresh() {
+  if (overviewOpen) return false;
   // Offline (no Tauri), the dumped-fixture path the cockpit, Settings and the
   // Containers panel all use, so these panels open in a plain browser and in
   // the Playwright suite.
