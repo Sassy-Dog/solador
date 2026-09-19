@@ -2553,6 +2553,15 @@ fn dashboard_save(
 }
 
 #[tauri::command]
+fn dashboard_preview(
+    tile: store::DashboardTile,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    dashboard::preview(&tile, &dashboard_view(width, state))
+}
+
+#[tauri::command]
 fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
     // The IPC boundary has no automated coverage (#123), and every failure
     // mode the manual smoke test in `app/README.md` looks for — a rejected
@@ -3426,8 +3435,15 @@ fn openclaw(state: tauri::State<'_, Arc<App>>) -> Value {
 static FIRST_SETTINGS_REQUEST: std::sync::Once = std::sync::Once::new();
 
 #[tauri::command]
-fn settings_view(state: tauri::State<'_, Arc<App>>) -> Value {
-    let payload = settings_payload(&state);
+fn settings_view(
+    route: Option<settings::ConnectionRoute>,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let mut payload = settings_payload(&state);
+    if let Some(route) = route {
+        let store = state.store.lock().expect("store poisoned");
+        payload["connectionRoute"] = settings::connection_route(&route, store.data());
+    }
     // The same terminal-side signal `cockpit` prints, for the same reason:
     // every way this surface can be broken from outside Rust -- a rejected
     // ACL, an unregistered command, a script error in settings.js -- looks
@@ -5937,6 +5953,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             dashboard_view,
+            dashboard_preview,
             dashboard_save,
             cockpit,
             containers,

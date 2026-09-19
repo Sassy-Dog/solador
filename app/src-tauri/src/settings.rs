@@ -751,6 +751,135 @@ pub fn view(
     })
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ConnectionRoute {
+    pub source: String,
+    #[serde(default)]
+    pub scope: String,
+}
+
+/// Resolve ownership from configuration, never from whichever account happens
+/// to be first or currently healthy. This runs only when Settings is opened;
+/// refreshing a dashboard must not add credential-store reads.
+pub fn connection_route(route: &ConnectionRoute, data: &store::StoreData) -> Value {
+    let resource = route.scope.strip_prefix("item:");
+    let editor = |kind: &str, id: Option<Uuid>| json!({"kind":kind,"entityId":id});
+    let mut target = Value::Null;
+    let (heading, kinds): (&str, &[&str]) = match route.source.as_str() {
+        "hosts" | "containers" => {
+            let host = resource.map(|id| id.split('|').next().unwrap_or(id));
+            if route.scope == "local"
+                || (route.source == "hosts" && host == Some("local"))
+                || (route.source == "containers" && host == Some(LOCAL_HOST_SCOPE))
+            {
+                target = editor("local", None);
+            } else if route.source == "containers" {
+                let owners: Vec<_> = data
+                    .hosts
+                    .iter()
+                    .filter(|h| resource.is_some_and(|r| r.starts_with(&format!("{}|", h.name))))
+                    .collect();
+                if let [owner] = owners.as_slice() {
+                    target = editor("host", Some(owner.id));
+                }
+            } else if let Some(host) =
+                host.and_then(|id| data.hosts.iter().find(|h| h.id.to_string() == id))
+            {
+                target = editor("host", Some(host.id));
+            }
+            (
+                "Machine connections",
+                if route.scope == "remote" {
+                    &["host"]
+                } else {
+                    &["host", "local"]
+                },
+            )
+        }
+        "ghWorkflows" | "ghRunners" => {
+            if let Some(resource) = resource {
+                if route.source == "ghWorkflows" {
+                    if let Some(repo) = data
+                        .repos
+                        .iter()
+                        .find(|r| r.slug.eq_ignore_ascii_case(resource))
+                    {
+                        target = repo
+                            .account_id
+                            .filter(|id| data.accounts.iter().any(|a| a.id == *id))
+                            .map_or_else(
+                                || editor("unattributed", None),
+                                |id| editor("account", Some(id)),
+                            );
+                    }
+                } else if let Some((org, _)) = resource.split_once('/') {
+                    let owners: Vec<_> = data
+                        .accounts
+                        .iter()
+                        .filter(|a| {
+                            a.orgs.as_ref().is_some_and(|orgs| {
+                                orgs.iter().any(|o| o.eq_ignore_ascii_case(org))
+                            })
+                        })
+                        .collect();
+                    if let [owner] = owners.as_slice() {
+                        target = editor("account", Some(owner.id));
+                    }
+                }
+            }
+            ("GitHub connections", &["account"])
+        }
+        "sentryCrons" => {
+            target = editor("sentry", None);
+            ("Scheduled jobs connection", &["sentry"])
+        }
+        "azureCost" => {
+            target = editor("azure", None);
+            ("Azure Cost connection", &["azure"])
+        }
+        "openclawAgents" => {
+            target = editor("openclaw", None);
+            ("OpenClaw connection", &["openclaw"])
+        }
+        "claudeUsage" => {
+            if route.scope == "claude" || resource.is_some_and(|id| id.starts_with("claude-")) {
+                target = editor("claude", None);
+            } else if let Some((provider, _)) = resource.and_then(|id| id.split_once(':')) {
+                if ["neon", "sentry", "vercel"].contains(&provider) {
+                    target = editor(provider, None);
+                }
+            }
+            (
+                "Usage connections",
+                if route.scope == "providers" {
+                    &["neon", "sentry", "vercel"]
+                } else {
+                    &["neon", "sentry", "vercel", "claude"]
+                },
+            )
+        }
+        "services" => {
+            if let Some(vendor) = resource.and_then(|id| {
+                data.status_vendors
+                    .iter()
+                    .find(|v| format!("vendor-{}", v.id) == id)
+            }) {
+                target = editor("vendor", Some(vendor.id));
+            } else if resource.is_some_and(|id| {
+                crate::services::ServiceId::ALL
+                    .iter()
+                    .any(|service| service.id() == id)
+            }) {
+                target = editor("services", None);
+            }
+            ("Service health connections", &["vendor", "services"])
+        }
+        _ => ("Connections", &[]),
+    };
+    json!({"editor":target,"kinds":kinds,"heading":heading,
+        "help":"Choose the connection that supplies this tile. Tile names and placement stay on the overview."})
+}
+
 /// Configuration status is deliberately distinct from liveness. A saved token
 /// proves that setup exists, not that its provider accepted the last request.
 /// OpenClaw has live facts here; other sources say only what this snapshot knows.
@@ -929,6 +1058,7 @@ fn connections_section(
         "empty": "Add a connection to start monitoring a remote host or provider.",
         "addLabel": "Add connection",
         "backLabel": "← Connections",
+        "allLabel": "All connections",
         "catalogHeading": "Add connection",
         "catalogHelp": "One connection can feed several tiles.",
         "catalog": [
@@ -2314,6 +2444,95 @@ fn about_tab(updates: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_connection_routes_follow_ownership_and_never_guess_an_account() {
+        let mut data = store::StoreData {
+            accounts: crate::dump_accounts(),
+            ..store::StoreData::default()
+        };
+        let owner = data.accounts[1].id;
+        data.repos.push(TrackedRepo {
+            account_id: Some(owner),
+            ..TrackedRepo::new("acme/widget")
+        });
+        data.repos.push(TrackedRepo::new("acme/orphan"));
+        data.hosts.push(Host::new("build", "build.local"));
+        data.status_vendors = crate::dump_status_vendors();
+        let route = |source: &str, scope: &str, data: &store::StoreData| {
+            connection_route(
+                &ConnectionRoute {
+                    source: source.into(),
+                    scope: scope.into(),
+                },
+                data,
+            )
+        };
+        assert_eq!(
+            route("ghWorkflows", "item:acme/widget", &data)["editor"]["entityId"],
+            owner.to_string()
+        );
+        assert_eq!(
+            route("ghWorkflows", "item:acme/orphan", &data)["editor"]["kind"],
+            "unattributed"
+        );
+        assert!(route("ghWorkflows", "item:acme/deleted", &data)["editor"].is_null());
+        assert!(route("ghWorkflows", "all", &data)["editor"].is_null());
+        assert_eq!(
+            route("ghWorkflows", "all", &data)["kinds"],
+            json!(["account"])
+        );
+        assert_eq!(
+            route("ghRunners", "item:acme/runner-1", &data)["editor"]["entityId"],
+            data.accounts[0].id.to_string()
+        );
+        data.accounts[1].orgs = Some(vec!["acme".into()]);
+        assert!(route("ghRunners", "item:acme/runner-1", &data)["editor"].is_null());
+        assert_eq!(
+            route("hosts", &format!("item:{}", data.hosts[0].id), &data)["editor"]["entityId"],
+            data.hosts[0].id.to_string()
+        );
+        assert_eq!(
+            route("hosts", "item:local", &data)["editor"]["kind"],
+            "local"
+        );
+        assert_eq!(
+            route("containers", "item:this machine|cache", &data)["editor"]["kind"],
+            "local"
+        );
+        assert_eq!(
+            route("containers", "item:build|cache", &data)["editor"]["entityId"],
+            data.hosts[0].id.to_string()
+        );
+        assert_eq!(
+            route("claudeUsage", "item:neon:compute", &data)["editor"]["kind"],
+            "neon"
+        );
+        assert_eq!(
+            route("claudeUsage", "claude", &data)["editor"]["kind"],
+            "claude"
+        );
+        assert_eq!(
+            route("sentryCrons", "active", &data)["editor"]["kind"],
+            "sentry"
+        );
+        assert_eq!(
+            route(
+                "services",
+                &format!("item:vendor-{}", data.status_vendors[0].id),
+                &data
+            )["editor"]["entityId"],
+            data.status_vendors[0].id.to_string()
+        );
+        data.hosts.push(Host::new("build", "another.local"));
+        assert!(route("containers", "item:build|cache", &data)["editor"].is_null());
+        data.hosts.push(Host::new("local", "remote.local"));
+        assert_eq!(
+            route("containers", "item:local|cache", &data)["editor"]["entityId"],
+            data.hosts[2].id.to_string()
+        );
+        assert!(route("services", "item:vendor-removed", &data)["editor"].is_null());
+    }
     use store::ContainerRuleAction as Action;
 
     fn health(hostname: &str, version: &str, stale: Option<bool>) -> wire::Health {

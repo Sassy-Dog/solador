@@ -510,7 +510,20 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
     } else {
         format!("{title} · check readings")
     };
-    json!({"id":id,"title":title,"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"settingsTab":match id {"hosts"|"containers"=>"hosts","ghWorkflows"|"ghRunners"=>"accounts","azureCost"=>"azure","claudeUsage"|"sentryCrons"=>"usage","openclawAgents"=>"openclaw",_=>"services"}})
+    let hint = match id {
+        "hosts" => "This machine and connected remote hosts",
+        "ghWorkflows" => "Repositories watched by your GitHub accounts",
+        "ghRunners" => "Self-hosted runners in watched GitHub organizations",
+        "services" => "Connected providers and custom status pages",
+        "sentryCrons" => "Scheduled jobs from your Sentry connection",
+        "containers" => "Containers and virtual machines on monitored hosts",
+        "claudeUsage" => "Local Claude Code logs and connected cloud providers",
+        "azureCost" => "Cost exports from your Azure connection",
+        "openclawAgents" => "Activity from your OpenClaw gateway",
+        _ => "",
+    };
+    json!({"id":id,"title":title,"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
+        "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false}})
 }
 
 fn in_scope(row: &Value, scope: &str) -> bool {
@@ -556,12 +569,43 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         .find(|s| s["value"] == tile.scope)
         .map(|s| string(s, "label").to_owned())
         .unwrap_or_else(|| "Resource no longer available".into());
-    let empty = if string(source, "message").is_empty() {
-        "Nothing in this scope."
+    let (empty, empty_action) = if source["loading"] == true && list(source, "rows").is_empty() {
+        ("Waiting for the first reading…", None)
+    } else if tile.scope.starts_with("item:") && matching.is_empty() {
+        (
+            "This resource has no current reading. Review its connection or choose another scope.",
+            Some("configure"),
+        )
+    } else if tile.scope != "all" && !list(source, "rows").is_empty() {
+        (
+            if ["attention", "active"].contains(&tile.scope.as_str())
+                && list(source, "warnings").is_empty()
+            {
+                "No attention items in available readings."
+            } else {
+                "No resources match this scope."
+            },
+            Some("configure"),
+        )
+    } else if string(source, "message").is_empty() {
+        ("No readings are available yet.", Some("manage"))
     } else {
-        string(source, "message")
+        (string(source, "message"), Some("manage"))
     };
-    json!({"id":tile.id,"source":tile.source,"title":tile.title,"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":format!("{} shown · {problems} need attention",matching.len().min(limit))})
+    json!({"id":tile.id,"source":tile.source,"title":tile.title,"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":format!("{} shown · {problems} need attention",matching.len().min(limit))})
+}
+
+/// Same scope and truncation rules as a saved tile, using cached readings only.
+pub fn preview(tile: &DashboardTile, snapshot: &Value) -> Result<Value, String> {
+    validate(&DashboardLayout {
+        revision: 0,
+        tiles: vec![tile.clone()],
+    })?;
+    let source = list(snapshot, "sources")
+        .iter()
+        .find(|s| s["id"] == tile.source)
+        .ok_or("That tile source is not available.")?;
+    Ok(tile_view(tile, source))
 }
 
 pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
@@ -633,12 +677,26 @@ fn labels() -> Value {
         ("medium", "Medium"),
         ("wide", "Wide"),
         ("catalog", "Add a tile"),
-        ("catalogHint", "Reuse a connected source"),
+        (
+            "catalogHint",
+            "Choose what to monitor, then set this tile's scope and size.",
+        ),
         ("restore", "Restore"),
         ("source", "Source"),
         ("fullPanel", "Open full panel"),
         ("back", "Overview"),
         ("manage", "Manage connection"),
+        ("editScope", "Choose scope"),
+        ("tilePreview", "Tile preview"),
+        (
+            "previewHint",
+            "Current readings · saves at the end of your dashboard",
+        ),
+        ("previewLoading", "Updating preview…"),
+        (
+            "previewFailed",
+            "Preview unavailable. Your draft is still here.",
+        ),
         ("openRepo", "Open on GitHub"),
         ("saved", "Dashboard saved."),
         (
@@ -660,6 +718,10 @@ fn labels() -> Value {
         ("duplicateSuffix", " copy"),
         ("missingScope", "Resource no longer available"),
         (
+            "missingReading",
+            "No current reading is available for this resource.",
+        ),
+        (
             "scopeNote",
             "This tile has its own scope; other tiles and connections are unchanged.",
         ),
@@ -676,6 +738,44 @@ fn labels() -> Value {
 mod tests {
     use super::*;
     use store::{LayoutProfile, LayoutSlot, Store};
+
+    #[test]
+    fn filtered_empty_tiles_do_not_reuse_an_unrelated_source_message() {
+        let source = source_view(
+            "ghWorkflows",
+            "GitHub repos",
+            &json!({"message":{"text":"Source-wide message"},"rows":[
+                {"repo":"acme/ok","name":"ok","status":"healthy","attention":false}
+            ]}),
+        );
+        let mut tile = default_layout().tiles.remove(1);
+        tile.scope = "attention".into();
+        let empty = tile_view(&tile, &source);
+        assert_eq!(empty["empty"], "No attention items in available readings.");
+        assert_eq!(empty["emptyAction"], "configure");
+        tile.scope = "item:acme/removed".into();
+        let missing = tile_view(&tile, &source);
+        assert!(list(&missing, "rows").is_empty());
+        assert!(string(&missing, "empty").contains("no current reading"));
+        let pending = source_view("ghWorkflows", "GitHub repos", &json!({"loading":true}));
+        assert!(tile_view(&tile, &pending)["emptyAction"].is_null());
+    }
+
+    #[test]
+    fn preview_uses_saved_tile_rules_without_mutating_the_dashboard() {
+        let snapshot = crate::dump_dashboard();
+        let before = snapshot.clone();
+        let mut tile = default_layout().tiles.remove(0);
+        tile.scope = "remote".into();
+        tile.width = "wide".into();
+        let preview = preview(&tile, &snapshot).unwrap();
+        assert_eq!(preview["width"], "wide");
+        assert_eq!(list(&preview, "rows").len(), 3);
+        assert!(list(&preview, "rows").iter().all(|r| r["id"] != "local"));
+        assert_eq!(snapshot, before);
+        tile.scope = "invalid".into();
+        assert!(super::preview(&tile, &snapshot).is_err());
+    }
 
     #[test]
     fn hiding_or_duplicating_tiles_cannot_change_attention() {

@@ -27,6 +27,7 @@ const S = {
   tab: "connections",
   editor: null,
   catalog: false,
+  route: null,
   status: "",
   /** Host id -> its last Test result line. Survives a re-render. */
   tests: new Map(),
@@ -237,6 +238,7 @@ function renderTabs() {
       S.tab = tab.id;
       S.editor = null;
       S.catalog = false;
+      S.route = null;
       S.status = "";
       S.discover = {};
       render();
@@ -1672,6 +1674,7 @@ function showConnections() {
   S.tab = "connections";
   S.editor = null;
   S.catalog = false;
+  S.route = null;
   S.probe = null;
   S.discover = {};
   S.status = "";
@@ -1709,16 +1712,23 @@ function connectionButton(entry, cls) {
 }
 
 function connectionsTab(t) {
+  const matches = entry => !S.route?.kinds?.length || S.route.kinds.includes(entry.kind);
+  const rows = t.rows.filter(matches);
   const heading = node("div", "connection-heading row");
   const title = node("div", "stack");
-  title.append(node("h2", null, S.catalog ? t.catalogHeading : t.heading),
-    help(S.catalog ? t.catalogHelp : t.summary));
+  title.append(node("h2", null, S.catalog ? t.catalogHeading : S.route?.heading || t.heading),
+    help(S.catalog ? t.catalogHelp : S.route?.help || t.summary));
   heading.append(title, node("span", "grow"));
+  if (S.route) {
+    const all = button(t.allLabel, "all-connections");
+    all.addEventListener("click", showConnections);
+    heading.append(all);
+  }
   if (S.catalog) {
     const back = button(t.backLabel, "connection-back");
     back.addEventListener("click", () => navigate(showConnections));
     const catalog = node("div", "connection-catalog");
-    for (const entry of t.catalog) {
+    for (const entry of t.catalog.filter(matches)) {
       // Providers have one persisted configuration; the catalog opens that
       // same editor, while accounts/hosts/status pages can be added again.
       const existing = t.rows.find(row => row.kind === entry.kind && !row.entityId);
@@ -1730,14 +1740,16 @@ function connectionsTab(t) {
   add.addEventListener("click", () => { S.catalog = true; render(); });
   heading.appendChild(add);
   const list = node("div", "connection-list");
-  for (const entry of t.rows) list.appendChild(connectionButton(entry, "connection-row"));
-  if (!t.rows.length) list.appendChild(help(t.empty));
+  for (const entry of rows) list.appendChild(connectionButton(entry, "connection-row"));
+  if (!rows.length) list.appendChild(help(t.empty));
   const automatic = node("section", "connection-automatic");
   automatic.appendChild(node("h3", null, t.automaticHeading));
   const items = node("div", "connection-auto-grid");
-  for (const entry of t.automatic) items.appendChild(connectionButton(entry, "connection-option"));
+  for (const entry of t.automatic.filter(matches)) items.appendChild(connectionButton(entry, "connection-option"));
   automatic.appendChild(items);
-  if (S.view.accounts.unattributed.length) {
+  automatic.hidden = !items.childElementCount;
+  if (S.view.accounts.unattributed.length && matches({kind:"account"})) {
+    automatic.hidden = false;
     const orphaned = button(t.unattributedLabel, "connection-orphans");
     orphaned.addEventListener("click", () => openConnection({ kind: "unattributed", title: t.unattributedLabel }));
     automatic.appendChild(orphaned);
@@ -1831,10 +1843,12 @@ function render() {
 // MARK: open / close
 
 async function openSettings(tab) {
+  const route = tab && typeof tab === "object" && typeof tab.source === "string" ? tab : null;
   const chooseRoute = () => {
     S.tab = S.view.tabs.some(t => t.id === tab) ? tab : "connections";
     S.editor = null;
     S.catalog = false;
+    S.route = route ? S.view.connectionRoute : null;
     // Aggregate tiles don't identify one account/host/provider to edit. Their
     // links land on Connections so the operator can choose the right source.
     const kinds = { azure: "azure", openclaw: "openclaw", services: "services" };
@@ -1845,15 +1859,28 @@ async function openSettings(tab) {
         S.view.connections.catalog.find(r => r.kind === kind);
       if (entry) S.editor = { ...entry };
     }
+    const target = S.route?.editor;
+    if (target) {
+      const entry = [...S.view.connections.rows, ...S.view.connections.automatic, ...S.view.connections.catalog]
+        .find(item => item.kind === target.kind && (!target.entityId || item.entityId === target.entityId));
+      if (entry) S.editor = { ...entry };
+      if (target.kind === "unattributed") S.editor = { kind: target.kind, title: S.view.connections.unattributedLabel };
+    }
     S.status = "";
     S.probe = null;
     S.discover = {};
     render();
   };
-  if (settingsOpen) { navigate(chooseRoute); return; }
+  if (settingsOpen) {
+    navigate(async () => {
+      if (route) S.view = await callRust("settings_view", { route }, "sample-settings.json");
+      chooseRoute();
+    });
+    return;
+  }
   // Offline (no Tauri), the same dumped-fixture path the cockpit uses, so the
   // surface can be opened in a plain browser and by the Playwright suite.
-  const view = await callRust("settings_view", {}, "sample-settings.json");
+  const view = await callRust("settings_view", route ? { route } : {}, "sample-settings.json");
   if (!view) return;
   S.view = view;
   chooseRoute();

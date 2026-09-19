@@ -148,13 +148,15 @@
 #dashboardOverview .db-muted {
   color: var(--db-muted);
 }
-#dashboardOverview .db-grid {
+#dashboardOverview .db-grid,
+#dashboardOverview .db-preview-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 12px;
   align-items: stretch;
 }
-#dashboardOverview .db-tile {
+#dashboardOverview .db-tile,
+#dashboardOverview .db-preview-tile {
   background: var(--db-panel);
   border: 1px solid var(--db-line);
   border-radius: 9px;
@@ -165,10 +167,12 @@
   position: relative;
   grid-column: span 4;
 }
-#dashboardOverview .db-tile[data-width="medium"] {
+#dashboardOverview .db-tile[data-width="medium"],
+#dashboardOverview .db-preview-tile[data-width="medium"] {
   grid-column: span 6;
 }
-#dashboardOverview .db-tile[data-width="wide"] {
+#dashboardOverview .db-tile[data-width="wide"],
+#dashboardOverview .db-preview-tile[data-width="wide"] {
   grid-column: span 12;
 }
 #dashboardOverview .db-tile.db-editable {
@@ -394,13 +398,23 @@
   gap: 6px 24px;
 }
 #dashboardOverview .db-catalog {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: 8px;
-  flex-wrap: wrap;
 }
 #dashboardOverview .db-catalog button {
   justify-content: flex-start;
+  align-items: flex-start;
+  flex-direction: column;
+  text-align: left;
+  padding: 12px;
 }
+#dashboardOverview .db-catalog strong { font-weight: 500; }
+#dashboardOverview .db-preview { border-top: 1px solid var(--db-line); padding-top: 14px; margin-top: 16px; }
+#dashboardOverview .db-preview-grid { margin-top: 10px; }
+#dashboardOverview .db-preview-grid[aria-busy="true"] { opacity: .65; }
+#dashboardOverview .db-empty-action { margin-top: 8px; font-size: 11px; }
+#dashboardOverview .db-detail-resource > button { margin: 8px 6px 0 0; font-size: 11px; }
 #dashboardOverview .db-end {
   display: flex;
   justify-content: space-between;
@@ -422,10 +436,12 @@
   text-align: center;
 }
 @container dashboard (max-width:800px) {
-  #dashboardOverview .db-tile {
+  #dashboardOverview .db-tile,
+  #dashboardOverview .db-preview-tile {
     grid-column: span 6;
   }
-  #dashboardOverview .db-tile[data-width="wide"] {
+  #dashboardOverview .db-tile[data-width="wide"],
+  #dashboardOverview .db-preview-tile[data-width="wide"] {
     grid-column: span 12;
   }
   #dashboardOverview .db-fields {
@@ -434,7 +450,9 @@
 }
 @container dashboard (max-width:560px) {
   #dashboardOverview .db-tile,
-  #dashboardOverview .db-tile[data-width="medium"] {
+  #dashboardOverview .db-tile[data-width="medium"],
+  #dashboardOverview .db-preview-tile,
+  #dashboardOverview .db-preview-tile[data-width="medium"] {
     grid-column: span 12;
   }
   #dashboardOverview .db-fields {

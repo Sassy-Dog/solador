@@ -17,7 +17,8 @@ visible tile. The source order remains stable as readings change. Summary rows
 are capped, with a count and a Details link for the remaining resources; omitted
 problems are named in that count. A resource scope that disappears stays empty.
 
-Edits save immediately; **Undo** reverses successful edits in the current session.
+Placement and visibility edits save immediately; configuration saves with
+**Add tile** or **Apply**. **Undo** reverses successful edits in the current session.
 Failed writes preserve the previous layout and the editable form. Hidden tiles
 can be restored from **Add tile**. Layout and connections are separate: the
 optional `dashboard` store field holds tile identities, scopes and order, plus a
@@ -32,6 +33,20 @@ atomic disk write fails, and returns the persisted overview. The frontend keeps
 configuration drafts intact during refreshes and rejects older revisions.
 **Settings → Detailed layout** applies to **All detailed panels**; overview
 placement lives in **Edit dashboard**.
+
+**Add tile** and **Duplicate tile** open an unsaved draft. Choose a name,
+scope, presentation and width against a preview of current cached readings;
+**Add tile** then saves it at the end of the dashboard. Closing the draft makes
+no layout change. Preview responses cannot replace a newer scope choice.
+**Manage connection** preserves the draft while Settings is open and refreshes
+the available scopes on return. Resource links resolve a host or repository's
+saved owner; aggregate links show the relevant connection types. Ambiguous or
+removed owners stay a choice instead of silently selecting another account.
+Empty filtered tiles offer **Choose scope** and retain their original scope.
+Saving uses the explicit **Add tile** / **Apply** button, so Return in a native
+picker cannot save a draft. Local sampling runs outside the lock used to read
+cards; a slow volume lookup leaves the window responsive and marks readings
+stale after five seconds without a completed sample.
 
 The dashboard tests cover these rules with real Rust panel fixtures and temporary
 stores. Browser tests cover editing, persistence through an IPC double, failed
@@ -53,7 +68,13 @@ That run did not test authenticated providers. On 2026-09-19 a fresh, normally
 signed build reused saved credentials without a Keychain prompt and displayed
 live data in the overview and full panels. Windows remains unverified. The fix
 for dragging a tile to the last position was checked in Chromium and WebKit on
-2026-09-19; native dragging was not repeated. See the recorded runs below.
+2026-09-19; native dragging was not repeated. A further native check that day
+verified scoped previews, width changes, Return without saving, the exact host
+connection editor, and returning with the draft intact. Explicit Add followed
+by Undo restored the original five tiles. No saved connection was changed and
+no password prompt appeared. A paused-sampler regression test verifies window
+reads stay available; the rebuilt native window also remained responsive during
+the tile check. See the recorded runs below.
 
 ### Settings and connections
 
@@ -104,6 +125,9 @@ the root [README](../README.md#download) is where a user is sent to download it.
 
 `./dev run` remains the *development* loop: a debug build, re-signed locally so
 the Keychain does not re-prompt on every launch.
+If an installed development identity cannot be verified, or signing fails, the
+launcher stops before opening the app. Retrying preserves the trusted identity
+instead of silently launching an ad-hoc build against existing credentials.
 
 > Notes below that compare a behaviour to "the original panel" or "the original's
 > `X`" are **provenance**: they record which decision was ported and why,
@@ -1162,8 +1186,10 @@ name, mirroring the original coordinator's `SortDescriptor(\.name)`.
 The first card is the local machine, matching `HostsPanel.hosts` in the original
 (`[local] + remoteHosts`). It is sampled in-process by
 [`crates/localhost`](../crates/localhost) on the same 1s cadence, and its
-connection dot is **always green**: this process *is* the host, so there is no
-link to lose and no staleness to report (`ConnectionState.local`). Its name is
+connection dot is green after a fresh sample. If no sample completes for five
+seconds, it reports sampler staleness while retaining the last measured values.
+Sampling and volume enumeration run outside the shared readings lock so a slow
+platform lookup cannot block the window. Its name is
 the platform host name minus macOS's cosmetic `.local`, exactly as
 `LocalHostMetricsService` derives it.
 
@@ -1781,10 +1807,11 @@ launch re-prompts for every stored item on every rebuild. The script resolves
 each candidate by its exact SHA-1, then requires code-signing trust and a
 positive OCSP response because `security find-identity` can still list a
 revoked certificate as valid. Signing with one makes AMFI kill the app and
-Gatekeeper call it malware. Untrusted identities are named and skipped. Where
-no usable identity is installed, or trust cannot be established (CI, an offline
-Mac, a non-macOS machine), signing is skipped and you get the bare-cargo
-behaviour.
+Gatekeeper call it malware. Untrusted identities are named and skipped. If
+development identities are installed but none passes verification, or signing
+fails, the launcher stops before opening the app. Retry after trust verification
+is available. Machines with no development identity installed, and non-macOS
+machines, retain the unsigned bare-cargo behaviour.
 
 The bare command still works and is what everything non-interactive uses:
 
