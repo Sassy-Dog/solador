@@ -42,7 +42,7 @@ async function gotoWithAzure(page, baseURL, name = "sample-azure.json") {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const azure = await fixture(baseURL, name);
   await stubIpc(page, { cockpit, azure });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   return azure;
 }
 
@@ -199,7 +199,7 @@ test("a narrow card stacks the breakdowns under the costs, divider and all", asy
   expect(narrow.panelRows.flat().find((p) => p.id === "azureCost").columns).toBe(1);
   const azure = await fixture(baseURL, "sample-azure.json");
   await stubIpc(page, { cockpit: narrow, azure });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
 
   const costs = await page.locator("#azureBody .az-main").boundingBox();
   const breakdowns = await page.locator("#azureBody .az-columns").boundingBox();

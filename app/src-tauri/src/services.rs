@@ -740,6 +740,8 @@ fn row(vendor: &ActiveVendor, statuses: &ServiceStatuses) -> Value {
         // count reads this, and counting amber pixels would be a second
         // definition of "degraded" free to disagree with the first.
         "degraded": component.is_some_and(ComponentStatus::is_degraded),
+        "unknown": state == "Unknown",
+        "readFailed": entry.is_some_and(|entry| entry.error.is_some()),
     })
 }
 

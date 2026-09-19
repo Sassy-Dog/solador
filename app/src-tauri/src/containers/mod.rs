@@ -320,6 +320,7 @@ fn row_value(
 ) -> Value {
     json!({
         "kind": kind,
+        "attention": dot == color::RED || (kind == "aggregate" && dot == color::AMBER),
         "name": name,
         "runtime": runtime,
         "dotColor": color::hex(dot),

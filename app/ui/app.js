@@ -37,6 +37,8 @@ const callRust = async (command, args, fixture) => {
 // regardless, so nothing is missed. settings.js calls `refreshCockpit()` on
 // close to repaint at the real width immediately rather than up to a tick late.
 let settingsOpen = false;
+// Overview reads the same backend caches; detailed renderers sleep until opened.
+let overviewOpen = false;
 let refreshCockpit = async () => {};
 
 // Panels poll on their own timers and skip the work while Settings is up, so
@@ -612,12 +614,12 @@ window.__SOLADOR_TEST__ = { render: renderCockpit, chartCount: () => CHARTS.size
 (async () => {
   // The width the host grid actually has. Rust turns it into a column count;
   // an unmeasured 0 stacks there rather than assuming wide.
-  const gridWidth = () => $("cockpit").clientWidth;
+  const gridWidth = () => $("cockpit").clientWidth || $("cockpitView").clientWidth;
 
   const poll = async () =>
     renderCockpit(await callRust("cockpit", { width: gridWidth() }, "sample.json"));
 
-  refreshCockpit = async () => { try { await poll(); } catch {} };
+  refreshCockpit = async () => { if (overviewOpen) return; try { await poll(); } catch {} };
 
   try { await poll(); } catch (e) {
     // CSSOM setters, not a `style=""` attribute: this string embeds `esc(e)`

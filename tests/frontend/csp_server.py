@@ -75,6 +75,11 @@ class LoopbackServer(http.server.ThreadingHTTPServer):
     and put the 35s back on the runner.
     """
 
+    # Parallel browser workers open several asset/fixture connections each.
+    # TCPServer's queue of five can reset those connections before a handler
+    # starts, making a missing script look like a UI failure under load.
+    request_queue_size = 128
+
     def server_bind(self):
         socketserver.TCPServer.server_bind(self)
         host, port = self.server_address[:2]

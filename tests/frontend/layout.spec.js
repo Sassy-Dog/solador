@@ -27,7 +27,7 @@ test.afterEach(async ({ page }) => {
 });
 
 async function gotoApp(page) {
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   await page.waitForFunction(() => document.querySelectorAll(".cores .core").length > 0);
 }
 

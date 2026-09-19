@@ -21,6 +21,7 @@ use viewmodel::color;
 mod azure;
 mod containers;
 mod crons;
+mod dashboard;
 mod github;
 mod local;
 mod openclaw;
@@ -2488,6 +2489,68 @@ fn save_status(store: &Store, ok: impl Into<String>) -> Option<String> {
 
 /// Guards the one-line "the frontend reached us" notice below.
 static FIRST_REQUEST: std::sync::Once = std::sync::Once::new();
+
+/// Cached readings only: editing or duplicating tiles never starts a poller.
+#[tauri::command]
+fn dashboard_view(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
+    let layout = state
+        .store
+        .lock()
+        .expect("store poisoned")
+        .dashboard()
+        .cloned()
+        .unwrap_or_else(dashboard::default_layout);
+    let mut hosts = cockpit(width, state.clone());
+    hosts["id"] = json!("hosts");
+    let payloads = vec![
+        hosts,
+        repos(state.clone()),
+        runners(state.clone()),
+        containers(state.clone()),
+        services(state.clone()),
+        crons(state.clone()),
+        usage(state.clone()),
+        azure_cost(state.clone()),
+        openclaw(state),
+    ];
+    dashboard::view(&layout, &payloads)
+}
+
+fn persist_dashboard(
+    store: &mut Store,
+    mut layout: store::DashboardLayout,
+    expected_revision: u64,
+) -> Result<store::DashboardLayout, String> {
+    dashboard::validate(&layout)?;
+    let revision = store.dashboard().map_or(0, |current| current.revision);
+    if revision != expected_revision {
+        return Err("The dashboard changed while you were editing. Review the current layout and try again.".into());
+    }
+    layout.revision = revision
+        .checked_add(1)
+        .ok_or("The dashboard revision cannot be advanced.")?;
+    store
+        .save_dashboard(layout.clone())
+        .map_err(|error| format!("Could not save the dashboard: {error}"))?;
+    Ok(layout)
+}
+
+#[tauri::command]
+fn dashboard_save(
+    layout: store::DashboardLayout,
+    expected_revision: u64,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    persist_dashboard(
+        &mut state.store.lock().expect("store poisoned"),
+        layout,
+        expected_revision,
+    )?;
+    // Return the persisted view together: a slow pre-save poll cannot leave
+    // freshly saved configuration paired with the previous tile bodies.
+    Ok(dashboard_view(width, state))
+}
 
 #[tauri::command]
 fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
@@ -5216,6 +5279,26 @@ fn dump_github(empty: bool, runners: bool) -> Value {
     }
 }
 
+/// The overview fixture uses the exact same panel views as its live command.
+fn dump_dashboard() -> Value {
+    let mut hosts = dump_cockpit(1200.0, 3, HostOverflowMode::Stack);
+    hosts["id"] = json!("hosts");
+    dashboard::view(
+        &dashboard::default_layout(),
+        &[
+            hosts,
+            dump_github(false, false),
+            dump_github(false, true),
+            dump_containers(false),
+            services::view(&services::fixture_statuses()),
+            dump_crons(crons::Fixture::Alerting, false),
+            dump_usage(usage::Fixture::Measured, false),
+            dump_azure(azure::Fixture::Measured, false),
+            dump_openclaw(openclaw::Fixture::Connected),
+        ],
+    )
+}
+
 /// Returns the path argument following `flag` if `flag` is present, falling
 /// back to `default` when the flag is given with no path.
 fn dump_flag_path(args: &[String], flag: &str, default: &str) -> Option<String> {
@@ -5243,6 +5326,10 @@ fn write_json(path: &str, value: &Value) {
 /// Handles every `--dump*` flag, returning `true` when one was given and the
 /// process should exit without starting a window.
 fn run_dump(args: &[String]) -> bool {
+    if let Some(path) = dump_flag_path(args, "--dump-dashboard", "sample-dashboard.json") {
+        write_json(&path, &dump_dashboard());
+        return true;
+    }
     if let Some(path) = dump_flag_path(args, "--dump", "sample.json") {
         write_json(&path, &dump_single(&Connection::Live));
         return true;
@@ -5779,6 +5866,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            dashboard_view,
+            dashboard_save,
             cockpit,
             containers,
             repos,

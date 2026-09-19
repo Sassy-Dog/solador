@@ -22,10 +22,11 @@ import path from "node:path";
  * `npm run screenshots`.
  */
 
-const OUT = path.resolve(__dirname, "..", "..", "Docs", "assets", "screenshots");
+const OUT = path.resolve(__dirname, "..", "..", "docs", "assets", "screenshots");
 
 /** Every command the frontend issues, answered from the dumped fixtures. */
 const PAYLOADS = {
+  dashboard_view: "sample-dashboard.json",
   cockpit: "sample-cockpit.json",
   repos: "sample-repos.json",
   runners: "sample-runners.json",
@@ -40,19 +41,16 @@ const PAYLOADS = {
 const fixture = async (baseURL, name) => (await fetch(`${baseURL}/${name}`)).json();
 
 async function loadCockpit(page, baseURL) {
-  const entries = await Promise.all(
-    Object.entries(PAYLOADS).map(async ([command, file]) => [
-      command,
-      await fixture(baseURL, file),
-    ])
-  );
-  const answers = Object.fromEntries(entries);
+  const answers = {};
+  for (const [command, file] of Object.entries(PAYLOADS)) {
+    answers[command] = await fixture(baseURL, file);
+  }
   await page.addInitScript((vms) => {
     window.__TAURI__ = {
       core: { invoke: async (command) => vms[command] ?? null },
     };
   }, answers);
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   // Every panel paints from its own command, so waiting on the last one to
   // have a title is what "the cockpit is drawn" means here.
   await expect(page.locator("#cronsPanel")).toBeVisible();
@@ -61,6 +59,15 @@ async function loadCockpit(page, baseURL) {
 
 test.beforeAll(async () => {
   await fs.mkdir(OUT, { recursive: true });
+});
+
+test("the compact overview at laptop size", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await loadCockpit(page, baseURL);
+  await page.goto("/index.html");
+  await expect(page.locator("#dashboardOverview")).toBeVisible();
+  await expect(page.locator(".db-tile")).toHaveCount(5);
+  await page.screenshot({ path: path.join(OUT, "overview.png"), fullPage: true });
 });
 
 test("the whole cockpit, at the width it was designed for", async ({ page, baseURL }) => {

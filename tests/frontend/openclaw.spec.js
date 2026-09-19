@@ -53,7 +53,7 @@ async function gotoWith(page, baseURL, name = "sample-openclaw.json") {
   const cockpit = await fixture(baseURL, "sample-cockpit.json");
   const openclaw = await fixture(baseURL, name);
   await stubIpc(page, { cockpit, openclaw });
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   return openclaw;
 }
 

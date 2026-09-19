@@ -1559,18 +1559,20 @@ function render() {
 
 // MARK: open / close
 
-async function openSettings() {
+async function openSettings(tab) {
   // Offline (no Tauri), the same dumped-fixture path the cockpit uses, so the
   // surface can be opened in a plain browser and by the Playwright suite.
   const view = await callRust("settings_view", {}, "sample-settings.json");
   if (!view) return;
   S.view = view;
+  if (typeof tab === "string" && view.tabs.some(t => t.id === tab)) S.tab = tab;
   S.status = "";
   // A probe answer must not outlive the session that ran it: reopening
   // Settings would otherwise show a component picker for an address nobody
   // just typed.
   S.probe = null;
   settingsOpen = true;
+  document.dispatchEvent(new CustomEvent("solador:settings", { detail: true }));
   $s("cockpitView").hidden = true;
   $s("settings").hidden = false;
   render();
@@ -1585,6 +1587,7 @@ async function closeSettings() {
   stopUpdatePolling();
   $s("settings").hidden = true;
   $s("cockpitView").hidden = false;
+  document.dispatchEvent(new CustomEvent("solador:settings", { detail: false }));
   // Repaint at the real width now rather than up to a poll interval late: the
   // cockpit measured zero while it was hidden.
   await refreshCockpit();
@@ -1596,6 +1599,8 @@ async function closeSettings() {
 
 $s("settingsToggle").addEventListener("click", openSettings);
 $s("settingsClose").addEventListener("click", closeSettings);
+
+window.soladorSettings = { open: openSettings };
 
 // Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.

@@ -38,7 +38,7 @@ async function gotoWithServices(page, baseURL, overrides) {
     },
     { cockpit, services: svc }
   );
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   return svc;
 }
 

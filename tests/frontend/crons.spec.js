@@ -48,7 +48,7 @@ async function gotoWithCrons(page, baseURL, payload) {
     },
     { cockpit, crons: payload }
   );
-  await page.goto("/index.html");
+  await page.goto("/index.html?view=details");
   return payload;
 }
 

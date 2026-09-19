@@ -178,6 +178,7 @@ function renderAzure(payload) {
 }
 
 async function refresh() {
+  if (overviewOpen) return false;
   try {
     const payload = await callRust("azure_cost", {}, "sample-azure.json");
     if (payload) renderAzure(payload);
