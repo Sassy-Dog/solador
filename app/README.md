@@ -35,9 +35,15 @@ configuration drafts intact during refreshes and rejects older revisions.
 placement lives in **Edit dashboard**.
 
 **Add tile** and **Duplicate tile** open an unsaved draft. Choose a name,
-scope, presentation and width against a preview of current cached readings;
-**Add tile** then saves it at the end of the dashboard. Closing the draft makes
-no layout change. Preview responses cannot replace a newer scope choice.
+scope, presentation, width and position against a preview of current cached
+readings. **Dashboard placement** previews the visible tile order and widths;
+**Position** can keep an existing tile in place, move it to the beginning/end,
+or place it after another visible tile. New tiles default to the end; duplicates
+default to immediately after their original. **Add tile** / **Apply** saves and
+focuses the resulting tile. Closing the draft makes no layout change, and Undo
+restores the previous order. Hidden tiles retain their stored slots when keeping
+the current position. If a chosen destination disappears, choose another
+position before saving. Preview responses cannot replace a newer scope choice.
 **Manage connection** preserves the draft while Settings is open and refreshes
 the available scopes on return. Resource links resolve a host or repository's
 saved owner; aggregate links show the relevant connection types. Ambiguous or
@@ -74,7 +80,10 @@ connection editor, and returning with the draft intact. Explicit Add followed
 by Undo restored the original five tiles. No saved connection was changed and
 no password prompt appeared. A paused-sampler regression test verifies window
 reads stay available; the rebuilt native window also remained responsive during
-the tile check. See the recorded runs below.
+the tile check. A further placement check verified the native dropdown, live
+order preview, duplication beside the original, explicit insertion after
+Runners, focus on the saved tile, and Undo back to the original layout. Return
+in the position picker did not save the draft. See the recorded runs below.
 
 ### Settings and connections
 

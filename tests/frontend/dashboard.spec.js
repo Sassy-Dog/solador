@@ -29,6 +29,7 @@ async function openDashboard(page, baseURL) {
         JSON.parse(localStorage.getItem("test-dashboard") || "null") ||
         original.layout;
       window.__CALLS__ = [];
+      window.__SET_LAYOUT__ = (next) => { layout = structuredClone(next); };
       function project(previewTile) {
         const view = structuredClone(original);
         view.layout = structuredClone(layout);
@@ -120,6 +121,61 @@ const action = (page, name) =>
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
+
+test("tile placement previews an insertion without moving saved tiles, then persists and undoes it", async ({ page, baseURL }) => {
+  const original = await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await action(page, "catalog").click();
+  await page.locator('[data-action="add"][data-id="hosts"]').click();
+  await page.getByLabel("Position", { exact: true }).selectOption("after:overview-ghWorkflows");
+  await page.locator("#dashboard-title").fill("Build machines");
+  await page.locator("#dashboard-width").selectOption("wide");
+  await expect(page.locator('.db-placement-tile[aria-current="true"]')).toHaveAttribute("data-width", "wide");
+  const order = ["Machines", "GitHub repos", "Build machines", "Runners", "Service health", "Scheduled jobs"];
+  await expect(page.locator(".db-placement-title")).toHaveText(order);
+  await expect(page.locator(".db-grid .db-tile-title")).toHaveText(original.tiles.map(t => t.title));
+  expect(await savedLayout(page)).toBeNull();
+  await action(page, "apply").click();
+  await expect(page.locator(".db-grid .db-tile-title")).toHaveText(order);
+  expect((await savedLayout(page)).tiles[2].title).toBe("Build machines");
+  await expect(page.getByRole("button", {name:"Configure Build machines",exact:true})).toBeFocused();
+  await page.reload();
+  await expect(page.locator(".db-grid .db-tile-title")).toHaveText(order);
+  await action(page, "edit").click();
+  await page.getByRole("button", {name:"Configure Build machines",exact:true}).click();
+  await page.getByLabel("Position", { exact: true }).selectOption("start");
+  await action(page, "apply").click();
+  await expect(page.locator(".db-grid .db-tile-title").first()).toHaveText("Build machines");
+  await action(page, "undo").click();
+  await expect(page.locator(".db-grid .db-tile-title")).toHaveText(order);
+});
+
+test("keeping a position retains hidden slots and a missing destination requires another choice", async ({ page, baseURL }) => {
+  const original = await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await tile(page, "ghWorkflows").locator('[data-action="hide"]').click();
+  await tile(page, "ghRunners").locator('[data-action="configure"]').click();
+  await page.locator("#dashboard-title").fill("Build runners");
+  await expect(page.locator(".db-placement-tile")).toHaveCount(4);
+  await action(page, "apply").click();
+  expect((await savedLayout(page)).tiles.map(t => t.id)).toEqual(original.layout.tiles.map(t => t.id));
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  await page.getByLabel("Position", { exact: true }).selectOption("after:overview-services");
+  await page.evaluate(() => {
+    const next = JSON.parse(localStorage.getItem("test-dashboard"));
+    next.tiles.find(t => t.source === "services").hidden = true;
+    next.revision++;
+    window.__SET_LAYOUT__(next);
+  });
+  await expect(tile(page, "services")).toHaveCount(0);
+  await expect(page.locator(".db-placement-error")).toHaveText("That tile is no longer visible. Choose another position.");
+  const saves = await page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_save").length);
+  await action(page, "apply").click();
+  expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_save").length)).toBe(saves);
+  await page.getByLabel("Position", { exact: true }).selectOption("end");
+  await action(page, "apply").click();
+  expect((await savedLayout(page)).tiles.at(-1).source).toBe("hosts");
+});
 
 test.beforeEach(async ({ page }) => {
   page.dashboardErrors = [];
@@ -249,12 +305,14 @@ test("a connection detour keeps a new tile's draft and returns to its preview", 
   await page.locator('[data-action="add"][data-id="hosts"]').click();
   await page.locator("#dashboard-title").fill("My workstation");
   await page.locator("#dashboard-scope").selectOption("local");
+  await page.getByLabel("Position", { exact: true }).selectOption("start");
   await action(page, "manage").click();
   await expect(page.locator("#settings .connection-heading h2")).toHaveText("This machine");
   expect(await page.evaluate(() => window.__CALLS__.find(c => c.command === "settings_view").args)).toEqual({route:{source:"hosts",scope:"local"}});
   await page.locator("#settingsClose").click();
   await expect(page.locator("#dashboard-title")).toHaveValue("My workstation");
   await expect(page.locator("#dashboard-scope")).toHaveValue("local");
+  await expect(page.getByLabel("Position", { exact: true })).toHaveValue("start");
   await expect(page.locator(".db-preview-tile .db-item")).toHaveCount(1);
   expect(await savedLayout(page)).toBeNull();
 });
@@ -324,7 +382,7 @@ test("a duplicate has an independent scope, width and draft that polling preserv
   await action(page, "apply").click();
   await expect(page.locator("#dashboardInspector")).toBeHidden();
   const layout = await savedLayout(page),
-    duplicate = layout.tiles.at(-1);
+    duplicate = layout.tiles[1];
   expect(duplicate).toMatchObject({
     title: "Remote machines only",
     scope: "remote",
@@ -351,6 +409,7 @@ test("a failed save retains the old layout and the editable draft", async ({
   await action(page, "edit").click();
   await tile(page, "hosts").locator('[data-action="configure"]').click();
   await page.locator("#dashboard-title").fill("My machines");
+  await page.getByLabel("Position", { exact: true }).selectOption("end");
   await page.evaluate(() => {
     window.__FAIL_SAVE__ = true;
   });
@@ -360,6 +419,7 @@ test("a failed save retains the old layout and the editable draft", async ({
   );
   await expect(page.locator("#dashboard-title")).toHaveValue("My machines");
   await expect(page.locator("#dashboard-title")).toBeEnabled();
+  await expect(page.getByLabel("Position", { exact: true })).toHaveValue("end");
   await expect(tile(page, "hosts").locator("h2")).toHaveText("Machines");
   await expect(action(page, "undo")).toBeDisabled();
   expect(await savedLayout(page)).toBeNull();
@@ -368,6 +428,7 @@ test("a failed save retains the old layout and the editable draft", async ({
   });
   await action(page, "apply").click();
   await expect(tile(page, "hosts").locator("h2")).toHaveText("My machines");
+  expect((await savedLayout(page)).tiles.at(-1).source).toBe("hosts");
 });
 
 test("keyboard ordering, undo and dragging persist the visible order", async ({
@@ -499,8 +560,13 @@ test("narrow layouts wrap tiles and render saved names as text", async ({
   await openDashboard(page, baseURL);
   await action(page, "edit").click();
   await tile(page, "hosts").locator('[data-action="configure"]').click();
-  const title = '<img src=x onerror="alert(1)"> Long machine name';
+  const title = '<img src=x onerror="alert(1)"> $& Long machine name';
   await page.locator("#dashboard-title").fill(title);
+  await expect(page.locator('.db-placement-tile[aria-current="true"] .db-placement-title')).toHaveText(title);
+  await expect(page.locator(".db-placement-tile img")).toHaveCount(0);
+  const previewXs = await page.locator(".db-placement-tile").evaluateAll(els => els.map(el => el.getBoundingClientRect().x));
+  expect(new Set(previewXs).size).toBe(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375);
   await action(page, "apply").click();
   await expect(tile(page, "hosts").locator("h2")).toHaveText(title);
   await expect(tile(page, "hosts").locator("img")).toHaveCount(0);
@@ -511,6 +577,8 @@ test("narrow layouts wrap tiles and render saved names as text", async ({
     .locator(".db-tile")
     .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().x));
   expect(new Set(xs).size).toBe(1);
+  await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
+  await expect(page.locator('#dashboard-position option[value="after:overview-hosts"]')).toHaveText(`After ${title}`);
 });
 
 test("a failed refresh keeps the last view and clears its warning on recovery", async ({

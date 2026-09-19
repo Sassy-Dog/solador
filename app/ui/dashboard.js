@@ -300,6 +300,10 @@
       `${model.layout.tiles.filter((t) => t.hidden).length} ${L("hidden")}`,
     );
     if (mode === "overview") updateTiles(force);
+    if (force && active?.kind === "configure") {
+      updatePlacementChoices();
+      paintPlacement();
+    }
     if (active?.kind === "details") fillDetails();
     if (focused && !focused.isConnected && focusData) {
       const scope = focusTile
@@ -364,6 +368,7 @@
     const wrap = node("div", "db-field"),
       lab = node("label", "", label),
       input = node("select");
+    wrap.dataset.field = name;
     input.name = name;
     input.id = `dashboard-${name}`;
     lab.htmlFor = input.id;
@@ -398,6 +403,7 @@
         label = node("label", "", L("name")),
         input = node("input");
       input.name = "title";
+      name.dataset.field = "title";
       input.id = "dashboard-title";
       input.type = "text";
       input.maxLength = 64;
@@ -424,6 +430,9 @@
           t.width,
         ),
       );
+      const placement = selectField("position", L("position"), [], "");
+      placement.classList.add("db-position-field");
+      fields.append(placement);
       const actions = node("div", "db-form-actions");
       actions.append(
         button(L(next.draft ? "add" : "apply"), "apply", null, "db-primary"),
@@ -433,6 +442,17 @@
       if (!next.draft) actions.insertBefore(button(L("duplicate"), "duplicate", t.id), actions.children[1]);
       form.append(fields, actions);
       box.querySelector(".db-inspector-body").append(form);
+      updatePlacementChoices(next.position || (next.draft ? "end" : "current"));
+      const placementPreview = node("section", "db-placement-preview");
+      placementPreview.setAttribute("aria-label", L("placementPreview"));
+      placementPreview.append(
+        node("h3", "", L("placementPreview")),
+        node("p", "db-sub", L("placementHint")),
+        node("ol", "db-placement-grid"),
+        node("p", "db-placement-error"),
+      );
+      placementPreview.querySelector(".db-placement-error").setAttribute("role", "status");
+      box.querySelector(".db-inspector-body").append(placementPreview);
       const preview = node("section", "db-preview");
       preview.setAttribute("aria-label", L("tilePreview"));
       preview.append(node("h3", "", L("tilePreview")), node("p", "db-sub", next.draft ? L("previewHint") : s.title), node("div", "db-preview-grid"));
@@ -472,7 +492,69 @@
     const fields = new FormData(form);
     return { ...original, title: String(fields.get("title")).trim(), scope: fields.get("scope"), presentation: fields.get("presentation"), width: fields.get("width") };
   }
+  function updatePlacementChoices(selected = q("#dashboard-position")?.value) {
+    const select = q("#dashboard-position");
+    if (!select) return;
+    const choices = active.draft ? [] : [{ value: "current", label: L("positionCurrent") }];
+    choices.push({ value: "start", label: L("positionStart") }, { value: "end", label: L("positionEnd") });
+    for (const t of model.layout.tiles.filter(t => !t.hidden && t.id !== active.id))
+      choices.push({ value: `after:${t.id}`, label: L("positionAfter").replace("{title}", () => t.title) });
+    if (!choices.some(choice => choice.value === selected))
+      choices.push({ value: selected, label: L("positionMissing") });
+    // Polls must not disturb a native picker while it is open.
+    const signature = JSON.stringify(choices);
+    if (select.dataset.choices === signature) return;
+    select.dataset.choices = signature;
+    select.replaceChildren(...choices.map(choice => {
+      const option = node("option", "", choice.label);
+      option.value = choice.value;
+      option.selected = choice.value === selected;
+      return option;
+    }));
+  }
+  function placedLayout(draft) {
+    const next = copyLayout(), position = q("#dashboard-position").value;
+    const original = next.tiles.findIndex(t => t.id === draft.id);
+    if (position === "current" && original >= 0) {
+      next.tiles[original] = draft;
+      return next;
+    }
+    next.tiles = next.tiles.filter(t => t.id !== draft.id);
+    let index = position === "start" ? 0 : next.tiles.length;
+    if (position.startsWith("after:")) {
+      const anchor = next.tiles.findIndex(t => t.id === position.slice(6) && !t.hidden);
+      if (anchor < 0) throw new Error(L("positionUnavailable"));
+      index = anchor + 1;
+    } else if (position !== "start" && position !== "end") {
+      throw new Error(L("positionUnavailable"));
+    }
+    next.tiles.splice(index, 0, draft);
+    return next;
+  }
+  function paintPlacement() {
+    const grid = q(".db-placement-grid"), draft = formTile();
+    if (!grid || !draft) return;
+    const select = q("#dashboard-position"), error = q(".db-placement-error");
+    try {
+      const proposed = placedLayout(draft);
+      select.setCustomValidity("");
+      error.textContent = "";
+      grid.replaceChildren(...proposed.tiles.filter(t => !t.hidden).map(t => {
+        const item = node("li", "db-placement-tile");
+        item.dataset.placementTile = t.id;
+        item.dataset.width = t.width;
+        if (t.id === draft.id) item.setAttribute("aria-current", "true");
+        item.append(node("strong", "db-placement-title", t.title || source(t.source).title), node("span", "db-sub", L(t.width)));
+        return item;
+      }));
+    } catch (e) {
+      grid.replaceChildren();
+      error.textContent = e.message;
+      select.setCustomValidity(e.message);
+    }
+  }
   function schedulePreview() {
+    paintPlacement();
     clearTimeout(previewTimer);
     const version = ++previewVersion;
     const target = q(".db-preview-grid");
@@ -635,14 +717,19 @@
   async function apply() {
     const form = q("#dashboardForm");
     if (!form || !form.reportValidity() || busy) return;
-    const next = copyLayout(), draft = formTile();
+    const draft = formTile();
     if (!draft) {
       status(L("missingScope"), true);
       return;
     }
-    if (active.draft) next.tiles.push(draft);
-    else Object.assign(next.tiles.find(t => t.id === draft.id), draft);
-    await save(next);
+    let next;
+    try { next = placedLayout(draft); }
+    catch (e) { status(e.message, true); return; }
+    if (await save(next)) {
+      const savedTile = tiles.get(draft.id);
+      savedTile?.scrollIntoView({ block: "nearest" });
+      savedTile?.querySelector('[data-action="configure"]')?.focus({ preventScroll: true });
+    }
   }
   function add(id, duplicate = false) {
     const original = duplicate ? tile(id) : null,
@@ -655,7 +742,7 @@
           hidden: false,
         }
       : { ...s.defaultTile, id: crypto.randomUUID() };
-    openInspector({ kind: "configure", id: newTile.id, draft: newTile });
+    openInspector({ kind: "configure", id: newTile.id, draft: newTile, position: original ? `after:${original.id}` : "end" });
   }
   async function showOverview() {
     mode = "overview";
