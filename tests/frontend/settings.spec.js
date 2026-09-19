@@ -84,7 +84,131 @@ async function openSettings(page, baseURL, probe, updates, discover) {
   return settings;
 }
 
-const tab = (page, id) => page.locator(`.tab[data-tab="${id}"]`);
+async function openConnection(page, id) {
+  await page.locator('.tab[data-tab="connections"]').click();
+  await page.locator(`[data-connection="${id}"]`).click();
+}
+
+async function addConnection(page, kind) {
+  await page.locator('.tab[data-tab="connections"]').click();
+  await page.locator('.connection-add').click();
+  await page.locator(`.connection-catalog [data-kind="${kind}"]`).click();
+}
+
+// Exercise the visible route into the editor, including catalog-only providers.
+const tab = (page, id) => ({ click: async () => {
+  if (["connections", "general", "layout", "about"].includes(id)) {
+    await page.locator(`.tab[data-tab="${id}"]`).click();
+    return;
+  }
+  if (id === "services") { await addConnection(page, "vendor"); return; }
+  const kind = { accounts: "account", hosts: "host", usage: "neon" }[id] || id;
+  await page.locator('.tab[data-tab="connections"]').click();
+  const row = page.locator(`.connection-row[data-kind="${kind}"]`).first();
+  if (await row.count()) await row.click();
+  else await addConnection(page, kind);
+} });
+
+test("Connections is the landing page and each saved source has one editor", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await expect(page.locator('#settingsTabs [data-tab="connections"]')).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".connection-row")).toHaveCount(settings.connections.rows.length);
+  await expect(page.locator(".connection-auto-grid .connection-option")).toHaveCount(3);
+  for (const entry of settings.connections.rows) {
+    const row = page.locator(`.connection-row[data-connection="${entry.id}"]`);
+    await expect(row.locator(".connection-title")).toHaveText(entry.title);
+    await expect(row.locator(".connection-feeds")).toHaveText(entry.feeds);
+    await expect(row.locator(".connection-state")).toHaveText(entry.status.text);
+  }
+  await tab(page, "sentry").click();
+  await expect(page.locator("#sentry-org-slug")).toBeVisible();
+  await expect(page.locator("#neon-org-id")).toHaveCount(0);
+  await expect(page.locator("#secret-sentry")).toBeHidden();
+  await expect(page.locator(".connection-heading")).toContainText("Usage · Scheduled jobs");
+  expect(await calls(page, "settings_save_secret")).toEqual([]);
+});
+
+test("leaving or closing an editor protects typed fields and explicitly discards secrets", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await tab(page, "usage").click();
+  await page.locator("#neon-org-id").fill("draft-org");
+  await page.locator(".replace-secret").click();
+  await page.locator("#secret-neon").fill("draft-token");
+  await page.locator('#settingsTabs [data-tab="general"]').click();
+  await expect(page.locator("#settingsConfirm")).toBeVisible();
+  await page.locator("#settingsConfirm .primary").click();
+  await expect(page.locator("#neon-org-id")).toHaveValue("draft-org");
+  await expect(page.locator("#secret-neon")).toHaveValue("draft-token");
+  await page.locator("#settingsClose").click();
+  await expect(page.locator("#settingsConfirm")).toBeVisible();
+  await page.locator("#settingsConfirm .discard").click();
+  await expect(page.locator("#settings")).toBeHidden();
+  await expect(page.locator('#settings input[type="password"]')).toHaveCount(0);
+  await page.locator("#settingsToggle").click();
+  await tab(page, "usage").click();
+  await expect(page.locator("#secret-neon")).toHaveValue("");
+  await expect(page.locator("#neon-org-id")).not.toHaveValue("draft-org");
+  expect(await calls(page, "settings_save_secret")).toEqual([]);
+  expect(await calls(page, "settings_save_providers")).toEqual([]);
+});
+
+test("an unapplied preference selection is protected when navigating", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "general").click();
+  const interval = settings.general.refreshInterval;
+  const other = interval.options.find(option => String(option.value) !== String(interval.value));
+  await page.locator("#general-interval").selectOption(String(other.value));
+  await tab(page, "connections").click();
+  await expect(page.locator("#settingsConfirm")).toBeVisible();
+  await page.locator("#settingsConfirm .primary").click();
+  await expect(page.locator("#general-interval")).toHaveValue(String(other.value));
+  expect(await calls(page, "settings_save_general")).toEqual([]);
+});
+
+test("host edits retain the saved identity and replace the token only explicitly", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const host = settings.hosts.rows[0];
+  await openConnection(page, `host:${host.id}`);
+  await expect(page.locator("#host-edit-token")).toBeHidden();
+  await page.locator("#host-edit-name").fill("Renamed host");
+  await page.locator("#host-edit-address").fill("new.example.ts.net");
+  await page.locator(".host-save").click();
+  expect(await calls(page, "settings_save_host")).toEqual([{
+    command: "settings_save_host", args: {id:host.id, name:"Renamed host", address:"new.example.ts.net", port:String(host.port), token:""},
+  }]);
+  await page.locator(".host-replace-token").click();
+  await page.locator("#host-edit-token").fill("replacement-token");
+  await page.locator(".host-save").click();
+  expect((await calls(page, "settings_save_host")).at(-1).args).toMatchObject({id:host.id, token:"replacement-token"});
+  await expect(page.locator("#host-edit-token")).toHaveValue("");
+  expect(await calls(page, "settings_add_host")).toEqual([]);
+});
+
+test("a rejected save keeps the connection draft and reports the failure", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "usage").click();
+  await page.evaluate(() => {
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command === "settings_save_providers") throw new Error("IPC unavailable");
+      return original(command, args);
+    };
+  });
+  await page.locator("#neon-org-id").fill("keep-this-draft");
+  await page.locator(".btn.apply").click();
+  await expect(page.locator("#settingsStatus")).toHaveText(settings.connections.saveFailed);
+  await expect(page.locator("#neon-org-id")).toHaveValue("keep-this-draft");
+});
+
+test("Connections and its editor fit a narrow window without clipped controls", async ({ page, baseURL }) => {
+  await page.setViewportSize({width:390,height:900});
+  await openSettings(page, baseURL);
+  const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  expect(await fits()).toBe(true);
+  await tab(page, "hosts").click();
+  await expect(page.locator(".host-save")).toBeVisible();
+  expect(await fits()).toBe(true);
+});
 
 /**
  * Panels keep their own timers and skip the work while Settings is up, so a
@@ -126,7 +250,8 @@ test("the Settings button, title and every tab come from Rust", async ({ page, b
   await expect(page.locator("#settingsToggle")).toHaveText(cockpit.settingsLabel);
   await expect(page.locator("#settingsTitle")).toHaveText(settings.title);
   await expect(page.locator("#settingsClose")).toHaveText(settings.closeLabel);
-  await expect(page.locator(".tabs .tab")).toHaveText(settings.tabs.map((t) => t.title));
+  await expect(page.locator("#settingsTabs .tab")).toHaveCount(settings.tabs.length);
+  for (const t of settings.tabs) await expect(page.locator(`#settingsTabs [data-tab="${t.id}"]`)).toContainText(t.title);
 
   // The cockpit is out of the way while Settings is up, and comes back on
   // close -- with a fresh poll rather than a stale, zero-width layout.
@@ -138,6 +263,7 @@ test("the Settings button, title and every tab come from Rust", async ({ page, b
 
 test("General shows the stored values and applies them in one command", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
+  await tab(page, "general").click();
   const g = settings.general;
 
   await expect(page.locator("#general-interval")).toHaveValue(String(g.refreshInterval.value));
@@ -177,6 +303,7 @@ test("each panel cadence applies on its own row and paints Rust's two sentences"
   baseURL,
 }) => {
   const settings = await openSettings(page, baseURL);
+  await tab(page, "general").click();
   const p = settings.general.panelIntervals;
 
   // Every settable cadence has a row, in Rust's order. A row invented here
@@ -234,6 +361,7 @@ test("the crash-reporting toggle saves on the spot and paints Rust's sentence", 
   baseURL,
 }) => {
   const settings = await openSettings(page, baseURL);
+  await tab(page, "general").click();
   const c = settings.general.crashReporting;
 
   const toggle = page.locator("#general-crash-reporting");
@@ -348,6 +476,12 @@ test("moving a panel and changing its width each save one command", async ({ pag
   // No Apply button in this tab: each control persists on its own, and the
   // status line is the proof it reached Rust.
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
+  // The IPC double returns the original persisted width. An immediate-save
+  // picker must follow that response, rather than preserve it as a draft.
+  await expect(page.locator(`#layout-span-${second.id}`)).toHaveValue(second.span);
+  await tab(page, "connections").click();
+  await expect(page.locator("#settingsConfirm")).toBeHidden();
+  await expect(page.locator(".connection-list")).toBeVisible();
 });
 
 test("the host-overflow mode is saved per breakpoint", async ({ page, baseURL }) => {
@@ -445,9 +579,10 @@ test("the Hosts tab lists every host with its endpoint and token badge", async (
   await tab(page, "hosts").click();
 
   const rows = page.locator(".host-row");
-  await expect(rows).toHaveCount(settings.hosts.rows.length);
-  for (const [i, host] of settings.hosts.rows.entries()) {
-    const row = rows.nth(i);
+  await expect(rows).toHaveCount(1);
+  for (const host of settings.hosts.rows) {
+    await openConnection(page, `host:${host.id}`);
+    const row = rows.first();
     await expect(row.locator(".host-name")).toHaveText(host.name);
     await expect(row).toContainText(host.endpoint);
     // Both sides of the badge, from the same fixture: a suite that only ever
@@ -463,6 +598,7 @@ test("the Hosts tab lists every host with its endpoint and token badge", async (
   // Hidden volumes hang off their own host's row, with the unhide button that
   // addresses that host.
   const withHidden = settings.hosts.rows.find((h) => h.hiddenVolumes.length > 0);
+  await openConnection(page, `host:${withHidden.id}`);
   const hidden = page.locator(`.host-row[data-host="${withHidden.id}"] .hidden-row`);
   await expect(hidden).toHaveCount(withHidden.hiddenVolumes.length);
   await expect(hidden.first().locator(".mount")).toHaveText(withHidden.hiddenVolumes[0]);
@@ -477,7 +613,7 @@ test("the Hosts tab lists every host with its endpoint and token badge", async (
 
 test("the rules editor renders every persisted field, and the Collapse-only ones only for Collapse", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "hosts").click();
+  await openConnection(page, "local");
 
   const t = settings.hosts.rules;
   const rows = page.locator(".rule-row");
@@ -512,7 +648,7 @@ test("the rules editor renders every persisted field, and the Collapse-only ones
 
 test("a rule adds, edits one field at a time, and deletes", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "hosts").click();
+  await openConnection(page, "local");
 
   const t = settings.hosts.rules;
   // A Collapse rule that *has* an expectation, so clearing it below is a real
@@ -572,6 +708,7 @@ test("Test probes that one host and paints the line Rust produced", async ({ pag
   await tab(page, "hosts").click();
 
   const host = settings.hosts.rows[1];
+  await openConnection(page, `host:${host.id}`);
   const row = page.locator(`.host-row[data-host="${host.id}"]`);
   await row.locator(".test").click();
 
@@ -583,12 +720,13 @@ test("Test probes that one host and paints the line Rust produced", async ({ pag
   ]);
   // …and only that row's. A shared result slot is the bug this catches.
   const other = settings.hosts.rows[0];
+  await openConnection(page, `host:${other.id}`);
   await expect(page.locator(`.host-row[data-host="${other.id}"] .result`)).toHaveText("");
 });
 
 test("Add Host waits for a name and an address, and keeps the token out of the DOM", async ({ page, baseURL }) => {
   await openSettings(page, baseURL);
-  await tab(page, "hosts").click();
+  await addConnection(page, "host");
 
   const add = page.locator(".btn.add");
   await expect(add).toBeDisabled();
@@ -622,7 +760,8 @@ test("a credential saves, clears, and never comes back", async ({ page, baseURL 
   // Sentry, not GitHub: the GitHub tab is retired (its token lives on
   // accounts), and the fixture stores a Sentry token, which is the same
   // claim with a subject that still exists.
-  await tab(page, "usage").click();
+  await tab(page, "sentry").click();
+  await page.locator(".replace-secret").click();
 
   const secret = settings.usage.sentry.secret;
   const box = page.locator('.group[data-secret="sentry"]');
@@ -644,6 +783,7 @@ test("a credential saves, clears, and never comes back", async ({ page, baseURL 
   await expect(input).toHaveValue("");
   await expect(page.locator("#settingsStatus")).toHaveText("Saved.");
 
+  await box.locator(".replace-secret").click();
   await box.locator(".clear").click();
   expect(await calls(page, "settings_clear_secret")).toEqual([
     { command: "settings_clear_secret", args: { key: "sentry" } },
@@ -668,8 +808,7 @@ test("the retired GitHub tab is gone and org watching lives on the account", asy
   const freshRow = page.locator(`.group[data-account="${fresh.id}"]`);
 
   await expect(watchingRow.locator(`[data-org="${watching.orgs[0]}"]`)).toBeVisible();
-  await expect(freshRow.locator(".result", { hasText: settings.accounts.noOrgsLabel }).first())
-    .toBeVisible();
+
 
   // Stop watching sends the row's own org, unchecked.
   await watchingRow.locator(`[data-org="${watching.orgs[0]}"] .org-remove`).click();
@@ -682,6 +821,8 @@ test("the retired GitHub tab is gone and org watching lives on the account", asy
 
   // Watch sends the typed org, checked, and clears the field before the
   // round trip. Disabled until something is typed — a hint; Rust validates.
+  await openConnection(page, `account:${fresh.id}`);
+  await expect(freshRow.locator(".result", { hasText: settings.accounts.noOrgsLabel }).first()).toBeVisible();
   const orgInput = page.locator(`#account-org-${fresh.id}`);
   const watch = freshRow.locator(".org-add");
   await expect(watch).toBeDisabled();
@@ -702,6 +843,7 @@ test("a credential with nothing stored offers nothing to clear", async ({ page, 
   // credential with nothing stored". The fixture deliberately stores no Neon
   // key, which is the same claim with a subject that still exists.
   await tab(page, "usage").click();
+  await page.locator(".replace-secret").click();
   expect(settings.usage.neon.secret.stored).toBe(false);
   const box = page.locator('.group[data-secret="neon"]');
   await expect(box.locator(".clear")).toBeDisabled();
@@ -891,6 +1033,8 @@ test("the unattributed section offers the picker, and a card's repo can be re-ho
     return row.locator("select.input");
   };
 
+  await tab(page, "connections").click();
+  await page.locator(".connection-orphans").click();
   const orphanPicker = await configOf(orphan.slug);
   await expect(
     orphanPicker,
@@ -911,6 +1055,7 @@ test("the unattributed section offers the picker, and a card's repo can be re-ho
   // …and back the other way: a card's repo starts on its own account, and the
   // empty option is `null` on the wire — Rust's "unattributed" rather than an
   // id of no characters.
+  await openConnection(page, `account:${owning.id}`);
   const cardPicker = await configOf(attributed.slug);
   await expect(cardPicker).toHaveValue(owning.id);
   await cardPicker.selectOption("");
@@ -938,7 +1083,7 @@ test("Accounts lists every account with its credential badge and what it fetches
   await tab(page, "accounts").click();
 
   const t = settings.accounts;
-  await expect(page.locator(".group[data-account]")).toHaveCount(t.rows.length);
+  await expect(page.locator(".group[data-account]")).toHaveCount(1);
   const { owning, spare } = accountsOf(settings);
 
   const first = page.locator(`.group[data-account="${owning.id}"]`);
@@ -950,6 +1095,7 @@ test("Accounts lists every account with its credential badge and what it fetches
 
   // An account with no token yet says so — `stored: false` is a fact the
   // payload carries, not a key it omits.
+  await openConnection(page, `account:${spare.id}`);
   const second = page.locator(`.group[data-account="${spare.id}"]`);
   await expect(second.locator(".badge-dim")).toHaveText(t.noTokenLabel);
   await expect(second).toContainText(t.noReposLabel);
@@ -998,6 +1144,7 @@ test("an account nothing depends on removes without a confirmation", async ({ pa
   const settings = await openSettings(page, baseURL);
   await tab(page, "accounts").click();
   const { spare } = accountsOf(settings);
+  await openConnection(page, `account:${spare.id}`);
 
   const row = page.locator(`.group[data-account="${spare.id}"]`);
   await row.locator(".btn.delete").first().click();
@@ -1008,13 +1155,11 @@ test("an account nothing depends on removes without a confirmation", async ({ pa
 
 test("an account is added with its vendor, and re-saved without exposing its token", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "accounts").click();
+  await addConnection(page, "account");
   const { owning } = accountsOf(settings);
 
   // The form sits behind Add account… — every form on this tab does.
   const addBox = page.locator('[data-disclosure="add-account"]');
-  await expect(addBox).toBeHidden();
-  await page.locator(".btn.add-account").click();
   await expect(addBox).toBeVisible();
   const add = page.locator(".btn.add");
   await expect(add, "an account needs a name").toBeDisabled();
@@ -1035,6 +1180,7 @@ test("an account is added with its vendor, and re-saved without exposing its tok
 
   // Replace token… reveals the card's token field; the save carries the
   // card's own label, so a rename cannot ride a token replacement.
+  await openConnection(page, `account:${owning.id}`);
   const card = page.locator(`.group[data-account="${owning.id}"]`);
   const tokenBox = card.locator('[data-disclosure="replace-token"]');
   await expect(tokenBox).toBeHidden();
@@ -1055,15 +1201,13 @@ test("Usage and Azure write every provider preference together", async ({ page, 
   await tab(page, "usage").click();
 
   await expect(page.locator("#neon-org-id")).toHaveValue(settings.usage.neon.orgId);
-  await expect(page.locator("#sentry-org-slug")).toHaveValue(settings.usage.sentry.orgSlug);
-  await expect(page.locator("#sentry-quota")).toHaveValue(String(settings.usage.sentry.quota));
+  await expect(page.locator("#sentry-org-slug")).toHaveCount(0);
+  await page.locator(".connection-advanced summary").click();
 
   await page.locator("#neon-org-id").fill("org-abc");
-  await page.locator("#sentry-quota").fill("100000");
   await page.locator("#neon-usd-cu-hour").fill("0.106");
   await page.locator("#neon-usd-gib-month").fill("0.35");
-  await expect(page.locator("#vercel-team-id")).toHaveValue(settings.usage.vercel.teamId);
-  await page.locator("#vercel-team-id").fill("team_abc");
+  await expect(page.locator("#vercel-team-id")).toHaveCount(0);
   await page.locator(".btn.apply").click();
 
   // The Azure budget travels with them, unchanged: `settings_save_providers`
@@ -1076,11 +1220,11 @@ test("Usage and Azure write every provider preference together", async ({ page, 
         prefs: {
           neonOrgId: "org-abc",
           sentryOrgSlug: settings.usage.sentry.orgSlug,
-          sentryMonthlyEventQuota: 100000,
+          sentryMonthlyEventQuota: settings.usage.sentry.quota,
           azureMonthlyBudgetUsd: settings.azure.budget.value,
           neonUsdPerCuHour: 0.106,
           neonUsdPerGibMonth: 0.35,
-          vercelTeamId: "team_abc",
+          vercelTeamId: settings.usage.vercel.teamId,
         },
       },
     },
@@ -1114,6 +1258,7 @@ test("a typed org ID survives saving that provider's key", async ({ page, baseUR
   // must survive that render or it is silently lost while the "Saved." status
   // says otherwise.
   await page.locator("#neon-org-id").fill("org-fond-sea-12345678");
+  await page.locator(".replace-secret").click();
   await page.locator("#secret-neon").fill("napi_smoke");
   await page.locator('.group[data-secret="neon"] .btn.save').click();
   expect(await calls(page, "settings_save_secret")).toEqual([
@@ -1129,10 +1274,10 @@ test("a typed org ID survives saving that provider's key", async ({ page, baseUR
 
 test("Services lists every watched status page with the component it watches", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
-  await tab(page, "services").click();
+  await openConnection(page, `vendor:${settings.services.rows[0].id}`);
 
   const t = settings.services;
-  await expect(page.locator(".vendor-row")).toHaveCount(t.rows.length);
+  await expect(page.locator(".vendor-row")).toHaveCount(1);
   const first = page.locator(`.vendor-row[data-vendor="${t.rows[0].id}"]`);
   await expect(first.locator(".host-name")).toHaveText(t.rows[0].label);
   await expect(first.locator(".dim")).toHaveText(t.rows[0].baseUrl);
@@ -1351,6 +1496,7 @@ test("OpenClaw round-trips the gateway URL and its bearer token", async ({ page,
   // The bearer token rides the shared credential controls, so it is written
   // through the same command every other secret is — and the field is emptied
   // the moment the value is handed over.
+  await page.locator(".replace-secret").click();
   const token = page.locator("#secret-openclaw");
   await expect(token).toHaveAttribute("type", "password");
   await token.fill("gateway-token");

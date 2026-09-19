@@ -48,7 +48,7 @@ use viewmodel::color;
 pub const NO_RUNTIME_MESSAGE: &str = "no agent runtime configured";
 
 /// Configured nothing yet: the runtime is idle because nothing was attempted.
-pub const IDLE_HINT: &str = "add a gateway URL in Settings → OpenClaw";
+pub const IDLE_HINT: &str = "add a gateway URL in Settings → Connections → OpenClaw";
 
 /// The connection line while the socket is being opened.
 pub const CONNECTING_REASON: &str = "connecting…";

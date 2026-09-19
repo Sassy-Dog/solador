@@ -219,6 +219,23 @@ pub fn parse_port(raw: &str) -> u16 {
     raw.trim().parse().unwrap_or(DEFAULT_AGENT_PORT)
 }
 
+/// Editing connection details must retain the host id (and therefore its
+/// credential), monitoring preference and hidden-volume choices.
+pub fn edit_host(
+    host: &mut Host,
+    name: &str,
+    address: &str,
+    port: &str,
+) -> Result<(), &'static str> {
+    if name.trim().is_empty() || address.trim().is_empty() {
+        return Err("Skipped — name and address are required.");
+    }
+    host.name = name.trim().into();
+    host.address = address.trim().into();
+    host.port = parse_port(port);
+    Ok(())
+}
+
 /// Whether a repo slug is addable, per `PortfolioStore.add(slug:)`.
 ///
 /// Returns the trimmed slug. The duplicate check is case-insensitive because
@@ -715,23 +732,13 @@ pub fn view(
         "title": OPEN_LABEL,
         "openLabel": OPEN_LABEL,
         "closeLabel": "Done",
-        // The original window's tab order, plus Layout — which the original app has
-        // no counterpart for — beside the other cockpit-shaping preferences.
         "tabs": [
-            { "id": "general", "title": "General" },
+            { "id": "connections", "title": "Connections" },
+            { "id": "general", "title": "Preferences" },
             { "id": "layout", "title": "Detailed layout" },
-            // Before the portfolio it attributes: an account is read
-            // left-to-right as "the token, then which repos it fetches". The
-            // GitHub tab that used to precede it is retired — accounts are the
-            // only home a token has, and org selection lives on each account.
-            { "id": "accounts", "title": "Accounts" },
-            { "id": "hosts", "title": "Hosts" },
-            { "id": "azure", "title": "Azure Cost" },
-            { "id": "usage", "title": "Usage" },
-            { "id": "services", "title": "Services" },
-            { "id": "openclaw", "title": "OpenClaw" },
             { "id": "about", "title": "About" },
         ],
+        "connections": connections_section(store, stored, openclaw),
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
@@ -744,9 +751,222 @@ pub fn view(
     })
 }
 
+/// Configuration status is deliberately distinct from liveness. A saved token
+/// proves that setup exists, not that its provider accepted the last request.
+/// OpenClaw has live facts here; other sources say only what this snapshot knows.
+fn connections_section(
+    store: StoreSections<'_>,
+    stored: &StoredSecrets,
+    openclaw: &openclaw::SettingsFacts,
+) -> Value {
+    let status = |text: &str, attention: bool| {
+        json!({
+            "text": text, "attention": attention,
+            "color": color::hex(if attention { color::AMBER } else { color::MUTED }),
+        })
+    };
+    let row = |id: String,
+               kind: &str,
+               entity: Option<String>,
+               title: &str,
+               identity: String,
+               feeds: &str,
+               state: Value| {
+        json!({
+            "id": id, "kind": kind, "entityId": entity, "title": title,
+            "identity": identity, "feeds": feeds, "status": state,
+        })
+    };
+    let mut rows = Vec::new();
+    for account in store.accounts {
+        rows.push(row(
+            format!("account:{}", account.id),
+            "account",
+            Some(account.id.to_string()),
+            "GitHub",
+            account.label.clone(),
+            "GitHub repos · Runners",
+            if !account.enabled {
+                status("Paused", false)
+            } else if stored.accounts.contains(&account.id) {
+                status("Configured", false)
+            } else {
+                status("Token needed", true)
+            },
+        ));
+    }
+    for host in store.hosts {
+        rows.push(row(
+            format!("host:{}", host.id),
+            "host",
+            Some(host.id.to_string()),
+            "Remote host",
+            host.name.clone(),
+            "Machines · Containers / VMs",
+            if !host.enabled {
+                status("Paused", false)
+            } else if stored.hosts.contains(&host.id) {
+                status("Configured", false)
+            } else {
+                status("Token needed", true)
+            },
+        ));
+    }
+    let s = store.settings;
+    for (kind, title, identity, feeds, credential, configured, complete) in [
+        (
+            "neon",
+            "Neon",
+            s.neon_org_id.as_str(),
+            "Usage",
+            stored.neon,
+            !s.neon_org_id.is_empty() || stored.neon,
+            stored.neon,
+        ),
+        (
+            "sentry",
+            "Sentry",
+            s.sentry_org_slug.as_str(),
+            "Usage · Scheduled jobs",
+            stored.sentry,
+            !s.sentry_org_slug.is_empty() || stored.sentry,
+            stored.sentry && !s.sentry_org_slug.is_empty(),
+        ),
+        (
+            "vercel",
+            "Vercel",
+            s.vercel_team_id.as_str(),
+            "Usage",
+            stored.vercel,
+            !s.vercel_team_id.is_empty() || stored.vercel,
+            stored.vercel,
+        ),
+    ] {
+        if configured {
+            rows.push(row(
+                kind.into(),
+                kind,
+                None,
+                title,
+                identity.into(),
+                feeds,
+                if complete {
+                    status("Configured", false)
+                } else {
+                    status(
+                        if credential {
+                            "Setup incomplete"
+                        } else {
+                            "Token needed"
+                        },
+                        true,
+                    )
+                },
+            ));
+        }
+    }
+    if !s.azure_storage_account.is_empty() || !s.azure_cost_container.is_empty() {
+        let complete = !s.azure_storage_account.is_empty() && !s.azure_cost_container.is_empty();
+        rows.push(row(
+            "azure".into(),
+            "azure",
+            None,
+            "Azure Cost",
+            s.azure_storage_account.clone(),
+            "Azure Cost",
+            status(
+                if complete {
+                    "Uses Azure CLI"
+                } else {
+                    "Setup incomplete"
+                },
+                !complete,
+            ),
+        ));
+    }
+    if !s.openclaw_gateway_url.is_empty() || stored.openclaw {
+        let (text, tint) = openclaw_status(&openclaw.connection);
+        rows.push(row(
+            "openclaw".into(),
+            "openclaw",
+            None,
+            "OpenClaw",
+            s.openclaw_gateway_url.clone(),
+            "OpenClaw",
+            json!({"text": text, "color": color::hex(tint),
+                "attention": openclaw.pairing.is_some() || tint == color::RED}),
+        ));
+    }
+    for vendor in store.vendors {
+        rows.push(row(
+            format!("vendor:{}", vendor.id),
+            "vendor",
+            Some(vendor.id.to_string()),
+            "Status page",
+            vendor.label.clone(),
+            "Service health",
+            status(
+                if vendor.enabled {
+                    "Configured"
+                } else {
+                    "Paused"
+                },
+                false,
+            ),
+        ));
+    }
+    let attention = rows
+        .iter()
+        .filter(|r| r["status"]["attention"] == true)
+        .count();
+    let count = rows.len();
+    json!({
+        "heading": "Connections",
+        "summary": if attention == 0 { format!("{count} configured") }
+            else { format!("{count} configured · {attention} needs attention") },
+        "attentionCount": if attention == 0 { String::new() } else { attention.to_string() },
+        "rows": rows,
+        "empty": "Add a connection to start monitoring a remote host or provider.",
+        "addLabel": "Add connection",
+        "backLabel": "← Connections",
+        "catalogHeading": "Add connection",
+        "catalogHelp": "One connection can feed several tiles.",
+        "catalog": [
+            {"kind":"account", "title":"GitHub", "feeds":"Repositories and self-hosted runners"},
+            {"kind":"host", "title":"Remote host", "feeds":"Machines, containers and virtual machines"},
+            {"kind":"neon", "title":"Neon", "feeds":"Database usage and estimated charges"},
+            {"kind":"sentry", "title":"Sentry", "feeds":"Usage and scheduled jobs"},
+            {"kind":"vercel", "title":"Vercel", "feeds":"Billing usage"},
+            {"kind":"azure", "title":"Azure Cost", "feeds":"Cost exports and monthly budget"},
+            {"kind":"openclaw", "title":"OpenClaw", "feeds":"Gateway activity and device pairing"},
+            {"kind":"vendor", "title":"Status page", "feeds":"A custom service and its component"},
+        ],
+        "automaticHeading": "Automatic sources",
+        "automatic": [
+            {"kind":"local", "title":"This machine", "feeds":"Local monitoring and container rules",
+                "help":"Local machine metrics are collected automatically. Container rules can apply to this machine or a remote host."},
+            {"kind":"claude", "title":"Claude Code", "feeds":"Local usage logs",
+                "help":"Claude Code usage is read from local session logs. No account token is required."},
+            {"kind":"services", "title":"Service health", "feeds":"Connected providers",
+                "help":"Service health follows configured providers automatically. Add a status page to watch another service."},
+        ],
+        "unattributedLabel": "Repositories needing an account",
+        "layoutHelp": "Tile names, scope and placement are in Overview → Edit dashboard.",
+        "advancedLabel": "Advanced options",
+        "replaceLabel": "Replace…", "addCredentialLabel": "Add credential…",
+        "cancelLabel": "Cancel", "saveLabel": "Save changes",
+        "saveFailed": "Could not save these changes. Try again.",
+        "monitorLabel": "Monitor this connection",
+        "unsavedHeading": "Keep your changes?",
+        "unsavedHelp": "This editor has unsaved changes.",
+        "keepLabel": "Keep editing", "discardLabel": "Discard changes",
+        "hostNameLabel": "Connection name", "hostAddressLabel": "Address", "hostPortLabel": "Agent port",
+    })
+}
+
 fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
     json!({
-        "heading": "General Settings",
+        "heading": "Preferences",
         "refreshInterval": {
             "label": "Refresh Interval",
             "value": settings.refresh_interval_secs,
@@ -1747,6 +1967,8 @@ fn hosts_tab(
                 "id": host.id.to_string(),
                 "name": host.name,
                 "endpoint": format!("{}:{}", host.address, host.port),
+                "address": host.address,
+                "port": host.port,
                 "enabled": host.enabled,
                 "tokenStored": stored.hosts.contains(&host.id),
                 "hiddenVolumes": host.hidden_volume_mounts,
@@ -2548,18 +2770,85 @@ mod tests {
             .iter()
             .map(|tab| tab["id"].as_str().expect("id"))
             .collect();
-        assert_eq!(
-            ids,
-            vec![
-                "general", "layout", "accounts", "hosts", "azure", "usage", "services", "openclaw",
-                "about"
-            ]
-        );
+        assert_eq!(ids, vec!["connections", "general", "layout", "about"]);
         // Every tab id must address a section of the payload, or the frontend
         // renders a blank pane for a tab that exists.
         for id in ids {
             assert!(!vm[id].is_null(), "tab {id} has no payload section");
         }
+    }
+
+    #[test]
+    fn host_edits_preserve_identity_credentials_scope_and_monitoring_choices() {
+        let mut host = Host::new("before", "old.example");
+        host.enabled = false;
+        host.hidden_volume_mounts.push("/backup".into());
+        let original = host.clone();
+        edit_host(&mut host, " After ", " new.example ", "9000").unwrap();
+        assert_eq!(host.id, original.id);
+        assert_eq!(host.created_at, original.created_at);
+        assert_eq!(host.enabled, original.enabled);
+        assert_eq!(host.hidden_volume_mounts, original.hidden_volume_mounts);
+        assert_eq!(host.name, "After");
+        assert_eq!(host.address, "new.example");
+        assert_eq!(host.port, 9000);
+        let edited = host.clone();
+        assert!(edit_host(&mut host, "", "another.example", "80").is_err());
+        assert_eq!(host, edited, "a rejected edit must not partially apply");
+    }
+
+    #[test]
+    fn connections_share_sources_and_never_infer_liveness_from_saved_tokens() {
+        let (mut settings, hosts, repos, mut stored) = sample();
+        settings.sentry_org_slug = "sample-org".into();
+        stored.sentry = true;
+        let vm = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let rows = vm["connections"]["rows"].as_array().unwrap();
+        let sentry = rows.iter().find(|r| r["kind"] == "sentry").unwrap();
+        assert_eq!(sentry["feeds"], "Usage · Scheduled jobs");
+        assert_eq!(sentry["status"]["text"], "Configured");
+        assert_eq!(sentry["status"]["attention"], false);
+        let remote = rows
+            .iter()
+            .find(|r| r["entityId"] == hosts[0].id.to_string())
+            .unwrap();
+        assert_eq!(remote["id"], format!("host:{}", hosts[0].id));
+        assert_eq!(remote["feeds"], "Machines · Containers / VMs");
+        stored.sentry = false;
+        let missing = view_of(&settings, &hosts, &repos, &stored, &facts());
+        let sentry = missing["connections"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["kind"] == "sentry")
+            .unwrap();
+        assert_eq!(sentry["status"]["text"], "Token needed");
+        assert_eq!(sentry["status"]["attention"], true);
+        stored.hosts.clear();
+        let missing = view_of(&settings, &hosts, &repos, &stored, &facts());
+        for host in &hosts {
+            let row = missing["connections"]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["entityId"] == host.id.to_string())
+                .unwrap();
+            assert_eq!(row["status"]["attention"], host.enabled);
+        }
+    }
+
+    #[test]
+    fn new_connections_are_offered_without_inventing_configured_providers() {
+        let vm = view_of(
+            &Settings::default(),
+            &[],
+            &[],
+            &StoredSecrets::default(),
+            &facts(),
+        );
+        assert_eq!(vm["connections"]["rows"], json!([]));
+        assert_eq!(vm["connections"]["catalog"].as_array().unwrap().len(), 8);
+        assert_eq!(vm["connections"]["automatic"].as_array().unwrap().len(), 3);
     }
 
     #[test]

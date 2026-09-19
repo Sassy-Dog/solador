@@ -75,7 +75,7 @@ impl GitHubError {
         match self {
             GitHubError::NotAuthenticated => {
                 format!(
-                    "{} → GitHub Token",
+                    "{} → Connections → GitHub",
                     Fault::CredentialRejected.message(VENDOR)
                 )
             }
@@ -580,7 +580,10 @@ mod tests {
             message.starts_with(&Fault::CredentialRejected.message("GitHub")),
             "{message}"
         );
-        assert!(message.ends_with("Settings → GitHub Token"), "{message}");
+        assert!(
+            message.ends_with("Settings → Connections → GitHub"),
+            "{message}"
+        );
     }
 
     /// A 403 whose response says the budget is spent is a rate limit, and it

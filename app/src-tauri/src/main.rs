@@ -3903,6 +3903,76 @@ fn settings_add_host(
 }
 
 #[tauri::command]
+fn settings_save_host(
+    id: String,
+    name: String,
+    address: String,
+    port: String,
+    token: String,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return settings_response(&state, Some("Skipped — unknown host.".into()));
+    };
+    let result = {
+        let mut store = state.store.lock().expect("store poisoned");
+        save_host_connection(
+            &mut store,
+            state.credentials.as_ref(),
+            id,
+            (&name, &address, &port),
+            &token,
+        )
+    };
+    if result == Ok(true) {
+        // Clients retain their token. Replacing it restarts only this host;
+        // a rename or another connection's edit keeps every poll/history.
+        let mut hosts = state.hosts.lock().expect("poll set poisoned");
+        hosts.retain(|host| {
+            if host.key.id != id {
+                return true;
+            }
+            host.task.abort();
+            false
+        });
+    }
+    reload_hosts(&state);
+    settings_response(
+        &state,
+        Some(result.map_or_else(|message| message, |_| "Saved.".into())),
+    )
+}
+
+/// A failed file write must retain both the previous host and its credential.
+/// A successful ordinary edit never touches the credential store at all.
+fn save_host_connection(
+    store: &mut Store,
+    credentials: &dyn CredentialStore,
+    id: Uuid,
+    (name, address, port): (&str, &str, &str),
+    token: &str,
+) -> Result<bool, String> {
+    let original = store.host(id).cloned().ok_or("Skipped — unknown host.")?;
+    let mut edited = original.clone();
+    settings::edit_host(&mut edited, name, address, port)?;
+    store.upsert_host(edited);
+    if let Err(error) = store.save() {
+        store.upsert_host(original);
+        return Err(format!("Could not save connection: {error}"));
+    }
+    if token.is_empty() {
+        return Ok(false);
+    }
+    credentials
+        .set_secret(SecretKey::HostToken(id), token)
+        .map_err(|error| {
+            eprintln!("could not replace the host's token: {error}");
+            "Connection saved, but its token could not be replaced. Try again.".to_owned()
+        })?;
+    Ok(true)
+}
+
+#[tauri::command]
 fn settings_set_host_enabled(
     id: String,
     enabled: bool,
@@ -5902,6 +5972,7 @@ fn main() {
             settings_set_container_rule,
             settings_remove_container_rule,
             settings_test_host,
+            settings_save_host,
             settings_add_repo,
             settings_remove_repo,
             settings_set_repo_enabled,
@@ -7474,6 +7545,89 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let store = Store::open_in(dir.path(), false).expect("open");
         (dir, store)
+    }
+
+    #[test]
+    fn host_connection_edits_keep_the_existing_token_until_explicitly_replaced() {
+        let (dir, mut store) = scratch_store();
+        let credentials = MemoryCredentialStore::new();
+        let host = Host::new("before", "old.example");
+        let id = host.id;
+        store.upsert_host(host);
+        credentials
+            .set_secret(SecretKey::HostToken(id), "old-token")
+            .unwrap();
+        assert_eq!(
+            save_host_connection(
+                &mut store,
+                &credentials,
+                id,
+                ("after", "new.example", "9000"),
+                ""
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            credentials
+                .secret(SecretKey::HostToken(id))
+                .unwrap()
+                .as_deref(),
+            Some("old-token")
+        );
+        let reopened = Store::open_in(dir.path(), false).unwrap();
+        assert_eq!(reopened.host(id).unwrap().address, "new.example");
+        assert_eq!(reopened.hosts().len(), 1);
+        assert_eq!(
+            save_host_connection(
+                &mut store,
+                &credentials,
+                id,
+                ("after", "new.example", "9000"),
+                "replacement-token"
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            credentials
+                .secret(SecretKey::HostToken(id))
+                .unwrap()
+                .as_deref(),
+            Some("replacement-token")
+        );
+        assert!(!std::fs::read_to_string(store.path())
+            .unwrap()
+            .contains("replacement-token"));
+    }
+
+    #[test]
+    fn a_failed_host_connection_write_preserves_the_old_host_and_credential() {
+        let (_dir, mut store) = scratch_store();
+        let credentials = MemoryCredentialStore::new();
+        let original = Host::new("before", "old.example");
+        let id = original.id;
+        store.upsert_host(original.clone());
+        store.save().unwrap();
+        credentials
+            .set_secret(SecretKey::HostToken(id), "old-token")
+            .unwrap();
+        std::fs::remove_file(store.path()).unwrap();
+        std::fs::create_dir(store.path()).unwrap();
+        assert!(save_host_connection(
+            &mut store,
+            &credentials,
+            id,
+            ("after", "new.example", "9000"),
+            "replacement-token"
+        )
+        .is_err());
+        assert_eq!(store.host(id), Some(&original));
+        assert_eq!(
+            credentials
+                .secret(SecretKey::HostToken(id))
+                .unwrap()
+                .as_deref(),
+            Some("old-token")
+        );
     }
 
     #[test]

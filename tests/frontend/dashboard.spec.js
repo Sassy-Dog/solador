@@ -387,8 +387,9 @@ test("details reach the existing full panel and the source's connection settings
   await action(page, "manage").click();
   await expect(page.locator("#settings")).toBeVisible();
   await expect(
-    page.locator('#settings .tab[data-tab="accounts"]'),
+    page.locator('#settings .tab[data-tab="connections"]'),
   ).toHaveAttribute("data-active", "true");
+  await expect(page.locator('#settings .connection-row[data-kind="account"]').first()).toBeVisible();
   await expect(page.locator("#dashboardOverview")).toBeHidden();
   await page.locator("#settingsClose").click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();

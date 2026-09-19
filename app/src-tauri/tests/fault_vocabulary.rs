@@ -113,7 +113,7 @@ fn an_arm_that_knows_more_says_the_stock_sentence_first_and_then_the_extra() {
         (
             GitHubError::NotAuthenticated.user_message(),
             Fault::CredentialRejected.message("GitHub"),
-            "GitHub Token",
+            "Connections → GitHub",
         ),
         (
             GitHubError::Unreachable(LEAKY_PAYLOAD.to_owned()).user_message(),

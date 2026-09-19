@@ -24,7 +24,9 @@
 const S = {
   /** The last `settings_view` payload. Null until Settings is first opened. */
   view: null,
-  tab: "general",
+  tab: "connections",
+  editor: null,
+  catalog: false,
   status: "",
   /** Host id -> its last Test result line. Survives a re-render. */
   tests: new Map(),
@@ -56,7 +58,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (Object.keys(S.discover).length === 0) return;
   S.discover = {};
-  render();
+  renderKeepingEdits();
 });
 
 function node(tag, cls, text) {
@@ -101,7 +103,7 @@ function numberInput(value, min, max) {
   return input;
 }
 
-function select(options, value) {
+function select(options, value, { saveOnChange = false } = {}) {
   const sel = node("select", "input");
   for (const option of options) {
     const opt = node("option", null, option.label);
@@ -109,6 +111,8 @@ function select(options, value) {
     sel.appendChild(opt);
   }
   sel.value = String(value);
+  sel.dataset.initialValue = sel.value;
+  if (saveOnChange) sel.dataset.saveOnChange = "true";
   return sel;
 }
 
@@ -151,9 +155,12 @@ const int = (raw) => Math.max(0, Math.round(Number(raw) || 0));
  *  is handed to Rust, and nothing may carry one across a render. */
 function unappliedEdits() {
   const edits = [];
-  for (const el of document.querySelectorAll("#settings input[id]")) {
+  for (const el of document.querySelectorAll("#settings input[id], #settings select[id]")) {
     if (el.type === "password" || el.type === "checkbox") continue;
-    if (el.value !== el.defaultValue) edits.push([el.id, el.value]);
+    // Immediate saves must render Rust's answer, including a refused change.
+    if (el.dataset.saveOnChange === "true") continue;
+    const initial = el.tagName === "SELECT" ? el.dataset.initialValue : el.defaultValue;
+    if (el.value !== initial) edits.push([el.id, el.value]);
   }
   return edits;
 }
@@ -171,6 +178,12 @@ function restoreEdits(edits) {
   }
 }
 
+function renderKeepingEdits() {
+  const edits = unappliedEdits();
+  render();
+  restoreEdits(edits);
+}
+
 /** Applies a mutation's `{status, settings}` answer. The frontend never
  *  patches its own copy -- it re-renders from what was actually persisted, so
  *  it cannot show an edit that failed to save. Edits not yet handed to Rust
@@ -180,29 +193,54 @@ function restoreEdits(edits) {
 async function apply(result) {
   if (!result) return;
   const edits = unappliedEdits();
+  const expanded = Array.from(document.querySelectorAll("#settingsBody .connection-advanced"), el => el.open);
   S.view = result.settings;
   S.status = result.status || "";
   render();
   restoreEdits(edits);
+  document.querySelectorAll("#settingsBody .connection-advanced").forEach((el, index) => { el.open = expanded[index] || false; });
 }
 
 async function mutate(command, args) {
-  apply(await callRust(command, args));
+  const previous = new Set(S.view.connections.rows.map(row => row.id));
+  const editor = S.editor;
+  let result;
+  try { result = await callRust(command, args); }
+  catch {
+    S.status = S.view.connections.saveFailed;
+    $s("settingsStatus").textContent = S.status;
+    return;
+  }
+  if (result?.settings && editor && S.editor === editor && !editor.entityId) {
+    const created = result.settings.connections.rows.find(row =>
+      row.kind === editor.kind && !previous.has(row.id));
+    if (created) S.editor = { ...created };
+  }
+  apply(result);
 }
 
 // MARK: rendering
 
 function renderTabs() {
   const bar = $s("settingsTabs");
+  bar.setAttribute("aria-label", S.view.title);
   bar.replaceChildren();
   for (const tab of S.view.tabs) {
     const b = button(tab.title, "tab");
     b.dataset.tab = tab.id;
     if (tab.id === S.tab) b.dataset.active = "true";
-    b.addEventListener("click", () => {
+    b.setAttribute("aria-current", tab.id === S.tab ? "page" : "false");
+    if (tab.id === "connections" && S.view.connections.attentionCount) {
+      b.appendChild(node("span", "connection-count", S.view.connections.attentionCount));
+    }
+    b.addEventListener("click", () => navigate(() => {
       S.tab = tab.id;
+      S.editor = null;
+      S.catalog = false;
+      S.status = "";
+      S.discover = {};
       render();
-    });
+    }));
     bar.appendChild(b);
   }
 }
@@ -213,9 +251,21 @@ function renderTabs() {
  *  back, so a stored credential has no path into the DOM. */
 function secretControls(box, secret) {
   box.dataset.secret = secret.key;
-
+  const labels = S.view.connections;
+  const summary = node("div", "credential-summary row");
+  summary.append(node("span", "lbl", secret.fieldLabel), node("span", "grow"));
+  if (secret.stored) summary.appendChild(node("span", "badge-ok", secret.storedLabel));
+  const replace = button(secret.stored ? labels.replaceLabel : labels.addCredentialLabel, "replace-secret");
+  const edit = node("div", "credential-editor stack");
+  edit.hidden = true;
   const input = textInput("", "password");
-  box.appendChild(field(`secret-${secret.key}`, secret.fieldLabel, input));
+  input.autocomplete = "new-password";
+  edit.appendChild(field(`secret-${secret.key}`, secret.fieldLabel, input));
+  replace.addEventListener("click", () => {
+    edit.hidden = false;
+    replace.hidden = true;
+    input.focus();
+  });
 
   const row = node("div", "row");
   const save = button(secret.saveLabel, "save");
@@ -233,8 +283,17 @@ function secretControls(box, secret) {
   });
   clear.addEventListener("click", () => mutate("settings_clear_secret", { key: secret.key }));
   row.append(save, clear, node("span", "grow"));
-  if (secret.stored) row.appendChild(node("span", "badge-ok", secret.storedLabel));
-  box.append(row, help(secret.help));
+  const cancel = button(labels.cancelLabel, "credential-cancel");
+  cancel.addEventListener("click", () => {
+    input.value = "";
+    edit.hidden = true;
+    replace.hidden = false;
+    replace.focus();
+  });
+  row.append(cancel);
+  summary.append(replace);
+  edit.append(row, help(secret.help));
+  box.append(summary, edit);
   return box;
 }
 
@@ -358,7 +417,7 @@ function layoutRow(t, band, panel) {
   row.dataset.panel = panel.id;
   row.append(node("span", "layout-name", panel.title), node("span", "grow"));
 
-  const span = select(t.spanOptions, panel.span);
+  const span = select(t.spanOptions, panel.span, { saveOnChange: true });
   span.addEventListener("change", () =>
     mutate("settings_set_panel_span", {
       minWidth: band.minWidth,
@@ -469,7 +528,7 @@ function layoutTab(t) {
   const list = group(t.heading);
   list.appendChild(help(t.help));
 
-  const overflow = select(t.overflowOptions, current.hostOverflow);
+  const overflow = select(t.overflowOptions, current.hostOverflow, { saveOnChange: true });
   overflow.addEventListener("change", () =>
     mutate("settings_set_breakpoint_overflow", {
       minWidth: current.minWidth,
@@ -522,14 +581,16 @@ function hiddenRow(t, mount, hostId) {
   return row;
 }
 
-function hostsTab(t) {
-  const list = group(t.heading);
+function hostsTab(t, options = {}) {
+  const list = group(options.edit ? null : t.heading);
   if (t.rows.length === 0) {
     list.appendChild(help(t.empty));
   }
   for (const host of t.rows) {
     const row = node("div", "host-row");
     row.dataset.host = host.id;
+
+    if (options.edit) row.appendChild(hostDetails(t, host));
 
     const head = node("div", "row");
     const names = node("div", "stack");
@@ -552,6 +613,7 @@ function hostsTab(t) {
     });
 
     const enabled = checkbox(host.enabled);
+    enabled.setAttribute("aria-label", S.view.connections.monitorLabel);
     enabled.addEventListener("change", () =>
       mutate("settings_set_host_enabled", { id: host.id, enabled: enabled.checked })
     );
@@ -562,22 +624,29 @@ function hostsTab(t) {
       mutate("settings_remove_host", { id: host.id });
     });
 
-    head.append(test, enabled, remove);
-    row.appendChild(head);
+    const monitor = node("label", "connection-toggle");
+    monitor.append(enabled, node("span", null, S.view.connections.monitorLabel));
+    head.append(test, remove);
+    row.prepend(head);
+    row.appendChild(monitor);
     for (const mount of host.hiddenVolumes) row.appendChild(hiddenRow(t, mount, host.id));
     list.appendChild(row);
   }
 
-  const boxes = [list];
+  const boxes = options.addOnly ? [] : [list];
 
   // Only when it has entries: this shell has no local collector, so an empty
   // section here would be a heading for something that cannot exist yet.
-  if (t.localHidden.mounts.length > 0) {
+  if (!options.edit && !options.addOnly && t.localHidden.mounts.length > 0) {
     const local = group(t.localHidden.heading);
     for (const mount of t.localHidden.mounts) local.appendChild(hiddenRow(t, mount, null));
     boxes.push(local);
   }
 
+  if (options.edit) {
+    boxes.push(advanced(rulesGroup(t.rules)));
+    return boxes;
+  }
   const add = group(t.add.heading);
   const name = textInput("");
   const address = textInput("");
@@ -616,8 +685,38 @@ function hostsTab(t) {
   });
   add.append(actionRow(submit), help(t.add.help));
   boxes.push(add);
-  boxes.push(rulesGroup(t.rules));
+  if (!options.addOnly) boxes.push(rulesGroup(t.rules));
   return boxes;
+}
+
+function hostDetails(t, host) {
+  const labels = S.view.connections;
+  const box = node("div", "host-details stack");
+  const fields = node("div", "connection-fields");
+  const name = textInput(host.name);
+  const address = textInput(host.address);
+  const port = textInput(host.port);
+  const token = textInput("", "password");
+  token.autocomplete = "new-password";
+  fields.append(field("host-edit-name", labels.hostNameLabel, name),
+    field("host-edit-address", labels.hostAddressLabel, address),
+    field("host-edit-port", labels.hostPortLabel, port));
+  const replace = button(host.tokenStored ? labels.replaceLabel : labels.addCredentialLabel, "host-replace-token");
+  const credential = field("host-edit-token", t.add.tokenLabel, token);
+  credential.hidden = true;
+  replace.addEventListener("click", () => {
+    credential.hidden = false;
+    replace.hidden = true;
+    token.focus();
+  });
+  const save = button(labels.saveLabel, "host-save primary");
+  save.addEventListener("click", () => {
+    const args = { id: host.id, name: name.value, address: address.value, port: port.value, token: token.value };
+    token.value = "";
+    mutate("settings_save_host", args);
+  });
+  box.append(fields, actionRow(node("span", "lbl", t.add.tokenLabel), replace), credential, actionRow(save));
+  return box;
 }
 
 /**
@@ -638,7 +737,7 @@ function ruleRow(t, rule) {
   const set = (field, value) =>
     mutate("settings_set_container_rule", { index: rule.index, field, value });
 
-  const action = select(t.actions, rule.action);
+  const action = select(t.actions, rule.action, { saveOnChange: true });
   action.title = t.actionLabel;
   action.addEventListener("change", () => set("action", action.value));
 
@@ -677,7 +776,7 @@ function ruleRow(t, rule) {
     controls.push(node("span", "rule-arrow", t.arrow), label, expected);
   }
 
-  const host = select(rule.hostOptions, rule.host);
+  const host = select(rule.hostOptions, rule.host, { saveOnChange: true });
   host.title = t.hostLabel;
   host.className = "input rule-host";
   host.addEventListener("change", () => set("host", host.value));
@@ -719,7 +818,7 @@ function repoConfig(t, account, repo) {
   );
   box.appendChild(field(`repo-workflows-${repo.slug}`, t.workflowsLabel, workflows));
   if (t.accountOptions.length > 0) {
-    const picker = select(t.accountOptions, account ? account.id : "");
+    const picker = select(t.accountOptions, account ? account.id : "", { saveOnChange: true });
     picker.addEventListener("change", () =>
       mutate("settings_set_repo_account", { slug: repo.slug, accountId: picker.value || null })
     );
@@ -810,7 +909,7 @@ function pickerRow(t, account, entry) {
 /** Closes the Configure repos… modal: forget the probe, repaint. */
 function closePicker(accountId) {
   delete S.discover[accountId];
-  render();
+  renderKeepingEdits();
 }
 
 /** The Configure repos… modal: render-driven from `S.discover[account.id]`,
@@ -914,6 +1013,7 @@ function accountCard(t, account) {
       account.stored ? t.tokenStoredLabel : t.noTokenLabel)
   );
   const enabled = checkbox(account.enabled);
+  enabled.setAttribute("aria-label", S.view.connections.monitorLabel);
   enabled.addEventListener("change", () =>
     mutate("settings_set_account_enabled", { id: account.id, enabled: enabled.checked })
   );
@@ -980,7 +1080,9 @@ function accountCard(t, account) {
   });
   confirm.append(node("p", "confirm", account.removePrompt || ""), actionRow(proceed, cancel));
 
-  head.append(enabled, rename, replace, remove);
+  head.append(rename, replace, remove);
+  const monitor = node("label", "connection-toggle");
+  monitor.append(enabled, node("span", null, S.view.connections.monitorLabel));
 
   // The repos this account fetches — just the list, with everything editable
   // behind the per-row Configure… and the whole selection behind the modal.
@@ -999,14 +1101,14 @@ function accountCard(t, account) {
       return;
     }
     S.discover[account.id] = "pending";
-    render();
+    renderKeepingEdits();
     const found = await callRust("settings_discover_repos", { id: account.id }).catch(() => null);
     if (found) {
       S.discover[account.id] = found;
     } else {
       delete S.discover[account.id];
     }
-    render();
+    renderKeepingEdits();
   });
   repos.appendChild(actionRow(configureRepos));
 
@@ -1050,7 +1152,7 @@ function accountCard(t, account) {
   });
   orgs.append(field(`account-org-${account.id}`, t.orgAddLabel, orgInput), actionRow(watch));
 
-  card.append(head, confirm, renameBox, tokenBox, repos, orgs);
+  card.append(head, confirm, renameBox, tokenBox, monitor, repos, orgs);
   return card;
 }
 
@@ -1061,9 +1163,9 @@ function accountCard(t, account) {
  * would be this file inventing an owner, and Rust refuses to do it for the
  * same reason.
  */
-function accountsTab(t) {
+function accountsTab(t, options = {}) {
   const out = [];
-  if (t.rows.length === 0) {
+  if (t.rows.length === 0 && !options.addOnly) {
     const empty = group(t.heading);
     empty.appendChild(help(t.empty));
     out.push(empty);
@@ -1083,11 +1185,12 @@ function accountsTab(t) {
     out.push(orphans);
   }
 
-  // Add Account, behind a button like every other form on this tab.
+  if (options.edit) return out;
+  // The catalog has already selected GitHub, so its create form opens directly.
   const add = node("section", "group");
   const addBox = node("div", "stack");
   addBox.dataset.disclosure = "add-account";
-  addBox.hidden = true;
+  addBox.hidden = !options.addOnly;
   const vendor = select(t.add.vendorOptions, t.add.vendorOptions[0].value);
   const name = textInput("");
   const token = textInput("", "password");
@@ -1118,7 +1221,8 @@ function accountsTab(t) {
   open.addEventListener("click", () => {
     addBox.hidden = !addBox.hidden;
   });
-  add.append(actionRow(open), addBox, help(t.reposHelp), help(t.help), help(t.orgsHelp));
+  if (!options.addOnly) add.appendChild(actionRow(open));
+  add.append(addBox, help(t.reposHelp), help(t.help), help(t.orgsHelp));
   out.push(add);
   return out;
 }
@@ -1165,7 +1269,7 @@ function azureTab(t) {
   return [box, exp];
 }
 
-function usageTab(t) {
+function usageTab(t, provider) {
   // One group per provider, each carrying its own non-secret fields *and* its
   // credential -- the original tab's shape, where adding a provider is adding a
   // section.
@@ -1176,21 +1280,21 @@ function usageTab(t) {
   cuRate.step = "any"; // rates are fractional; the default step=1 would flag 0.106 invalid
   const gibRate = numberInput(t.neon.usdPerGibMonth, 0);
   gibRate.step = "any";
-  neon.append(
+  neon.append(advanced(
     field("neon-usd-cu-hour", t.neon.usdPerCuHourLabel, cuRate),
     field("neon-usd-gib-month", t.neon.usdPerGibMonthLabel, gibRate),
     help(t.neon.ratesHelp)
-  );
+  ));
   secretControls(neon, t.neon.secret);
 
   const sentry = group(t.sentry.heading);
   const orgSlug = textInput(t.sentry.orgSlug);
   const quota = numberInput(t.sentry.quota, 0);
-  sentry.append(
-    field("sentry-org-slug", t.sentry.orgSlugLabel, orgSlug),
+  sentry.appendChild(field("sentry-org-slug", t.sentry.orgSlugLabel, orgSlug));
+  sentry.append(advanced(
     field("sentry-quota", t.sentry.quotaLabel, quota),
     help(t.sentry.quotaHelp)
-  );
+  ));
   secretControls(sentry, t.sentry.secret);
 
   const vercel = group(t.vercel.heading);
@@ -1218,7 +1322,8 @@ function usageTab(t) {
 
   // One Apply for both, because `settings_save_providers` writes every
   // non-secret provider preference in one go.
-  return [neon, sentry, vercel, actionRow(apply)];
+  const groups = { neon, sentry, vercel };
+  return [...(provider ? [groups[provider]] : [neon, sentry, vercel]), actionRow(apply)];
 }
 
 /** One watched status page: its name, its address, the component it is watched
@@ -1239,6 +1344,7 @@ function vendorRow(t, vendor) {
   head.append(names, node("span", "grow"));
 
   const enabled = checkbox(vendor.enabled);
+  enabled.setAttribute("aria-label", S.view.connections.monitorLabel);
   enabled.addEventListener("change", () =>
     mutate("settings_set_status_vendor_enabled", { id: vendor.id, enabled: enabled.checked })
   );
@@ -1246,9 +1352,11 @@ function vendorRow(t, vendor) {
   remove.addEventListener("click", () =>
     mutate("settings_remove_status_vendor", { id: vendor.id })
   );
-  head.append(enabled, remove);
+  const monitor = node("label", "connection-toggle");
+  monitor.append(enabled, node("span", null, S.view.connections.monitorLabel));
+  head.append(remove);
 
-  row.appendChild(head);
+  row.append(head, monitor);
   return row;
 }
 
@@ -1267,10 +1375,11 @@ function vendorRow(t, vendor) {
  * be this file turning "we could not look" into "this page has no components",
  * which are different facts with different fixes.
  */
-function servicesTab(t) {
+function servicesTab(t, options = {}) {
   const list = group(t.heading);
   if (t.rows.length === 0) list.appendChild(help(t.empty));
   for (const vendor of t.rows) list.appendChild(vendorRow(t, vendor));
+  if (options.edit) return [list];
 
   const add = group(t.add.heading);
   // Refilled from the answer rather than from a copy this file keeps:
@@ -1362,7 +1471,7 @@ function servicesTab(t) {
     found.appendChild(actionRow(save));
   }
 
-  return [list, add];
+  return options.addOnly ? [add] : [list, add];
 }
 
 /**
@@ -1533,8 +1642,170 @@ function aboutTab(t) {
   return [box, updatesGroup(t.updates)];
 }
 
+function advanced(...content) {
+  const details = node("details", "connection-advanced");
+  details.append(node("summary", null, S.view.connections.advancedLabel), ...content);
+  return details;
+}
+
+// Navigation never serializes a draft or a password. Keep the current DOM
+// alive until the operator either returns to it or explicitly discards it.
+function navigate(next) {
+  const dirty = unappliedEdits().length > 0 ||
+    Array.from(document.querySelectorAll('#settings input[type="password"]')).some(el => el.value);
+  if (!dirty) { next(); return; }
+  const labels = S.view.connections;
+  const box = $s("settingsConfirm");
+  const heading = node("h2", "group-hdr", labels.unsavedHeading);
+  const keep = button(labels.keepLabel, "primary");
+  const discard = button(labels.discardLabel, "discard");
+  const dismiss = () => { box.hidden = true; box.replaceChildren(); };
+  keep.addEventListener("click", dismiss);
+  discard.addEventListener("click", () => { dismiss(); next(); });
+  box.replaceChildren(heading, help(labels.unsavedHelp), actionRow(keep, discard));
+  box.hidden = false;
+  box.setAttribute("role", "alert");
+  keep.focus();
+}
+
+function showConnections() {
+  S.tab = "connections";
+  S.editor = null;
+  S.catalog = false;
+  S.probe = null;
+  S.discover = {};
+  S.status = "";
+  render();
+}
+
+function openConnection(entry) {
+  navigate(() => {
+    S.tab = "connections";
+    S.catalog = false;
+    S.editor = { ...entry };
+    S.probe = null;
+    S.discover = {};
+    S.status = "";
+    render();
+  });
+}
+
+function connectionButton(entry, cls) {
+  const b = button("", cls);
+  b.dataset.connection = entry.id || entry.kind;
+  b.dataset.kind = entry.kind;
+  const text = node("span", "connection-copy");
+  text.append(node("span", "connection-title", entry.title));
+  if (entry.identity) text.appendChild(node("span", "connection-identity", entry.identity));
+  text.appendChild(node("span", "connection-feeds", entry.feeds));
+  b.append(text);
+  if (entry.status) {
+    const state = node("span", "connection-state", entry.status.text);
+    state.style.color = entry.status.color;
+    b.appendChild(state);
+  }
+  b.addEventListener("click", () => openConnection(entry));
+  return b;
+}
+
+function connectionsTab(t) {
+  const heading = node("div", "connection-heading row");
+  const title = node("div", "stack");
+  title.append(node("h2", null, S.catalog ? t.catalogHeading : t.heading),
+    help(S.catalog ? t.catalogHelp : t.summary));
+  heading.append(title, node("span", "grow"));
+  if (S.catalog) {
+    const back = button(t.backLabel, "connection-back");
+    back.addEventListener("click", () => navigate(showConnections));
+    const catalog = node("div", "connection-catalog");
+    for (const entry of t.catalog) {
+      // Providers have one persisted configuration; the catalog opens that
+      // same editor, while accounts/hosts/status pages can be added again.
+      const existing = t.rows.find(row => row.kind === entry.kind && !row.entityId);
+      catalog.appendChild(connectionButton(existing || entry, "connection-option"));
+    }
+    return [back, heading, catalog];
+  }
+  const add = button(t.addLabel, "primary connection-add");
+  add.addEventListener("click", () => { S.catalog = true; render(); });
+  heading.appendChild(add);
+  const list = node("div", "connection-list");
+  for (const entry of t.rows) list.appendChild(connectionButton(entry, "connection-row"));
+  if (!t.rows.length) list.appendChild(help(t.empty));
+  const automatic = node("section", "connection-automatic");
+  automatic.appendChild(node("h3", null, t.automaticHeading));
+  const items = node("div", "connection-auto-grid");
+  for (const entry of t.automatic) items.appendChild(connectionButton(entry, "connection-option"));
+  automatic.appendChild(items);
+  if (S.view.accounts.unattributed.length) {
+    const orphaned = button(t.unattributedLabel, "connection-orphans");
+    orphaned.addEventListener("click", () => openConnection({ kind: "unattributed", title: t.unattributedLabel }));
+    automatic.appendChild(orphaned);
+  }
+  return [heading, list, automatic, help(t.layoutHelp)];
+}
+
+function connectionEditor() {
+  const t = S.view.connections;
+  const entry = S.editor;
+  const current = entry.id ? t.rows.find(row => row.id === entry.id) : null;
+  // A removal returns a new persisted list; it cannot strand a stale editor.
+  if (entry.entityId && !current) { S.editor = null; return connectionsTab(t); }
+  const back = button(t.backLabel, "connection-back");
+  back.addEventListener("click", () => navigate(showConnections));
+  const heading = node("div", "connection-heading row");
+  const title = node("div", "stack");
+  title.append(node("h2", null, current?.title || entry.title),
+    help(current?.feeds || entry.feeds));
+  heading.append(title, node("span", "grow"));
+  if (current?.status) {
+    const status = node("span", "connection-state", current.status.text);
+    status.style.color = current.status.color;
+    heading.appendChild(status);
+  }
+  let content = [];
+  if (entry.kind === "account") {
+    const accounts = S.view.accounts;
+    content = accountsTab({ ...accounts, rows: accounts.rows.filter(a => a.id === entry.entityId), unattributed: [] },
+      { edit: !!entry.entityId, addOnly: !entry.entityId });
+  } else if (entry.kind === "host") {
+    const hosts = S.view.hosts;
+    content = hostsTab({ ...hosts, rows: hosts.rows.filter(h => h.id === entry.entityId) },
+      { edit: !!entry.entityId, addOnly: !entry.entityId });
+  } else if (["neon", "sentry", "vercel"].includes(entry.kind)) {
+    content = usageTab(S.view.usage, entry.kind);
+  } else if (entry.kind === "azure") content = azureTab(S.view.azure);
+  else if (entry.kind === "openclaw") content = openclawTab(S.view.openclaw);
+  else if (entry.kind === "vendor") {
+    const services = S.view.services;
+    content = servicesTab({ ...services, rows: services.rows.filter(v => v.id === entry.entityId) },
+      { edit: !!entry.entityId, addOnly: !entry.entityId });
+  } else if (entry.kind === "unattributed") {
+    const accounts = S.view.accounts;
+    const orphaned = group(accounts.unattributedHeading);
+    for (const repo of accounts.unattributed) orphaned.appendChild(repoRow(accounts, null, repo));
+    orphaned.appendChild(help(accounts.unattributedHelp));
+    content = [orphaned];
+  } else if (entry.kind === "local") {
+    const hosts = S.view.hosts;
+    const local = group(hosts.localHidden.heading);
+    for (const mount of hosts.localHidden.mounts) local.appendChild(hiddenRow(hosts, mount, null));
+    content = [help(entry.help), ...(hosts.localHidden.mounts.length ? [local] : []), rulesGroup(hosts.rules)];
+  } else if (entry.kind === "claude") content = [help(entry.help)];
+  else if (entry.kind === "services") {
+    const add = button(t.addLabel, "connection-add");
+    add.addEventListener("click", () => openConnection(t.catalog.find(item => item.kind === "vendor")));
+    content = [help(entry.help), actionRow(add)];
+  }
+  return [back, heading, ...content];
+}
+
 function renderBody() {
   const body = $s("settingsBody");
+  if (S.tab === "connections") {
+    body.replaceChildren(...(S.editor ? connectionEditor() : connectionsTab(S.view.connections)));
+    return;
+  }
   const build = {
     general: generalTab,
     layout: layoutTab,
@@ -1560,12 +1831,32 @@ function render() {
 // MARK: open / close
 
 async function openSettings(tab) {
+  const chooseRoute = () => {
+    S.tab = S.view.tabs.some(t => t.id === tab) ? tab : "connections";
+    S.editor = null;
+    S.catalog = false;
+    // Aggregate tiles don't identify one account/host/provider to edit. Their
+    // links land on Connections so the operator can choose the right source.
+    const kinds = { azure: "azure", openclaw: "openclaw", services: "services" };
+    const kind = kinds[tab];
+    if (kind) {
+      const entry = S.view.connections.rows.find(r => r.kind === kind) ||
+        S.view.connections.automatic.find(r => r.kind === kind) ||
+        S.view.connections.catalog.find(r => r.kind === kind);
+      if (entry) S.editor = { ...entry };
+    }
+    S.status = "";
+    S.probe = null;
+    S.discover = {};
+    render();
+  };
+  if (settingsOpen) { navigate(chooseRoute); return; }
   // Offline (no Tauri), the same dumped-fixture path the cockpit uses, so the
   // surface can be opened in a plain browser and by the Playwright suite.
   const view = await callRust("settings_view", {}, "sample-settings.json");
   if (!view) return;
   S.view = view;
-  if (typeof tab === "string" && view.tabs.some(t => t.id === tab)) S.tab = tab;
+  chooseRoute();
   S.status = "";
   // A probe answer must not outlive the session that ran it: reopening
   // Settings would otherwise show a component picker for an address nobody
@@ -1582,10 +1873,14 @@ async function openSettings(tab) {
   startUpdatePolling();
 }
 
-async function closeSettings() {
+async function finishCloseSettings() {
   settingsOpen = false;
   stopUpdatePolling();
   $s("settings").hidden = true;
+  // Closing must remove a discarded password, not merely hide its input.
+  $s("settingsBody").replaceChildren();
+  $s("settingsConfirm").replaceChildren();
+  $s("settingsConfirm").hidden = true;
   $s("cockpitView").hidden = false;
   document.dispatchEvent(new CustomEvent("solador:settings", { detail: false }));
   // Repaint at the real width now rather than up to a poll interval late: the
@@ -1595,6 +1890,10 @@ async function closeSettings() {
   // or address saved a second ago leaves its panel still displaying the setup
   // instruction that asked for it.
   await refreshPanels();
+}
+
+function closeSettings() {
+  navigate(finishCloseSettings);
 }
 
 $s("settingsToggle").addEventListener("click", openSettings);
