@@ -619,17 +619,18 @@ pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
             source_view(id, title, payload)
         })
         .collect();
-    let tiles: Vec<_> = layout
+    let (hidden_tiles, tiles): (Vec<_>, Vec<_>) = layout
         .tiles
         .iter()
-        .filter(|t| !t.hidden)
         .filter_map(|tile| {
             sources
                 .iter()
                 .find(|s| s["id"] == tile.source)
-                .map(|s| tile_view(tile, s))
+                .map(|s| (tile.hidden, tile_view(tile, s)))
         })
-        .collect();
+        .partition(|(hidden, _)| *hidden);
+    let tiles: Vec<_> = tiles.into_iter().map(|(_, tile)| tile).collect();
+    let hidden_tiles: Vec<_> = hidden_tiles.into_iter().map(|(_, tile)| tile).collect();
     let attention: Vec<_> = sources
         .iter()
         .filter(|s| {
@@ -637,7 +638,27 @@ pub fn view(layout: &DashboardLayout, payloads: &[Value]) -> Value {
         })
         .map(|s| json!({"source":s["id"],"label":s["attentionLabel"],"color":s["attentionColor"]}))
         .collect();
-    json!({"layout":layout,"tiles":tiles,"sources":sources,"attention":attention,"labels":labels()})
+    json!({"layout":layout,"tiles":tiles,"hiddenTiles":hidden_tiles,"presets":presets(),"sources":sources,"attention":attention,"labels":labels()})
+}
+
+fn presets() -> Value {
+    json!([
+        {
+            "id":"remote-machines",
+            "hint":"Keep remote hosts together, with CPU and memory at a glance.",
+            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
+        },
+        {
+            "id":"repos-attention",
+            "hint":"Focus on repositories with issues in their available readings.",
+            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos needing attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
+        },
+        {
+            "id":"linux-runners",
+            "hint":"See Linux runner availability in one compact tile.",
+            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false }
+        }
+    ])
 }
 
 fn labels() -> Value {
@@ -651,13 +672,13 @@ fn labels() -> Value {
         ("add", "Add tile"),
         ("undo", "Undo"),
         ("attention", "Needs attention"),
-        ("attentionNote", "Includes hidden tiles"),
+        ("attentionNote", "All sources, even without a tile"),
         ("quiet", "No attention items in available readings."),
         (
             "editHint",
             "Drag tiles or use the arrows. Hiding a tile keeps its source monitored.",
         ),
-        ("empty", "No tiles in this view. Add a tile to get started."),
+        ("empty", "No tiles in this view. Add a tile or restore a hidden one."),
         ("details", "Details →"),
         ("configure", "Configure"),
         ("hide", "Hide"),
@@ -692,11 +713,23 @@ fn labels() -> Value {
         ("medium", "Medium"),
         ("wide", "Wide"),
         ("catalog", "Add a tile"),
+        ("presets", "Start with a preset"),
+        ("presetsHint", "Customize its name, scope and placement before adding."),
+        ("allSources", "All sources"),
         (
             "catalogHint",
             "Choose what to monitor, then set this tile's scope and size.",
         ),
         ("restore", "Restore"),
+        ("restored", "Tile restored in its saved position."),
+        ("hiddenTiles", "Hidden tiles"),
+        ("hiddenCount", "Hidden tiles · {count}"),
+        ("hiddenHint", "Saved here with their scope, size and position. Select a tile to preview its current readings."),
+        ("hiddenEmpty", "No hidden tiles. Tiles you hide will be saved here to restore later."),
+        ("hideSaved", "Tile hidden. Restore it from Hidden tiles, or Undo."),
+        ("remove", "Remove tile"),
+        ("removeNote", "Removing a tile keeps its connection and monitoring. Undo brings the tile back."),
+        ("removed", "Tile removed. Its connection is still monitored. Undo restores the tile."),
         ("source", "Source"),
         ("fullPanel", "Open full panel"),
         ("back", "Overview"),
@@ -793,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn hiding_or_duplicating_tiles_cannot_change_attention() {
+    fn hiding_duplicating_or_removing_tiles_cannot_change_attention() {
         let baseline = crate::dump_dashboard();
         let payload = crate::dump_crons(crate::crons::Fixture::Alerting, false);
         let mut layout = default_layout();
@@ -808,10 +841,55 @@ mod tests {
         duplicate.id = "another-cron-view".into();
         duplicate.hidden = false;
         layout.tiles.push(duplicate);
-        assert_eq!(view(&layout, &[payload])["attention"], attention);
+        assert_eq!(
+            view(&layout, std::slice::from_ref(&payload))["attention"],
+            attention
+        );
+        layout.tiles.clear();
+        let removed = view(&layout, &[payload]);
+        assert_eq!(removed["attention"], attention);
+        assert!(list(&removed, "tiles").is_empty());
+        assert!(list(&removed, "hiddenTiles").is_empty());
         assert!(list(&baseline, "sources")
             .iter()
             .any(|s| s["id"] == "azureCost"));
+    }
+
+    #[test]
+    fn hidden_library_preserves_the_same_scoped_readings_and_saved_slot() {
+        let mut layout = default_layout();
+        layout.tiles[4].scope = "attention".into();
+        layout.tiles[4].width = "wide".into();
+        let payload = crate::dump_crons(crate::crons::Fixture::Alerting, true);
+        let visible = view(&layout, std::slice::from_ref(&payload));
+        layout.tiles[4].hidden = true;
+        let hidden = view(&layout, &[payload]);
+        assert_eq!(hidden["hiddenTiles"][0], visible["tiles"][4]);
+        assert_eq!(list(&hidden, "tiles").len(), 4);
+        assert_eq!(hidden["layout"]["tiles"][4]["id"], "overview-sentryCrons");
+        assert!(!list(&hidden["hiddenTiles"][0], "warnings").is_empty());
+    }
+
+    #[test]
+    fn presets_are_valid_scoped_drafts_and_do_not_create_measured_states() {
+        let snapshot = crate::dump_dashboard();
+        let unmeasured = view(&default_layout(), &[]);
+        let mut ids = BTreeSet::new();
+        for preset in presets().as_array().unwrap() {
+            assert!(ids.insert(preset["id"].as_str().unwrap().to_owned()));
+            let tile: DashboardTile = serde_json::from_value(preset["tile"].clone()).unwrap();
+            assert!(!tile.hidden);
+            assert_ne!(tile.scope, "all");
+            let projected = preview(&tile, &snapshot).unwrap();
+            assert!(!list(&projected, "rows").is_empty());
+            for row in list(&projected, "rows") {
+                assert!(in_scope(row, &tile.scope));
+            }
+            let empty = preview(&tile, &unmeasured).unwrap();
+            assert!(list(&empty, "rows").is_empty());
+            assert_ne!(empty["empty"], "No attention items in available readings.");
+        }
+        assert_eq!(snapshot["layout"], json!(default_layout()));
     }
 
     #[test]

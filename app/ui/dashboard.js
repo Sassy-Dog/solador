@@ -104,7 +104,7 @@
     const editbar = node("div", "db-editbar");
     editbar.append(
       node("span", "", L("editHint")),
-      node("span", "db-hidden-count"),
+      button("", "hidden", null, "db-hidden-count"),
     );
     const inspector = node("section", "db-inspector");
     inspector.id = "dashboardInspector";
@@ -297,14 +297,16 @@
     q(".db-editbar").hidden = !editing;
     text(
       q(".db-hidden-count"),
-      `${model.layout.tiles.filter((t) => t.hidden).length} ${L("hidden")}`,
+      L("hiddenCount").replace("{count}", () => model.layout.tiles.filter((t) => t.hidden).length),
     );
+    q(".db-hidden-count").disabled = busy;
     if (mode === "overview") updateTiles(force);
     if (force && active?.kind === "configure") {
       updatePlacementChoices();
       paintPlacement();
     }
     if (active?.kind === "details") fillDetails();
+    if (active?.kind === "hidden") fillHidden();
     if (focused && !focused.isConnected && focusData) {
       const scope = focusTile
         ? root.querySelector(`[data-tile="${CSS.escape(focusTile)}"]`)
@@ -457,22 +459,44 @@
       preview.setAttribute("aria-label", L("tilePreview"));
       preview.append(node("h3", "", L("tilePreview")), node("p", "db-sub", next.draft ? L("previewHint") : s.title), node("div", "db-preview-grid"));
       box.querySelector(".db-inspector-body").append(preview);
+      if (!next.draft) {
+        const removal = node("div", "db-removal");
+        removal.append(button(L("remove"), "remove", t.id, "db-remove"), node("p", "db-sub", L("removeNote")));
+        box.querySelector(".db-inspector-body").append(removal);
+      }
       form.addEventListener("input", schedulePreview);
       schedulePreview();
       input.focus();
     } else if (next.kind === "catalog") {
       text(copy.children[0], L("catalog"));
       text(copy.children[1], L("catalogHint"));
-      const body = box.querySelector(".db-inspector-body"),
-        catalog = node("div", "db-catalog");
-      for (const t of model.layout.tiles.filter((t) => t.hidden))
-        catalog.append(button(`${L("restore")} ${t.title}`, "restore", t.id));
+      const body = box.querySelector(".db-inspector-body");
+      const presets = node("section", "db-catalog-section"), choices = node("div", "db-catalog");
+      presets.append(node("h3", "", L("presets")), node("p", "db-sub", L("presetsHint")), choices);
+      for (const preset of model.presets || []) {
+        const choose = button("", "preset", preset.id);
+        choose.append(node("strong", "", preset.tile.title), node("span", "db-sub", preset.hint));
+        choices.append(choose);
+      }
+      const all = node("section", "db-catalog-section"), catalog = node("div", "db-catalog");
+      all.append(node("h3", "", L("allSources")), catalog);
       for (const s of model.sources) {
         const choose = button("", "add", s.id);
         choose.append(node("strong", "", s.title), node("span", "db-sub", s.hint));
         catalog.append(choose);
       }
-      body.append(catalog);
+      body.append(presets, all, button(L("hiddenTiles"), "hidden", null, "db-library-link"));
+      choices.querySelector("button")?.focus({ preventScroll: true });
+    } else if (next.kind === "hidden") {
+      text(copy.children[0], L("hiddenTiles"));
+      text(copy.children[1], L("hiddenHint"));
+      const library = node("div", "db-hidden-library");
+      const list = node("div", "db-hidden-list");
+      list.setAttribute("aria-label", L("hiddenTiles"));
+      library.append(list, node("div", "db-hidden-preview"));
+      box.querySelector(".db-inspector-body").append(library);
+      fillHidden();
+      (list.querySelector('[aria-pressed="true"]') || box.querySelector('[data-action="close"]')).focus({ preventScroll: true });
     } else {
       const actions = node("div", "db-form-actions");
       actions.append(
@@ -483,6 +507,59 @@
       fillDetails();
       box.querySelector('[data-action="close"]').focus({ preventScroll: true });
     }
+    box.setAttribute("aria-label", copy.children[0].textContent);
+  }
+  function fillHidden() {
+    const hidden = model.hiddenTiles || [];
+    const list = q(".db-hidden-list"), target = q(".db-hidden-preview");
+    if (!hidden.some(t => t.id === active.id)) active.id = hidden[0]?.id;
+    const choices = hidden.map(t => [t.id, t.title, source(t.source).title, t.scopeLabel, t.width, t.presentation]);
+    const signature = JSON.stringify([choices, active.id]);
+    if (active.listSignature !== signature) {
+      active.listSignature = signature;
+      list.replaceChildren();
+      for (const t of hidden) {
+        const choose = button("", "hidden-preview", t.id);
+        choose.setAttribute("aria-pressed", String(t.id === active.id));
+        choose.append(node("strong", "", t.title), node("span", "db-sub", `${source(t.source).title} · ${t.scopeLabel}`), node("span", "db-sub", `${L(t.width)} · ${L(t.presentation)}`));
+        list.append(choose);
+      }
+    }
+    const selected = hidden.find(t => t.id === active.id);
+    const previewSignature = JSON.stringify(selected);
+    if (active.previewSignature === previewSignature && target.childElementCount) return;
+    active.previewSignature = previewSignature;
+    if (!selected) {
+      target.replaceChildren(node("p", "db-sub", L("hiddenEmpty")));
+      return;
+    }
+    // Refresh readings without replacing the Restore/Remove controls under focus.
+    let grid = target.querySelector(".db-preview-grid");
+    if (!grid || target.dataset.tileId !== selected.id) {
+      target.dataset.tileId = selected.id;
+      grid = node("div", "db-preview-grid");
+      const actions = node("div", "db-form-actions");
+      actions.append(actionLabel(button(L("restore"), "restore", selected.id, "db-primary"), selected.title), actionLabel(button(L("remove"), "remove", selected.id, "db-remove"), selected.title));
+      target.replaceChildren(node("h3", "", L("tilePreview")), grid, actions, node("p", "db-sub db-removal-note", L("removeNote")));
+    }
+    grid.replaceChildren(previewCard(selected));
+    target.querySelectorAll("button").forEach(b => {
+      actionLabel(b, selected.title);
+      b.disabled = busy;
+    });
+  }
+  function previewCard(t) {
+    const card = node("article", "db-preview-tile");
+    card.dataset.width = t.width;
+    const head = node("header", "db-tile-head"), heading = node("div");
+    heading.append(node("h3", "db-tile-title", t.title), node("p", "db-tile-note", `${t.scopeLabel} · ${L(t.presentation)}`));
+    head.append(heading);
+    card.append(head, warnings(t.warnings));
+    if (!t.rows.length) card.append(node("p", "db-sub", t.empty));
+    for (const row of t.rows) card.append(makeRow(row, t, t.presentation === "detailed", false));
+    if (t.moreCount) card.append(node("p", "db-sub", t.moreLabel));
+    card.append(node("footer", "db-tile-footer", t.footer));
+    return card;
   }
   function formTile() {
     const form = q("#dashboardForm");
@@ -568,17 +645,7 @@
         const next = await callRust("dashboard_preview", { tile: { ...draft, title: draft.title || source(draft.source).title }, width: root.clientWidth || innerWidth });
         if (version !== previewVersion || !target.isConnected) return;
         if (!next || !Array.isArray(next.rows)) throw new Error();
-        const card = node("article", "db-preview-tile");
-        card.dataset.width = next.width;
-        const head = node("header", "db-tile-head"), heading = node("div");
-        heading.append(node("h3", "db-tile-title", next.title), node("p", "db-tile-note", `${next.scopeLabel} · ${L(next.presentation)}`));
-        head.append(heading);
-        card.append(head, warnings(next.warnings));
-        if (!next.rows.length) card.append(node("p", "db-sub", next.empty));
-        for (const row of next.rows) card.append(makeRow(row, next, next.presentation === "detailed", false));
-        if (next.moreCount) card.append(node("p", "db-sub", next.moreLabel));
-        card.append(node("footer", "db-tile-footer", next.footer));
-        target.replaceChildren(card);
+        target.replaceChildren(previewCard(next));
       } catch {
         if (version === previewVersion && target.isConnected) target.replaceChildren(node("p", "db-sub", L("previewFailed")));
       } finally {
@@ -832,6 +899,23 @@
       openInspector({ kind: "catalog" });
       return;
     }
+    if (action === "hidden") {
+      openInspector({ kind: "hidden" });
+      return;
+    }
+    if (action === "hidden-preview") {
+      active.id = id;
+      render();
+      return;
+    }
+    if (action === "preset") {
+      const preset = model.presets?.find(p => p.id === id);
+      if (preset) {
+        const draft = { ...preset.tile, id: crypto.randomUUID() };
+        openInspector({ kind: "configure", id: draft.id, draft, position: "end" });
+      }
+      return;
+    }
     if (action === "configure") {
       editing = true;
       render(true);
@@ -858,9 +942,30 @@
     const next = copyLayout(),
       t = next.tiles.find((t) => t.id === id);
     if (!t) return;
+    if (action === "remove") {
+      const fromLibrary = active?.kind === "hidden";
+      next.tiles = next.tiles.filter(t => t.id !== id);
+      if (await save(next, L("removed"))) {
+        if (fromLibrary) openInspector({ kind: "hidden" });
+        else {
+          q(".db-chrome").scrollIntoView({ block: "start" });
+          q('[data-action="undo"]').focus({ preventScroll: true });
+        }
+      }
+      return;
+    }
     if (action === "hide" || action === "restore") {
       t.hidden = action === "hide";
-      await save(next);
+      if (await save(next, L(t.hidden ? "hideSaved" : "restored"))) {
+        if (t.hidden) {
+          q(".db-chrome").scrollIntoView({ block: "start" });
+          q(".db-hidden-count").focus({ preventScroll: true });
+        }
+        else {
+          tiles.get(id)?.scrollIntoView({ block: "nearest" });
+          tiles.get(id)?.querySelector('[data-action="configure"]')?.focus({ preventScroll: true });
+        }
+      }
       return;
     }
     if (action === "earlier" || action === "later") {

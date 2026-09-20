@@ -19,12 +19,20 @@ problems are named in that count. A resource scope that disappears stays empty.
 
 Placement and visibility edits save immediately; configuration saves with
 **Add tile** or **Apply**. **Undo** reverses successful edits in the current session.
-Failed writes preserve the previous layout and the editable form. Hidden tiles
-can be restored from **Add tile**. Layout and connections are separate: the
+Failed writes preserve the previous layout and the editable form. **Hidden tiles**
+opens a library with each saved tile's scope, size and current preview. **Restore**
+returns it to its saved position. **Remove tile** is available in Configure and
+the hidden library; Undo restores its identity, scope, visibility and position.
+Removing or hiding a tile keeps its connections and monitoring. Layout and connections are separate: the
 optional `dashboard` store field holds tile identities, scopes and order, plus a
 revision that rejects stale saves. Stores without it receive the default five
 tiles. An intentionally empty layout stays empty. Existing connections,
 credentials, preferences and the full-panel layout are retained.
+
+**Add tile** offers Remote machines, Repos needing attention and Linux runners
+as presets, followed by all sources. Each preset opens the same editable draft,
+preview and placement controls; nothing saves until **Add tile** is pressed.
+Presets use existing connections and retain unknown, waiting and failed readings.
 
 `dashboard_view` composes the existing cached panel readings; it starts no new
 pollers. Rust owns attention, scope filtering, truncation and the rendered text.
