@@ -33,9 +33,7 @@ async function openDashboard(page, baseURL) {
       function project(previewTile) {
         const view = structuredClone(original);
         view.layout = structuredClone(layout);
-        view.tiles = (previewTile ? [previewTile] : layout.tiles)
-          .filter((t) => !t.hidden)
-          .map((t) => {
+        const projectTile = (t) => {
             const source = view.sources.find((s) => s.id === t.source);
             const base =
               original.tiles.find((old) => old.source === t.source) || {};
@@ -60,7 +58,9 @@ async function openDashboard(page, baseURL) {
               footer: `${Math.min(rows.length, limit)} shown`,
               empty: source.message,
             };
-          });
+          };
+        view.tiles = (previewTile ? [previewTile] : layout.tiles.filter(t => !t.hidden)).map(projectTile);
+        view.hiddenTiles = layout.tiles.filter(t => t.hidden).map(projectTile);
         return view;
       }
       window.__TAURI__ = {
@@ -121,6 +121,156 @@ const action = (page, name) =>
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
+
+test("hidden library previews the saved scope and restores the original slot", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const original = await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await tile(page, "hosts").locator('[data-action="configure"]').click();
+  const title = '<img src=x onerror="alert(1)"> $& Remote';
+  await page.locator("#dashboard-title").fill(title);
+  await page.locator("#dashboard-scope").selectOption("remote");
+  await page.locator("#dashboard-width").selectOption("wide");
+  await action(page, "apply").click();
+  const configured = (await savedLayout(page)).tiles[0];
+  await tile(page, "hosts").locator('[data-action="hide"]').click();
+  await tile(page, "ghRunners").locator('[data-action="hide"]').click();
+  await page.locator(".db-hidden-count").click();
+  await expect(page.locator(".db-hidden-list button")).toHaveCount(2);
+  await expect(page.locator(".db-hidden-list strong").first()).toHaveText(title);
+  await expect(page.locator(".db-hidden-list button").first()).toContainText("Wide · Summary");
+  await expect(page.locator(".db-hidden-preview .db-tile-title")).toHaveText(title);
+  await expect(page.locator(".db-hidden-preview .db-item")).toHaveCount(3);
+  await expect(page.locator(".db-hidden-library img")).toHaveCount(0);
+  await page.locator('.db-hidden-list [data-id="overview-ghRunners"]').click();
+  await expect(page.locator('.db-hidden-list [data-id="overview-ghRunners"]')).toBeFocused();
+  await expect(page.locator(".db-hidden-preview .db-tile-title")).toHaveText("Runners");
+  await page.locator('.db-hidden-list [data-id="overview-hosts"]').click();
+  await action(page, "restore").focus();
+  const reads = await page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_view").length);
+  await expect.poll(() => page.evaluate(() => window.__CALLS__.filter(c => c.command === "dashboard_view").length)).toBeGreaterThan(reads);
+  await expect(action(page, "restore")).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+  await action(page, "restore").click();
+  expect((await savedLayout(page)).tiles[0]).toEqual(configured);
+  await expect(tile(page, "hosts").locator('[data-action="configure"]')).toBeFocused();
+  await expect(page.locator(".db-attention-items button")).toHaveText(original.attention.map(a => a.label));
+});
+
+test("removing a visible tile keeps source alerts, persists, and Undo restores its full configuration", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1024, height: 500 });
+  const original = await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
+  await expect(page.locator(".db-removal")).toContainText("keeps its connection and monitoring");
+  await action(page, "remove").click();
+  expect((await savedLayout(page)).tiles).toEqual(original.layout.tiles.filter(t => t.source !== "ghWorkflows"));
+  await expect(tile(page, "ghWorkflows")).toHaveCount(0);
+  await expect(action(page, "undo")).toBeFocused();
+  await expect(action(page, "undo")).toBeInViewport({ ratio: 1 });
+  await expect(page.locator(".db-attention-items button")).toHaveText(original.attention.map(a => a.label));
+  await action(page, "undo").click();
+  expect((await savedLayout(page)).tiles).toEqual(original.layout.tiles);
+  await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
+  await action(page, "remove").click();
+  await page.reload();
+  await expect(tile(page, "ghWorkflows")).toHaveCount(0);
+  await expect(page.locator(".db-grid .db-tile")).toHaveCount(4);
+});
+
+test("a long hidden library keeps the selected tile and its recovery controls in view", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const original = await openDashboard(page, baseURL);
+  await page.evaluate(layout => {
+    const hidden = Array.from({ length: 12 }, (_, i) => ({ ...layout.tiles[0], id: `saved-hosts-${i}`, title: `Saved machines ${i + 1}`, scope:"remote", hidden:true }));
+    window.__SET_LAYOUT__({ ...layout, revision:1, tiles:[...layout.tiles, ...hidden] });
+  }, original.layout);
+  await action(page, "edit").click();
+  await expect(page.locator(".db-hidden-count")).toHaveText("Hidden tiles · 12");
+  await page.locator(".db-hidden-count").click();
+  const last = page.locator('.db-hidden-list [data-id="saved-hosts-11"]');
+  await last.click();
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio:1 });
+  await expect(page.locator(".db-hidden-preview .db-tile-title")).toHaveText("Saved machines 12");
+  await expect(action(page, "restore")).toBeInViewport({ ratio:1 });
+  await action(page, "restore").click();
+  await expect(page.locator('[data-tile="saved-hosts-11"]')).toBeVisible();
+  expect((await savedLayout(page)).tiles.filter(t => t.hidden)).toHaveLength(11);
+});
+
+test("a failed removal preserves the hidden library and Undo restores a removed hidden tile", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await tile(page, "hosts").locator('[data-action="hide"]').click();
+  const before = await savedLayout(page);
+  await page.locator(".db-hidden-count").click();
+  await page.evaluate(() => { window.__FAIL_SAVE__ = true; });
+  await action(page, "remove").click();
+  await expect(page.locator(".db-live-note")).toContainText("disk unavailable");
+  expect(await savedLayout(page)).toEqual(before);
+  await expect(page.locator(".db-hidden-preview .db-tile-title")).toHaveText("Machines");
+  await expect(action(page, "restore")).toBeEnabled();
+  await page.evaluate(() => { window.__FAIL_SAVE__ = false; });
+  await action(page, "remove").click();
+  await expect(page.locator(".db-hidden-preview")).toContainText("No hidden tiles.");
+  await expect(page.locator(".db-hidden-list button")).toHaveCount(0);
+  expect((await savedLayout(page)).tiles).toHaveLength(4);
+  await action(page, "undo").click();
+  expect((await savedLayout(page)).tiles).toEqual(before.tiles);
+  await expect(tile(page, "hosts")).toHaveCount(0);
+  await page.locator(".db-hidden-count").click();
+  await action(page, "restore").click();
+  await expect(tile(page, "hosts")).toBeVisible();
+});
+
+test("removing the final tile retains the empty dashboard and its independent alerts", async ({ page, baseURL }) => {
+  const original = await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  for (const t of original.layout.tiles) {
+    await page.locator(`[data-tile="${t.id}"] [data-action="configure"]`).click();
+    await action(page, "remove").click();
+  }
+  await expect(page.locator(".db-grid .db-empty")).toBeVisible();
+  await expect(page.locator(".db-attention-items button")).toHaveText(original.attention.map(a => a.label));
+  await page.reload();
+  await expect(page.locator(".db-grid .db-tile")).toHaveCount(0);
+  await action(page, "edit").click();
+  await action(page, "catalog").click();
+  await page.locator('[data-action="preset"][data-id="remote-machines"]').click();
+  await expect(page.locator(".db-placement-tile")).toHaveCount(1);
+  await action(page, "apply").click();
+  await expect(page.locator(".db-grid .db-tile")).toHaveCount(1);
+});
+
+test("presets open scoped drafts, can be customized, and never save on selection or Return", async ({ page, baseURL }) => {
+  const original = await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  for (const preset of original.presets) {
+    await action(page, "catalog").click();
+    await page.locator(`[data-action="preset"][data-id="${preset.id}"]`).click();
+    await expect(page.locator("#dashboard-title")).toHaveValue(preset.tile.title);
+    await expect(page.locator("#dashboard-scope")).toHaveValue(preset.tile.scope);
+    await expect(page.locator("#dashboard-width")).toHaveValue(preset.tile.width);
+    await expect(page.locator(".db-preview-tile .db-tile-title")).toHaveText(preset.tile.title);
+    const rows = original.sources.find(s => s.id === preset.tile.source).rows.filter(r => preset.tile.scope === "attention" ? r.attention : r.scopes.includes(preset.tile.scope));
+    await expect(page.locator(".db-preview-tile .db-item-name")).toHaveText(rows.slice(0, preset.tile.source === "hosts" ? 4 : 5).map(r => r.label));
+    await page.locator("#dashboard-scope").press("Enter");
+    expect(await savedLayout(page)).toBeNull();
+    await action(page, "close").click();
+  }
+  await action(page, "catalog").click();
+  await page.locator('[data-action="preset"][data-id="linux-runners"]').click();
+  await page.locator("#dashboard-title").fill("Build runners");
+  await page.locator("#dashboard-presentation").selectOption("detailed");
+  await page.locator("#dashboard-position").selectOption("start");
+  await action(page, "apply").click();
+  const saved = (await savedLayout(page)).tiles[0];
+  expect(saved).toMatchObject({ title:"Build runners", source:"ghRunners", scope:"LINUX", presentation:"detailed", hidden:false });
+  expect(saved.id).not.toBe("draft");
+  await action(page, "undo").click();
+  expect((await savedLayout(page)).tiles).toEqual(original.layout.tiles);
+});
 
 test("tile placement previews an insertion without moving saved tiles, then persists and undoes it", async ({ page, baseURL }) => {
   const original = await openDashboard(page, baseURL);
@@ -263,6 +413,7 @@ test("hidden tiles survive reopening, keep alerts, and can be restored", async (
   await expect(page.locator(".db-tile")).toHaveCount(4);
   await action(page, "edit").click();
   await action(page, "catalog").click();
+  await page.locator('.db-library-link').click();
   await action(page, "restore").click();
   await expect(tile(page, "ghWorkflows")).toBeVisible();
   expect((await savedLayout(page)).revision).toBe(2);
