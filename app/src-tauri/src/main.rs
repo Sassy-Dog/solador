@@ -1792,10 +1792,11 @@ async fn poll_github(app: &Arc<App>) {
     // operator never pointed at it.
     //
     // Sequential per repo, matching `GHWorkflowsService.refresh()`: each
-    // `repo_health` already fires its three side counts concurrently, so a
-    // six-repo portfolio is 24 requests either way — doing them all at once
-    // would only spend the rate-limit budget faster. Sequential per *account*
-    // for the same reason.
+    // `repo_health` already fires its four side counts concurrently (three
+    // REST reads and the board walk, one GraphQL POST per hundred open
+    // issues), so a six-repo portfolio is 30 requests either way — doing
+    // them all at once would only spend the rate-limit budget faster.
+    // Sequential per *account* for the same reason.
     for fetch in &pass.fetches {
         let client = github::GitHubClient::new(fetch.token.clone());
         let mut health = Vec::with_capacity(fetch.repos.len());
@@ -7391,9 +7392,10 @@ mod tests {
     /// 937pt whichever row it is in — Azure Cost included — the quarters at
     /// 460.5, and the content columns each of those affords.
     ///
-    /// Repos clears its split by 41pt (896 of 937) and only because its numeric
-    /// columns are sized to their labels; the same panel with the original
-    /// originals needed 1136 and stayed single-column on this display.
+    /// Repos clears its split by 5pt (932 of 937) and only because its numeric
+    /// columns are sized to their labels — READY joined the row on points PRS,
+    /// LOCAL and JOBS held past their widest text; the same panel with the
+    /// original originals needed 1136 and stayed single-column on this display.
     #[test]
     fn a_1890pt_cockpit_gives_every_list_panel_two_columns() {
         let vm = stacked_payload(vec![], 0, 1890.0);
@@ -7410,7 +7412,7 @@ mod tests {
         assert_eq!(
             seen["ghWorkflows"],
             (json!(937.0), json!(2)),
-            "Repos pairs at 896pt; widening a column past that costs it the split"
+            "Repos pairs at 932pt; widening a column past that costs it the split"
         );
         assert_eq!(
             seen["containers"],

@@ -732,6 +732,41 @@ test("narrow layouts wrap tiles and render saved names as text", async ({
   await expect(page.locator('#dashboard-position option[value="after:overview-hosts"]')).toHaveText(`After ${title}`);
 });
 
+test("repo rows carry issues, ready and PRs on the row, in summary and in detail", async ({
+  page,
+  baseURL,
+}) => {
+  await openDashboard(page, baseURL);
+  const repos = tile(page, "ghWorkflows");
+  const item = (id) => repos.locator(`[data-id="${id}"]`);
+  // Every row carries the three counts verbatim from the Rust cells: a real
+  // zero is "0", an unreadable count is the em dash.
+  await expect(item("acme/pipe-fitting").locator(".db-row-counts")).toHaveText("7 issues · 3 ready · 2 PRs");
+  // Exactly one is singular; `ready` has no plural.
+  await expect(item("acme/flywheel").locator(".db-row-counts")).toHaveText("0 issues · 0 ready · 1 PR");
+  await expect(item("acme/cogwheel").locator(".db-row-counts")).toHaveText("— issues · — ready · — PRs");
+  // …on the row itself: name, counts and status share one line, and the
+  // status is not displaced by the strip.
+  const [name, counts, status] = await item("acme/pipe-fitting")
+    .locator(".db-item-name, .db-row-counts, .db-value")
+    .evaluateAll((els) => els.map((el) => el.getBoundingClientRect()));
+  const sameLine = (a, b) => Math.abs(a.y - b.y) <= 2 && Math.abs(a.y + a.height - (b.y + b.height)) <= 2;
+  expect(sameLine(counts, name)).toBe(true);
+  expect(sameLine(status, name)).toBe(true);
+  expect(counts.x).toBeGreaterThan(name.x + name.width);
+  expect(status.x).toBeGreaterThanOrEqual(counts.x + counts.width);
+  await expect(item("acme/pipe-fitting").locator(".db-value")).toHaveText("Running");
+  // Detailed adds the remaining columns beneath, without repeating the three.
+  await action(page, "edit").click();
+  await repos.locator('[data-action="configure"]').click();
+  await page.locator("#dashboard-presentation").selectOption("detailed");
+  await action(page, "apply").click();
+  const row = item("acme/pipe-fitting").locator("xpath=..");
+  await expect(row.locator(".db-extra-metrics .db-muted")).toHaveText(["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]);
+  await expect(row.locator(".db-row-counts")).toHaveCount(1);
+  expect(page.dashboardErrors).toEqual([]);
+});
+
 test("a failed refresh keeps the last view and clears its warning on recovery", async ({
   page,
   baseURL,

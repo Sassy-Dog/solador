@@ -19,7 +19,7 @@ Credential Manager on Windows), never in `store.json`.
 
 | Credential | Panel | Scope needed |
 |---|---|---|
-| GitHub fine-grained PAT | Repos, Runners | read: Actions, Contents, Issues, Pull requests |
+| GitHub fine-grained PAT | Repos, Runners | read: Actions, Contents, Issues, Pull requests; org: Projects (READY column), Self-hosted runners |
 | Per-host bearer token | Hosts, Containers | whatever the agent was installed with |
 | Neon API key | Usage | organization-scoped |
 | Sentry auth token | Usage, Sentry Crons | `org:read` only |

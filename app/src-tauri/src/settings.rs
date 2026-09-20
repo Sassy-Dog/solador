@@ -1551,7 +1551,7 @@ fn accounts_tab(
         "nameLabel": "Name (e.g. work)",
         "tokenLabel": "Fine-grained PAT",
         "buttonLabel": "Add Account",
-        "help": "The token is stored in your OS credential store under this account's own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests. You can add the account now and its token later.",
+        "help": "The token is stored in your OS credential store under this account's own item, never in the settings file. Grant the fine-grained PAT read access to Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY column. You can add the account now and its token later.",
     });
     // Two literals merged into one object: a single `json!` this size trips
     // the macro's recursion limit, and the split is invisible on the wire.

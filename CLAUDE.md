@@ -36,9 +36,14 @@ detailed than this file.
   width-aware grid (1s poll).
 - **Containers/VMs** — local docker/podman/tart plus every host's agent, with
   grouping rules and presence memory (10s by default).
-- **GitHub Repos + GitHub Runners** — per-repo CI health and counts, local
-  branch/worktree counts, self-hosted runners with the absence roster
-  (the store's `refresh_interval_secs`).
+- **GitHub Repos + GitHub Runners** — per-repo CI health and counts (open
+  issues, the board's **Ready** backlog, open PRs — the three also ride on the
+  compact dashboard's repo rows in every presentation), local branch/worktree
+  counts, self-hosted runners with the absence roster (the store's
+  `refresh_interval_secs`). READY is a GraphQL read (`crates/github::ready`),
+  issue-side so no board identity lives in config; it needs the PAT's org
+  Projects permission and renders `—`, never `0`, without it — and, alone
+  among the four counts, says why in the panel footer (`ready_error`).
 - **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
@@ -459,7 +464,7 @@ the bundle's floor.
 │   ├── agentclient/        # HTTP client polling the agent
 │   ├── store/              # settings/hosts/repos/container-rules/runner-roster/
 │   │                       #   cockpit-layout JSON + OS credential-store wrappers
-│   ├── github/             # GitHub REST client + the "is it us?" verdict
+│   ├── github/             # GitHub client (REST + one GraphQL walk) + the "is it us?" verdict
 │   ├── servicestatus/      # Atlassian Statuspage, status.io, Azure RSS
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
@@ -601,7 +606,9 @@ the bundle's floor.
 
 ### Authentication
 - **Repos / GitHub Runners**: a fine-grained PAT with read-only access to
-  **Actions**, **Contents**, **Issues**, and **Pull requests**.
+  **Actions**, **Contents**, **Issues**, and **Pull requests**, plus the
+  *organization* permission **Projects** (read) for the READY column — without
+  it that one column reads `—` and everything else is unaffected.
 - **Remote hosts**: per-host bearer token.
 - **Usage → Claude**: no credential — and **no account either**. The rollups
   are a walk of `~/.claude/projects`, and those logs record what was consumed,

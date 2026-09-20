@@ -226,6 +226,35 @@ fn host_rows(p: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// The Repos columns a summary row carries *on* the row, between the name and
+/// the status, as `7 issues · 3 ready · 2 PRs`: the backlog at a glance. Each
+/// entry is the table's header and the two words the strip prints for it —
+/// one thing and several — chosen here by the value, so the frontend never
+/// pluralises. Named by header so the detailed table stays the one place a
+/// column's position is decided.
+///
+/// On the row rather than under it (the way a machine's CPU/RAM sit) because
+/// five two-line rows are what stops the default overview fitting a 1024×768
+/// laptop — the e2e suite measures that.
+const ROW_COUNTS: [(&str, &str, &str); 3] = [
+    (crate::github::COL_ISSUES, "issue", "issues"),
+    (crate::github::COL_READY, "ready", "ready"),
+    (crate::github::COL_PRS, "PR", "PRs"),
+];
+
+/// One entry of a repo row's count strip: the value verbatim from the cell,
+/// the word the strip prints beside it (singular for exactly `1`, plural for
+/// everything else including `0` and `—`), and the table header the inspector
+/// lists it under so the eight numbers read in one vocabulary there.
+fn count(header: &str, one: &str, many: &str, value: &Value) -> Value {
+    let word = if value.as_str() == Some("1") {
+        one
+    } else {
+        many
+    };
+    json!({"label": word, "header": header, "value": value, "fraction": null})
+}
+
 fn source_rows(id: &str, p: &Value) -> Vec<Value> {
     match id {
         "hosts" => host_rows(p),
@@ -241,19 +270,43 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     v["attention"].as_bool().unwrap_or(false),
                 );
                 r["url"] = v["url"].clone();
-                r["detail"] = json!(format!(
-                    "{} · longest running: {}",
-                    string(v, "repo"),
-                    v["cells"][6]["text"].as_str().unwrap_or("—")
-                ));
                 if v["status"] == "healthy" {
                     add_scope(&mut r, "healthy");
                 }
-                r["details"] = json!(list(p, "columns")
+                // Every numeric column of the detailed table, keyed by its
+                // header. The first column is REPO, which the row's label
+                // already carries.
+                let cells: Vec<(&str, &Value)> = list(p, "columns")
                     .iter()
                     .skip(1)
                     .zip(list(v, "cells"))
-                    .map(|(column, cell)| field(string(column, "label"), &cell["text"]))
+                    .map(|(column, cell)| (string(column, "label"), &cell["text"]))
+                    .collect();
+                let cell = |label: &str| {
+                    cells
+                        .iter()
+                        .find(|(l, _)| *l == label)
+                        .map_or(&Value::Null, |(_, text)| *text)
+                };
+                r["detail"] = json!(format!(
+                    "{} · longest running: {}",
+                    string(v, "repo"),
+                    cell(crate::github::COL_LONGEST).as_str().unwrap_or("—")
+                ));
+                // The backlog at a glance rides on the row in every
+                // presentation. Verbatim from the cells: an unknown count
+                // arrives as the em dash Rust already chose for it, never
+                // re-derived here.
+                r["counts"] = json!(ROW_COUNTS
+                    .iter()
+                    .map(|(column, one, many)| count(column, one, many, cell(column)))
+                    .collect::<Vec<_>>());
+                // …and what is left is Detailed's extra, so the three are
+                // never printed twice on one row.
+                r["details"] = json!(cells
+                    .iter()
+                    .filter(|(label, _)| !ROW_COUNTS.iter().any(|(column, _, _)| column == label))
+                    .map(|(label, text)| field(label, text))
                     .collect::<Vec<_>>());
                 r
             })
@@ -980,6 +1033,109 @@ mod tests {
             rows.iter().find(|r| r["label"] == "Neon").unwrap()["attention"],
             true
         );
+    }
+
+    /// Every presentation paints `counts` on the row itself, so the three
+    /// backlog numbers ride there — verbatim from the detailed table's cells,
+    /// em dash included — and never in `metrics`, whose stat grid would put a
+    /// second line under five rows and push the overview off a laptop.
+    /// `details` is what is left, so Detailed does not print the three twice.
+    #[test]
+    fn repo_rows_carry_issues_ready_and_prs_on_the_row() {
+        let p = crate::dump_github(false, false);
+        let rows = source_rows("ghWorkflows", &p);
+        let get = |name| rows.iter().find(|r| r["label"] == name).unwrap();
+        let labels = |row: &Value, key: &str| -> Vec<String> {
+            list(row, key)
+                .iter()
+                .map(|m| string(m, "label").to_owned())
+                .collect()
+        };
+        let values = |row: &Value| -> Vec<String> {
+            list(row, "counts")
+                .iter()
+                .map(|m| m["value"].as_str().unwrap_or("?").to_owned())
+                .collect()
+        };
+        for row in &rows {
+            assert_eq!(
+                list(row, "counts")
+                    .iter()
+                    .map(|c| string(c, "header").to_owned())
+                    .collect::<Vec<_>>(),
+                ["ISSUES", "READY", "PRS"]
+            );
+            assert!(
+                list(row, "metrics").is_empty(),
+                "{}: a repo row stays one line",
+                row["label"]
+            );
+            assert!(
+                !labels(row, "details")
+                    .iter()
+                    .any(|l| ["ISSUES", "READY", "PRS"].contains(&l.as_str())),
+                "{}: details repeat a metric",
+                row["label"]
+            );
+        }
+        // pipe-fitting: 9 inclusive − 2 PRs, 3 Ready, 2 PRs.
+        assert_eq!(values(get("pipe-fitting")), ["7", "3", "2"]);
+        assert_eq!(
+            labels(get("pipe-fitting"), "counts"),
+            ["issues", "ready", "PRs"]
+        );
+        // A genuine zero is "0", not an em dash — and plural, like the dash.
+        assert_eq!(values(get("widget")), ["4", "0", "0"]);
+        assert_eq!(labels(get("widget"), "counts"), ["issues", "ready", "PRs"]);
+        // Exactly one is singular; `ready` has no plural.
+        assert_eq!(values(get("flywheel")), ["0", "0", "1"]);
+        assert_eq!(labels(get("flywheel"), "counts"), ["issues", "ready", "PR"]);
+        // cogwheel's PAT could not read any side count; toolkit's runs failed.
+        assert_eq!(values(get("cogwheel")), ["—", "—", "—"]);
+        assert_eq!(
+            labels(get("cogwheel"), "counts"),
+            ["issues", "ready", "PRs"]
+        );
+        assert_eq!(values(get("toolkit")), ["—", "—", "—"]);
+        // The detail line still names the longest run, found by column label
+        // rather than a cell index that moves when a column joins.
+        assert!(
+            get("pipe-fitting")["detail"]
+                .as_str()
+                .unwrap()
+                .contains("longest running: 1h35m"),
+            "{}",
+            get("pipe-fitting")["detail"]
+        );
+        assert_eq!(
+            labels(get("widget"), "details"),
+            ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
+        );
+    }
+
+    /// The mixed row: READY alone refused beside counts that came back — the
+    /// shape a PAT without the Projects permission produces on every repo.
+    /// The dash is the cell's own, carried verbatim, and plural like a zero.
+    #[test]
+    fn a_refused_ready_beside_known_counts_keeps_the_cells_own_dash() {
+        let mut p = crate::dump_github(false, false);
+        let ready = list(&p, "columns")
+            .iter()
+            .position(|c| c["label"] == crate::github::COL_READY)
+            .expect("READY column")
+            - 1; // cells omit the REPO column
+        for row in p["rows"].as_array_mut().expect("rows") {
+            if row["name"] == "pipe-fitting" {
+                row["cells"][ready]["text"] = json!("—");
+            }
+        }
+        let rows = source_rows("ghWorkflows", &p);
+        let row = rows.iter().find(|r| r["label"] == "pipe-fitting").unwrap();
+        let strip: Vec<String> = list(row, "counts")
+            .iter()
+            .map(|c| format!("{} {}", c["value"].as_str().unwrap(), string(c, "label")))
+            .collect();
+        assert_eq!(strip, ["7 issues", "— ready", "2 PRs"]);
     }
 
     #[test]

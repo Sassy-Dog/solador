@@ -24,13 +24,16 @@ granted, and polls the organizations it watches.
    - **Issues** — the Repos panel's open-issue counts.
    - **Pull requests** — the Repos panel's open-PR counts.
    - **Metadata** — read-only, granted automatically alongside the others.
-6. **For the GitHub Runners panel only**, also grant, under **Organization
-   permissions**:
-   - **Self-hosted runners** — read-only.
+6. Under **Organization permissions**, also grant read-only:
+   - **Self-hosted runners** — the GitHub Runners panel. Without it that
+     panel has nothing to read even though the Repos panel works fine.
+   - **Projects** — the Repos panel's READY column (open issues whose
+     project-board Status is `Ready`). Without it that one column reads `—`
+     and the panel's footer says so; everything else is unaffected.
 
-   This one is easy to miss: it is an *organization* permission, not a
-   repository one, and without it the Runners panel has nothing to read even
-   though the Repos panel works fine.
+   Both are easy to miss: they are *organization* permissions, not
+   repository ones, and only appear when the token's resource owner is an
+   organization.
 7. Leave everything else at **No access**. Solador never writes to GitHub.
 8. Generate the token and copy it — it is shown only once.
 
@@ -78,8 +81,9 @@ polling the same org twice.
 ### Repos panel shows no data, or 401
 - Check the token hasn't expired, and was scoped to the repos you expect.
 - Confirm **Actions** read access. Missing **Issues** or **Pull requests** shows
-  `—` in those columns specifically, without breaking the rest of the panel —
-  which is the intended behaviour, not a failure.
+  `—` in those columns specifically, and a missing organization **Projects**
+  permission shows `—` under READY with a footer naming it, without breaking
+  the rest of the panel — which is the intended behaviour, not a failure.
 - Replace the token from the account card.
 
 ### Runners panel is empty but Repos works

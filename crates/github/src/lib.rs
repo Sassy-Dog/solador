@@ -33,6 +33,7 @@ pub mod client;
 pub mod discovery;
 pub mod link;
 pub mod presence;
+pub mod ready;
 pub mod roster;
 pub mod runners;
 pub mod status;

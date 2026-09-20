@@ -143,7 +143,20 @@
     dot.setAttribute("aria-hidden", "true");
     dot.style.color = row.color;
     name.append(dot, node("span", "db-item-name", row.label));
-    b.append(name, colored("span", "db-value", row.value, row.valueColor));
+    b.append(name);
+    if (row.counts?.length) {
+      // A repo's `7 issues · 3 ready · 2 PRs`, on the row rather than under
+      // it: the strip is the one line the tile has for it. Both halves are
+      // Rust's — the value verbatim from the cell, the word already singular
+      // or plural — and this only lays them side by side.
+      const counts = node("span", "db-row-counts");
+      row.counts.forEach((c, i) => {
+        if (i) counts.append(" · ");
+        counts.append(node("strong", "", c.value), ` ${c.label}`);
+      });
+      b.append(counts);
+    }
+    b.append(colored("span", "db-value", row.value, row.valueColor));
     wrap.append(b);
     if (row.metrics?.length) {
       const stats = node("div", "db-host-stats");
@@ -693,10 +706,17 @@
       item.append(head);
       if (row.explanation || row.detail)
         item.append(node("p", "db-detail-copy", row.explanation || row.detail));
-      for (const m of [...(row.metrics || []), ...(row.details || [])]) {
+      for (const m of [
+        ...(row.metrics || []),
+        ...(row.counts || []),
+        ...(row.details || []),
+      ]) {
         const field = node("div", "db-row");
+        // A count carries the table header it sits under, so the eight
+        // numbers list in one vocabulary here rather than three words and
+        // five headers.
         field.append(
-          node("span", "db-muted", m.label),
+          node("span", "db-muted", m.header ?? m.label),
           node("span", "", m.value ?? "—"),
         );
         item.append(field);
