@@ -417,7 +417,7 @@
 #dashboardOverview .db-catalog-section .db-catalog { margin-top: 10px; }
 #dashboardOverview .db-library-link { margin-top: 16px; }
 #dashboardOverview .db-hidden-library { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); gap: 20px; align-items: start; }
-#dashboardOverview .db-hidden-list { display: grid; gap: 8px; }
+#dashboardOverview .db-hidden-list { display: grid; gap: 8px; max-height: min(440px, 55vh); overflow-y: auto; padding: 2px; }
 #dashboardOverview .db-hidden-list:empty { display: none; }
 #dashboardOverview .db-hidden-list:empty + .db-hidden-preview { grid-column: 1 / -1; }
 #dashboardOverview .db-hidden-list button { flex-direction: column; align-items: flex-start; text-align: left; padding: 10px; }
@@ -492,6 +492,7 @@
 }
 @container dashboard (max-width:560px) {
   #dashboardOverview .db-hidden-library { grid-template-columns: minmax(0, 1fr); }
+  #dashboardOverview .db-hidden-list { max-height: 240px; }
   #dashboardOverview .db-tile,
   #dashboardOverview .db-tile[data-width="medium"],
   #dashboardOverview .db-preview-tile,

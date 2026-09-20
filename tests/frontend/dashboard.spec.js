@@ -178,6 +178,27 @@ test("removing a visible tile keeps source alerts, persists, and Undo restores i
   await expect(page.locator(".db-grid .db-tile")).toHaveCount(4);
 });
 
+test("a long hidden library keeps the selected tile and its recovery controls in view", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const original = await openDashboard(page, baseURL);
+  await page.evaluate(layout => {
+    const hidden = Array.from({ length: 12 }, (_, i) => ({ ...layout.tiles[0], id: `saved-hosts-${i}`, title: `Saved machines ${i + 1}`, scope:"remote", hidden:true }));
+    window.__SET_LAYOUT__({ ...layout, revision:1, tiles:[...layout.tiles, ...hidden] });
+  }, original.layout);
+  await action(page, "edit").click();
+  await expect(page.locator(".db-hidden-count")).toHaveText("Hidden tiles · 12");
+  await page.locator(".db-hidden-count").click();
+  const last = page.locator('.db-hidden-list [data-id="saved-hosts-11"]');
+  await last.click();
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio:1 });
+  await expect(page.locator(".db-hidden-preview .db-tile-title")).toHaveText("Saved machines 12");
+  await expect(action(page, "restore")).toBeInViewport({ ratio:1 });
+  await action(page, "restore").click();
+  await expect(page.locator('[data-tile="saved-hosts-11"]')).toBeVisible();
+  expect((await savedLayout(page)).tiles.filter(t => t.hidden)).toHaveLength(11);
+});
+
 test("a failed removal preserves the hidden library and Undo restores a removed hidden tile", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await action(page, "edit").click();
