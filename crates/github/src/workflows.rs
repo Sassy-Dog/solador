@@ -178,13 +178,22 @@ impl RunRef {
 /// Every field is optional and `None` means *unknown*, never zero — a PAT
 /// missing the Issues scope, or a count the `Link`-header trick cannot compute,
 /// must render as "—". A zero here is a claim that the repo genuinely has none.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoCounts {
     pub remote_branches: Option<u32>,
     /// GitHub counts every pull request as an issue, so this is
     /// `open issues + open PRs`.
     pub open_issues_including_prs: Option<u32>,
     pub open_pull_requests: Option<u32>,
+    /// Open issues whose project-board `Status` is `Ready` (see
+    /// [`crate::ready`]). `None` is a PAT without the Projects permission or
+    /// a refused walk — never an empty column.
+    pub ready_issues: Option<u32>,
+    /// Why `ready_issues` is `None`, as the operator should read it — the
+    /// walk's [`crate::GitHubError::user_message`]. The other three counts
+    /// render a bare `—`; this one is gated by a permission no older setup
+    /// guide names, so the panel's footer says so.
+    pub ready_error: Option<String>,
 }
 
 /// Per-repo workflow health: latest main run, latest PR run, and any running
@@ -209,6 +218,13 @@ pub struct RepoWorkflowHealth {
     pub open_issues: Option<u32>,
     /// Open pull requests; `None` if unknown/fetch failed.
     pub open_prs: Option<u32>,
+    /// Open issues in the board's `Ready` column; `None` if unknown/fetch
+    /// failed.
+    pub ready_issues: Option<u32>,
+    /// The reason `ready_issues` is `None`, for the panel footer; `None`
+    /// when the count is known, and for an unreachable repo, whose row
+    /// already says everything.
+    pub ready_error: Option<String>,
 }
 
 impl RepoWorkflowHealth {
@@ -227,6 +243,8 @@ impl RepoWorkflowHealth {
             remote_branches: None,
             open_issues: None,
             open_prs: None,
+            ready_issues: None,
+            ready_error: None,
         }
     }
 
@@ -330,6 +348,8 @@ pub fn health(
             counts.open_pull_requests,
         ),
         open_prs: counts.open_pull_requests,
+        ready_issues: counts.ready_issues,
+        ready_error: counts.ready_error,
     }
 }
 
@@ -918,11 +938,14 @@ mod tests {
                 remote_branches: Some(9),
                 open_issues_including_prs: Some(12),
                 open_pull_requests: Some(4),
+                ready_issues: Some(3),
+                ready_error: None,
             },
             now(),
         );
         assert_eq!(h.open_issues, Some(8), "12 inclusive − 4 PRs = 8 pure");
         assert_eq!(h.open_prs, Some(4));
+        assert_eq!(h.ready_issues, Some(3), "carried through untouched");
         assert_eq!(h.remote_branches, Some(9));
     }
 
@@ -947,6 +970,8 @@ mod tests {
                 remote_branches: Some(0),
                 open_issues_including_prs: Some(0),
                 open_pull_requests: Some(0),
+                ready_issues: None,
+                ready_error: None,
             },
             now(),
         );
@@ -1255,6 +1280,8 @@ mod tests {
                 remote_branches: Some(37),
                 open_issues_including_prs: Some(12),
                 open_pull_requests: Some(4),
+                ready_issues: None,
+                ready_error: None,
             },
             parse_timestamp("2026-05-29T12:05:00Z").expect("valid timestamp"),
         );

@@ -309,8 +309,15 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    and the height assertion in `github.spec.js` catches it. */
 .panel-chip { font-size:9px; font-weight:700; white-space:nowrap; flex:none;
   letter-spacing:0.02em; }
+/* `flex-shrink:0`, for the reason `.panel-asof` has it: the title is the
+   panel's name and never the give, and at the default factor of 1 a long
+   warning beside it (READY's refused-board line is ~520px at 9pt) still
+   costs it a sub-pixel — 1 against 100× the warning's length — which is all
+   `text-overflow:ellipsis` needs to paint "GitHub Rep…" over a title whose
+   integer `scrollWidth` says it fits. The warning keeps `min-width:0` and
+   collapses first; the trailing summary is already unshrinkable. */
 .panel-hdr .panel-title { white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis; }
+  text-overflow:ellipsis; flex-shrink:0; }
 /* Whole host groups sit side by side once Rust says the panel is wide enough
    (`--panel-cols`, from `panel_columns`). A group is already the right grid
    item, so this is the entire two-column implementation for this panel -- and
@@ -353,7 +360,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 
 /* `flex:none` for the same reason `.gh-cell` has it: the width is Rust's
    `REPO_NAME_W` reservation, and a shrinkable reservation is not one — left to
-   flex, the name is the only elastic thing in the row, so the seven fixed
+   flex, the name is the only elastic thing in the row, so the eight fixed
    cells squeeze it to zero in a column that is even slightly tight. Long names
    ellipsize inside the reservation instead. */
 .gh-repo-name { font-size:11px; font-weight:700; white-space:nowrap;

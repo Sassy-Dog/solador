@@ -93,7 +93,7 @@ Add these in **Settings**, in any order, whenever you feel like it.
 
 | To see | Give it |
 |---|---|
-| **Repos and Runners** | a fine-grained GitHub token, read-only on Actions, Contents, Issues and Pull requests. It finds your repos itself, and derives the organizations whose runners it watches — [step-by-step walkthrough](docs/github-setup.md) |
+| **Repos and Runners** | a fine-grained GitHub token, read-only on Actions, Contents, Issues and Pull requests, plus the organization permission Projects (read) for the READY backlog column. It finds your repos itself, and derives the organizations whose runners it watches — [step-by-step walkthrough](docs/github-setup.md) |
 | **Other machines** | the [agent](agent/) running on that host, plus its address and bearer token |
 | **Usage** | a Neon org key, a Sentry `org:read` token, a Vercel token — each optional and independent |
 | **Azure Cost** | a daily cost export in blob storage. There is no credential to paste: it signs each read itself with the `az` CLI you're already signed in to |

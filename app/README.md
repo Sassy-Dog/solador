@@ -16,6 +16,12 @@ monitored, and **Needs attention** covers every source, including ones with no
 visible tile. The source order remains stable as readings change. Summary rows
 are capped, with a count and a Details link for the remaining resources; omitted
 problems are named in that count. A resource scope that disappears stays empty.
+A **GitHub repos** row carries its backlog on the row itself, in both
+presentations — `7 issues · 3 ready · 2 PRs`, where *ready* is the repo's open
+issues whose project-board Status is `Ready` — verbatim from the detailed
+table's cells, so an unreadable count is the same `—` there. On the row rather
+than under it, the way a machine's CPU/RAM sit, because five two-line rows are
+what stops the default overview fitting a 1024×768 laptop.
 
 Placement and visibility edits save immediately; configuration saves with
 **Add tile** or **Apply**. **Undo** reverses successful edits in the current session.
@@ -199,7 +205,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`viewmodel`](../crates/viewmodel) | every string, colour and layout number the frontend paints |
 | [`store`](../crates/store) | settings / hosts / repos / rules / roster JSON + the OS credential store |
 | [`localhost`](../crates/localhost) | this machine's metrics; every field the platform can decline is an `Option` |
-| [`github`](../crates/github) | the GitHub REST client: workflows, runners, roster/presence |
+| [`github`](../crates/github) | the GitHub client (REST, plus one GraphQL walk for the board's Ready column): workflows, runners, roster/presence |
 | [`usage`](../crates/usage) | Claude Code log rollups, Neon consumption, Sentry stats |
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
@@ -264,7 +270,7 @@ keep recording and are current the moment they are shown.
 not a CSS `auto-fit` — **every panel declares its own `min_width`**, and a row
 splits only when *its* panels stop fitting. The case that model exists for is
 visible at the 880pt window floor: Containers + OpenClaw still share a row at
-412pt each where Repos + Runners (896pt) must break apart. Rows naming a panel
+412pt each where Repos + Runners (932pt) must break apart. Rows naming a panel
 this frontend has no section for — `hosts`, which is the grid above — still
 travel; app.js skips them rather than Rust silently omitting a row it did
 produce.
@@ -461,13 +467,13 @@ await window.__TAURI__.core.invoke("runners");
   "message": null,                       // or {"text": "connect a GitHub token in Settings"} / {"text": "loading…"}
   "loading": false,                      // true while the panel is still filling in
   "availability": {"label": "Operational", "color": "#1c6b41", "detail": "GitHub Actions is operational and …"},
-  "columns": [{"label": "REPO", "width": null}, {"label": "ISSUES", "width": 52.0}, …],
+  "columns": [{"label": "REPO", "width": 96.0}, {"label": "ISSUES", "width": 36.0}, {"label": "READY", "width": 28.0}, …],
   "rows": [{
     "repo": "acme/gadget", "name": "gadget",
     "dotColor": "#e05a4f", "blinking": false,
     "url": "https://github.com/acme/gadget/actions",   // the row's click target
     "linkLabel": "Open acme/gadget on GitHub Actions", // its accessible name
-    "cells": [{"text": "18", "color": "#cfe9d8", "width": 52.0}, …]
+    "cells": [{"text": "18", "color": "#cfe9d8", "width": 36.0}, …]
   }],
   "health": {"text": "✓ 4/6 healthy", "color": "#33d17a"}
 }
@@ -487,17 +493,38 @@ await window.__TAURI__.core.invoke("runners");
 ```
 
 **Unknown is not zero, on every count cell.** `"—"` muted is "we could not find
-out" — a failed fetch, a PAT missing the Issues or Pull requests scope, a repo
-not checked out on this machine. `"0"` dimmed is "there are none". They are two
+out" — a failed fetch, a PAT missing the Issues, Pull requests or Projects
+permission, a repo not checked out on this machine. `"0"` dimmed is "there are
+none". They are two
 different Rust decisions arriving as two different `{text, color}` pairs, and
 the frontend never derives either from a number: putting that distinction in JS
 would put it where no Rust test can see it. It is the same rule the `/issues`
 cursor-pagination guard in `crates/github` exists to protect.
 
 The **column widths are Rust's**, in points, for the same reason the host
-grid's column count is: seven fixed numeric columns summing to 312pt is what
-`PanelKind::GhWorkflows.min_width` (440pt) is built on, and a width re-typed in
+grid's column count is: eight fixed numeric columns summing to 232pt is what
+`PanelKind::GhWorkflows.min_width` (458pt) is built on, and a width re-typed in
 CSS is a second implementation free to disagree with the breakpoint.
+
+**READY is the one column REST cannot answer.** Projects v2 has no REST
+surface, so `crates/github::ready` walks the repo's open issues through one
+`POST /graphql` per hundred and counts those with a board item whose `Status`
+is literally `Ready` — issue-side, never board-side, so no board number or
+option id lives in configuration and the count holds whether or not the repo
+is linked to the board. It needs the PAT's org **Projects (read)** permission
+on top of Issues. A response carrying `errors[]` is refused as a whole, even
+beside complete-looking `data`: that is the shape a token without that
+permission produces — the refused `projectItems` arrives as `null` in every
+issue beside a `FORBIDDEN` entry — and reading the partial answer would
+report every board as empty. A `null` with no error attached is refused too.
+A repo with more than 1,000 open issues, or an issue on more than ten boards,
+gets `—` rather than a count that might be short. **This is the one `—` the
+panel explains**: the walk's reason travels as `ready_error` and the footer
+reads `⚠ READY for 3 repos: GitHub refused the board read — grant the token
+Projects (read) for the org`, grouped by reason, while the other three
+counts render a bare dash as they always have. A GraphQL `RATE_LIMITED`
+(HTTP 200) is the same rate-limit state REST's 403 is; other error types
+keep GitHub's own message.
 
 **LOCAL and WT come from this machine**, not from GitHub:
 [`src/github/git.rs`](src-tauri/src/github/git.rs) walks `~/Repos` three levels
@@ -613,7 +640,7 @@ second author of the app's whole browser-opening surface. See
 
 The row is a `div`, not an `<a>`, so github.js spells out what a real link would
 carry for free: `role="link"`, Rust's `linkLabel` as the accessible name (the
-row's own text is seven numbers), a tab stop and an Enter handler. That is
+row's own text is eight numbers), a tab stop and an Enter handler. That is
 *more* than the original panel, whose `onTapGesture` on a `VStack` is invisible to
 VoiceOver and unreachable from a keyboard — parity with a gap is not a reason to
 reproduce the gap.
@@ -735,7 +762,7 @@ window is one fetch, a second Forget wins it, and the age-out mops up
 regardless.
 
 Both panels now sit in whichever row `panelRows` puts them — side by side at
-≥896pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).
+≥932pt, stacked below it. See [the `cockpit` command](#the-cockpit-command).
 
 Two counts are deliberately not the same number: the rollup counts *every*
 container the runtimes reported, including the ones rules hid or collapsed (so
@@ -2250,8 +2277,9 @@ and that immediacy is itself the check on the corresponding wake:
    The Repos table is where the "—"-vs-`0` rule is visible: a repo not checked
    out under `~/Repos` shows `—` in LOCAL and WT while one that is shows real
    counts, and neither ever shows a zero it did not read. A PAT missing the
-   Issues scope shows `—` under ISSUES with the repo still green — a missing
-   scope is not an outage.
+   Issues scope shows `—` under ISSUES, one missing the org's Projects
+   permission `—` under READY, with the repo still green — a missing
+   permission is not an outage.
 
 8. **Read the terminal a last time** for the Usage and Azure Cost panels' own
    one-line signals (both print at load, alongside the others):

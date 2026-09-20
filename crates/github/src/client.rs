@@ -3,17 +3,20 @@
 //! per-org fetch orchestration from `GHWorkflowsService` /
 //! `GHRunnersService`.
 //!
-//! Read-only GETs only. The token is a fine-grained PAT and travels in an
-//! `Authorization: Bearer` header — never in a URL, which is what keeps it out
-//! of `reqwest`'s error strings and any log line built from them.
+//! Read-only: REST GETs, plus one `POST /graphql` for the one thing REST
+//! cannot answer (the Projects v2 board column behind [`ready`]). The token is
+//! a fine-grained PAT and travels in an `Authorization: Bearer` header — never
+//! in a URL, which is what keeps it out of `reqwest`'s error strings and any
+//! log line built from them.
 
 use chrono::{DateTime, Utc};
 use fault::Fault;
-use futures_util::future::join3;
+use futures_util::future::join4;
 use serde::Deserialize;
 
 use crate::discovery;
 use crate::link;
+use crate::ready;
 use crate::roster::{apply_fetch, RosterUpdate, RunnerRosterEntry};
 use crate::runners::{self, RunnersResponse};
 use crate::workflows::{self, RepoCounts, RepoWorkflowHealth, WorkflowRun, WorkflowRunsResponse};
@@ -54,6 +57,20 @@ pub enum GitHubError {
     /// page size as the total and undercounting every repo.
     #[error("cannot count via the last-page trick (cursor pagination)")]
     UnsupportedPagination,
+    /// GraphQL refused a field with `FORBIDDEN`: the token can read the repo
+    /// but not its boards. The one cause of a missing READY that is the
+    /// operator's to fix, so it gets the sentence that names the permission.
+    /// Carries GitHub's message, which is what the Repos footer prints.
+    #[error("GitHub refused the board read: {0}")]
+    ProjectsForbidden(String),
+    /// The board walk could not produce a number for any other reason — an
+    /// `errors[]` entry of another type, a `null` where a field should be, a
+    /// repo GitHub reports as absent, an issue on more boards than the walk
+    /// asks for, a walk past its page cap, or a slug that will not split into
+    /// `owner`/`name`. The reason is the sentence: none of these is a
+    /// permission, and telling the operator to grant one would be wrong.
+    #[error("GitHub could not answer the board read: {0}")]
+    BoardUnavailable(String),
 }
 
 impl GitHubError {
@@ -99,6 +116,18 @@ impl GitHubError {
             ),
             GitHubError::UnsupportedPagination => {
                 "GitHub paginates this collection by cursor, so the count is unavailable.".into()
+            }
+            // Their own sentences for the same reason as above: neither is a
+            // transport failure the vocabulary has a word for. A refused field
+            // is a fine-grained PAT never granted the org's Projects
+            // permission, which no HTTP status ever says; everything else
+            // names its own cause rather than pointing at a permission the
+            // operator may well hold.
+            GitHubError::ProjectsForbidden(_) => {
+                "GitHub refused the board read — grant the token Projects (read) for the org".into()
+            }
+            GitHubError::BoardUnavailable(reason) => {
+                format!("GitHub could not answer the board read — {reason}")
             }
         }
     }
@@ -154,14 +183,12 @@ impl GitHubClient {
         Ok(self.get(path, query).await?.body)
     }
 
-    /// The one request path every endpoint goes through: bearer auth, the two
-    /// GitHub-mandated headers, status classification, body read.
+    /// The one REST request path every endpoint goes through: bearer auth, the
+    /// two GitHub-mandated headers, [`classify_status`], body read.
     ///
     /// Unlike `crates/agentclient`, which pins an exact 200 against an agent we
-    /// ship ourselves, this accepts any 2xx: GitHub is a third-party API whose
-    /// success codes are its own to choose, and a client that hard-fails on an
-    /// unexpected-but-successful code would break on GitHub's schedule rather
-    /// than ours.
+    /// ship ourselves, the classification accepts any 2xx — see
+    /// [`classify_status`] for why.
     async fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<Response, GitHubError> {
         if !self.has_token() {
             return Err(GitHubError::NotAuthenticated);
@@ -177,30 +204,107 @@ impl GitHubClient {
             .await
             .map_err(|e| GitHubError::Unreachable(e.to_string()))?;
 
-        let status = resp.status().as_u16();
         let link = header(&resp, "link");
-        // Read the rate-limit pair off *this* response. A 403 is only a rate
-        // limit when this very response says the budget is spent; a 403 for a
-        // missing scope must stay a plain HTTP 403 so the operator fixes the
-        // PAT instead of waiting for a reset that will not help.
-        let remaining = header(&resp, "x-ratelimit-remaining").and_then(|v| v.parse::<u64>().ok());
-        let reset = header(&resp, "x-ratelimit-reset")
-            .and_then(|v| v.parse::<i64>().ok())
-            .and_then(|secs| DateTime::from_timestamp(secs, 0));
-
-        if !(200..300).contains(&status) {
-            return Err(match status {
-                401 => GitHubError::NotAuthenticated,
-                403 if remaining == Some(0) => GitHubError::RateLimited { reset },
-                other => GitHubError::HttpStatus(other),
-            });
-        }
+        classify_status(&resp)?;
 
         let body = resp
             .text()
             .await
             .map_err(|e| GitHubError::Unreachable(e.to_string()))?;
         Ok(Response { body, link })
+    }
+
+    /// The GraphQL counterpart of [`Self::get`]: one `POST /graphql` with the
+    /// same bearer auth and version header and the same [`classify_status`],
+    /// returning the raw envelope.
+    ///
+    /// Only the HTTP layer is classified here. GraphQL reports a refused
+    /// field — and a spent rate limit — as a 200 with `errors[]`, so the
+    /// caller decodes the envelope and decides; this method must not read a
+    /// 200 as consent.
+    async fn post_graphql(
+        &self,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<String, GitHubError> {
+        if !self.has_token() {
+            return Err(GitHubError::NotAuthenticated);
+        }
+        let resp = self
+            .http
+            .post(format!("{}/graphql", self.base_url))
+            .bearer_auth(&self.token)
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", API_VERSION)
+            .json(&serde_json::json!({ "query": query, "variables": variables }))
+            .send()
+            .await
+            .map_err(|e| GitHubError::Unreachable(e.to_string()))?;
+
+        classify_status(&resp)?;
+        resp.text()
+            .await
+            .map_err(|e| GitHubError::Unreachable(e.to_string()))
+    }
+
+    /// Open issues in the project board's `Ready` column — the groomed,
+    /// dispatchable backlog. Requires the PAT's org **Projects (read)**
+    /// permission on top of Issues.
+    ///
+    /// Walks the repo's open issues page by page (see [`ready`] for why the
+    /// read is issue-side) and stops at [`ready::PAGE_CAP`] with an error
+    /// rather than a number: the pages read so far are an undercount.
+    pub async fn ready_issue_count(&self, repo: &str) -> Result<u32, GitHubError> {
+        let (owner, name) = repo
+            .split_once('/')
+            .filter(|(o, n)| !o.is_empty() && !n.is_empty())
+            .ok_or_else(|| {
+                GitHubError::BoardUnavailable(format!("not an owner/name slug: {repo}"))
+            })?;
+        let mut total = 0u32;
+        let mut after: Option<String> = None;
+        for _ in 0..ready::PAGE_CAP {
+            let body = self
+                .post_graphql(
+                    ready::QUERY,
+                    serde_json::json!({ "owner": owner, "name": name, "after": after }),
+                )
+                .await?;
+            let envelope: ready::Envelope = serde_json::from_str(&body).map_err(decode_failed)?;
+            let page = ready::count_page(envelope).map_err(|e| match e {
+                // GraphQL's own classification: a spent budget is the same
+                // state the REST 403-with-zero-remaining is, and a refused
+                // field is the permission. Anything else is unavailable
+                // for the reason GitHub gave.
+                ready::PageError::Refused {
+                    error_type,
+                    message,
+                } => match error_type.as_str() {
+                    "RATE_LIMITED" => GitHubError::RateLimited { reset: None },
+                    "FORBIDDEN" | "INSUFFICIENT_SCOPES" => GitHubError::ProjectsForbidden(message),
+                    _ => GitHubError::BoardUnavailable(message),
+                },
+                ready::PageError::NullField => GitHubError::BoardUnavailable(format!(
+                    "{repo}'s board items came back null with no error attached"
+                )),
+                ready::PageError::NoRepository => {
+                    GitHubError::BoardUnavailable(format!("no such repository: {repo}"))
+                }
+                ready::PageError::TooManyBoards => GitHubError::BoardUnavailable(format!(
+                    "an issue in {repo} sits on more than {} boards",
+                    ready::PROJECT_ITEMS_PER_ISSUE
+                )),
+            })?;
+            total += page.ready;
+            match page.next {
+                Some(cursor) => after = Some(cursor),
+                None => return Ok(total),
+            }
+        }
+        Err(GitHubError::BoardUnavailable(format!(
+            "{repo} has more than {} open issues; the count would be a truncation",
+            ready::PAGE_CAP * ready::ISSUES_PER_PAGE as usize
+        )))
     }
 
     /// Every repository the token can access — Settings' discovery picker.
@@ -318,11 +422,14 @@ impl GitHubClient {
     /// [`RepoWorkflowHealth::unreachable`] so one failing repo never takes the
     /// rest of the panel with it.
     ///
-    /// The three side counts are best-effort and fired concurrently. Any of
-    /// them failing — including a PAT missing the Issues or Pull requests scope
-    /// — yields `None`, which renders as "—" and never marks the repo
-    /// unreachable: its runs decoded fine, and a missing scope is not an
-    /// outage.
+    /// The four side counts are best-effort and fired concurrently. Any of
+    /// them failing — including a PAT missing the Issues, Pull requests or
+    /// Projects permission — yields `None`, which renders as "—" and never
+    /// marks the repo unreachable: its runs decoded fine, and a missing
+    /// permission is not an outage. READY's failure additionally keeps its
+    /// [`GitHubError::user_message`] as `ready_error`, because it is the one
+    /// count gated by a permission no older guidance names — a `—` there
+    /// needs the footer to say why.
     pub async fn repo_health(
         &self,
         repo: &str,
@@ -332,10 +439,11 @@ impl GitHubClient {
         let Ok(runs) = self.workflow_runs(repo).await else {
             return RepoWorkflowHealth::unreachable(repo);
         };
-        let (branches, open_prs, open_issues_incl_prs) = join3(
+        let (branches, open_prs, open_issues_incl_prs, ready) = join4(
             self.branch_count(repo),
             self.open_pull_request_count(repo),
             self.open_issues_including_prs_count(repo),
+            self.ready_issue_count(repo),
         )
         .await;
 
@@ -347,6 +455,8 @@ impl GitHubClient {
                 remote_branches: branches.ok(),
                 open_issues_including_prs: open_issues_incl_prs.ok(),
                 open_pull_requests: open_prs.ok(),
+                ready_issues: ready.as_ref().ok().copied(),
+                ready_error: ready.err().map(|e| e.user_message()),
             },
             now,
         )
@@ -396,6 +506,33 @@ pub struct RepoDto {
 
 fn header(resp: &reqwest::Response, name: &str) -> Option<String> {
     resp.headers().get(name)?.to_str().ok().map(str::to_string)
+}
+
+/// The one status classification both transports share, so REST and GraphQL
+/// cannot disagree about what a 401 or a 403 means.
+///
+/// Accepts any 2xx: GitHub is a third-party API whose success codes are its
+/// own to choose, and a client that hard-fails on an unexpected-but-successful
+/// code would break on GitHub's schedule rather than ours.
+///
+/// Reads the rate-limit pair off *this* response. A 403 is only a rate limit
+/// when this very response says the budget is spent; a 403 for a missing
+/// scope must stay a plain HTTP 403 so the operator fixes the PAT instead of
+/// waiting for a reset that will not help.
+fn classify_status(resp: &reqwest::Response) -> Result<(), GitHubError> {
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let remaining = header(resp, "x-ratelimit-remaining").and_then(|v| v.parse::<u64>().ok());
+    let reset = header(resp, "x-ratelimit-reset")
+        .and_then(|v| v.parse::<i64>().ok())
+        .and_then(|secs| DateTime::from_timestamp(secs, 0));
+    Err(match status {
+        401 => GitHubError::NotAuthenticated,
+        403 if remaining == Some(0) => GitHubError::RateLimited { reset },
+        other => GitHubError::HttpStatus(other),
+    })
 }
 
 /// One place that turns a deserialisation failure into `DecodeFailed`, so every
@@ -857,7 +994,33 @@ mod tests {
             .respond_with(json("{\"open_issues_count\":12}"))
             .mount(&server)
             .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(&ready_page(&["Ready", "Backlog", "Ready"], None)))
+            .mount(&server)
+            .await;
         server
+    }
+
+    /// One GraphQL page of open issues, each on exactly one board in the
+    /// given `Status` column; `next` is the cursor a further page hangs off.
+    fn ready_page(statuses: &[&str], next: Option<&str>) -> String {
+        let nodes: Vec<String> = statuses
+            .iter()
+            .map(|s| {
+                format!(
+                    r#"{{"projectItems":{{"pageInfo":{{"hasNextPage":false}},"nodes":[{{"fieldValueByName":{{"name":"{s}"}}}}]}}}}"#
+                )
+            })
+            .collect();
+        let page_info = match next {
+            Some(c) => format!(r#"{{"hasNextPage":true,"endCursor":"{c}"}}"#),
+            None => r#"{"hasNextPage":false,"endCursor":null}"#.into(),
+        };
+        format!(
+            r#"{{"data":{{"repository":{{"issues":{{"pageInfo":{page_info},"nodes":[{}]}}}}}}}}"#,
+            nodes.join(",")
+        )
     }
 
     #[tokio::test]
@@ -875,6 +1038,11 @@ mod tests {
         assert_eq!(health.remote_branches, Some(37));
         assert_eq!(health.open_prs, Some(4));
         assert_eq!(health.open_issues, Some(8), "12 inclusive − 4 PRs");
+        assert_eq!(
+            health.ready_issues,
+            Some(2),
+            "two of three open issues sit in Ready"
+        );
     }
 
     /// A failed runs fetch marks that repo unreachable — and only that repo.
@@ -910,8 +1078,14 @@ mod tests {
             .respond_with(json(RUNS_FIXTURE))
             .mount(&server)
             .await;
-        // Everything else 403s the way a scope-starved PAT does.
+        // Everything else 403s the way a scope-starved PAT does — the board
+        // walk's POST included, so its failure is the HTTP one, not a refused
+        // field.
         Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(403))
             .mount(&server)
             .await;
@@ -925,6 +1099,294 @@ mod tests {
         assert_eq!(
             health.open_issues, None,
             "an unfetchable count is unknown, never zero"
+        );
+        assert_eq!(health.ready_issues, None);
+    }
+
+    /// The GraphQL walk: `POST /graphql` with the bearer token, the repo split
+    /// into `$owner`/`$name`, and the second page requested at the first
+    /// page's cursor. The tally spans both pages.
+    #[tokio::test]
+    async fn ready_issue_count_walks_every_page_at_the_advertised_cursor() {
+        use wiremock::matchers::body_partial_json;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header_matcher("authorization", "Bearer ghp_s3cret"))
+            .and(header_matcher("x-github-api-version", API_VERSION))
+            .and(body_partial_json(serde_json::json!({
+                "variables": {"owner": "acme", "name": "widget", "after": null}
+            })))
+            .respond_with(json(&ready_page(&["Ready", "Backlog"], Some("c1"))))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_partial_json(serde_json::json!({
+                "variables": {"owner": "acme", "name": "widget", "after": "c1"}
+            })))
+            .respond_with(json(&ready_page(&["Ready", "Ready", "Done"], None)))
+            .mount(&server)
+            .await;
+
+        let count = GitHubClient::with_base_url(server.uri(), "ghp_s3cret")
+            .ready_issue_count("acme/widget")
+            .await
+            .expect("both pages decode");
+        assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn ready_issue_count_of_a_repo_with_no_open_issues_is_zero() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(&ready_page(&[], None)))
+            .mount(&server)
+            .await;
+        let count = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("o/r")
+            .await
+            .expect("decodes");
+        assert_eq!(count, 0);
+    }
+
+    /// The fail-closed rule at the transport: GraphQL answers HTTP 200 with
+    /// `errors[]` beside complete-looking `data` when the PAT lacks the
+    /// Projects permission. That is an error, not an empty board.
+    #[tokio::test]
+    async fn ready_issue_count_refuses_a_page_that_carries_errors() {
+        let server = MockServer::start().await;
+        let body = r#"{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"projectItems":null}]}}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by personal access token"}]}"#;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(body))
+            .mount(&server)
+            .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("o/r")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, GitHubError::ProjectsForbidden(m) if m.contains("not accessible")),
+            "got {err:?}"
+        );
+        assert!(
+            err.user_message().contains("Projects (read)"),
+            "the operator is pointed at the permission: {}",
+            err.user_message()
+        );
+    }
+
+    /// GraphQL reports a spent budget as HTTP 200 + `errors[].type ==
+    /// RATE_LIMITED`. That is the state REST's 403-with-zero-remaining is,
+    /// and must not read as "grant a permission".
+    #[tokio::test]
+    async fn ready_issue_count_reads_a_graphql_rate_limit_as_the_rate_limit() {
+        let server = MockServer::start().await;
+        let body = r#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(body))
+            .mount(&server)
+            .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("o/r")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, GitHubError::RateLimited { reset: None }),
+            "got {err:?}"
+        );
+    }
+
+    /// Any other `errors[]` type is unavailable for the reason GitHub gave —
+    /// never the permission sentence, which would send the operator to grant
+    /// something they hold.
+    #[tokio::test]
+    async fn ready_issue_count_keeps_an_unclassified_graphql_error_as_its_own_reason() {
+        let server = MockServer::start().await;
+        let body = r#"{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository with the name 'o/r'."}]}"#;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(body))
+            .mount(&server)
+            .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("o/r")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, GitHubError::BoardUnavailable(m) if m.contains("Could not resolve")),
+            "got {err:?}"
+        );
+        assert!(
+            !err.user_message().contains("Projects"),
+            "{}",
+            err.user_message()
+        );
+    }
+
+    /// The HTTP layer is classified identically to REST: the same helper, so
+    /// each branch is exercised once through `/graphql` here.
+    #[tokio::test]
+    async fn post_graphql_classifies_http_the_way_get_does() {
+        for (status, remaining, expect) in [
+            (401, None, "NotAuthenticated"),
+            (403, Some("0"), "RateLimited"),
+            (403, Some("12"), "HttpStatus(403)"),
+            (500, None, "HttpStatus(500)"),
+        ] {
+            let server = MockServer::start().await;
+            let mut template = ResponseTemplate::new(status);
+            if let Some(remaining) = remaining {
+                template = template.insert_header("x-ratelimit-remaining", remaining);
+            }
+            Mock::given(method("POST"))
+                .and(path("/graphql"))
+                .respond_with(template)
+                .mount(&server)
+                .await;
+            let err = GitHubClient::with_base_url(server.uri(), "t")
+                .ready_issue_count("o/r")
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{err:?}").starts_with(expect),
+                "{status}/{remaining:?}: got {err:?}"
+            );
+        }
+        // No token: no request at all, the same refusal `get` makes.
+        let server = MockServer::start().await;
+        let err = GitHubClient::with_base_url(server.uri(), "")
+            .ready_issue_count("o/r")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitHubError::NotAuthenticated), "got {err:?}");
+        assert_eq!(
+            server.received_requests().await.expect("recording").len(),
+            0
+        );
+    }
+
+    /// The isolation `repo_health` promises: only the board walk fails, the
+    /// three REST counts survive, the repo stays reachable — and the reason
+    /// travels as `ready_error` so the footer can say it.
+    #[tokio::test]
+    async fn a_refused_board_read_fails_only_ready_and_carries_its_reason() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/actions/runs"))
+            .respond_with(json(RUNS_FIXTURE))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/branches"))
+            .respond_with(json("[]").insert_header(
+                "link",
+                "<https://api.github.com/x?per_page=1&page=37>; rel=\"last\"",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/pulls"))
+            .respond_with(json("[]").insert_header(
+                "link",
+                "<https://api.github.com/x?per_page=1&page=4>; rel=\"last\"",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(json("{\"open_issues_count\":12}"))
+            .mount(&server)
+            .await;
+        // The no-Projects-permission shape: 200, nulled field, FORBIDDEN.
+        let refused = r#"{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"projectItems":null}]}}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by personal access token"}]}"#;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(refused))
+            .mount(&server)
+            .await;
+
+        let health = GitHubClient::with_base_url(server.uri(), "t")
+            .repo_health("o/r", None, now())
+            .await;
+        assert!(health.reachable);
+        assert_eq!(health.remote_branches, Some(37));
+        assert_eq!(health.open_prs, Some(4));
+        assert_eq!(health.open_issues, Some(8));
+        assert_eq!(health.ready_issues, None);
+        assert_eq!(
+            health.ready_error.as_deref(),
+            Some("GitHub refused the board read — grant the token Projects (read) for the org")
+        );
+
+        // And a 403 at the HTTP layer — the shape a scope-starved classic
+        // token gets — is the plain HTTP sentence, not the permission one.
+        let server = full_repo_server().await;
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/actions/runs"))
+            .respond_with(json(RUNS_FIXTURE))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let health = GitHubClient::with_base_url(server.uri(), "t")
+            .repo_health("o/r", None, now())
+            .await;
+        assert!(health.reachable);
+        assert_eq!(health.ready_issues, None);
+        assert_eq!(
+            health.ready_error.as_deref(),
+            Some(GitHubError::HttpStatus(403).user_message().as_str())
+        );
+    }
+
+    /// A walk that would exceed the page cap gets no number at all — the
+    /// pages read so far are an undercount, not a partial answer.
+    #[tokio::test]
+    async fn ready_issue_count_refuses_past_the_page_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(&ready_page(&["Ready"], Some("again"))))
+            .mount(&server)
+            .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("o/r")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, GitHubError::BoardUnavailable(_)),
+            "got {err:?}"
+        );
+        let hits = server.received_requests().await.expect("recording").len();
+        assert_eq!(
+            hits,
+            crate::ready::PAGE_CAP,
+            "stops at the cap, never loops"
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_issue_count_of_a_malformed_repo_slug_is_refused_without_a_request() {
+        let server = MockServer::start().await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("no-slash")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, GitHubError::BoardUnavailable(_)),
+            "got {err:?}"
+        );
+        assert_eq!(
+            server.received_requests().await.expect("recording").len(),
+            0
         );
     }
 

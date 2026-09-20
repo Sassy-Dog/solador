@@ -111,15 +111,15 @@ impl PanelKind {
     /// hungrier pair to stack.
     ///
     /// Each figure is the panel's widest fixed content plus its card padding —
-    /// e.g. Repos sums seven fixed numeric columns (214pt), their gaps, the
+    /// e.g. Repos sums eight fixed numeric columns (232pt), their gaps, the
     /// status dot and a 96pt name reservation. Widen a panel's content, widen
     /// this number.
     ///
     /// It is also the width **one content column** needs, which is what
     /// [`panel_columns`] reads it as. Repos was 560 while its columns carried
     /// half again the width their labels needed; sizing them to their text
-    /// took it to 440, which is what lets it hold two columns on a display
-    /// where it previously could not.
+    /// took it to 440 — 458 since READY joined the row — which is what lets it
+    /// hold two columns on a display where it previously could not.
     ///
     /// OpenClaw's and Usage's figures were inherited guesses until spans made
     /// them load-bearing — a quarter-width panel is held to its minimum against
@@ -142,7 +142,7 @@ impl PanelKind {
     pub fn min_width(self) -> f64 {
         match self {
             PanelKind::Hosts => HOST_CARD_MIN_WIDTH,
-            PanelKind::GhWorkflows => 440.0,
+            PanelKind::GhWorkflows => 458.0,
             PanelKind::GhRunners => 400.0,
             PanelKind::Containers => 400.0,
             PanelKind::AzureCost => 400.0,
@@ -749,7 +749,7 @@ mod tests {
     }
 
     /// At the 880pt window floor (840pt of content) no authored row survives
-    /// whole: the halves would render 412pt each (Repos needs 440), and the
+    /// whole: the halves would render 412pt each (Repos needs 458), and the
     /// quarter row cannot seat three panels at 202pt a quarter.
     ///
     /// What the per-panel model buys is the pair that *does* survive, and
@@ -765,7 +765,7 @@ mod tests {
             reflowed(840.0),
             vec![
                 vec![PanelKind::Hosts],
-                vec![PanelKind::GhWorkflows], // (840 - 16) / 2 = 412 < 440
+                vec![PanelKind::GhWorkflows], // (840 - 16) / 2 = 412 < 458
                 vec![PanelKind::GhRunners],
                 vec![PanelKind::Containers, PanelKind::OpenclawAgents], // 412 >= 400, 340
                 vec![PanelKind::ClaudeUsage],
@@ -786,19 +786,19 @@ mod tests {
     }
 
     /// Boundary: a half-width panel is held to its minimum against *half* the
-    /// row, so Repos + Runners need 2 * 440 + 16 = 896pt — not the 856pt the
-    /// old sum-of-minimums check let them share, where Repos rendered at 420.
+    /// row, so Repos + Runners need 2 * 458 + 16 = 932pt — not the 892pt the
+    /// old sum-of-minimums check let them share, where Repos rendered at 438.
     #[test]
     fn row_splits_once_below_its_exact_requirement() {
         assert_eq!(
-            reflowed(896.0)[1],
+            reflowed(932.0)[1],
             vec![PanelKind::GhWorkflows, PanelKind::GhRunners],
-            "896pt is enough"
+            "932pt is enough"
         );
         assert_eq!(
-            reflowed(895.0)[1],
+            reflowed(931.0)[1],
             vec![PanelKind::GhWorkflows],
-            "895pt is not"
+            "931pt is not"
         );
     }
 
@@ -867,10 +867,20 @@ mod tests {
         );
         // Below 1008pt a quarter no longer clears OpenClaw's 240 floor, and the
         // fill falls back to the even split that does — down to 816, where
-        // Containers' own 400 stops fitting in half and the pair splits.
+        // Containers' own 400 stops fitting in half and the pair splits. Found
+        // by kind rather than index: at 900 the Repos + Runners row above has
+        // already split (it needs 932), so this row is no longer the third.
         let rows = reflow(&layout().rows, 900.0, SPACING);
-        assert_eq!(spans_of(&rows[2]), vec![PanelSpan::Half, PanelSpan::Half]);
-        assert_eq!(panel_widths(&rows[2], 900.0, SPACING), vec![442.0, 442.0]);
+        let containers = rows
+            .iter()
+            .find(|row| row.iter().any(|p| p.kind == PanelKind::Containers))
+            .expect("Containers is placed");
+        assert_eq!(
+            kinds(std::slice::from_ref(containers))[0],
+            vec![PanelKind::Containers, PanelKind::OpenclawAgents]
+        );
+        assert_eq!(spans_of(containers), vec![PanelSpan::Half, PanelSpan::Half]);
+        assert_eq!(panel_widths(containers, 900.0, SPACING), vec![442.0, 442.0]);
     }
 
     /// Filling never lopsides a row that was already even: two quarters left
@@ -1116,10 +1126,10 @@ mod tests {
         assert_eq!(panel_columns(PanelKind::GhRunners, 816.0, SPACING), 2);
         assert_eq!(panel_columns(PanelKind::Containers, 815.0, SPACING), 1);
         assert_eq!(panel_columns(PanelKind::Containers, 816.0, SPACING), 2);
-        // Repos carries 214pt of fixed numeric columns plus a 96pt name, so
-        // its minimum is 440 and it pairs at 2 * 440 + 16 = 896.
-        assert_eq!(panel_columns(PanelKind::GhWorkflows, 895.0, SPACING), 1);
-        assert_eq!(panel_columns(PanelKind::GhWorkflows, 896.0, SPACING), 2);
+        // Repos carries 232pt of fixed numeric columns plus a 96pt name, so
+        // its minimum is 458 and it pairs at 2 * 458 + 16 = 932.
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 931.0, SPACING), 1);
+        assert_eq!(panel_columns(PanelKind::GhWorkflows, 932.0, SPACING), 2);
     }
 
     /// The shipped case, pinned at the width the cockpit is tuned for: the
@@ -1127,10 +1137,12 @@ mod tests {
     /// affords. Derived from `hosts_forward` rather than restated, so a
     /// re-authored row is visible here as a failure and not as silent drift.
     ///
-    /// Repos only just clears its split — 896 of its 937 — and it did not at all
-    /// until its numeric columns were sized to their labels rather than half
-    /// again that. If a column widens and this drops back to 1, the panel has
-    /// outgrown the display it was tuned for.
+    /// Repos only just clears its split — 932 of its 937 — and it did not at
+    /// all until its numeric columns were sized to their labels rather than
+    /// half again that. READY joining the row would have taken it to 956 and
+    /// cost the split; PRS, LOCAL and JOBS gave up the points they held past
+    /// their widest text instead. If a column widens and this drops back to
+    /// 1, the panel has outgrown the display it was tuned for.
     ///
     /// Azure Cost is the same 937 as every other Half since Sentry Crons joined
     /// its row, and still clears its own 816pt split. It has 121pt of headroom
@@ -1358,7 +1370,7 @@ mod tests {
         // on purpose, so a table built from ids alone would be wrong.
         assert_eq!(entries[3]["id"], "ghWorkflows");
         assert_eq!(entries[3]["title"], "GitHub Repos");
-        assert_eq!(entries[3]["minWidth"], 440.0);
+        assert_eq!(entries[3]["minWidth"], 458.0);
     }
 
     #[test]

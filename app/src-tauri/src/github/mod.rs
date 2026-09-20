@@ -111,16 +111,19 @@ pub const RUNNERS_STALE_AFTER_SECS: u64 = 150;
 // 9pt header label and its 11pt value — plus a little margin, and nothing
 // more: the original panel's originals were half again this size, which spread
 // the numbers so far apart that a row read as scattered digits rather than one
-// record, and cost Repos the second column it now fits in.
+// record, and cost Repos the second column it now fits in. READY joining the
+// row was paid for the same way — PRS, LOCAL and JOBS gave up the few points
+// they held past their widest text — so the panel still pairs at 1890pt.
 //
-// They sum to 214pt, the figure `PanelKind::GhWorkflows.min_width` is built
+// They sum to 232pt, the figure `PanelKind::GhWorkflows.min_width` is built
 // on — widen one and that breakpoint has to move with it.
 const ISSUES_W: f64 = 36.0; // "ISSUES" 32.4
-const PRS_W: f64 = 24.0; // 3-digit value 19.8
-const LOCAL_W: f64 = 30.0; // "LOCAL" 27.0
+const READY_W: f64 = 28.0; // "READY" 27.0
+const PRS_W: f64 = 20.0; // 3-digit value 19.8
+const LOCAL_W: f64 = 28.0; // "LOCAL" 27.0
 const REMOTE_W: f64 = 36.0; // "REMOTE" 32.4
 const WT_W: f64 = 20.0; // 3-digit value 19.8
-const JOBS_W: f64 = 26.0; // "JOBS" 21.6
+const JOBS_W: f64 = 22.0; // "JOBS" 21.6
 const LONGEST_W: f64 = 42.0; // "LONGEST" 37.8
 
 /// The cockpit's monospace advance at the repo rows' 11pt, in points — the
@@ -137,7 +140,7 @@ const MONO_11_CHAR_W: f64 = 6.6;
 const REPO_NAME_CHARS: usize = 14;
 
 /// **Fixed, not a minimum**, for the reason every other column here is
-/// (#206): a name column that grows to its own text drags all seven numeric
+/// (#206): a name column that grows to its own text drags all eight numeric
 /// columns right on exactly the row whose name is longest.
 ///
 /// It is also what stops the numeric block being flung to the panel's far
@@ -147,16 +150,25 @@ const REPO_NAME_CHARS: usize = 14;
 /// which is where a second column lands when one fits.
 const REPO_NAME_W: f64 = 96.0;
 
+/// The column headers, named so the dashboard's summary rows can pick cells
+/// by header rather than by an index that moves when a column joins — the
+/// table stays the one place a column's position is decided.
+pub const COL_ISSUES: &str = "ISSUES";
+pub const COL_READY: &str = "READY";
+pub const COL_PRS: &str = "PRS";
+pub const COL_LONGEST: &str = "LONGEST";
+
 /// The header row. `REPO` is the only left-aligned column.
-const COLUMNS: [(&str, Option<f64>); 8] = [
+const COLUMNS: [(&str, Option<f64>); 9] = [
     ("REPO", Some(REPO_NAME_W)),
-    ("ISSUES", Some(ISSUES_W)),
-    ("PRS", Some(PRS_W)),
+    (COL_ISSUES, Some(ISSUES_W)),
+    (COL_READY, Some(READY_W)),
+    (COL_PRS, Some(PRS_W)),
     ("REMOTE", Some(REMOTE_W)),
     ("LOCAL", Some(LOCAL_W)),
     ("WT", Some(WT_W)),
     ("JOBS", Some(JOBS_W)),
-    ("LONGEST", Some(LONGEST_W)),
+    (COL_LONGEST, Some(LONGEST_W)),
 ];
 
 /// One identity's contribution to the Repos panel: the rows it fetched, or the
@@ -211,7 +223,7 @@ pub enum AccountResult {
 ///
 /// A `Failed` or `Unattributed` account contributes its repos as
 /// **unreachable** rows rather than as nothing at all. The panel already has a
-/// rendering for "we could not read this repo" — a muted dot and seven em
+/// rendering for "we could not read this repo" — a muted dot and eight em
 /// dashes — and it is the honest one here: dropping the rows would take a
 /// tracked repo off the board with only a footer line to say so, and a row
 /// that is *present and blank* is much harder to miss than a row that is gone.
@@ -724,7 +736,7 @@ pub fn actions_url(slug: &str) -> String {
 ///
 /// The original panel has none — an `onTapGesture` on a `VStack` is invisible to
 /// VoiceOver — so this is not parity, it is the web platform's own floor: a
-/// `role="link"` whose accessible name would otherwise be the row's seven
+/// `role="link"` whose accessible name would otherwise be the row's eight
 /// numbers read aloud in a row.
 fn open_label(slug: &str) -> String {
     format!("Open {slug} on GitHub Actions")
@@ -789,7 +801,7 @@ pub fn repos_view(state: &GitHubState, now: DateTime<Utc>) -> Value {
         // it parse a string it is otherwise careful never to interpret.
         "loading": repos_loading(state),
         // On both panels, not one shared element: `reflow` splits Repos and
-        // Runners onto separate rows below ~896pt, so a single chip would be
+        // Runners onto separate rows below ~932pt, so a single chip would be
         // orphaned from one of them at exactly the widths this cockpit runs at.
         "availability": availability_chip(state, now_secs),
         "columns": columns(),
@@ -839,6 +851,16 @@ fn repos_footer(state: &GitHubState, now: u64) -> Value {
             ACCOUNT_FOOTER_STALE_AFTER,
         ));
     }
+    for label in ready_error_labels(state.health.as_deref().unwrap_or_default()) {
+        // The pass succeeded for these repos — their rows are painted — so
+        // there is no failure clock to age; the segment is the reason alone.
+        parts.push(crate::panel::status_footer(
+            None,
+            Some(&label),
+            now,
+            ACCOUNT_FOOTER_STALE_AFTER,
+        ));
+    }
 
     let text = parts
         .iter()
@@ -851,6 +873,38 @@ fn repos_footer(state: &GitHubState, now: u64) -> Value {
         Some(first) if !text.is_empty() => json!({ "text": text, "color": first["color"] }),
         _ => Value::Null,
     }
+}
+
+/// `"READY for 3 repos: GitHub refused the board read — grant the token
+/// Projects (read) for the org"` — one segment per distinct reason, in the
+/// order the reasons were first met.
+///
+/// The em dash under READY is the only one of the four counts whose cause is
+/// a permission no older setup guide names, so it is the one whose `—` the
+/// panel explains rather than leaves to be looked up. Grouped by reason so a
+/// PAT missing the permission for its whole portfolio says so once, not once
+/// per row; counted rather than listed because the rows that carry the dash
+/// are on screen already.
+fn ready_error_labels(health: &[RepoWorkflowHealth]) -> Vec<String> {
+    let mut reasons: Vec<(&str, usize)> = Vec::new();
+    for h in health {
+        let Some(reason) = h.ready_error.as_deref() else {
+            continue;
+        };
+        match reasons.iter_mut().find(|(r, _)| *r == reason) {
+            Some((_, n)) => *n += 1,
+            None => reasons.push((reason, 1)),
+        }
+    }
+    reasons
+        .into_iter()
+        .map(|(reason, n)| {
+            format!(
+                "READY for {n} {}: {reason}",
+                if n == 1 { "repo" } else { "repos" }
+            )
+        })
+        .collect()
 }
 
 /// `"1 repo has no account: acme/orphan"`.
@@ -953,7 +1007,7 @@ fn health_line(health: &[RepoWorkflowHealth]) -> Value {
     json!({ "text": text, "color": color::hex(color::GREEN) })
 }
 
-/// One repo's row: the dot, the short name, and the seven fixed cells.
+/// One repo's row: the dot, the short name, and the eight fixed cells.
 ///
 /// The local counts are joined by [`git::normalize`]d name, the same key the
 /// original panel joins on — a repo not checked out here simply has no entry, and
@@ -999,6 +1053,7 @@ fn repo_row(
         "linkLabel": open_label(&health.repo),
         "cells": [
             count_cell(health.open_issues, ISSUES_W, color::INK),
+            count_cell(health.ready_issues, READY_W, color::INK),
             count_cell(health.open_prs, PRS_W, color::INK),
             count_cell(health.remote_branches, REMOTE_W, color::INK),
             count_cell(on_disk.local_branches, LOCAL_W, color::INK),
@@ -1499,10 +1554,12 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     let health = |slug: &str, runs: &[WorkflowRun], counts: github::workflows::RepoCounts| {
         github::workflows::health(slug, runs, None, counts, now)
     };
-    let counts = |branches, issues_incl_prs, prs| github::workflows::RepoCounts {
+    let counts = |branches, issues_incl_prs, prs, ready| github::workflows::RepoCounts {
         remote_branches: branches,
         open_issues_including_prs: issues_incl_prs,
         open_pull_requests: prs,
+        ready_issues: ready,
+        ready_error: None,
     };
 
     let mut state = GitHubState::new();
@@ -1511,32 +1568,33 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         health(
             "acme/widget",
             &[run(1, "CI", "completed", Some("success"), 30)],
-            counts(Some(12), Some(4), Some(0)),
+            counts(Some(12), Some(4), Some(0), Some(0)),
         ),
         // A build in flight: amber dot, amber JOBS, an elapsed LONGEST.
         health(
             "acme/pipe-fitting",
             &[run(2, "CI", "in_progress", None, 95)],
-            counts(Some(3), Some(9), Some(2)),
+            counts(Some(3), Some(9), Some(2), Some(3)),
         ),
         // Parked at an approval gate: the blinking dot.
         health(
             "acme/flywheel",
             &[run(3, "Release", "waiting", None, 6)],
-            counts(Some(2), Some(1), Some(1)),
+            counts(Some(2), Some(1), Some(1), Some(0)),
         ),
         // Red, and its side counts came back while its runs failed.
         health(
             "acme/gadget",
             &[run(4, "CI", "completed", Some("failure"), 12)],
-            counts(Some(41), Some(23), Some(5)),
+            counts(Some(41), Some(23), Some(5), Some(6)),
         ),
-        // The PAT could read the runs but not the Issues/PRs scopes: every
-        // side count is an em dash while the repo stays green.
+        // The PAT could read the runs but not the Issues/PRs/Projects
+        // permissions: every side count is an em dash while the repo stays
+        // green.
         health(
             "acme/cogwheel",
             &[run(5, "CI", "completed", Some("success"), 240)],
-            counts(None, None, None),
+            counts(None, None, None, None),
         ),
         // The runs themselves could not be fetched: muted dot, all em dashes.
         RepoWorkflowHealth::unreachable("acme/toolkit"),
@@ -1695,12 +1753,13 @@ mod tests {
     }
 
     const ISSUES: usize = 0;
-    const PRS: usize = 1;
-    const REMOTE: usize = 2;
-    const LOCAL: usize = 3;
-    const WT: usize = 4;
-    const JOBS: usize = 5;
-    const LONGEST: usize = 6;
+    const READY: usize = 1;
+    const PRS: usize = 2;
+    const REMOTE: usize = 3;
+    const LOCAL: usize = 4;
+    const WT: usize = 5;
+    const JOBS: usize = 6;
+    const LONGEST: usize = 7;
 
     // MARK: - Repos: states
 
@@ -1931,6 +1990,8 @@ mod tests {
                 remote_branches: Some(0),
                 open_issues_including_prs: None,
                 open_pull_requests: None,
+                ready_issues: None,
+                ready_error: None,
             },
         )]);
         let view = repos_view(&state, now());
@@ -1938,6 +1999,11 @@ mod tests {
 
         assert_eq!(cell_text(row, ISSUES), "—", "a failed fetch is not zero");
         assert_eq!(cell(row, ISSUES)["color"], color::hex(color::MUTED));
+        assert_eq!(
+            cell_text(row, READY),
+            "—",
+            "no Projects permission is not an empty column"
+        );
         assert_eq!(cell_text(row, PRS), "—");
 
         assert_eq!(cell_text(row, REMOTE), "0", "a genuine zero survives");
@@ -1961,6 +2027,8 @@ mod tests {
                 remote_branches: Some(41),
                 open_issues_including_prs: Some(9),
                 open_pull_requests: Some(2),
+                ready_issues: None,
+                ready_error: None,
             },
         )]);
         let row = &only_row(&state, now());
@@ -1970,6 +2038,45 @@ mod tests {
         assert_eq!(cell_text(row, REMOTE), "41");
     }
 
+    /// READY sits between ISSUES and PRS and follows the same three-way
+    /// rule: a count in ink, a genuine zero dimmed, an unknown as an em dash.
+    #[test]
+    fn the_ready_column_renders_a_count_a_zero_and_an_unknown_apart() {
+        let with = |count: Option<u32>| {
+            ready(vec![health_of(
+                "o/gadget",
+                &[],
+                RepoCounts {
+                    remote_branches: Some(1),
+                    open_issues_including_prs: Some(9),
+                    open_pull_requests: Some(2),
+                    ready_issues: count,
+                    ready_error: None,
+                },
+            )])
+        };
+        let row = &only_row(&with(Some(3)), now());
+        assert_eq!(cell_text(row, READY), "3");
+        assert_eq!(cell(row, READY)["color"], color::hex(color::INK));
+        assert_eq!(cell(row, READY)["width"], READY_W);
+
+        let row = &only_row(&with(Some(0)), now());
+        assert_eq!(
+            cell_text(row, READY),
+            "0",
+            "an empty Ready column is a real zero"
+        );
+        assert_eq!(cell(row, READY)["color"], color::hex(color::MUTED));
+
+        let row = &only_row(&with(None), now());
+        assert_eq!(
+            cell_text(row, READY),
+            "—",
+            "a refused board read is unknown"
+        );
+        assert_eq!(cell(row, READY)["color"], color::hex(color::MUTED));
+    }
+
     /// An unreachable repo knows nothing at all, and says so on every column
     /// rather than reporting zeroes it never read.
     #[test]
@@ -1977,7 +2084,7 @@ mod tests {
         let state = ready(vec![RepoWorkflowHealth::unreachable("o/platform")]);
         let view = repos_view(&state, now());
         let row = &rows(&view)[0];
-        for index in [ISSUES, PRS, REMOTE] {
+        for index in [ISSUES, READY, PRS, REMOTE] {
             assert_eq!(cell_text(row, index), "—", "column {index}");
         }
         assert_eq!(cell_text(row, JOBS), "0", "no runs is a real zero");
@@ -2308,14 +2415,14 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            vec!["REPO", "ISSUES", "PRS", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
+            vec!["REPO", "ISSUES", "READY", "PRS", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
         );
         // REPO is a reservation like every other column: a name column that
-        // grew to its own text would drag all seven numeric columns right on
+        // grew to its own text would drag all eight numeric columns right on
         // the one row whose name is longest (#206).
         assert_eq!(columns[0]["width"], REPO_NAME_W);
 
-        // The seven numeric widths sum to the figure
+        // The eight numeric widths sum to the figure
         // `PanelKind::GhWorkflows.min_width` is built on — widen a column
         // without moving that breakpoint and the panel silently outgrows the
         // width it claims to need.
@@ -2325,7 +2432,7 @@ mod tests {
             .filter_map(|c| c["width"].as_f64())
             .sum();
         assert!(
-            (numeric - 214.0).abs() < f64::EPSILON,
+            (numeric - 232.0).abs() < f64::EPSILON,
             "numeric columns sum to {numeric}"
         );
         // …and the whole fixed block, name included, still fits inside it.
@@ -2594,6 +2701,41 @@ mod tests {
             ],
             now_unix(),
         );
+        assert!(repos_view(&state, now())["footer"].is_null());
+    }
+
+    /// The one em dash the panel explains: a refused board read leaves the
+    /// rows painted and puts its reason in the footer, grouped by reason and
+    /// counted, so a whole portfolio missing the permission says so once.
+    #[test]
+    fn a_refused_board_read_is_said_in_the_footer_once_per_reason() {
+        let forbidden = github::GitHubError::ProjectsForbidden("nope".into()).user_message();
+        let capped =
+            github::GitHubError::BoardUnavailable("acme/big has more than 1000 open issues".into())
+                .user_message();
+        let with_reason = |slug: &str, reason: Option<&str>| {
+            let mut h = health_of("acme/x", &[], RepoCounts::default());
+            h.repo = slug.to_owned();
+            h.ready_error = reason.map(str::to_owned);
+            h
+        };
+        let state = ready(vec![
+            with_reason("acme/one", Some(&forbidden)),
+            with_reason("acme/two", Some(&forbidden)),
+            with_reason("acme/big", Some(&capped)),
+            with_reason("acme/fine", None),
+        ]);
+        let view = repos_view(&state, now());
+        assert_eq!(
+            footer_text(&view),
+            format!("⚠ READY for 2 repos: {forbidden} · ⚠ READY for 1 repo: {capped}")
+        );
+        // Every row is still there — the refusal is a footer, not an outage.
+        assert_eq!(rows(&view).len(), 4);
+        assert_eq!(cell_text(&rows(&view)[0], READY), "—");
+
+        // A count that arrived carries no reason, and no footer.
+        let state = ready(vec![with_reason("acme/fine", None)]);
         assert!(repos_view(&state, now())["footer"].is_null());
     }
 

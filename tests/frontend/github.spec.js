@@ -263,7 +263,7 @@ test("every repo row is its own tap target, including the unreachable one", asyn
   await expect(rows).toHaveCount(repos.rows.length);
 
   for (const [i, row] of repos.rows.entries()) {
-    // Rust's accessible name, not the row's seven numbers read aloud.
+    // Rust's accessible name, not the row's eight numbers read aloud.
     await expect(rows.nth(i)).toHaveAttribute("aria-label", row.linkLabel);
     await expect(rows.nth(i)).toHaveAttribute("role", "link");
     await expect(rows.nth(i)).toHaveJSProperty("tabIndex", 0);
@@ -583,6 +583,53 @@ test("a Runners error does not make the card taller", async ({ page, baseURL }) 
 });
 
 /**
+ * The same rule on the Repos header, against the longest warning it now
+ * carries: a refused board read names the permission in full, beside a
+ * trailing summary that is itself unshrinkable. The title's own
+ * `flex-shrink` used to be 1, and a shortfall this size cost it a sub-pixel —
+ * which is all `text-overflow:ellipsis` needs to eat "GitHub Repos" down to
+ * "GitHub Rep…" while the warning kept most of its characters. The message
+ * is the designated give; the title gives nothing.
+ */
+test("a long Repos warning ellipsises itself, never the panel's name", async ({ page, baseURL }) => {
+  const good = await fixture(baseURL, "sample-repos.json");
+  const refused = {
+    ...good,
+    footer: {
+      text: "⚠ READY for 6 repos: GitHub refused the board read — grant the token Projects (read) for the org",
+      color: "#e0a03a",
+    },
+  };
+  // The cockpit width the README's panel screenshots are taken at, where the
+  // half-width Repos card is ~876pt and the warning fits in part.
+  await page.setViewportSize({ width: 1800, height: 1200 });
+  await gotoWithFixtures(page, baseURL, { repos: refused });
+  const stale = page.locator("#reposStale");
+  await expect(stale).toBeVisible();
+  await expect(stale).toHaveAttribute("title", refused.footer.text);
+  const title = page.locator("#reposTitle");
+  await expect(title).toHaveText("GitHub Repos");
+  // Measured fractionally, on purpose: the integer `scrollWidth` the Runners
+  // test compares reads 94 <= 94 on a title that is painting "GitHub Rep…",
+  // because the shrink that triggered the ellipsis was under a pixel.
+  expect(
+    await title.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return range.getBoundingClientRect().width <= el.getBoundingClientRect().width + 0.01;
+    }),
+    "the title is not the one being truncated"
+  ).toBe(true);
+  // The warning is what gave way — cut, but present — and the header itself
+  // does not overflow the card.
+  const staled = await stale.boundingBox();
+  expect(staled.width).toBeGreaterThan(0);
+  expect(await stale.evaluate((el) => el.scrollWidth > el.clientWidth), "the warning ellipsises").toBe(true);
+  const header = page.locator("#reposPanel .panel-hdr");
+  expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+});
+
+/**
  * The reported bug, from the DOM's side: at launch Rust has not read the
  * credential store yet, and both panels used to render "connect a GitHub token
  * in Settings" at an operator whose token was fine. The payload now says it is
@@ -851,7 +898,7 @@ test("a narrow panel keeps every list in one column", async ({ page, baseURL }) 
 
 test("the repo name column is a reservation, so the numeric block never moves", async ({ page, baseURL }) => {
   // #206's rule, now applied to REPO as well: a name that grew to its own text
-  // would drag all seven numeric columns right on exactly the longest row.
+  // would drag all eight numeric columns right on exactly the longest row.
   const { repos } = await gotoWithFixtures(page, baseURL);
   const reserved = repos.columns[0].width;
   expect(reserved, "REPO carries a width, not null").toBeGreaterThan(0);
