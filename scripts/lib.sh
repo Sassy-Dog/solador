@@ -31,9 +31,9 @@ command_exists() {
 # sign another.
 apple_certificate_is_usable() {
     local candidate_id="$1"
-    local certificate
+    local certificate verification_error attempt
 
-    certificate="$(
+    if ! certificate="$(
         security find-certificate -a -Z -p 2>/dev/null |
             awk -v candidate_id="$candidate_id" '
                 /^SHA-1 hash:/ {
@@ -51,11 +51,32 @@ apple_certificate_is_usable() {
                     wanted = 0
                 }
             '
-    )"
-    [[ -n "$certificate" ]] || return 1
-    printf '%s\n' "$certificate" |
-        security verify-cert -c /dev/stdin -p codeSign -R ocsp -R require \
-            >/dev/null 2>&1
+    )"; then
+        printf 'Could not read signing certificates from the Keychain.\n' >&2
+        return 1
+    fi
+    if [[ -z "$certificate" ]]; then
+        printf 'Certificate %s was not found in the Keychain.\n' "$candidate_id" >&2
+        return 1
+    fi
+
+    # A transient OCSP/trust-service failure is not proof of revocation. Retry
+    # once, still requiring a positive response for the exact same certificate.
+    # Keep the final diagnostic so an outage is distinguishable from revocation.
+    for attempt in 1 2; do
+        if verification_error="$(printf '%s\n' "$certificate" |
+            security verify-cert -c /dev/stdin -p codeSign -R ocsp -R require 2>&1)"; then
+            return 0
+        fi
+        case "$verification_error" in
+            *CSSMERR_TP_CERT_REVOKED*|*CSSMERR_TP_CERT_EXPIRED*) break ;;
+        esac
+        if [[ "$attempt" -eq 1 ]]; then
+            sleep 1
+        fi
+    done
+    printf '%s\n' "${verification_error:-Certificate verification failed without a diagnostic.}" >&2
+    return 1
 }
 
 # Ensure we're in the project root

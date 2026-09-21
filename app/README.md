@@ -1862,11 +1862,18 @@ launch re-prompts for every stored item on every rebuild. The script resolves
 each candidate by its exact SHA-1, then requires code-signing trust and a
 positive OCSP response because `security find-identity` can still list a
 revoked certificate as valid. Signing with one makes AMFI kill the app and
-Gatekeeper call it malware. Untrusted identities are named and skipped. If
+Gatekeeper call it malware. An identity that fails verification is named,
+with `security`'s own diagnostic beneath it, and skipped; a *transient* failure
+(an OCSP responder that did not answer) is retried once for the same
+certificate, while a `REVOKED` or `EXPIRED` verdict is final on the first
+read, so an outage and a revocation read differently on the terminal. If
 development identities are installed but none passes verification, or signing
-fails, the launcher stops before opening the app. Retry after trust verification
-is available. Machines with no development identity installed, and non-macOS
-machines, retain the unsigned bare-cargo behaviour.
+fails, the launcher stops before opening the app — the app was not launched,
+so its saved credentials keep their existing access. Machines with no
+development identity installed, and non-macOS machines, retain the unsigned
+bare-cargo behaviour. `scripts/run-test.sh` drives every one of those paths
+against a stubbed `security`, and asserts the identity that gets signed is the
+one that verified.
 
 The bare command still works and is what everything non-interactive uses:
 
