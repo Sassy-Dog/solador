@@ -125,14 +125,15 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         CANDIDATE_ID="$(printf '%s\n' "$SIGN_LINE" | awk '{print $2}')"
         CANDIDATE_NAME="$(printf '%s\n' "$SIGN_LINE" | sed -n 's/.*"\(.*\)".*/\1/p')"
         [[ -n "$CANDIDATE_ID" && -n "$CANDIDATE_NAME" ]] || continue
-        if apple_certificate_is_usable "$CANDIDATE_ID"; then
+        if VERIFY_ERROR="$(apple_certificate_is_usable "$CANDIDATE_ID" 2>&1)"; then
             SIGN_ID="$CANDIDATE_ID"
             break
         fi
-        log_warning "Ignoring untrusted signing identity: $CANDIDATE_NAME"
+        log_warning "Could not verify signing identity: $CANDIDATE_NAME"
+        printf '%s\n' "$VERIFY_ERROR" >&2
     done <<< "$SIGN_LINES"
     if [[ -n "$SIGN_LINES" && -z "$SIGN_ID" ]]; then
-        log_error "Could not verify an installed development signing identity. Retry when certificate verification is available; the app was not launched, so its saved credentials keep their existing access."
+        log_error "Could not verify an installed development signing identity. See the verification errors above; the app was not launched, so its saved credentials keep their existing access."
         exit 1
     fi
     if [[ -n "$SIGN_ID" ]]; then
