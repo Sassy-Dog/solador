@@ -270,7 +270,23 @@ impl GitHubClient {
                     serde_json::json!({ "owner": owner, "name": name, "after": after }),
                 )
                 .await?;
-            let envelope: ready::Envelope = serde_json::from_str(&body).map_err(decode_failed)?;
+            // A body that is JSON but not the shape this decoder expects is
+            // named — the stock "likely an API contract change" is what the
+            // footer read for five repos while the actual reason was one
+            // nullable slot the decoder had not allowed for, and the serde
+            // message says which field. A body that is not JSON at all (a
+            // captive portal, a truncated read) stays the transport-level
+            // `DecodeFailed` the REST paths report for it. serde's position
+            // is dropped: the footer groups segments by exact text, and a
+            // line/column would make every repo its own segment.
+            let envelope: ready::Envelope =
+                serde_json::from_str(&body).map_err(|e| match e.classify() {
+                    serde_json::error::Category::Data => GitHubError::BoardUnavailable(format!(
+                        "unexpected response shape ({})",
+                        e.to_string().split(" at line ").next().unwrap_or_default()
+                    )),
+                    _ => decode_failed(e),
+                })?;
             let page = ready::count_page(envelope).map_err(|e| match e {
                 // GraphQL's own classification: a spent budget is the same
                 // state the REST 403-with-zero-remaining is, and a refused
@@ -284,9 +300,19 @@ impl GitHubClient {
                     "FORBIDDEN" | "INSUFFICIENT_SCOPES" => GitHubError::ProjectsForbidden(message),
                     _ => GitHubError::BoardUnavailable(message),
                 },
-                ready::PageError::NullField => GitHubError::BoardUnavailable(format!(
-                    "{repo}'s board items came back null with no error attached"
-                )),
+                // No `errors[]` to classify, but a null board item is what an
+                // unreadable board looks like, so the likely cause is named
+                // as likely — not asserted the way `FORBIDDEN` is. No slug:
+                // the footer groups by exact text so a portfolio says this
+                // once, and the rows carrying the dash are on screen already.
+                // "The board's owner", not "the org": a user-owned board or
+                // another org's is the same null under a token scoped
+                // elsewhere.
+                ready::PageError::NullField => GitHubError::BoardUnavailable(
+                    "an issue's board items came back null with no error attached — \
+                     likely the token lacks Projects (read) for the board's owner"
+                        .into(),
+                ),
                 ready::PageError::NoRepository => {
                     GitHubError::BoardUnavailable(format!("no such repository: {repo}"))
                 }
@@ -1267,6 +1293,96 @@ mod tests {
             server.received_requests().await.expect("recording").len(),
             0
         );
+    }
+
+    /// A shape this decoder does not anticipate is refused with the serde
+    /// message — the field's name — never the stock "API contract change"
+    /// that hid the null-item slot from the footer for five repos.
+    #[tokio::test]
+    async fn ready_issue_count_names_the_field_an_unexpected_shape_breaks_on() {
+        let server = MockServer::start().await;
+        let body = r#"{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false},"nodes":[{"projectItems":{"nodes":[]}}]}}}}"#;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(body))
+            .mount(&server)
+            .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("o/r")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, GitHubError::BoardUnavailable(m) if m.contains("pageInfo") && !m.contains("line")),
+            "the field, not serde's position: {err:?}"
+        );
+        assert!(
+            err.user_message().contains("pageInfo"),
+            "{}",
+            err.user_message()
+        );
+    }
+
+    /// The shape that reached production, end to end: a decoded connection
+    /// whose *item* is `null`, no `errors[]`. The REST counts survive, the
+    /// repo stays reachable, READY is unknown, and the reason names the
+    /// permission — with no slug in it, so the footer can group it.
+    #[tokio::test]
+    async fn a_null_board_item_fails_only_ready_and_names_the_likely_permission() {
+        let server = full_repo_server().await;
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/actions/runs"))
+            .respond_with(json(RUNS_FIXTURE))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(json("{\"open_issues_count\":12}"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(json("[]"))
+            .mount(&server)
+            .await;
+        let body = r#"{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":"c"},"nodes":[{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[null]}}]}}}}"#;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(json(body))
+            .mount(&server)
+            .await;
+
+        let health = GitHubClient::with_base_url(server.uri(), "t")
+            .repo_health("o/r", None, now())
+            .await;
+        assert!(health.reachable);
+        assert_eq!(health.open_prs, Some(0));
+        assert_eq!(health.open_issues, Some(12));
+        assert_eq!(health.ready_issues, None);
+        let reason = health.ready_error.expect("a reason travels");
+        assert!(reason.contains("Projects (read)"), "{reason}");
+        assert!(
+            !reason.contains("o/r"),
+            "no slug, so the footer groups it: {reason}"
+        );
+    }
+
+    /// A body that is not JSON at all is the transport's failure, not the
+    /// board's: it stays `DecodeFailed`, like every REST path's.
+    #[tokio::test]
+    async fn a_non_json_graphql_body_is_a_decode_failure_not_a_board_state() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("<html>portal</html>", "text/html"),
+            )
+            .mount(&server)
+            .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .ready_issue_count("o/r")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitHubError::DecodeFailed(_)), "got {err:?}");
     }
 
     /// The isolation `repo_health` promises: only the board walk fails, the

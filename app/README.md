@@ -19,7 +19,12 @@ problems are named in that count. A resource scope that disappears stays empty.
 A **GitHub repos** row carries its backlog on the row itself, in both
 presentations — `7 issues · 3 ready · 2 PRs`, where *ready* is the repo's open
 issues whose project-board Status is `Ready` — verbatim from the detailed
-table's cells, so an unreadable count is the same `—` there. On the row rather
+table's cells, so an unreadable count is the same `—` there. The strip is
+columns, not a sentence: each number sits right-aligned in a slot at least
+three characters wide, each word in a slot sized to its column's longest, and
+the status word beside it is held to the widest the panel produces, so the
+numbers line up down the tile whether a row reads `1 PR` or `10 PRs` (a count
+past three digits widens its own row, and only that row). On the row rather
 than under it, the way a machine's CPU/RAM sit, because five two-line rows are
 what stops the default overview fitting a 1024×768 laptop.
 
@@ -516,7 +521,13 @@ on top of Issues. A response carrying `errors[]` is refused as a whole, even
 beside complete-looking `data`: that is the shape a token without that
 permission produces — the refused `projectItems` arrives as `null` in every
 issue beside a `FORBIDDEN` entry — and reading the partial answer would
-report every board as empty. A `null` with no error attached is refused too.
+report every board as empty. A `null` with no error attached is refused too,
+including a `null` *item* inside a decoded connection — an issue on a board
+the token cannot read, which is the shape a scoped token meets on any issue
+that sits on such a board, with no `errors[]` to say so. A body that is JSON
+of a shape the decoder does not anticipate names the field in the footer
+rather than the stock "API contract change"; a body that is not JSON at all
+stays the transport's `DecodeFailed`.
 A repo with more than 1,000 open issues, or an issue on more than ten boards,
 gets `—` rather than a count that might be short. **This is the one `—` the
 panel explains**: the walk's reason travels as `ready_error` and the footer

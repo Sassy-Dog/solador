@@ -1576,11 +1576,13 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
             &[run(2, "CI", "in_progress", None, 95)],
             counts(Some(3), Some(9), Some(2), Some(3)),
         ),
-        // Parked at an approval gate: the blinking dot.
+        // Parked at an approval gate: the blinking dot. Exactly one issue
+        // and one PR — the singular words the dashboard strip prints, and
+        // the row that proves a shorter word does not move the next number.
         health(
             "acme/flywheel",
             &[run(3, "Release", "waiting", None, 6)],
-            counts(Some(2), Some(1), Some(1), Some(0)),
+            counts(Some(2), Some(2), Some(1), Some(0)),
         ),
         // Red, and its side counts came back while its runs failed.
         health(

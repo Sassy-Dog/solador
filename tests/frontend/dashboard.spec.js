@@ -743,8 +743,19 @@ test("repo rows carry issues, ready and PRs on the row, in summary and in detail
   // zero is "0", an unreadable count is the em dash.
   await expect(item("acme/pipe-fitting").locator(".db-row-counts")).toHaveText("7 issues · 3 ready · 2 PRs");
   // Exactly one is singular; `ready` has no plural.
-  await expect(item("acme/flywheel").locator(".db-row-counts")).toHaveText("0 issues · 0 ready · 1 PR");
+  await expect(item("acme/flywheel").locator(".db-row-counts")).toHaveText("1 issue · 0 ready · 1 PR");
   await expect(item("acme/cogwheel").locator(".db-row-counts")).toHaveText("— issues · — ready · — PRs");
+  // The numbers are columns: every row's three numbers end at the same x as
+  // every other row's, whether the row reads `1 PR`, `18 issues` or `—`.
+  const rightEdges = await repos
+    .locator(".db-row-counts")
+    .evaluateAll((strips) =>
+      strips.map((strip) =>
+        [...strip.querySelectorAll("strong")].map((n) => Math.round(n.getBoundingClientRect().right)),
+      ),
+    );
+  expect(rightEdges.length).toBe(5);
+  for (const edges of rightEdges) expect(edges).toEqual(rightEdges[0]);
   // …on the row itself: name, counts and status share one line, and the
   // status is not displaced by the strip.
   const [name, counts, status] = await item("acme/pipe-fitting")
