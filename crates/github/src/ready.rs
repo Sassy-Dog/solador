@@ -124,7 +124,12 @@ pub struct Issue {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectItemConnection {
     pub page_info: ItemPageInfo,
-    pub nodes: Vec<ProjectItem>,
+    /// `[ProjectV2Item]` — each entry nullable. An item on a board the
+    /// token cannot read is `null` in its slot: that is the shape a
+    /// fine-grained PAT without the org's Projects permission produces on
+    /// every issue that sits on a board, and the one that reached production
+    /// as "couldn't read GitHub's response" while this was `Vec<ProjectItem>`.
+    pub nodes: Vec<Option<ProjectItem>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,9 +160,10 @@ pub struct FieldValue {
 pub enum PageError {
     /// The response carried `errors[]`: the first entry's `type` and message.
     Refused { error_type: String, message: String },
-    /// An issue node, or its `projectItems`, was `null` with no error
-    /// attached. Refused rather than read as "on no board": a null is what a
-    /// refused field looks like, and an unexplained one is not a count.
+    /// An issue node, its `projectItems`, or one of its items was `null`
+    /// with no error attached. Refused rather than read as "on no board": a
+    /// null is what an unreadable board looks like, and an unexplained one
+    /// is not a count.
     NullField,
     /// `data.repository` was `null` with no error attached — a repo the token
     /// cannot see, which GitHub reports as absence.
@@ -204,12 +210,18 @@ pub fn count_page(envelope: Envelope) -> Result<Page, PageError> {
         if items.page_info.has_next_page {
             return Err(PageError::TooManyBoards);
         }
-        let is_ready = items.nodes.iter().any(|item| {
-            item.field_value_by_name
+        let mut is_ready = false;
+        for item in &items.nodes {
+            let item = item.as_ref().ok_or(PageError::NullField)?;
+            if item
+                .field_value_by_name
                 .as_ref()
                 .and_then(|v| v.name.as_deref())
                 == Some(READY_STATUS)
-        });
+            {
+                is_ready = true;
+            }
+        }
         if is_ready {
             ready += 1;
         }
@@ -361,6 +373,17 @@ mod tests {
                 message: "Something went wrong".into()
             })
         );
+    }
+
+    /// The shape that reached production: the issue decodes, its
+    /// `projectItems` connection decodes, and the *item* is `null` — a board
+    /// the token cannot read. Beside a `Ready` sibling on a readable board
+    /// it is still refused: the null one might be the Ready one.
+    #[test]
+    fn a_null_project_item_is_refused_even_beside_a_ready_one() {
+        let body = r#"{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},
+          "nodes":[{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"fieldValueByName":{"name":"Ready"}},null]}}]}}}}"#;
+        assert_eq!(count_page(decode(body)), Err(PageError::NullField));
     }
 
     /// A `null` with nothing in `errors[]` to explain it is not "on no

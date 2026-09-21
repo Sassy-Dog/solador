@@ -287,13 +287,40 @@
   font-size: 11px;
   color: var(--db-muted);
 }
-#dashboardOverview .db-row-counts strong {
+/* Columns, not a sentence: every cell is the same width on every row, so the
+   numbers sit in a column down the tile. The number takes three characters
+   right-aligned (the widest count the table shows), the word a slot sized to
+   the longest word its column prints — `issue`/`issues`, `ready`, `PR`/`PRs`
+   — so a singular does not pull the next number left. `ch` rather than px so
+   the slots track the font. */
+#dashboardOverview .db-count {
+  display: inline-block;
+  white-space: nowrap;
+}
+#dashboardOverview .db-count > strong {
+  display: inline-block;
+  min-width: 3ch;
+  text-align: right;
   color: var(--db-text);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
+#dashboardOverview .db-count > span {
+  display: inline-block;
+  text-align: left;
+}
+#dashboardOverview .db-count[data-header="ISSUES"] > span { width: 6ch; }
+#dashboardOverview .db-count[data-header="READY"] > span { width: 5ch; }
+#dashboardOverview .db-count[data-header="PRS"] > span { width: 3ch; }
 #dashboardOverview .db-item > .db-value {
   flex: none;
+}
+/* …and the status word beside the strip is a column too: the strip is
+   anchored to it, so a `Needs approval` row would otherwise pull its three
+   numbers 7ch left of a `Healthy` row's. 14ch is the widest status the Repos
+   panel produces (`Needs approval`). */
+#dashboardOverview .db-item-tabular > .db-value {
+  min-width: 14ch;
 }
 #dashboardOverview .db-host {
   padding: 6px 0;

@@ -242,6 +242,21 @@ const ROW_COUNTS: [(&str, &str, &str); 3] = [
     (crate::github::COL_PRS, "PR", "PRs"),
 ];
 
+/// The widest word each strip column prints, in characters, and the widest
+/// status word beside it. `app/ui/dashboard.css` reserves exactly these —
+/// `.db-count[data-header=…] > span { width: Nch }` and
+/// `.db-item-tabular > .db-value { min-width: 14ch }` — so a longer word
+/// here would overflow its slot on every row without moving a number the
+/// e2e alignment test could see. The test below is the link.
+#[cfg(test)]
+const ROW_COUNT_SLOT_CH: [(&str, usize); 3] = [
+    (crate::github::COL_ISSUES, 6),
+    (crate::github::COL_READY, 5),
+    (crate::github::COL_PRS, 3),
+];
+#[cfg(test)]
+const ROW_STATUS_SLOT_CH: usize = 14;
+
 /// One entry of a repo row's count strip: the value verbatim from the cell,
 /// the word the strip prints beside it (singular for exactly `1`, plural for
 /// everything else including `0` and `—`), and the table header the inspector
@@ -1088,8 +1103,8 @@ mod tests {
         assert_eq!(values(get("widget")), ["4", "0", "0"]);
         assert_eq!(labels(get("widget"), "counts"), ["issues", "ready", "PRs"]);
         // Exactly one is singular; `ready` has no plural.
-        assert_eq!(values(get("flywheel")), ["0", "0", "1"]);
-        assert_eq!(labels(get("flywheel"), "counts"), ["issues", "ready", "PR"]);
+        assert_eq!(values(get("flywheel")), ["1", "0", "1"]);
+        assert_eq!(labels(get("flywheel"), "counts"), ["issue", "ready", "PR"]);
         // cogwheel's PAT could not read any side count; toolkit's runs failed.
         assert_eq!(values(get("cogwheel")), ["—", "—", "—"]);
         assert_eq!(
@@ -1110,6 +1125,37 @@ mod tests {
         assert_eq!(
             labels(get("widget"), "details"),
             ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
+        );
+    }
+
+    /// The CSS slots are hand-copied numbers; this is what ties them to the
+    /// words. A word longer than its slot overflows into the separator on
+    /// every row alike, which the alignment test cannot see.
+    #[test]
+    fn every_strip_word_and_status_fits_the_slot_the_css_reserves() {
+        for (column, one, many) in ROW_COUNTS {
+            let (_, slot) = ROW_COUNT_SLOT_CH
+                .iter()
+                .find(|(c, _)| *c == column)
+                .expect("every column has a slot");
+            assert!(
+                one.len() <= *slot && many.len() <= *slot,
+                "{column}: {one}/{many} in {slot}ch"
+            );
+        }
+        let p = crate::dump_github(false, false);
+        for row in list(&p, "rows") {
+            let status = string(row, "statusLabel");
+            assert!(
+                status.len() <= ROW_STATUS_SLOT_CH,
+                "{status} in {ROW_STATUS_SLOT_CH}ch"
+            );
+        }
+        assert!(
+            list(&p, "rows")
+                .iter()
+                .any(|r| r["statusLabel"] == "Needs approval"),
+            "the widest status is in the fixture, so the bound is exercised"
         );
     }
 

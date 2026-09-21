@@ -149,10 +149,18 @@
       // it: the strip is the one line the tile has for it. Both halves are
       // Rust's — the value verbatim from the cell, the word already singular
       // or plural — and this only lays them side by side.
+      // Each count is a fixed-width cell — the number right-aligned in
+      // three characters, the word in a slot sized for that column's
+      // longest word — so the numbers line up down the tile whether a row
+      // reads `1 PR` or `10 PRs`. The header names the column for the CSS.
       const counts = node("span", "db-row-counts");
+      b.classList.add("db-item-tabular");
       row.counts.forEach((c, i) => {
         if (i) counts.append(" · ");
-        counts.append(node("strong", "", c.value), ` ${c.label}`);
+        const cell = node("span", "db-count");
+        cell.dataset.header = c.header;
+        cell.append(node("strong", "", c.value), " ", node("span", "", c.label));
+        counts.append(cell);
       });
       b.append(counts);
     }
