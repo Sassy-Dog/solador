@@ -318,6 +318,7 @@
   <!-- Order matters: settings.js reads `esc`, `callRust` and `refreshCockpit`
        from app.js's top-level lexical scope (shared across classic scripts),
        and wires its own listeners once app.js has defined them. -->
+  <script src="layout-stability.js"></script>
   <script src="app.js"></script>
   <script src="settings.js"></script>
   <script src="containers.js"></script>

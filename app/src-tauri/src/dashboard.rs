@@ -9,15 +9,33 @@ use viewmodel::color;
 
 pub const SOURCES: [(&str, &str); 9] = [
     ("hosts", "Machines"),
-    ("ghWorkflows", "GitHub repos"),
+    ("ghWorkflows", "GitHub Repos"),
     ("ghRunners", "Runners"),
-    ("services", "Service health"),
-    ("sentryCrons", "Scheduled jobs"),
+    ("services", "Service Health"),
+    ("sentryCrons", "Scheduled Jobs"),
     ("containers", "Containers / VMs"),
     ("claudeUsage", "Usage"),
     ("azureCost", "Azure Cost"),
     ("openclawAgents", "OpenClaw"),
 ];
+
+// Preserve brand/acronym casing, but capitalize every word in saved custom
+// titles as well as defaults. Presentation only: never rewrite stored names.
+fn title_case(title: &str) -> String {
+    let mut start = true;
+    title
+        .chars()
+        .flat_map(|c| {
+            let upper = start;
+            start = c.is_whitespace();
+            if upper {
+                c.to_uppercase().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
 
 pub fn default_layout() -> DashboardLayout {
     DashboardLayout {
@@ -90,13 +108,13 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
 }
 
 fn fixed_scopes(source: &str) -> Vec<(&'static str, &'static str)> {
-    let mut choices = vec![("all", "All resources"), ("attention", "Needs attention")];
+    let mut choices = vec![("all", "All resources"), ("attention", "Needs Attention")];
     match source {
-        "hosts" => choices.extend([("local", "This machine"), ("remote", "Remote machines")]),
+        "hosts" => choices.extend([("local", "This machine"), ("remote", "Remote Machines")]),
         "ghWorkflows" => choices.push(("healthy", "Healthy repos")),
         "ghRunners" => choices.extend([
             ("MACOS", "macOS runners"),
-            ("LINUX", "Linux runners"),
+            ("LINUX", "Linux Runners"),
             ("WINDOWS", "Windows runners"),
         ]),
         "sentryCrons" => choices.push(("active", "Active issues")),
@@ -666,7 +684,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     } else {
         (string(source, "message"), Some("manage"))
     };
-    json!({"id":tile.id,"source":tile.source,"title":tile.title,"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":format!("{} shown · {problems} need attention",matching.len().min(limit))})
+    json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":format!("{} shown · {problems} need attention",matching.len().min(limit))})
 }
 
 /// Same scope and truncation rules as a saved tile, using cached readings only.
@@ -720,17 +738,17 @@ fn presets() -> Value {
         {
             "id":"remote-machines",
             "hint":"Keep remote hosts together, with CPU and memory at a glance.",
-            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
+            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote Machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
         },
         {
             "id":"repos-attention",
             "hint":"Focus on repositories with issues in their available readings.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos needing attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
+            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos Needing Attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
         },
         {
             "id":"linux-runners",
             "hint":"See Linux runner availability in one compact tile.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false }
+            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false }
         }
     ])
 }
@@ -745,7 +763,7 @@ fn labels() -> Value {
         ("done", "Done"),
         ("add", "Add tile"),
         ("undo", "Undo"),
-        ("attention", "Needs attention"),
+        ("attention", "Needs Attention"),
         ("attentionNote", "All sources, even without a tile"),
         ("quiet", "No attention items in available readings."),
         (
@@ -859,6 +877,14 @@ fn labels() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_titles_capitalize_words_without_lowercasing_brands() {
+        assert_eq!(title_case("GitHub repos"), "GitHub Repos");
+        assert_eq!(title_case("my GPU / VMs"), "My GPU / VMs");
+        assert_eq!(title_case("équipe machines"), "Équipe Machines");
+    }
+
     use store::{LayoutProfile, LayoutSlot, Store};
 
     #[test]
@@ -884,7 +910,7 @@ mod tests {
     fn filtered_empty_tiles_do_not_reuse_an_unrelated_source_message() {
         let source = source_view(
             "ghWorkflows",
-            "GitHub repos",
+            "GitHub Repos",
             &json!({"message":{"text":"Source-wide message"},"rows":[
                 {"repo":"acme/ok","name":"ok","status":"healthy","attention":false}
             ]}),
@@ -898,7 +924,7 @@ mod tests {
         let missing = tile_view(&tile, &source);
         assert!(list(&missing, "rows").is_empty());
         assert!(string(&missing, "empty").contains("no current reading"));
-        let pending = source_view("ghWorkflows", "GitHub repos", &json!({"loading":true}));
+        let pending = source_view("ghWorkflows", "GitHub Repos", &json!({"loading":true}));
         assert!(tile_view(&tile, &pending)["emptyAction"].is_null());
     }
 
@@ -1040,14 +1066,14 @@ mod tests {
         for kind in [crate::crons::Fixture::Failed, crate::crons::Fixture::Blind] {
             let s = source_view(
                 "sentryCrons",
-                "Scheduled jobs",
+                "Scheduled Jobs",
                 &crate::dump_crons(kind, false),
             );
             assert!(!list(&s, "warnings").is_empty());
         }
         let s = source_view(
             "sentryCrons",
-            "Scheduled jobs",
+            "Scheduled Jobs",
             &crate::dump_crons(crate::crons::Fixture::Unconfigured, false),
         );
         assert!(list(&s, "warnings").is_empty());

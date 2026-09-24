@@ -922,19 +922,17 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .link-row .link-label { font-weight:700; min-width:150px; }
 .link-row .link-url { color:var(--muted); user-select:text; }
 
-/* A poll may replace an entire list (including all-clear/error states). The
-   viewport belongs to the panel, not the current payload, so neighbouring
-   panels never move. Overflow stays keyboard-scrollable and text is retained. */
+/* Content remains in the page scroll. layout-stability.js retains the largest
+   measured body at this width when a poll temporarily removes its rows. */
 .panel-body {
-  height:200px;
+  min-height:200px;
   flex:none;
-  overflow:auto;
-  scrollbar-gutter:stable;
+  overflow:visible;
   align-content:start;
 }
 .panel-body > * { flex-shrink:0; }
-#usageBody, #azureBody, #openclawBody { height:300px; }
-#reposHealth { height:15px; margin:0; overflow:auto; white-space:nowrap; }
+#usageBody, #azureBody, #openclawBody { min-height:300px; }
+#reposHealth { height:15px; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #reposHealth[hidden] { display:block !important; visibility:hidden; }
 .svc-state { width:18ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
 .cont-status { width:16ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
@@ -952,8 +950,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .host-row > .row > .stack > .result { height:29px; overflow:auto; }
 .crash-status, .cadence-status { height:29px; overflow:auto; }
 
-/* Reserve the host frame before its first successful sample too. Core and
-   volume counts may change on reconnect; their charts keep their own sizes. */
-.card { height:960px; overflow:auto; scrollbar-gutter:stable; }
+/* A host grows to fit every core and volume. Keep the initial reservation for
+   cold failures; subsequent outages retain the measured live height. */
+.card { min-height:960px; overflow:visible; }
 .card > * { flex-shrink:0; }
-.card > .hdr { position:sticky; top:0; z-index:1; background:var(--panel); }

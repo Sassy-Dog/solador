@@ -281,7 +281,7 @@ test("tile placement previews an insertion without moving saved tiles, then pers
   await page.locator("#dashboard-title").fill("Build machines");
   await page.locator("#dashboard-width").selectOption("wide");
   await expect(page.locator('.db-placement-tile[aria-current="true"]')).toHaveAttribute("data-width", "wide");
-  const order = ["Machines", "GitHub repos", "Build machines", "Runners", "Service health", "Scheduled jobs"];
+  const order = ["Machines", "GitHub Repos", "Build machines", "Runners", "Service Health", "Scheduled Jobs"];
   await expect(page.locator(".db-placement-title")).toHaveText(order);
   await expect(page.locator(".db-grid .db-tile-title")).toHaveText(original.tiles.map(t => t.title));
   expect(await savedLayout(page)).toBeNull();
@@ -347,7 +347,7 @@ test.afterEach(async ({ page }) => {
   expect(page.dashboardErrors).toEqual([]);
 });
 
-test("the default overview fits a laptop and keeps all source alerts", async ({
+test("the default overview uses page scrolling on a laptop and keeps all source alerts", async ({
   page,
   baseURL,
 }) => {
@@ -376,8 +376,8 @@ test("the default overview fits a laptop and keeps all source alerts", async ({
   expect(rects[3].y).toBe(rects[4].y);
   expect(rects[2].y).toBeGreaterThan(rects[0].y);
   expect(
-    await page.evaluate(() => document.documentElement.scrollHeight),
-  ).toBeLessThanOrEqual(768);
+    await page.locator(".db-tile-content").evaluateAll(els => els.every(el => el.scrollHeight <= el.clientHeight + 1)),
+  ).toBe(true);
   const row = tile(page, "hosts").locator('[data-action="row"]').first();
   await row.focus();
   const reads = await page.evaluate(
@@ -590,7 +590,7 @@ test("keyboard ordering, undo and dragging persist the visible order", async ({
   await action(page, "edit").click();
   await tile(page, "hosts").locator('[data-action="later"]').click();
   await expect(page.locator(".db-tile-title").first()).toHaveText(
-    "GitHub repos",
+    "GitHub Repos",
   );
   await action(page, "undo").click();
   await expect(page.locator(".db-tile-title")).toHaveText(
@@ -600,7 +600,7 @@ test("keyboard ordering, undo and dragging persist the visible order", async ({
     .locator(".db-drag")
     .dragTo(tile(page, "hosts").locator(".db-drag"));
   await expect(page.locator(".db-tile-title").first()).toHaveText(
-    "Service health",
+    "Service Health",
   );
   expect((await savedLayout(page)).tiles[0].source).toBe("services");
 });
