@@ -438,6 +438,7 @@
     active = next;
     const box = q(".db-inspector");
     box.hidden = false;
+    box.dataset.kind = next.kind;
     box.replaceChildren();
     const head = node("div", "db-inspector-head"),
       copy = node("div");
@@ -602,13 +603,22 @@
   function previewCard(t) {
     const card = node("article", "db-preview-tile");
     card.dataset.width = t.width;
+    card.dataset.source = t.source;
+    card.dataset.presentation = t.presentation;
     const head = node("header", "db-tile-head"), heading = node("div");
     heading.append(node("h3", "db-tile-title", t.title), node("p", "db-tile-note", `${t.scopeLabel} · ${L(t.presentation)}`));
     head.append(heading);
-    card.append(head, warnings(t.warnings));
-    if (!t.rows.length) card.append(node("p", "db-sub", t.empty));
-    for (const row of t.rows) card.append(makeRow(row, t, t.presentation === "detailed", false));
-    if (t.moreCount) card.append(node("p", "db-sub", t.moreLabel));
+    const content = node("div", "db-tile-content");
+    content.tabIndex = 0;
+    content.setAttribute("role", "region");
+    content.setAttribute("aria-label", t.title);
+    content.append(warnings(t.warnings));
+    const rows = node("div", "db-tile-rows");
+    if (!t.rows.length) rows.append(node("p", "db-sub", t.empty));
+    for (const row of t.rows) rows.append(makeRow(row, t, t.presentation === "detailed", false));
+    if (t.moreCount) rows.append(node("p", "db-sub", t.moreLabel));
+    content.append(rows);
+    card.append(head, content);
     card.append(node("footer", "db-tile-footer", t.footer));
     return card;
   }
@@ -731,6 +741,9 @@
     );
     text(box.querySelector(".db-inspector-head .db-sub"), s.trailing || "");
     const body = box.querySelector(".db-inspector-body");
+    body.tabIndex = 0;
+    body.setAttribute("role", "region");
+    body.setAttribute("aria-label", s.title);
     body.replaceChildren(warnings(s.warnings));
     if (s.message && rows.length) body.append(node("p", "db-detail-copy", s.message));
     const list = node("div", "db-detail-grid");

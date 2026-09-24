@@ -217,10 +217,10 @@
   overflow: auto;
   scrollbar-gutter: stable;
 }
-#dashboardOverview .db-tile[data-source="hosts"] .db-tile-content {
+#dashboardOverview :is(.db-tile, .db-preview-tile)[data-source="hosts"] .db-tile-content {
   flex-basis:196px; height:196px;
 }
-#dashboardOverview .db-tile[data-presentation="detailed"] .db-tile-content {
+#dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation="detailed"] .db-tile-content {
   flex-basis: 360px;
   height: 360px;
 }
@@ -692,3 +692,14 @@
 }
 
 #dashboardOverview .db-tile[data-presentation="summary"] .db-row-description { height:16.5px; white-space:nowrap; }
+
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-body {
+  height:360px; overflow:auto; scrollbar-gutter:stable;
+}
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head > div { min-width:0; }
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head h3 {
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head .db-sub {
+  height:16.5px; white-space:nowrap; overflow:auto;
+}

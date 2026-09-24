@@ -34,7 +34,9 @@ reserve a separate line; status values use fixed columns, and machine metric
 slots show `—` while disconnected. Summary tile contents have a fixed viewport
 (196px for Machines, 144px for other sources); Detailed uses 360px. Long lists,
 filtered empty states and warnings therefore change inside the tile instead of
-moving the tiles below it. The viewport supports keyboard scrolling. Row titles
+moving the tiles below it. Hidden-tile previews use the same viewports, and the
+live Details inspector reserves a 360px body to keep its actions anchored.
+The viewports support keyboard scrolling. Row titles
 and Details retain text abbreviated in the overview.
 
 Detailed panels likewise reserve scrollable content viewports: 200px for lists,

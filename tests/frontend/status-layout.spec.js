@@ -134,3 +134,36 @@ test('a host first connecting after a cold failure keeps the surrounding layout 
   await page.evaluate(async live => { window.framesForTest.cockpit = live; await refreshCockpit(); }, live);
   expect(await bounds(page, '.card, #panelRows')).toEqual(before);
 });
+
+test('live resource details keep the inspector and its actions anchored', async ({ page, baseURL }) => {
+  const frames = await open(page, baseURL);
+  await page.locator('.db-tile .db-item').first().click();
+  const before = await bounds(page, '.db-inspector, .db-inspector > .db-form-actions, .db-grid');
+  const next = structuredClone(frames.dashboard_view);
+  const hosts = next.sources.find(s => s.id === 'hosts');
+  hosts.rows = [];
+  hosts.trailing = '';
+  hosts.warnings = [{text:'Long diagnostic '.repeat(40),color:'#ff9384'}];
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  await expect(page.locator('.db-detail-resource')).toHaveCount(0);
+  expect(await bounds(page, '.db-inspector, .db-inspector > .db-form-actions, .db-grid')).toEqual(before);
+});
+
+test('live hidden previews keep Restore and Remove anchored', async ({ page, baseURL }) => {
+  const frames = await open(page, baseURL);
+  const next = structuredClone(frames.dashboard_view);
+  const hidden = next.tiles.shift();
+  next.hiddenTiles = [hidden];
+  next.layout.tiles.find(t => t.id === hidden.id).hidden = true;
+  next.layout.revision += 1;
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  await expect(page.locator('.db-tile')).toHaveCount(next.tiles.length);
+  await page.locator('[data-action="edit"]').click();
+  await page.locator('.db-hidden-count').click();
+  const before = await bounds(page, '.db-inspector, .db-hidden-preview .db-form-actions');
+  hidden.rows = [];
+  hidden.warnings = [{text:'Long diagnostic '.repeat(40),color:'#ff9384'}];
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  await expect(page.locator('.db-hidden-preview .db-item')).toHaveCount(0);
+  expect(await bounds(page, '.db-inspector, .db-hidden-preview .db-form-actions')).toEqual(before);
+});
