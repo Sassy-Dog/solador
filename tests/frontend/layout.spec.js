@@ -882,7 +882,7 @@ test("side-by-side cards reserve volume slots so the sections below them line up
   expect(new Set(baselines).size, `TOP CPU baselines ${baselines}`).toBe(1);
 });
 
-test("a stacked column reserves nothing, so a short card keeps its own height", async ({ page, baseURL }) => {
+test("stacked host content adds no volume padding slots", async ({ page, baseURL }) => {
   // Alignment is meaningless once the cards stack, and reserving there would
   // pad a 1-volume card with dead space under it. Rust says 0; the frontend
   // must render no padding tiles at all.
@@ -1358,7 +1358,7 @@ for (const px of [0, 16]) {
   });
 }
 
-test("the Runners list ends at its last row, at one column and at two", async ({ page, baseURL }) => {
+test("the Runners list has no trailing gap inside its reserved viewport", async ({ page, baseURL }) => {
   // The trap in the mechanism that gives Runners its gap. `.gh-list` is
   // multi-column, so the gap is a child `margin-bottom` — and the bottom row of
   // EVERY column carries one, while the balancer sizes the list to its tallest
@@ -1392,12 +1392,9 @@ test("the Runners list ends at its last row, at one column and at two", async ({
       const rows = [...list.querySelectorAll(":scope > .gh-row")];
       const lowest = Math.max(...rows.map((r) => r.getBoundingClientRect().bottom));
       const columns = new Set(rows.map((r) => Math.round(r.getBoundingClientRect().left))).size;
-      // Against the panel BODY, not the list's own box: the compensation is a
-      // negative margin on `.gh-list`, and an element's margin is not part of
-      // the border box `getBoundingClientRect` reports. The body is where the
-      // gap either survives into the card or does not, so the body is what the
-      // card's bottom padding is measured from.
-      const px = document.getElementById("runnersBody").getBoundingClientRect().bottom - lowest;
+      // Include the list's compensating margin. The panel body now reserves
+      // a stable viewport even when status changes remove rows.
+      const px = list.getBoundingClientRect().bottom + parseFloat(getComputedStyle(list).marginBottom) - lowest;
       if (before) panel.style.setProperty("--panel-cols", before);
       else panel.style.removeProperty("--panel-cols");
       return { px, columns };

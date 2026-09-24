@@ -49,6 +49,7 @@ function rowNode(row) {
   el.appendChild(node("span", "grow"));
 
   const state = node("span", "svc-state", row.state);
+  state.title = row.state;
   state.style.color = row.color;
   el.appendChild(state);
 

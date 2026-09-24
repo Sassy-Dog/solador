@@ -100,7 +100,10 @@
       node("h2", "", L("attention")),
       node("span", "db-sub", L("attentionNote")),
     );
-    attention.append(head, node("div", "db-attention-items"));
+    const items = node("div", "db-attention-items");
+    items.tabIndex = 0;
+    items.setAttribute("aria-label", L("attention"));
+    attention.append(head, items);
     const editbar = node("div", "db-editbar");
     editbar.append(
       node("span", "", L("editHint")),
@@ -125,8 +128,18 @@
     back.addEventListener("click", () => showOverview());
     initialized = true;
   }
-  function warnings(values) {
-    const wrap = node("div", "db-warnings");
+  function warnings(values, wrap = node("div", "db-warnings")) {
+    const signature = JSON.stringify(values || []);
+    if (wrap.warningSignature === signature) return wrap;
+    wrap.warningSignature = signature;
+    wrap.replaceChildren();
+    wrap.removeAttribute("tabindex");
+    wrap.removeAttribute("title");
+    if (values?.length) {
+      wrap.tabIndex = 0;
+      wrap.setAttribute("role", "note");
+      wrap.title = values.map(v => v.text).join(" · ");
+    }
     for (const v of values || [])
       wrap.append(colored("p", "db-warning", v.text, v.color));
     return wrap;
@@ -165,6 +178,7 @@
       b.append(counts);
     }
     b.append(colored("span", "db-value", row.value, row.valueColor));
+    b.title = [row.label, row.value, row.detail].filter(Boolean).join(" · ");
     wrap.append(b);
     if (row.metrics?.length) {
       const stats = node("div", "db-host-stats");
@@ -179,7 +193,11 @@
       wrap.append(stats);
     }
     const description = detail ? row.detail : row.compactDetail;
-    if (description) wrap.append(node("p", "db-sub", description));
+    if (detail || t.source === "sentryCrons") {
+      const copy = node("p", "db-sub db-row-description", description || "");
+      copy.title = description || "";
+      wrap.append(copy);
+    }
     if (detail && row.details) {
       const metrics = node("div", "db-extra-metrics");
       for (const m of row.details) {
@@ -222,6 +240,8 @@
       if (grid.children[index] !== el)
         grid.insertBefore(el, grid.children[index] || null);
       el.dataset.width = t.width;
+      el.dataset.source = t.source;
+      el.dataset.presentation = t.presentation;
       el.setAttribute("aria-label", t.title);
       el.classList.toggle("db-editable", editing);
       const tools = el.querySelector(".db-tools");
@@ -254,21 +274,31 @@
       }
       if (force || fresh || (!editing && !dragged)) {
         const content = el.querySelector(".db-tile-content");
-        content.replaceChildren(warnings(t.warnings));
+        content.tabIndex = 0;
+        content.setAttribute("role", "region");
+        content.setAttribute("aria-label", t.title);
+        let warning = content.querySelector(":scope > .db-warnings");
+        let rows = content.querySelector(":scope > .db-tile-rows");
+        if (!warning) {
+          warning = warnings(t.warnings);
+          rows = node("div", "db-tile-rows");
+          content.append(warning, rows);
+        } else warnings(t.warnings, warning);
+        rows.replaceChildren();
         if (!t.rows.length) {
-          content.append(node("p", "db-sub", t.empty));
+          rows.append(node("p", "db-sub", t.empty));
           if (t.emptyAction) {
             const action = button(L(t.emptyAction === "configure" ? "editScope" : "manage"), t.emptyAction, t.id, "db-empty-action");
             action.dataset.source = t.source;
             action.dataset.scope = tile(t.id).scope;
-            content.append(action);
+            rows.append(action);
           }
         }
         for (const row of t.rows)
-          content.append(makeRow(row, t, t.presentation === "detailed"));
+          rows.append(makeRow(row, t, t.presentation === "detailed"));
         if (t.moreCount) {
           const more = button(t.moreLabel, "details", t.id, "db-more db-plain");
-          content.append(more);
+          rows.append(more);
         }
         const footer = el.querySelector(".db-tile-footer");
         footer.replaceChildren(
@@ -1023,6 +1053,14 @@
     if (e.key === "Escape" && pointerDrag) clearDrag();
   });
   root.addEventListener("keydown", (e) => {
+    // WebKit does not consistently scroll a focused nested overflow area
+    // with arrow keys. Handle these two horizontal status strips explicitly.
+    if (e.target.matches(".db-warnings, .db-attention-items") &&
+        !e.altKey && !e.ctrlKey && !e.metaKey &&
+        ["ArrowLeft", "ArrowRight"].includes(e.key)) {
+      e.preventDefault();
+      e.target.scrollLeft += e.key === "ArrowRight" ? 40 : -40;
+    }
     if (e.key === "Escape" && active) {
       closeInspector();
       q('[data-action="edit"]').focus({ preventScroll: true });

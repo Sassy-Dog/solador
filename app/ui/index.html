@@ -73,7 +73,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="containersTrailing"></span>
       </header>
-      <div class="panel-body" id="containersBody"></div>
+      <div class="panel-body" id="containersBody" tabindex="0" role="region" aria-labelledby="containersTitle"></div>
     </section>
 
     <!-- Repos. One fixed row per tracked repo, so the card never resizes as CI
@@ -90,7 +90,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="reposTrailing"></span>
       </header>
-      <div class="panel-body" id="reposBody"></div>
+      <div class="panel-body" id="reposBody" tabindex="0" role="region" aria-labelledby="reposTitle"></div>
       <p class="panel-health" id="reposHealth" hidden></p>
     </section>
 
@@ -106,7 +106,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="runnersTrailing"></span>
       </header>
-      <div class="panel-body" id="runnersBody"></div>
+      <div class="panel-body" id="runnersBody" tabindex="0" role="region" aria-labelledby="runnersTitle"></div>
     </section>
 
     <!-- Usage. Claude Code token rollups, plus a Neon and a Sentry section
@@ -132,7 +132,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="usageTrailing"></span>
       </header>
-      <div class="panel-body" id="usageBody"></div>
+      <div class="panel-body" id="usageBody" tabindex="0" role="region" aria-labelledby="usageTitle"></div>
     </section>
 
     <!-- Azure Cost. Month-to-date spend, a prior-month reference, a projection
@@ -155,7 +155,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="azureTrailing"></span>
       </header>
-      <div class="panel-body" id="azureBody"></div>
+      <div class="panel-body" id="azureBody" tabindex="0" role="region" aria-labelledby="azureTitle"></div>
     </section>
 
     <!-- Services. Third-party availability for the vendors this cockpit is
@@ -171,7 +171,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="servicesTrailing"></span>
       </header>
-      <div class="panel-body" id="servicesBody"></div>
+      <div class="panel-body" id="servicesBody" tabindex="0" role="region" aria-labelledby="servicesTitle"></div>
     </section>
 
     <!-- Sentry Crons. Every cron monitor environment that is not ok, and how
@@ -198,7 +198,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="cronsTrailing"></span>
       </header>
-      <div class="panel-body" id="cronsBody"></div>
+      <div class="panel-body" id="cronsBody" tabindex="0" role="region" aria-labelledby="cronsTitle"></div>
     </section>
 
     <!-- OpenClaw. An agent farm's per-agent status, cron health, channel
@@ -212,7 +212,7 @@
         <span class="grow"></span>
         <span class="panel-trailing" id="openclawTrailing"></span>
       </header>
-      <div class="panel-body" id="openclawBody"></div>
+      <div class="panel-body" id="openclawBody" tabindex="0" role="region" aria-labelledby="openclawTitle"></div>
     </section>
 
     </div>
@@ -229,7 +229,7 @@
       <img class="brandmark" src="mark.svg" alt="" width="18" height="18" />
       <h1 class="panel-title" id="settingsTitle"></h1>
       <span class="grow"></span>
-      <span class="status" id="settingsStatus" role="status"></span>
+      <span class="status" id="settingsStatus" role="status" tabindex="0"></span>
       <button class="btn" id="settingsClose" type="button"></button>
     </div>
     <div class="settings-shell">
@@ -245,7 +245,7 @@
        hosts on the page an id would be duplicated N times, which makes
        `getElementById` return whichever card happened to render first. -->
   <template id="cardTpl">
-    <div class="card">
+    <div class="card" tabindex="0" role="region">
       <!-- One header row, not two: the host's identity and its CPU reading used
            to stack, and the second line bought nothing a single line could not
            say. The glyph stays as the CPU section's marker, matching Memory /

@@ -95,11 +95,11 @@ body { padding:var(--cockpit-gap, 16px); }
   overflow-x:auto; scrollbar-width:none; }
 .topbar .host-tabs::-webkit-scrollbar { display:none; }
 .topbar .host-tabs .tab { flex:none; }
-.card { padding:18px; background:var(--panel); border:1px solid var(--line);
+.card { position:relative; padding:18px; background:var(--panel); border:1px solid var(--line);
   border-radius:12px; display:flex; flex-direction:column; gap:10px; min-width:0; }
-/* A host we cannot contact renders as its header and one sentence — every
-   chart, core grid, volume tile and process row below is hidden rather than
-   left showing the readings it had when the link dropped.
+/* A host we cannot contact shows its header and an overlaid error. Hide old
+   readings with visibility so their footprint survives the outage; recovery
+   must not move the neighbouring cards.
 
    `> *:not(.hdr):not(.card-down)` rather than a `.card-body` wrapper, so an
    element added to the template later is hidden by default here instead of
@@ -112,8 +112,9 @@ body { padding:var(--cockpit-gap, 16px); }
    looking at — the tab bar carries the alarm for the ones you are not. */
 .card[data-state="unreachable"], .card[data-state="failed"] { border-color:var(--red); }
 .card[data-state="unreachable"] > *:not(.hdr):not(.card-down),
-.card[data-state="failed"] > *:not(.hdr):not(.card-down) { display:none; }
-.card-down { font-size:12px; font-weight:700; margin:0; }
+.card[data-state="failed"] > *:not(.hdr):not(.card-down) { visibility:hidden; }
+.card-down { position:absolute; top:50px; left:18px; right:18px;
+  max-height:calc(100% - 68px); overflow:auto; font-size:12px; font-weight:700; margin:0; }
 /* The card's header row and the section headers below it are the same shape: a
    marker, a label that gives ground first, then a value pinned right. The host
    header used to be a row of its own above the CPU section header; the two are
@@ -920,3 +921,39 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .link-row { display:flex; gap:10px; font-size:11px; flex-wrap:wrap; }
 .link-row .link-label { font-weight:700; min-width:150px; }
 .link-row .link-url { color:var(--muted); user-select:text; }
+
+/* A poll may replace an entire list (including all-clear/error states). The
+   viewport belongs to the panel, not the current payload, so neighbouring
+   panels never move. Overflow stays keyboard-scrollable and text is retained. */
+.panel-body {
+  height:200px;
+  flex:none;
+  overflow:auto;
+  scrollbar-gutter:stable;
+  align-content:start;
+}
+.panel-body > * { flex-shrink:0; }
+#usageBody, #azureBody, #openclawBody { height:300px; }
+#reposHealth { height:15px; margin:0; overflow:auto; white-space:nowrap; }
+#reposHealth[hidden] { display:block !important; visibility:hidden; }
+.svc-state { width:18ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
+.cont-status { width:16ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
+.settings .status { min-width:0; max-width:50%; white-space:nowrap; overflow:auto; }
+.connection-state { width:18ch; justify-content:flex-end; white-space:nowrap; overflow:auto; }
+.update-status { height:32px; overflow:auto; }
+.update-notes-slot { height:64px; overflow:auto; }
+.update-notes-slot .update-notes { margin:0; }
+.settings .update-controls { height:28px; }
+
+.settings [data-group="updates"] > .help { height:32px; overflow:auto; }
+.settings .update-controls { flex-wrap:nowrap; overflow:auto; }
+.settings .update-controls > button { flex:none; white-space:nowrap; }
+.host-row > .row > .stack { flex:1; }
+.host-row > .row > .stack > .result { height:29px; overflow:auto; }
+.crash-status, .cadence-status { height:29px; overflow:auto; }
+
+/* Reserve the host frame before its first successful sample too. Core and
+   volume counts may change on reconnect; their charts keep their own sizes. */
+.card { height:960px; overflow:auto; scrollbar-gutter:stable; }
+.card > * { flex-shrink:0; }
+.card > .hdr { position:sticky; top:0; z-index:1; background:var(--panel); }
