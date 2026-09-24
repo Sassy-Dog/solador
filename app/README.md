@@ -1,7 +1,7 @@
 # Solador Cross-Platform Cockpit (`app/`)
 
 The macOS/Windows cockpit: a [Tauri v2](https://v2.tauri.app) app opening on a
-compact overview of **Machines**, **GitHub repos**, **Runners**, **Service health**
+compact overview of **Machines**, **GitHub Repos**, **Runners**, **Service Health**
 and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings and the existing full panel; **All
@@ -12,11 +12,11 @@ in **Settings**, backed by the OS credential store.
 
 A tile is a saved view of a source. Duplicates can have independent names, scopes,
 widths and Summary/Detailed presentations. Hiding a tile leaves its source
-monitored, and **Needs attention** covers every source, including ones with no
+monitored, and **Needs Attention** covers every source, including ones with no
 visible tile. The source order remains stable as readings change. Summary rows
 are capped, with a count and a Details link for the remaining resources; omitted
 problems are named in that count. A resource scope that disappears stays empty.
-A **GitHub repos** row carries its backlog on the row itself, in both
+A **GitHub Repos** row carries its backlog on the row itself, in both
 presentations — `7 issues · 3 ready · 2 PRs`, where *ready* is the repo's open
 issues whose project-board Status is `Ready` — verbatim from the detailed
 table's cells, so an unreadable count is the same `—` there. The strip is
@@ -24,31 +24,32 @@ columns, not a sentence: each number sits right-aligned in a slot at least
 three characters wide, each word in a slot sized to its column's longest, and
 the status word beside it occupies a reserved column, so the
 numbers line up down the tile whether a row reads `1 PR` or `10 PRs` (a count
-past three digits widens its own row, and only that row). On the row rather
-than under it, the way a machine's CPU/RAM sit, because five two-line rows are
-what stops the default overview fitting a 1024×768 laptop.
+past three digits widens its own row, and only that row). Keeping counts on
+the same line makes the overview compact at laptop widths; longer content
+extends the page instead of creating a scrollbar inside the tile.
 
-Live status changes keep the dashboard footprint stable. **Needs attention**
-reserves one horizontally scrollable line, including while empty. Tile warnings
-reserve a separate line; status values use fixed columns, and machine metric
-slots show `—` while disconnected. Summary tile contents have a fixed viewport
-(196px for Machines, 144px for other sources); Detailed uses 360px. Long lists,
-filtered empty states and warnings therefore change inside the tile instead of
-moving the tiles below it. Hidden-tile previews use the same viewports, and the
-live Details inspector reserves a 360px body to keep its actions anchored.
-Refresh failures scroll within the footer status slot rather than wrapping its
-Details link.
-The viewports support keyboard scrolling. Row titles
-and Details retain text abbreviated in the overview.
+Live status changes keep the dashboard footprint stable without scrolling inside
+its tiles. **Needs Attention** has the same 12px padding and bordered frame as
+other tiles. Its responsive grid reserves a slot for every source, including
+while clear, so status changes do not push the dashboard down. Tile warnings
+reserve a separate line; long diagnostics are abbreviated visually, with the
+complete accessible text and hover title retained. Status values use fixed
+columns, and machine metric slots show `—` while disconnected. Tile headings
+capitalize each word, preserving brand/acronym casing, including saved names.
 
-Detailed panels likewise reserve scrollable content viewports: 200px for lists,
-300px for Usage, Azure Cost and OpenClaw. Detailed host cards reserve a 960px
-scrollable frame even before their first reading; charts retain their own sizes
-inside it. Disconnected host cards hide old readings while retaining their
-occupied space. Settings reserves space for host
-probe results, update notes/actions and changing status messages. Window resizing
-and explicit layout edits may still reflow the app. Browser regression tests
-measure failure, empty, warning and recovery transitions across these surfaces.
+Tile bodies, hidden previews, the Details inspector, detailed panels and host
+cards grow to fit their content in the **page's** scroll. `layout-stability.js`
+retains their largest measured height at the current width, so temporary empty
+or failed polls do not collapse them. Minimum reservations are 196px for Machines,
+144px for other summary tiles, 360px for detailed tiles/inspectors, 200px for
+list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards.
+These are floors, never clipping limits. New resources or a first larger reading
+can expand the page; resizing or changing a tile’s source, scope or presentation
+resets its measured reservation.
+Disconnected host cards hide old readings while retaining their occupied space.
+Settings reserves space for probe results, update notes/actions and status
+messages. Browser regressions measure both status stability and fully visible
+content at narrow, medium and wide window sizes.
 
 Placement and visibility edits save immediately; configuration saves with
 **Add tile** or **Apply**. **Undo** reverses successful edits in the current session.

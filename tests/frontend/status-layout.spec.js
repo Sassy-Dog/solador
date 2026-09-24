@@ -64,12 +64,12 @@ for (const width of [375, 1024, 1600]) {
     const warnings = page.locator('.db-grid .db-warnings').first();
     await warnings.focus();
     await expect(warnings).toBeFocused();
-    await page.keyboard.press('ArrowRight');
-    await expect.poll(() => warnings.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+    await expect(warnings).toHaveAttribute('title', failed.tiles[0].warnings[0].text);
+    expect(await warnings.evaluate(el => getComputedStyle(el).overflowX)).toBe('hidden');
     const reads = await page.evaluate(() => window.dashboardReads);
     await expect.poll(() => page.evaluate(() => window.dashboardReads)).toBeGreaterThan(reads);
     await expect(warnings).toBeFocused();
-    expect(await warnings.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+    await expect(warnings).toHaveAttribute('title', failed.tiles[0].warnings[0].text);
     await changeDashboard(page, initial);
     expect(await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item')).toEqual(before);
   });
@@ -113,6 +113,7 @@ test('a disconnected detailed host hides old readings without moving the next pa
   const live = await (await fetch(`${baseURL}/sample.json`)).json();
   const down = await (await fetch(`${baseURL}/sample-unreachable.json`)).json();
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, live);
+  await expect.poll(() => page.locator('.card').first().evaluate(el => parseFloat(el.style.minHeight) === el.getBoundingClientRect().height)).toBe(true);
   const before = await bounds(page, '.card, #panelRows');
   await page.evaluate(async model => { window.framesForTest.cockpit = model; await refreshCockpit(); }, down);
   await expect(page.locator('.card-down')).toBeVisible();
@@ -133,6 +134,7 @@ test('a host first connecting after a cold failure keeps the surrounding layout 
     window.framesForTest.cockpit = down;
     await refreshCockpit();
   }, down);
+  await expect.poll(() => page.locator('.card').first().evaluate(el => parseFloat(el.style.minHeight) === el.getBoundingClientRect().height)).toBe(true);
   const before = await bounds(page, '.card, #panelRows');
   await page.evaluate(async live => { window.framesForTest.cockpit = live; await refreshCockpit(); }, live);
   expect(await bounds(page, '.card, #panelRows')).toEqual(before);
@@ -181,4 +183,72 @@ test('refresh errors keep the narrow overview footer anchored', async ({ page, b
   await page.evaluate(() => { window.failDashboard = false; });
   await expect(page.locator('.db-live-note')).toHaveText('');
   expect(await bounds(page, '.db-end, .db-end button')).toEqual(before);
+});
+
+for (const width of [375, 1024, 1600]) test(`tile content is fully visible without internal scrolling at ${width}px`, async ({page, baseURL}) => {
+  await page.setViewportSize({width, height:900});
+  const frames = await open(page, baseURL);
+  const next = structuredClone(frames.dashboard_view);
+  const runners = next.tiles.find(t => t.source === 'ghRunners');
+  runners.rows = Array.from({length:12}, (_, i) => ({...runners.rows[0], id:`runner-${i}`, name:`runner-${i}`}));
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  await expect(page.locator('[data-source="ghRunners"] .db-item')).toHaveCount(12);
+  const clipped = () => page.locator('.db-tile-content, .card, .panel-body').evaluateAll(elements => elements.filter(el => el.getClientRects().length && el.scrollHeight > el.clientHeight + 1).map(el => el.className));
+  await expect.poll(clipped).toEqual([]);
+  const padding = await page.locator('.db-attention').evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]);
+  expect(padding).toEqual(await page.locator('.db-tile').first().evaluate(el => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]));
+  await page.goto('/index.html?view=details');
+  await expect(page.locator('.card').first()).toBeVisible();
+  await expect.poll(clipped).toEqual([]);
+});
+
+test('resizing releases obsolete height reservations without clipping content', async ({page, baseURL}) => {
+  await page.setViewportSize({width:375,height:900});
+  const frames = await open(page, baseURL);
+  const next = structuredClone(frames.dashboard_view);
+  const runners = next.tiles.find(t => t.source === 'ghRunners');
+  runners.rows = Array.from({length:20}, (_, i) => ({...runners.rows[0], id:`runner-${i}`}));
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  const body = page.locator('.db-tile[data-source="ghRunners"] .db-tile-content');
+  await expect.poll(() => body.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(400);
+  const tall = await body.boundingBox();
+  runners.rows = [];
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  await expect(page.locator('.db-tile[data-source="ghRunners"] .db-item')).toHaveCount(0);
+  expect((await body.boundingBox()).height).toEqual(tall.height);
+  await page.setViewportSize({width:1600,height:900});
+  await expect.poll(() => body.evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(tall.height);
+  expect(await body.evaluate(el => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+});
+
+test('changing Detailed to Summary releases the old tile height', async ({page, baseURL}) => {
+  const frames = await open(page, baseURL);
+  const next = structuredClone(frames.dashboard_view);
+  next.tiles[0].presentation = 'detailed';
+  next.layout.revision += 1;
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  const content = page.locator('.db-tile').first().locator('.db-tile-content');
+  await expect.poll(() => content.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThanOrEqual(360);
+  const detailed = (await content.boundingBox()).height;
+  next.tiles[0].presentation = 'summary';
+  next.layout.revision += 1;
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  await expect.poll(() => content.evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(detailed);
+});
+
+test('resizing releases shared row heights and immediately establishes new reservations', async ({page, baseURL}) => {
+  await page.setViewportSize({width:1600,height:900});
+  const frames = await open(page, baseURL);
+  const next = structuredClone(frames.dashboard_view);
+  const hosts = next.tiles[0];
+  hosts.rows = Array.from({length:20}, (_, i) => ({...hosts.rows[0], id:`host-${i}`}));
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  const bodies = page.locator('.db-tile-content');
+  await expect.poll(() => bodies.nth(1).evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(1000);
+  hosts.rows = [];
+  await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
+  await expect(page.locator('.db-tile').first().locator('.db-item')).toHaveCount(0);
+  await page.setViewportSize({width:1500,height:900});
+  await expect.poll(() => bodies.nth(1).evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(500);
+  await expect.poll(() => bodies.evaluateAll(els => els.every(el => parseFloat(el.style.minHeight) > 0))).toBe(true);
 });

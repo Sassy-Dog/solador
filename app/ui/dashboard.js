@@ -245,6 +245,7 @@
       el.dataset.width = t.width;
       el.dataset.source = t.source;
       el.dataset.presentation = t.presentation;
+      el.dataset.scope = t.scopeLabel;
       el.setAttribute("aria-label", t.title);
       el.classList.toggle("db-editable", editing);
       const tools = el.querySelector(".db-tools");
@@ -325,22 +326,24 @@
     overviewOpen = mode === "overview";
     const attention = q(".db-attention-items");
     attention.replaceChildren();
-    for (const item of model.attention) {
-      const b = button("", "attention", item.source),
-        dot = node("span", "db-dot");
+    for (const source of model.sources) {
+      const item = model.attention.find(item => item.source === source.id);
+      if (!item) {
+        const slot = node("span", "db-attention-slot");
+        slot.setAttribute("aria-hidden", "true");
+        attention.append(slot);
+        continue;
+      }
+      const b = button("", "attention", item.source), dot = node("span", "db-dot");
       dot.style.color = item.color;
       dot.setAttribute("aria-hidden", "true");
-      b.append(dot, document.createTextNode(item.label));
+      b.title = item.label;
+      b.append(dot, node("span", "db-attention-label", item.label));
       attention.append(b);
     }
     if (!model.attention.length)
-      attention.append(
-        node(
-          "span",
-          "db-muted",
-          model.sources.some((s) => s.loading) ? L("loading") : L("quiet"),
-        ),
-      );
+      attention.append(node("span", "db-muted db-attention-quiet",
+        model.sources.some(s => s.loading) ? L("loading") : L("quiet")));
     q('[data-action="edit"]').textContent = editing ? L("done") : L("edit");
     q('[data-action="edit"]').classList.toggle("db-primary", editing);
     q('[data-action="edit"]').disabled = busy || !window.__TAURI__;
@@ -608,6 +611,7 @@
     card.dataset.width = t.width;
     card.dataset.source = t.source;
     card.dataset.presentation = t.presentation;
+    card.dataset.scope = t.scopeLabel;
     const head = node("header", "db-tile-head"), heading = node("div");
     heading.append(node("h3", "db-tile-title", t.title), node("p", "db-tile-note", `${t.scopeLabel} · ${L(t.presentation)}`));
     head.append(heading);
@@ -1069,14 +1073,6 @@
     if (e.key === "Escape" && pointerDrag) clearDrag();
   });
   root.addEventListener("keydown", (e) => {
-    // WebKit does not consistently scroll a focused nested overflow area
-    // with arrow keys. Handle horizontal status strips explicitly.
-    if (e.target.matches(".db-warnings, .db-attention-items, .db-live-note") &&
-        !e.altKey && !e.ctrlKey && !e.metaKey &&
-        ["ArrowLeft", "ArrowRight"].includes(e.key)) {
-      e.preventDefault();
-      e.target.scrollLeft += e.key === "ArrowRight" ? 40 : -40;
-    }
     if (e.key === "Escape" && active) {
       closeInspector();
       q('[data-action="edit"]').focus({ preventScroll: true });
