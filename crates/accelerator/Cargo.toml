@@ -1,0 +1,38 @@
+[package]
+# Prefixed like the other workspace crates to stay clear of crates.io names.
+# The lib below keeps the short import name.
+name = "solador-accelerator"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+# The IOKit `IOAccelerator` reader, on its own so both samplers can share it:
+# `crates/localhost` (this machine's card) and `agent/` (a Mac host's card).
+# The agent depends on this crate rather than on `crates/localhost` so an
+# unattended daemon does not also pull in the battery and Foundation readers
+# for one function. Keep it narrow: wire plus the two IOKit bindings.
+
+[lib]
+name = "accelerator"
+
+[dependencies]
+solador-wire = { path = "../wire" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The IOKit registry walk — the same `IOAccelerator` properties `GPUMonitor`
+# reads. Chosen over `io-kit-sys`/`core-foundation` because both crates are
+# already in this workspace's lock via tauri (so the port adds no new package
+# to the tree at all), they are the same objc2 family as `crates/localhost`'s
+# `objc2-foundation`, and `CFRetained` gets the reference counting right by
+# construction rather than by hand. Only the features the walk names are
+# enabled: matching dictionaries, string keys, numeric values.
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "CFDictionary",
+  "CFString",
+  "CFNumber",
+] }
+objc2-io-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "libc",
+] }

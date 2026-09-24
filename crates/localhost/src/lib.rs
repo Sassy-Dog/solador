@@ -38,7 +38,6 @@
 //! anything.
 
 mod battery;
-mod gpu;
 mod process;
 mod rate;
 mod thermal;
@@ -259,7 +258,7 @@ impl LocalSampler {
     /// a named non-goal, as does any Mac that matches no accelerator at all
     /// (a VM, which is what CI's macOS runners are). Both report
     /// `Gpu::unknown()`, whose `is_present() == false` renders "—" rather than
-    /// a 0% GPU nobody looked at. See [`gpu`] for what the port deliberately
+    /// a 0% GPU nobody looked at. See [`accelerator`] for what the port deliberately
     /// leaves behind.
     pub fn sample(&mut self) -> LocalSnapshot {
         let now = Instant::now();
@@ -308,8 +307,8 @@ impl LocalSampler {
             network: self.network_rates(now),
             // Physical memory is only ever used as the pool a *unified*-memory
             // GPU's occupancy is measured against; a discrete adapter is
-            // measured against its own VRAM. See `gpu`'s module docs.
-            gpu: gpu::read(self.system.total_memory()),
+            // measured against its own VRAM. See `accelerator`'s crate docs.
+            gpu: accelerator::read(self.system.total_memory()),
             battery: battery::read(),
             volumes: self.collect_volumes(),
             processes: self.processes.clone(),

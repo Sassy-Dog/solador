@@ -1,9 +1,14 @@
-//! GPU sampling by shelling out to a vendor CLI.
+//! GPU sampling: IOKit on a Mac, `nvidia-smi` on an NVIDIA host.
 //!
 //! `sysinfo` reports no GPU on any platform, which is why #183 had the agent
 //! omit the `gpu` object outright rather than keep sending the all-zero one
-//! that predated it. This module is the first thing here that actually
-//! *measures* one: NVIDIA cards, read out of `nvidia-smi` (#217).
+//! that predated it. Two sources measure one now:
+//!
+//! - **macOS** — the `IOAccelerator` registry, through `crates/accelerator`:
+//!   the same reader, and the same mapping, that fills the cockpit's own card.
+//!   Until it was wired in here a Mac host's card read `—` beside a local card
+//!   that was full, because the only source this agent knew was the next one.
+//! - **NVIDIA** — `nvidia-smi` (#217).
 //!
 //! # Measured, or absent
 //!
@@ -25,6 +30,10 @@
 //! in tens of milliseconds, but a wedged driver can leave it in uninterruptible
 //! sleep indefinitely, and one such call inside the loop would freeze *every*
 //! metric, not just the GPU.
+//!
+//! The IOKit read is not a subprocess, but it is synchronous FFI into the
+//! registry, so it runs on a blocking thread from the same task for the same
+//! reason: nothing the sampler waits on.
 //!
 //! So this runs as its own task ([`spawn_probe`]) on its own cadence, writing
 //! the last reading into a shared cell. The sampler's contact with it is
@@ -74,6 +83,25 @@ const PROBE_INTERVAL: Duration = Duration::from_secs(5);
 /// up behind itself.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Which source produced a reading. Only for the transition log: the wire
+/// carries no source, and a consumer has no use for one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    /// The `IOAccelerator` registry (macOS).
+    IoKit,
+    /// `nvidia-smi`.
+    NvidiaSmi,
+}
+
+impl Source {
+    fn name(self) -> &'static str {
+        match self {
+            Source::IoKit => "IOKit",
+            Source::NvidiaSmi => NVIDIA_SMI,
+        }
+    }
+}
+
 /// The most recent GPU reading, shared between the probe task that writes it
 /// and the metrics sampler that reads it.
 #[derive(Clone)]
@@ -112,22 +140,28 @@ pub fn spawn_probe() -> GpuState {
     let handle = state.clone();
 
     tokio::spawn(async move {
-        // Log only when the answer *changes*. A host with no NVIDIA card
+        // The pool a unified-memory GPU allocates from, read once: physical
+        // memory does not change under a running agent. Only the IOKit arm
+        // uses it — see `crates/accelerator` for why a discrete card never
+        // gets system RAM as its capacity.
+        let pool_bytes = physical_memory_bytes();
+
+        // Log only when the answer *changes*. A host with no GPU source
         // probes and fails every interval forever; a line each time would be
         // noise, while a line at each transition is how an operator tells "no
         // GPU here" from "the GPU stopped answering".
-        let mut was_present: Option<bool> = None;
+        let mut last_source: Option<Option<Source>> = None;
 
         loop {
-            let gpu = probe().await;
-            let present = gpu.is_present();
-            if was_present != Some(present) {
-                if present {
-                    tracing::info!("gpu probe measuring via {NVIDIA_SMI}");
-                } else {
-                    tracing::info!("no gpu measured; the snapshot's gpu stays empty");
+            let (gpu, source) = probe(pool_bytes).await;
+            if last_source != Some(source) {
+                match source {
+                    Some(source) => {
+                        tracing::info!("gpu probe measuring via {}", source.name());
+                    }
+                    None => tracing::info!("no gpu measured; the snapshot's gpu stays empty"),
                 }
-                was_present = Some(present);
+                last_source = Some(source);
             }
             handle.store(gpu);
             tokio::time::sleep(PROBE_INTERVAL).await;
@@ -137,14 +171,64 @@ pub fn spawn_probe() -> GpuState {
     state
 }
 
-/// Probe the host's GPU, vendor by vendor.
+/// Probe the host's GPU, source by source, and name the one that answered.
 ///
-/// One vendor today. Another (AMD's `rocm-smi`, Intel's `xpu-smi`) slots in as
-/// a second `Option`-returning arm here plus its own parser — a function
-/// boundary, not a trait: nothing yet needs to be generic over vendors, and the
-/// contract carries a single GPU regardless.
-async fn probe() -> Gpu {
-    nvidia_probe().await.unwrap_or_else(Gpu::unknown)
+/// The first arm that measures anything wins whole — the contract carries a
+/// single GPU, and a card assembled from two sources describes neither.
+/// Another vendor (AMD's `rocm-smi`, Intel's `xpu-smi`) slots in as one more
+/// `Option`-returning arm plus its own parser — a function boundary, not a
+/// trait: nothing yet needs to be generic over vendors.
+///
+/// On a Mac the IOKit arm runs first and `nvidia-smi` is still tried after it
+/// declines. That costs a `NotFound` every [`PROBE_INTERVAL`] on a machine
+/// with no accelerator (a VM), and keeps the arms independent of the platform
+/// rather than guessing which one a host "should" have.
+async fn probe(pool_bytes: u64) -> (Gpu, Option<Source>) {
+    if let Some(gpu) = iokit_probe(pool_bytes).await {
+        return (gpu, Some(Source::IoKit));
+    }
+    if let Some(gpu) = nvidia_probe().await {
+        return (gpu, Some(Source::NvidiaSmi));
+    }
+    (Gpu::unknown(), None)
+}
+
+/// The macOS arm: read the `IOAccelerator` registry on a blocking thread.
+///
+/// `None` when no accelerator answered — a VM, which is what CI's macOS
+/// runners are — so the next arm gets its turn. A reading IOKit gave only in
+/// part (utilisation but no pool size) is still a reading and is kept, exactly
+/// as the cockpit's own card keeps it; `is_present` decides what renders.
+///
+/// There is no timeout here, unlike the subprocess arm: a blocking thread
+/// cannot be killed, so a cap would only stop *waiting*. The read is a
+/// registry lookup rather than a query to the GPU, and if it ever did hang the
+/// cost is the one this module is built around — a stale GPU reading, never a
+/// stalled sampler.
+#[cfg(target_os = "macos")]
+async fn iokit_probe(pool_bytes: u64) -> Option<Gpu> {
+    let gpu = tokio::task::spawn_blocking(move || accelerator::read(pool_bytes))
+        .await
+        .ok()?;
+    (gpu != Gpu::unknown()).then_some(gpu)
+}
+
+/// No `IOAccelerator` registry off macOS, and `crates/accelerator` is not even
+/// a dependency there — the Linux musl builds do not change.
+#[cfg(not(target_os = "macos"))]
+async fn iokit_probe(_pool_bytes: u64) -> Option<Gpu> {
+    None
+}
+
+/// Physical memory in bytes, `0` when unknown — which `crates/accelerator`
+/// reads as "no pool", leaving a unified-memory capacity unknown rather than
+/// invented.
+fn physical_memory_bytes() -> u64 {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+    System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
+    )
+    .total_memory()
 }
 
 /// The NVIDIA arm: run `nvidia-smi`, read the first GPU out of its output.
@@ -343,22 +427,51 @@ mod tests {
         assert_eq!(gpu.usage, Some(100.0));
     }
 
-    /// THE DECISION PATH, not the parser: whatever [`capped_output`] failed to
-    /// produce, the probe reports a GPU it never measured as absent — which
-    /// serialises to the `{}` this agent has emitted since #183.
+    /// The NVIDIA arm on a host without the driver — CI and every developer
+    /// Mac — exercises the real spawn → NotFound → `None` path end to end.
     #[tokio::test]
-    async fn a_host_with_no_nvidia_smi_measures_no_gpu() {
-        // The full probe, on this machine. CI and every developer Mac run it
-        // without an NVIDIA driver, so this exercises the real
-        // spawn → NotFound → unknown path end to end.
-        let gpu = probe().await;
+    async fn a_host_with_no_nvidia_smi_gets_nothing_from_that_arm() {
+        assert_eq!(nvidia_probe().await, None);
+    }
 
-        assert!(!gpu.is_present(), "no nvidia-smi here, so no GPU: {gpu:?}");
-        assert_eq!(
-            serde_json::to_value(&gpu).unwrap(),
-            json!({}),
-            "an unmeasured GPU must omit every key, never send zeros"
-        );
+    /// THE DECISION PATH, not the parser: a probe in which no arm measured
+    /// anything reports an absent GPU — which serialises to the `{}` this
+    /// agent has emitted since #183.
+    ///
+    /// Off macOS there is no IOKit arm and no NVIDIA driver on these hosts, so
+    /// that is the whole answer. On a Mac the answer depends on the machine: a
+    /// real one has an accelerator and a VM (CI's runners) has none, so the
+    /// assertion is coherence — a reading from the source it names, or no
+    /// reading and no source — the same shape `crates/accelerator`'s own
+    /// platform test uses.
+    #[tokio::test]
+    async fn the_probe_reports_a_named_reading_or_an_absent_gpu() {
+        let pool = physical_memory_bytes();
+        let (gpu, source) = probe(pool).await;
+
+        match source {
+            None => {
+                assert_eq!(
+                    serde_json::to_value(&gpu).unwrap(),
+                    json!({}),
+                    "an unmeasured GPU must omit every key, never send zeros"
+                );
+            }
+            Some(source) => {
+                // Only IOKit can answer on these hosts, and off macOS that
+                // arm is compiled to `None` — so this also pins the platform.
+                assert_eq!(source, Source::IoKit, "no NVIDIA driver here");
+                assert_ne!(gpu, Gpu::unknown());
+                assert_ne!(gpu, Gpu::zeros(), "never the pre-#183 fabrication");
+            }
+        }
+    }
+
+    /// A Mac knows how much memory it has; without that the unified-memory
+    /// capacity would stay unknown and the card would blank.
+    #[test]
+    fn physical_memory_is_read() {
+        assert!(physical_memory_bytes() > 0);
     }
 
     /// A binary that is not on `PATH` is the ordinary case (every host without

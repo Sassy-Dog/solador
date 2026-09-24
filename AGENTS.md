@@ -1,6 +1,6 @@
 # Solador — AI Assistant Instructions
 
-This file provides context for Claude Code when working with the Solador codebase.
+This file provides context for Codex when working with the Solador codebase.
 
 ## Project Overview
 
@@ -44,7 +44,7 @@ detailed than this file.
   issue-side so no board identity lives in config; it needs the PAT's org
   Projects permission and renders `—`, never `0`, without it — and, alone
   among the four counts, says why in the panel footer (`ready_error`).
-- **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
+- **Usage** — Codex token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
   (MTD)` from operator-entered rates, and a best-effort `NEON LAST INVOICE` off
@@ -67,7 +67,7 @@ detailed than this file.
   in either direction fires a desktop notification. **The watched list is
   derived from configuration, never shipped** (#284, wired up in #375):
   `services::active_vendors` answers it every pass from the credentials and
-  accounts already in the cockpit — plus Claude rollups, which are Anthropic's
+  accounts already in the cockpit — plus Codex rollups, which are Anthropic's
   only evidence — and appends the operator's own Atlassian Statuspages
   (`store.json`'s `status_vendors`). `poll_service_status` reads exactly that
   list through `read_vendor`, and `readings`/`view` render exactly that list, so
@@ -471,7 +471,7 @@ the bundle's floor.
 │   │                       #   host's). Floor 11.0, the agent's: no newer symbol
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
-│   ├── usage/              # Claude Code log rollups + Neon + Sentry + Vercel
+│   ├── usage/              # Codex log rollups + Neon + Sentry + Vercel
 │   ├── azurecost/          # Azure Cost Management export reader (SAS blob + CSV)
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
 │   │                       #   device identity, the frame→snapshot reducer
@@ -588,7 +588,7 @@ the bundle's floor.
 ### CI & usage data
 - GitHub Actions data: `crates/github` (workflow health, self-hosted runners,
   remote branch / open-issue / open-PR counts).
-- Claude Code usage rollups: `crates/usage` (tokens only — USD is computed and
+- Codex usage rollups: `crates/usage` (tokens only — USD is computed and
   unit-tested but never displayed, since the account is subscription-based).
 - Neon, Sentry, Vercel consumption: `crates/usage`. Own 1h cadence, not the
   shared refresh interval; render `—` when the key is missing or the API fails.
@@ -620,8 +620,8 @@ the bundle's floor.
   *organization* permission **Projects** (read) for the READY column — without
   it that one column reads `—` and everything else is unaffected.
 - **Remote hosts**: per-host bearer token.
-- **Usage → Claude**: no credential — and **no account either**. The rollups
-  are a walk of `~/.claude/projects`, and those logs record what was consumed,
+- **Usage → Codex**: no credential — and **no account either**. The rollups
+  are a walk of `~/.Codex/projects`, and those logs record what was consumed,
   never who paid for it: a full key survey of a real session file — 50+
   top-level fields including `cwd`, `gitBranch`, `sessionId`, `version`,
   `userType`, `requestId`, `messageId` — carries no `account`, `organization`,
