@@ -710,11 +710,13 @@ test("Test probes that one host and paints the line Rust produced", async ({ pag
   const host = settings.hosts.rows[1];
   await openConnection(page, `host:${host.id}`);
   const row = page.locator(`.host-row[data-host="${host.id}"]`);
+  const before = await row.boundingBox();
   await row.locator(".test").click();
 
   // The result string is Rust's (`settings::health_result`) and has no other
   // path to the DOM: the frontend never composes a ✓/✗ line of its own.
   await expect(row.locator(".result")).toHaveText(TEST_RESULT);
+  expect(await row.boundingBox()).toEqual(before);
   expect(await calls(page, "settings_test_host")).toEqual([
     { command: "settings_test_host", args: { id: host.id } },
   ]);
@@ -1548,4 +1550,15 @@ test("the device key is not a field anyone can type into", async ({ page, baseUR
     "data-secret",
     "openclaw"
   );
+});
+
+test("update status, notes and buttons change inside a stable group", async ({ page, baseURL }) => {
+  const failed = { heading:"Updates", status:{text:"Could not check: " + "network unavailable ".repeat(20), color:"#e0a03a"}, notes:null, checkLabel:"Check for updates", installLabel:null, help:"Solador checks once when it starts." };
+  await openSettings(page, baseURL, null, failed);
+  await tab(page, "about").click();
+  const group = page.locator('.group[data-group="updates"]');
+  const before = await group.boundingBox();
+  await group.locator('.check-updates').click();
+  await expect(group.locator('.update-status')).toHaveText(failed.status.text);
+  expect(await group.boundingBox()).toEqual(before);
 });

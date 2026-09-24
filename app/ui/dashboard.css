@@ -126,9 +126,13 @@
 }
 #dashboardOverview .db-attention-items {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
+  height: 36px;
+  overflow: auto;
   gap: 7px;
 }
+#dashboardOverview .db-attention-items > * { flex: none; white-space: nowrap; }
 #dashboardOverview .db-attention-items button {
   background: var(--db-panel);
   font-size: 11px;
@@ -207,8 +211,18 @@
   flex: none;
 }
 #dashboardOverview .db-tile-content {
-  flex: 1;
+  flex: 1 0 144px;
+  height: 144px;
   min-width: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+#dashboardOverview :is(.db-tile, .db-preview-tile)[data-source="hosts"] .db-tile-content {
+  flex-basis:196px; height:196px;
+}
+#dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation="detailed"] .db-tile-content {
+  flex-basis: 360px;
+  height: 360px;
 }
 #dashboardOverview .db-tile-footer {
   display: flex;
@@ -597,9 +611,16 @@
 .dashboard-load-error {
   color: var(--red);
 }
-#dashboardOverview .db-warnings:empty {
-  display: none;
+/* Warnings occupy the same line before, during and after a failed poll.
+   Long diagnostics remain readable by scrolling the reserved line. */
+#dashboardOverview .db-warnings {
+  height: 23px;
+  overflow: auto;
+  white-space: nowrap;
+  display: flex;
+  gap: 12px;
 }
+#dashboardOverview .db-warning { flex: none; }
 #dashboardOverview .db-warning {
   font-size: 11px;
   margin: 0 0 6px;
@@ -650,3 +671,39 @@
   padding: 0;
   font-size: 11px;
 }
+
+/* Status text is a column, never a reason to wrap a resource name. Full text
+   is on the row's title and in its Details view. */
+#dashboardOverview .db-item-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#dashboardOverview .db-item > .db-value {
+  width:18ch;
+  max-width:48%;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+#dashboardOverview .db-row-description { height:33px; overflow:auto; }
+#dashboardOverview .db-stat-label { min-width:0; white-space:nowrap; }
+#dashboardOverview .db-stat-label strong { overflow:hidden; text-overflow:ellipsis; }
+#dashboardOverview .db-tile-footer > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#dashboardOverview .db-live-note { height:17px; overflow:auto; white-space:nowrap; }
+@media (pointer: coarse) {
+  #dashboardOverview .db-attention-items { height:54px; }
+}
+
+#dashboardOverview .db-tile[data-presentation="summary"] .db-row-description { height:16.5px; white-space:nowrap; }
+
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-body {
+  height:360px; overflow:auto; scrollbar-gutter:stable;
+}
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head > div { min-width:0; }
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head h3 {
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head .db-sub {
+  height:16.5px; white-space:nowrap; overflow:auto;
+}
+
+#dashboardOverview .db-end { flex-wrap:nowrap; }
+#dashboardOverview .db-end > .db-live-note { flex:1; min-width:0; }
+#dashboardOverview .db-end > button { flex:none; }

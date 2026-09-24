@@ -282,6 +282,7 @@ function render(card, d, volumeSlots) {
 
 /** One host's card: the connection badge, then either the error or the data. */
 function drawCard(card, d, volumeSlots) {
+  card.setAttribute("aria-label", d.hostName || d.error?.hostName || "");
   // The dot's colour and the "connecting"/"live"/"stale"/"failed" state
   // both come from Rust (`viewmodel::color`), never chosen here — same
   // discipline as every other colour in the card. `data-state` (not a
@@ -310,6 +311,7 @@ function drawCard(card, d, volumeSlots) {
     f(card, "cpuModel").textContent = "";
     down.textContent = d.error.message;
     down.style.color = d.connection ? d.connection.color : "var(--red)";
+    if (down.hidden) card.scrollTop = 0;
     down.hidden = false;
     stale.textContent = "";
     return;

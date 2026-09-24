@@ -350,6 +350,13 @@ test("the Runners header keeps the stats and the chips on one line", async ({ pa
   await gotoWithFixtures(page, baseURL);
   await expect(page.locator("#runnersPanel")).toHaveAttribute("data-cols", "2");
 
+  // Exercise a classic scrollbar even on Macs configured for overlay ones.
+  await page.evaluate(selector => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`${selector}::-webkit-scrollbar { width:15px; height:15px; }`);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  }, "#runnersBody");
+
   const header = page.locator("#runnersBody .gh-header");
   await expect(header).toHaveCount(1);
   const stats = await header.locator(".gh-stats").boundingBox();
@@ -363,9 +370,10 @@ test("the Runners header keeps the stats and the chips on one line", async ({ pa
     `stats ${JSON.stringify(stats)} vs chips ${JSON.stringify(chips)}`
   ).toBe(Math.round(chips.height));
 
-  // Right-flush against the panel body, and clear of the stats beside them.
-  const body = await page.locator("#runnersBody").boundingBox();
-  expect(Math.round(chips.x + chips.width)).toBe(Math.round(body.x + body.width));
+  // Right-flush against usable content, excluding the reserved scrollbar gutter.
+  const right = await page.locator("#runnersBody").evaluate(el =>
+    el.getBoundingClientRect().left + el.clientLeft + el.clientWidth);
+  expect(Math.abs(chips.x + chips.width - right)).toBeLessThan(1);
   expect(chips.x).toBeGreaterThan(stats.x);
 
   // And the header really is one line, not a tall box holding two.

@@ -491,10 +491,17 @@ test("with no providers the Claude block takes the whole two-column body", async
   await gotoWithColumns(page, baseURL, 2, (usage) => delete usage.providers);
   await expect(page.locator("#usageBody .usage-providers")).toHaveCount(0);
 
-  const body = await page.locator("#usageBody").boundingBox();
+  // Exercise a classic scrollbar even on Macs configured for overlay ones.
+  await page.evaluate(selector => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`${selector}::-webkit-scrollbar { width:15px; height:15px; }`);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  }, "#usageBody");
+
+  const bodyWidth = await page.locator("#usageBody").evaluate(el => el.clientWidth);
   const claude = await page.locator("#usageBody .usage-main").boundingBox();
   expect(
-    Math.abs(claude.width - body.width),
+    Math.abs(claude.width - bodyWidth),
     "the rollups span both tracks, not one"
   ).toBeLessThan(1);
 });

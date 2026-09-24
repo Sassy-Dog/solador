@@ -54,6 +54,7 @@ function rowNode(row) {
   el.appendChild(node("span", "grow"));
 
   const status = node("span", "cont-status", row.status);
+  status.title = row.status;
   status.style.color = row.statusColor;
   el.appendChild(status);
   return el;

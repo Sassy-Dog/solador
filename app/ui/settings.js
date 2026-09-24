@@ -598,6 +598,7 @@ function hostsTab(t, options = {}) {
     const names = node("div", "stack");
     names.append(node("span", "host-name", host.name), node("span", "dim", host.endpoint));
     const result = node("span", "result", S.tests.get(host.id) || "");
+    result.tabIndex = 0;
     names.appendChild(result);
     head.append(names, node("span", "grow"));
     head.appendChild(
@@ -1600,12 +1601,16 @@ function updatesGroup(u) {
   const box = group(u.heading);
   box.dataset.group = "updates";
   const status = node("p", "update-status", u.status.text);
+  status.tabIndex = 0;
   // Rust's colour, assigned through the CSSOM -- a `style=""` attribute is
   // blocked by `style-src 'self'`. Green/amber/red mean what they mean on the
   // cards, and this file does not choose between them.
   status.style.color = u.status.color;
   box.appendChild(status);
-  if (u.notes) box.appendChild(node("p", "update-notes", u.notes));
+  const notes = node("div", "update-notes-slot");
+  if (u.notes) notes.tabIndex = 0;
+  if (u.notes) notes.appendChild(node("p", "update-notes", u.notes));
+  box.appendChild(notes);
 
   const controls = [];
   if (u.installLabel) {
@@ -1618,7 +1623,9 @@ function updatesGroup(u) {
     check.addEventListener("click", () => callUpdate("update_check"));
     controls.push(check);
   }
-  if (controls.length) box.appendChild(actionRow(...controls));
+  const actions = actionRow(...controls);
+  actions.classList.add("update-controls");
+  box.appendChild(actions);
 
   box.appendChild(help(u.help));
   return box;

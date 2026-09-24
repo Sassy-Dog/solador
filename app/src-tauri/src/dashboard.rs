@@ -209,16 +209,22 @@ fn host_rows(p: &Value) -> Vec<Value> {
                     .collect::<Vec<_>>()
                     .join(" · ")
             });
+            // Keep the same reading slots through connection transitions. Unknown
+            // values preserve the layout without presenting old data as current.
+            let reading = |key: &str| if down { &Value::Null } else { &h[key] };
+            r["metrics"] = json!([
+                field("CPU", reading("cpuValue")),
+                field("RAM", reading("memValue"))
+            ]);
+            r["details"] = json!([
+                field("Disk read", reading("diskRead")),
+                field("Disk write", reading("diskWrite")),
+                field("Network down", reading("netDown")),
+                field("Network up", reading("netUp")),
+                field("GPU", reading("gpuValue")),
+                field("Thermal", reading("thermalText")),
+            ]);
             if !down {
-                r["metrics"] = json!([field("CPU", &h["cpuValue"]), field("RAM", &h["memValue"])]);
-                r["details"] = json!([
-                    field("Disk read", &h["diskRead"]),
-                    field("Disk write", &h["diskWrite"]),
-                    field("Network down", &h["netDown"]),
-                    field("Network up", &h["netUp"]),
-                    field("GPU", &h["gpuValue"]),
-                    field("Thermal", &h["thermalText"]),
-                ]);
                 r["volumes"] = h["volumes"].clone();
             }
             r
@@ -856,6 +862,25 @@ mod tests {
     use store::{LayoutProfile, LayoutSlot, Store};
 
     #[test]
+    fn disconnected_hosts_keep_unknown_metric_slots() {
+        let rows = host_rows(&json!({"hosts": [{
+            "id": "remote", "connection": {"state":"unreachable"},
+            "error": {"hostName":"remote", "message":"Connection failed"},
+            "cpuValue":"99%", "memValue":"31 GB"
+        }]}));
+        assert_eq!(
+            rows[0]["metrics"],
+            json!([field("CPU", &Value::Null), field("RAM", &Value::Null)])
+        );
+        assert_eq!(rows[0]["details"].as_array().unwrap().len(), 6);
+        assert!(rows[0]["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["value"].is_null()));
+    }
+
+    #[test]
     fn filtered_empty_tiles_do_not_reuse_an_unrelated_source_message() {
         let source = source_view(
             "ghWorkflows",
@@ -1031,7 +1056,8 @@ mod tests {
         let row = &host_rows(&p)[0];
         assert_eq!(row["attention"], false);
         assert_eq!(row["value"], "Connecting");
-        assert!(list(row, "metrics").is_empty());
+        assert_eq!(list(row, "metrics").len(), 2);
+        assert!(list(row, "metrics").iter().all(|m| m["value"].is_null()));
     }
 
     #[test]

@@ -22,11 +22,33 @@ issues whose project-board Status is `Ready` — verbatim from the detailed
 table's cells, so an unreadable count is the same `—` there. The strip is
 columns, not a sentence: each number sits right-aligned in a slot at least
 three characters wide, each word in a slot sized to its column's longest, and
-the status word beside it is held to the widest the panel produces, so the
+the status word beside it occupies a reserved column, so the
 numbers line up down the tile whether a row reads `1 PR` or `10 PRs` (a count
 past three digits widens its own row, and only that row). On the row rather
 than under it, the way a machine's CPU/RAM sit, because five two-line rows are
 what stops the default overview fitting a 1024×768 laptop.
+
+Live status changes keep the dashboard footprint stable. **Needs attention**
+reserves one horizontally scrollable line, including while empty. Tile warnings
+reserve a separate line; status values use fixed columns, and machine metric
+slots show `—` while disconnected. Summary tile contents have a fixed viewport
+(196px for Machines, 144px for other sources); Detailed uses 360px. Long lists,
+filtered empty states and warnings therefore change inside the tile instead of
+moving the tiles below it. Hidden-tile previews use the same viewports, and the
+live Details inspector reserves a 360px body to keep its actions anchored.
+Refresh failures scroll within the footer status slot rather than wrapping its
+Details link.
+The viewports support keyboard scrolling. Row titles
+and Details retain text abbreviated in the overview.
+
+Detailed panels likewise reserve scrollable content viewports: 200px for lists,
+300px for Usage, Azure Cost and OpenClaw. Detailed host cards reserve a 960px
+scrollable frame even before their first reading; charts retain their own sizes
+inside it. Disconnected host cards hide old readings while retaining their
+occupied space. Settings reserves space for host
+probe results, update notes/actions and changing status messages. Window resizing
+and explicit layout edits may still reflow the app. Browser regression tests
+measure failure, empty, warning and recovery transitions across these surfaces.
 
 Placement and visibility edits save immediately; configuration saves with
 **Add tile** or **Apply**. **Undo** reverses successful edits in the current session.
@@ -1285,7 +1307,8 @@ no `Connection::Stale` variant any more so it cannot come back by accident.
 
 The loss is only on screen: `latest` and `histories` stay in state, so the
 sparklines return intact the moment the host answers. What survives on the card
-is *when* it went quiet, the one fact still true.
+is *when* it went quiet, the one fact still true. The hidden readings retain
+their layout space, so an outage and recovery do not move the panels below.
 
 In tabs mode a hidden host has nothing on screen but its button, so the **tab
 carries the alarm** — red and pulsing (`alert` in the `hostTabs` payload, a
