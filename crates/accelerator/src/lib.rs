@@ -1,4 +1,10 @@
-//! GPU sampling.
+//! GPU sampling from IOKit's `IOAccelerator` registry.
+//!
+//! Shared by both samplers: `crates/localhost` reads this machine's card with
+//! it, and `agent/` reads a Mac host's. One mapping means the local and remote
+//! cards of the same kind of Mac cannot disagree about what they show. Before
+//! this crate existed the reader lived in `crates/localhost` alone, and the
+//! agent — which only knew `nvidia-smi` — reported every Mac's GPU as unknown.
 //!
 //! A port of HostMetricsKit's `GPUMonitor`: macOS publishes GPU
 //! utilisation and memory occupancy as ordinary properties on the IOKit
@@ -6,6 +12,10 @@
 //! rather than a vendor SDK. Windows has no equivalent cheap read — DXGI or
 //! NVML — and is a named non-goal (#205), so it reports [`wire::Gpu::unknown`]
 //! and the card renders "—".
+//!
+//! The agent adds one more constraint: it declares a macOS 11.0 floor, three
+//! majors below the cockpit's, so nothing here may reference a symbol newer
+//! than Big Sur. The `macos` walk documents the one that nearly did.
 //!
 //! # What is *not* ported
 //!
@@ -30,7 +40,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::{BYTES_PER_GIB, BYTES_PER_MIB};
+/// 1024-base, like every other `…GB` on the wire: `memory.usedGB` and each
+/// volume have meant GiB since the first snapshot.
+const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
 /// One accelerator's numeric properties, lifted out of CoreFoundation into
 /// plain Rust.
@@ -176,7 +189,7 @@ pub(crate) fn map_accelerators(accelerators: &[Accelerator], pool_bytes: u64) ->
 /// `pool_bytes` is physical memory, which only matters on unified-memory
 /// hardware; see the module docs.
 #[cfg(target_os = "macos")]
-pub(crate) fn read(pool_bytes: u64) -> wire::Gpu {
+pub fn read(pool_bytes: u64) -> wire::Gpu {
     map_accelerators(&macos::accelerators(), pool_bytes)
 }
 
@@ -193,7 +206,7 @@ pub(crate) fn read(pool_bytes: u64) -> wire::Gpu {
 /// definition of that rule instead of two that can drift apart, while leaving
 /// the mapping above compiled and lint-checked on the Windows job.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn read(pool_bytes: u64) -> wire::Gpu {
+pub fn read(pool_bytes: u64) -> wire::Gpu {
     map_accelerators(&[], pool_bytes)
 }
 
@@ -214,7 +227,7 @@ mod macos {
         CFDictionary, CFMutableDictionary, CFNumber, CFRetained, CFString, CFType, Type,
     };
     use objc2_io_kit::{
-        io_iterator_t, io_object_t, kIOMainPortDefault, IOIteratorNext, IOObjectRelease,
+        io_iterator_t, io_object_t, IOIteratorNext, IOObjectRelease,
         IORegistryEntryCreateCFProperties, IOServiceGetMatchingServices, IOServiceMatching,
     };
 
@@ -233,6 +246,19 @@ mod macos {
     /// or `AMDRadeonX…` of an Intel one. The original monitor lists all of those
     /// spellings explicitly and never reaches past the first.
     const ACCELERATOR_CLASS: &str = "IOAccelerator";
+
+    /// The default IOKit main port, spelled as its value rather than its name.
+    ///
+    /// `kIOMainPortDefault` is a macOS **12.0** symbol, and objc2-io-kit binds
+    /// it as an `extern static`, so naming it links the binary against it.
+    /// The cockpit (floor 14.0) never noticed; the agent declares **11.0**, and
+    /// on Big Sur dyld would refuse to launch it over the missing symbol — which
+    /// `vtool`'s floor check cannot see, because the floor it reads is correct.
+    /// IOKit documents `MACH_PORT_NULL` as the default port, and it is the value
+    /// both `kIOMainPortDefault` and the deprecated `kIOMasterPortDefault` hold.
+    /// `u32` because that is what `mach_port_t` is; naming it through `libc`
+    /// would add a dependency for one type alias.
+    const DEFAULT_MAIN_PORT: u32 = 0;
 
     /// The `PerformanceStatistics` sub-dictionary's key on the registry entry.
     const PERFORMANCE_STATISTICS: &str = "PerformanceStatistics";
@@ -263,11 +289,11 @@ mod macos {
         let matching: CFRetained<CFDictionary> = (**matching).retain();
 
         let mut iterator: io_iterator_t = 0;
-        // SAFETY: `kIOMainPortDefault` is IOKit's own default port, the
+        // SAFETY: `DEFAULT_MAIN_PORT` is IOKit's own default port, the
         // dictionary is a valid matching dictionary whose reference this call
         // takes over, and `iterator` is a live out-parameter.
         let result = unsafe {
-            IOServiceGetMatchingServices(kIOMainPortDefault, Some(matching), &mut iterator)
+            IOServiceGetMatchingServices(DEFAULT_MAIN_PORT, Some(matching), &mut iterator)
         };
         if result != KERN_SUCCESS || iterator == 0 {
             return Vec::new();

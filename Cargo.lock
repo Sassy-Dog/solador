@@ -4181,8 +4181,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "solador-accelerator"
+version = "0.1.0"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "solador-wire",
+]
+
+[[package]]
 name = "solador-agent"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -4195,6 +4204,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "solador-accelerator",
  "solador-buildversion",
  "solador-wire",
  "sysinfo",
@@ -4289,10 +4299,9 @@ dependencies = [
 name = "solador-localhost"
 version = "0.1.0"
 dependencies = [
- "objc2-core-foundation",
  "objc2-foundation",
- "objc2-io-kit",
  "serde_json",
+ "solador-accelerator",
  "solador-wire",
  "starship-battery",
  "sysinfo",

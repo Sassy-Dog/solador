@@ -1283,8 +1283,10 @@ testing the lowered number for zero. An idle disk really does read `0.0 MB/s`,
 and hiding that would be the mirror-image bug.
 
 On macOS today that means memory pressure (no portable source: the original
-collector reaches into mach for wired and compressed page counts) and the GPU (no
-dependency-free read on either platform) render `—` permanently, and the disk and
+collector reaches into mach for wired and compressed page counts) renders `—`
+permanently, as does the GPU on a Mac with no `IOAccelerator` (a VM) and on
+Windows — a real Mac's GPU is read from IOKit by `crates/accelerator`, the
+same reader the agent uses for a Mac host — and the disk and
 network rates render `—` for exactly one tick at startup, before there are two
 samples to diff. A partially-measured sample is **shown but not plotted**:
 pushing the wire lowering's `0.0` into a history buffer would draw a spike from a

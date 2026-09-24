@@ -24,13 +24,15 @@
 //!   millidegrees, and collapsing those into the ladder needs per-machine trip
 //!   points nothing here knows — a different fabrication, not a fix for this
 //!   one.
-//! - `gpu` — **measured on hosts with an NVIDIA card** (#217), out of
-//!   `nvidia-smi` rather than `sysinfo`, which reports no GPU on any platform.
-//!   See [`crate::gpu`] for the probe and why it never runs on this module's 1s
-//!   path. Omitted ([`Gpu::unknown`], serialising as `{}`) everywhere that
-//!   probe measures nothing: no NVIDIA driver, a failed or hung invocation, or
-//!   output it does not recognise. AMD and Intel are not read yet, so they are
-//!   part of that "omitted" set.
+//! - `gpu` — **measured on Macs and on hosts with an NVIDIA card**, never by
+//!   `sysinfo`, which reports no GPU on any platform: IOKit's `IOAccelerator`
+//!   registry on macOS (through `crates/accelerator`, the cockpit's own
+//!   reader), `nvidia-smi` elsewhere (#217). See [`crate::gpu`] for the probe
+//!   and why it never runs on this module's 1s path. Omitted ([`Gpu::unknown`],
+//!   serialising as `{}`) everywhere that probe measures nothing: a Mac with no
+//!   accelerator (a VM), no NVIDIA driver, a failed or hung invocation, or
+//!   output it does not recognise. AMD and Intel on Linux are not read yet, so
+//!   they are part of that "omitted" set.
 //! - `disk` / `network` rates — **measured** from the sampler's byte deltas,
 //!   so they are present (and often a legitimate `0.0`) in every real sample.
 //!   Absent only from [`empty_snapshot`], which predates the first delta.
@@ -625,9 +627,9 @@ pub fn spawn_sampler() -> MetricsState {
 /// The sampler's inner loop: prime once, then sample forever.
 ///
 /// `gpu_state` is read, never driven: the probe behind it runs on its own task
-/// and cadence ([`crate::gpu`]), so this loop's contact with a subprocess is a
-/// mutex lock. A wedged `nvidia-smi` costs a stale GPU reading, not a stalled
-/// snapshot.
+/// and cadence ([`crate::gpu`]), so this loop's contact with a subprocess or
+/// an IOKit read is a mutex lock. A wedged `nvidia-smi` costs a stale GPU
+/// reading, not a stalled snapshot.
 ///
 /// **Two cadences, and therefore two `sysinfo::System` handles** — CPU/memory
 /// every [`SAMPLE_INTERVAL`], processes every [`PROCESS_SAMPLE_TICKS`] of them.

@@ -13,6 +13,10 @@ name = "solador-agent"
 # `crates/wire`'s tolerance notes cite. Nothing reads it at runtime any more —
 # `crate_version()` left `agent/deploy/lib.sh` with it — so keep bumping it for
 # the contract, never for a release.
+# 0.5.1: `gpu` is measured on macOS too, out of IOKit's `IOAccelerator`
+# registry through `crates/accelerator` — the reader the cockpit's own card
+# uses. A patch, not a minor: no key this agent has not produced before, only
+# a platform it now fills them on. Still omitted wherever nothing answered.
 # 0.5.0: `processes[].cpuCores` (#378). A minor for the same reason 0.4.0 was:
 # a wire field this agent has never produced before. It also FIXES what
 # `cpuPercent` carries on Linux — the process refresh has its own sysinfo
@@ -29,7 +33,7 @@ name = "solador-agent"
 # keys are omitted instead. `/v1/health`'s `version` is how you tell a
 # redeployed agent from one still sending the old zeros (or, now, the old
 # fabricated thread rows).
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Per-host metrics agent polled by Solador over Tailscale"
 license = "MIT"
@@ -97,6 +101,15 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # install-directory writability refusal. Already a transitive dependency of
 # tokio; this is a new edge, not a new package.
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The GPU on a Mac: the IOKit `IOAccelerator` reader, shared with the cockpit's
+# `crates/localhost` so a Mac host's remote card and the local one use one
+# mapping. Deliberately this narrow crate and not `crates/localhost` itself,
+# which would pull the battery and Foundation readers into the daemon. It
+# references no symbol newer than macOS 11.0, the agent's floor — see its
+# `DEFAULT_MAIN_PORT`.
+solador-accelerator = { path = "../crates/accelerator" }
 
 [dev-dependencies]
 # `ServiceExt::oneshot` drives the router in auth middleware tests.

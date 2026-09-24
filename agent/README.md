@@ -55,19 +55,27 @@ Notes:
     `ProcessInfo.ThermalState`; Linux exposes thermal zones in millidegrees, and
     collapsing those into the ladder needs per-machine trip points this agent
     doesn't know.
-  - `gpu` is **measured on hosts with an NVIDIA card** (agent ≥ 0.4.0), from
-    `nvidia-smi` — `sysinfo` reports no GPU on any platform. `usage` is the
-    utilisation percentage; `vramUsedGB` / `vramTotalGB` are its MiB figures in
-    the same 1024-base "GB" as every other size here (a 12288 MiB card reads
-    `12.0`). A multi-GPU host reports its **first** card, since the contract
-    carries one `gpu`.
-    Still `{}` wherever nothing was measured: no `nvidia-smi` on `PATH` (every
-    host without an NVIDIA driver, including macOS), a failed or hung
-    invocation, or output the agent doesn't recognise. AMD and Intel GPUs are
-    not read yet, so they are part of that set.
-    The probe runs on its own task every 5s with a 2s hard timeout — never on
-    the 1s sample path, so a wedged `nvidia-smi` costs a stale GPU reading and
-    not a stalled snapshot.
+  - `gpu` is **measured on Macs** (agent ≥ 0.5.1) **and on hosts with an
+    NVIDIA card** (agent ≥ 0.4.0) — `sysinfo` reports no GPU on any platform.
+    - **macOS** reads IOKit's `IOAccelerator` registry through
+      `crates/accelerator`, the same reader and mapping the cockpit uses for
+      its own card, so a Mac host's remote card matches what that Mac shows
+      locally. On Apple Silicon the GPU has no VRAM of its own: `vramUsedGB` is
+      the GPU's resident share of system memory and `vramTotalGB` is physical
+      memory, the pool it allocates from.
+    - **NVIDIA** reads `nvidia-smi`. `usage` is the utilisation percentage;
+      `vramUsedGB` / `vramTotalGB` are its MiB figures in the same 1024-base
+      "GB" as every other size here (a 12288 MiB card reads `12.0`). A
+      multi-GPU host reports its **first** card, since the contract carries
+      one `gpu`.
+
+    Still `{}` wherever nothing was measured: a Mac that registers no
+    accelerator (a VM), no `nvidia-smi` on `PATH`, a failed or hung
+    invocation, or output the agent doesn't recognise. AMD and Intel GPUs on
+    Linux are not read yet, so they are part of that set.
+    The probe runs on its own task every 5s — never on the 1s sample path, so
+    a wedged `nvidia-smi` (2s hard timeout) or a slow IOKit read (on a blocking
+    thread) costs a stale GPU reading, not a stalled snapshot.
   - `battery` stays JSON `null` (not omitted) — the one optional the contract
     deliberately keeps emitting.
   - Before the first sample lands, `disk`, `network`, `gpu` are all `{}` and
