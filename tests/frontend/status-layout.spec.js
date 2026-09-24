@@ -19,7 +19,10 @@ async function open(page, baseURL, details = false) {
     window.framesForTest = frames;
     window.dashboardReads = 0;
     window.__TAURI__ = { core: { invoke: async command => {
-      if (command === 'dashboard_view') window.dashboardReads += 1;
+      if (command === 'dashboard_view') {
+        window.dashboardReads += 1;
+        if (window.failDashboard) throw new Error('Connection interrupted');
+      }
       return window.framesForTest[command] ?? null;
     } } };
   }, frames);
@@ -166,4 +169,16 @@ test('live hidden previews keep Restore and Remove anchored', async ({ page, bas
   await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   await expect(page.locator('.db-hidden-preview .db-item')).toHaveCount(0);
   expect(await bounds(page, '.db-inspector, .db-hidden-preview .db-form-actions')).toEqual(before);
+});
+
+test('refresh errors keep the narrow overview footer anchored', async ({ page, baseURL }) => {
+  await page.setViewportSize({width:375,height:812});
+  const frames = await open(page, baseURL);
+  const before = await bounds(page, '.db-end, .db-end button');
+  await page.evaluate(() => { window.failDashboard = true; });
+  await expect(page.locator('.db-live-note')).toHaveText(frames.dashboard_view.labels.loadFailed);
+  expect(await bounds(page, '.db-end, .db-end button')).toEqual(before);
+  await page.evaluate(() => { window.failDashboard = false; });
+  await expect(page.locator('.db-live-note')).toHaveText('');
+  expect(await bounds(page, '.db-end, .db-end button')).toEqual(before);
 });

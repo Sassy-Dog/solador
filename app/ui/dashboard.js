@@ -53,6 +53,9 @@
     const el = q(".db-live-note");
     if (!el) return;
     text(el, message);
+    el.title = message;
+    if (message) el.tabIndex = 0;
+    else el.removeAttribute("tabindex");
     el.classList.toggle("db-save-error", error);
     el.setAttribute("role", error ? "alert" : "status");
   }
@@ -1067,8 +1070,8 @@
   });
   root.addEventListener("keydown", (e) => {
     // WebKit does not consistently scroll a focused nested overflow area
-    // with arrow keys. Handle these two horizontal status strips explicitly.
-    if (e.target.matches(".db-warnings, .db-attention-items") &&
+    // with arrow keys. Handle horizontal status strips explicitly.
+    if (e.target.matches(".db-warnings, .db-attention-items, .db-live-note") &&
         !e.altKey && !e.ctrlKey && !e.metaKey &&
         ["ArrowLeft", "ArrowRight"].includes(e.key)) {
       e.preventDefault();

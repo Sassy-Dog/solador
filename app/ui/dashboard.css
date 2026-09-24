@@ -703,3 +703,7 @@
 #dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head .db-sub {
   height:16.5px; white-space:nowrap; overflow:auto;
 }
+
+#dashboardOverview .db-end { flex-wrap:nowrap; }
+#dashboardOverview .db-end > .db-live-note { flex:1; min-width:0; }
+#dashboardOverview .db-end > button { flex:none; }

@@ -36,6 +36,8 @@ slots show `—` while disconnected. Summary tile contents have a fixed viewport
 filtered empty states and warnings therefore change inside the tile instead of
 moving the tiles below it. Hidden-tile previews use the same viewports, and the
 live Details inspector reserves a 360px body to keep its actions anchored.
+Refresh failures scroll within the footer status slot rather than wrapping its
+Details link.
 The viewports support keyboard scrolling. Row titles
 and Details retain text abbreviated in the overview.
 
