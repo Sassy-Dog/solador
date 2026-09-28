@@ -1327,6 +1327,22 @@ transition discipline as the statuspage watch, keyed on the same `error` field
 the card renders from so a banner and a red card can never disagree — debounce
 included.
 
+**Every remote host down at once gets a second signal, on the compact
+dashboard only** ([#446](https://github.com/Sassy-Dog/solador/issues/446)).
+`dashboard::source_view`'s `all_remote_hosts_unreachable` — a small pure
+function beside `host_rows` — pushes one amber warning onto the `hosts`
+source's `warnings` when the payload's remote cards (every card but
+`"id": "local"`) number at least two, all carry the same non-null `error`
+`host_rows`' own `down` test reads, and none is still `connecting`. Amber,
+because "is the network or VPN down" is a question, not a finding — each card
+keeps its own red `Unreachable`, and the line names no vendor (Tailscale
+becomes optional once #445 lands). It rides the Machines tile's fixed-height
+warning line (#436), so it moves no geometry, and it is recomputed from the
+payload on every frame with no state kept, so it clears the instant any
+remote host answers. The full detailed Hosts panel (`?view=details`) carries
+no such line — every card there already reads `Unreachable` on its own, which
+is what this signal sits beside rather than inside.
+
 ### TOP CPU is a core count, and an old agent gets an em dash
 
 The card's **TOP CPU** column reads `0.04 cores` / `2.2 cores`, never a

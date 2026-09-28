@@ -204,6 +204,40 @@ test('a host first connecting after a cold failure keeps the surrounding layout 
   expect(await bounds(page, '.card, #panelRows')).toEqual(before);
 });
 
+test('the Machines tile warns when every remote host is unreachable, and clears once one answers', async ({ page, baseURL }) => {
+  const frames = await open(page, baseURL);
+  const hostsTile = () => page.locator('.db-tile[data-source="hosts"]');
+  const warningText = "All remote hosts unreachable — is this machine's network or VPN up?";
+  const model = structuredClone(frames.dashboard_view);
+  model.tiles[0].rows[0].value = 'baseline';
+  await changeDashboard(page, model);
+  await expect(hostsTile().locator('.db-warning')).toHaveCount(0);
+  const before = await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item');
+
+  // Every remote host down at once (#446): the Machines tile's fixed-height
+  // warning line (#436) carries the hint, without moving anything around it.
+  // `all_remote_hosts_unreachable` itself is exercised by the Rust unit tests
+  // beside `host_rows`; this frame only proves the frontend paints the
+  // warning `dashboard_view` would hand it and keeps the grid anchored.
+  const down = structuredClone(model);
+  down.tiles.find(t => t.source === 'hosts').warnings = [{ text: warningText, color: '#e0a03a' }];
+  down.attention = [...down.attention, { source: 'hosts', label: 'Machines · check readings', color: '#e0a03a' }];
+  down.tiles[0].rows[0].value = 'unreachable';
+  await page.evaluate(down => { window.framesForTest.dashboard_view = down; }, down);
+  await expect(hostsTile().locator('.db-warning')).toHaveText(warningText);
+  expect(await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item')).toEqual(before);
+
+  // The next frame in which any remote host answers clears it — recomputed
+  // per frame, with no state carried forward.
+  const recovered = structuredClone(down);
+  recovered.tiles.find(t => t.source === 'hosts').warnings = [];
+  recovered.attention = recovered.attention.filter(a => a.source !== 'hosts');
+  recovered.tiles[0].rows[0].value = 'recovered';
+  await page.evaluate(recovered => { window.framesForTest.dashboard_view = recovered; }, recovered);
+  await expect(hostsTile().locator('.db-warning')).toHaveCount(0);
+  expect(await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item')).toEqual(before);
+});
+
 test('live resource details keep the inspector and its actions anchored', async ({ page, baseURL }) => {
   const frames = await open(page, baseURL);
   await page.locator('.db-tile .db-item').first().click();

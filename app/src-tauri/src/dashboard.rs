@@ -250,6 +250,27 @@ fn host_rows(p: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// True when every **remote** host card is down in the same frame: at least
+/// two remote cards (the local card, `"id": "local"`, never counts), each
+/// carrying the non-null `error` that `host_rows`' own `down` test reads
+/// (`down` above), and none still `connecting`. A single down remote is
+/// exactly what that card's own `Unreachable` status already says — this is
+/// a distinct, stronger claim, so it takes at least two before it fires.
+///
+/// Pure over the payload and recomputed every frame: nothing is carried
+/// forward, so this clears on the very next frame in which any remote host
+/// answers, same as every other reading here.
+fn all_remote_hosts_unreachable(p: &Value) -> bool {
+    let remotes: Vec<&Value> = list(p, "hosts")
+        .iter()
+        .filter(|h| h["id"] != "local")
+        .collect();
+    remotes.len() >= 2
+        && remotes
+            .iter()
+            .all(|h| !h["error"].is_null() && string(&h["connection"], "state") != "connecting")
+}
+
 /// The Repos columns a summary row carries *on* the row, between the name and
 /// the status, as `7 issues · 3 ready · 2 PRs`: the backlog at a glance. Each
 /// entry is the table's header and the two words the strip prints for it —
@@ -568,6 +589,15 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         if let Some(text) = payload[key]["text"].as_str().filter(|s| !s.is_empty()) {
             warnings.push(json!({"text":text,"color":tint(&payload[key]["color"])}));
         }
+    }
+    // Amber, because it's a question ("is the VPN up?"), not a finding — each
+    // card keeps its own red `Unreachable`. Names no vendor: Tailscale becomes
+    // optional once #445 lands.
+    if id == "hosts" && all_remote_hosts_unreachable(payload) {
+        warnings.push(json!({
+            "text": "All remote hosts unreachable — is this machine's network or VPN up?",
+            "color": color::hex(color::AMBER),
+        }));
     }
     let message = payload["message"]["text"]
         .as_str()
@@ -904,6 +934,140 @@ mod tests {
             .unwrap()
             .iter()
             .all(|m| m["value"].is_null()));
+    }
+
+    /// A remote host entry, down or not, connecting or not — the three
+    /// fields [`all_remote_hosts_unreachable`] reads. `down` sets the
+    /// non-null `error` `host_rows`' own `down` test reads; `connecting`
+    /// overrides the connection state regardless of `down`, matching
+    /// [`viewmodel::card::pending_card`]'s `Connecting` arm, which carries a
+    /// non-null `error` too.
+    fn remote(id: &str, down: bool, connecting: bool) -> Value {
+        let state = if connecting {
+            "connecting"
+        } else if down {
+            "unreachable"
+        } else {
+            "live"
+        };
+        json!({
+            "id": id,
+            "connection": {"state": state},
+            "error": if down || connecting {
+                json!({"hostName": id, "message": "down"})
+            } else {
+                Value::Null
+            },
+        })
+    }
+    fn local_card(down: bool) -> Value {
+        json!({
+            "id": "local",
+            "connection": {"state": if down {"unreachable"} else {"live"}},
+            "error": if down { json!({"hostName":"local","message":"down"}) } else { Value::Null },
+        })
+    }
+
+    #[test]
+    fn all_remote_hosts_unreachable_fires_with_two_or_more_remotes_all_down() {
+        let p = json!({"hosts": [
+            local_card(false),
+            remote("r1", true, false),
+            remote("r2", true, false),
+        ]});
+        assert!(all_remote_hosts_unreachable(&p));
+    }
+
+    #[test]
+    fn all_remote_hosts_unreachable_is_absent_when_one_of_two_remotes_is_up() {
+        let p = json!({"hosts": [
+            local_card(false),
+            remote("r1", false, false),
+            remote("r2", true, false),
+        ]});
+        assert!(!all_remote_hosts_unreachable(&p));
+    }
+
+    #[test]
+    fn all_remote_hosts_unreachable_is_absent_with_only_a_single_remote_down() {
+        let p = json!({"hosts": [local_card(false), remote("r1", true, false)]});
+        assert!(!all_remote_hosts_unreachable(&p));
+    }
+
+    #[test]
+    fn all_remote_hosts_unreachable_is_absent_while_one_down_remote_is_still_connecting() {
+        let p = json!({"hosts": [
+            local_card(false),
+            remote("r1", true, false),
+            remote("r2", true, true),
+        ]});
+        assert!(!all_remote_hosts_unreachable(&p));
+    }
+
+    #[test]
+    fn all_remote_hosts_unreachable_is_absent_when_only_the_local_card_is_down() {
+        let p = json!({"hosts": [local_card(true)]});
+        assert!(!all_remote_hosts_unreachable(&p));
+    }
+
+    #[test]
+    fn hosts_source_view_carries_the_amber_all_remote_unreachable_warning() {
+        let payload = json!({"id": "hosts", "hosts": [
+            local_card(false),
+            remote("r1", true, false),
+            remote("r2", true, false),
+        ]});
+        let source = source_view("hosts", "Machines", &payload);
+        let warning = list(&source, "warnings")
+            .iter()
+            .find(|w| {
+                w["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("All remote hosts unreachable")
+            })
+            .expect("the all-remote-unreachable warning");
+        assert_eq!(warning["color"], color::hex(color::AMBER));
+        // Names no vendor: Tailscale becomes optional once #445 lands.
+        assert!(!warning["text"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("tailscale"));
+
+        let dashboard = view(&default_layout(), &[payload]);
+        assert!(list(&dashboard, "attention")
+            .iter()
+            .any(|a| a["source"] == "hosts"));
+    }
+
+    #[test]
+    fn the_all_remote_unreachable_warning_clears_the_next_frame_any_remote_answers() {
+        let down = json!({"id": "hosts", "hosts": [
+            local_card(false),
+            remote("r1", true, false),
+            remote("r2", true, false),
+        ]});
+        assert!(list(&source_view("hosts", "Machines", &down), "warnings")
+            .iter()
+            .any(|w| w["text"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("All remote hosts unreachable")));
+
+        let recovered = json!({"id": "hosts", "hosts": [
+            local_card(false),
+            remote("r1", false, false),
+            remote("r2", true, false),
+        ]});
+        assert!(
+            !list(&source_view("hosts", "Machines", &recovered), "warnings")
+                .iter()
+                .any(|w| w["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("All remote hosts unreachable"))
+        );
     }
 
     #[test]
