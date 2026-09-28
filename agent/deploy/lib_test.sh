@@ -104,6 +104,18 @@ skip_needs_minisign() {
     fi
 }
 
+# A skip whose only cause is "jq is not installed". jq is deliberately kept
+# off the PATH every other bootstrap.sh case runs under (TOOLBIN never
+# symlinks it), so the sed fallback is what those cases exercise; this is the
+# one place that puts a REAL jq back in front of a bootstrap.sh run, to cover
+# the jq branch itself — loudly SKIPped, not silently, on a machine that has
+# none. Unlike minisign, CI is not asked to install jq on purpose (both
+# hosted runner images already carry one), so there is no
+# SOLADOR_DEPLOY_TEST_REQUIRE_JQ escalation to go with it.
+skip_needs_jq() {
+    skip "$1" "jq not installed"
+}
+
 # Print a file's permission bits as three octal digits, on either stat.
 # GNU first: `stat -f` is GNU's --file-system flag, so trying the BSD form
 # first prints a filesystem block and exits 1, and the fallback's answer is
@@ -567,6 +579,19 @@ if command -v minisign >/dev/null 2>&1; then
     else
         MINISIGN_SKIP_REASON="$(minisign -v 2>&1 | head -n1) cannot generate an unencrypted key (-W needs minisign >= 0.11)"
     fi
+fi
+
+# jq is deliberately absent from TOOLBIN (see its own comment above), so every
+# bootstrap.sh --ref case elsewhere in this file drives the no-jq sed
+# fallback. JQ_DIR is a real jq, symlinked in ONLY for the case that
+# deliberately exercises the jq branch of verify_ref_reachable_from_main —
+# added to a run's PATH, never to TOOLBIN itself.
+JQ_DIR="$TMP/jq-bin"
+mkdir -p "$JQ_DIR"
+HAVE_JQ=false
+if command -v jq >/dev/null 2>&1; then
+    ln -s "$(command -v jq)" "$JQ_DIR/jq"
+    HAVE_JQ=true
 fi
 
 # The bypass: a "verifier" that accepts everything. Used ONCE, to show that
@@ -2129,6 +2154,41 @@ test_bootstrap_extraction_and_passthrough() {
     fi
 }
 
+test_bootstrap_help_when_piped() {
+    local home="$TMP/home-bootstrap-piped-help" out status
+    mkdir -p "$home"
+
+    # usage() reads its own header comment out of $0 by line range — but
+    # piped in ("cat bootstrap.sh | bash -s -- --help"), $0 is bash itself,
+    # not this file, and under set -e an awk failure to open it would kill
+    # the run before `exit 0` is ever reached. The canned fallback text is
+    # what keeps this exiting 0 either way. Deliberately the bare word
+    # "bash", resolved through PATH — not $BASH's own absolute path, which
+    # IS a real file and would make `[ -f "$0" ]` true for the wrong reason,
+    # missing the case entirely. argv[0] is the literal text used to invoke
+    # a command found via PATH, not its resolved path, which is what makes
+    # $0 the word "bash" here — the same as a real `curl ... | bash`.
+    reset_argv_logs
+    (
+        # A fresh, empty cwd: `[ -f "$0" ]` resolves the bare word "bash"
+        # against the CURRENT directory, and this must stay false on
+        # anyone's machine, not merely on one that has no ./bash today.
+        cd "$home" || exit 1
+        export HOME="$home"
+        export PATH="$STUBS:$TOOLBIN"
+        cat "$BOOTSTRAP_SCRIPT" | bash -s -- --help
+    ) >"$BOOTSTRAP_OUT" 2>&1
+    status=$?
+    out="$(cat "$BOOTSTRAP_OUT")"
+    assert_eq "bootstrap.sh --help exits 0 even when piped (\$0 is not a real file)" "0" "$status"
+    assert_output_has "the piped --help still prints Usage" "$out" "Usage:"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the piped --help downloads nothing" "curl was invoked"
+    else
+        pass "the piped --help downloads nothing"
+    fi
+}
+
 test_bootstrap_resolves_commit_from_pax_header() {
     local home="$TMP/home-bootstrap-pax" embedded="0123456789abcdef0123456789abcdef01234567"
     mkdir -p "$home"
@@ -2212,6 +2272,19 @@ STUB
 test_bootstrap_validate_ref() {
     local home="$TMP/home-bootstrap-validate-ref"
     mkdir -p "$home"
+
+    # A bare --ref with nothing after it (the last token on the line) must
+    # be refused as usage, not read $ref past the end of "$@" or silently
+    # keep the "main" default.
+    reset_argv_logs
+    run_bootstrap "$home" --ref
+    assert_eq "a bare --ref with no value exits 2" "2" "$BOOTSTRAP_STATUS"
+    assert_output_has "the bare --ref refusal says why" "$(cat "$BOOTSTRAP_OUT")" "needs a value"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "a bare --ref downloads nothing" "curl was invoked"
+    else
+        pass "a bare --ref downloads nothing"
+    fi
 
     # A control character in --ref must never reach the URL bootstrap.sh
     # builds by interpolation — refused the same shape validate_release_tag
@@ -2339,6 +2412,123 @@ test_bootstrap_ref_must_be_reachable_from_main() {
     fi
 }
 
+# Every case above runs with jq off the PATH, so none of them ever exercise
+# the `command -v jq` branch of verify_ref_reachable_from_main — only its
+# sed fallback. This is the one test that puts a real jq back in front of
+# bootstrap.sh (JQ_DIR, never TOOLBIN itself) and drives the same four
+# statuses through it.
+test_bootstrap_ref_reachable_via_jq() {
+    local home="$TMP/home-bootstrap-ref-jq" ref="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    mkdir -p "$home"
+    if [ "$HAVE_JQ" != true ]; then
+        skip_needs_jq "bootstrap.sh (jq present) refuses a --ref GitHub reports as diverged from main"
+        skip_needs_jq "bootstrap.sh (jq present) refuses a --ref GitHub reports as behind main"
+        skip_needs_jq "bootstrap.sh (jq present) accepts a --ref GitHub reports as an ancestor of main (ahead)"
+        skip_needs_jq "bootstrap.sh (jq present) accepts a --ref GitHub reports as identical to main"
+        return
+    fi
+
+    reset_argv_logs
+    BOOTSTRAP_PATH="$JQ_DIR:$STUBS:$TOOLBIN" \
+    STUB_CURL_BODY='{"status":"diverged","ahead_by":3,"behind_by":5}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh (jq present) refuses a --ref GitHub reports as diverged from main" \
+        "1" "$BOOTSTRAP_STATUS"
+
+    reset_argv_logs
+    BOOTSTRAP_PATH="$JQ_DIR:$STUBS:$TOOLBIN" \
+    STUB_CURL_BODY='{"status":"behind","ahead_by":0,"behind_by":2}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh (jq present) refuses a --ref GitHub reports as behind main" \
+        "1" "$BOOTSTRAP_STATUS"
+
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    make_bootstrap_archive "$ref"
+    BOOTSTRAP_PATH="$JQ_DIR:$STUBS:$TOOLBIN" \
+    STUB_CURL_BODY='{"status":"ahead","ahead_by":3,"behind_by":0}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh (jq present) accepts a --ref GitHub reports as an ancestor of main (ahead)" \
+        "0" "$BOOTSTRAP_STATUS"
+
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    BOOTSTRAP_PATH="$JQ_DIR:$STUBS:$TOOLBIN" \
+    STUB_CURL_BODY='{"status":"identical","ahead_by":0,"behind_by":0}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh (jq present) accepts a --ref GitHub reports as identical to main" \
+        "0" "$BOOTSTRAP_STATUS"
+
+    BOOTSTRAP_PATH=""
+}
+
+# The no-jq sed fallback's own comment used to claim that truncating at
+# "commits"/"files" makes the top-level "status" the only field an
+# unanchored match can ever reach — true for a compact, single-line response,
+# but sed truncates per LINE, so a pretty-printed (multi-line) one needs its
+# own coverage.
+test_bootstrap_ref_reachable_pretty_printed() {
+    local home="$TMP/home-bootstrap-ref-pretty" ref="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" body
+    mkdir -p "$home"
+
+    # The ordinary shape, pretty-printed: top-level "status" in GitHub's own
+    # position, before "commits"/"files". Must read the same as the compact
+    # case above.
+    body='{
+  "url": "https://api.github.com/repos/Sassy-Dog/solador/compare/'"$ref"'...main",
+  "status": "identical",
+  "ahead_by": 0,
+  "behind_by": 0,
+  "commits": [],
+  "files": [
+    {
+      "filename": "agent/deploy/install.sh",
+      "status": "modified"
+    }
+  ]
+}'
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    make_bootstrap_archive "$ref"
+    STUB_CURL_BODY="$body" run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh reads the top-level status from a pretty-printed (multi-line) response" \
+        "0" "$BOOTSTRAP_STATUS"
+
+    # The case the old comment overclaimed protection against: "files"
+    # (carrying a per-file status of "identical", chosen to spoof an accept)
+    # placed BEFORE the real top-level "status", which is "diverged" and
+    # must be refused. sed's truncation runs line by line: on a MULTI-LINE
+    # response it blanks only the "files" line itself, so a per-file
+    # "status" on a later line — untouched by that truncation — would
+    # reach the second sed and, since it now sits earlier in the stream
+    # than the real field, win the `head -n1` race. A spoofed accept here
+    # is a regression back to the per-line version of the fallback; this
+    # must stay refused.
+    body='{
+  "url": "https://api.github.com/repos/Sassy-Dog/solador/compare/'"$ref"'...main",
+  "files": [
+    {
+      "filename": "agent/deploy/install.sh",
+      "status": "identical"
+    }
+  ],
+  "status": "diverged",
+  "ahead_by": 3,
+  "behind_by": 5
+}'
+    reset_argv_logs
+    STUB_CURL_BODY="$body" run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh refuses a pretty-printed response whose real status is diverged, even though an earlier per-file status spells 'identical'" \
+        "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the refusal names the real reason, not a spoofed accept" \
+        "$(cat "$BOOTSTRAP_OUT")" "not reachable from main"
+    if grep -q "codeload" "$STUB_CURL_ARGV" 2>/dev/null; then
+        fail "the spoof attempt downloads no archive" "codeload.github.com was requested"
+    else
+        pass "the spoof attempt downloads no archive"
+    fi
+}
+
 test_bootstrap_failure_paths() {
     local home="$TMP/home-bootstrap-failures"
     mkdir -p "$home"
@@ -2394,6 +2584,37 @@ test_bootstrap_failure_paths() {
     fi
 }
 
+# The three failure paths above are all bootstrap.sh's OWN refusals —
+# nothing here yet proves that a FAILURE install.sh reports on its own (a
+# preflight refusal, an --enable-timer opt-in that did not take, ...) comes
+# back out of bootstrap.sh unchanged, rather than being swallowed or
+# flattened to 1. FAKE_INSTALL_EXIT (make_bootstrap_archive's fake
+# install.sh) is what lets this test set that exit status without a real
+# installer run.
+test_bootstrap_passes_through_install_exit_status() {
+    local home="$TMP/home-bootstrap-exit-status"
+    mkdir -p "$home"
+
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV" "$BOOTSTRAP_FAKE_STAGE"
+    make_bootstrap_archive main
+    FAKE_INSTALL_EXIT=3 run_bootstrap "$home"
+    assert_eq "bootstrap.sh passes install.sh's own non-zero exit status through unchanged" \
+        "3" "$BOOTSTRAP_STATUS"
+
+    # Cleanup does not depend on install.sh's own exit status either — the
+    # staging directory is removed whether the run underneath it succeeded
+    # or not.
+    local stage_dir
+    stage_dir="$(cat "$BOOTSTRAP_FAKE_STAGE" 2>/dev/null || true)"
+    if [ -n "$stage_dir" ] && [ ! -e "$stage_dir" ]; then
+        pass "the staging directory is removed even when install.sh exits non-zero"
+    else
+        fail "the staging directory is removed even when install.sh exits non-zero" \
+            "still present: ${stage_dir:-<unknown>}"
+    fi
+}
+
 test_bootstrap_signature_gate() {
     local home="$TMP/home-bootstrap-sig" ref="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" marker="$TMP/bootstrap-sig-marker"
     mkdir -p "$home"
@@ -2444,6 +2665,35 @@ test_bootstrap_signature_gate() {
     fi
     BOOTSTRAP_PATH=""
     unset SOLADOR_AGENT_RELEASE
+}
+
+# A re-run hint printed by the REAL install.sh, reached through bootstrap.sh,
+# must name `bash bootstrap.sh ...` — never $0, which by the time anyone
+# could read and act on a hint is a path under bootstrap.sh's own (already
+# removed) staging directory. The "no bind address" preflight refusal is the
+# earliest hint site reachable without a signed release fixture, so it is
+# the one driven here, the same way test_bootstrap_signature_gate reaches a
+# real install.sh: no Tailscale on PATH, no SOLADOR_AGENT_BIND set.
+test_bootstrap_rerun_hint_names_bootstrap() {
+    local home="$TMP/home-bootstrap-rerun-hint" out
+    mkdir -p "$home"
+
+    rm -rf "$FIXTURES"
+    make_bootstrap_checkout_archive main "$SCRIPT_DIR/../release-signing-key.pub"
+    reset_argv_logs
+    BOOTSTRAP_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" run_bootstrap "$home"
+    out="$(cat "$BOOTSTRAP_OUT")"
+    assert_eq "install.sh (reached through bootstrap.sh) still refuses without a bind address" \
+        "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the re-run hint names bootstrap.sh, not \$0" "$out" "bash bootstrap.sh"
+    case "$out" in
+        *.cache/solador-agent-bootstrap*)
+            fail "the re-run hint does not name the (already-deleted) staged install.sh" \
+                "found a ~/.cache/solador-agent-bootstrap.* path in the output"
+            ;;
+        *) pass "the re-run hint does not name the (already-deleted) staged install.sh" ;;
+    esac
+    BOOTSTRAP_PATH=""
 }
 
 test_install_linux_flow() {
@@ -5311,13 +5561,18 @@ test_install_preflight
 test_install_release_resolution
 test_install_signature_gate
 test_bootstrap_extraction_and_passthrough
+test_bootstrap_help_when_piped
 test_bootstrap_resolves_commit_from_pax_header
 test_bootstrap_truncated_runs_nothing
 test_bootstrap_refuses_root
 test_bootstrap_validate_ref
 test_bootstrap_ref_must_be_reachable_from_main
+test_bootstrap_ref_reachable_via_jq
+test_bootstrap_ref_reachable_pretty_printed
 test_bootstrap_failure_paths
+test_bootstrap_passes_through_install_exit_status
 test_bootstrap_signature_gate
+test_bootstrap_rerun_hint_names_bootstrap
 test_install_linux_flow
 test_install_macos_flow
 test_install_update_timer_linux

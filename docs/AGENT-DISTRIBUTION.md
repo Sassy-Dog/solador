@@ -786,7 +786,22 @@ the same protected path a checkout already gave it; a release *tag* remains
 the least-protected ref (§5) and is never where `bootstrap.sh` looks. No key
 is embedded in `bootstrap.sh` and none is downloaded from anywhere but that
 archive, so there is no key-drift assertion to keep in CI the way #392's
-embedded-key proposal would have needed. Fetching the archive is itself no
+embedded-key proposal would have needed.
+
+**The reachability check above only protects an operator who already has a
+trustworthy `bootstrap.sh`.** The check is code *inside* the script, so a
+copy fetched from `raw.githubusercontent.com/.../<sha>/agent/deploy/bootstrap.sh`
+— a commit not already known to be on `main` — is free to run its own
+version of it: skip the check outright, or always answer `identical`, and
+trust its own `release-signing-key.pub`. That copy gets no protection from
+the check at all, regardless of what `--ref` is then passed to it. Only a
+`bootstrap.sh` already known to be on `main` can be trusted to enforce the
+guarantee this section describes, which is why `agent/README.md`'s
+Prerequisites fetches `bootstrap.sh` itself from `/main/` in both the
+unpinned and the pinned form, and passes the pin as `--ref` rather than as
+part of the fetch URL.
+
+Fetching the archive is itself no
 more and no less authenticated than the checkout it stands in for — HTTPS
 only — so it
 neither closes nor widens the fresh-install downgrade window described

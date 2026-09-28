@@ -6,9 +6,20 @@
 #   curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
 #   bash bootstrap.sh [--ref <40-hex sha>] [install.sh flags...]
 #
-#   The pinned form names the exact commit an operator trusts:
-#   curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/<sha>/agent/deploy/bootstrap.sh
+#   The pinned form names the exact commit an operator trusts to install —
+#   but bootstrap.sh itself is STILL fetched from /main/, never from the
+#   pinned sha's own raw URL, and the pin is passed as --ref:
+#   curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
 #   bash bootstrap.sh --ref <sha> [install.sh flags...]
+#
+#   WARNING: a bootstrap.sh fetched from .../<sha>/agent/deploy/bootstrap.sh
+#   (rather than from /main/) gets NO protection from the --ref-reachable-
+#   from-main check below — that check is code INSIDE this script, so a copy
+#   fetched from a sha not already known to be on main is free to run its
+#   own version of the check (skip it, or always answer yes) and trust its
+#   own key. Only a bootstrap.sh already known to be on main can be trusted
+#   to enforce that guarantee at all — fetch it from /main/, always, and pin
+#   with --ref, never with the raw URL.
 #
 # What it does (the accepted proposal on #434 — read the issue's
 # "## Decision" section before changing any of this):
@@ -71,10 +82,37 @@ REPO_URL="https://github.com/$REPO"
 CODELOAD_URL="https://codeload.github.com/$REPO/tar.gz"
 GITHUB_API="https://api.github.com/repos/$REPO"
 
+# Read by usage() only when $0 is not a real file (see below) — a canned
+# copy of the header's Usage section, kept short on purpose so there is only
+# one place (the header above) that carries the full rationale.
+USAGE_FALLBACK_TEXT='Checkout-free bootstrap for the Solador metrics agent (#434).
+
+Usage:
+  curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
+  bash bootstrap.sh [--ref <40-hex sha>] [install.sh flags...]
+
+  The pinned form names the exact commit an operator trusts to install —
+  but bootstrap.sh itself is STILL fetched from /main/, never from the
+  pinned sha'"'"'s own raw URL, and the pin is passed as --ref:
+  curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
+  bash bootstrap.sh --ref <sha> [install.sh flags...]
+
+Run install.sh --help (directly, or after this script has extracted it) for
+its own usage.'
+
 usage() {
     # The header comment above, found rather than hardcoded by line range —
-    # the same trick install.sh's own usage() uses.
-    awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); print; next } NR > 2 { exit }' "$0"
+    # the same trick install.sh's own usage() uses. That trick needs a real
+    # file at $0: piped in ("cat bootstrap.sh | bash -s -- --help"), $0 is
+    # the interpreter (bash) rather than this script, and awk has nothing to
+    # read there — under `set -e` that failure would kill the run before
+    # `exit 0` is ever reached, turning --help into a crash instead of usage
+    # text. Fall back to the canned copy above whenever $0 is not a file.
+    if [ -f "$0" ]; then
+        awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); print; next } NR > 2 { exit }' "$0"
+    else
+        printf '%s\n' "$USAGE_FALLBACK_TEXT"
+    fi
 }
 
 # A `--ref` is either the literal word "main" or exactly 40 lowercase hex
@@ -138,13 +176,21 @@ verify_ref_reachable_from_main() {
         # "files" arrays (confirmed against the live API) — and a *file's*
         # `status` ("added"/"modified"/…) is exactly as valid JSON there as
         # the one this needs, so a match that is not anchored to arrive
-        # before those arrays would read a compacted (single-line) response
-        # correctly today only because no file status happens to spell
-        # "ahead" or "identical" — the failure mode is silent, not loud, so
-        # it is worth closing rather than relying on. Truncating the text
-        # there before searching makes the top-level field the only one an
-        # unanchored, greedy match can ever reach.
+        # before those arrays would read a later, per-file status instead of
+        # the real one. Truncating the text at the first "commits"/"files"
+        # is what closes that off — but sed truncates per LINE, and GitHub
+        # may or may not pretty-print this response, so `tr -d '\n'` runs
+        # FIRST to squash it onto one line: without that, a per-file
+        # "status" sitting on its own line, inside a multi-line "files"
+        # array, would be on a line the truncation below never touches, and
+        # could still be read as the answer — a JSON string cannot legally
+        # contain a raw newline, so nothing this needs to read is lost by
+        # removing them. With everything on one line, truncating at
+        # "commits"/"files" makes the top-level field the only one an
+        # unanchored, greedy match can ever reach, regardless of how the
+        # response was formatted.
         status="$(printf '%s' "$resp" \
+            | tr -d '\n' \
             | sed -e 's/"commits".*//' -e 's/"files".*//' \
             | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
             | head -n1)"
@@ -326,6 +372,12 @@ bootstrap_main() {
     fi
     echo "==> Running agent/deploy from commit $resolved ($REPO_URL/tree/$resolved)"
 
+    # $0 inside the extracted install.sh names a path under $stage, which is
+    # gone by the time anyone could act on a hint built from it (the trap
+    # above removes it the moment install.sh returns). SOLADOR_AGENT_BOOTSTRAP
+    # is how install.sh knows to print "bash bootstrap.sh ..." in a re-run
+    # hint instead of $0 — see install.sh's RERUN_CMD.
+    export SOLADOR_AGENT_BOOTSTRAP=1
     if [ "${#install_args[@]}" -gt 0 ]; then
         "$install_sh" "${install_args[@]}"
     else
