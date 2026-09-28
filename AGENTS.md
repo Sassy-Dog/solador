@@ -831,6 +831,32 @@ tests build (#417); the crate still has zero dependencies.
   and `docs/AGENT-DISTRIBUTION.md` §6 for why an archive of a commit
   `main`'s history contains keeps the same key-provenance property a
   checkout does.
+- **`install.sh --uninstall` is the mirror of the install, for the invoking
+  user only (#439).** Refuses first, untouched, when the service manager
+  itself is unreachable — the same `systemctl --user show-environment` /
+  `gui/<uid>` domain check the install path makes — then disables and stops
+  both service-manager jobs (`systemctl --user disable --now` /
+  `launchctl bootout gui/<uid>/…`), removes both unit/plist pairs (Linux
+  `daemon-reload`s once something changed), the binary and its
+  `.prev`/`.new`/`.update.lock`/`.rollback-displaced` siblings, the macOS
+  launcher, the Linux guard, and the update stamp. The env file is **kept**
+  and named in the output unless `--purge` also runs (it deletes the token);
+  `--purge` alone, or `--uninstall` beside `--migrate-from-opt` or
+  `--enable-timer`, is a usage error. Refuses as root (same reason
+  `--enable-timer` does), refuses while `<bin>.update.lock` is held
+  (`update_lock_busy`, `lib.sh` — a real `flock(1)` where the host has one, a
+  pid-liveness fallback otherwise, since the lock file itself is never
+  removed and so proves nothing by existing; the lock is re-checked once
+  more right before the binary itself is removed, narrowing but not closing
+  the window a manager call can take), never runs `loginctl disable-linger`,
+  and is idempotent — a second run finds nothing left and says so. **Exit
+  status is not always 0 for a run that removed every file**: a manager
+  found reachable can still refuse one specific stop request, which still
+  removes everything (best-effort) but exits 4, distinct from 0 ("Done",
+  earned) and 1 ("refused, nothing changed" — false here).
+  `agent/README.md`'s "Moving the agent to another user" is the ordered
+  procedure this exists for: install as the new user, re-pair the token,
+  `--uninstall --purge` as the old one.
 - **`solador-agent update` / `rollback` are in the binary (#393), and the
   order of operations is the security design.** `agent/src/update.rs`:
   refuse root; resolve #392's install — reading only — from the unit's
@@ -909,8 +935,9 @@ tests build (#417); the crate still has zero dependencies.
   that service it would kill its own verifier. A default install creates
   **nothing** and makes no check; a re-run without the flag leaves an
   earlier opt-in exactly as it is (files, enablement, phase) and says so —
-  revocation is only the documented disable/remove commands
-  (`agent/README.md`, **Unattended updates**). The job is created only
+  revocation is the documented disable/remove commands
+  (`agent/README.md`, **Unattended updates**), or `install.sh --uninstall`,
+  which removes it along with everything else (#439). The job is created only
   *after* the metrics install verified, and refused before anything is
   created as root, on an unwritable install directory or binary, and on an
   unmigrated `/opt` host (`--migrate-from-opt --enable-timer` does both).

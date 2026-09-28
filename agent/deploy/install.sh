@@ -6,6 +6,8 @@
 #   ./deploy/install.sh                     # download, verify, install, start, verify
 #   ./deploy/install.sh --enable-timer      # ...and opt in to a daily unattended update check
 #   ./deploy/install.sh --migrate-from-opt  # re-point an existing /opt install (Linux)
+#   ./deploy/install.sh --uninstall         # remove THIS USER's install (env file kept)
+#   ./deploy/install.sh --uninstall --purge # ...and delete the env file (it holds the token) too
 #   ./deploy/install.sh --help
 #
 # Environment:
@@ -38,13 +40,36 @@
 #      creates no updater job and makes no update check. Daily, no catch-up:
 #      the first check is a day after enabling, a missed one is discarded,
 #      never made up at wake or login. A re-run WITHOUT the flag leaves an
-#      earlier opt-in exactly as it is; it is revoked only by the
-#      disable/remove commands in agent/README.md.
+#      earlier opt-in exactly as it is; it is revoked by the disable/remove
+#      commands in agent/README.md, or removed along with everything else
+#      by --uninstall (below).
 #
 # Exit status: 0 installed and serving (and, with the flag, scheduled); 1 the
 # install failed or was refused, nothing is serving that this run put there;
 # 2 usage; 3 the metrics service IS installed and serving but the
 # --enable-timer opt-in failed — the "Done" block above the error is true.
+#
+# --uninstall (#439): removes, for the INVOKING USER ONLY, everything a
+# default install (or an opted-in --enable-timer) put on disk — disables and
+# stops both service-manager jobs, removes both unit/plist pairs, the binary
+# and its .prev/.new/.update.lock/.rollback-displaced siblings, the macOS
+# launcher, the Linux guard, and the update stamp. The env file (the token)
+# is KEPT and named in the output unless --purge is also given. Refuses as
+# root (same reason --enable-timer does) or when the service manager itself
+# is unreachable (same reachability check the install path makes — a
+# sudo -u/su session, say), never runs loginctl disable-linger, and refuses,
+# untouched, while solador-agent update/rollback holds <bin>.update.lock — an
+# uninstall mid-transaction would race that transaction's own binary swap.
+# Idempotent: a second run finds nothing left and says so. Exit status: 0
+# uninstalled (or already clean — a second run is a no-op) — earned only when
+# every service-manager call the reachability check let through actually
+# succeeded; 1 refused before anything changed (root, the manager
+# unreachable, the lock, a hostile SOLADOR_AGENT_LAUNCHD_LABEL, an
+# unsupported platform); 2 usage (--purge without --uninstall, or --uninstall
+# combined with --migrate-from-opt or --enable-timer — the two do not
+# combine); 4 every file was still removed (best-effort), but at least one
+# reachable manager refused a specific stop request — verify by hand that
+# nothing is still running before trusting this host is clean.
 #
 # Re-running is safe: it reuses the token, replaces the binary and restarts.
 # Nothing here uses sudo. redeploy.sh remains the from-source path for our own
@@ -110,6 +135,11 @@ UPDATE_LABEL="${LAUNCHD_LABEL}.update"
 UPDATE_PLIST_SRC="$SCRIPT_DIR/app.solador.agent.update.plist"
 UPDATE_PLIST_DST="$HOME/Library/LaunchAgents/${UPDATE_LABEL}.plist"
 UPDATE_LOG_FILE="$HOME/Library/Logs/${UPDATE_NAME}.log"
+# The no-catch-up stamp both guards write (update-guard.sh on Linux,
+# run-agent.sh's update mode on macOS) — one path, one name, on both
+# platforms; --uninstall is the one thing here that reads it by name rather
+# than writing it.
+UPDATE_STAMP="$HOME/.config/${UPDATE_NAME}.last-attempt"
 
 # The pre-rename install. Everything below that mentions these exists to hand a
 # host over from the old agent without the operator noticing anything except a
@@ -132,16 +162,23 @@ MIGRATE_FROM_OPT=false
 # touch unattended updating either way": neither create it nor revoke an
 # earlier opt-in.
 ENABLE_TIMER=false
+# --uninstall (#439): the mirror of the install this script otherwise
+# performs. --purge only ever modifies what --uninstall does (it is refused
+# alone, below) — it is never a standalone mode.
+UNINSTALL=false
+PURGE=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --migrate-from-opt) MIGRATE_FROM_OPT=true ;;
         --enable-timer) ENABLE_TIMER=true ;;
+        --uninstall) UNINSTALL=true ;;
+        --purge) PURGE=true ;;
         -h | --help | help)
             usage
             exit 0
             ;;
         *)
-            echo "ERROR: unknown argument '$1'. Use: [--enable-timer] [--migrate-from-opt] [--help]" >&2
+            echo "ERROR: unknown argument '$1'. Use: [--enable-timer] [--migrate-from-opt] [--uninstall [--purge]] [--help]" >&2
             exit 2
             ;;
     esac
@@ -161,6 +198,257 @@ if [ "${SOLADOR_AGENT_BOOTSTRAP:-}" = "1" ]; then
     RERUN_CMD="bash bootstrap.sh [--ref <sha>]"
 fi
 
+# --purge only ever modifies --uninstall; --uninstall does not combine with a
+# flag that installs or repoints something. Refused here, before OS detection
+# even runs, the same "usage error before anything happens" contract every
+# other argument gets.
+if [ "$PURGE" = true ] && [ "$UNINSTALL" != true ]; then
+    echo "ERROR: --purge only applies together with --uninstall (it deletes the env file" >&2
+    echo "       that --uninstall would otherwise keep). Use: $RERUN_CMD --uninstall --purge" >&2
+    exit 2
+fi
+if [ "$UNINSTALL" = true ] && { [ "$MIGRATE_FROM_OPT" = true ] || [ "$ENABLE_TIMER" = true ]; }; then
+    echo "ERROR: --uninstall does not combine with --migrate-from-opt or --enable-timer —" >&2
+    echo "       it removes an install; it does not create or repoint one." >&2
+    exit 2
+fi
+
+# The label becomes a filename under ~/Library/LaunchAgents and a rendered
+# plist value; it is a test seam, not a place for a path or a placeholder.
+# Validated HERE — before --uninstall's own dispatch below, not only inside
+# the install-only preflight further down — because run_uninstall derives
+# PLIST_DST/UPDATE_PLIST_DST from it too and `rm -f`s whatever that resolves
+# to: an unvalidated "../x" would let SOLADOR_AGENT_LAUNCHD_LABEL steer an
+# uninstall's own deletions outside ~/Library/LaunchAgents. UPDATE_LABEL
+# ("${LAUNCHD_LABEL}.update") needs no separate check: a label safe by this
+# rule stays safe with ".update" appended.
+case "$LAUNCHD_LABEL" in
+    [A-Za-z0-9]*) ;;
+    *) echo "ERROR: SOLADOR_AGENT_LAUNCHD_LABEL '$LAUNCHD_LABEL' must start with a letter or digit." >&2; exit 1 ;;
+esac
+case "$LAUNCHD_LABEL" in
+    *[!A-Za-z0-9._-]*) echo "ERROR: SOLADOR_AGENT_LAUNCHD_LABEL '$LAUNCHD_LABEL' may contain only letters, digits, '.', '_' and '-'." >&2; exit 1 ;;
+esac
+
+# ---- uninstall (#439) ---------------------------------------------------------
+# The mirror of everything above: for the INVOKING USER ONLY, remove what a
+# default install (or an opted-in --enable-timer) put on disk. Every path
+# used below (ENV_FILE, DEST_BIN, UNIT_DST, PLIST_DST, ...) is already defined
+# — they are plain $HOME-relative strings set unconditionally near the top of
+# this script, before argument parsing even runs.
+#
+# The env file is the one thing kept by default: it holds the bearer token,
+# and #439's own motivating case (moving the agent to another Unix user) is
+# install-as-the-new-user, re-pair the token in the cockpit, THEN
+# uninstall-with-purge as the old user — so the token is never read back out
+# of a file by hand, and a plain --uninstall (any other reason to remove an
+# install) does not delete a credential the operator may still want.
+UNINSTALL_REMOVED=false
+
+# uninstall_remove <path> <description>: rm -f, and note it in both the
+# summary printed to the operator and UNINSTALL_REMOVED — the fact "a second
+# run is a no-op" is read from, rather than an exit code guessed at.
+uninstall_remove() {
+    local path="$1" desc="$2"
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        rm -f "$path"
+        UNINSTALL_REMOVED=true
+        echo "    removed: $desc ($path)"
+    fi
+}
+
+run_uninstall() {
+    # Same refusal, and the same reason, as --enable-timer's: the install is
+    # user-owned, so removing it is too.
+    if [ "$(id -u)" = "0" ]; then
+        echo "ERROR: --uninstall refuses to run as root. The agent installs and runs" >&2
+        echo "       user-owned, with no sudo anywhere in this chain, and uninstall only" >&2
+        echo "       ever touches the invoking user's own files. Run this as the user the" >&2
+        echo "       agent is installed as." >&2
+        return 1
+    fi
+
+    # The same service-manager reachability the install path refuses on
+    # (preflight, below) before touching anything — a `sudo -u`/`su` session,
+    # or one with no XDG_RUNTIME_DIR, cannot ask systemd to stop anything, and
+    # discovering that mid-uninstall (after the unit file is already gone) is
+    # exactly the half-changed state this check exists to prevent: the files
+    # say "removed" while a manager none of this could reach may still be
+    # running the process.
+    case "$OS" in
+        Linux)
+            if ! systemctl --user show-environment >/dev/null 2>&1; then
+                echo "ERROR: cannot reach this user's systemd manager (systemctl --user)." >&2
+                echo "       Run --uninstall from a real login session for this user (not via" >&2
+                echo "       sudo -u or su), or set XDG_RUNTIME_DIR=/run/user/\$(id -u). Nothing" >&2
+                echo "       has been changed." >&2
+                return 1
+            fi
+            ;;
+        Darwin)
+            if ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+                echo "ERROR: no launchd gui domain for uid $(id -u) — this user has no login session." >&2
+                echo "       --uninstall needs the same login session the agent runs in; log in at" >&2
+                echo "       the console (or via Screen Sharing) as this user and re-run. Nothing" >&2
+                echo "       has been changed." >&2
+                return 1
+            fi
+            ;;
+    esac
+
+    # The transaction lock solador-agent update/rollback hold for their
+    # lifetime (agent/src/update.rs, #393). It is never removed once created,
+    # so its mere presence proves nothing — update_lock_busy (lib.sh) is what
+    # asks whether it is actually HELD right now. Checked before anything else
+    # touches disk: uninstalling mid-transaction would race that transaction's
+    # own binary swap, the same race install.sh itself must not run either.
+    local lock_file="$DEST_BIN.update.lock"
+    if update_lock_busy "$lock_file"; then
+        echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
+        echo "       Uninstalling now would race that transaction's own binary swap." >&2
+        echo "       Wait for it to finish (or fail) and re-run." >&2
+        return 1
+    fi
+
+    echo "==> Uninstalling $BIN_NAME for $(id -un) ($OS)"
+
+    # Set when a service-manager call the reachability check above should
+    # have let succeed reports an error anyway — a narrower, rarer case than
+    # "the manager was unreachable" (already refused above), but one where
+    # this run cannot promise the live process actually stopped even though
+    # its files are all still removed below (best-effort, per this script's
+    # own --uninstall contract). Read at the end to pick the summary line and
+    # the exit status: 0 ("Done") is a claim only a manager that agreed to
+    # every stop request has earned.
+    local MANAGER_CALL_FAILED=false
+
+    case "$OS" in
+        Linux)
+            if [ -f "$UNIT_DST" ]; then
+                # The line printed reflects what actually happened, not what
+                # was attempted: a failed disable/stop is reported as such,
+                # never as "stopped".
+                if systemctl --user disable --now "$BIN_NAME" 2>/dev/null; then
+                    echo "    stopped and disabled $BIN_NAME.service"
+                else
+                    echo "    (systemctl --user disable --now $BIN_NAME reported an error;" >&2
+                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
+                    MANAGER_CALL_FAILED=true
+                fi
+                UNINSTALL_REMOVED=true
+            fi
+            if [ -f "$UPDATE_TIMER_DST" ]; then
+                if systemctl --user disable --now "$UPDATE_NAME.timer" 2>/dev/null; then
+                    echo "    stopped and disabled $UPDATE_NAME.timer"
+                else
+                    echo "    (systemctl --user disable --now $UPDATE_NAME.timer reported an error;" >&2
+                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
+                    MANAGER_CALL_FAILED=true
+                fi
+                UNINSTALL_REMOVED=true
+            fi
+            uninstall_remove "$UNIT_DST" "systemd unit"
+            uninstall_remove "$UNIT_DST.prev" "systemd unit (previous, from a migration)"
+            uninstall_remove "$UPDATE_UNIT_DST" "update oneshot unit"
+            uninstall_remove "$UPDATE_TIMER_DST" "update timer"
+            # Only when something above actually changed: a no-op second run
+            # asks systemd for nothing, the same "no manager calls" contract
+            # every other refusal/no-op path in this script keeps.
+            if [ "$UNINSTALL_REMOVED" = true ]; then
+                systemctl --user daemon-reload 2>/dev/null || true
+            fi
+            uninstall_remove "$GUARD_DST" "update guard"
+            ;;
+        Darwin)
+            local metrics_svc update_svc
+            metrics_svc="gui/$(id -u)/$LAUNCHD_LABEL"
+            update_svc="gui/$(id -u)/$UPDATE_LABEL"
+            if launchctl print "$metrics_svc" >/dev/null 2>&1; then
+                if launchctl bootout "$metrics_svc" 2>/dev/null; then
+                    echo "    stopped $metrics_svc"
+                else
+                    echo "    (launchctl bootout $metrics_svc reported an error;" >&2
+                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
+                    MANAGER_CALL_FAILED=true
+                fi
+                UNINSTALL_REMOVED=true
+            fi
+            if launchctl print "$update_svc" >/dev/null 2>&1; then
+                if launchctl bootout "$update_svc" 2>/dev/null; then
+                    echo "    stopped $update_svc"
+                else
+                    echo "    (launchctl bootout $update_svc reported an error;" >&2
+                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
+                    MANAGER_CALL_FAILED=true
+                fi
+                UNINSTALL_REMOVED=true
+            fi
+            uninstall_remove "$PLIST_DST" "LaunchAgent plist"
+            uninstall_remove "$UPDATE_PLIST_DST" "update LaunchAgent plist"
+            uninstall_remove "$LAUNCHER_DST" "launcher"
+            ;;
+        *)
+            echo "ERROR: --uninstall supports Linux (systemd) and macOS (launchd); this is $OS." >&2
+            return 1
+            ;;
+    esac
+
+    # Re-checked, not assumed still true from the single check above: the
+    # service-manager calls just made can take long enough for a
+    # concurrently started `solador-agent update`/`rollback` to acquire the
+    # lock in between. This narrows that window; it does not close it (the
+    # manager calls above are not themselves reversible), which is the
+    # accepted scope #439 was written against.
+    if update_lock_busy "$lock_file"; then
+        echo "ERROR: $lock_file is now held — an update or rollback started while this" >&2
+        echo "       uninstall was stopping the service. The service and its unit/plist" >&2
+        echo "       files are already removed above; leaving the binary and the lock" >&2
+        echo "       alone rather than deleting them out from under that transaction." >&2
+        echo "       Wait for it to finish (or fail) and re-run to finish removing the binary." >&2
+        return 1
+    fi
+
+    uninstall_remove "$DEST_BIN" "binary"
+    uninstall_remove "$DEST_BIN.prev" "binary (previous)"
+    uninstall_remove "$DEST_BIN.new" "binary (staged)"
+    # A leftover from a half-done `solador-agent rollback` (agent/src/update.rs):
+    # the live binary's only copy at the moment the swap ran, kept until an
+    # operator moves it by hand. Once the whole install is going away there is
+    # nothing left for it to be a backup of.
+    uninstall_remove "$DEST_BIN.rollback-displaced" "binary (rollback-displaced, from a half-done rollback)"
+    uninstall_remove "$lock_file" "update transaction lock"
+    uninstall_remove "$UPDATE_STAMP" "update stamp"
+
+    if [ "$PURGE" = true ]; then
+        uninstall_remove "$ENV_FILE" "env file (--purge: it held the bearer token)"
+    elif [ -e "$ENV_FILE" ]; then
+        echo "    left:    env file ($ENV_FILE) — holds the bearer token; remove it with:"
+        echo "               $RERUN_CMD --uninstall --purge"
+    fi
+
+    echo
+    if [ "$MANAGER_CALL_FAILED" = true ]; then
+        # Every file this run knows about is gone (or was already gone), but
+        # "Done: uninstalled" is a claim about the SERVICE, not the files —
+        # and a manager that answered `show-environment`/`print gui/<uid>`
+        # (the reachability check above) yet still refused a specific stop
+        # request is a narrower, rarer thing than unreachable, not a reason
+        # to fabricate the stronger claim. Exit 4 is distinct from both 0
+        # ("Done", earned) and 1 ("refused, nothing changed" — false here).
+        echo "==> $BIN_NAME's files were removed for $(id -un), but at least one" >&2
+        echo "    service-manager call above could not confirm the service actually" >&2
+        echo "    stopped. Verify by hand that nothing is still running:" >&2
+        service_inspect_hint "$LAUNCHD_LABEL" >&2
+        return 4
+    fi
+    if [ "$UNINSTALL_REMOVED" = true ]; then
+        echo "==> Done: $BIN_NAME uninstalled for $(id -un)."
+    else
+        echo "==> Nothing installed for $(id -un); nothing to do."
+    fi
+    return 0
+}
+
 # ---- preflight ---------------------------------------------------------------
 # Everything that can refuse, refuses HERE — before a byte is downloaded and
 # before any installed state changes. A half-installed host is the outcome
@@ -168,6 +456,18 @@ fi
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
+
+# --uninstall is its own path, dispatched before any of the install-only
+# preflight below (minisign, the macOS floor, Tailscale, a release download —
+# none of it applies to removing files this user's own earlier run created).
+# run_uninstall's own return is propagated as-is (0, 1 or 4 — see its header
+# comment), never collapsed to a bare 0/1: 4 is a distinct claim from both.
+if [ "$UNINSTALL" = true ]; then
+    uninstall_status=0
+    run_uninstall || uninstall_status=$?
+    exit "$uninstall_status"
+fi
+
 TRIPLE="$(agent_target_for "$OS" "$ARCH")" || exit 1
 echo "==> Platform: $OS $ARCH -> $TRIPLE"
 
@@ -280,16 +580,6 @@ if [ "$ENABLE_TIMER" = true ]; then
         exit 1
     fi
 fi
-
-# The label becomes a filename under ~/Library/LaunchAgents and a rendered
-# plist value; it is a test seam, not a place for a path or a placeholder.
-case "$LAUNCHD_LABEL" in
-    [A-Za-z0-9]*) ;;
-    *) echo "ERROR: SOLADOR_AGENT_LAUNCHD_LABEL '$LAUNCHD_LABEL' must start with a letter or digit." >&2; exit 1 ;;
-esac
-case "$LAUNCHD_LABEL" in
-    *[!A-Za-z0-9._-]*) echo "ERROR: SOLADOR_AGENT_LAUNCHD_LABEL '$LAUNCHD_LABEL' may contain only letters, digits, '.', '_' and '-'." >&2; exit 1 ;;
-esac
 
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found (needed to download the release and to verify health)." >&2; exit 1; }
 if ! command -v minisign >/dev/null 2>&1; then
@@ -810,11 +1100,11 @@ esac
 #
 # Off by default. The no-flag run touches nothing about the updater: an
 # earlier opt-in is left exactly as it is (the files, the enablement, the
-# timer's phase), and it is revoked only by the documented disable/remove
-# commands — never by a re-run. The summary line at the end reports what the
-# service manager says, not what files exist, so a paused job (the
-# documented `disable --now` / `bootout`, which leave the files) is not
-# reported as scheduled.
+# timer's phase), and it is revoked by the documented disable/remove
+# commands, or by --uninstall — never by a plain re-run. The summary line
+# at the end reports what the service manager says, not what files exist,
+# so a paused job (the documented `disable --now` / `bootout`, which leave
+# the files) is not reported as scheduled.
 #
 # The first firing is a day away on both platforms: systemd's OnActiveSec
 # starts counting when the timer starts, launchd's StartInterval when the

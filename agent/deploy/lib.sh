@@ -408,6 +408,57 @@ calver_newer() {
     [ "$a3" -gt "$b3" ]
 }
 
+# ---- the update transaction lock (#393, #439) --------------------------------
+# `<bin>.update.lock` is the flock `solador-agent update`/`rollback` hold for
+# their lifetime (agent/src/update.rs's TransactionLock) — created once and
+# NEVER removed, so the file's mere existence proves nothing: it is exactly as
+# present the instant after a transaction finishes cleanly as it is while one
+# is running. What install.sh's `--uninstall` needs to know is "is it HELD
+# right now", not "does it exist" — uninstalling mid-transaction would race the
+# exact binary rename that transaction is in the middle of.
+#
+# Prefer a real, non-blocking flock() on the same path — util-linux's
+# `flock(1)`, present on the Linux hosts this repo targets — which answers the
+# question exactly: this process asking for the lock and failing IS the same
+# contention the updater's own attempt would meet. Where flock(1) does not
+# exist (stock macOS ships none), fall back to the note the lock's holder
+# writes into the file the moment it acquires it (`pid=<pid> since=<epoch>`,
+# TransactionLock::try_acquire) and ask whether that pid is still alive. A
+# note naming a since-exited pid, or no note at all (the file was created but
+# never locked, or the note write itself failed — both possible per
+# TransactionLock's own comments), reads as free. The false BUSY that leaves —
+# an unrelated process started later happening to reuse the same pid number —
+# is a narrower race than the one this check exists to close, and the
+# fallback is only reached on a platform with no better primitive to ask.
+# It has no automatic way out: `kill -0` on a live, unrelated pid keeps
+# reading busy for as long as that process runs, and the refusal's own "wait
+# for it to finish and re-run" cannot resolve a lock nothing is actually
+# using. The manual escape is the same either way — confirm no
+# `solador-agent update`/`rollback` is genuinely running on this host, then
+# remove `<bin>.update.lock` by hand.
+#
+# A read that FAILS on a file the `-f` check just confirmed exists (a
+# permission change, or the file removed between the two checks) is a
+# different case from an empty or unparseable note: it is uncertainty, not
+# evidence of "free", so it fails toward busy — matching the flock branch
+# above, where any non-success reads as held. Only a note this function could
+# actually read and still found empty or unparseable is treated as free.
+update_lock_busy() {
+    local lock_file="$1"
+    [ -f "$lock_file" ] || return 1
+    if command -v flock >/dev/null 2>&1; then
+        if flock -n "$lock_file" true 2>/dev/null; then
+            return 1
+        fi
+        return 0
+    fi
+    local note pid
+    note="$(cat "$lock_file" 2>/dev/null)" || return 0
+    pid="$(printf '%s' "$note" | sed -n 's/^pid=\([0-9][0-9]*\)[[:space:]].*/\1/p')"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
 # ---- the env file -----------------------------------------------------------
 # Read one key's value out of an env file, the way systemd's EnvironmentFile=
 # and the macOS launcher (run-agent.sh) read it: first matching line, trailing

@@ -59,6 +59,7 @@ unset STUB_SYSTEMCTL_TIMER_EXIT STUB_SYSTEMCTL_IS_ENABLED STUB_PLUTIL_FAIL_MATCH
 unset STUB_DATE_EPOCH STUB_DATE_EXIT STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SYSCTL_EXIT STUB_SYSCTL_ARGV
 unset STUB_MONO_NOW_US STUB_RESUME_US STUB_GUARD_SYSTEMCTL_ARGV GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
 unset STUB_SYSTEMD_VERSION
+unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_LAUNCHCTL_BOOTOUT_EXIT
 
 # ---- harness ----------------------------------------------------------------
 
@@ -390,6 +391,16 @@ case "${2:-}" in
         [ "${STUB_SYSTEMCTL_IS_ENABLED:-enabled}" = "enabled" ] && exit 0
         exit 1
         ;;
+    # --uninstall's own disable --now calls (#439): STUB_SYSTEMCTL_DISABLE_EXIT
+    # fails BOTH the metrics and the update-timer disable, ahead of the more
+    # specific update-timer-only case below — reachability (show-environment)
+    # already answered above, so this is the narrower "manager reachable, one
+    # stop request still refused" case that path is meant to exercise.
+    disable)
+        if [ -n "${STUB_SYSTEMCTL_DISABLE_EXIT:-}" ] && [ "$STUB_SYSTEMCTL_DISABLE_EXIT" != "0" ]; then
+            exit "$STUB_SYSTEMCTL_DISABLE_EXIT"
+        fi
+        ;;
 esac
 case "$*" in
     *"solador-agent-update.timer"*) exit "${STUB_SYSTEMCTL_TIMER_EXIT:-0}" ;;
@@ -437,6 +448,16 @@ case "${1:-}" in
             echo "Bootstrap failed: 5: Input/output error (stubbed)" >&2
         fi
         exit "${STUB_LAUNCHCTL_BOOTSTRAP_EXIT:-0}"
+        ;;
+    # --uninstall's own bootout calls (#439): STUB_LAUNCHCTL_BOOTOUT_EXIT fails
+    # both the metrics and the update-label bootout — the login-session check
+    # (print gui/<uid>, above) already answered, so this is the narrower
+    # "manager reachable, one stop request still refused" case.
+    bootout)
+        if [ -n "${STUB_LAUNCHCTL_BOOTOUT_EXIT:-}" ] && [ "$STUB_LAUNCHCTL_BOOTOUT_EXIT" != "0" ]; then
+            exit "$STUB_LAUNCHCTL_BOOTOUT_EXIT"
+        fi
+        exit 0
         ;;
     *) exit 0 ;;
 esac
@@ -552,13 +573,21 @@ chmod +x "$STUBS"/*
 # one) or TOOLBIN_NOVERIFIER.
 TOOLBIN="$TMP/toolbin"
 TOOLBIN_NOVERIFIER="$TMP/toolbin-noverifier"
-mkdir -p "$TOOLBIN" "$TOOLBIN_NOVERIFIER"
+# update_lock_busy's non-flock fallback (lib.sh) is only exercised on a host
+# with no flock(1) on PATH — which, since flock is now in TOOLBIN above (for
+# install.sh's own restricted-PATH check to see it when the host has one),
+# is no longer "any host running this suite". TOOLBIN_NOFLOCK is TOOLBIN
+# minus flock, so test_update_lock_busy can force the fallback branch
+# deterministically regardless of what the running host happens to have.
+TOOLBIN_NOFLOCK="$TMP/toolbin-noflock"
+mkdir -p "$TOOLBIN" "$TOOLBIN_NOVERIFIER" "$TOOLBIN_NOFLOCK"
 for tool in awk sed grep cut head tr od cat mkdir rm cp mv install chmod mktemp cmp \
-            id dirname basename ls seq openssl env sh bash date sort tar find gzip base64; do
+            id dirname basename ls seq openssl env sh bash date sort tar find gzip base64 flock; do
     real="$(command -v "$tool" 2>/dev/null || true)"
     if [ -n "$real" ]; then
         ln -s "$real" "$TOOLBIN/$tool"
         ln -s "$real" "$TOOLBIN_NOVERIFIER/$tool"
+        [ "$tool" = "flock" ] || ln -s "$real" "$TOOLBIN_NOFLOCK/$tool"
     fi
 done
 # The throwaway keypair the signature cases sign with. Generated up front so
@@ -1439,6 +1468,160 @@ test_verify_agent_signature() {
     assert_file_has "the impostor is named" "$STDERR" "does not identify itself as minisign"
 }
 
+# ---- update_lock_busy (#439) -------------------------------------------------
+#
+# The lock `solador-agent update`/`rollback` hold for their lifetime
+# (agent/src/update.rs's TransactionLock) is never removed once created, so
+# the file's mere existence proves nothing about whether it is held RIGHT
+# NOW — that is what install.sh's --uninstall needs to know before it removes
+# anything. Two implementations: a real flock(1) where the host has one
+# (Linux, typically), and a pid-liveness fallback reading the holder's own
+# note otherwise (stock macOS ships no flock(1)).
+
+# hold_fake_lock <path>: makes update_lock_busy report BUSY for <path>,
+# however it decides that — a real, held flock(1) when this host has one, the
+# pid-liveness fallback's note otherwise — and does not return until it can
+# prove the lock is actually held, so a caller never races its own setup.
+# release_fake_lock undoes it. FAKE_LOCK_PID is empty in the fallback case
+# (nothing was backgrounded).
+#
+# The holder blocks on opening a FIFO nobody writes to — a builtin
+# redirection, not a forked command — rather than `sleep`: a plain `sleep`
+# here would fork a child that INHERITS fd 9 (a bare `exec N>file` carries no
+# CLOEXEC), and flock(2)'s lock lives as long as ANY reference to that open
+# file description does, sleep's included — the exact gotcha
+# agent/src/update.rs's TransactionLock documents. Killing only the
+# subshell would leave that orphaned child quietly holding the lock forever,
+# and every later "is it released" assertion would read busy. Blocking on
+# the FIFO's open() instead means this subshell forks nothing while fd 9 is
+# open, so killing it is the whole story.
+FAKE_LOCK_PID=""
+FAKE_LOCK_FIFO=""
+hold_fake_lock() {
+    local lock="$1"
+    mkdir -p "$(dirname "$lock")"
+    if command -v flock >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1; then
+        : > "$lock"
+        FAKE_LOCK_FIFO="$TMP/fake-lock-fifo.$$"
+        rm -f "$FAKE_LOCK_FIFO"
+        mkfifo "$FAKE_LOCK_FIFO"
+        (
+            exec 9>"$lock"
+            flock -x 9
+            exec <"$FAKE_LOCK_FIFO"
+            read -r _unused
+        ) &
+        FAKE_LOCK_PID=$!
+        local waited=0
+        while flock -n "$lock" true 2>/dev/null; do
+            waited=$((waited + 1))
+            [ "$waited" -ge 50 ] && break
+            sleep 0.1
+        done
+    else
+        printf 'pid=%s since=%s\n' "$$" "$(date +%s 2>/dev/null || echo 0)" > "$lock"
+        FAKE_LOCK_PID=""
+    fi
+}
+release_fake_lock() {
+    local lock="$1"
+    if [ -n "$FAKE_LOCK_PID" ]; then
+        kill "$FAKE_LOCK_PID" 2>/dev/null || true
+        wait "$FAKE_LOCK_PID" 2>/dev/null || true
+        FAKE_LOCK_PID=""
+    fi
+    if [ -n "$FAKE_LOCK_FIFO" ]; then
+        rm -f "$FAKE_LOCK_FIFO"
+        FAKE_LOCK_FIFO=""
+    fi
+    rm -f "$lock"
+}
+
+test_update_lock_busy() {
+    local lock="$TMP/fake.update.lock"
+    rm -f "$lock"
+
+    if update_lock_busy "$lock"; then
+        fail "a missing lock file is not busy" "update_lock_busy returned busy"
+    else
+        pass "a missing lock file is not busy"
+    fi
+
+    # A lock file that exists but names a pid that is not running (real
+    # flock(1): never actually locked either) — matches an installer's own
+    # last transaction having long since exited.
+    printf 'pid=999999999 since=1\n' > "$lock"
+    if update_lock_busy "$lock"; then
+        fail "a note naming a pid that is not running is not busy" "update_lock_busy returned busy"
+    else
+        pass "a note naming a pid that is not running is not busy"
+    fi
+    rm -f "$lock"
+
+    hold_fake_lock "$lock"
+    if update_lock_busy "$lock"; then
+        pass "a real transaction lock is reported busy while it is held"
+    else
+        fail "a real transaction lock is reported busy while it is held" \
+            "update_lock_busy returned not-busy"
+    fi
+    release_fake_lock "$lock"
+    if update_lock_busy "$lock"; then
+        fail "a released lock is not busy" "update_lock_busy returned busy after release"
+    else
+        pass "a released lock is not busy"
+    fi
+
+    # A lock file the existence check just confirmed is there, but that
+    # cannot actually be read (permissions changed underneath, say), is
+    # uncertainty about a file known to exist — not the same as an empty or
+    # unparseable note — so it must fail toward busy, the same direction a
+    # contended flock() already fails in. Skipped as root, which ignores
+    # file permissions and would make chmod 000 unreadable-proof.
+    if [ "$(id -u)" = "0" ]; then
+        skip "an existing lock file that cannot be read is busy" "running as root, which can read anything"
+    else
+        printf 'pid=999999999 since=1\n' > "$lock"
+        chmod 000 "$lock"
+        if update_lock_busy "$lock"; then
+            pass "an existing lock file that cannot be read is busy"
+        else
+            fail "an existing lock file that cannot be read is busy" "update_lock_busy returned not-busy"
+        fi
+        chmod 600 "$lock"
+    fi
+    rm -f "$lock"
+
+    # The pid-liveness fallback itself, forced regardless of what the host
+    # running this suite happens to have on PATH — TOOLBIN_NOFLOCK has no
+    # flock, so `command -v flock` inside update_lock_busy fails there the
+    # same way it does on stock macOS, and the sed/kill-0 branch is what
+    # answers. Without this, CI's Linux leg (flock present) never exercises
+    # this branch at all, and a break in it would ship unnoticed on the one
+    # platform (macOS, no flock) that actually depends on it.
+    (
+        PATH="$TOOLBIN_NOFLOCK"
+        if command -v flock >/dev/null 2>&1; then
+            fail "TOOLBIN_NOFLOCK actually has no flock on PATH" "flock resolved to $(command -v flock)"
+        else
+            pass "TOOLBIN_NOFLOCK actually has no flock on PATH"
+        fi
+        printf 'pid=999999999 since=1\n' > "$lock"
+        if update_lock_busy "$lock"; then
+            fail "the forced fallback: a dead pid's note is not busy" "update_lock_busy returned busy"
+        else
+            pass "the forced fallback: a dead pid's note is not busy"
+        fi
+        printf 'pid=%s since=1\n' "$$" > "$lock"
+        if update_lock_busy "$lock"; then
+            pass "the forced fallback: a live pid's note is busy"
+        else
+            fail "the forced fallback: a live pid's note is busy" "update_lock_busy returned not-busy"
+        fi
+    )
+    rm -f "$lock"
+}
+
 # ---- the install flow (#392) ------------------------------------------------
 #
 # install.sh, run for real against a temporary HOME, from a copy of the
@@ -2122,6 +2305,15 @@ test_bootstrap_extraction_and_passthrough() {
     assert_eq "install.sh receives exactly the pass-through arguments, --ref stripped" \
         "--enable-timer --migrate-from-opt" "$argv"
 
+    # --uninstall [--purge] passes through exactly the same way (#439) — no
+    # special case in bootstrap.sh's own argument loop for it.
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV" "$BOOTSTRAP_FAKE_LISTING" "$BOOTSTRAP_FAKE_STAGE"
+    run_bootstrap "$home" --uninstall --purge
+    assert_eq "bootstrap.sh passes --uninstall --purge through" "0" "$BOOTSTRAP_STATUS"
+    argv="$(cat "$BOOTSTRAP_FAKE_ARGV" 2>/dev/null || true)"
+    assert_eq "install.sh receives --uninstall --purge unchanged" "--uninstall --purge" "$argv"
+
     # Extraction is restricted to agent/deploy/* and the signing key(s) —
     # nothing else the archive carries reaches disk.
     listing="$(cat "$BOOTSTRAP_FAKE_LISTING" 2>/dev/null || true)"
@@ -2694,6 +2886,35 @@ test_bootstrap_rerun_hint_names_bootstrap() {
         *) pass "the re-run hint does not name the (already-deleted) staged install.sh" ;;
     esac
     BOOTSTRAP_PATH=""
+}
+
+# install.sh --uninstall never touches minisign/curl/Tailscale (it is
+# dispatched before any of that preflight), so — unlike the install-flow
+# tests — this needs no HAVE_MINISIGN gate to run the REAL install.sh
+# through bootstrap.sh end to end.
+test_bootstrap_uninstall_rerun_hint() {
+    local home="$TMP/home-bootstrap-uninstall-hint" env_file out
+    mkdir -p "$home/.config"
+    env_file="$home/.config/solador-agent.env"
+    : > "$env_file"
+
+    rm -rf "$FIXTURES"
+    make_bootstrap_checkout_archive main "$SCRIPT_DIR/../release-signing-key.pub"
+    reset_argv_logs
+    run_bootstrap "$home" --uninstall
+    out="$(cat "$BOOTSTRAP_OUT")"
+    assert_eq "install.sh --uninstall (reached through bootstrap.sh) exits 0" "0" "$BOOTSTRAP_STATUS"
+    assert_output_has "the kept-env-file hint names bootstrap.sh, not \$0" "$out" "bash bootstrap.sh"
+    assert_output_has "the kept-env-file hint still names --uninstall --purge" "$out" "--uninstall --purge"
+    case "$out" in
+        *.cache/solador-agent-bootstrap*)
+            fail "the uninstall hint does not name the (already-deleted) staged install.sh" \
+                "found a ~/.cache/solador-agent-bootstrap.* path in the output"
+            ;;
+        *) pass "the uninstall hint does not name the (already-deleted) staged install.sh" ;;
+    esac
+    [ -e "$env_file" ] && pass "the env file survives an uninstall reached through bootstrap.sh" \
+        || fail "the env file survives an uninstall reached through bootstrap.sh" "$env_file is gone"
 }
 
 test_install_linux_flow() {
@@ -4978,6 +5199,369 @@ STUB
     fi
 }
 
+# ---- install.sh --uninstall (#439) -------------------------------------------
+#
+# The mirror of the install flow above, on the same stubbed managers: install
+# with --enable-timer (so both the metrics job and the updater exist), then
+# --uninstall and assert every installer file is gone and both jobs were
+# disabled/stopped; the env file survives without --purge and is gone with
+# it; a second --uninstall is a no-op that exits 0 and asks the manager for
+# nothing; root is refused; the transaction lock refuses an uninstall while
+# it is held.
+
+test_uninstall_linux() {
+    local home="$TMP/home-uninstall-linux" env_file unit update_unit update_timer bin guard out
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh --uninstall (Linux)"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
+    export STUB_TAILSCALE_IP="100.64.0.9"
+
+    env_file="$home/.config/solador-agent.env"
+    unit="$home/.config/systemd/user/solador-agent.service"
+    update_unit="$home/.config/systemd/user/solador-agent-update.service"
+    update_timer="$home/.config/systemd/user/solador-agent-update.timer"
+    bin="$home/.local/bin/solador-agent"
+    guard="$home/.local/bin/solador-agent-update-guard"
+
+    reset_argv_logs
+    INSTALL_STDIN="uninstall-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the uninstall fixture (Linux)" "0" "$INSTALL_STATUS"
+    # A migration remnant and the update-only siblings a real host can carry,
+    # seeded by hand so removing them is actually exercised.
+    cp "$unit" "$unit.prev"
+    : > "$bin.new"
+    mkdir -p "$(dirname "$home/.config/solador-agent-update.last-attempt")"
+    printf '1234567890\n' > "$home/.config/solador-agent-update.last-attempt"
+
+    # ---- refuses while the transaction lock is held ----
+    hold_fake_lock "$bin.update.lock"
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall refuses while the update lock is held" "1" "$INSTALL_STATUS"
+    assert_output_has "the lock refusal names the lock file" "$out" "$bin.update.lock"
+    [ -e "$unit" ] && pass "a lock-refused uninstall leaves the unit in place" \
+        || fail "a lock-refused uninstall leaves the unit in place" "$unit is gone"
+    [ -x "$bin" ] && pass "a lock-refused uninstall leaves the binary in place" \
+        || fail "a lock-refused uninstall leaves the binary in place" "$bin is gone"
+    if systemctl_mutated; then
+        fail "a lock-refused uninstall never reaches the service manager" "systemctl was called"
+    else
+        pass "a lock-refused uninstall never reaches the service manager"
+    fi
+    release_fake_lock "$bin.update.lock"
+    # A leftover lock file from a transaction that already finished — the
+    # ordinary case (agent/src/update.rs's TransactionLock never removes its
+    # file). Named with a pid that is certainly not running, NOT $$: this
+    # process's own pid is alive by definition and would read as held under
+    # the fallback (no-flock) implementation, defeating the point of this
+    # step.
+    printf 'pid=999999999 since=1\n' > "$bin.update.lock"
+
+    # ---- the real uninstall ----
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall succeeds (Linux)" "0" "$INSTALL_STATUS"
+    # Exact-line (grep -x), not a substring match: "solador-agent" is a
+    # literal prefix of "solador-agent-update.timer", so a plain substring
+    # search on the metrics line's text would also "find" it on the timer's.
+    if grep -qxF -- "--user disable --now solador-agent" "$STUB_SYSTEMCTL_ARGV"; then
+        pass "the metrics service is disabled and stopped"
+    else
+        fail "the metrics service is disabled and stopped" "no exact '--user disable --now solador-agent' line"
+    fi
+    assert_file_has "the update timer is disabled and stopped" "$STUB_SYSTEMCTL_ARGV" "--user disable --now solador-agent-update.timer"
+    assert_file_has "systemd is reloaded" "$STUB_SYSTEMCTL_ARGV" "--user daemon-reload"
+    if [ -e "$unit" ] || [ -e "$unit.prev" ] || [ -e "$update_unit" ] || [ -e "$update_timer" ] \
+        || [ -e "$guard" ] || [ -e "$bin" ] || [ -e "$bin.prev" ] || [ -e "$bin.new" ] \
+        || [ -e "$bin.update.lock" ] || [ -e "$home/.config/solador-agent-update.last-attempt" ]; then
+        fail "install.sh --uninstall removes every installer file (Linux)" "some installer file is still present"
+    else
+        pass "install.sh --uninstall removes every installer file (Linux)"
+    fi
+    case "$out" in
+        *"uninstall-tok-MUST-NOT-BE-PRINTED"*) fail "install.sh --uninstall never prints the token" "it appeared in the output" ;;
+        *) pass "install.sh --uninstall never prints the token" ;;
+    esac
+    [ -e "$env_file" ] && pass "the env file survives without --purge" \
+        || fail "the env file survives without --purge" "$env_file is gone"
+    assert_output_has "the kept env file is named in the output" "$out" "$env_file"
+    assert_output_has "the kept env file's removal is spelled out" "$out" "--uninstall --purge"
+    assert_output_has "install.sh --uninstall reports success" "$out" "uninstalled for"
+    if grep -q "disable-linger" "$STUB_SYSTEMCTL_ARGV"; then
+        fail "install.sh --uninstall never disables linger" "loginctl disable-linger was called"
+    else
+        pass "install.sh --uninstall never disables linger"
+    fi
+
+    # ---- a second uninstall is a no-op ----
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a second install.sh --uninstall is a no-op that exits 0 (Linux)" "0" "$INSTALL_STATUS"
+    assert_output_has "the no-op run says nothing was installed" "$out" "Nothing installed"
+    if systemctl_mutated; then
+        fail "a no-op uninstall asks the service manager for nothing" "systemctl was called"
+    else
+        pass "a no-op uninstall asks the service manager for nothing"
+    fi
+    [ -e "$env_file" ] && pass "a no-op uninstall still leaves the env file" \
+        || fail "a no-op uninstall still leaves the env file" "$env_file is gone"
+
+    # ---- --purge also removes the env file ----
+    reset_argv_logs
+    run_install "$home" --uninstall --purge
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall --purge succeeds" "0" "$INSTALL_STATUS"
+    [ -e "$env_file" ] && fail "--purge removes the env file" "$env_file still exists" \
+        || pass "--purge removes the env file"
+    assert_output_has "the purge names the env file removed" "$out" "$env_file"
+
+    # ---- idempotent again, even with --purge ----
+    reset_argv_logs
+    run_install "$home" --uninstall --purge
+    assert_eq "a repeated --uninstall --purge is still a no-op that exits 0" "0" "$?"
+
+    # ---- a fresh install, for the two manager-related cases below ----
+    reset_argv_logs
+    INSTALL_STDIN="uninstall-manager-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds again, for the manager-failure cases (Linux)" "0" "$INSTALL_STATUS"
+
+    # ---- an unreachable systemd user manager refuses --uninstall, untouched ----
+    reset_argv_logs
+    STUB_SYSTEMCTL_USER_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall refuses when systemctl --user is unreachable" "1" "$INSTALL_STATUS"
+    assert_output_has "the unreachable-manager refusal says so" "$out" "cannot reach this user's systemd manager"
+    [ -e "$unit" ] && pass "an unreachable-manager refusal leaves the unit in place" \
+        || fail "an unreachable-manager refusal leaves the unit in place" "$unit is gone"
+    [ -x "$bin" ] && pass "an unreachable-manager refusal leaves the binary in place" \
+        || fail "an unreachable-manager refusal leaves the binary in place" "$bin is gone"
+    if grep -qE "disable|daemon-reload" "$STUB_SYSTEMCTL_ARGV"; then
+        fail "an unreachable-manager refusal never asks systemd to change anything" "a mutating call was made"
+    else
+        pass "an unreachable-manager refusal never asks systemd to change anything"
+    fi
+
+    # ---- a reachable manager that still refuses to stop the service: exit 4, files still removed ----
+    reset_argv_logs
+    STUB_SYSTEMCTL_DISABLE_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall exits 4 when a reachable manager refuses to stop the service" "4" "$INSTALL_STATUS"
+    assert_output_has "the exit-4 case says the files were removed anyway" "$out" "files were removed"
+    assert_output_has "the exit-4 case says to verify by hand" "$out" "Verify by hand"
+    if [ -e "$unit" ] || [ -x "$bin" ]; then
+        fail "the exit-4 case still removes every installer file" "some installer file is still present"
+    else
+        pass "the exit-4 case still removes every installer file"
+    fi
+    case "$out" in
+        *"uninstall-manager-tok-MUST-NOT-BE-PRINTED"*)
+            fail "the exit-4 case never prints the token" "it appeared in the output" ;;
+        *) pass "the exit-4 case never prints the token" ;;
+    esac
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
+}
+
+test_uninstall_macos() {
+    local home="$TMP/home-uninstall-macos" env_file plist update_plist launcher bin out
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh --uninstall (macOS)"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.8 aarch64-apple-darwin "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"mac","version":"2026.9.8"}'
+    export STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 STUB_SW_VERS=15.6
+
+    env_file="$home/.config/solador-agent.env"
+    plist="$home/Library/LaunchAgents/app.solador.agent.plist"
+    update_plist="$home/Library/LaunchAgents/app.solador.agent.update.plist"
+    launcher="$home/.local/bin/solador-agent-launchd"
+    bin="$home/.local/bin/solador-agent"
+
+    reset_argv_logs
+    INSTALL_STDIN="mac-uninstall-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the uninstall fixture (macOS)" "0" "$INSTALL_STATUS"
+
+    # ---- the real uninstall: both loaded services must be bootout, both plists removed ----
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=0 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall succeeds (macOS)" "0" "$INSTALL_STATUS"
+    assert_file_has "the metrics LaunchAgent is booted out" "$STUB_LAUNCHCTL_ARGV" "bootout gui/$(id -u)/app.solador.agent"
+    assert_file_has "the update LaunchAgent is booted out" "$STUB_LAUNCHCTL_ARGV" "bootout gui/$(id -u)/app.solador.agent.update"
+    if [ -e "$plist" ] || [ -e "$update_plist" ] || [ -e "$launcher" ] \
+        || [ -e "$bin" ] || [ -e "$bin.prev" ] || [ -e "$bin.new" ] || [ -e "$bin.update.lock" ] \
+        || [ -e "$home/.config/solador-agent-update.last-attempt" ]; then
+        fail "install.sh --uninstall removes every installer file (macOS)" "some installer file is still present"
+    else
+        pass "install.sh --uninstall removes every installer file (macOS)"
+    fi
+    case "$out" in
+        *"mac-uninstall-tok-MUST-NOT-BE-PRINTED"*) fail "macOS: install.sh --uninstall never prints the token" "it appeared in the output" ;;
+        *) pass "macOS: install.sh --uninstall never prints the token" ;;
+    esac
+    [ -e "$env_file" ] && pass "macOS: the env file survives without --purge" \
+        || fail "macOS: the env file survives without --purge" "$env_file is gone"
+    assert_output_has "macOS: the kept env file is named in the output" "$out" "$env_file"
+    if systemctl_mutated; then
+        fail "macOS: install.sh --uninstall never calls systemctl" "it did"
+    else
+        pass "macOS: install.sh --uninstall never calls systemctl"
+    fi
+
+    # ---- a second uninstall is a no-op ----
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=113 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a second install.sh --uninstall is a no-op that exits 0 (macOS)" "0" "$INSTALL_STATUS"
+    assert_output_has "macOS: the no-op run says nothing was installed" "$out" "Nothing installed"
+    if grep -qE "^(bootout|bootstrap)" "$STUB_LAUNCHCTL_ARGV"; then
+        fail "macOS: a no-op uninstall asks launchd for nothing" "bootout/bootstrap was called"
+    else
+        pass "macOS: a no-op uninstall asks launchd for nothing"
+    fi
+
+    # ---- --purge removes the env file ----
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=113 run_install "$home" --uninstall --purge
+    [ -e "$env_file" ] && fail "macOS: --purge removes the env file" "$env_file still exists" \
+        || pass "macOS: --purge removes the env file"
+
+    # ---- a fresh install, for the two manager-related cases below ----
+    reset_argv_logs
+    INSTALL_STDIN="mac-uninstall-manager-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds again, for the manager-failure cases (macOS)" "0" "$INSTALL_STATUS"
+
+    # ---- no launchd gui domain refuses --uninstall, untouched ----
+    reset_argv_logs
+    STUB_LAUNCHCTL_DOMAIN_EXIT=125 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "macOS: install.sh --uninstall refuses when there is no gui domain" "1" "$INSTALL_STATUS"
+    assert_output_has "the missing-domain refusal says so" "$out" "no launchd gui domain"
+    [ -e "$plist" ] && pass "a missing-domain refusal leaves the plist in place" \
+        || fail "a missing-domain refusal leaves the plist in place" "$plist is gone"
+    [ -x "$bin" ] && pass "a missing-domain refusal leaves the binary in place" \
+        || fail "a missing-domain refusal leaves the binary in place" "$bin is gone"
+    if grep -qE "^bootout" "$STUB_LAUNCHCTL_ARGV"; then
+        fail "a missing-domain refusal never asks launchd to change anything" "bootout was called"
+    else
+        pass "a missing-domain refusal never asks launchd to change anything"
+    fi
+
+    # ---- a reachable manager that still refuses to stop the service: exit 4, files still removed ----
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=0 STUB_LAUNCHCTL_BOOTOUT_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "macOS: install.sh --uninstall exits 4 when a reachable manager refuses to stop the service" "4" "$INSTALL_STATUS"
+    assert_output_has "macOS: the exit-4 case says the files were removed anyway" "$out" "files were removed"
+    assert_output_has "macOS: the exit-4 case says to verify by hand" "$out" "Verify by hand"
+    if [ -e "$plist" ] || [ -x "$bin" ]; then
+        fail "macOS: the exit-4 case still removes every installer file" "some installer file is still present"
+    else
+        pass "macOS: the exit-4 case still removes every installer file"
+    fi
+    case "$out" in
+        *"mac-uninstall-manager-tok-MUST-NOT-BE-PRINTED"*)
+            fail "macOS: the exit-4 case never prints the token" "it appeared in the output" ;;
+        *) pass "macOS: the exit-4 case never prints the token" ;;
+    esac
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS
+}
+
+test_uninstall_arguments_and_refusals() {
+    local home="$TMP/home-uninstall-args"
+    mkdir -p "$home"
+    INSTALL_PATH="$NOVERIFY_PATH"
+    make_checkout "$SCRIPT_DIR/../release-signing-key.pub"
+
+    reset_argv_logs
+    run_install "$home" --purge
+    assert_eq "install.sh refuses --purge without --uninstall" "2" "$?"
+    assert_output_has "the refusal says --purge needs --uninstall" "$(cat "$INSTALL_OUT")" "--purge only applies together with --uninstall"
+    assert_untouched "--purge alone changes nothing" "$home"
+
+    reset_argv_logs
+    run_install "$home" --uninstall --enable-timer
+    assert_eq "install.sh refuses --uninstall with --enable-timer" "2" "$?"
+    assert_untouched "--uninstall with --enable-timer changes nothing" "$home"
+
+    reset_argv_logs
+    run_install "$home" --uninstall --migrate-from-opt
+    assert_eq "install.sh refuses --uninstall with --migrate-from-opt" "2" "$?"
+    assert_untouched "--uninstall with --migrate-from-opt changes nothing" "$home"
+
+    # Order independence, the same contract test_install_arguments already
+    # holds --enable-timer to.
+    reset_argv_logs
+    run_install "$home" --enable-timer --uninstall
+    assert_eq "install.sh refuses --enable-timer ahead of --uninstall" "2" "$?"
+
+    # ---- as root, --uninstall itself is refused (same reason --enable-timer is) ----
+    local root_stubs="$TMP/stubs-uninstall-root"
+    mkdir -p "$root_stubs"
+    cat > "$root_stubs/id" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+    -u) echo 0 ;;
+    *) exec "$(command -v id)" "\$@" ;;
+esac
+STUB
+    chmod +x "$root_stubs/id"
+    reset_argv_logs
+    INSTALL_PATH="$root_stubs:$STUBS:$TOOLBIN" run_install "$home" --uninstall
+    assert_eq "install.sh --uninstall as root is refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the root refusal says why" "$(cat "$INSTALL_OUT")" "refuses to run as root"
+    assert_untouched "a root-refused uninstall changes nothing" "$home"
+    if systemctl_mutated; then
+        fail "a root-refused uninstall never reaches the service manager" "systemctl was called"
+    else
+        pass "a root-refused uninstall never reaches the service manager"
+    fi
+    INSTALL_PATH="$NOVERIFY_PATH"
+
+    # ---- an unsupported OS refuses --uninstall too, dispatched before ----
+    # ---- the install-only platform table even runs                    ----
+    reset_argv_logs
+    STUB_UNAME_S=FreeBSD run_install "$home" --uninstall
+    assert_eq "install.sh --uninstall refuses an unsupported OS" "1" "$?"
+    assert_output_has "the unsupported-OS refusal names the two it supports" "$(cat "$INSTALL_OUT")" "Linux (systemd) and macOS (launchd)"
+    assert_untouched "an unsupported-OS uninstall changes nothing" "$home"
+
+    # ---- a hostile SOLADOR_AGENT_LAUNCHD_LABEL is refused on --uninstall ----
+    # too, not only on a normal install — run_uninstall derives
+    # PLIST_DST/UPDATE_PLIST_DST from it and rm -f's whatever that resolves
+    # to, so an unvalidated "../x" would let this variable steer an
+    # uninstall's deletions outside ~/Library/LaunchAgents.
+    local bad_label
+    for bad_label in "../x" "x@BINARY@y" ".hidden" "a b"; do
+        reset_argv_logs
+        SOLADOR_AGENT_LAUNCHD_LABEL="$bad_label" STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 run_install "$home" --uninstall
+        assert_eq "install.sh --uninstall refuses SOLADOR_AGENT_LAUNCHD_LABEL [$bad_label]" "1" "$?"
+        assert_untouched "a refused label leaves an uninstall changing nothing [$bad_label]" "$home"
+    done
+
+    INSTALL_PATH=""
+}
+
 # ---- scripts/agent-standby-key.sh (#393 §A) -----------------------------------
 #
 # The custody script, run for real against a copy of the checkout with
@@ -5557,6 +6141,8 @@ test_resolve_latest_release_tag
 test_service_rendering
 test_verify_agent_signature
 test_install_arguments
+test_uninstall_arguments_and_refusals
+test_update_lock_busy
 test_install_preflight
 test_install_release_resolution
 test_install_signature_gate
@@ -5573,6 +6159,7 @@ test_bootstrap_failure_paths
 test_bootstrap_passes_through_install_exit_status
 test_bootstrap_signature_gate
 test_bootstrap_rerun_hint_names_bootstrap
+test_bootstrap_uninstall_rerun_hint
 test_install_linux_flow
 test_install_macos_flow
 test_install_update_timer_linux
@@ -5581,6 +6168,8 @@ test_launchd_launcher
 test_launchd_launcher_update
 test_update_guard_linux
 test_launchd_smoke
+test_uninstall_linux
+test_uninstall_macos
 test_standby_key_script
 test_deploy_script_invariants
 

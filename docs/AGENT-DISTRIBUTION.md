@@ -421,9 +421,10 @@ status command and the log path.
 (`<metrics label>.update`). People running a monitoring agent on their own
 servers should not get surprise restarts; those who want hands-off can ask.
 A default install creates no job and makes no check; a re-run without the
-flag leaves an earlier opt-in exactly as it is, and only the documented
-disable/remove commands revoke it (`agent/README.md`, **Unattended
-updates**). The job is **separate from the metrics service** on both
+flag leaves an earlier opt-in exactly as it is, and the documented
+disable/remove commands (`agent/README.md`, **Unattended updates**) revoke
+it on its own — `install.sh --uninstall` (#439) revokes it along with
+everything else. The job is **separate from the metrics service** on both
 platforms, because `update` restarts that service and then verifies and,
 on failure, restores it — a job inside the service's cgroup or launchd job
 would be killed by its own restart. It runs the installed binary's `update`
@@ -883,6 +884,54 @@ The from-source path is deliberately still there: `redeploy.sh` builds with
 `cargo` for our own Linux hosts and is `build_release_binary`'s only caller
 now. See "Open items".
 
+**Uninstalling is the mirror of installing, and covers only the invoking
+user (#439).** `install.sh --uninstall` — `--uninstall --purge` also removes
+the env file — first refuses, untouched, when the service manager itself is
+unreachable (the same `systemctl --user show-environment` / `gui/<uid>`
+domain check the install path makes in its own preflight, below: a
+`sudo -u`/`su` session cannot ask systemd to stop anything, and discovering
+that mid-uninstall — after a unit file is already gone — is exactly the
+half-changed state this check exists to prevent), then disables and stops
+both service-manager jobs (`systemctl --user disable --now` on Linux,
+`launchctl bootout gui/<uid>/…` on macOS), removes both unit/plist pairs
+(Linux additionally `daemon-reload`s once something changed), and removes
+the binary with its `.prev`/`.new`/`.update.lock`/`.rollback-displaced`
+siblings, the macOS launcher, the Linux guard, and the update stamp. The env
+file — the one file that holds the bearer token — is kept and named in the
+output unless `--purge` says otherwise; `--purge` alone is refused (it
+modifies `--uninstall`, it is never a mode of its own), and neither combines
+with `--migrate-from-opt` or `--enable-timer` (remove an install or
+create/repoint one, never both in one run). It refuses to run as root for
+the same reason `--enable-timer` does, never runs `loginctl disable-linger`
+(another service on this login may depend on it), refuses, untouched, while
+`solador-agent update`/`rollback` holds `<bin>.update.lock` (§4's own
+transaction lock — uninstalling mid-swap would race that transaction's own
+binary rename; the lock is checked again after the service-manager calls,
+before the binary itself is removed, since those calls can take long enough
+for a concurrently started transaction to acquire it in between — that
+narrows the window rather than closing it, which is the accepted residual
+scope this was written against), and is idempotent: a second run finds
+nothing left and says so. **Exit status is not always 0 for a run that
+removed everything**: a manager the reachability check found reachable can
+still refuse one specific stop request (rarer than unreachable, and not
+grounds for the refusal above, since the files genuinely can be removed) —
+that case still removes every file (best-effort) but exits **4**, distinct
+from both 0 ("Done", earned only when every stop request succeeded) and 1
+("refused, nothing changed" — false here), and names what to check by hand.
+`SOLADOR_AGENT_LAUNCHD_LABEL`'s path-safety validation (the same
+`[A-Za-z0-9][A-Za-z0-9._-]*` gate the install path always had) is checked
+**before** `--uninstall` dispatches rather than only inside the install-only
+preflight further down — `run_uninstall` derives `PLIST_DST`/`UPDATE_PLIST_DST`
+from that variable too and `rm -f`s whatever they resolve to, so an
+unvalidated value could otherwise steer an uninstall's own deletions outside
+`~/Library/LaunchAgents`. It is the second half of
+moving the agent to another Unix user; `agent/README.md`'s "Moving the agent
+to another user" has the ordered procedure — install as the new user first
+(checkout or `bootstrap.sh`), re-pair the token, then `--uninstall --purge`
+as the old user — for exactly the reason a plain `--uninstall` does not
+purge by default: the env file is worth keeping until whatever replaced it
+is confirmed working.
+
 ## Testing
 
 **The signature-rejection test is the load-bearing one.** A tampered binary
@@ -951,6 +1000,41 @@ Also required:
   curl's. The opt-in launchd smoke does the same against real launchd,
   read-only. What no test observes is a day of sleep on a real Mac or a
   real systemd timer through a reload and a suspend (§4).
+- **Uninstall — SHIPPED (#439).** `lib_test.sh` installs with `--enable-timer`
+  then `--uninstall`s on both platforms (the same stubbed managers) and
+  asserts every installer file is gone, `disable --now` / `bootout` reached
+  both jobs (an exact-line match — "solador-agent" is a literal prefix of
+  "solador-agent-update.timer", so a plain substring check would pass even if
+  only the timer, never the metrics service, had been disabled), the env file
+  survives without `--purge` and is gone with it, a second `--uninstall` (with
+  or without `--purge`) is a no-op that exits 0 and asks the service manager
+  for nothing, `--purge` alone and `--uninstall` beside `--migrate-from-opt`
+  or `--enable-timer` are each refused as usage errors, and
+  `loginctl disable-linger` is never called. `update_lock_busy` (`lib.sh`) has
+  its own cases — a missing lock file, one naming a pid that is not running,
+  and (whichever `update_lock_busy` itself uses: a real held `flock(1)` where
+  the host has one, the pid-liveness note otherwise) one genuinely held and
+  then released — and the install-flow case backs a real lock with a holder
+  that blocks on a FIFO's `open()` rather than `sleep`, because a `sleep`
+  child would inherit the locked fd across `fork()` (no `CLOEXEC` on a plain
+  `exec N>file`) and keep the lock held even after the parent holding it is
+  killed — exactly the gotcha `agent/src/update.rs`'s `TransactionLock`
+  documents. `bootstrap.sh` needed no code change for `--uninstall`: its
+  argument loop passes through anything it does not itself recognise, and
+  `lib_test.sh` proves that generically (an existing `--enable-timer
+  --migrate-from-opt` case) and once more by name for `--uninstall --purge`,
+  plus a real-`install.sh` run through `bootstrap.sh` asserting the kept-env-
+  file hint reads `bash bootstrap.sh ... --uninstall --purge` rather than a
+  path under bootstrap's own (already-removed) staging directory. Root, an
+  unreachable service manager (`STUB_SYSTEMCTL_USER_EXIT` / a
+  `STUB_LAUNCHCTL_DOMAIN_EXIT` no gui domain) and an unsupported platform are
+  each asserted to refuse before anything changes; a hostile
+  `SOLADOR_AGENT_LAUNCHD_LABEL` (`../x`, `x@BINARY@y`, `.hidden`, `a b`) is
+  asserted to refuse `--uninstall` the same way it refuses a normal install.
+  A manager that answers reachable but still refuses one specific stop
+  request (`STUB_SYSTEMCTL_DISABLE_EXIT` / `STUB_LAUNCHCTL_BOOTOUT_EXIT`) is
+  asserted to still remove every file, exit 4 rather than 0, and never print
+  the token.
 
 Which halves of the rejection test exist is worth saying precisely rather
 than letting a checked box imply all of them:

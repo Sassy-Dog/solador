@@ -596,6 +596,8 @@ From the crate directory on the target host:
 ./deploy/install.sh                      # latest published release
 SOLADOR_AGENT_RELEASE=v<version> ./deploy/install.sh   # a specific one
 ./deploy/install.sh --enable-timer       # ...and opt in to a daily unattended update check
+./deploy/install.sh --uninstall          # remove THIS USER's install (env file kept)
+./deploy/install.sh --uninstall --purge  # ...and delete the env file (it holds the token) too
 ./deploy/install.sh --help
 ```
 
@@ -792,6 +794,114 @@ refusal one step earlier: on an unmigrated `/opt` host it stops before
 creating any job and names the combined step, `./deploy/install.sh
 --migrate-from-opt --enable-timer`.
 
+### Uninstall
+
+`--uninstall` removes everything the installer put on disk, for **the
+invoking user only** — it never touches another user's files, and it
+refuses to run as root for the same reason `--enable-timer` does (the
+install, and everything it created, is user-owned):
+
+```bash
+./deploy/install.sh --uninstall           # keeps ~/.config/solador-agent.env (it holds the token)
+./deploy/install.sh --uninstall --purge   # ...and deletes it too
+```
+
+It refuses first, before touching anything, when the service manager itself
+is unreachable (`systemctl --user show-environment` on Linux, the
+`gui/<uid>` domain on macOS — the same check the install path makes: a
+`sudo -u`/`su` session, or one with no `XDG_RUNTIME_DIR`, cannot ask systemd
+to stop anything). On Linux it then runs `systemctl --user disable --now` on
+the metrics service and the update timer (whichever exist), removes
+`solador-agent.service`, `solador-agent.service.prev`,
+`solador-agent-update.service` and `solador-agent-update.timer`, then
+`daemon-reload`s. On macOS it runs `launchctl bootout
+gui/<uid>/app.solador.agent` and `gui/<uid>/app.solador.agent.update`
+(whichever are loaded) and removes both plists. Both platforms then remove
+the binary and its `.prev`/`.new`/`.update.lock`/`.rollback-displaced`
+siblings, the macOS launcher (`solador-agent-launchd`), the Linux update
+guard (`solador-agent-update-guard`), and the update stamp
+(`~/.config/solador-agent-update.last-attempt`). Logs are left alone.
+
+It never runs `loginctl disable-linger` — another service on this login may
+depend on it — and it refuses, with nothing touched, while `solador-agent
+update` or `rollback` holds `<bin>.update.lock` (see **Updating**, below):
+uninstalling mid-swap would race the exact binary rename that transaction is
+in the middle of. A second run finds nothing left to remove and says so;
+`--purge` alone (with no `--uninstall`) is refused, as is `--uninstall`
+beside `--migrate-from-opt` or `--enable-timer`. The env file is named in the
+output whether it is kept or removed, since it is the one file here that
+carries the bearer token.
+
+**Exit status**: 0 uninstalled (or already clean); 1 refused before anything
+changed (root, an unreachable manager, the lock, a hostile
+`SOLADOR_AGENT_LAUNCHD_LABEL`, an unsupported platform); 2 usage
+(`--purge` without `--uninstall`, or the combinations above); 4 every file
+was still removed, but a *reachable* manager refused a specific stop
+request anyway — the summary names what to check by hand, since this run
+cannot promise the process actually stopped.
+
+## Moving the agent to another user
+
+Moving the agent from one Unix user to another on the same host — a
+different login taking over the monitored workload — is **install as the
+new user, then uninstall as the old one**, never an in-place move:
+`~/.local/bin` and `~/.config/systemd/user` (or `~/Library/LaunchAgents`)
+belong to the account that owns them, and neither service format has a
+"re-home this unit to another user" operation.
+
+**Both agents will be live on the same host at once, briefly — they cannot
+share a bind address and port.** `SOLADOR_AGENT_BIND` defaults to the
+*host's* Tailscale IP (one per machine, not one per Unix user) and
+`SOLADOR_AGENT_PORT` defaults to `7878`; a fresh install has no env file of
+its own to carry a different choice forward, so a plain `install.sh` as the
+new user binds the exact socket the old user's agent already holds — the
+same `EADDRINUSE` crash-loop **Upgrading from the pre-rename agent** (below)
+describes for a single-user host, here between two different users on one
+host instead. Give the new user's install a distinct port for the overlap:
+
+1. **As the new user**, install exactly as any fresh host would — a
+   checkout, or `bootstrap.sh` on a host with no checkout at all
+   (**Prerequisites**, above) — on a port the old agent is not already using:
+
+   ```bash
+   SOLADOR_AGENT_PORT=7879 ./deploy/install.sh   # from a checkout; any port but the old agent's
+   # or, checkout-free:
+   curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
+   SOLADOR_AGENT_PORT=7879 bash bootstrap.sh
+   ```
+
+   Verify it is healthy — the installer's own final health check, or
+   `systemctl --user status solador-agent` / `launchctl print
+   gui/$(id -u)/app.solador.agent` — before touching the old user at all;
+   that is what keeps a working agent serving throughout the move. A new
+   user installing fresh **generates a new bearer token**; it does not, and
+   cannot, inherit the old user's.
+2. **In the cockpit**, replace that host's stored token *and port* with the
+   new user's (Settings → Hosts). Until this step the cockpit is still
+   polling the old user's agent — the new one is up but not yet the one
+   being read.
+3. **As the old user**, remove its install:
+
+   ```bash
+   ./deploy/install.sh --uninstall --purge          # from a checkout
+   # or, checkout-free:
+   bash bootstrap.sh --uninstall --purge
+   ```
+
+   `--purge` matters here specifically: leaving `~/.config/solador-agent.env`
+   behind under an account nothing runs any more is a bearer token sitting on
+   disk for no reason. (Without `--purge` the file survives — see
+   **Uninstall**, above — which is the right default for every *other*
+   reason to uninstall, just not this one.) Once the old agent's port is
+   free, a subsequent `SOLADOR_AGENT_PORT=7878 ./deploy/install.sh` as the
+   new user (a re-run, so its token is reused unchanged) can reclaim the
+   default port; update the cockpit's stored port to match if you do.
+
+Each step is independently re-runnable: re-installing as the new user, or
+re-uninstalling as the old one, is a no-op or a safe refresh, never a
+failure — so a move interrupted partway through resumes by continuing from
+wherever it stopped.
+
 ## Updating (`solador-agent update`)
 
 From any shell on the host, as the user the service runs as — never as the
@@ -931,7 +1041,8 @@ enablement) and reports what the service manager says about it — enabled /
 loaded, present but paused, or off — never re-enabling a job you paused; a
 re-run *with* the flag regenerates the job's files from the checkout
 (exactly like the metrics unit or plist) and never creates a second copy.
-The disable/remove commands below are the only way it goes away. A fresh
+The disable/remove commands below take it away on its own, and
+`install.sh --uninstall` takes it away along with everything else. A fresh
 install without the flag never has one. One timing effect of any re-run on
 Linux: the installer's `daemon-reload` re-bases a timer that has **not yet
 fired** to the reload time, so a first check due in an hour becomes one due
