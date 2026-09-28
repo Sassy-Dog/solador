@@ -322,12 +322,44 @@ No Rust toolchain. A supported clean host needs:
   the agent is a LaunchAgent in that user's `gui/<uid>` domain, so it needs
   someone logged in at the console (or via Screen Sharing), and it does not run
   before anyone logs in.
-- A checkout of this repository's **`main`** (`git clone`) — for
-  `agent/deploy/*` and `agent/release-signing-key.pub`, not to build anything.
-  There is deliberately no `curl | sh` bootstrap: the public key the download
-  is verified under has to arrive by a path other than the download, and
-  `main` is the ref the repository's ruleset protects (see the note on the key
-  above).
+- `agent/deploy/*` and `agent/release-signing-key.pub`, not to build anything —
+  by either of two paths ([#434](https://github.com/Sassy-Dog/solador/issues/434)):
+  - **A checkout of this repository's `main`** (`git clone`).
+  - **`deploy/bootstrap.sh`**, needing `curl`, `tar`, `mktemp`, `id`,
+    `basename` and `bash` — the same "usual coreutils" assumption
+    `install.sh`'s own Prerequisites make below — for a host with no
+    checkout at all (`gzip`/`grep`/`sed`, for the best-effort resolved-commit
+    readout, and `awk`, for `--help`, are used too but never required):
+    ```bash
+    curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
+    bash bootstrap.sh [--ref <40-hex sha>] [install.sh flags...]
+    ```
+    A `--ref` other than `main` is trusted only once GitHub's compare API
+    (unauthenticated) confirms it is reachable from `main` — `codeload`
+    will archive *any* commit this public repository holds, merged or not,
+    including an open pull request's head, and only a commit `main`'s own
+    history already contains keeps the property below. It then downloads
+    the repository **archive at a `main` commit** (or the exact commit
+    named by `--ref`) from `codeload.github.com` over HTTPS, extracts only
+    `agent/deploy/*` and the signing key(s) — nothing else the archive
+    carries reaches disk — and runs the extracted `install.sh` unchanged,
+    passing every remaining argument through (`-h`/`--help` is the one
+    exception: `bootstrap.sh` answers that itself; run `install.sh`
+    directly, or after extraction, for its own). This keeps the property
+    below (the key still arrives from `main`, the protected ref, never from
+    beside the binary): an archive of a commit `main`'s history contains —
+    the default, or a `--ref` the compare check has confirmed — travels
+    from `codeload.github.com` over the same GitHub HTTPS a `git clone`
+    would use, so it is not "a tag or an archive of one" in the sense the
+    note above refuses. Piping it into a shell is deliberately not the
+    documented form — download it to a file first — but the whole script
+    lives in one function called on its last line either way, so a
+    transfer cut short downloads and runs nothing.
+    `install.sh` itself is unchanged by which path fetched it: its own
+    release resolution (`/releases/latest`, unsigned by design) and the
+    fresh-install downgrade window docs/AGENT-DISTRIBUTION.md §6 already
+    records are neither closed nor widened by `bootstrap.sh` — that window
+    was never about how `install.sh` arrived.
 
 ### To build from source (`cargo`, `deploy/redeploy.sh`)
 

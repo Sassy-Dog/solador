@@ -763,8 +763,36 @@ steer-to-old-release case for every host past its first install; the
 fresh-install window is recorded here beside §5's tag-ruleset acceptance
 rather than solved. The two mechanisms should agree that a pulled release is
 one marked *prerelease*, which both a feed and this redirect skip.
-The public key, meanwhile, must reach the host from a checkout of `main` —
-the protected ref — not from a tag or an archive of one.
+The public key, meanwhile, must reach the host from `main` — the protected
+ref — not from a tag or an archive of one. Until #434, the only path onto
+`main` was a full `git clone`; `agent/deploy/bootstrap.sh` is the second one,
+and it keeps exactly that property rather than relaxing it: it downloads the
+repository **archive at a `main` commit** (or a `--ref` the operator pins to
+an exact 40-hex commit SHA) from `codeload.github.com` over HTTPS, extracts
+only `agent/deploy/*` and the signing key(s), and runs the extracted
+`install.sh` unchanged. **"Reachable from `main`" is checked, not assumed,
+for a pinned `--ref`**: `codeload` will archive *any* commit this public
+repository holds — an open pull request's head among them, pushed by
+anyone — so before a byte downloads, `bootstrap.sh` asks GitHub's
+(unauthenticated) compare API whether `main`'s own history already
+contains `--ref` (`status` `ahead` or `identical`) and refuses otherwise
+(`diverged`, `behind`, or an unanswerable request). Without that check, a
+pinned commit off `main` — a fork's own `release-signing-key.pub` and
+`install.sh`, both internally consistent — would satisfy every check
+downstream and still not be `main`'s key. An archive of a commit `main`'s
+history contains is not "a tag or an archive of one" — it travels over the
+same GitHub HTTPS a `git clone` of that commit would, so the key arrives by
+the same protected path a checkout already gave it; a release *tag* remains
+the least-protected ref (§5) and is never where `bootstrap.sh` looks. No key
+is embedded in `bootstrap.sh` and none is downloaded from anywhere but that
+archive, so there is no key-drift assertion to keep in CI the way #392's
+embedded-key proposal would have needed. Fetching the archive is itself no
+more and no less authenticated than the checkout it stands in for — HTTPS
+only — so it
+neither closes nor widens the fresh-install downgrade window described
+above; that window is about `install.sh`'s own `/releases/latest`
+resolution, which is identical regardless of which path fetched
+`install.sh` itself.
 
 **A release without agent binaries is a failure, never a fallback.** Every
 release up to and including `v2026.9.3` predates #390 and carries none; the

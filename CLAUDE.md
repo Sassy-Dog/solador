@@ -822,6 +822,15 @@ tests build (#417); the crate still has zero dependencies.
   `redeploy.sh` is untouched, Linux-only, and now `build_release_binary`'s
   only caller. Service identities here are the restart contract
   `solador-agent update` consumes.
+- **`agent/deploy/bootstrap.sh` is the checkout-free path onto `install.sh`
+  (#434).** No `git clone` needed: it downloads the repository archive at a
+  `main` commit (or a `--ref` confirmed, via GitHub's compare API, reachable
+  from `main` — never an unmerged commit) from `codeload.github.com`,
+  extracts only `agent/deploy/*` and the signing key(s), and runs the
+  extracted `install.sh` unchanged. See `agent/README.md`'s Prerequisites
+  and `docs/AGENT-DISTRIBUTION.md` §6 for why an archive of a commit
+  `main`'s history contains keeps the same key-provenance property a
+  checkout does.
 - **`solador-agent update` / `rollback` are in the binary (#393), and the
   order of operations is the security design.** `agent/src/update.rs`:
   refuse root; resolve #392's install — reading only — from the unit's

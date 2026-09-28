@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# Tests for agent/deploy/lib.sh — the helpers install.sh and redeploy.sh share.
+# Tests for agent/deploy/lib.sh — the helpers install.sh and redeploy.sh share
+# — and, since #434, for agent/deploy/bootstrap.sh, the checkout-free path
+# onto install.sh.
 #
 #   bash agent/deploy/lib_test.sh
 #
@@ -16,8 +18,11 @@
 # invariants that no runtime test can reach — and, since #392, the install
 # flow itself, run end to end against a temporary HOME with every host command
 # stubbed (curl, systemctl, launchctl, uname, sw_vers, …), and, since #393,
-# scripts/agent-standby-key.sh against a file-backed `doppler` stub. Nothing
-# here talks to a host or a network. What is NOT stubbed is the signature verifier: the
+# scripts/agent-standby-key.sh against a file-backed `doppler` stub. Since
+# #434, bootstrap.sh is driven the same way — a stubbed curl serving a local
+# tarball keyed by the ref's own basename, so no change to the stub was
+# needed to add it. Nothing here talks to a host or a network. What is NOT
+# stubbed is the signature verifier: the
 # tamper-rejection cases run the real `minisign` against fixtures signed with a
 # throwaway key, and report themselves as SKIPPED when it is not installed,
 # because a stubbed verifier that always says yes would make those cases prove
@@ -537,7 +542,7 @@ TOOLBIN="$TMP/toolbin"
 TOOLBIN_NOVERIFIER="$TMP/toolbin-noverifier"
 mkdir -p "$TOOLBIN" "$TOOLBIN_NOVERIFIER"
 for tool in awk sed grep cut head tr od cat mkdir rm cp mv install chmod mktemp cmp \
-            id dirname basename ls seq openssl env sh bash date sort; do
+            id dirname basename ls seq openssl env sh bash date sort tar find gzip base64; do
     real="$(command -v "$tool" 2>/dev/null || true)"
     if [ -n "$real" ]; then
         ln -s "$real" "$TOOLBIN/$tool"
@@ -1420,17 +1425,23 @@ test_verify_agent_signature() {
 CHECKOUT="$TMP/checkout"
 FIXTURES="$TMP/fixtures"
 
+# The agent/deploy/* files a real install.sh needs beside it — one list, so
+# make_checkout (a plain directory, for the existing install-flow tests) and
+# make_bootstrap_checkout_archive (the same files tarred up, for #434's
+# bootstrap.sh) can never drift into copying two different sets.
+DEPLOY_SOURCE_FILES="install.sh lib.sh run-agent.sh solador-agent.service \
+    app.solador.agent.plist solador-agent-update.service \
+    solador-agent-update.timer app.solador.agent.update.plist update-guard.sh"
+
 # Lay out a copy of agent/deploy plus the given public key as
 # agent/release-signing-key.pub.
 make_checkout() {
-    local pubkey="$1"
+    local pubkey="$1" f
     rm -rf "$CHECKOUT"
     mkdir -p "$CHECKOUT/agent/deploy"
-    cp "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/lib.sh" "$SCRIPT_DIR/run-agent.sh" \
-       "$SCRIPT_DIR/solador-agent.service" "$SCRIPT_DIR/app.solador.agent.plist" \
-       "$SCRIPT_DIR/solador-agent-update.service" "$SCRIPT_DIR/solador-agent-update.timer" \
-       "$SCRIPT_DIR/app.solador.agent.update.plist" "$SCRIPT_DIR/update-guard.sh" \
-       "$CHECKOUT/agent/deploy/"
+    for f in $DEPLOY_SOURCE_FILES; do
+        cp "$SCRIPT_DIR/$f" "$CHECKOUT/agent/deploy/"
+    done
     cp "$pubkey" "$CHECKOUT/agent/release-signing-key.pub"
 }
 
@@ -1903,6 +1914,535 @@ test_install_signature_gate() {
         pass "the real checkout never executes a candidate the committed key rejects"
     fi
 
+    unset SOLADOR_AGENT_RELEASE
+}
+
+# ---- bootstrap.sh (#434) ------------------------------------------------
+#
+# bootstrap.sh downloads a repository ARCHIVE (codeload.github.com), not a
+# directory, so its own tests package fixtures as tarballs rather than
+# plain directories: the stub curl's `-o <dest> <url>` mode already copies
+# STUB_CURL_FIXTURES/<basename of url> to <dest> for any URL, and a
+# codeload URL's basename is just the ref (e.g. "main", or a 40-hex sha) —
+# so pointing STUB_CURL_FIXTURES at the same $FIXTURES directory the
+# install-flow tests already use, and dropping an archive there named after
+# the ref, needs no change to the curl stub at all.
+
+BOOTSTRAP_SCRIPT="$SCRIPT_DIR/bootstrap.sh"
+BOOTSTRAP_OUT="$TMP/bootstrap.out"
+BOOTSTRAP_STATUS=""
+BOOTSTRAP_PATH=""
+run_bootstrap() {
+    local home="$1"
+    shift
+    (
+        export HOME="$home"
+        export PATH="${BOOTSTRAP_PATH:-$STUBS:$TOOLBIN}"
+        export VERIFY_HEALTH_ATTEMPTS=1
+        export STUB_CURL_FIXTURES="$FIXTURES"
+        unset XDG_CACHE_HOME
+        export USER="${USER:-tester}"
+        umask 022
+        "$BASH" "$BOOTSTRAP_SCRIPT" "$@"
+    ) >"$BOOTSTRAP_OUT" 2>&1
+    BOOTSTRAP_STATUS=$?
+    return "$BOOTSTRAP_STATUS"
+}
+
+# The three files the fake install.sh below writes, all OUTSIDE bootstrap's
+# own staging directory (which is gone by the time run_bootstrap returns) —
+# its argv, a full listing of the extracted tree, and the staged directory's
+# own path, captured from INSIDE the run so the test can assert it is gone
+# afterward.
+BOOTSTRAP_FAKE_ARGV="$TMP/bootstrap-fake-argv"
+BOOTSTRAP_FAKE_LISTING="$TMP/bootstrap-fake-listing"
+BOOTSTRAP_FAKE_STAGE="$TMP/bootstrap-fake-stage"
+
+# make_bootstrap_archive <ref>: an archive laid out the way codeload.github.com
+# lays one out (solador-<ref>/...), carrying a FAKE agent/deploy/install.sh
+# (records its own argv and its tree, never touches a real service) plus the
+# signing key(s) — and, critically, files OUTSIDE agent/deploy and outside
+# the .pub names (a crate, a workflow, a second file under agent/ that is
+# not the key) that must NOT survive bootstrap.sh's extraction.
+make_bootstrap_archive() {
+    local ref="$1" src="$TMP/bootstrap-src" dir
+    rm -rf "$src"
+    dir="$src/solador-$ref"
+    mkdir -p "$dir/agent/deploy" "$dir/crates/decoy" "$dir/.github/workflows"
+    cat > "$dir/agent/deploy/install.sh" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "$BOOTSTRAP_FAKE_ARGV"
+( cd "\$(dirname "\$0")/../.." && find . -type f | sort ) > "$BOOTSTRAP_FAKE_LISTING"
+( cd "\$(dirname "\$0")/../.." && pwd ) > "$BOOTSTRAP_FAKE_STAGE"
+exit "\${FAKE_INSTALL_EXIT:-0}"
+STUB
+    chmod +x "$dir/agent/deploy/install.sh"
+    echo "lib" > "$dir/agent/deploy/lib.sh"
+    echo "pubkey" > "$dir/agent/release-signing-key.pub"
+    echo "next-pubkey" > "$dir/agent/release-signing-key-next.pub"
+    echo "cargo" > "$dir/agent/Cargo.toml"
+    echo "decoy" > "$dir/crates/decoy/lib.rs"
+    echo "workflow" > "$dir/.github/workflows/ci.yml"
+    mkdir -p "$FIXTURES"
+    ( cd "$src" && tar -czf "$FIXTURES/$ref" "solador-$ref" )
+}
+
+# A real codeload.github.com pax GLOBAL header record — captured verbatim
+# (base64) from a live `main` archive during #434's development, not
+# synthesised: a valid tar header's checksum is over the whole 512-byte
+# block, and reproducing that by hand invites a checksum bug a synthetic
+# fixture would never exercise. Its `comment=` VALUE lives in the data
+# block that follows this header, never inside the header itself (whose
+# name is always the 18 bytes "pax_global_header" and whose size is always
+# 52 for a 40-hex-character sha, so the header itself needs no per-test
+# edits) — replaying these exact bytes ahead of an otherwise-ordinary tar
+# is what a real archive's layout actually is.
+PAX_GLOBAL_HEADER_B64="cGF4X2dsb2JhbF9oZWFkZXIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAwMDA2NjYAMDAwMDAwMAAwMDAwMDAwADAwMDAwMDAwMDY0ADE1MjU2NTM1NDMxADAwMTQ1MjMAZwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB1c3RhcgAwMHJvb3QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcm9vdAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMDAwMDAwADAwMDAwMDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+# make_bootstrap_archive_with_pax_comment <ref> <embedded-sha>: like
+# make_bootstrap_archive, but the archive genuinely carries a pax GLOBAL
+# header whose `comment=` is <embedded-sha> — the shape bootstrap.sh's
+# best-effort resolved-commit readout (bootstrap.sh's `if [ "$ref" = main
+# ]` block) actually parses, unlike the plain-`tar` fixture above, which
+# carries no such header and only exercises the "main" fallback.
+make_bootstrap_archive_with_pax_comment() {
+    local ref="$1" embedded="$2" src="$TMP/bootstrap-pax-src" dir work
+    rm -rf "$src"
+    dir="$src/solador-$ref"
+    mkdir -p "$dir/agent/deploy"
+    cat > "$dir/agent/deploy/install.sh" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "$BOOTSTRAP_FAKE_ARGV"
+exit "\${FAKE_INSTALL_EXIT:-0}"
+STUB
+    chmod +x "$dir/agent/deploy/install.sh"
+    echo "pubkey" > "$dir/agent/release-signing-key.pub"
+
+    work="$TMP/bootstrap-pax-work"
+    rm -rf "$work"
+    mkdir -p "$work"
+    printf '%s' "$PAX_GLOBAL_HEADER_B64" | base64 -d > "$work/header.bin"
+    printf '52 comment=%s\n' "$embedded" > "$work/data-raw.bin"
+    head -c 460 /dev/zero > "$work/data-pad.bin"
+    cat "$work/data-raw.bin" "$work/data-pad.bin" > "$work/data.bin"
+    ( cd "$src" && tar -cf "$work/plain.tar" "solador-$ref" )
+    cat "$work/header.bin" "$work/data.bin" "$work/plain.tar" > "$work/full.tar"
+    mkdir -p "$FIXTURES"
+    gzip -c "$work/full.tar" > "$FIXTURES/$ref"
+}
+
+# make_bootstrap_checkout_archive <ref> <pubkey>: the REAL agent/deploy/*
+# (DEPLOY_SOURCE_FILES — the same files make_checkout copies) tarred up as
+# codeload would serve them, carrying <pubkey> as agent/release-signing-key.pub.
+# For the one case that must run the real install.sh, and through it the
+# real minisign gate, end to end through bootstrap.sh.
+make_bootstrap_checkout_archive() {
+    local ref="$1" pubkey="$2" src="$TMP/bootstrap-checkout-src" dir f
+    rm -rf "$src"
+    dir="$src/solador-$ref"
+    mkdir -p "$dir/agent/deploy"
+    for f in $DEPLOY_SOURCE_FILES; do
+        cp "$SCRIPT_DIR/$f" "$dir/agent/deploy/"
+    done
+    cp "$pubkey" "$dir/agent/release-signing-key.pub"
+    mkdir -p "$FIXTURES"
+    ( cd "$src" && tar -czf "$FIXTURES/$ref" "solador-$ref" )
+}
+
+test_bootstrap_extraction_and_passthrough() {
+    local home="$TMP/home-bootstrap" listing argv
+
+    mkdir -p "$home"
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV" "$BOOTSTRAP_FAKE_LISTING" "$BOOTSTRAP_FAKE_STAGE"
+
+    # --help is bootstrap's own, never reaching the network.
+    run_bootstrap "$home" --help
+    assert_eq "bootstrap.sh --help exits 0" "0" "$BOOTSTRAP_STATUS"
+    assert_output_has "--help prints the usage" "$(cat "$BOOTSTRAP_OUT")" "Usage:"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "--help downloads nothing" "curl was invoked"
+    else
+        pass "--help downloads nothing"
+    fi
+
+    # A bad --ref is refused before any download, the same way.
+    reset_argv_logs
+    run_bootstrap "$home" --ref not-a-sha
+    assert_eq "bootstrap.sh refuses a --ref that is not 'main' or a 40-hex sha" "2" "$BOOTSTRAP_STATUS"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "a bad --ref downloads nothing" "curl was invoked"
+    else
+        pass "a bad --ref downloads nothing"
+    fi
+
+    # No pass-through arguments: the fake install.sh must see an empty argv.
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    make_bootstrap_archive main
+    run_bootstrap "$home"
+    assert_eq "bootstrap.sh (default ref, no flags) exits 0" "0" "$BOOTSTRAP_STATUS"
+    argv="$(cat "$BOOTSTRAP_FAKE_ARGV" 2>/dev/null || true)"
+    assert_empty "install.sh receives no arguments when bootstrap.sh is given none" "$argv"
+    assert_output_has "bootstrap.sh prints the resolved commit" "$(cat "$BOOTSTRAP_OUT")" "commit main"
+
+    # --ref is consumed by bootstrap.sh; everything else passes through, in
+    # order, unchanged — including flags bootstrap.sh itself knows nothing
+    # about (its job is not to duplicate install.sh's own argument parser).
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV" "$BOOTSTRAP_FAKE_LISTING" "$BOOTSTRAP_FAKE_STAGE"
+    run_bootstrap "$home" --ref main --enable-timer --migrate-from-opt
+    assert_eq "bootstrap.sh with pass-through arguments exits 0" "0" "$BOOTSTRAP_STATUS"
+    argv="$(cat "$BOOTSTRAP_FAKE_ARGV" 2>/dev/null || true)"
+    assert_eq "install.sh receives exactly the pass-through arguments, --ref stripped" \
+        "--enable-timer --migrate-from-opt" "$argv"
+
+    # Extraction is restricted to agent/deploy/* and the signing key(s) —
+    # nothing else the archive carries reaches disk.
+    listing="$(cat "$BOOTSTRAP_FAKE_LISTING" 2>/dev/null || true)"
+    assert_output_has "the extracted tree carries install.sh" "$listing" "agent/deploy/install.sh"
+    assert_output_has "the extracted tree carries lib.sh" "$listing" "agent/deploy/lib.sh"
+    assert_output_has "the extracted tree carries the signing key" "$listing" "agent/release-signing-key.pub"
+    assert_output_has "the extracted tree carries the standby signing key" "$listing" "agent/release-signing-key-next.pub"
+    case "$listing" in
+        *crates*) fail "bootstrap.sh does not extract crates/" "found it in the extracted tree" ;;
+        *) pass "bootstrap.sh does not extract crates/" ;;
+    esac
+    case "$listing" in
+        *.github*) fail "bootstrap.sh does not extract .github/" "found it in the extracted tree" ;;
+        *) pass "bootstrap.sh does not extract .github/" ;;
+    esac
+    case "$listing" in
+        *Cargo.toml*) fail "bootstrap.sh does not extract agent/Cargo.toml (only deploy/ and the key(s))" "found it in the extracted tree" ;;
+        *) pass "bootstrap.sh does not extract agent/Cargo.toml (only deploy/ and the key(s))" ;;
+    esac
+
+    # The staged directory the fake install.sh reported (agent/deploy/../..,
+    # i.e. the extracted solador-<ref> root, itself inside bootstrap's own
+    # mktemp -d) must be GONE now that bootstrap.sh has exited.
+    local stage_dir
+    stage_dir="$(cat "$BOOTSTRAP_FAKE_STAGE" 2>/dev/null || true)"
+    if [ -n "$stage_dir" ] && [ ! -e "$stage_dir" ]; then
+        pass "bootstrap.sh removes its staging directory on exit"
+    else
+        fail "bootstrap.sh removes its staging directory on exit" "still present: ${stage_dir:-<unknown>}"
+    fi
+}
+
+test_bootstrap_resolves_commit_from_pax_header() {
+    local home="$TMP/home-bootstrap-pax" embedded="0123456789abcdef0123456789abcdef01234567"
+    mkdir -p "$home"
+
+    # The "prints the resolved commit" case in the passthrough test above
+    # exercises only the FALLBACK (a fixture with no pax global header, so
+    # $resolved stays the literal word "main"). This one carries a real pax
+    # global header, so it is the one that actually exercises
+    # bootstrap.sh's `gzip | head | grep` readout.
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    make_bootstrap_archive_with_pax_comment main "$embedded"
+    run_bootstrap "$home"
+    assert_eq "bootstrap.sh exits 0 against an archive carrying a pax global header" "0" "$BOOTSTRAP_STATUS"
+    assert_output_has "bootstrap.sh reads the resolved commit from the archive's pax global header" \
+        "$(cat "$BOOTSTRAP_OUT")" "commit $embedded"
+}
+
+test_bootstrap_truncated_runs_nothing() {
+    local start call_line cut truncated
+
+    start="$(line_of "$BOOTSTRAP_SCRIPT" 'bootstrap_main() {')"
+    call_line="$(line_of "$BOOTSTRAP_SCRIPT" 'bootstrap_main "$@"')"
+    if [ -z "$start" ] || [ -z "$call_line" ]; then
+        fail "bootstrap.sh has the expected single-function shape" \
+            "could not find bootstrap_main() { and its final call on their own lines"
+        return
+    fi
+    cut=$(( (start + call_line) / 2 ))
+
+    truncated="$TMP/bootstrap-truncated.sh"
+    head -n "$cut" "$BOOTSTRAP_SCRIPT" > "$truncated"
+    chmod +x "$truncated"
+
+    reset_argv_logs
+    (
+        export HOME="$TMP/home-bootstrap-truncated"
+        mkdir -p "$HOME"
+        export PATH="$STUBS:$TOOLBIN"
+        export STUB_CURL_FIXTURES="$FIXTURES"
+        "$BASH" "$truncated" --ref main >"$BOOTSTRAP_OUT" 2>&1
+    )
+    BOOTSTRAP_STATUS=$?
+    if [ "$BOOTSTRAP_STATUS" -eq 0 ]; then
+        fail "a bootstrap.sh truncated mid-function does not exit 0" "it exited 0"
+    else
+        pass "a bootstrap.sh truncated mid-function exits non-zero (a syntax error, never a partial run)"
+    fi
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "a truncated bootstrap.sh downloads nothing" "curl was invoked"
+    else
+        pass "a truncated bootstrap.sh downloads nothing"
+    fi
+}
+
+test_bootstrap_refuses_root() {
+    local home="$TMP/home-bootstrap-root" root_stubs="$TMP/stubs-bootstrap-root" out
+    mkdir -p "$home" "$root_stubs"
+    cat > "$root_stubs/id" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+    -u) echo 0 ;;
+    *) exec "$(command -v id)" "\$@" ;;
+esac
+STUB
+    chmod +x "$root_stubs/id"
+
+    reset_argv_logs
+    BOOTSTRAP_PATH="$root_stubs:$STUBS:$TOOLBIN" run_bootstrap "$home"
+    out="$(cat "$BOOTSTRAP_OUT")"
+    assert_eq "bootstrap.sh refuses to run as root" "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the root refusal says why" "$out" "refusing to run as root"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the root refusal downloads nothing" "curl was invoked"
+    else
+        pass "the root refusal downloads nothing"
+    fi
+    BOOTSTRAP_PATH=""
+}
+
+test_bootstrap_validate_ref() {
+    local home="$TMP/home-bootstrap-validate-ref"
+    mkdir -p "$home"
+
+    # A control character in --ref must never reach the URL bootstrap.sh
+    # builds by interpolation — refused the same shape validate_release_tag
+    # refuses one in lib.sh (lib_test.sh's own test_validate_release_tag).
+    reset_argv_logs
+    run_bootstrap "$home" --ref "$(printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbee\tf')"
+    assert_eq "bootstrap.sh refuses a --ref with a control character" "2" "$BOOTSTRAP_STATUS"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "a --ref with a control character downloads nothing" "curl was invoked"
+    else
+        pass "a --ref with a control character downloads nothing"
+    fi
+
+    # `--ref=<sha>` (the single-token form) must be recognised too, not
+    # silently fall through to install_args, which would leave $ref at its
+    # "main" default — the reachability check skipped and main downloaded
+    # instead of the pin the operator asked for, with install.sh's own
+    # "unknown argument '--ref=<sha>'" refusal the only visible symptom.
+    reset_argv_logs
+    run_bootstrap "$home" --ref=not-a-sha
+    assert_eq "bootstrap.sh refuses --ref=<value> the same as --ref <value>" "2" "$BOOTSTRAP_STATUS"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "a bad --ref=<value> downloads nothing" "curl was invoked"
+    else
+        pass "a bad --ref=<value> downloads nothing"
+    fi
+
+    local ref="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    make_bootstrap_archive "$ref"
+    STUB_CURL_BODY='{"status":"identical","ahead_by":0,"behind_by":0}' \
+        run_bootstrap "$home" --ref="$ref"
+    assert_eq "bootstrap.sh accepts and acts on --ref=<sha> like --ref <sha>" "0" "$BOOTSTRAP_STATUS"
+    if grep -q "api.github.com" "$STUB_CURL_ARGV" 2>/dev/null; then
+        pass "--ref=<sha> reaches the reachability check (main's shortcut was not taken)"
+    else
+        fail "--ref=<sha> reaches the reachability check (main's shortcut was not taken)" \
+            "api.github.com was never requested — \$ref likely stayed \"main\""
+    fi
+}
+
+test_bootstrap_ref_must_be_reachable_from_main() {
+    local home="$TMP/home-bootstrap-ref" ref="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    mkdir -p "$home"
+
+    # codeload.github.com will archive ANY commit this repo holds, merged or
+    # not — an open pull request's head among them. --ref only trusts a
+    # commit main's own history already contains, checked against GitHub's
+    # compare API before any download: `diverged` (an unmerged branch) and
+    # `behind` (main lacks commits the ref has) are both refused.
+    reset_argv_logs
+    STUB_CURL_BODY='{"status":"diverged","ahead_by":3,"behind_by":5}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh refuses a --ref GitHub reports as diverged from main" "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the diverged refusal says why" "$(cat "$BOOTSTRAP_OUT")" "not reachable from main"
+    if grep -q "codeload" "$STUB_CURL_ARGV" 2>/dev/null; then
+        fail "a --ref refused for reachability downloads no archive" "codeload.github.com was requested"
+    else
+        pass "a --ref refused for reachability downloads no archive"
+    fi
+
+    reset_argv_logs
+    STUB_CURL_BODY='{"status":"behind","ahead_by":0,"behind_by":2}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh refuses a --ref GitHub reports as behind main" "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the behind refusal says why" "$(cat "$BOOTSTRAP_OUT")" "not reachable from main"
+    if grep -q "codeload" "$STUB_CURL_ARGV" 2>/dev/null; then
+        fail "a --ref refused as behind downloads no archive" "codeload.github.com was requested"
+    else
+        pass "a --ref refused as behind downloads no archive"
+    fi
+
+    # An unreachable/failed compare check fails closed: an unverifiable ref
+    # is never treated as a verified one.
+    reset_argv_logs
+    STUB_CURL_BODY="" \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh refuses a --ref it could not verify against main" "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the unverifiable-ref refusal says why" "$(cat "$BOOTSTRAP_OUT")" "could not verify"
+
+    # `ahead` (main contains the ref plus more commits) and `identical`
+    # (the ref IS main) both mean the ref is part of main's history, and are
+    # accepted — the archive download and extraction proceed normally.
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    make_bootstrap_archive "$ref"
+    STUB_CURL_BODY='{"status":"ahead","ahead_by":3,"behind_by":0}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh accepts a --ref GitHub reports as an ancestor of main (ahead)" "0" "$BOOTSTRAP_STATUS"
+
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    STUB_CURL_BODY='{"status":"identical","ahead_by":0,"behind_by":0}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh accepts a --ref GitHub reports as identical to main" "0" "$BOOTSTRAP_STATUS"
+
+    # jq is deliberately NOT on the restricted PATH this harness builds
+    # (TOOLBIN never symlinks it), so every case above already drives the
+    # no-jq sed fallback. This one is the shape that fallback has to get
+    # right: a COMPACT (single-line, no jq available to pretty-print it)
+    # response whose "files" array carries its own per-file "status" ---
+    # "modified" here --- after the real, top-level one. An unanchored
+    # greedy match would walk past the real field and read the file's
+    # instead; the fix truncates before "files"/"commits" so only the
+    # top-level field is ever in play.
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    STUB_CURL_BODY='{"url":"x","status":"identical","ahead_by":0,"behind_by":0,"commits":[],"files":[{"filename":"a","status":"modified"}]}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "bootstrap.sh reads the top-level status, not a later per-file one, from compact JSON" \
+        "0" "$BOOTSTRAP_STATUS"
+
+    # main itself never consults the compare API at all — the common path
+    # costs no extra round trip.
+    reset_argv_logs
+    rm -f "$BOOTSTRAP_FAKE_ARGV"
+    make_bootstrap_archive main
+    run_bootstrap "$home"
+    assert_eq "the default ref (main) still exits 0 with no compare-API stub set" "0" "$BOOTSTRAP_STATUS"
+    if grep -q "api.github.com" "$STUB_CURL_ARGV" 2>/dev/null; then
+        fail "the default ref never consults the compare API" "api.github.com was requested"
+    else
+        pass "the default ref never consults the compare API"
+    fi
+}
+
+test_bootstrap_failure_paths() {
+    local home="$TMP/home-bootstrap-failures"
+    mkdir -p "$home"
+
+    # A download that fails outright (no fixture at the ref's key) leaves
+    # nothing extracted and install.sh never runs.
+    reset_argv_logs
+    rm -rf "$FIXTURES"
+    run_bootstrap "$home"
+    assert_eq "bootstrap.sh refuses when the archive cannot be downloaded" "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the download failure is named" "$(cat "$BOOTSTRAP_OUT")" "could not download"
+
+    # An archive that does not have the expected agent/deploy layout at all
+    # (extraction matches nothing) is refused, not silently ignored.
+    reset_argv_logs
+    rm -rf "$FIXTURES"
+    mkdir -p "$FIXTURES"
+    (
+        d="$TMP/bootstrap-empty-src/solador-main"
+        rm -rf "$TMP/bootstrap-empty-src"
+        mkdir -p "$d/crates/decoy"
+        echo "nothing here" > "$d/crates/decoy/lib.rs"
+        cd "$TMP/bootstrap-empty-src" && tar -czf "$FIXTURES/main" solador-main
+    )
+    run_bootstrap "$home"
+    assert_eq "bootstrap.sh refuses an archive with no agent/deploy layout" "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the empty-extraction failure is named" "$(cat "$BOOTSTRAP_OUT")" "could not extract"
+
+    # An archive that has agent/deploy/* but no install.sh inside it is
+    # refused just as loudly, after extraction succeeds but before anything
+    # is run.
+    reset_argv_logs
+    rm -rf "$FIXTURES"
+    mkdir -p "$FIXTURES"
+    (
+        d="$TMP/bootstrap-noinstall-src/solador-main"
+        rm -rf "$TMP/bootstrap-noinstall-src"
+        mkdir -p "$d/agent/deploy"
+        echo "lib" > "$d/agent/deploy/lib.sh"
+        echo "pubkey" > "$d/agent/release-signing-key.pub"
+        cd "$TMP/bootstrap-noinstall-src" && tar -czf "$FIXTURES/main" solador-main
+    )
+    run_bootstrap "$home"
+    assert_eq "bootstrap.sh refuses an archive whose agent/deploy carries no install.sh" "1" "$BOOTSTRAP_STATUS"
+    assert_output_has "the missing-install.sh failure is named" "$(cat "$BOOTSTRAP_OUT")" "not found after extraction"
+
+    # Cleanup is unconditional: none of the three refusals above should have
+    # left a staging directory behind.
+    if ls "$home/.cache"/solador-agent-bootstrap.* >/dev/null 2>&1; then
+        fail "every refusal above still cleaned up its staging directory" "a staging directory was left under $home/.cache"
+    else
+        pass "every refusal above still cleaned up its staging directory"
+    fi
+}
+
+test_bootstrap_signature_gate() {
+    local home="$TMP/home-bootstrap-sig" ref="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" marker="$TMP/bootstrap-sig-marker"
+    mkdir -p "$home"
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "a wrong key delivered via the bootstrap archive is rejected by install.sh's real minisign gate"
+        skip_needs_minisign "the rejection above is minisign's (an accept-all verifier lets the same archive through)"
+        return
+    fi
+
+    # The archive carries key B; the release binary it will try to install
+    # is signed with key A — the same key-mismatch shape
+    # test_install_signature_gate proves against a checkout on disk, proven
+    # here against a key that arrived through the bootstrap archive instead.
+    rm -rf "$FIXTURES"
+    make_bootstrap_checkout_archive "$ref" "$TEST_KEY_DIR/b.pub"
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" "$marker" >/dev/null
+    rm -f "$marker"
+    reset_argv_logs
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    # A pinned --ref now needs GitHub's compare API to confirm it is
+    # reachable from main before anything downloads; stub it "identical" so
+    # this test exercises the signature gate, not that earlier check (which
+    # has its own dedicated test below).
+    STUB_CURL_BODY='{"status":"identical","ahead_by":0,"behind_by":0}' \
+        run_bootstrap "$home" --ref "$ref"
+    assert_eq "install.sh, reached through bootstrap.sh, rejects a candidate signed under a key that does not match the one the archive delivered" \
+        "1" "$BOOTSTRAP_STATUS"
+    if [ -e "$marker" ]; then
+        fail "the mismatched-key candidate is never executed, even when the wrong key arrives via the bootstrap archive" \
+            "the fixture ran (--version was called)"
+    else
+        pass "the mismatched-key candidate is never executed, even when the wrong key arrives via the bootstrap archive"
+    fi
+
+    # THE PROOF. Same archive, same wrong key, same fixture — only the
+    # verifier on PATH changes. If the rejection above were not minisign's
+    # doing, this run would be rejected too; it is not.
+    rm -f "$marker"
+    reset_argv_logs
+    STUB_CURL_BODY='{"status":"identical","ahead_by":0,"behind_by":0}' \
+    BOOTSTRAP_PATH="$STUBS_BYPASS:$STUBS:$TOOLBIN" run_bootstrap "$home" --ref "$ref"
+    if [ -e "$marker" ]; then
+        pass "the rejection above is minisign's (an accept-all verifier lets the same archive through)"
+    else
+        fail "the rejection above is minisign's (an accept-all verifier lets the same archive through)" \
+            "with an accept-all verifier the mismatched-key candidate still did not run" \
+            "$(head -n 20 "$BOOTSTRAP_OUT")"
+    fi
+    BOOTSTRAP_PATH=""
     unset SOLADOR_AGENT_RELEASE
 }
 
@@ -4770,6 +5310,14 @@ test_install_arguments
 test_install_preflight
 test_install_release_resolution
 test_install_signature_gate
+test_bootstrap_extraction_and_passthrough
+test_bootstrap_resolves_commit_from_pax_header
+test_bootstrap_truncated_runs_nothing
+test_bootstrap_refuses_root
+test_bootstrap_validate_ref
+test_bootstrap_ref_must_be_reachable_from_main
+test_bootstrap_failure_paths
+test_bootstrap_signature_gate
 test_install_linux_flow
 test_install_macos_flow
 test_install_update_timer_linux
