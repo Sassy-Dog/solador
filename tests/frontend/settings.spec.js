@@ -261,6 +261,97 @@ test("the Settings button, title and every tab come from Rust", async ({ page, b
   await expect(page.locator("#settings")).toBeHidden();
 });
 
+/**
+ * macOS WebKit applies the system text-input settings ("Capitalize words
+ * automatically", autocorrect) to any `<input type="text">` that doesn't
+ * opt out, so typing `mac-n87k` into Add host became `Mac-n87k` (#435).
+ * Every Settings text field is an identifier or a short name -- none is
+ * prose -- so `textInput()` (settings.js:89) opts every one of them out by
+ * default now, rather than three call sites each carrying their own copy.
+ *
+ * This walks every page Settings can render -- the three plain tabs, every
+ * catalog kind through the Add flow (including the Add host form the issue
+ * reported), the three automatic sources, the unattributed-repos view, and
+ * every already-saved connection's own edit view (including the host edit
+ * form) -- and asserts every `input.input` on it carries all three opt-outs.
+ * Headless Chromium never applies the macOS setting itself, so this only
+ * proves the attributes are on the element; the manual check belongs on the
+ * PR.
+ */
+test("every text and password field in Settings opts out of system capitalization, autocorrect and spellcheck", async ({
+  page,
+  baseURL,
+}) => {
+  const settings = await openSettings(page, baseURL);
+
+  const expectOptedOut = async () => {
+    const inputs = page.locator("#settings input.input");
+    const count = await inputs.count();
+    for (let i = 0; i < count; i++) {
+      const input = inputs.nth(i);
+      await expect(input).toHaveAttribute("autocapitalize", "off");
+      await expect(input).toHaveAttribute("autocorrect", "off");
+      await expect(input).toHaveAttribute("spellcheck", "false");
+    }
+    return count;
+  };
+
+  let checked = 0;
+
+  // The three plain tabs (Preferences carries number fields; Detailed
+  // layout carries the add-breakpoint width; About carries none).
+  for (const id of ["general", "layout", "about"]) {
+    await tab(page, id).click();
+    checked += await expectOptedOut();
+  }
+
+  // Every catalog kind, through the Add flow -- the form a brand-new
+  // connection actually renders, including Add host (#host-name,
+  // #host-address) named in the issue.
+  for (const kind of ["account", "host", "neon", "sentry", "vercel", "azure", "openclaw", "vendor"]) {
+    await addConnection(page, kind);
+    checked += await expectOptedOut();
+    if (kind === "host") {
+      await expect(page.locator("#host-name")).toHaveAttribute("autocapitalize", "off");
+      await expect(page.locator("#host-address")).toHaveAttribute("autocapitalize", "off");
+    }
+  }
+
+  // The automatic sources, each opened by its own fixed connection id.
+  for (const id of ["local", "claude", "services"]) {
+    await openConnection(page, id);
+    checked += await expectOptedOut();
+  }
+
+  // The unattributed-repos view, reached only through its own button
+  // (`.connection-orphans`) rather than a fixed connection id -- it renders
+  // a workflows textInput per orphaned repo (repoConfig), built into the DOM
+  // up front rather than behind the "Configure…" disclosure.
+  const unattributedCount = settings.accounts.unattributed.length;
+  expect(unattributedCount, "the fixture must carry an unattributed repo to reach this view").toBeGreaterThan(0);
+  await page.locator('.tab[data-tab="connections"]').click();
+  await page.locator(".connection-orphans").click();
+  checked += await expectOptedOut();
+
+  // Every already-saved connection, in its own edit view -- including the
+  // host edit form (#host-edit-name) named in the issue.
+  let sawHostEdit = false;
+  for (const row of settings.connections.rows) {
+    await openConnection(page, row.id);
+    checked += await expectOptedOut();
+    if (row.kind === "host") {
+      await expect(page.locator("#host-edit-name")).toHaveAttribute("autocapitalize", "off");
+      sawHostEdit = true;
+    }
+  }
+  expect(sawHostEdit, "the fixture must carry a saved host to reach the host edit form").toBe(true);
+
+  // The sweep above is vacuous if nothing it visited ever carried an
+  // input.input -- prove real fields were swept, not just empty pages.
+  expect(settings.connections.rows.length, "the fixture must carry a saved connection to reach an edit view").toBeGreaterThan(0);
+  expect(checked).toBeGreaterThan(10);
+});
+
 test("General shows the stored values and applies them in one command", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "general").click();

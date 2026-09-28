@@ -89,6 +89,14 @@ function field(id, labelText, input) {
 function textInput(value, type = "text") {
   const input = node("input", "input");
   input.type = type;
+  // Every Settings text field is an identifier or a short name (hostnames,
+  // slugs, IPs, tokens, URLs) — none is prose — so WebKit's system text-input
+  // behaviour (autocapitalize, autocorrect, spellcheck) is opted out for all
+  // of them here, once, rather than per field (#435). `autocorrect` is a
+  // WebKit extension with no IDL property, so it is set as an attribute.
+  input.autocapitalize = "off";
+  input.setAttribute("autocorrect", "off");
+  input.spellcheck = false;
   const initial = value === undefined || value === null ? "" : String(value);
   input.value = initial;
   // Also the default, so `value !== defaultValue` means "typed and not yet
@@ -747,8 +755,6 @@ function ruleRow(t, rule) {
   const pattern = textInput(rule.pattern);
   pattern.placeholder = t.patternPrompt;
   pattern.title = t.patternLabel;
-  pattern.autocapitalize = "off";
-  pattern.spellcheck = false;
   // On change, not on every keystroke: each save re-renders the list, and a
   // per-keystroke write would rebuild the field under the caret and eat the
   // rest of the word. Same reason the watched-workflows field uses `change`.
@@ -1389,8 +1395,6 @@ function servicesTab(t, options = {}) {
   // normalised when the probe validated it, exactly as typed when it did not,
   // so a rejected address is still on screen to be corrected.
   const url = textInput(S.probe ? S.probe.baseUrl : "");
-  url.autocapitalize = "off";
-  url.spellcheck = false;
   add.appendChild(field("vendor-url", t.add.urlLabel, url));
 
   const probe = button(t.add.probeLabel, "probe");
@@ -1490,8 +1494,6 @@ function openclawTab(t) {
   const gateway = group(t.heading);
   const url = textInput(t.gateway.value);
   url.placeholder = t.gateway.placeholder;
-  url.autocapitalize = "off";
-  url.spellcheck = false;
   gateway.appendChild(field("openclaw-gateway", t.gateway.label, url));
 
   const save = button(t.gateway.saveLabel, "apply");
