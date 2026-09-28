@@ -24,14 +24,20 @@ columns, not a sentence: each number sits right-aligned in a slot at least
 three characters wide, each word in a slot sized to its column's longest, and
 the status word beside it occupies a reserved column, so the
 numbers line up down the tile whether a row reads `1 PR` or `10 PRs` (a count
-past three digits widens its own row, and only that row). Keeping counts on
+past three digits widens its own row, and only that row). The status column
+is exactly as wide as the widest Repos status (`Needs approval`), and a long
+repo name ellipsizes before the strip gives up a character — the strip only
+clips on a tile too narrow for a few letters of name beside it. Keeping counts on
 the same line makes the overview compact at laptop widths; longer content
 extends the page instead of creating a scrollbar inside the tile.
 
 Live status changes keep the dashboard footprint stable without scrolling inside
 its tiles. **Needs Attention** has the same 12px padding and bordered frame as
-other tiles. Its responsive grid reserves a slot for every source, including
-while clear, so status changes do not push the dashboard down. Tile warnings
+other tiles, and is one line: title, the sources needing attention packed
+from the left at their own width, then the note (the chips take a second line
+under ~600px). That chip row has a fixed height whether it holds nothing or
+every source — overflow scrolls sideways rather than adding a row — so status
+changes do not push the dashboard down. Tile warnings
 reserve a separate line; long diagnostics are abbreviated visually, with the
 complete accessible text and hover title retained. Status values use fixed
 columns, and machine metric slots show `—` while disconnected. Tile headings

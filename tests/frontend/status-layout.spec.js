@@ -75,6 +75,70 @@ for (const width of [375, 1024, 1600]) {
   });
 }
 
+for (const width of [375, 1024, 1600]) {
+  test(`the attention strip is one fixed-height row at ${width}px`, async ({ page, baseURL }) => {
+    await page.setViewportSize({ width, height:900 });
+    const frames = await open(page, baseURL);
+    const strip = page.locator('.db-attention');
+    const model = structuredClone(frames.dashboard_view);
+    const heights = [];
+    for (const attention of [[], model.attention.slice(-2, -1), model.attention]) {
+      model.attention = attention;
+      model.tiles[0].rows[0].value = `step ${heights.length}`;
+      await changeDashboard(page, model);
+      await expect(page.locator('.db-attention-items button')).toHaveCount(attention.length);
+      heights.push(await strip.evaluate(el => el.getBoundingClientRect().height));
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    }
+    expect(new Set(heights).size).toBe(1);
+    if (width === 375) {
+      // Every source at once overflows a phone-width row: the chips scroll
+      // inside it, on their own line under the title and note.
+      const row = page.locator('.db-attention-items');
+      expect(await row.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+      const [frame, head, chips, note] = await page.locator('.db-attention, .db-attention > h2, .db-attention-items, .db-attention-note')
+        .evaluateAll(els => els.map(el => el.getBoundingClientRect()));
+      expect(chips.y).toBeGreaterThanOrEqual(head.y + head.height);
+      expect(chips.y).toBeGreaterThanOrEqual(note.y + note.height);
+      expect(Math.round(chips.width)).toBe(Math.round(frame.width - 24 - 2));
+    }
+    // One item: packed at the start of the row and sized to its label — not
+    // parked in a reserved per-source slot.
+    const [one] = model.attention = frames.dashboard_view.attention.slice(-2, -1);
+    model.tiles[0].rows[0].value = 'single';
+    await changeDashboard(page, model);
+    const [row, chip] = await page.locator('.db-attention-items, .db-attention-items button')
+      .evaluateAll(els => els.map(el => el.getBoundingClientRect()));
+    await expect(page.locator('.db-attention-items button')).toHaveText(one.label);
+    expect(Math.round(row.x)).toBe(Math.round(chip.x));
+    expect(chip.width).toBeLessThan(row.width / 2);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  });
+}
+
+test('a long repo name ellipsizes before the count strip does, and the numbers stay in columns', async ({ page, baseURL }) => {
+  await page.setViewportSize({ width:1024, height:900 });
+  const frames = await open(page, baseURL);
+  const model = structuredClone(frames.dashboard_view);
+  const repos = model.tiles.find(t => t.source === 'ghWorkflows');
+  repos.rows[0].label = 'mission-control-tower-and-then-some';
+  model.tiles[0].rows[0].value = 'long name';
+  await changeDashboard(page, model);
+  const tile = page.locator('.db-tile[data-tile="overview-ghWorkflows"]');
+  await expect(tile.locator('.db-item-name').first()).toHaveText(repos.rows[0].label);
+  const strips = await tile.locator('.db-row-counts').evaluateAll(els => els.map(el => ({
+    clipped: el.scrollWidth > el.clientWidth,
+    edges: [...el.querySelectorAll('strong')].map(n => Math.round(n.getBoundingClientRect().right)),
+  })));
+  expect(strips.length).toBe(repos.rows.length);
+  for (const s of strips) {
+    expect(s.clipped).toBe(false);
+    expect(s.edges).toEqual(strips[0].edges);
+  }
+  const name = tile.locator('.db-item-name').first();
+  expect(await name.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+});
+
 for (const presentation of ['summary', 'detailed']) test(`all overview sources retain their ${presentation} footprint when status filters empty their rows`, async ({ page, baseURL }) => {
   const frames = await open(page, baseURL);
   const next = structuredClone(frames.dashboard_view);

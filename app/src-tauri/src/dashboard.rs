@@ -269,7 +269,7 @@ const ROW_COUNTS: [(&str, &str, &str); 3] = [
 /// The widest word each strip column prints, in characters, and the widest
 /// status word beside it. `app/ui/dashboard.css` reserves exactly these —
 /// `.db-count[data-header=…] > span { width: Nch }` and
-/// `.db-item-tabular > .db-value { min-width: 14ch }` — so a longer word
+/// `.db-item.db-item-tabular > .db-value { width: 14ch }` — so a longer word
 /// here would overflow its slot on every row without moving a number the
 /// e2e alignment test could see. The test below is the link.
 #[cfg(test)]
