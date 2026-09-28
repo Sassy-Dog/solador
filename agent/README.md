@@ -322,12 +322,64 @@ No Rust toolchain. A supported clean host needs:
   the agent is a LaunchAgent in that user's `gui/<uid>` domain, so it needs
   someone logged in at the console (or via Screen Sharing), and it does not run
   before anyone logs in.
-- A checkout of this repository's **`main`** (`git clone`) — for
-  `agent/deploy/*` and `agent/release-signing-key.pub`, not to build anything.
-  There is deliberately no `curl | sh` bootstrap: the public key the download
-  is verified under has to arrive by a path other than the download, and
-  `main` is the ref the repository's ruleset protects (see the note on the key
-  above).
+- `agent/deploy/*` and `agent/release-signing-key.pub`, not to build anything —
+  by either of two paths ([#434](https://github.com/Sassy-Dog/solador/issues/434)):
+  - **A checkout of this repository's `main`** (`git clone`).
+  - **`deploy/bootstrap.sh`**, needing `curl`, `tar`, `mktemp`, `id`,
+    `basename` and `bash` — the same "usual coreutils" assumption
+    `install.sh`'s own Prerequisites make below — for a host with no
+    checkout at all (`gzip`/`grep`/`sed`, for the best-effort resolved-commit
+    readout, and `awk`, for `--help`, are used too but never required):
+    ```bash
+    curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
+    bash bootstrap.sh [--ref <40-hex sha>] [install.sh flags...]
+    ```
+    **Fetch `bootstrap.sh` itself from `/main/`, always — pinning is what
+    `--ref` is for, never the fetch URL.** A copy fetched from
+    `raw.githubusercontent.com/.../<sha>/agent/deploy/bootstrap.sh` gets NO
+    protection from the reachability check below: that check is code inside
+    the script, so a copy from a commit not already known to be on `main` is
+    free to run its own version of it (skip it, or always answer yes) and
+    trust its own key. Only a `bootstrap.sh` already known to be on `main`
+    enforces the guarantee at all — the pinned form above still fetches from
+    `/main/` and passes the pin as `--ref` for exactly this reason.
+
+    A `--ref` other than `main` is trusted only once GitHub's compare API
+    (unauthenticated) confirms it is reachable from `main` — `codeload`
+    will archive *any* commit this public repository holds, merged or not,
+    including an open pull request's head, and only a commit `main`'s own
+    history already contains keeps the property below. It then downloads
+    the repository **archive at a `main` commit** (or the exact commit
+    named by `--ref`) from `codeload.github.com` over HTTPS, extracts only
+    `agent/deploy/*` and the signing key(s) — nothing else the archive
+    carries reaches disk — and runs the extracted `install.sh` unchanged,
+    passing every remaining argument through (`-h`/`--help` is the one
+    exception: `bootstrap.sh` answers that itself; run `install.sh`
+    directly, or after extraction, for its own). This keeps the property
+    below (the key still arrives from `main`, the protected ref, never from
+    beside the binary): an archive of a commit `main`'s history contains —
+    the default, or a `--ref` the compare check has confirmed — travels
+    from `codeload.github.com` over the same GitHub HTTPS a `git clone`
+    would use, so it is not "a tag or an archive of one" in the sense the
+    note above refuses. Piping it into a shell is deliberately not the
+    documented form — download it to a file first — but the whole script
+    lives in one function called on its last line either way, so a
+    transfer cut short downloads and runs nothing.
+    `install.sh` itself is unchanged by which path fetched it: its own
+    release resolution (`/releases/latest`, unsigned by design) and the
+    fresh-install downgrade window docs/AGENT-DISTRIBUTION.md §6 already
+    records are neither closed nor widened by `bootstrap.sh` — that window
+    was never about how `install.sh` arrived. One thing it does change:
+    `install.sh`'s own "re-run this" hints (the `/opt` migration step, a
+    bind-address example, a version pin for a refused downgrade, unattended
+    updates left off, ...) would otherwise name `$0` — a path under
+    bootstrap.sh's own staging
+    directory (`~/.cache/solador-agent-bootstrap.*`), removed the moment
+    bootstrap.sh's EXIT trap runs, so a hint built from it would name a file
+    that is already gone. `bootstrap.sh` exports `SOLADOR_AGENT_BOOTSTRAP=1`
+    immediately before running the extracted `install.sh`, and every hint
+    prints `bash bootstrap.sh [--ref <sha>] ...` instead whenever that is
+    set — the command that will actually still exist next time.
 
 ### To build from source (`cargo`, `deploy/redeploy.sh`)
 
@@ -401,6 +453,44 @@ its manager reads, clock and kernel counter stubbed (**Unattended updates**
 below lists both).
 `redeploy.sh` keeps its source-level invariants: taking `.prev` before the
 swap, and aborting on a binary that carries no version.
+
+**`bootstrap.sh`'s own coverage lives in the same suite** (#434). It
+downloads an ARCHIVE rather than a directory, so its fixtures are tarballs
+shaped the way `codeload.github.com` shapes one (`solador-<ref>/...`) — the
+stub `curl`'s existing `-o <dest> <url>` fixture lookup needed no changes to
+serve them, since a codeload URL's basename is just the ref. Covered:
+extraction restricted to `agent/deploy/*` and the signing key(s) (a decoy
+crate, a workflow file and `agent/Cargo.toml` packed into the same archive
+must never reach disk), pass-through arguments reaching `install.sh`
+unchanged with `--ref` stripped, the staging directory under `~/.cache`
+removed on every exit — a bootstrap.sh refusal, and a non-zero exit from
+`install.sh` itself, which bootstrap.sh passes straight through — the
+best-effort resolved-commit readout against a real pax global header
+(captured verbatim from a live archive, not synthesised), the root refusal,
+and `--ref` validation (a control character, `--ref=<sha>` as one token, and
+a bare `--ref` with no value at all). The `--ref`-reachable-from-`main`
+check is driven through every status the compare API returns
+(`identical`/`ahead` accepted, `diverged`/`behind`/unanswerable refused) —
+with jq absent, the default here, exercising the no-jq sed fallback, and,
+when this machine has a real `jq` (SKIPped loudly otherwise, the same as the
+minisign cases), the jq branch too. A pretty-printed (multi-line) compare
+response is covered on both sides: the ordinary case, and an
+adversarially-ordered one — a per-file `status` spelling `identical` placed
+textually *before* the real top-level `status` of `diverged` — that the
+fallback must still refuse; it squashes the response onto one line before
+truncating at `commits`/`files` for exactly this reason, so a later field
+can never survive to be read as the answer regardless of how the response
+was formatted. The load-bearing signature-mismatch case runs through
+`bootstrap.sh` too: a wrong key delivered via the extracted archive is
+rejected by `install.sh`'s real `minisign` gate, then re-run against the
+accept-everything stub to prove the rejection was the verifier's. `--help`
+is covered piped as well as run from a file (`cat bootstrap.sh | bash -s --
+--help`, where `$0` is the word `bash`, not this script) — the canned
+fallback text it prints, rather than the file it has no way to read, keeps
+that path exiting 0 too. And `install.sh`'s own re-run hints, reached
+through a real `bootstrap.sh` run (`SOLADOR_AGENT_BOOTSTRAP=1`), are
+asserted to name `bash bootstrap.sh ...` rather than a path under the
+already-removed staging directory.
 
 **The signature gate is tested with the real `minisign`, and that is the
 load-bearing case of #392.** Fixtures are signed with a throwaway keypair the

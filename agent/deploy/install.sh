@@ -148,6 +148,19 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+# Every "re-run this" hint below prints $RERUN_CMD, not $0 directly. Run
+# straight from a checkout, $0 IS the command to re-run. Run through
+# bootstrap.sh (#434), $0 is a path under ITS staging directory —
+# ~/.cache/solador-agent-bootstrap.* — which is gone (bootstrap.sh's own EXIT
+# trap removes it) by the time anyone could act on a hint built from it.
+# bootstrap.sh exports SOLADOR_AGENT_BOOTSTRAP=1 immediately before running
+# this script for exactly this: a hint here names the command that will
+# still exist next time.
+RERUN_CMD="$0"
+if [ "${SOLADOR_AGENT_BOOTSTRAP:-}" = "1" ]; then
+    RERUN_CMD="bash bootstrap.sh [--ref <sha>]"
+fi
+
 # ---- preflight ---------------------------------------------------------------
 # Everything that can refuse, refuses HERE — before a byte is downloaded and
 # before any installed state changes. A half-installed host is the outcome
@@ -327,7 +340,7 @@ if [ "$OS" = "Linux" ]; then
             echo "       and since #392 new installs are user-owned at" >&2
             echo "         $DEST_BIN" >&2
             echo "       Nothing has been changed. To migrate explicitly, re-run with" >&2
-            echo "         $0 --migrate-from-opt" >&2
+            echo "         $RERUN_CMD --migrate-from-opt" >&2
             echo "       which keeps $ENV_FILE (token, bind, port) as it is, installs the" >&2
             echo "       verified binary at $DEST_BIN, regenerates the unit from the template" >&2
             echo "       with that path (the displaced unit is kept as .service.prev), restarts," >&2
@@ -337,7 +350,7 @@ if [ "$OS" = "Linux" ]; then
             if [ "$ENABLE_TIMER" = true ]; then
                 echo "       --enable-timer needs that migration first: the updater it schedules cannot" >&2
                 echo "       replace a binary this user does not own. Both flags together do it in" >&2
-                echo "       one run:  $0 --migrate-from-opt --enable-timer" >&2
+                echo "       one run:  $RERUN_CMD --migrate-from-opt --enable-timer" >&2
             fi
             exit 1
         fi
@@ -395,7 +408,7 @@ fi
 if [ -z "$BIND" ]; then
     echo "ERROR: could not detect a Tailscale IP for SOLADOR_AGENT_BIND." >&2
     echo "       Bring up Tailscale, or set SOLADOR_AGENT_BIND explicitly" >&2
-    echo "       (e.g. SOLADOR_AGENT_BIND=0.0.0.0 ./deploy/install.sh — only behind a firewall)." >&2
+    echo "       (e.g. SOLADOR_AGENT_BIND=0.0.0.0 $RERUN_CMD — only behind a firewall)." >&2
     exit 1
 fi
 echo "==> Binding to $BIND ($BIND_SOURCE)"
@@ -449,7 +462,7 @@ if ! download_release_asset "$ASSET_URL" "$STAGED_BIN"; then
     echo "       Release $TAG has no $ASSET, or it is not reachable. A release cut" >&2
     echo "       before #390 (v2026.9.3 and earlier) publishes no agent binaries at" >&2
     echo "       all — this installer does not fall back to building from source." >&2
-    echo "       Pin a release that has them:  SOLADOR_AGENT_RELEASE=v<version> $0" >&2
+    echo "       Pin a release that has them:  SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD" >&2
     exit 1
 fi
 if ! download_release_asset "$ASSET_URL.minisig" "$STAGED_SIG"; then
@@ -485,7 +498,7 @@ if [ -x "$DEST_BIN" ] && [ -z "${SOLADOR_AGENT_RELEASE:-}" ]; then
     if [ -n "$INSTALLED_VERSION" ] && calver_newer "$INSTALLED_VERSION" "$TARGET_VERSION"; then
         echo "ERROR: the installed agent is $INSTALLED_VERSION and the latest published release is $TARGET_VERSION." >&2
         echo "       Refusing to install an older version over a newer one on the unpinned path." >&2
-        echo "       If that downgrade is what you want, say so:  SOLADOR_AGENT_RELEASE=$TAG $0" >&2
+        echo "       If that downgrade is what you want, say so:  SOLADOR_AGENT_RELEASE=$TAG $RERUN_CMD" >&2
         exit 1
     fi
 fi
@@ -913,7 +926,7 @@ update_scheduling_summary() {
     case "$OS" in
         Linux)
             if [ ! -f "$UPDATE_TIMER_DST" ]; then
-                echo "    Unattended updates: off (opt in with: $0 --enable-timer)"
+                echo "    Unattended updates: off (opt in with: $RERUN_CMD --enable-timer)"
                 return
             fi
             state="$(systemctl --user is-enabled "$UPDATE_NAME.timer" 2>/dev/null || true)"
@@ -945,7 +958,7 @@ update_scheduling_summary() {
             ;;
         Darwin)
             if [ ! -f "$UPDATE_PLIST_DST" ]; then
-                echo "    Unattended updates: off (opt in with: $0 --enable-timer)"
+                echo "    Unattended updates: off (opt in with: $RERUN_CMD --enable-timer)"
                 return
             fi
             if launchctl print "gui/$(id -u)/$UPDATE_LABEL" >/dev/null 2>&1; then
