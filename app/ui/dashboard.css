@@ -110,36 +110,49 @@
   margin-right: 5px;
 }
 #dashboardOverview .db-attention {
+  display: flex;
+  gap: 8px 12px;
+  align-items: center;
   padding: 12px;
   margin: 12px 0;
   background: var(--db-panel);
   border: 1px solid var(--db-line);
   border-radius: 9px;
 }
-#dashboardOverview .db-attention-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 6px;
-  flex-wrap: wrap;
-}
 #dashboardOverview h2 {
   font-size: 13px;
   font-weight: 500;
 }
-#dashboardOverview .db-attention-items {
-  display: grid;
-  position: relative;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: 26px;
-  gap: 7px;
+#dashboardOverview .db-attention > h2 { flex:none; white-space:nowrap; }
+#dashboardOverview .db-attention-note {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-#dashboardOverview .db-attention-slot { visibility:hidden; }
-#dashboardOverview .db-attention-quiet { position:absolute; inset:0; }
+/* One row, packed from the left, sized to its content. The height is fixed
+   whether it holds nothing or every source, so tiles below never move;
+   overflow scrolls sideways (the row is focusable) instead of wrapping. */
+#dashboardOverview .db-attention-items {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 7px;
+  align-items: center;
+  height: 26px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+#dashboardOverview .db-attention-items::-webkit-scrollbar { display:none; }
+#dashboardOverview .db-attention-items > button { flex:none; max-width:24ch; height:100%; }
+#dashboardOverview .db-attention-quiet { white-space:nowrap; font-size:11px; }
 #dashboardOverview .db-attention-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @media (max-width:600px) {
-  #dashboardOverview .db-attention-items { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #dashboardOverview .db-attention { flex-wrap:wrap; }
+  #dashboardOverview .db-attention-note { flex:1; text-align:right; }
+  #dashboardOverview .db-attention-items { order:3; flex-basis:100%; }
 }
 #dashboardOverview .db-attention-items button {
   background: var(--db-panel);
@@ -294,9 +307,18 @@
   text-align: right;
   font-size: 11px;
 }
-/* The count strip sits against the status word and gives way first: it is
-   the only elastic thing on the row, so a narrow tile ellipsizes it rather
-   than wrapping the row or pushing the status out of the tile. */
+/* The count strip sits against the status word and keeps its width: every
+   row's strip is the same fixed-width cells, so a strip that never shrinks
+   is what keeps the numbers in columns. The repo name gives way instead —
+   it ellipsizes (full name on the row's title) down to a few characters,
+   and only a tile narrower than that clips the strip, as a last resort.
+   The order falls out of the bases: the name's is 0, so it only ever grows
+   into spare room, and a row short of room shrinks the strip — by then the
+   name is already at its floor. */
+#dashboardOverview .db-item-tabular > .db-row-label {
+  flex: 1 1 0;
+  min-width: 6ch;
+}
 #dashboardOverview .db-row-counts {
   margin-left: auto;
   flex: 0 1 auto;
@@ -338,9 +360,13 @@
 /* …and the status word beside the strip is a column too: the strip is
    anchored to it, so a `Needs approval` row would otherwise pull its three
    numbers 7ch left of a `Healthy` row's. 14ch is the widest status the Repos
-   panel produces (`Needs approval`). */
-#dashboardOverview .db-item-tabular > .db-value {
-  min-width: 14ch;
+   panel produces (`Needs approval`), and exactly 14ch rather than the 18ch
+   other rows reserve, so the strip sits as far right as any status allows.
+   The doubled class outranks the generic 18ch `.db-item > .db-value` rule
+   later in this file, so this stays the one rule for the Repos column. */
+#dashboardOverview .db-item.db-item-tabular > .db-value {
+  width: 14ch;
+  max-width: none;
 }
 #dashboardOverview .db-host {
   padding: 6px 0;
@@ -694,7 +720,7 @@
 #dashboardOverview .db-tile-footer > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #dashboardOverview .db-live-note { height:17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @media (pointer: coarse) {
-  #dashboardOverview .db-attention-items { grid-auto-rows:44px; }
+  #dashboardOverview .db-attention-items { height:44px; }
 }
 
 #dashboardOverview .db-tile[data-presentation="summary"] .db-row-description { height:16.5px; white-space:nowrap; }

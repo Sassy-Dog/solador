@@ -98,15 +98,18 @@
     chrome.append(brand, actions);
     const attention = node("section", "db-attention");
     attention.setAttribute("aria-label", L("attention"));
-    const head = node("div", "db-attention-head");
-    head.append(
-      node("h2", "", L("attention")),
-      node("span", "db-sub", L("attentionNote")),
-    );
+    // One line: title, the chips, the note. The chip row is a fixed height
+    // whatever it holds — overflow scrolls sideways rather than adding a row
+    // — so nothing below it moves when sources start or stop needing
+    // attention.
     const items = node("div", "db-attention-items");
     items.tabIndex = 0;
     items.setAttribute("aria-label", L("attention"));
-    attention.append(head, items);
+    attention.append(
+      node("h2", "", L("attention")),
+      items,
+      node("span", "db-sub db-attention-note", L("attentionNote")),
+    );
     const editbar = node("div", "db-editbar");
     editbar.append(
       node("span", "", L("editHint")),
@@ -328,12 +331,7 @@
     attention.replaceChildren();
     for (const source of model.sources) {
       const item = model.attention.find(item => item.source === source.id);
-      if (!item) {
-        const slot = node("span", "db-attention-slot");
-        slot.setAttribute("aria-hidden", "true");
-        attention.append(slot);
-        continue;
-      }
+      if (!item) continue;
       const b = button("", "attention", item.source), dot = node("span", "db-dot");
       dot.style.color = item.color;
       dot.setAttribute("aria-hidden", "true");
