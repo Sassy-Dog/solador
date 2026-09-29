@@ -5,14 +5,18 @@
 # Usage:
 #   ./deploy/install.sh                     # download, verify, install, start, verify
 #   ./deploy/install.sh --enable-timer      # ...and opt in to a daily unattended update check
+#   ./deploy/install.sh --enable-tls        # ...and turn SOLADOR_AGENT_TLS on for an EXISTING install
 #   ./deploy/install.sh --migrate-from-opt  # re-point an existing /opt install (Linux)
-#   ./deploy/install.sh --uninstall         # remove THIS USER's install (env file kept)
-#   ./deploy/install.sh --uninstall --purge # ...and delete the env file (it holds the token) too
+#   ./deploy/install.sh --uninstall         # remove THIS USER's install (env file, TLS key/cert kept)
+#   ./deploy/install.sh --uninstall --purge # ...and delete the env file + TLS key/cert too
 #   ./deploy/install.sh --help
 #
 # Environment:
 #   SOLADOR_AGENT_RELEASE=vYYYY.M.N   install this release instead of the latest
 #   SOLADOR_AGENT_BIND / _PORT        as documented in agent/README.md
+#   SOLADOR_AGENT_TLS=0|1             pin the TLS opt-in (#447) outright, overriding both
+#                                     the fresh-install default and --enable-tls; as
+#                                     documented in agent/README.md's TLS section
 #
 # What it does:
 #   1. Detects the platform and maps it onto one of the four published
@@ -65,7 +69,11 @@
 # the Linux guard, and the update stamp. The env file (the token) is KEPT and
 # named in the output unless --purge is also given, which also removes the
 # pre-rename devcanopy-agent.env (install copied its token out of that file
-# and never deleted it). A binary an existing unit/plist names OUTSIDE
+# and never deleted it). The TLS key/certificate (#447, tls.key / tls.crt
+# beside the env file) follow the SAME rule: KEPT — a re-install as this
+# user reuses them, so every cockpit that has pinned the fingerprint keeps
+# working — unless --purge is given, which removes them too (re-pairing is
+# then a fresh certificate on the next start). A binary an existing unit/plist names OUTSIDE
 # ~/.local/bin — an unmigrated /opt host, most likely — is named as "left
 # behind" together with its actual remedy (this user cannot delete it; its
 # owner can) rather than silently ignored or pointed at a flag that does not
@@ -153,6 +161,13 @@ RELEASE_REPO_URL="https://github.com/Sassy-Dog/solador"
 SIGNING_PUBKEY="$SCRIPT_DIR/../release-signing-key.pub"
 
 ENV_FILE="$HOME/.config/${BIN_NAME}.env"
+# The self-signed keypair SOLADOR_AGENT_TLS=1 serves (#447), generated once
+# by the agent itself on its first start — never by this script — and kept
+# for the host's lifetime beside the env file. Named here only so
+# --uninstall can KEEP them (like the env file) or, with --purge, remove
+# them; this script never reads or writes their contents.
+TLS_KEY_FILE="$HOME/.config/tls.key"
+TLS_CERT_FILE="$HOME/.config/tls.crt"
 # User-owned, no sudo — the owner decision recorded on #392. /opt is no longer
 # a destination; an existing /opt install is detected below and migrated only
 # on request.
@@ -232,18 +247,24 @@ ENABLE_TIMER=false
 # alone, below) — it is never a standalone mode.
 UNINSTALL=false
 PURGE=false
+# --enable-tls (#447): explicit consent to flip an EXISTING env file's
+# SOLADOR_AGENT_TLS choice to on. A fresh install (no env file yet) writes
+# SOLADOR_AGENT_TLS=1 regardless of this flag — see the env-file section
+# below — so this only ever matters on a re-run.
+ENABLE_TLS=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --migrate-from-opt) MIGRATE_FROM_OPT=true ;;
         --enable-timer) ENABLE_TIMER=true ;;
         --uninstall) UNINSTALL=true ;;
         --purge) PURGE=true ;;
+        --enable-tls) ENABLE_TLS=true ;;
         -h | --help | help)
             usage
             exit 0
             ;;
         *)
-            echo "ERROR: unknown argument '$1'. Use: [--enable-timer] [--migrate-from-opt] [--uninstall [--purge]] [--help]" >&2
+            echo "ERROR: unknown argument '$1'. Use: [--enable-timer] [--enable-tls] [--migrate-from-opt] [--uninstall [--purge]] [--help]" >&2
             exit 2
             ;;
     esac
@@ -947,9 +968,26 @@ run_uninstall() {
         # under an account nothing runs any more, in the one file --purge
         # exists to be certain is gone.
         uninstall_remove "$LEGACY_ENV_FILE" "legacy env file (--purge: install copied its token out and never deleted it)"
-    elif [ -e "$ENV_FILE" ]; then
-        echo "    left:    env file ($ENV_FILE) — holds the bearer token; remove it with:"
-        echo "               $RERUN_CMD --uninstall --purge"
+        # The self-signed TLS keypair (#447), the same "credential this
+        # script never generated and does not lightly discard" reasoning as
+        # the env file's token: plain --uninstall keeps it (a re-install as
+        # this user reuses it, byte for byte, and every cockpit that has
+        # pinned its fingerprint keeps working), --purge removes it because
+        # purging IS "re-pair from scratch" — a fresh certificate next start.
+        uninstall_remove "$TLS_KEY_FILE" "TLS key (--purge: re-pairing needs a fresh certificate)"
+        uninstall_remove "$TLS_CERT_FILE" "TLS certificate (--purge: re-pairing needs a fresh certificate)"
+    else
+        if [ -e "$ENV_FILE" ]; then
+            echo "    left:    env file ($ENV_FILE) — holds the bearer token; remove it with:"
+            echo "               $RERUN_CMD --uninstall --purge"
+        fi
+        if [ -e "$TLS_KEY_FILE" ] || [ -e "$TLS_CERT_FILE" ]; then
+            echo "    left:    TLS key/certificate ($TLS_KEY_FILE, $TLS_CERT_FILE) — a re-install as"
+            echo "               this user reuses them; every cockpit that has pinned the"
+            echo "               fingerprint keeps working. --purge also removes them (re-pairing"
+            echo "               then generates a fresh certificate on the next start):"
+            echo "               $RERUN_CMD --uninstall --purge"
+        fi
     fi
 
     echo
@@ -1272,6 +1310,40 @@ echo "==> Binding to $BIND ($BIND_SOURCE)"
 EXISTING_PORT="$(env_value "$ENV_FILE" SOLADOR_AGENT_PORT)"
 PORT="${SOLADOR_AGENT_PORT:-${EXISTING_PORT:-7878}}"
 
+# ---- TLS opt-in (#447): freshness/existing-choice is decided now, capability is not --------
+# A FRESH install — no env file existed before this run — writes
+# SOLADOR_AGENT_TLS=1: HTTPS is the default for a host nobody has configured
+# yet. A re-run (the env file already existing, however it got here) keeps
+# whatever choice is already recorded, touched only by the explicit
+# --enable-tls flag — there is no --disable-tls; turning TLS back off, like
+# rotating the token, is an env-file edit an operator makes by hand, never
+# something a re-run does on its own.
+#
+# What is decided HERE is only freshness and the existing env file's choice —
+# BOTH of which are readable before any download. The actual TLS_VALUE this
+# run writes is NOT decided until the release is staged and verified, below:
+# it also depends on whether the STAGED BINARY understands
+# SOLADOR_AGENT_TLS at all, which can only be asked of the verified bytes,
+# never assumed from this script's own git history. A release cut before
+# #447 (or one pinned via SOLADOR_AGENT_RELEASE to before it) silently
+# ignores the env var and serves plain HTTP regardless of what this file
+# says — so defaulting a fresh install to TLS=1 against such a binary would
+# write a setting the agent cannot honour, and the health check below would
+# fail confusingly (dialing https:// against a plain-HTTP server) rather
+# than reporting the real cause.
+#
+# "Fresh" also checks the LEGACY env file (#447 review round 2): the
+# pre-rename handover (below, "Found a pre-rename install") carries an
+# existing host's token across specifically so its cockpit pairing survives
+# the rename — $ENV_FILE has never existed under the new name, so without
+# this check FRESH_INSTALL would read true and silently turn TLS on under
+# that same host, breaking the exact pairing the handover exists to keep.
+FRESH_INSTALL=true
+if [ -f "$ENV_FILE" ] || [ -f "$LEGACY_ENV_FILE" ]; then
+    FRESH_INSTALL=false
+fi
+EXISTING_TLS="$(env_value "$ENV_FILE" SOLADOR_AGENT_TLS)"
+
 # ---- resolve the release -----------------------------------------------------
 if [ -n "${SOLADOR_AGENT_RELEASE:-}" ]; then
     TAG="$SOLADOR_AGENT_RELEASE"
@@ -1336,6 +1408,74 @@ if [ "$TARGET_VERSION" != "$RELEASE_VERSION" ]; then
     exit 1
 fi
 echo "==> Verified $ASSET ($TARGET_VERSION)"
+
+# ---- TLS opt-in (#447): NOW capability is known ------------------------------
+# `tls-fingerprint` is refused as an unrecognized argument, exit 2, by any
+# agent published before this feature — see parse_args in agent/src/main.rs,
+# which dispatches it before the token check, the same as --version. Exit 0
+# (fingerprint printed) or 1 (no certificate yet, but the subcommand IS
+# recognized) both mean the opposite: this binary knows what
+# SOLADOR_AGENT_TLS means. This is the only way to ask the VERIFIED bytes
+# rather than assume this script's own git history.
+STAGED_TLS_PROBE_RC=0
+"$STAGED_BIN" tls-fingerprint >/dev/null 2>&1 || STAGED_TLS_PROBE_RC=$?
+STAGED_BIN_SUPPORTS_TLS=true
+[ "$STAGED_TLS_PROBE_RC" -eq 2 ] && STAGED_BIN_SUPPORTS_TLS=false
+
+if [ -n "${SOLADOR_AGENT_TLS:-}" ]; then
+    # The explicit override always wins, even against a binary that will
+    # silently ignore it — the same "you asked for this" precedent
+    # SOLADOR_AGENT_BIND/_PORT already set. The health check below still
+    # fails informatively if it turns out not to work.
+    TLS_VALUE="$SOLADOR_AGENT_TLS"
+    TLS_SOURCE="SOLADOR_AGENT_TLS"
+elif [ "$FRESH_INSTALL" = true ]; then
+    if [ "$STAGED_BIN_SUPPORTS_TLS" = true ]; then
+        TLS_VALUE=1
+        TLS_SOURCE="fresh install"
+    else
+        TLS_VALUE=0
+        TLS_SOURCE="fresh install, but $ASSET ($TARGET_VERSION) predates #447 and cannot serve TLS"
+    fi
+elif [ "$ENABLE_TLS" = true ]; then
+    if [ "$STAGED_BIN_SUPPORTS_TLS" = true ]; then
+        TLS_VALUE=1
+        TLS_SOURCE="--enable-tls"
+    else
+        echo "ERROR: --enable-tls was given, but $ASSET ($TARGET_VERSION) predates #447 and" >&2
+        echo "       does not support TLS (solador-agent tls-fingerprint is not a recognized" >&2
+        echo "       command on this binary). Pin a release that has it"                       >&2
+        echo "       (SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD --enable-tls), or drop" >&2
+        echo "       --enable-tls. Nothing has been changed." >&2
+        exit 1
+    fi
+elif [ -n "$EXISTING_TLS" ]; then
+    # Same capability check as --enable-tls, and for the same reason (#447
+    # review round 2): a re-run pinning SOLADOR_AGENT_RELEASE to a release
+    # before #447 — the exact downgrade this script's own error message
+    # below recommends for other problems — must not keep re-writing
+    # SOLADOR_AGENT_TLS=1 against a binary that will silently ignore it.
+    # Refused before anything changes, like every other capability refusal
+    # here; the operator's already-generated tls.crt is untouched either way.
+    if [ "$EXISTING_TLS" = "1" ] && [ "$STAGED_BIN_SUPPORTS_TLS" != true ]; then
+        echo "ERROR: the env file already has SOLADOR_AGENT_TLS=1, but $ASSET ($TARGET_VERSION)" >&2
+        echo "       predates #447 and does not support TLS (solador-agent tls-fingerprint is" >&2
+        echo "       not a recognized command on this binary). Pin a release that has it, or" >&2
+        echo "       turn TLS off explicitly:  SOLADOR_AGENT_TLS=0 $RERUN_CMD" >&2
+        echo "       Nothing has been changed." >&2
+        exit 1
+    fi
+    TLS_VALUE="$EXISTING_TLS"
+    TLS_SOURCE="kept from the existing env file"
+else
+    TLS_VALUE=0
+    TLS_SOURCE="kept from the existing env file (was unset)"
+fi
+if [ "$TLS_VALUE" = "1" ]; then
+    echo "==> TLS: on ($TLS_SOURCE)"
+else
+    echo "==> TLS: off ($TLS_SOURCE; re-run with --enable-tls to turn it on)"
+fi
 
 # A re-run is the update path, and `/releases/latest` is the one unsigned
 # link in the chain (docs/AGENT-DISTRIBUTION.md §6): an intercepting proxy
@@ -1413,7 +1553,7 @@ fi
 # silently mints a fresh one — the very divergence the handover above exists
 # to prevent.
 #
-# Every line that is not one of the three keys this script owns is carried
+# Every line that is not one of the four keys this script owns is carried
 # through verbatim. SOLADOR_AGENT_SKIP_FSTYPES and RUST_LOG are documented
 # keys an operator adds by hand, and a re-run that dropped them would be an
 # upgrade that quietly changed the agent's configuration.
@@ -1424,14 +1564,15 @@ ENV_NEW="$ENV_FILE.new"
         printf 'SOLADOR_AGENT_TOKEN=%s\n' "$TOKEN"
         printf 'SOLADOR_AGENT_BIND=%s\n' "$BIND"
         printf 'SOLADOR_AGENT_PORT=%s\n' "$PORT"
+        printf 'SOLADOR_AGENT_TLS=%s\n' "$TLS_VALUE"
         if [ -f "$ENV_FILE" ]; then
-            grep -vE '^SOLADOR_AGENT_(TOKEN|BIND|PORT)=' "$ENV_FILE" || true
+            grep -vE '^SOLADOR_AGENT_(TOKEN|BIND|PORT|TLS)=' "$ENV_FILE" || true
         fi
     } > "$ENV_NEW"
 )
 chmod 600 "$ENV_NEW"
 mv -f "$ENV_NEW" "$ENV_FILE"
-echo "==> Wrote $ENV_FILE (token + bind + port, mode 600; other keys kept)"
+echo "==> Wrote $ENV_FILE (token + bind + port + tls, mode 600; other keys kept)"
 
 # ---- install the binary ------------------------------------------------------
 # Staged BESIDE the live path and renamed over it, never copied onto it: Linux
@@ -1650,6 +1791,35 @@ case "$OS" in
         ;;
 esac
 
+# ---- TLS fingerprint (#447) -----------------------------------------------------
+# Printed only when TLS is actually on for this install. By now verify_health
+# above has already confirmed the service serving — over HTTPS, when TLS is
+# on — so the certificate it generated on that first start is already there;
+# this reads it (`solador-agent tls-fingerprint` never generates one, see
+# agent/src/tls.rs) rather than reimplementing the SHA-256/DER read in shell.
+if [ "$TLS_VALUE" = "1" ]; then
+    if TLS_FINGERPRINT="$("$DEST_BIN" tls-fingerprint 2>&1)"; then
+        echo "    TLS: on — certificate fingerprint (give this to Solador to pin):"
+        echo "      $TLS_FINGERPRINT"
+        echo "      Never delete $TLS_KEY_FILE / $TLS_CERT_FILE unless you mean to re-pair —"
+        echo "      a new certificate invalidates every cockpit's existing pin."
+        echo "      KNOWN LIMIT: no released Solador build can pin or dial this yet (#448 is"
+        echo "      not shipped) — this host reads as unreachable in the cockpit until it is."
+        echo "      To use this host with Solador today, edit $ENV_FILE, set"
+        echo "      SOLADOR_AGENT_TLS=0, and restart the service."
+    else
+        echo "    TLS: on, but the fingerprint could not be read (this should not happen right" >&2
+        echo "       after a verified HTTPS health check): $TLS_FINGERPRINT" >&2
+        echo "       Inspect by hand:  $DEST_BIN tls-fingerprint" >&2
+        echo "       KNOWN LIMIT: no released Solador build can pin or dial this yet (#448 is" >&2
+        echo "       not shipped) — this host reads as unreachable in the cockpit until it is." >&2
+        echo "       To use this host with Solador today, edit $ENV_FILE, set" >&2
+        echo "       SOLADOR_AGENT_TLS=0, and restart the service." >&2
+    fi
+else
+    echo "    TLS: off (a fresh install turns this on by default; re-run with --enable-tls to opt in)"
+fi
+
 # ---- the unattended update job (#394) ------------------------------------------
 # After the metrics service is verified AND reported, never before: a job
 # that updates a service this run could not bring up would be consent
@@ -1824,7 +1994,11 @@ update_scheduling_summary
 echo
 echo "Verify locally (the token reaches curl on stdin, not its argv, and the env"
 echo "file is read, never sourced — its contents are yours to type and not shell):"
-echo "  printf 'header = \"Authorization: Bearer %s\"\\n' \"\$(grep '^SOLADOR_AGENT_TOKEN=' \"$ENV_FILE\" | cut -d= -f2- | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g')\" | curl -sS -K - \"$(health_url "$BIND" "$PORT")\""
+if [ "$TLS_VALUE" = "1" ]; then
+    echo "  printf 'header = \"Authorization: Bearer %s\"\\ncacert = \"%s\"\\n' \"\$(grep '^SOLADOR_AGENT_TOKEN=' \"$ENV_FILE\" | cut -d= -f2- | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g')\" \"$TLS_CERT_FILE\" | curl -sS -K - \"$(health_url "$BIND" "$PORT" "$TLS_VALUE")\""
+else
+    echo "  printf 'header = \"Authorization: Bearer %s\"\\n' \"\$(grep '^SOLADOR_AGENT_TOKEN=' \"$ENV_FILE\" | cut -d= -f2- | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g')\" | curl -sS -K - \"$(health_url "$BIND" "$PORT" "$TLS_VALUE")\""
+fi
 echo
 echo "Bearer token (give this to Solador): stored in $ENV_FILE (mode 600)."
 echo "  Last 4 chars: ...${TOKEN: -4}   — read the full value with:"

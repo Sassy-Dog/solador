@@ -889,8 +889,10 @@ now. See "Open items".
 
 **Uninstalling is the mirror of installing, and covers only the invoking
 user (#439).** `install.sh --uninstall` — `--uninstall --purge` also removes
-the env file, and the pre-rename `devcanopy-agent.env` beside it, since
-install copied its token out of that file and never deleted it. Its
+the env file, the pre-rename `devcanopy-agent.env` beside it (since
+install copied its token out of that file and never deleted it), and the
+TLS keypair (`tls.key`/`tls.crt`, #447), on the same reasoning: purging
+credentials means a re-pair. Its
 refusals run in this order, each untouched: **root** first, for the same
 reason `--enable-timer` refuses it; then an **unsupported platform** (this
 script supports Linux/systemd and macOS/launchd, named as such); then the
@@ -1029,9 +1031,12 @@ here. It then removes both unit/plist pairs (Linux additionally
 changed, clearing any "failed" state a disable/stop that reported an error
 left on one of them), and removes the binary with its
 `.prev`/`.new`/`.update.lock`/`.rollback-displaced` siblings, the macOS
-launcher, the Linux guard, and the update stamp. The env file — the one
-file that holds the bearer token — is kept and named in the output unless
-`--purge` says otherwise; `--purge` alone is refused (it modifies
+launcher, the Linux guard, and the update stamp. The env file — the file
+that holds the bearer token — and the TLS keypair (`tls.key`/`tls.crt`,
+#447, beside it) are both **kept** and named in the output unless
+`--purge` says otherwise, for the same reason: a re-install as this user
+reuses them, so an operator's existing cockpit pairing (and, once #448
+ships, an existing TLS pin) survives. `--purge` alone is refused (it modifies
 `--uninstall`, it is never a mode of its own), and neither combines with
 `--migrate-from-opt` or `--enable-timer` (remove an install or
 create/repoint one, never both in one run). It never runs `loginctl

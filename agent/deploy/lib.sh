@@ -275,6 +275,15 @@ curl_exit_hint() {
         22) echo "HTTP error — the agent answered but refused (a 401 means the token it holds is not this one)" ;;
         52 | 56) echo "the connection was accepted then dropped — the agent is probably crash-looping; check its log" ;;
         6) echo "could not resolve the host" ;;
+        # TLS/certificate failures (#447): 77 is the one this repo has hit —
+        # cacert pointed at a file curl's TLS backend could not load (an
+        # earlier revision wrote tls.crt as DER, which every backend here
+        # refuses; see agent/src/tls.rs). 35/51/60 are the handshake and
+        # verification failures the same misconfiguration, or a genuinely
+        # mismatched pin, would produce.
+        77) echo "could not load the certificate cacert points at — it must be PEM, not DER" ;;
+        35) echo "TLS handshake failed — the agent may not actually be speaking TLS on that port" ;;
+        60 | 51) echo "certificate verification failed — the served certificate does not match the pinned tls.crt" ;;
         *) echo "see curl(1) EXIT CODES" ;;
     esac
 }
@@ -373,15 +382,22 @@ build_release_binary() {
 # tailnet IPv4 by default, but the operator can opt into a wildcard behind a
 # firewall. A wildcard is not an address you can dial, so probe loopback there;
 # an IPv6 literal needs brackets before it is a legal URL host.
+#
+# The optional third argument is SOLADOR_AGENT_TLS's value (#447): exactly
+# "1" means https://, anything else (including absent) means http:// — never
+# inferred from the port. Mirrors agent/src/update.rs's `health_url`, which
+# is why the two cannot disagree about what a bind/port/tls triple dials.
 health_url() {
-    local bind="${1:-}" port="${2:-7878}" host
+    local bind="${1:-}" port="${2:-7878}" tls="${3:-}" host scheme
     case "$bind" in
         "" | 0.0.0.0) host="127.0.0.1" ;;
         "::" | "[::]") host="[::1]" ;;
         *:*) host="[${bind}]" ;;
         *) host="$bind" ;;
     esac
-    printf 'http://%s:%s/v1/health\n' "$host" "${port:-7878}"
+    scheme="http"
+    [ "$tls" = "1" ] && scheme="https"
+    printf '%s://%s:%s/v1/health\n' "$scheme" "$host" "${port:-7878}"
 }
 
 # Pull the `version` field out of a /v1/health body without assuming jq is
@@ -482,16 +498,40 @@ verify_health() {
     local env_file="$1" expected_version="${2:-}" launchd_label="${3:-app.solador.agent}"
     [ -f "$env_file" ] || { echo "ERROR: env file $env_file not found; cannot verify." >&2; return 1; }
 
-    local token bind port url
+    local token bind port tls url
     token="$(env_value "$env_file" SOLADOR_AGENT_TOKEN)"
     bind="$(env_value "$env_file" SOLADOR_AGENT_BIND)"
     port="$(env_value "$env_file" SOLADOR_AGENT_PORT)"
-    url="$(health_url "$bind" "$port")"
+    tls="$(env_value "$env_file" SOLADOR_AGENT_TLS)"
+    url="$(health_url "$bind" "$port" "$tls")"
 
     if [ -z "$token" ]; then
         echo "ERROR: no SOLADOR_AGENT_TOKEN in $env_file; cannot verify." >&2
         return 1
     fi
+
+    # SOLADOR_AGENT_TLS=1 (#447): verify against the certificate beside the
+    # env file — tls.crt, the same directory `agent/src/tls.rs` writes it
+    # into — never with verification disabled. `cacert` (below, in the SAME
+    # -K config curl already reads the Authorization header from — a bash
+    # array of extra argv, the more obvious way to make this conditional,
+    # is a real portability trap: `"${arr[@]}"` on an EMPTY array throws
+    # "unbound variable" under `set -u` on bash 3.2, the interpreter this
+    # script runs under on macOS) makes curl trust exactly that one
+    # certificate; nothing else (a real CA-signed cert presented instead
+    # would fail here too, which is the point: this confirms it is THIS
+    # agent, not merely that something answered on the port).
+    #
+    # The existence check happens INSIDE the retry loop below, not here:
+    # on a fresh install this function is often called moments after
+    # `systemctl --user restart` / `launchctl kickstart`, and the agent
+    # generates tls.crt during its own startup — after reading settings and
+    # spawning the sampler, on Linux's Type=simple unit `restart` returns as
+    # soon as the process forks, before any of that has run. Checking once,
+    # here, would race that startup and report "never started with TLS on"
+    # about a service that is about to be fine.
+    local cert_file=""
+    cert_file="$(dirname "$env_file")/tls.crt"
 
     if [ -n "$expected_version" ]; then
         echo "==> Verifying $url reports version $expected_version ..."
@@ -504,15 +544,17 @@ verify_health() {
     # /proc/<pid>/cmdline on any Linux without hidepid, and #392 made this the
     # path a stranger runs on a shared server. curl's config syntax quotes
     # values with double quotes and escapes with backslash, so both are
-    # escaped in the token first.
+    # escaped in the token first. `cacert_line` rides the same config, on its
+    # own line; empty, curl's config parser ignores the blank line.
     local header_line curl_rc
     header_line="$(printf '%s' "$token" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
     header_line="header = \"Authorization: Bearer ${header_line}\""
 
-    local attempt body got
+    local attempt body got cacert_line cert_missing
     body=""
     got=""
     curl_rc=0
+    cert_missing=false
     # Bounded per attempt: without a connect timeout a blackholed bind (a
     # tailnet address with Tailscale down) waits out the OS SYN timeout —
     # 75 s on macOS, ~2 min on Linux — fifteen times over. `got` is reset per
@@ -521,7 +563,22 @@ verify_health() {
     for attempt in $(seq 1 "${VERIFY_HEALTH_ATTEMPTS:-15}"); do
         curl_rc=0
         got=""
-        body="$(printf '%s\n' "$header_line" | curl -fsS --connect-timeout 2 --max-time 5 -K - "$url" 2>/dev/null)" || curl_rc=$?
+        cacert_line=""
+        if [ "$tls" = "1" ]; then
+            if [ ! -f "$cert_file" ]; then
+                # Not yet generated — the agent may still be starting (see
+                # above). Consume this attempt like any other unanswered
+                # one, rather than a distinct return: only if it is STILL
+                # missing once every attempt is spent does that become the
+                # reported cause, below.
+                cert_missing=true
+                sleep 1
+                continue
+            fi
+            cert_missing=false
+            cacert_line="cacert = \"$(printf '%s' "$cert_file" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')\""
+        fi
+        body="$(printf '%s\n%s\n' "$header_line" "$cacert_line" | curl -fsS --connect-timeout 2 --max-time 5 -K - "$url" 2>/dev/null)" || curl_rc=$?
         if [ -n "$body" ]; then
             got="$(health_version "$body")"
             if [ -z "$expected_version" ]; then
@@ -538,6 +595,13 @@ verify_health() {
         fi
         sleep 1
     done
+
+    if [ "$tls" = "1" ] && [ "$cert_missing" = true ]; then
+        echo "ERROR: SOLADOR_AGENT_TLS=1 but $cert_file still does not exist after" >&2
+        echo "       ${VERIFY_HEALTH_ATTEMPTS:-15} attempts; the agent generates it on its own" >&2
+        echo "       first start, so this means it never started with TLS on." >&2
+        return 1
+    fi
 
     if [ -z "$expected_version" ]; then
         echo "ERROR: /v1/health did not come back online within timeout." >&2

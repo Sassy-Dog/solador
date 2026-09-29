@@ -42,4 +42,16 @@ if grep -qE '^(solador-crashreport|sentry|sentry-[a-z]+) ' <<< "$agent_tree"; th
     echo "::error::agent/ resolves crates/crashreport or the Sentry SDK — the agent must never carry crash reporting (CLAUDE.md: only app/src-tauri depends on crashreport)"
     exit 1
 fi
-echo "agent/ does not resolve solador-updatefeed, solador-crashreport or sentry."
+# A third absence, since #447: agent/Cargo.toml deliberately pins `rcgen`,
+# `rustls` and `axum-server` onto the `ring` crypto provider (the one
+# `reqwest`'s `rustls-tls` already resolves for the whole workspace) rather
+# than each crate's own default `aws-lc-rs` — a second crypto backend, and
+# a C/cmake build (`aws-lc-sys`) the musl cross-compile (`cargo-zigbuild`,
+# no Docker on the runner) does not need and must not gain silently the
+# next time one of those three crates' feature defaults change underneath
+# this pin.
+if grep -qE '^(aws-lc-rs|aws-lc-sys) ' <<< "$agent_tree"; then
+    echo "::error::agent/ resolves aws-lc-rs or aws-lc-sys — agent/Cargo.toml pins rcgen/rustls/axum-server onto the ring crypto provider specifically to avoid this second backend and its C/cmake build; check that pin rather than adding a workaround here"
+    exit 1
+fi
+echo "agent/ does not resolve solador-updatefeed, solador-crashreport, sentry, or aws-lc-rs/aws-lc-sys."

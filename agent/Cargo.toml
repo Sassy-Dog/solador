@@ -96,6 +96,29 @@ base64 = "0.23"
 # other crates resolve, no `json` feature (serde_json decodes the two bodies).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
+# --- SOLADOR_AGENT_TLS=1 (#447): self-signed HTTPS, generated once, kept ---
+# --- for the host's lifetime -----------------------------------------------
+# The self-signed ECDSA P-256 keypair (agent/src/tls.rs). "ring", not
+# "aws_lc_rs": `reqwest`'s `rustls-tls` above already resolves `ring` as the
+# workspace's one crypto backend, and rcgen's alternative pulls in
+# `aws-lc-sys`, a C/cmake build the musl cross-compile (`cargo-zigbuild`, no
+# Docker on the runner) does not need and should not gain.
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+# Only for `rustls::crypto::ring::default_provider().install_default()`
+# (main.rs's TLS startup path): rustls needs a process-wide default crypto
+# provider installed once, and axum-server's "tls-rustls-no-provider" feature
+# (below) deliberately picks none, so this is the one place that chooses —
+# the same "ring" reqwest already resolves, never a second backend.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# The TLS server itself: `axum_server::bind_rustls` around the same `Router`
+# the plain-HTTP path serves. Pinned to an exact patch (0.7.3, not "0.7") and
+# on the "tls-rustls-no-provider" feature specifically — NOT the crate's own
+# default "tls-rustls", which pulls `rustls/aws-lc-rs` unconditionally (the
+# same C/cmake backend `rcgen` above is kept off); "tls-rustls-no-provider"
+# was added between 0.7.0 and 0.7.3, so the exact version is load-bearing,
+# not habit.
+axum-server = { version = "0.7.3", default-features = false, features = ["tls-rustls-no-provider"] }
+
 [target.'cfg(unix)'.dependencies]
 # `getuid` for the launchd `gui/<uid>` domain and `access(W_OK)` for the
 # install-directory writability refusal. Already a transitive dependency of
@@ -124,4 +147,12 @@ ed25519-dalek = "3"
 blake2 = "0.11"
 # Loopback "release server" and temp install trees for the transaction tests.
 tempfile = "3"
+# Test-only: `CertificateDer`/`PrivateKeyDer`/`ServerName` for the TLS tests
+# (agent/src/tls.rs, agent/src/update.rs, agent/tests/update_flow.rs) that
+# drive a real rustls handshake or client verifier directly. The shipped
+# binary never names these types itself — `rcgen`/`axum-server`/`reqwest`
+# take and return plain `Vec<u8>` DER at every boundary this crate's own code
+# crosses — and the crate costs nothing new to compile: `axum-server`'s
+# "tls-rustls-no-provider" feature already resolves it transitively.
+rustls-pki-types = "1"
 

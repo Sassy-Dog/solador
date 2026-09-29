@@ -1009,6 +1009,23 @@ test_health_url() {
         "http://127.0.0.1:9999/v1/health" "$(health_url "127.0.0.1" "9999")"
     assert_eq "health_url defaults both arguments" \
         "http://127.0.0.1:7878/v1/health" "$(health_url)"
+
+    # SOLADOR_AGENT_TLS=1 (#447): https://, across the same bind shapes —
+    # mirrors agent/src/update.rs's own `health_url_uses_https_when_tls_is_on`
+    # so the two implementations cannot silently diverge on what "on" means.
+    assert_eq "health_url dials https:// when tls=1" \
+        "https://100.87.202.125:7878/v1/health" "$(health_url "100.87.202.125" "7878" "1")"
+    assert_eq "health_url still probes loopback for a wildcard bind, over https" \
+        "https://127.0.0.1:7878/v1/health" "$(health_url "0.0.0.0" "7878" "1")"
+    assert_eq "health_url still brackets an IPv6 literal, over https" \
+        "https://[fd7a:115c:a1e0::1]:7878/v1/health" "$(health_url "fd7a:115c:a1e0::1" "7878" "1")"
+    # Anything other than the literal "1" is http://, never inferred.
+    assert_eq "health_url treats an empty tls argument as http://" \
+        "http://127.0.0.1:7878/v1/health" "$(health_url "127.0.0.1" "7878" "")"
+    assert_eq "health_url treats tls=0 as http://" \
+        "http://127.0.0.1:7878/v1/health" "$(health_url "127.0.0.1" "7878" "0")"
+    assert_eq "health_url treats an unrecognized tls value as http://" \
+        "http://127.0.0.1:7878/v1/health" "$(health_url "127.0.0.1" "7878" "true")"
 }
 
 # ---- health_version ---------------------------------------------------------
@@ -1323,6 +1340,9 @@ test_verify_health() {
     assert_output_has "curl_exit_hint names a timeout" "$(curl_exit_hint 28)" "timed out"
     assert_output_has "curl_exit_hint names an HTTP refusal" "$(curl_exit_hint 22)" "401"
     assert_output_has "curl_exit_hint names a dropped connection" "$(curl_exit_hint 56)" "check its log"
+    assert_output_has "curl_exit_hint names the DER/PEM cacert failure (#447)" "$(curl_exit_hint 77)" "PEM, not DER"
+    assert_output_has "curl_exit_hint names a failed TLS handshake" "$(curl_exit_hint 35)" "TLS handshake failed"
+    assert_output_has "curl_exit_hint names a certificate mismatch" "$(curl_exit_hint 60)" "does not match the pinned"
     assert_output_has "curl_exit_hint falls back to the manual" "$(curl_exit_hint 99)" "curl(1)"
 
     # The CalVer comparison the re-run downgrade guard uses.
@@ -1397,6 +1417,66 @@ test_verify_health() {
     ) >/dev/null 2>&1
     assert_eq "verify_health fails when the agent never comes back online" "1" "$?"
 
+    # ---- SOLADOR_AGENT_TLS=1 (#447) ----
+    export STUB_CURL_BODY='{"status":"ok","hostname":"ubu-3xdv","version":"0.4.0"}'
+    local tls_dir tls_env
+    tls_dir="$TMP/tlsconfig"
+    tls_env="$tls_dir/solador-agent.env"
+    mkdir -p "$tls_dir"
+    printf 'SOLADOR_AGENT_TOKEN=%s\nSOLADOR_AGENT_BIND=127.0.0.1\nSOLADOR_AGENT_PORT=7878\nSOLADOR_AGENT_TLS=1\n' \
+        "$token" > "$tls_env"
+
+    # No certificate at all: refused, and curl is never even invoked — the
+    # missing-cert check short-circuits before a request could leak anything.
+    : > "$STUB_CURL_ARGV"
+    out="$(
+        PATH="$STUBS:$PATH"
+        export VERIFY_HEALTH_ATTEMPTS=2
+        verify_health "$tls_env" "0.4.0" 2>&1
+    )"
+    status=$?
+    assert_eq "verify_health refuses SOLADOR_AGENT_TLS=1 with no certificate" "1" "$status"
+    assert_output_has "the refusal names why" "$out" "never started with TLS on"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "no certificate: verify_health never invokes curl" "curl was invoked anyway"
+    else
+        pass "no certificate: verify_health never invokes curl"
+    fi
+
+    # The certificate appearing PARTWAY through the retry loop — the
+    # fresh-install startup race the existence check moved inside the loop
+    # to survive (#447 review) — still succeeds: once found, the probe
+    # dials https:// and pins it via cacert. This needs REAL per-attempt
+    # timing to race a background writer against, so it uses a narrower
+    # PATH than the rest of this function: just the curl stub, deliberately
+    # WITHOUT $STUBS's own `sleep` (instant, for every other test's speed —
+    # see its own stub, "keeps even that second off the clock" — which
+    # would let all attempts finish before this test's background writer's
+    # real 0.3s ever elapses).
+    local tls_stub_dir
+    tls_stub_dir="$TMP/tls-stubs"
+    mkdir -p "$tls_stub_dir"
+    ln -sf "$STUBS/curl" "$tls_stub_dir/curl"
+    : > "$STUB_CURL_ARGV"
+    rm -f "$tls_dir/tls.crt"
+    (
+        sleep 0.3
+        printf 'FAKE-PEM-FOR-THIS-SHELL-LEVEL-TEST' > "$tls_dir/tls.crt"
+    ) &
+    out="$(
+        PATH="$tls_stub_dir:$PATH"
+        export VERIFY_HEALTH_ATTEMPTS=5
+        verify_health "$tls_env" "0.4.0" 2>&1
+    )"
+    status=$?
+    wait
+    assert_eq "verify_health survives the certificate appearing mid-retry" "0" "$status"
+    assert_file_has "once found, the probe dials https://" "$STUB_CURL_ARGV" \
+        "https://127.0.0.1:7878/v1/health"
+    assert_file_has "once found, the probe pins via cacert" "$STUB_CURL_ARGV" \
+        "[config] cacert = \"$tls_dir/tls.crt\""
+
+    rm -rf "$tls_dir"
     unset STUB_CURL_BODY STUB_CURL_ARGV
 }
 
@@ -1798,6 +1878,11 @@ make_checkout() {
 # was actually asked, not on curl's argv) — plus its .minisig, unless the
 # key is "-".
 AGENT_ARGV="$TMP/agent-argv"
+# The fingerprint every fixture's `tls-fingerprint` prints (#447): a fixed,
+# obviously-fake value — the fixture is a shell stub with no real
+# certificate behind it, and install.sh's Done block only ever reads this
+# back and prints it, never parses it.
+FIXTURE_TLS_FINGERPRINT="AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
 make_fixture() {
     local version="$1" triple="$2" seckey="$3" marker="${4:-}" f
     mkdir -p "$FIXTURES"
@@ -1810,7 +1895,39 @@ if [ "\$1" = "--version" ]; then
     printf '%s\n' '$version'
     exit 0
 fi
+if [ "\$1" = "tls-fingerprint" ]; then
+    printf '%s\n' '$FIXTURE_TLS_FINGERPRINT'
+    exit 0
+fi
 exit 0
+STUB
+    rm -f "$f.minisig"
+    if [ "$seckey" != "-" ]; then
+        sign_fixture "$f" "$seckey"
+    fi
+    printf '%s\n' "$f"
+}
+
+# make_pre_tls_fixture <version> <triple> <seckey|->: like make_fixture, but
+# `tls-fingerprint` is an UNRECOGNIZED argument (exit 2), matching a real
+# agent published before #447 — main.rs's parse_args refuses anything it
+# does not name, and this subcommand did not exist yet. install.sh's
+# capability probe (`STAGED_BIN_SUPPORTS_TLS`) is what this fixture exists
+# to exercise: a fresh install staging THIS binary must not default
+# SOLADOR_AGENT_TLS to 1.
+make_pre_tls_fixture() {
+    local version="$1" triple="$2" seckey="$3" f
+    mkdir -p "$FIXTURES"
+    f="$FIXTURES/$(agent_asset_name "$version" "$triple")"
+    cat > "$f" <<STUB
+#!/bin/sh
+printf '%s\\n' "\$*" >> "$AGENT_ARGV"
+if [ "\$1" = "--version" ]; then
+    printf '%s\n' '$version'
+    exit 0
+fi
+echo "solador-agent: unrecognized argument '\$1'" >&2
+exit 2
 STUB
     rm -f "$f.minisig"
     if [ "$seckey" != "-" ]; then
@@ -1823,12 +1940,15 @@ STUB
 # stdin from INSTALL_STDIN (a token, or nothing), PATH = stubs + the tool set
 # in INSTALL_PATH, and the STUB_* variables the caller exported. Output
 # (both streams) lands in $INSTALL_OUT; the exit status is returned AND kept
-# in INSTALL_STATUS, for assertions that read the output first.
+# in INSTALL_STATUS, for assertions that read the output first. INSTALL_TLS
+# (#447, default "0") sets SOLADOR_AGENT_TLS for the run; "unset" leaves it
+# unset so install.sh's own default (on for a fresh install) decides.
 INSTALL_OUT="$TMP/install.out"
 INSTALL_STDIN=""
 INSTALL_PATH=""
 INSTALL_SCRIPT=""
 INSTALL_STATUS=""
+INSTALL_TLS=""
 run_install() {
     local home="$1"
     shift
@@ -1839,6 +1959,20 @@ run_install() {
         export STUB_CURL_FIXTURES="$FIXTURES"
         unset XDG_CACHE_HOME
         export USER="${USER:-tester}"
+        # SOLADOR_AGENT_TLS (#447) defaults to off for this harness: the
+        # fixture "agent" is a shell stub with no real TLS server behind it,
+        # so every pre-#447 scenario below keeps exercising the plain-HTTP
+        # path it was written against, via install.sh's own precedence (a
+        # pre-set SOLADOR_AGENT_TLS wins outright, ahead of "fresh install
+        # defaults to on"). A TLS-specific scenario sets INSTALL_TLS=unset
+        # to let that default actually fire, or INSTALL_TLS=1 to force it
+        # on for a re-run — either way it also fakes the certificate
+        # `verify_health` then requires; see the TLS section below.
+        if [ "${INSTALL_TLS:-0}" = "unset" ]; then
+            unset SOLADOR_AGENT_TLS
+        else
+            export SOLADOR_AGENT_TLS="${INSTALL_TLS:-0}"
+        fi
         # INSTALL_UMASK: the operator's umask is not ours to assume; a case
         # runs under 002 to prove the env file and plist modes are explicit.
         umask "${INSTALL_UMASK:-022}"
@@ -3298,6 +3432,31 @@ test_install_linux_flow() {
         && pass "the legacy env file is left for rollback" \
         || fail "the legacy env file is left for rollback" "it was removed"
 
+    # ---- the pre-rename handover is NOT a fresh install: TLS stays off (#447 review round 2) ----
+    # Run with INSTALL_TLS=unset (rather than this harness's own
+    # SOLADOR_AGENT_TLS=0 default) so install.sh's real FRESH_INSTALL /
+    # LEGACY_ENV_FILE precedence is what actually decides this, the same way
+    # test_install_tls's "pre-#447 env file" case does. $ENV_FILE has never
+    # existed under the new name, so without the LEGACY_ENV_FILE check this
+    # host reads as fresh and gets SOLADOR_AGENT_TLS=1 — breaking the exact
+    # cockpit pairing the handover exists to keep, since #448 has not shipped.
+    rm -rf "$home"
+    mkdir -p "$home/.config/systemd/user"
+    printf '[Service]\nExecStart=/opt/devcanopy-agent/devcanopy-agent\n' > "$home/.config/systemd/user/devcanopy-agent.service"
+    printf 'DEVCANOPY_AGENT_TOKEN=legacy-tok-tls-MUST-NOT-BE-PRINTED\nDEVCANOPY_AGENT_BIND=0.0.0.0\n' \
+        > "$home/.config/devcanopy-agent.env"
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: the pre-rename handover succeeds" "0" "$INSTALL_STATUS"
+    assert_file_has "the handover does NOT turn TLS on" "$env_file" "SOLADOR_AGENT_TLS=0"
+    assert_output_has "the run does not call this a fresh install" "$out" "TLS: off"
+    case "$out" in
+        *"TLS: on (fresh install)"*)
+            fail "the handover is not treated as a fresh install" "the output said so" ;;
+        *) pass "the handover is not treated as a fresh install" ;;
+    esac
+
     # ---- /opt migration gate ----
     # An existing unit that starts /opt/…: refuse, before any state change,
     # and print the explicit path. Then take that path.
@@ -3339,7 +3498,21 @@ test_install_linux_flow() {
     run_install "$home" --migrate-from-opt
     out="$(cat "$INSTALL_OUT")"
     assert_eq "install.sh --migrate-from-opt re-points an /opt install" "0" "$INSTALL_STATUS"
-    assert_eq "the migration preserves the env file byte-for-byte" "$env_before" "$(cat "$env_file")"
+    # The migration otherwise preserves the env file byte-for-byte, but this
+    # one gains a line it never had: SOLADOR_AGENT_TLS (#447) is a fourth
+    # key install.sh now always writes (0 here — this harness's default,
+    # since the fixture agent has no real TLS server behind it), so a
+    # pre-#447 file (hand-crafted above with only the original three) picks
+    # it up on its first re-run through the new install.sh, right where the
+    # write order puts it: after the three original owned keys, before the
+    # operator-added one that was already carried through unowned.
+    assert_eq "the migration preserves the env file otherwise byte-for-byte, plus the new TLS key" \
+        "SOLADOR_AGENT_TOKEN=opt-tok-MUST-NOT-BE-PRINTED
+SOLADOR_AGENT_BIND=100.64.0.3
+SOLADOR_AGENT_PORT=7979
+SOLADOR_AGENT_TLS=0
+RUST_LOG=debug" \
+        "$(cat "$env_file")"
     assert_file_has "the migration re-points ExecStart at the user-owned binary" "$unit" "ExecStart=$bin"
     assert_file_has "the migration carries an operator-added key through" "$env_file" "RUST_LOG=debug"
     assert_file_has "the migration keeps the displaced unit as .prev" "$unit.prev" "ExecStart=$opt_bin"
@@ -3390,6 +3563,179 @@ test_install_linux_flow() {
     else
         pass "a refused HOME downloads nothing"
     fi
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
+}
+
+# ---- TLS (#447) ---------------------------------------------------------------
+# The fixture "agent" is a shell stub (make_fixture) with no real TLS server
+# behind it, and the stub systemctl/launchctl never actually run it as a
+# live process — so nothing in this harness generates a real certificate.
+# Every scenario below pre-seeds $home/.config/tls.crt itself, standing in
+# for what the real Rust agent would have written on its own first start,
+# before the health probe (also stubbed — STUB_CURL_BODY, not a real TLS
+# handshake) needs it to exist. What IS real and asserted here is
+# install.sh's own logic: which value SOLADOR_AGENT_TLS gets and why
+# (TLS_SOURCE, in the "==> TLS:" line), that the probe switches to https://
+# and to `cacert = "…tls.crt"` on curl's stdin config, and that the Done
+# block reads the fingerprint back through `tls-fingerprint` rather than
+# generating or parsing anything itself.
+test_install_tls() {
+    local home="$TMP/home-tls" env_file bin out
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh: TLS defaults on for a fresh install"
+        skip_needs_minisign "install.sh: a no-flag re-run keeps TLS off"
+        skip_needs_minisign "install.sh: --enable-tls turns an existing off install on"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
+    export STUB_TAILSCALE_IP="100.64.0.9"
+
+    env_file="$home/.config/solador-agent.env"
+    bin="$home/.local/bin/solador-agent"
+
+    # ---- a fresh install defaults SOLADOR_AGENT_TLS=1: https://, cacert, and the fingerprint in the Done block ----
+    mkdir -p "$home/.config"
+    printf 'FAKE-DER-BYTES' > "$home/.config/tls.crt"
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="tok-tls-fresh
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: TLS defaults on for a fresh install" "0" "$INSTALL_STATUS"
+    assert_file_has "the env file carries SOLADOR_AGENT_TLS=1" "$env_file" "SOLADOR_AGENT_TLS=1"
+    assert_output_has "the run reports TLS on, sourced from a fresh install" "$out" "TLS: on (fresh install)"
+    assert_file_has "the health probe dials https://" "$STUB_CURL_ARGV" "https://100.64.0.9:7878/v1/health"
+    assert_file_has "the health probe pins the certificate via cacert" "$STUB_CURL_ARGV" \
+        "[config] cacert = \"$home/.config/tls.crt\""
+    assert_output_has "the Done block prints the fingerprint" "$out" "$FIXTURE_TLS_FINGERPRINT"
+    assert_output_has "the Done block warns against deleting the key/cert" "$out" "Never delete"
+    [ -x "$bin" ] || fail "the binary is installed before the fingerprint is read" "$out"
+
+    # ---- a no-flag re-run keeps an existing TLS=1, unchanged ----
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a no-flag re-run over a TLS-on install" "0" "$INSTALL_STATUS"
+    assert_file_has "TLS stays on across a no-flag re-run" "$env_file" "SOLADOR_AGENT_TLS=1"
+    assert_output_has "the re-run names the env file as the source" "$out" \
+        "TLS: on (kept from the existing env file)"
+
+    # ---- an install with SOLADOR_AGENT_TLS=0 pre-set stays off across a no-flag re-run ----
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    INSTALL_STDIN="tok-tls-off
+" run_install "$home"
+    assert_eq "install.sh: a fresh install with SOLADOR_AGENT_TLS=0 pre-set" "0" "$INSTALL_STATUS"
+    assert_file_has "TLS is off, per the pre-set env var, even though this install is fresh" \
+        "$env_file" "SOLADOR_AGENT_TLS=0"
+
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a no-flag re-run over a TLS-off install" "0" "$INSTALL_STATUS"
+    assert_file_has "a no-flag re-run does not turn TLS on" "$env_file" "SOLADOR_AGENT_TLS=0"
+    assert_output_has "the re-run says how to opt in" "$out" "re-run with --enable-tls"
+
+    # ---- only --enable-tls turns an existing off install on ----
+    printf 'FAKE-DER-BYTES' > "$home/.config/tls.crt"
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home" --enable-tls
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: --enable-tls turns an existing off install on" "0" "$INSTALL_STATUS"
+    assert_file_has "--enable-tls flips SOLADOR_AGENT_TLS to 1" "$env_file" "SOLADOR_AGENT_TLS=1"
+    assert_output_has "the run names --enable-tls as the source" "$out" "TLS: on (--enable-tls)"
+
+    # ---- the most common upgrade path: an env file from BEFORE #447 (no
+    # SOLADOR_AGENT_TLS line at all — hand-crafted, the way the /opt
+    # migration fixture above is, rather than produced by a run_install
+    # call, since every run_install call in THIS file's own present already
+    # writes the key) ----
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'SOLADOR_AGENT_TOKEN=pre-447-tok\nSOLADOR_AGENT_BIND=127.0.0.1\nSOLADOR_AGENT_PORT=7878\n' \
+        > "$env_file"
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a no-flag re-run over a pre-#447 env file succeeds" "0" "$INSTALL_STATUS"
+    assert_file_has "a pre-#447 env file's absent key resolves to off" "$env_file" "SOLADOR_AGENT_TLS=0"
+    assert_output_has "the run names the unset existing choice, not a fresh install" "$out" \
+        "TLS: off (kept from the existing env file (was unset)"
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
+}
+
+# A release published before #447 answers `--version` but refuses
+# `tls-fingerprint` as an unrecognized argument (exit 2) — install.sh's
+# capability probe reads exactly that, so defaulting TLS on for a fresh
+# install must depend on the STAGED bytes, never on this script's own
+# revision.
+test_install_tls_capability_gate() {
+    local home="$TMP/home-tls-capability" env_file bin out
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh: a fresh install does not default TLS on when the staged binary predates it"
+        skip_needs_minisign "install.sh: --enable-tls is refused against a binary that predates it"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_pre_tls_fixture 2026.9.5 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.5"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.5"}'
+    export STUB_TAILSCALE_IP="100.64.0.9"
+
+    env_file="$home/.config/solador-agent.env"
+    bin="$home/.local/bin/solador-agent"
+
+    # ---- a fresh install still succeeds, but TLS stays off ----
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="tok-pre-tls
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a fresh install with a pre-#447 binary still succeeds" "0" "$INSTALL_STATUS"
+    [ -x "$bin" ] || fail "the binary is installed" "$out"
+    assert_file_has "TLS stays off: the staged binary cannot serve it" "$env_file" "SOLADOR_AGENT_TLS=0"
+    assert_output_has "the run explains why, naming #447" "$out" "predates #447"
+
+    # ---- --enable-tls against the same binary is refused, not silently ignored ----
+    # A RE-run (the env file from the fresh install above already exists),
+    # not another fresh install: on a fresh install --enable-tls is always
+    # redundant with the (capability-gated) default, so it takes a second
+    # run to reach the --enable-tls branch of install.sh's own precedence at
+    # all — the same reason a real operator would only pass the flag once
+    # they already have a host installed and want to turn TLS on.
+    ENV_BEFORE="$(cat "$env_file")"
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home" --enable-tls
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: --enable-tls is refused against a binary that predates it" "1" "$INSTALL_STATUS"
+    assert_output_has "the refusal names the reason" "$out" "does not support TLS"
+    assert_eq "a refused --enable-tls leaves the env file byte-for-byte" "$ENV_BEFORE" "$(cat "$env_file")"
+
+    # ---- a re-run with an EXISTING SOLADOR_AGENT_TLS=1 is refused too, not
+    # silently kept on (#447 review round 2). Simulates SOLADOR_AGENT_RELEASE
+    # pinned back to a release before #447 — the exact downgrade install.sh's
+    # own error messages recommend for other problems — on a host that
+    # already had TLS on: the "kept from the existing env file" branch must
+    # not skip the capability check just because no flag was given.
+    printf 'SOLADOR_AGENT_TOKEN=tok-existing-tls\nSOLADOR_AGENT_BIND=127.0.0.1\nSOLADOR_AGENT_PORT=7878\nSOLADOR_AGENT_TLS=1\n' \
+        > "$env_file"
+    ENV_BEFORE="$(cat "$env_file")"
+    reset_argv_logs
+    INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a re-run with an existing TLS=1 is refused against a binary that predates it" \
+        "1" "$INSTALL_STATUS"
+    assert_output_has "the refusal names the reason" "$out" "predates #447 and does not support TLS"
+    assert_output_has "the refusal names the SOLADOR_AGENT_TLS=0 override" "$out" "SOLADOR_AGENT_TLS=0"
+    assert_eq "the refusal leaves the env file byte-for-byte" "$ENV_BEFORE" "$(cat "$env_file")"
 
     unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
 }
@@ -5357,6 +5703,7 @@ STUB
 
 test_uninstall_linux() {
     local home="$TMP/home-uninstall-linux" env_file unit update_unit update_timer bin guard out
+    local tls_key tls_cert
     if [ "$HAVE_MINISIGN" != true ]; then
         skip_needs_minisign "install.sh --uninstall (Linux)"
         return
@@ -5373,6 +5720,8 @@ test_uninstall_linux() {
     unit="$home/.config/systemd/user/solador-agent.service"
     update_unit="$home/.config/systemd/user/solador-agent-update.service"
     update_timer="$home/.config/systemd/user/solador-agent-update.timer"
+    tls_key="$home/.config/tls.key"
+    tls_cert="$home/.config/tls.crt"
     bin="$home/.local/bin/solador-agent"
     guard="$home/.local/bin/solador-agent-update-guard"
 
@@ -5391,6 +5740,12 @@ test_uninstall_linux() {
     : > "$bin.rollback-displaced"
     mkdir -p "$(dirname "$home/.config/solador-agent-update.last-attempt")"
     printf '1234567890\n' > "$home/.config/solador-agent-update.last-attempt"
+    # A TLS keypair (#447), seeded by hand for the same reason: this install
+    # ran with TLS off (the harness default), so nothing here would create
+    # one on its own, and "survives without --purge, gone with it" needs a
+    # real file to make either half of that claim about.
+    printf 'FAKE-KEY-BYTES' > "$tls_key"
+    printf 'FAKE-CERT-BYTES' > "$tls_cert"
 
     # ---- refuses while the transaction lock is held ----
     hold_fake_lock "$bin.update.lock"
@@ -5468,6 +5823,14 @@ test_uninstall_linux() {
         || fail "the env file survives without --purge" "$env_file is gone"
     assert_output_has "the kept env file is named in the output" "$out" "$env_file"
     assert_output_has "the kept env file's removal is spelled out" "$out" "--uninstall --purge"
+    # The TLS key/certificate (#447) follow the same rule as the env file:
+    # kept without --purge, named in the output.
+    if [ -e "$tls_key" ] && [ -e "$tls_cert" ]; then
+        pass "the TLS key and certificate survive without --purge"
+    else
+        fail "the TLS key and certificate survive without --purge" "$tls_key or $tls_cert is gone"
+    fi
+    assert_output_has "the kept TLS key/certificate are named in the output" "$out" "$tls_key, $tls_cert"
     assert_output_has "install.sh --uninstall reports success" "$out" "uninstalled for"
     if grep -q "disable-linger" "$STUB_SYSTEMCTL_ARGV"; then
         fail "install.sh --uninstall never disables linger" "loginctl disable-linger was called"
@@ -5488,6 +5851,11 @@ test_uninstall_linux() {
     fi
     [ -e "$env_file" ] && pass "a no-op uninstall still leaves the env file" \
         || fail "a no-op uninstall still leaves the env file" "$env_file is gone"
+    if [ -e "$tls_key" ] && [ -e "$tls_cert" ]; then
+        pass "a no-op uninstall still leaves the TLS key and certificate"
+    else
+        fail "a no-op uninstall still leaves the TLS key and certificate" "$tls_key or $tls_cert is gone"
+    fi
 
     # ---- --purge also removes the env file ----
     reset_argv_logs
@@ -5497,6 +5865,15 @@ test_uninstall_linux() {
     [ -e "$env_file" ] && fail "--purge removes the env file" "$env_file still exists" \
         || pass "--purge removes the env file"
     assert_output_has "the purge names the env file removed" "$out" "$env_file"
+    # --purge removes the TLS key/certificate too (#447): re-pairing means a
+    # fresh certificate on the agent's next start.
+    if [ -e "$tls_key" ] || [ -e "$tls_cert" ]; then
+        fail "--purge removes the TLS key and certificate" "$tls_key or $tls_cert still exists"
+    else
+        pass "--purge removes the TLS key and certificate"
+    fi
+    assert_output_has "the purge names the TLS key removed" "$out" "$tls_key"
+    assert_output_has "the purge names the TLS certificate removed" "$out" "$tls_cert"
 
     # ---- idempotent again, even with --purge ----
     reset_argv_logs
@@ -6860,6 +7237,8 @@ test_bootstrap_signature_gate
 test_bootstrap_rerun_hint_names_bootstrap
 test_bootstrap_uninstall_rerun_hint
 test_install_linux_flow
+test_install_tls
+test_install_tls_capability_gate
 test_install_macos_flow
 test_install_update_timer_linux
 test_install_update_timer_macos
