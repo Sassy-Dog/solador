@@ -803,42 +803,60 @@ install, and everything it created, is user-owned):
 
 ```bash
 ./deploy/install.sh --uninstall           # keeps ~/.config/solador-agent.env (it holds the token)
-./deploy/install.sh --uninstall --purge   # ...and deletes it too
+./deploy/install.sh --uninstall --purge   # ...and deletes it, and the pre-rename devcanopy-agent.env, too
 ```
 
-It refuses first, before touching anything, when the service manager itself
-is unreachable (`systemctl --user show-environment` on Linux, the
-`gui/<uid>` domain on macOS — the same check the install path makes: a
-`sudo -u`/`su` session, or one with no `XDG_RUNTIME_DIR`, cannot ask systemd
-to stop anything). On Linux it then runs `systemctl --user disable --now` on
-the metrics service and the update timer (whichever exist), removes
+Its refusals run in this order, each untouched: **root** first (same reason
+`--enable-timer` refuses it), then the **service manager being unreachable**
+(`systemctl --user show-environment` on Linux, the `gui/<uid>` domain on
+macOS — the same check the install path makes: a `sudo -u`/`su` session, or
+one with no `XDG_RUNTIME_DIR`, cannot ask systemd to stop anything), then
+`<bin>.update.lock` being **held** by a `solador-agent update`/`rollback`
+already in progress (see **Updating**, below) — uninstalling mid-swap would
+race that transaction's own binary rename, so this holds the *same* flock
+for the rest of the run wherever `flock(1)` exists, closing the window a
+transaction could start in rather than merely re-checking it afterwards.
+
+On Linux it then runs `systemctl --user disable --now` on the metrics
+service and the update timer (whichever exist), removes
 `solador-agent.service`, `solador-agent.service.prev`,
 `solador-agent-update.service` and `solador-agent-update.timer`, then
 `daemon-reload`s. On macOS it runs `launchctl bootout
 gui/<uid>/app.solador.agent` and `gui/<uid>/app.solador.agent.update`
-(whichever are loaded) and removes both plists. Both platforms then remove
-the binary and its `.prev`/`.new`/`.update.lock`/`.rollback-displaced`
-siblings, the macOS launcher (`solador-agent-launchd`), the Linux update
-guard (`solador-agent-update-guard`), and the update stamp
+(whichever are loaded) and removes both plists. Before either unit/plist is
+removed, the binary path it currently names is read: one outside
+`~/.local/bin` — an unmigrated `/opt` host, most likely — is reported as
+`left behind: <path> (not owned by this user; see --migrate-from-opt)`
+rather than silently ignored; it is never this user's to delete. Both
+platforms then remove the binary and its
+`.prev`/`.new`/`.update.lock`/`.rollback-displaced` siblings, the macOS
+launcher (`solador-agent-launchd`), the Linux update guard
+(`solador-agent-update-guard`), and the update stamp
 (`~/.config/solador-agent-update.last-attempt`). Logs are left alone.
 
 It never runs `loginctl disable-linger` — another service on this login may
-depend on it — and it refuses, with nothing touched, while `solador-agent
-update` or `rollback` holds `<bin>.update.lock` (see **Updating**, below):
-uninstalling mid-swap would race the exact binary rename that transaction is
-in the middle of. A second run finds nothing left to remove and says so;
+depend on it. A second run finds nothing left to remove and says so;
 `--purge` alone (with no `--uninstall`) is refused, as is `--uninstall`
 beside `--migrate-from-opt` or `--enable-timer`. The env file is named in the
 output whether it is kept or removed, since it is the one file here that
-carries the bearer token.
+carries the bearer token; `--purge` also removes the pre-rename
+`devcanopy-agent.env`, since install copied its token out of that file and
+never deleted it.
 
 **Exit status**: 0 uninstalled (or already clean); 1 refused before anything
-changed (root, an unreachable manager, the lock, a hostile
-`SOLADOR_AGENT_LAUNCHD_LABEL`, an unsupported platform); 2 usage
+changed (root, an unreachable manager, the lock already held at the start, a
+hostile `SOLADOR_AGENT_LAUNCHD_LABEL`, an unsupported platform); 2 usage
 (`--purge` without `--uninstall`, or the combinations above); 4 every file
 was still removed, but a *reachable* manager refused a specific stop
 request anyway — the summary names what to check by hand, since this run
-cannot promise the process actually stopped.
+cannot promise the process actually stopped; 5 the lock became held *after*
+the service was stopped and its unit/plist removed (a transaction started in
+that window, on a host with no `flock(1)` to have closed it) — the binary
+and lock file are deliberately left alone rather than raced, and re-running
+once that transaction finishes will remove them; 6 at least one file that
+should have been removable — the service and other files may already be
+gone — could not actually be deleted (a read-only parent directory, an
+immutable file, or similar); fix that and re-run.
 
 ## Moving the agent to another user
 
@@ -896,6 +914,14 @@ host instead. Give the new user's install a distinct port for the overlap:
    free, a subsequent `SOLADOR_AGENT_PORT=7878 ./deploy/install.sh` as the
    new user (a re-run, so its token is reused unchanged) can reclaim the
    default port; update the cockpit's stored port to match if you do.
+
+   If the *old* user's install was itself never migrated off the pre-#392
+   `/opt` layout, this step's output will say
+   `left behind: /opt/solador-agent/... (not owned by this user; see --migrate-from-opt)`
+   — that binary is root-owned, so this uninstall (which runs with no
+   `sudo` anywhere) cannot remove it and must not pretend to. It is inert
+   once nothing starts it any more; remove it by hand whenever you like
+   (`sudo rm -rf /opt/solador-agent`).
 
 Each step is independently re-runnable: re-installing as the new user, or
 re-uninstalling as the old one, is a no-op or a safe refresh, never a

@@ -54,22 +54,37 @@
 # stops both service-manager jobs, removes both unit/plist pairs, the binary
 # and its .prev/.new/.update.lock/.rollback-displaced siblings, the macOS
 # launcher, the Linux guard, and the update stamp. The env file (the token)
-# is KEPT and named in the output unless --purge is also given. Refuses as
-# root (same reason --enable-timer does) or when the service manager itself
-# is unreachable (same reachability check the install path makes — a
-# sudo -u/su session, say), never runs loginctl disable-linger, and refuses,
-# untouched, while solador-agent update/rollback holds <bin>.update.lock — an
-# uninstall mid-transaction would race that transaction's own binary swap.
+# is KEPT and named in the output unless --purge is also given, which also
+# removes the pre-rename devcanopy-agent.env (install copied its token out of
+# that file and never deleted it). A binary an existing unit/plist names
+# OUTSIDE ~/.local/bin — an unmigrated /opt host, most likely — is named as
+# "left behind" rather than silently ignored; it is never this user's to
+# delete. Refusals run in this order and each is untouched: root (same
+# reason --enable-timer refuses it), then the service manager being
+# unreachable (same reachability check the install path makes — a sudo -u/su
+# session, say), then <bin>.update.lock being held by a solador-agent
+# update/rollback already in progress — an uninstall mid-transaction would
+# race that transaction's own binary swap, so this holds the SAME flock for
+# the rest of the run wherever flock(1) exists, closing the window a
+# transaction could start in rather than merely re-checking it afterwards.
 # Idempotent: a second run finds nothing left and says so. Exit status: 0
 # uninstalled (or already clean — a second run is a no-op) — earned only when
 # every service-manager call the reachability check let through actually
-# succeeded; 1 refused before anything changed (root, the manager
-# unreachable, the lock, a hostile SOLADOR_AGENT_LAUNCHD_LABEL, an
-# unsupported platform); 2 usage (--purge without --uninstall, or --uninstall
-# combined with --migrate-from-opt or --enable-timer — the two do not
-# combine); 4 every file was still removed (best-effort), but at least one
-# reachable manager refused a specific stop request — verify by hand that
-# nothing is still running before trusting this host is clean.
+# succeeded and every file that should be gone actually is; 1 refused before
+# anything changed (root, the manager unreachable, the lock already held at
+# the start, a hostile SOLADOR_AGENT_LAUNCHD_LABEL, an unsupported platform);
+# 2 usage (--purge without --uninstall, or --uninstall combined with
+# --migrate-from-opt or --enable-timer — the two do not combine); 4 every
+# file was still removed (best-effort), but at least one reachable manager
+# refused a specific stop request — verify by hand that nothing is still
+# running before trusting this host is clean; 5 the lock became held AFTER
+# the service was stopped and its unit/plist removed (a transaction started
+# in that window, on a host with no flock(1) to have closed it) — the binary
+# and lock file are deliberately left alone rather than raced, re-run once it
+# finishes; 6 at least one file that should have been removable — the
+# service and other files may already be gone — could not actually be
+# deleted (a read-only parent directory, an immutable file, or similar); fix
+# that and re-run.
 #
 # Re-running is safe: it reuses the token, replaces the binary and restarts.
 # Nothing here uses sudo. redeploy.sh remains the from-source path for our own
@@ -244,17 +259,87 @@ esac
 # of a file by hand, and a plain --uninstall (any other reason to remove an
 # install) does not delete a credential the operator may still want.
 UNINSTALL_REMOVED=false
+# Set the moment any `rm -f` below fails on a path that still exists
+# afterwards — a read-only parent directory (`chmod 555`) or an immutable
+# file (`chflags uchg` on macOS) both leave `rm -f` reporting failure rather
+# than quietly doing nothing, and this run_uninstall's own review found that
+# failure was going unchecked: every other file still got its "removed:"
+# line, the run still ended in "==> Done", and the exit status was still 0 —
+# a failed removal reported as a successful one. Read at the end, same as
+# MANAGER_CALL_FAILED below: it is a DIFFERENT, more severe case (a file that
+# should be gone is provably still there, not merely unconfirmed), so it gets
+# its own exit status rather than folding into 4's.
+UNINSTALL_FAILED=false
 
-# uninstall_remove <path> <description>: rm -f, and note it in both the
-# summary printed to the operator and UNINSTALL_REMOVED — the fact "a second
-# run is a no-op" is read from, rather than an exit code guessed at.
+# uninstall_remove <path> <description>: rm -f, and note the OUTCOME — not
+# just the attempt — in the summary printed to the operator and in
+# UNINSTALL_REMOVED/UNINSTALL_FAILED. `rm -f` suppresses "no such file", but
+# still fails (and still prints its own reason to stderr, ahead of the line
+# below) on a permission or immutability error, and that failure must never
+# be read as success: a second `-e`/`-L` check after the `rm -f` call is what
+# tells "removed" apart from "rm said it worked but the path is somehow still
+# there" (belt-and-braces; `rm -f`'s own exit status already catches every
+# case observed in practice).
 uninstall_remove() {
     local path="$1" desc="$2"
     if [ -e "$path" ] || [ -L "$path" ]; then
-        rm -f "$path"
-        UNINSTALL_REMOVED=true
-        echo "    removed: $desc ($path)"
+        if rm -f "$path" && ! { [ -e "$path" ] || [ -L "$path" ]; }; then
+            UNINSTALL_REMOVED=true
+            echo "    removed: $desc ($path)"
+        else
+            echo "ERROR: FAILED to remove: $desc ($path)" >&2
+            UNINSTALL_FAILED=true
+        fi
     fi
+}
+
+# unowned_service_binary: the executable path a PRE-EXISTING unit/plist
+# names, read BEFORE --uninstall removes that unit/plist — never assumed to
+# be $DEST_BIN. An unmigrated /opt host's unit still names
+# /opt/solador-agent/solador-agent (root-owned; #392's migration is
+# explicit, never automatic on its own), and --uninstall deleting that unit
+# must not go quiet about the binary it named: the mirror-of-install claims
+# it removed everything IT put there, and a root-owned binary this run never
+# touched is not that. Prints nothing when there is no existing unit/plist,
+# it cannot be read, or it already names $DEST_BIN. Read-only.
+unowned_service_binary() {
+    local path=""
+    case "$OS" in
+        Linux)
+            [ -f "$UNIT_DST" ] || return 0
+            path="$(awk '/^ExecStart=/ { sub(/^ExecStart=/, ""); print; exit }' "$UNIT_DST" \
+                | sed -e 's/^"//' -e 's/"$//')"
+            ;;
+        Darwin)
+            [ -f "$PLIST_DST" ] || return 0
+            # ProgramArguments is [launcher, binary, env file, log file]
+            # (stage_launch_agent_plist, below) — the SECOND <string>, never
+            # the first (the launcher, resolved and removed on its own path
+            # as $LAUNCHER_DST). A plain scan, not `plutil -extract … raw`
+            # (macOS 12+ only, and it is the OPERATOR's shell this runs
+            # under, not the agent's 11.0 floor): every path this plist can
+            # hold already passed check_install_path (no ", \, $, % or
+            # control character), so the handful of entities xml_escape can
+            # produce are the only ones ever to undo.
+            path="$(awk '
+                /<key>ProgramArguments<\/key>/ { want = 1; next }
+                want && /<string>/ {
+                    n++
+                    if (n == 2) {
+                        line = $0
+                        sub(/^[ \t]*<string>/, "", line)
+                        sub(/<\/string>[ \t]*$/, "", line)
+                        print line
+                        exit
+                    }
+                    next
+                }
+                want && /<\/array>/ { exit }
+            ' "$PLIST_DST")"
+            path="$(printf '%s' "$path" | sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e "s/&apos;/'/g" -e 's/&quot;/"/g' -e 's/&amp;/\&/g')"
+            ;;
+    esac
+    [ -n "$path" ] && [ "$path" != "$DEST_BIN" ] && printf '%s\n' "$path"
 }
 
 run_uninstall() {
@@ -302,8 +387,41 @@ run_uninstall() {
     # asks whether it is actually HELD right now. Checked before anything else
     # touches disk: uninstalling mid-transaction would race that transaction's
     # own binary swap, the same race install.sh itself must not run either.
+    #
+    # Where flock(1) is on PATH, HOLD it — `exec 9<"$lock_file"` then
+    # `flock -n 9` — for the rest of this function, rather than a one-shot
+    # check: this is the exact bash-3.2-safe idiom `man flock`'s EXAMPLES
+    # documents (a numeric-fd-only invocation locks the CALLER's own open fd
+    # and returns; the lock then persists for as long as that fd stays open,
+    # which here is until this process exits), and it is the same primitive
+    # `TransactionLock` itself uses (lib.sh's own comment on update_lock_busy
+    # has the proof). Held continuously, an `update`/`rollback` arriving in
+    # the window this uninstall spends stopping the service and removing its
+    # unit/plist sees the SAME contention it would meet racing a real
+    # transaction — reported as *busy*, exit 75, by its own code — so this
+    # process never again needs to ask; the second check the previous
+    # revision made after that window used to answer a question that had
+    # already changed underneath it (see below). `9<`, never `9<>`: the file
+    # already exists (checked by update_lock_busy just above having reached
+    # here at all — a MISSING file has nothing to hold, see `held_lock`
+    # below), so this never creates or truncates one, and a note a genuine
+    # transaction wrote there for a human to read survives untouched.
     local lock_file="$DEST_BIN.update.lock"
-    if update_lock_busy "$lock_file"; then
+    local held_lock=false
+    if [ -e "$lock_file" ] && command -v flock >/dev/null 2>&1; then
+        exec 9<"$lock_file" || {
+            echo "ERROR: could not open $lock_file to check it." >&2
+            return 1
+        }
+        if ! flock -n 9; then
+            echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
+            echo "       Uninstalling now would race that transaction's own binary swap." >&2
+            echo "       Wait for it to finish (or fail) and re-run." >&2
+            exec 9<&-
+            return 1
+        fi
+        held_lock=true
+    elif update_lock_busy "$lock_file"; then
         echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
         echo "       Uninstalling now would race that transaction's own binary swap." >&2
         echo "       Wait for it to finish (or fail) and re-run." >&2
@@ -321,6 +439,10 @@ run_uninstall() {
     # the exit status: 0 ("Done") is a claim only a manager that agreed to
     # every stop request has earned.
     local MANAGER_CALL_FAILED=false
+    # Read BEFORE the unit/plist is removed below — unowned_service_binary
+    # needs the file that is about to be deleted.
+    local foreign_bin
+    foreign_bin="$(unowned_service_binary)"
 
     case "$OS" in
         Linux)
@@ -358,6 +480,9 @@ run_uninstall() {
                 systemctl --user daemon-reload 2>/dev/null || true
             fi
             uninstall_remove "$GUARD_DST" "update guard"
+            if [ -n "$foreign_bin" ]; then
+                echo "    left behind: $foreign_bin (not owned by this user; see --migrate-from-opt)"
+            fi
             ;;
         Darwin)
             local metrics_svc update_svc
@@ -386,6 +511,9 @@ run_uninstall() {
             uninstall_remove "$PLIST_DST" "LaunchAgent plist"
             uninstall_remove "$UPDATE_PLIST_DST" "update LaunchAgent plist"
             uninstall_remove "$LAUNCHER_DST" "launcher"
+            if [ -n "$foreign_bin" ]; then
+                echo "    left behind: $foreign_bin (not owned by this user; see --migrate-from-opt)"
+            fi
             ;;
         *)
             echo "ERROR: --uninstall supports Linux (systemd) and macOS (launchd); this is $OS." >&2
@@ -393,19 +521,31 @@ run_uninstall() {
             ;;
     esac
 
-    # Re-checked, not assumed still true from the single check above: the
-    # service-manager calls just made can take long enough for a
-    # concurrently started `solador-agent update`/`rollback` to acquire the
-    # lock in between. This narrows that window; it does not close it (the
-    # manager calls above are not themselves reversible), which is the
-    # accepted scope #439 was written against.
-    if update_lock_busy "$lock_file"; then
+    # A concurrently started `solador-agent update`/`rollback` cannot have
+    # acquired `$lock_file` in the window since the check above when
+    # `held_lock` is true: this process has held the SAME flock continuously
+    # since then, so a transaction attempting to start met THIS run's hold as
+    # busy on its own terms (exit 75) rather than racing anything here, and
+    # re-checking would only ask this process whether it is busy holding its
+    # own lock. Only where nothing was held — flock(1) is not on PATH, or the
+    # file did not exist yet at the first check and so had nothing to hold —
+    # is the service-manager calls' own window still open, and this asks once
+    # more rather than assuming it stayed clear; that narrows the window, it
+    # does not close it (the manager calls above are not themselves
+    # reversible), which is the accepted residual scope for a host with no
+    # flock(1) to hold. The exit status here is NOT 1: the service and its
+    # unit/plist are already stopped and removed above, so "refused, nothing
+    # changed" would be false; and it is NOT 4 either, since the binary and
+    # lock file are deliberately left alone here rather than "removed
+    # anyway" — a transaction that may have just started must not have its
+    # own binary swap raced out from under it.
+    if [ "$held_lock" != true ] && update_lock_busy "$lock_file"; then
         echo "ERROR: $lock_file is now held — an update or rollback started while this" >&2
         echo "       uninstall was stopping the service. The service and its unit/plist" >&2
         echo "       files are already removed above; leaving the binary and the lock" >&2
         echo "       alone rather than deleting them out from under that transaction." >&2
         echo "       Wait for it to finish (or fail) and re-run to finish removing the binary." >&2
-        return 1
+        return 5
     fi
 
     uninstall_remove "$DEST_BIN" "binary"
@@ -421,12 +561,34 @@ run_uninstall() {
 
     if [ "$PURGE" = true ]; then
         uninstall_remove "$ENV_FILE" "env file (--purge: it held the bearer token)"
+        # The pre-rename install (#392's own handover) copied its token OUT of
+        # this file and into $ENV_FILE, but never deleted it — so a $ENV_FILE
+        # purge that stopped there would still leave the same secret sitting
+        # under an account nothing runs any more, in the one file --purge
+        # exists to be certain is gone.
+        uninstall_remove "$LEGACY_ENV_FILE" "legacy env file (--purge: install copied its token out and never deleted it)"
     elif [ -e "$ENV_FILE" ]; then
         echo "    left:    env file ($ENV_FILE) — holds the bearer token; remove it with:"
         echo "               $RERUN_CMD --uninstall --purge"
     fi
 
     echo
+    if [ "$UNINSTALL_FAILED" = true ]; then
+        # A more severe, and different, claim than MANAGER_CALL_FAILED below:
+        # something that SHOULD be an ordinary `rm -f` provably did not
+        # happen (see uninstall_remove's own comment — the FAILED lines
+        # above this name which path and why), so this is not "Done" and not
+        # "refused, nothing changed" either, since the service was likely
+        # already stopped and other files already removed above. Exit 6 is
+        # its own code rather than folding into 4's: 4 promises every file
+        # WAS removed and only a manager call is unconfirmed; that promise
+        # is false here.
+        echo "==> $BIN_NAME's uninstall for $(id -un) did NOT finish: see the FAILED line(s)" >&2
+        echo "    above. Whatever else is listed as \"removed\" or \"stopped\" above this is" >&2
+        echo "    genuinely gone; fix the reported problem (a read-only parent directory, an" >&2
+        echo "    immutable file, or similar) and re-run to finish." >&2
+        return 6
+    fi
     if [ "$MANAGER_CALL_FAILED" = true ]; then
         # Every file this run knows about is gone (or was already gone), but
         # "Done: uninstalled" is a claim about the SERVICE, not the files —

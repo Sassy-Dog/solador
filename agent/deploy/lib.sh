@@ -417,32 +417,37 @@ calver_newer() {
 # right now", not "does it exist" — uninstalling mid-transaction would race the
 # exact binary rename that transaction is in the middle of.
 #
-# Prefer a real, non-blocking flock() on the same path — util-linux's
-# `flock(1)`, present on the Linux hosts this repo targets — which answers the
-# question exactly: this process asking for the lock and failing IS the same
-# contention the updater's own attempt would meet. Where flock(1) does not
-# exist (stock macOS ships none), fall back to the note the lock's holder
-# writes into the file the moment it acquires it (`pid=<pid> since=<epoch>`,
-# TransactionLock::try_acquire) and ask whether that pid is still alive. A
-# note naming a since-exited pid, or no note at all (the file was created but
-# never locked, or the note write itself failed — both possible per
-# TransactionLock's own comments), reads as free. The false BUSY that leaves —
-# an unrelated process started later happening to reuse the same pid number —
-# is a narrower race than the one this check exists to close, and the
-# fallback is only reached on a platform with no better primitive to ask.
-# It has no automatic way out: `kill -0` on a live, unrelated pid keeps
-# reading busy for as long as that process runs, and the refusal's own "wait
-# for it to finish and re-run" cannot resolve a lock nothing is actually
-# using. The manual escape is the same either way — confirm no
-# `solador-agent update`/`rollback` is genuinely running on this host, then
-# remove `<bin>.update.lock` by hand.
+# TransactionLock::try_acquire takes the lock via `std::fs::File::try_lock`,
+# which is `flock()` on Unix (not `fcntl()`/`F_SETLK`) — confirmed by reading
+# its own comments on the module (a lock surviving `fork()` until `exec()`,
+# which is `flock()`'s open-file-description semantics; a `fcntl()` lock is
+# per-process and does not survive `fork()` at all). So this asks the SAME
+# kernel primitive `try_lock()` uses, never the note the holder writes into
+# the file alongside it for a *human* reading a busy error (`pid=<pid>
+# since=<epoch>`, still written for that reason and unrelated to what
+# follows): a real `flock()` attempt failing IS the same contention the
+# updater's own attempt would meet, with no format to keep in step across two
+# languages and no false-busy from an unrelated process reusing an old pid
+# number — #439's review found exactly that coupling untested and asked for
+# it to be removed rather than pinned down with a cross-format test.
 #
-# A read that FAILS on a file the `-f` check just confirmed exists (a
-# permission change, or the file removed between the two checks) is a
-# different case from an empty or unparseable note: it is uncertainty, not
-# evidence of "free", so it fails toward busy — matching the flock branch
-# above, where any non-success reads as held. Only a note this function could
-# actually read and still found empty or unparseable is treated as free.
+# Three tiers, most to least capable:
+#   1. util-linux's `flock(1)`, present on the Linux hosts this repo targets:
+#      a real, non-blocking flock() on the path itself.
+#   2. Where flock(1) does not exist (stock macOS ships none), the stock
+#      `perl` almost every macOS ships (Fcntl's `flock`) asks the identical
+#      question through the identical syscall — never the note.
+#   3. Neither on PATH: there is no way left to ask the kernel, and guessing
+#      "free" is the one wrong answer here (a fresh update/rollback, or an
+#      uninstall, racing a transaction this host cannot actually see). Every
+#      existing lock file reads as busy unconditionally, the same direction
+#      every uncertain case below already fails toward.
+#
+# A read/open that FAILS on a file the `-f` check just confirmed exists (a
+# permission change, or the file removed between the two checks) is
+# uncertainty, not evidence of "free", so it fails toward busy too — the exit
+# code perl's helper below reserves for exactly that (2: could not even open
+# it), distinct from 0 (busy) and 1 (free, flock() acquired and released).
 update_lock_busy() {
     local lock_file="$1"
     [ -f "$lock_file" ] || return 1
@@ -452,11 +457,18 @@ update_lock_busy() {
         fi
         return 0
     fi
-    local note pid
-    note="$(cat "$lock_file" 2>/dev/null)" || return 0
-    pid="$(printf '%s' "$note" | sed -n 's/^pid=\([0-9][0-9]*\)[[:space:]].*/\1/p')"
-    [ -n "$pid" ] || return 1
-    kill -0 "$pid" 2>/dev/null
+    if command -v perl >/dev/null 2>&1; then
+        perl -MFcntl=:flock -e '
+            open(my $fh, "<", $ARGV[0]) or exit 2;
+            exit(flock($fh, LOCK_EX | LOCK_NB) ? 1 : 0);
+        ' "$lock_file"
+        case $? in
+            0) return 0 ;;
+            1) return 1 ;;
+            *) return 0 ;;
+        esac
+    fi
+    return 0
 }
 
 # ---- the env file -----------------------------------------------------------

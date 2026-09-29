@@ -60,6 +60,8 @@ unset STUB_DATE_EPOCH STUB_DATE_EXIT STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SY
 unset STUB_MONO_NOW_US STUB_RESUME_US STUB_GUARD_SYSTEMCTL_ARGV GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
 unset STUB_SYSTEMD_VERSION
 unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_LAUNCHCTL_BOOTOUT_EXIT
+unset STUB_SYSTEMCTL_TAKE_LOCK STUB_LAUNCHCTL_TAKE_LOCK
+unset STUB_SYSTEMCTL_PROBE_LOCK STUB_SYSTEMCTL_PROBE_RESULT
 
 # ---- harness ----------------------------------------------------------------
 
@@ -396,7 +398,29 @@ case "${2:-}" in
     # specific update-timer-only case below — reachability (show-environment)
     # already answered above, so this is the narrower "manager reachable, one
     # stop request still refused" case that path is meant to exercise.
+    # STUB_SYSTEMCTL_TAKE_LOCK simulates a transaction starting DURING this
+    # call (#439 fix 2): the path it names is simply touched into existence,
+    # which is enough to read as busy under the no-flock/no-perl fallback
+    # test_uninstall_linux's lock-race case forces via INSTALL_PATH.
+    # STUB_SYSTEMCTL_PROBE_LOCK is the stronger form, proving fix 2's
+    # continuous hold rather than assuming it: it asks `flock` on the
+    # CURRENT PATH (the synthetic one under TOOLBIN_FAKEFLOCK, in the one
+    # test that sets this) whether the named lock is free right now, and
+    # writes "busy" or "free" to STUB_SYSTEMCTL_PROBE_RESULT — a genuine,
+    # independent process actually contending for the SAME flock() this
+    # uninstall is meant to be holding throughout, not merely a file that
+    # exists.
     disable)
+        if [ -n "${STUB_SYSTEMCTL_TAKE_LOCK:-}" ]; then
+            : > "$STUB_SYSTEMCTL_TAKE_LOCK"
+        fi
+        if [ -n "${STUB_SYSTEMCTL_PROBE_LOCK:-}" ]; then
+            if flock -n "$STUB_SYSTEMCTL_PROBE_LOCK" true 2>/dev/null; then
+                printf 'free\n' > "${STUB_SYSTEMCTL_PROBE_RESULT:-/dev/null}"
+            else
+                printf 'busy\n' > "${STUB_SYSTEMCTL_PROBE_RESULT:-/dev/null}"
+            fi
+        fi
         if [ -n "${STUB_SYSTEMCTL_DISABLE_EXIT:-}" ] && [ "$STUB_SYSTEMCTL_DISABLE_EXIT" != "0" ]; then
             exit "$STUB_SYSTEMCTL_DISABLE_EXIT"
         fi
@@ -453,7 +477,12 @@ case "${1:-}" in
     # both the metrics and the update-label bootout — the login-session check
     # (print gui/<uid>, above) already answered, so this is the narrower
     # "manager reachable, one stop request still refused" case.
+    # STUB_LAUNCHCTL_TAKE_LOCK is the macOS analogue of
+    # STUB_SYSTEMCTL_TAKE_LOCK above.
     bootout)
+        if [ -n "${STUB_LAUNCHCTL_TAKE_LOCK:-}" ]; then
+            : > "$STUB_LAUNCHCTL_TAKE_LOCK"
+        fi
         if [ -n "${STUB_LAUNCHCTL_BOOTOUT_EXIT:-}" ] && [ "$STUB_LAUNCHCTL_BOOTOUT_EXIT" != "0" ]; then
             exit "$STUB_LAUNCHCTL_BOOTOUT_EXIT"
         fi
@@ -579,17 +608,99 @@ TOOLBIN_NOVERIFIER="$TMP/toolbin-noverifier"
 # is no longer "any host running this suite". TOOLBIN_NOFLOCK is TOOLBIN
 # minus flock, so test_update_lock_busy can force the fallback branch
 # deterministically regardless of what the running host happens to have.
+# Since #439 fix 3 that fallback asks `perl` for a real flock() rather than
+# reading the lock's note, so `perl` is in the master list below too —
+# without it, every --uninstall test run on a host with no flock(1) at all
+# (stock macOS, including the CI runner `./dev test` uses for this suite)
+# would find NEITHER flock(1) nor perl on PATH and read every existing lock
+# file as busy unconditionally (update_lock_busy's own last-resort fallback),
+# refusing an uninstall the fixtures below expect to succeed.
+# TOOLBIN_NOFLOCK_NOPERL further removes perl, for the one test that proves
+# THAT last-resort fallback specifically.
 TOOLBIN_NOFLOCK="$TMP/toolbin-noflock"
-mkdir -p "$TOOLBIN" "$TOOLBIN_NOVERIFIER" "$TOOLBIN_NOFLOCK"
+TOOLBIN_NOFLOCK_NOPERL="$TMP/toolbin-noflock-noperl"
+mkdir -p "$TOOLBIN" "$TOOLBIN_NOVERIFIER" "$TOOLBIN_NOFLOCK" "$TOOLBIN_NOFLOCK_NOPERL"
 for tool in awk sed grep cut head tr od cat mkdir rm cp mv install chmod mktemp cmp \
-            id dirname basename ls seq openssl env sh bash date sort tar find gzip base64 flock; do
+            id dirname basename ls seq openssl env sh bash date sort tar find gzip base64 \
+            flock perl mkfifo sleep; do
     real="$(command -v "$tool" 2>/dev/null || true)"
     if [ -n "$real" ]; then
         ln -s "$real" "$TOOLBIN/$tool"
         ln -s "$real" "$TOOLBIN_NOVERIFIER/$tool"
         [ "$tool" = "flock" ] || ln -s "$real" "$TOOLBIN_NOFLOCK/$tool"
+        [ "$tool" = "flock" ] || [ "$tool" = "perl" ] || ln -s "$real" "$TOOLBIN_NOFLOCK_NOPERL/$tool"
     fi
 done
+
+# TOOLBIN_FAKEFLOCK: TOOLBIN_NOFLOCK plus a SYNTHETIC `flock(1)`, backed by
+# the same perl Fcntl flock as update_lock_busy's own fallback, supporting
+# only the two invocation forms this repo's code actually uses: the path
+# form (`flock -n <path> <command>`, update_lock_busy's one-shot check) and
+# the fd-only form (`flock -n <fd>`, install.sh's #439 fix-2 continuous
+# hold — `man flock`'s EXAMPLES idiom for locking the CALLER's own open fd
+# in place). This exists because stock macOS — including the CI runner
+# `./dev test` runs this suite on — ships no real flock(1) at all, which
+# would otherwise leave fix 2's Linux-only "hold the flock for the rest of
+# the run" code entirely unexercised by this suite outside of Linux CI. A
+# real `flock -n <fd>` genuinely locks the OPEN FILE DESCRIPTION, not a
+# per-process table, so a lock taken this way persists for as long as the
+# CALLING shell's own fd on that path stays open — exactly what the
+# fd-only form is for, and exactly what this reproduces with perl. Present
+# only when perl is (SOLADOR_DEPLOY_TEST-style SKIP, not a failure,
+# otherwise).
+TOOLBIN_FAKEFLOCK="$TMP/toolbin-fakeflock"
+HAVE_FAKEFLOCK=false
+if command -v perl >/dev/null 2>&1; then
+    mkdir -p "$TOOLBIN_FAKEFLOCK"
+    for f in "$TOOLBIN_NOFLOCK"/*; do
+        ln -s "$f" "$TOOLBIN_FAKEFLOCK/$(basename "$f")"
+    done
+    cat > "$TOOLBIN_FAKEFLOCK/flock" <<'STUB'
+#!/usr/bin/env bash
+rest=()
+for a in "$@"; do
+    case "$a" in
+        -n | -x | -s | -u) ;;
+        *) rest+=("$a") ;;
+    esac
+done
+target="${rest[0]:-}"
+case "$target" in
+    '' | *[!0-9]*)
+        # Path form: open/create it, lock it, then exec the command (or, with
+        # none, just report the result) — update_lock_busy's own shape.
+        cmd=("${rest[@]:1}")
+        if [ "${#cmd[@]}" -eq 0 ]; then
+            perl -MFcntl=:flock -e '
+                open(my $fh, "+>>", $ARGV[0]) or exit 1;
+                exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1);
+            ' "$target"
+            exit $?
+        fi
+        perl -MFcntl=:flock -e '
+            my $path = shift @ARGV;
+            open(my $fh, "+>>", $path) or exit 1;
+            exit 1 unless flock($fh, LOCK_EX | LOCK_NB);
+            exec { $ARGV[0] } @ARGV;
+        ' "$target" "${cmd[@]}"
+        exit $?
+        ;;
+    *)
+        # fd-only form: lock the CALLER's already-open fd in place — "<&="
+        # reuses that exact fd rather than dup()ing a new one, so the lock
+        # this acquires is the SAME open file description the caller's own
+        # fd refers to, and survives this (sub)process exiting.
+        perl -MFcntl=:flock -e '
+            open(my $fh, "<&=", $ARGV[0]) or exit 1;
+            exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1);
+        ' "$target"
+        exit $?
+        ;;
+esac
+STUB
+    chmod +x "$TOOLBIN_FAKEFLOCK/flock"
+    HAVE_FAKEFLOCK=true
+fi
 # The throwaway keypair the signature cases sign with. Generated up front so
 # "minisign is usable" is one fact decided once: present, AND new enough for
 # `-W` (unencrypted keys, minisign ≥ 0.11 — what Debian 12 and Ubuntu 24.04
@@ -1474,29 +1585,42 @@ test_verify_agent_signature() {
 # (agent/src/update.rs's TransactionLock) is never removed once created, so
 # the file's mere existence proves nothing about whether it is held RIGHT
 # NOW — that is what install.sh's --uninstall needs to know before it removes
-# anything. Two implementations: a real flock(1) where the host has one
-# (Linux, typically), and a pid-liveness fallback reading the holder's own
-# note otherwise (stock macOS ships no flock(1)).
+# anything. Three implementations (lib.sh, #439 fix 3): a real flock(1) where
+# the host has one (Linux, typically); the stock `perl`'s Fcntl flock asking
+# the SAME kernel question where flock(1) is absent (stock macOS ships
+# neither `flock(1)` — TransactionLock is flock()-based too, confirmed by
+# reading update.rs's own comments, so this is never a different question
+# from the one a real transaction would meet); and, where neither tool
+# exists at all, an unconditional "busy" for any existing lock file, since
+# there is no way left to ask for certain and guessing "free" is the wrong
+# direction.
 
 # hold_fake_lock <path>: makes update_lock_busy report BUSY for <path>,
-# however it decides that — a real, held flock(1) when this host has one, the
-# pid-liveness fallback's note otherwise — and does not return until it can
-# prove the lock is actually held, so a caller never races its own setup.
-# release_fake_lock undoes it. FAKE_LOCK_PID is empty in the fallback case
-# (nothing was backgrounded).
+# however it decides that — a real, held flock(1) when this host has one, a
+# real held lock via perl otherwise — and does not return until it can prove
+# the lock is actually held, so a caller never races its own setup.
+# release_fake_lock undoes it. FAKE_LOCK_PID is empty when nothing was
+# backgrounded (neither tool is on PATH at all — see the plain `: > "$lock"`
+# branch below, which relies on update_lock_busy's own last-resort "any
+# existing file is busy" fallback rather than holding a real lock itself).
 #
-# The holder blocks on opening a FIFO nobody writes to — a builtin
-# redirection, not a forked command — rather than `sleep`: a plain `sleep`
-# here would fork a child that INHERITS fd 9 (a bare `exec N>file` carries no
-# CLOEXEC), and flock(2)'s lock lives as long as ANY reference to that open
-# file description does, sleep's included — the exact gotcha
-# agent/src/update.rs's TransactionLock documents. Killing only the
-# subshell would leave that orphaned child quietly holding the lock forever,
+# Both real holders block on opening a FIFO nobody writes to, rather than
+# `sleep`: a plain `sleep` would fork a child that INHERITS the locked file
+# descriptor (a bare `exec N>file` carries no CLOEXEC, and perl's own open()
+# does not set it either), and flock(2)'s lock lives as long as ANY
+# reference to that open file description does, sleep's included — the exact
+# gotcha agent/src/update.rs's TransactionLock documents. Killing only the
+# holder would leave that orphaned child quietly holding the lock forever,
 # and every later "is it released" assertion would read busy. Blocking on
-# the FIFO's open() instead means this subshell forks nothing while fd 9 is
-# open, so killing it is the whole story.
+# the FIFO's open() instead means neither holder forks anything while the
+# lock is held, so killing it is the whole story. The perl holder signals
+# "I actually hold it now" by writing an ack file rather than by this
+# function re-probing the lock itself — probing WITH perl would be exactly
+# the operation under test, and probing WITH flock(1) is not available
+# (that is why this branch exists).
 FAKE_LOCK_PID=""
 FAKE_LOCK_FIFO=""
+FAKE_LOCK_ACK=""
 hold_fake_lock() {
     local lock="$1"
     mkdir -p "$(dirname "$lock")"
@@ -1518,8 +1642,35 @@ hold_fake_lock() {
             [ "$waited" -ge 50 ] && break
             sleep 0.1
         done
+    elif command -v perl >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1; then
+        : > "$lock"
+        FAKE_LOCK_FIFO="$TMP/fake-lock-fifo.$$"
+        FAKE_LOCK_ACK="$TMP/fake-lock-ack.$$"
+        rm -f "$FAKE_LOCK_FIFO" "$FAKE_LOCK_ACK"
+        mkfifo "$FAKE_LOCK_FIFO"
+        perl -MFcntl=:flock -e '
+            my ($lock, $fifo, $ack) = @ARGV;
+            open(my $fh, "+<", $lock) or die "open $lock: $!";
+            flock($fh, LOCK_EX) or die "flock $lock: $!";
+            open(my $a, ">", $ack) or die "open $ack: $!";
+            print $a "held\n";
+            close $a;
+            open(my $f, "<", $fifo) or die "open $fifo: $!";
+            my $line = <$f>;
+        ' "$lock" "$FAKE_LOCK_FIFO" "$FAKE_LOCK_ACK" &
+        FAKE_LOCK_PID=$!
+        local waited=0
+        while [ ! -e "$FAKE_LOCK_ACK" ]; do
+            waited=$((waited + 1))
+            [ "$waited" -ge 100 ] && break
+            sleep 0.05
+        done
     else
-        printf 'pid=%s since=%s\n' "$$" "$(date +%s 2>/dev/null || echo 0)" > "$lock"
+        # Neither tool exists: update_lock_busy's own last-resort fallback
+        # treats ANY existing lock file as busy, unconditionally, so a plain
+        # touch already produces the state this function promises — nothing
+        # is actually locked, and nothing needs backgrounding.
+        : > "$lock"
         FAKE_LOCK_PID=""
     fi
 }
@@ -1534,28 +1685,39 @@ release_fake_lock() {
         rm -f "$FAKE_LOCK_FIFO"
         FAKE_LOCK_FIFO=""
     fi
+    if [ -n "$FAKE_LOCK_ACK" ]; then
+        rm -f "$FAKE_LOCK_ACK"
+        FAKE_LOCK_ACK=""
+    fi
     rm -f "$lock"
 }
 
 test_update_lock_busy() {
-    local lock="$TMP/fake.update.lock"
-    rm -f "$lock"
+    local lock="$TMP/fake.update.lock" content
 
+    rm -f "$lock"
     if update_lock_busy "$lock"; then
         fail "a missing lock file is not busy" "update_lock_busy returned busy"
     else
         pass "a missing lock file is not busy"
     fi
 
-    # A lock file that exists but names a pid that is not running (real
-    # flock(1): never actually locked either) — matches an installer's own
-    # last transaction having long since exited.
-    printf 'pid=999999999 since=1\n' > "$lock"
-    if update_lock_busy "$lock"; then
-        fail "a note naming a pid that is not running is not busy" "update_lock_busy returned busy"
-    else
-        pass "a note naming a pid that is not running is not busy"
-    fi
+    # An existing lock file nobody holds is not busy, REGARDLESS of its
+    # content (#439 fix 3): update_lock_busy no longer reads or parses the
+    # holder's "pid=… since=…" note at all — every real implementation asks
+    # the kernel a genuine flock() question instead, so a note naming a pid
+    # that is long dead, garbage bytes, or nothing at all must all answer
+    # exactly the same way once nobody actually holds the lock. This is the
+    # coupling #439's review found untested and asked to have removed rather
+    # than pinned to update.rs's exact format string.
+    for content in "pid=999999999 since=1" "not a note at all" ""; do
+        printf '%s' "$content" > "$lock"
+        if update_lock_busy "$lock"; then
+            fail "an existing, unlocked file is not busy [$content]" "update_lock_busy returned busy"
+        else
+            pass "an existing, unlocked file is not busy [$content]"
+        fi
+    done
     rm -f "$lock"
 
     hold_fake_lock "$lock"
@@ -1574,14 +1736,15 @@ test_update_lock_busy() {
 
     # A lock file the existence check just confirmed is there, but that
     # cannot actually be read (permissions changed underneath, say), is
-    # uncertainty about a file known to exist — not the same as an empty or
-    # unparseable note — so it must fail toward busy, the same direction a
-    # contended flock() already fails in. Skipped as root, which ignores
-    # file permissions and would make chmod 000 unreadable-proof.
+    # uncertainty about a file known to exist — not "free" — so it must fail
+    # toward busy, the same direction a contended flock() already fails in
+    # and the direction perl's helper's exit code 2 (lib.sh) maps to. Skipped
+    # as root, which ignores file permissions and would make chmod 000
+    # unreadable-proof.
     if [ "$(id -u)" = "0" ]; then
         skip "an existing lock file that cannot be read is busy" "running as root, which can read anything"
     else
-        printf 'pid=999999999 since=1\n' > "$lock"
+        printf 'anything\n' > "$lock"
         chmod 000 "$lock"
         if update_lock_busy "$lock"; then
             pass "an existing lock file that cannot be read is busy"
@@ -1592,13 +1755,18 @@ test_update_lock_busy() {
     fi
     rm -f "$lock"
 
-    # The pid-liveness fallback itself, forced regardless of what the host
-    # running this suite happens to have on PATH — TOOLBIN_NOFLOCK has no
-    # flock, so `command -v flock` inside update_lock_busy fails there the
-    # same way it does on stock macOS, and the sed/kill-0 branch is what
-    # answers. Without this, CI's Linux leg (flock present) never exercises
-    # this branch at all, and a break in it would ship unnoticed on the one
-    # platform (macOS, no flock) that actually depends on it.
+    # The perl fallback itself, forced regardless of what the host running
+    # this suite happens to have on PATH — TOOLBIN_NOFLOCK has no flock, so
+    # `command -v flock` inside update_lock_busy fails there the same way it
+    # does on stock macOS, and the perl branch is what answers. Without
+    # this, CI's Linux leg (flock present) never exercises this branch at
+    # all, and a break in it would ship unnoticed on the one platform
+    # (macOS, no flock(1)) that actually depends on it. Proven with the SAME
+    # unlocked-file-is-not-busy case as above (content is irrelevant now),
+    # and, right after, with a REAL lock hold_fake_lock backs with perl —
+    # the one place this suite proves the replacement mechanism itself
+    # answers "busy" correctly, not merely "not busy for a note it no longer
+    # reads".
     (
         PATH="$TOOLBIN_NOFLOCK"
         if command -v flock >/dev/null 2>&1; then
@@ -1606,17 +1774,54 @@ test_update_lock_busy() {
         else
             pass "TOOLBIN_NOFLOCK actually has no flock on PATH"
         fi
-        printf 'pid=999999999 since=1\n' > "$lock"
-        if update_lock_busy "$lock"; then
-            fail "the forced fallback: a dead pid's note is not busy" "update_lock_busy returned busy"
+        if ! command -v perl >/dev/null 2>&1; then
+            skip "the forced perl fallback: an unlocked file is not busy" "no perl on PATH"
+            skip "the forced perl fallback: a real held lock is busy" "no perl on PATH"
+            skip "the forced perl fallback: released is not busy" "no perl on PATH"
         else
-            pass "the forced fallback: a dead pid's note is not busy"
+            printf 'pid=999999999 since=1' > "$lock"
+            if update_lock_busy "$lock"; then
+                fail "the forced perl fallback: an unlocked file is not busy" "update_lock_busy returned busy"
+            else
+                pass "the forced perl fallback: an unlocked file is not busy"
+            fi
+            rm -f "$lock"
+
+            hold_fake_lock "$lock"
+            if update_lock_busy "$lock"; then
+                pass "the forced perl fallback: a real held lock is busy"
+            else
+                fail "the forced perl fallback: a real held lock is busy" "update_lock_busy returned not-busy"
+            fi
+            release_fake_lock "$lock"
+            if update_lock_busy "$lock"; then
+                fail "the forced perl fallback: released is not busy" "update_lock_busy returned busy after release"
+            else
+                pass "the forced perl fallback: released is not busy"
+            fi
         fi
-        printf 'pid=%s since=1\n' "$$" > "$lock"
-        if update_lock_busy "$lock"; then
-            pass "the forced fallback: a live pid's note is busy"
+    )
+    rm -f "$lock"
+
+    # The ultimate fallback — neither flock(1) nor perl on PATH — fails
+    # toward busy unconditionally for any existing file: there is no way
+    # left to ask the kernel the real question, and guessing free is the one
+    # wrong answer (an uninstall or a fresh update racing an actual
+    # transaction this host cannot see).
+    (
+        PATH="$TOOLBIN_NOFLOCK_NOPERL"
+        if command -v flock >/dev/null 2>&1 || command -v perl >/dev/null 2>&1; then
+            fail "TOOLBIN_NOFLOCK_NOPERL actually has neither flock nor perl on PATH" \
+                "one of them resolved"
         else
-            fail "the forced fallback: a live pid's note is busy" "update_lock_busy returned not-busy"
+            pass "TOOLBIN_NOFLOCK_NOPERL actually has neither flock nor perl on PATH"
+        fi
+        : > "$lock"
+        if update_lock_busy "$lock"; then
+            pass "with neither flock nor perl, an existing lock file fails toward busy"
+        else
+            fail "with neither flock nor perl, an existing lock file fails toward busy" \
+                "update_lock_busy returned not-busy"
         fi
     )
     rm -f "$lock"
@@ -5235,9 +5440,14 @@ test_uninstall_linux() {
 " run_install "$home" --enable-timer
     assert_eq "install.sh --enable-timer succeeds, setting up the uninstall fixture (Linux)" "0" "$INSTALL_STATUS"
     # A migration remnant and the update-only siblings a real host can carry,
-    # seeded by hand so removing them is actually exercised.
+    # seeded by hand so removing them is actually exercised — without this,
+    # ".prev is gone" and ".rollback-displaced is gone" below would be true
+    # by vacuous absence (a fresh install never creates either) rather than
+    # by anything this run actually removed.
     cp "$unit" "$unit.prev"
+    cp "$bin" "$bin.prev"
     : > "$bin.new"
+    : > "$bin.rollback-displaced"
     mkdir -p "$(dirname "$home/.config/solador-agent-update.last-attempt")"
     printf '1234567890\n' > "$home/.config/solador-agent-update.last-attempt"
 
@@ -5283,6 +5493,7 @@ test_uninstall_linux() {
     assert_file_has "systemd is reloaded" "$STUB_SYSTEMCTL_ARGV" "--user daemon-reload"
     if [ -e "$unit" ] || [ -e "$unit.prev" ] || [ -e "$update_unit" ] || [ -e "$update_timer" ] \
         || [ -e "$guard" ] || [ -e "$bin" ] || [ -e "$bin.prev" ] || [ -e "$bin.new" ] \
+        || [ -e "$bin.rollback-displaced" ] \
         || [ -e "$bin.update.lock" ] || [ -e "$home/.config/solador-agent-update.last-attempt" ]; then
         fail "install.sh --uninstall removes every installer file (Linux)" "some installer file is still present"
     else
@@ -5371,6 +5582,169 @@ test_uninstall_linux() {
         *) pass "the exit-4 case never prints the token" ;;
     esac
 
+    # ---- an unmigrated /opt host: --uninstall says what it leaves behind ----
+    # (#439 nit b) — a unit whose ExecStart= names a binary this user does not
+    # own (the pre-#392 layout --migrate-from-opt exists to repoint) must not
+    # be silently forgotten once the unit that named it is gone.
+    reset_argv_logs
+    INSTALL_STDIN="foreign-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    assert_eq "install.sh succeeds, setting up the foreign-binary fixture (Linux)" "0" "$INSTALL_STATUS"
+    awk '/^ExecStart=/ { print "ExecStart=/opt/solador-agent/solador-agent"; next } { print }' \
+        "$unit" > "$unit.tmp" && mv "$unit.tmp" "$unit"
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall still succeeds on an unmigrated host (Linux)" "0" "$INSTALL_STATUS"
+    assert_output_has "the foreign binary is named as left behind" "$out" \
+        "left behind: /opt/solador-agent/solador-agent (not owned by this user; see --migrate-from-opt)"
+    [ -e "$unit" ] && fail "the unit naming a foreign binary is still removed" "$unit is still present" \
+        || pass "the unit naming a foreign binary is still removed"
+
+    # ---- an unremovable binary: exit 6, no Done, no "removed:" line for it ----
+    # (#439 fix 1) — chmod 555 on the binary's own parent directory (not the
+    # file itself: a file's own permission bits do not gate unlink(2), its
+    # containing directory's do), the same shape the reviewer reproduced with
+    # `chmod 555 ~/.local/bin`. Restored before this function returns either
+    # way, so a failure here cannot break cleanup or any later test.
+    reset_argv_logs
+    INSTALL_STDIN="unremovable-bin-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    assert_eq "install.sh succeeds, setting up the unremovable-binary fixture (Linux)" "0" "$INSTALL_STATUS"
+    chmod 555 "$(dirname "$bin")"
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    chmod 755 "$(dirname "$bin")"
+    assert_eq "install.sh --uninstall exits 6 when the binary cannot be removed (Linux)" "6" "$INSTALL_STATUS"
+    case "$out" in
+        *"==> Done"*) fail "the exit-6 binary case never prints Done" "it did" ;;
+        *) pass "the exit-6 binary case never prints Done" ;;
+    esac
+    if grep -q "removed: binary (" "$INSTALL_OUT"; then
+        fail "the exit-6 binary case prints no removed: line for the binary" "it did"
+    else
+        pass "the exit-6 binary case prints no removed: line for the binary"
+    fi
+    assert_output_has "the exit-6 binary case names FAILED to remove and the binary" "$out" \
+        "FAILED to remove: binary ($bin)"
+    [ -e "$unit" ] && fail "the exit-6 binary case still removes the unit" "$unit is still present" \
+        || pass "the exit-6 binary case still removes the unit"
+    rm -f "$bin" "$bin.prev" "$bin.new" "$bin.rollback-displaced" "$bin.update.lock"
+    reset_argv_logs
+    run_install "$home" --uninstall >/dev/null 2>&1
+    assert_eq "cleanup: a follow-up uninstall finishes once the directory is writable again (Linux)" "0" "$INSTALL_STATUS"
+
+    # ---- an unremovable env file under --purge: the same exit-6 contract ----
+    # (#439 fix 1 / nit a). An ordinary --uninstall (no --purge) runs first so
+    # the update stamp — which lives beside the env file in ~/.config — is
+    # already gone before ~/.config itself is made read-only; otherwise its
+    # removal would ALSO fail here, and this case would no longer be
+    # specifically about the env file.
+    reset_argv_logs
+    INSTALL_STDIN="unremovable-env-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    assert_eq "install.sh succeeds, setting up the unremovable-env-file fixture (Linux)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    run_install "$home" --uninstall
+    assert_eq "the ordinary uninstall ahead of the unremovable-env-file case succeeds (Linux)" "0" "$INSTALL_STATUS"
+    [ -e "$home/.config/solador-agent-update.last-attempt" ] && \
+        fail "nothing but the env file is left in ~/.config before the chmod" "the update stamp is still there"
+    chmod 555 "$(dirname "$env_file")"
+    reset_argv_logs
+    run_install "$home" --uninstall --purge
+    out="$(cat "$INSTALL_OUT")"
+    chmod 755 "$(dirname "$env_file")"
+    assert_eq "install.sh --uninstall --purge exits 6 when the env file cannot be removed (Linux)" "6" "$INSTALL_STATUS"
+    case "$out" in
+        *"==> Done"*) fail "the exit-6 env-file case never prints Done" "it did" ;;
+        *) pass "the exit-6 env-file case never prints Done" ;;
+    esac
+    if grep -q "removed: env file (" "$INSTALL_OUT"; then
+        fail "the exit-6 env-file case prints no removed: line for it" "it did"
+    else
+        pass "the exit-6 env-file case prints no removed: line for it"
+    fi
+    assert_output_has "the exit-6 env-file case names FAILED to remove and the env file" "$out" \
+        "FAILED to remove: env file (--purge: it held the bearer token) ($env_file)"
+    rm -f "$env_file"
+
+    # ---- the legacy pre-rename env file is purged too (#439 nit a) ----
+    # install copies its token OUT of devcanopy-agent.env and never deletes
+    # it; --purge must not leave that copy of the same secret behind.
+    reset_argv_logs
+    INSTALL_STDIN="legacy-purge-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    assert_eq "install.sh succeeds, setting up the legacy-env-file fixture (Linux)" "0" "$INSTALL_STATUS"
+    local legacy_env="$home/.config/devcanopy-agent.env"
+    printf 'DEVCANOPY_AGENT_TOKEN=legacy-tok-MUST-NOT-BE-PRINTED\n' > "$legacy_env"
+    reset_argv_logs
+    run_install "$home" --uninstall --purge
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall --purge succeeds with a legacy env file present (Linux)" "0" "$INSTALL_STATUS"
+    [ -e "$legacy_env" ] && fail "--purge removes the legacy env file" "$legacy_env still exists" \
+        || pass "--purge removes the legacy env file"
+    assert_output_has "--purge names the legacy env file removed" "$out" "$legacy_env"
+    case "$out" in
+        *"legacy-tok-MUST-NOT-BE-PRINTED"*) fail "--purge never prints the legacy token" "it appeared in the output" ;;
+        *) pass "--purge never prints the legacy token" ;;
+    esac
+
+    # ---- a transaction starting DURING the stop call: exit 5, binary left ----
+    # ---- alone (#439 fix 2) — forced onto the fallback path (no flock(1),  ----
+    # ---- no perl) so this is deterministic regardless of what the host    ----
+    # ---- running this suite happens to have: with a real flock(1) on PATH ----
+    # ---- (Linux CI, typically) this run's own hold since the first check  ----
+    # ---- would make the race this simulates impossible to reach at all —  ----
+    # ---- which is the point fix 2 makes, not a gap in this test.          ----
+    reset_argv_logs
+    INSTALL_STDIN="lockrace-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the lock-race fixture (Linux)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_SYSTEMCTL_TAKE_LOCK="$bin.update.lock" INSTALL_PATH="$STUBS:$TOOLBIN_NOFLOCK_NOPERL" \
+        run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall exits 5 when the lock is taken during the stop call (Linux)" "5" "$INSTALL_STATUS"
+    assert_output_has "the exit-5 case says the lock is now held" "$out" "is now held"
+    [ -e "$unit" ] && fail "the exit-5 case still removes the unit" "$unit is still present" \
+        || pass "the exit-5 case still removes the unit"
+    [ -x "$bin" ] && pass "the exit-5 case leaves the binary in place" \
+        || fail "the exit-5 case leaves the binary in place" "$bin is gone"
+    rm -f "$bin.update.lock"
+    INSTALL_PATH=""
+    reset_argv_logs
+    run_install "$home" --uninstall
+    assert_eq "cleanup: a follow-up uninstall finishes removing the binary (Linux)" "0" "$INSTALL_STATUS"
+
+    # ---- the continuous hold itself, proven with a REAL flock() (#439 fix ----
+    # ---- 2) — not merely "the second check didn't fire". TOOLBIN_FAKEFLOCK ----
+    # ---- is a synthetic flock(1) (perl-backed; see its own setup comment) ----
+    # ---- standing in for the real one this dev/CI host may not have, so   ----
+    # ---- this is exercised everywhere the pre-existing tests already run, ----
+    # ---- not only on a Linux runner that happens to carry util-linux.     ----
+    if [ "$HAVE_FAKEFLOCK" != true ]; then
+        skip "install.sh's continuous flock hold blocks a real competing flock()" "no perl on PATH to back the synthetic flock(1)"
+    else
+        reset_argv_logs
+        INSTALL_STDIN="fakeflock-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+        assert_eq "install.sh --enable-timer succeeds, setting up the fakeflock fixture (Linux)" "0" "$INSTALL_STATUS"
+        # A stale lock from a finished transaction (never removed, per
+        # TransactionLock's own contract) — the first check must OPEN this,
+        # never create or truncate it, which `9<` (not `9<>`) is what proves.
+        printf 'pid=999999999 since=1\n' > "$bin.update.lock"
+        local probe="$TMP/fakeflock-probe-result"
+        rm -f "$probe"
+        reset_argv_logs
+        STUB_SYSTEMCTL_PROBE_LOCK="$bin.update.lock" STUB_SYSTEMCTL_PROBE_RESULT="$probe" \
+            INSTALL_PATH="$STUBS:$TOOLBIN_FAKEFLOCK" run_install "$home" --uninstall
+        assert_eq "install.sh --uninstall succeeds while holding a real flock() throughout (Linux)" "0" "$INSTALL_STATUS"
+        assert_eq "a genuinely competing flock() attempt during the stop call sees the hold as busy (Linux)" \
+            "busy" "$(cat "$probe" 2>/dev/null)"
+        INSTALL_PATH=""
+    fi
+
     unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
 }
 
@@ -5398,6 +5772,13 @@ test_uninstall_macos() {
     INSTALL_STDIN="mac-uninstall-tok-MUST-NOT-BE-PRINTED
 " run_install "$home" --enable-timer
     assert_eq "install.sh --enable-timer succeeds, setting up the uninstall fixture (macOS)" "0" "$INSTALL_STATUS"
+    # The rollback-anchor siblings a real host can carry, seeded by hand so
+    # removing them is actually exercised — without this, ".prev is gone"
+    # and ".rollback-displaced is gone" below would be true by vacuous
+    # absence (a fresh install never creates either) rather than by
+    # anything this run actually removed.
+    cp "$bin" "$bin.prev"
+    : > "$bin.rollback-displaced"
 
     # ---- the real uninstall: both loaded services must be bootout, both plists removed ----
     reset_argv_logs
@@ -5407,7 +5788,8 @@ test_uninstall_macos() {
     assert_file_has "the metrics LaunchAgent is booted out" "$STUB_LAUNCHCTL_ARGV" "bootout gui/$(id -u)/app.solador.agent"
     assert_file_has "the update LaunchAgent is booted out" "$STUB_LAUNCHCTL_ARGV" "bootout gui/$(id -u)/app.solador.agent.update"
     if [ -e "$plist" ] || [ -e "$update_plist" ] || [ -e "$launcher" ] \
-        || [ -e "$bin" ] || [ -e "$bin.prev" ] || [ -e "$bin.new" ] || [ -e "$bin.update.lock" ] \
+        || [ -e "$bin" ] || [ -e "$bin.prev" ] || [ -e "$bin.new" ] || [ -e "$bin.rollback-displaced" ] \
+        || [ -e "$bin.update.lock" ] \
         || [ -e "$home/.config/solador-agent-update.last-attempt" ]; then
         fail "install.sh --uninstall removes every installer file (macOS)" "some installer file is still present"
     else
@@ -5484,6 +5866,58 @@ test_uninstall_macos() {
         *) pass "macOS: the exit-4 case never prints the token" ;;
     esac
 
+    # ---- a plist naming a binary this user does not own (#439 nit b) ----
+    # The macOS analogue of the /opt case: nothing ships a foreign macOS
+    # layout today, but unowned_service_binary's plist-reading half is real
+    # code, and a hand-edited (or otherwise foreign) ProgramArguments is the
+    # only way to exercise it without a genuine root-owned macOS install to
+    # migrate from.
+    reset_argv_logs
+    INSTALL_STDIN="mac-foreign-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    assert_eq "install.sh succeeds, setting up the foreign-binary fixture (macOS)" "0" "$INSTALL_STATUS"
+    awk '
+        /<key>ProgramArguments<\/key>/ { want = 1 }
+        want && /<string>/ {
+            n++
+            if (n == 2) {
+                print "        <string>/opt/solador-agent/solador-agent</string>"
+                next
+            }
+        }
+        want && /<\/array>/ { want = 0 }
+        { print }
+    ' "$plist" > "$plist.tmp" && mv "$plist.tmp" "$plist"
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=0 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall still succeeds on a foreign-binary plist (macOS)" "0" "$INSTALL_STATUS"
+    assert_output_has "macOS: the foreign binary is named as left behind" "$out" \
+        "left behind: /opt/solador-agent/solador-agent (not owned by this user; see --migrate-from-opt)"
+    [ -e "$plist" ] && fail "macOS: the plist naming a foreign binary is still removed" "$plist is still present" \
+        || pass "macOS: the plist naming a foreign binary is still removed"
+
+    # ---- a transaction starting DURING the stop call: exit 5 (#439 fix 2) ----
+    reset_argv_logs
+    INSTALL_STDIN="mac-lockrace-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the lock-race fixture (macOS)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=0 STUB_LAUNCHCTL_TAKE_LOCK="$bin.update.lock" \
+        INSTALL_PATH="$STUBS:$TOOLBIN_NOFLOCK_NOPERL" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "macOS: install.sh --uninstall exits 5 when the lock is taken during the stop call" "5" "$INSTALL_STATUS"
+    assert_output_has "macOS: the exit-5 case says the lock is now held" "$out" "is now held"
+    [ -e "$plist" ] && fail "macOS: the exit-5 case still removes the plist" "$plist is still present" \
+        || pass "macOS: the exit-5 case still removes the plist"
+    [ -x "$bin" ] && pass "macOS: the exit-5 case leaves the binary in place" \
+        || fail "macOS: the exit-5 case leaves the binary in place" "$bin is gone"
+    rm -f "$bin.update.lock"
+    INSTALL_PATH=""
+    reset_argv_logs
+    STUB_LAUNCHCTL_LOADED_EXIT=113 run_install "$home" --uninstall
+    assert_eq "cleanup: a follow-up uninstall finishes removing the binary (macOS)" "0" "$INSTALL_STATUS"
+
     unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS
 }
 
@@ -5558,6 +5992,30 @@ STUB
         assert_eq "install.sh --uninstall refuses SOLADOR_AGENT_LAUNCHD_LABEL [$bad_label]" "1" "$?"
         assert_untouched "a refused label leaves an uninstall changing nothing [$bad_label]" "$home"
     done
+
+    # ---- the traversal case specifically: prove nothing OUTSIDE ----
+    # ---- ~/Library/LaunchAgents was touched, not just that the run ----
+    # ---- refused. assert_untouched above only checks the FIXED paths ----
+    # ---- (app.solador.agent.plist, the env file, ...) — none of them is ----
+    # ---- the path "../x" actually resolves to, so a refusal that somehow ----
+    # ---- still ran rm -f on that path would pass every assertion above ----
+    # ---- while quietly deleting a sentinel one directory above ----
+    # ---- LaunchAgents. Seeded and checked with content, not just presence, ----
+    # ---- so a refusal that truncated or rewrote the file would still fail ----
+    # ---- this rather than reading as "still exists, so untouched".
+    local sentinel="$home/Library/x.plist"
+    mkdir -p "$(dirname "$sentinel")"
+    printf 'sentinel-untouched\n' > "$sentinel"
+    reset_argv_logs
+    SOLADOR_AGENT_LAUNCHD_LABEL="../x" STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 run_install "$home" --uninstall
+    assert_eq "install.sh --uninstall refuses the traversal label [../x] (repeated, for the sentinel check)" "1" "$?"
+    if [ -f "$sentinel" ] && [ "$(cat "$sentinel")" = "sentinel-untouched" ]; then
+        pass "a traversal label cannot delete or modify a file outside ~/Library/LaunchAgents"
+    else
+        fail "a traversal label cannot delete or modify a file outside ~/Library/LaunchAgents" \
+            "$sentinel was removed or changed"
+    fi
+    rm -f "$sentinel"
 
     INSTALL_PATH=""
 }

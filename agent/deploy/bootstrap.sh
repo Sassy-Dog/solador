@@ -68,12 +68,19 @@
 # called on the LAST LINE. bash cannot call a function whose closing brace
 # it never read, so a truncated transfer downloads nothing and runs nothing.
 #
-# Exit status: whatever the extracted install.sh exits with (0 installed
-# and serving, 1 failed/refused, 2 usage, 3 the metrics service is fine but
-# --enable-timer's opt-in failed — see install.sh's own header), or this
-# script's own refusals: 1 a download/extraction failure, a --ref GitHub
-# does not confirm as reachable from main, or refusing to run as root; 2 a
-# missing or malformed --ref value.
+# Exit status: whatever the extracted install.sh exits with — see its own
+# header for the full table, which --uninstall (#439) extends: 0 installed
+# and serving (or, with --uninstall, uninstalled/already clean), 1
+# failed/refused with nothing changed, 2 usage, 3 the metrics service is
+# fine but --enable-timer's opt-in failed, 4 an --uninstall whose files were
+# all removed anyway but a reachable manager refused a specific stop
+# request, 5 an --uninstall whose lock became held AFTER the service and its
+# unit/plist were already removed (re-run once the transaction finishes), 6
+# an --uninstall where at least one file that should have been removable
+# could not actually be deleted — or this script's own refusals: 1 a
+# download/extraction failure, a --ref GitHub does not confirm as reachable
+# from main, or refusing to run as root; 2 a missing or malformed --ref
+# value.
 
 set -euo pipefail
 

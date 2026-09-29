@@ -886,38 +886,94 @@ now. See "Open items".
 
 **Uninstalling is the mirror of installing, and covers only the invoking
 user (#439).** `install.sh --uninstall` — `--uninstall --purge` also removes
-the env file — first refuses, untouched, when the service manager itself is
-unreachable (the same `systemctl --user show-environment` / `gui/<uid>`
+the env file, and the pre-rename `devcanopy-agent.env` beside it, since
+install copied its token out of that file and never deleted it. Its
+refusals run in this order, each untouched: **root** first, for the same
+reason `--enable-timer` refuses it; then the **service manager being
+unreachable** (the same `systemctl --user show-environment` / `gui/<uid>`
 domain check the install path makes in its own preflight, below: a
 `sudo -u`/`su` session cannot ask systemd to stop anything, and discovering
 that mid-uninstall — after a unit file is already gone — is exactly the
-half-changed state this check exists to prevent), then disables and stops
-both service-manager jobs (`systemctl --user disable --now` on Linux,
-`launchctl bootout gui/<uid>/…` on macOS), removes both unit/plist pairs
-(Linux additionally `daemon-reload`s once something changed), and removes
-the binary with its `.prev`/`.new`/`.update.lock`/`.rollback-displaced`
-siblings, the macOS launcher, the Linux guard, and the update stamp. The env
-file — the one file that holds the bearer token — is kept and named in the
-output unless `--purge` says otherwise; `--purge` alone is refused (it
-modifies `--uninstall`, it is never a mode of its own), and neither combines
-with `--migrate-from-opt` or `--enable-timer` (remove an install or
-create/repoint one, never both in one run). It refuses to run as root for
-the same reason `--enable-timer` does, never runs `loginctl disable-linger`
-(another service on this login may depend on it), refuses, untouched, while
-`solador-agent update`/`rollback` holds `<bin>.update.lock` (§4's own
-transaction lock — uninstalling mid-swap would race that transaction's own
-binary rename; the lock is checked again after the service-manager calls,
-before the binary itself is removed, since those calls can take long enough
-for a concurrently started transaction to acquire it in between — that
-narrows the window rather than closing it, which is the accepted residual
-scope this was written against), and is idempotent: a second run finds
-nothing left and says so. **Exit status is not always 0 for a run that
-removed everything**: a manager the reachability check found reachable can
-still refuse one specific stop request (rarer than unreachable, and not
-grounds for the refusal above, since the files genuinely can be removed) —
-that case still removes every file (best-effort) but exits **4**, distinct
-from both 0 ("Done", earned only when every stop request succeeded) and 1
-("refused, nothing changed" — false here), and names what to check by hand.
+half-changed state this check exists to prevent); then `<bin>.update.lock`
+being **held** by a `solador-agent update`/`rollback` already in progress
+(§4's own transaction lock — uninstalling mid-swap would race that
+transaction's own binary rename). On Linux that lock check does more than
+ask once: it **holds** the same flock (`exec 9<"$lock_file"` then
+`flock -n 9` — `man flock`'s own bash-3.2-safe idiom for locking the
+CALLER's own already-open fd in place, no different a primitive from
+`TransactionLock`'s own, per its comments on `std::fs::File::try_lock`
+being `flock()`-based) for the rest of the run, so a transaction that would
+otherwise start in the window this spends stopping the service and removing
+its unit/plist meets that hold as busy on its own terms (exit 75) rather
+than racing anything here — closing the window rather than merely
+re-checking it afterwards, which is what the previous revision did and what
+a review of #439 found could return **exit 1** ("refused, nothing changed")
+**after** the service had already been stopped and its unit/plist already
+removed, a false claim.
+
+It then disables and stops both service-manager jobs
+(`systemctl --user disable --now` on Linux, `launchctl bootout
+gui/<uid>/…` on macOS). **Before either unit/plist is removed**, the binary
+path it currently names is read (`unowned_service_binary`, never assumed to
+be `$DEST_BIN`) — reading `ExecStart=` on Linux, the second
+`<string>` of the plist's `ProgramArguments` on macOS (the first is the
+launcher, handled on its own path). One outside `~/.local/bin` — an
+unmigrated `/opt` host, most likely, root-owned since #392's migration is
+explicit and never automatic on its own — is reported as
+`left behind: <path> (not owned by this user; see --migrate-from-opt)`
+rather than silently forgotten: the mirror-of-install claiming it removed
+everything IT put there must not go quiet about a binary it never touched.
+It then removes both unit/plist pairs (Linux additionally `daemon-reload`s
+once something changed), and removes the binary with its
+`.prev`/`.new`/`.update.lock`/`.rollback-displaced` siblings, the macOS
+launcher, the Linux guard, and the update stamp. The env file — the one
+file that holds the bearer token — is kept and named in the output unless
+`--purge` says otherwise; `--purge` alone is refused (it modifies
+`--uninstall`, it is never a mode of its own), and neither combines with
+`--migrate-from-opt` or `--enable-timer` (remove an install or
+create/repoint one, never both in one run). It never runs `loginctl
+disable-linger` (another service on this login may depend on it), and is
+idempotent: a second run finds nothing left and says so.
+
+Where `flock(1)` is not on PATH — stock macOS ships none — the lock is
+checked again right before the binary itself is removed, rather than held
+continuously: that narrows the window rather than closing it (the accepted
+residual scope this was written against), and it asks
+`update_lock_busy` (`lib.sh`), which as of this review no longer reads the
+lock's `pid=… since=…` note at all. That coupling — a shell-side parser
+kept in step with a Rust format string by nothing but two comments agreeing
+with each other — is exactly what the review found untested and asked
+removed: `update_lock_busy` now asks the SAME kernel question
+`TransactionLock` itself asks, confirmed by reading `agent/src/update.rs`'s
+own comments that it is `flock()`-based (a lock surviving `fork()` until
+`exec()`, which is `flock()`'s open-file-description semantics — a
+`fcntl()`/`F_SETLK` lock is per-process and would not survive `fork()` at
+all). A real, non-blocking `flock()` on the path where `flock(1)` is
+present; the stock `perl`'s `Fcntl` `flock` asking the identical question
+through the identical syscall where it is not (almost every macOS ships
+one); and, with neither tool on PATH at all, every existing lock file reads
+as busy unconditionally — there is no way left to ask for certain, and
+guessing "free" is the wrong direction, the same one every other uncertain
+case here already fails toward.
+
+**Exit status is not always 0 or 1 for a run that changed something**: a
+manager the reachability check found reachable can still refuse one
+specific stop request (rarer than unreachable, and not grounds for the
+refusal above, since the files genuinely can be removed) — that case still
+removes every file (best-effort) but exits **4**. A transaction that
+started in the window between the service being stopped and the binary
+being removed — reachable only where nothing was held continuously, i.e. no
+`flock(1)` on PATH — exits **5**, with the binary and lock file deliberately
+left alone rather than raced. And `uninstall_remove` now checks every
+`rm -f`'s own result, not merely that it ran: a read-only parent directory
+(the reviewer reproduced this with `chmod 555 ~/.local/bin`) or an
+immutable file (`chflags uchg`, reproduced against the env file under
+`--purge`) previously still printed `removed:` and ended in `==> Done` with
+exit 0 — a failed removal reported as a successful one. That case now prints
+`FAILED to remove: <desc> (<path>)`, no `removed:` line for that file, no
+`Done`, and exits **6**. 4, 5 and 6 are each distinct from both 0 ("Done",
+earned only when every stop request succeeded and every file that should be
+gone actually is) and 1 ("refused, nothing changed" — false in all three).
 `SOLADOR_AGENT_LAUNCHD_LABEL`'s path-safety validation (the same
 `[A-Za-z0-9][A-Za-z0-9._-]*` gate the install path always had) is checked
 **before** `--uninstall` dispatches rather than only inside the install-only
@@ -1000,32 +1056,83 @@ Also required:
   curl's. The opt-in launchd smoke does the same against real launchd,
   read-only. What no test observes is a day of sleep on a real Mac or a
   real systemd timer through a reload and a suspend (§4).
-- **Uninstall — SHIPPED (#439).** `lib_test.sh` installs with `--enable-timer`
-  then `--uninstall`s on both platforms (the same stubbed managers) and
-  asserts every installer file is gone, `disable --now` / `bootout` reached
-  both jobs (an exact-line match — "solador-agent" is a literal prefix of
-  "solador-agent-update.timer", so a plain substring check would pass even if
-  only the timer, never the metrics service, had been disabled), the env file
-  survives without `--purge` and is gone with it, a second `--uninstall` (with
-  or without `--purge`) is a no-op that exits 0 and asks the service manager
-  for nothing, `--purge` alone and `--uninstall` beside `--migrate-from-opt`
-  or `--enable-timer` are each refused as usage errors, and
-  `loginctl disable-linger` is never called. `update_lock_busy` (`lib.sh`) has
-  its own cases — a missing lock file, one naming a pid that is not running,
-  and (whichever `update_lock_busy` itself uses: a real held `flock(1)` where
-  the host has one, the pid-liveness note otherwise) one genuinely held and
-  then released — and the install-flow case backs a real lock with a holder
-  that blocks on a FIFO's `open()` rather than `sleep`, because a `sleep`
-  child would inherit the locked fd across `fork()` (no `CLOEXEC` on a plain
-  `exec N>file`) and keep the lock held even after the parent holding it is
-  killed — exactly the gotcha `agent/src/update.rs`'s `TransactionLock`
-  documents. `bootstrap.sh` needed no code change for `--uninstall`: its
-  argument loop passes through anything it does not itself recognise, and
-  `lib_test.sh` proves that generically (an existing `--enable-timer
-  --migrate-from-opt` case) and once more by name for `--uninstall --purge`,
-  plus a real-`install.sh` run through `bootstrap.sh` asserting the kept-env-
-  file hint reads `bash bootstrap.sh ... --uninstall --purge` rather than a
-  path under bootstrap's own (already-removed) staging directory. Root, an
+- **Uninstall — SHIPPED (#439), fixed up against human review at 8f30567.**
+  `lib_test.sh` installs with `--enable-timer` then `--uninstall`s on both
+  platforms (the same stubbed managers) and asserts every installer file is
+  gone — seeding `.prev`, `.new` and `.rollback-displaced` by hand first, so
+  each removal is asserted for real rather than by vacuous absence — that
+  `disable --now` / `bootout` reached both jobs (an exact-line match —
+  "solador-agent" is a literal prefix of "solador-agent-update.timer", so a
+  plain substring check would pass even if only the timer, never the metrics
+  service, had been disabled), the env file survives without `--purge` and
+  is gone (along with the legacy `devcanopy-agent.env`) with it, a second
+  `--uninstall` (with or without `--purge`) is a no-op that exits 0 and asks
+  the service manager for nothing, `--purge` alone and `--uninstall` beside
+  `--migrate-from-opt` or `--enable-timer` are each refused as usage errors,
+  and `loginctl disable-linger` is never called. A unit/plist naming a
+  binary outside `~/.local/bin` (a hand-edited `ExecStart=`/`ProgramArguments`
+  standing in for an unmigrated `/opt` host) is asserted to be named
+  `left behind: … (not owned by this user; see --migrate-from-opt)` and
+  never removed. The label-traversal case (`../x`) is proven with a seeded
+  sentinel at the path it would resolve to (one directory above
+  `~/Library/LaunchAgents`), asserted to survive byte-for-byte — not merely
+  that the run refused, which a broken check could still satisfy vacuously
+  if nothing happened to exist at that path yet.
+
+  `update_lock_busy` (`lib.sh`) is proven against every tier it can reach:
+  a missing lock file; an EXISTING, unlocked one, asserted not-busy
+  regardless of its content (a dead pid's note, garbage bytes, or nothing at
+  all must all answer alike, since nothing here reads that content any
+  more); a genuinely held lock (via `hold_fake_lock`, below) and the same
+  once released; an unreadable file (fails toward busy); the `perl` fallback
+  forced via a `flock(1)`-less `PATH`, proven with the SAME real-hold/release
+  pair rather than assumed from the unlocked case alone; and, with neither
+  `flock(1)` nor `perl` on `PATH`, an unconditional busy for any existing
+  file. `hold_fake_lock` itself backs a real lock with a holder that blocks
+  on a FIFO's `open()` rather than `sleep` (a `sleep` child would inherit the
+  locked fd across `fork()` — no `CLOEXEC` on a plain `exec N>file` or on
+  perl's own `open()` — and keep the lock held even after the parent holding
+  it is killed, exactly the gotcha `agent/src/update.rs`'s `TransactionLock`
+  documents), preferring real `flock(1)` and falling back to the identical
+  `perl` mechanism `update_lock_busy` itself uses when `flock(1)` is absent —
+  which it is on every macOS host this suite runs on, `./dev test`'s
+  `rust-workspace` CI leg included, so this is the branch that dev machine
+  and that CI leg actually exercise, not merely the one Linux CI's real
+  `flock(1)` happens to cover.
+
+  Fix 2's Linux-only continuous hold is proven two ways, not just asserted
+  from the source. First, with a genuinely competing process: a synthetic
+  `flock(1)` (`TOOLBIN_FAKEFLOCK`, also `perl`-backed, standing in for the
+  real one no host running this suite has) is put on `--uninstall`'s own
+  `PATH`, a stubbed `systemctl disable` is made to independently attempt a
+  real, non-blocking `flock()` on the SAME lock file mid-call, and the run is
+  asserted to both succeed (the hold does not itself break the happy path)
+  and to have made that independent attempt see the lock as busy — proving
+  the hold, not merely the absence of the old re-check. Second, the residual
+  case fix 2 accepts rather than closes: with neither `flock(1)` nor `perl`
+  on `PATH` (so nothing here is held continuously), a stubbed
+  `systemctl`/`launchctl` call touches the lock file into existence mid-stop,
+  standing in for a transaction that started in that exact window, and the
+  run is asserted to exit **5** — never 1, since the service and its
+  unit/plist are already gone by then — with the binary and lock file left
+  in place for a later re-run.
+
+  `uninstall_remove`'s own failure path (fix 1) is proven by making `rm -f`
+  itself fail: `chmod 555` on a target's parent directory (the binary's
+  `~/.local/bin`, and — after an ordinary `--uninstall` first clears
+  everything else from `~/.config` — the env file's, under `--purge`, the
+  reviewer's own two repro cases) is asserted to leave no `removed:` line for
+  that file, no `==> Done`, a `FAILED to remove: …` line naming it, and exit
+  **6**; permissions are restored immediately after each case so neither a
+  later step in the same test nor the suite's own cleanup is affected.
+
+  `bootstrap.sh` needed no code change for `--uninstall`: its argument loop
+  passes through anything it does not itself recognise, and `lib_test.sh`
+  proves that generically (an existing `--enable-timer --migrate-from-opt`
+  case) and once more by name for `--uninstall --purge`, plus a
+  real-`install.sh` run through `bootstrap.sh` asserting the kept-env-file
+  hint reads `bash bootstrap.sh ... --uninstall --purge` rather than a path
+  under bootstrap's own (already-removed) staging directory. Root, an
   unreachable service manager (`STUB_SYSTEMCTL_USER_EXIT` / a
   `STUB_LAUNCHCTL_DOMAIN_EXIT` no gui domain) and an unsupported platform are
   each asserted to refuse before anything changes; a hostile

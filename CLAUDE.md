@@ -832,28 +832,49 @@ tests build (#417); the crate still has zero dependencies.
   `main`'s history contains keeps the same key-provenance property a
   checkout does.
 - **`install.sh --uninstall` is the mirror of the install, for the invoking
-  user only (#439).** Refuses first, untouched, when the service manager
-  itself is unreachable — the same `systemctl --user show-environment` /
-  `gui/<uid>` domain check the install path makes — then disables and stops
-  both service-manager jobs (`systemctl --user disable --now` /
-  `launchctl bootout gui/<uid>/…`), removes both unit/plist pairs (Linux
-  `daemon-reload`s once something changed), the binary and its
-  `.prev`/`.new`/`.update.lock`/`.rollback-displaced` siblings, the macOS
-  launcher, the Linux guard, and the update stamp. The env file is **kept**
-  and named in the output unless `--purge` also runs (it deletes the token);
+  user only (#439).** Its refusals run in this order, each untouched: root
+  first (same reason `--enable-timer` refuses it), then the service manager
+  being unreachable — the same `systemctl --user show-environment` /
+  `gui/<uid>` domain check the install path makes — then `<bin>.update.lock`
+  being held by a `solador-agent update`/`rollback` already in progress. On
+  Linux that lock check HOLDS the same flock (`exec 9<"$lock_file"; flock -n
+  9`, `man flock`'s own fd-only idiom) for the rest of the run wherever
+  `flock(1)` exists, rather than a one-shot check: a transaction starting in
+  the window this spends stopping the service and removing its unit/plist
+  meets that hold as busy on its own terms (exit 75), so nothing here needs
+  to re-ask afterwards. It then disables and stops both service-manager jobs
+  (`systemctl --user disable --now` / `launchctl bootout gui/<uid>/…`).
+  Before either unit/plist is removed, the binary path it currently names is
+  read (`unowned_service_binary`) — one outside `~/.local/bin` (an
+  unmigrated `/opt` host, most likely) is reported as `left behind: <path>
+  (not owned by this user; see --migrate-from-opt)` rather than silently
+  forgotten, since it is never this user's to delete. It then removes both
+  unit/plist pairs (Linux `daemon-reload`s once something changed), the
+  binary and its `.prev`/`.new`/`.update.lock`/`.rollback-displaced`
+  siblings, the macOS launcher, the Linux guard, and the update stamp. The
+  env file is **kept** and named in the output unless `--purge` also runs
+  (it deletes the token, and the pre-rename `devcanopy-agent.env` beside
+  it — install copied its token out of that file and never deleted it);
   `--purge` alone, or `--uninstall` beside `--migrate-from-opt` or
-  `--enable-timer`, is a usage error. Refuses as root (same reason
-  `--enable-timer` does), refuses while `<bin>.update.lock` is held
-  (`update_lock_busy`, `lib.sh` — a real `flock(1)` where the host has one, a
-  pid-liveness fallback otherwise, since the lock file itself is never
-  removed and so proves nothing by existing; the lock is re-checked once
-  more right before the binary itself is removed, narrowing but not closing
-  the window a manager call can take), never runs `loginctl disable-linger`,
-  and is idempotent — a second run finds nothing left and says so. **Exit
-  status is not always 0 for a run that removed every file**: a manager
-  found reachable can still refuse one specific stop request, which still
-  removes everything (best-effort) but exits 4, distinct from 0 ("Done",
-  earned) and 1 ("refused, nothing changed" — false here).
+  `--enable-timer`, is a usage error. Where `flock(1)` is not on PATH
+  (`update_lock_busy`, `lib.sh`: a real `flock(1)` where the host has one,
+  else the stock `perl`'s Fcntl flock asking the SAME kernel question —
+  never a note's content, which #439's review found untested and asked
+  removed; confirmed against `agent/src/update.rs`'s own comments that
+  `TransactionLock` is flock()-based, not `fcntl()`/`F_SETLK` — else, with
+  neither tool, every existing lock file reads as busy unconditionally) the
+  lock is re-checked once more right before the binary itself is removed,
+  narrowing but not closing the window a manager call can take. Never runs
+  `loginctl disable-linger`, and is idempotent — a second run finds nothing
+  left and says so. **Exit status is not always 0 or 1 for a run that
+  changed something**: a manager found reachable can still refuse one
+  specific stop request, which still removes everything (best-effort) but
+  exits 4; a transaction that started in the window above (only reachable
+  where nothing was held continuously) exits 5, the binary and lock
+  deliberately left alone; a file that should have been removable but
+  genuinely could not be (`uninstall_remove` checks every `rm -f`'s own
+  result now, not just that it ran) exits 6 — distinct from 0 ("Done",
+  earned) and 1 ("refused, nothing changed" — false in all three).
   `agent/README.md`'s "Moving the agent to another user" is the ordered
   procedure this exists for: install as the new user, re-pair the token,
   `--uninstall --purge` as the old one.
