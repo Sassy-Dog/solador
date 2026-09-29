@@ -50,14 +50,17 @@
 # --enable-timer opt-in failed — the "Done" block above the error is true.
 #
 # --uninstall (#439): removes, for the INVOKING USER ONLY, everything a
-# default install (or an opted-in --enable-timer) put on disk — where a
-# unit's own FILE still exists, stops it then disables it (and the
-# pre-rename unit, if a handed-over host still has one; on Linux stop and
+# default install (or an opted-in --enable-timer) put on disk. On Linux,
+# where a unit's own FILE still exists, it stops it then disables it (and
+# the pre-rename unit, if a handed-over host still has one; stop and
 # disable are two separate systemctl calls — #454 round-4 review's
 # follow-up — since a combined `disable --now` never reaches its own stop
 # when the unit file is already gone, and splitting them means a stop
-# failure and a disable failure are never reported as the same claim),
-# removes both unit/plist pairs, the binary and its
+# failure and a disable failure are never reported as the same claim). On
+# macOS, gated on `launchctl print` rather than a file check, it stops the
+# service with `launchctl bootout`; nothing is disabled — launchd has no
+# separate enablement step to clear. Either way this removes both
+# unit/plist pairs, the binary and its
 # .prev/.new/.update.lock/.rollback-displaced siblings, the macOS launcher,
 # the Linux guard, and the update stamp. The env file (the token) is KEPT and
 # named in the output unless --purge is also given, which also removes the
@@ -319,6 +322,27 @@ UNINSTALL_REMOVED=false
 # into 4's.
 UNINSTALL_FAILED=false
 
+# LINUX_UNIT_HINTS: a space-separated list of "<unit>=<kind>" records, one
+# per systemd unit whose `stop` and/or `disable` call failed during THIS
+# run's own pass (Linux only — see stop_and_disable_linux_unit, below,
+# which appends to it; <kind> is "stop", "disable" or "both"). Read only by
+# run_uninstall's own Linux exit-4 hint, further down, to name exactly which
+# `systemctl --user status <unit>` calls are worth the operator's time — by
+# then this run has already removed the unit file and run `daemon-reload`,
+# so a blanket hint naming a fixed unit (what `service_inspect_hint` in
+# lib.sh does, unchanged, for redeploy.sh's own use) answers "No files
+# found" whether or not the process is still running, and names only the
+# metrics unit regardless of which one actually failed.
+#
+# A plain string, not an array: bash 3.2 (the macOS system /bin/bash this
+# repo's own tests run under, and `set -u`) makes bash arrays a poor
+# foundation here, and no systemd unit name can ever contain a space, so
+# splitting this back apart on whitespace is safe. A script-global, like
+# UNINSTALL_REMOVED/UNINSTALL_FAILED above — not a `local` — for the same
+# reason: stop_and_disable_linux_unit is a function this one calls, visible
+# to it under bash's own dynamic scoping.
+LINUX_UNIT_HINTS=""
+
 # uninstall_remove <path> <description>: rm -f, and note the OUTCOME — not
 # just the attempt — in the summary printed to the operator and in
 # UNINSTALL_REMOVED/UNINSTALL_FAILED. `rm -f` suppresses "no such file", but
@@ -458,8 +482,17 @@ left_behind_hint() {
 # run_uninstall's own locals; all three are visible here, unshadowed, under
 # bash's dynamic scoping (verified: a `local` in a calling function is
 # visible to a function it calls).
+#
+# Either failure also appends "<unit>=<kind>" to LINUX_UNIT_HINTS (another
+# script-global, declared beside UNINSTALL_REMOVED above), so the exit-4
+# path below can name exactly which unit(s) to inspect by hand, and how —
+# by the time it runs, this same unit's FILE is already gone and
+# `daemon-reload` has already run, so a generic `systemctl --user cat
+# <fixed-unit>` hint answers "No files found" regardless of whether the
+# process is still running, and never names anything but the metrics unit.
 stop_and_disable_linux_unit() {
     local unit="$1" file="$2" label="$3"
+    local this_stop_failed=false this_disable_failed=false
     if [ -f "$file" ]; then
         if systemctl --user stop "$unit" 2>/dev/null; then
             echo "    stopped $label"
@@ -467,6 +500,7 @@ stop_and_disable_linux_unit() {
             echo "    (systemctl --user stop $unit reported an error;" >&2
             echo "     could not confirm it is stopped — removing its files anyway)" >&2
             MANAGER_STOP_FAILED=true
+            this_stop_failed=true
         fi
         if systemctl --user disable "$unit" 2>/dev/null; then
             echo "    disabled $label"
@@ -474,8 +508,51 @@ stop_and_disable_linux_unit() {
             echo "    (systemctl --user disable $unit reported an error;" >&2
             echo "     could not confirm its enablement is cleared — removing its files anyway)" >&2
             MANAGER_DISABLE_FAILED=true
+            this_disable_failed=true
         fi
         UNINSTALL_REMOVED=true
+        if [ "$this_stop_failed" = true ] && [ "$this_disable_failed" = true ]; then
+            LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=both"
+        elif [ "$this_stop_failed" = true ]; then
+            LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=stop"
+        elif [ "$this_disable_failed" = true ]; then
+            LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=disable"
+        fi
+    fi
+}
+
+# linux_uninstall_hint: the Linux exit-4 "verify by hand" text, reading
+# LINUX_UNIT_HINTS (above) rather than `lib.sh`'s own `service_inspect_hint`
+# — that one is deliberately left unchanged, since redeploy.sh still uses
+# it and it is correct there: redeploy leaves the unit's file in place.
+# --uninstall does not: by the time run_uninstall reaches its exit-4 path
+# the failed unit's FILE is already removed and `systemctl --user
+# daemon-reload` has already run, so `systemctl --user cat solador-agent`
+# (service_inspect_hint's own Linux line) answers "No files found" whether
+# or not the process is still running, and names only the metrics unit
+# regardless of which of up to four actually failed.
+#
+# One `systemctl --user status <unit>` line per unit LINUX_UNIT_HINTS
+# recorded (order of first failure, the order stop_and_disable_linux_unit's
+# own callers run in) — `status`, not `cat`, because a unit whose FILE is
+# gone still has a live status the manager can report (running, dead,
+# failed) and `cat` cannot. Any recorded disable failure — alone or beside
+# a stop failure — also gets the one command that finds what a `disable`
+# systemd could not confirm actually leaves behind: a dangling enablement
+# symlink under one of the *.wants directories, printed once, not once per
+# unit, since it is not itself a per-unit listing.
+linux_uninstall_hint() {
+    local record hint_unit hint_kind hint_seen_disable=false
+    for record in $LINUX_UNIT_HINTS; do
+        hint_unit="${record%=*}"
+        hint_kind="${record##*=}"
+        echo "         systemctl --user status $hint_unit" >&2
+        case "$hint_kind" in
+            disable | both) hint_seen_disable=true ;;
+        esac
+    done
+    if [ "$hint_seen_disable" = true ]; then
+        echo "         ls -l ~/.config/systemd/user/*.wants/" >&2
     fi
 }
 
@@ -683,12 +760,27 @@ run_uninstall() {
                 2)
                     echo "ERROR: cannot check the update lock ($lock_file) — perl could not" >&2
                     echo "       reopen its already-open file descriptor. Refusing rather than" >&2
-                    echo "       guessing free. Nothing has been changed." >&2
-                    exec 9>&-
+                    echo "       guessing free." >&2
                     # NEVER deleted, even when created_lock is true — this
                     # run could not actually verify the lock is free, so it
                     # is held to the same rule as the genuinely busy branch,
-                    # below.
+                    # below. That means the "nothing changed" claim is only
+                    # true when this run did not create the file: when it
+                    # did, the empty file its own atomic create left behind
+                    # is a real, if inert, change — said below rather than
+                    # papered over. A LATER run that reaches this same
+                    # section finds the file already present (created_lock
+                    # false, this time) and, once it gets past whatever
+                    # tripped this check, removes it: run_uninstall's own
+                    # cleanup at the end always calls uninstall_remove on
+                    # $lock_file once lock_pre_existed is true.
+                    if [ "$created_lock" = true ]; then
+                        echo "       Nothing else has been changed; an empty lock file may remain" >&2
+                        echo "       at $lock_file, and the next run removes it." >&2
+                    else
+                        echo "       Nothing has been changed." >&2
+                    fi
+                    exec 9>&-
                     return 1
                     ;;
                 *)
@@ -744,8 +836,13 @@ run_uninstall() {
             # stop_and_disable_linux_unit's own comment for what this leaves
             # unhandled, and why). Every argument here is the unit's FULL
             # name (e.g. "solador-agent.service", never bare
-            # "solador-agent") — `disable` in particular needs the exact
-            # unit name to find its own file.
+            # "solador-agent") — not because `disable` needs the exact name
+            # to find its own file (systemctl expands a bare name to
+            # "<name>.service" for `disable` too), but because the update
+            # TIMER does: a bare "solador-agent-update" resolves to the
+            # oneshot ".service", never the ".timer", so the timer must be
+            # named in full, and full names are used everywhere for
+            # consistency.
             stop_and_disable_linux_unit "$BIN_NAME.service" "$UNIT_DST" "$BIN_NAME.service"
             stop_and_disable_linux_unit "$UPDATE_NAME.timer" "$UPDATE_TIMER_DST" "$UPDATE_NAME.timer"
             stop_and_disable_linux_unit "$UPDATE_NAME.service" "$UPDATE_UNIT_DST" "$UPDATE_NAME.service"
@@ -896,7 +993,11 @@ run_uninstall() {
             echo "    The service itself was told to stop; only its future auto-start (at" >&2
             echo "    next login/boot) is unconfirmed. Verify by hand:" >&2
         fi
-        service_inspect_hint "$LAUNCHD_LABEL" >&2
+        if [ "$OS" = "Linux" ]; then
+            linux_uninstall_hint
+        else
+            service_inspect_hint "$LAUNCHD_LABEL" >&2
+        fi
         return 4
     fi
     if [ "$UNINSTALL_REMOVED" = true ]; then

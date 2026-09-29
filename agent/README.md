@@ -847,9 +847,10 @@ description, not the path, so unlinking a file another process has locked
 and letting a third opener recreate the same name hands that third opener a
 lock nobody is actually contending over (`agent/src/update.rs` documents the
 same hazard for its own transaction lock). The lock file is now **never**
-deleted on a busy result, whoever created it; the narrower non-busy failures
-(the open itself failing, or `perl` unable to reopen its own fd) delete it
-only when this run's own atomic create proved authorship.
+deleted on a busy result, whoever created it. Of the two narrower non-busy
+failures, only the open itself failing deletes a lock this run created; a
+`perl` reopen failure never deletes one, this run's or not — it proves
+nothing about whether the lock is free.
 
 On Linux it then runs `systemctl --user stop`, and then `systemctl --user
 disable` (no `--now`; the two are separate calls, never combined) on each of
@@ -858,7 +859,11 @@ update oneshot and the pre-rename unit — wherever, and *only* wherever, the
 unit's own file still exists on disk. That file is the ONLY signal: a
 failure of either call means exit **4** (below), and both calls are made
 against the unit's FULL name (e.g. `solador-agent.service`, never a bare
-one) — `disable` in particular needs the exact name to find its own file.
+one) — not because `disable` needs the exact name to find its own file
+(`systemctl` expands a bare name to `<name>.service` for `disable` too), but
+because the update *timer* does: a bare `solador-agent-update` resolves to
+the oneshot `.service`, never the `.timer`, so the timer must be named in
+full, and full names are used everywhere for consistency.
 
 **Known limit ([#455](https://github.com/Sassy-Dog/solador/issues/455)):** an
 earlier revision also asked the running manager's own state

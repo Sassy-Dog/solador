@@ -5556,6 +5556,19 @@ test_uninstall_linux() {
             fail "the exit-4 (disable) case never prints the token" "it appeared in the output" ;;
         *) pass "the exit-4 (disable) case never prints the token" ;;
     esac
+    # #454 round-6 nit: by this point the unit's FILE is already removed and
+    # `daemon-reload` has already run, so lib.sh's own service_inspect_hint
+    # (`systemctl --user cat solador-agent | grep ExecStart`) would answer
+    # "No files found" whether or not the process is still running. Linux
+    # gets its own hint instead: `systemctl --user status <unit>` for every
+    # unit whose disable call actually failed here — a fresh --enable-timer
+    # fixture, so all three (metrics, timer, oneshot) failed to disable —
+    # plus the `.wants` listing that a dangling enablement symlink leaves
+    # behind.
+    assert_output_has "the exit-4 (disable) case names the failed unit's status command" \
+        "$out" "systemctl --user status solador-agent.service"
+    assert_output_has "the exit-4 (disable) case names the dangling-enablement-link listing" \
+        "$out" "ls -l ~/.config/systemd/user/*.wants/"
 
     # ---- a reachable manager that still refuses to STOP the service: exit 4, files still removed ----
     # A fresh fixture (install with --enable-timer) so the unit file exists
@@ -5584,6 +5597,24 @@ test_uninstall_linux() {
         *"uninstall-stopfail-tok-MUST-NOT-BE-PRINTED"*)
             fail "the exit-4 (stop) case never prints the token" "it appeared in the output" ;;
         *) pass "the exit-4 (stop) case never prints the token" ;;
+    esac
+    # #454 round-6 nit (continued): this fresh --enable-timer fixture fails
+    # `stop` on all three units it carries, which is also the "two failed
+    # units" case — both the metrics unit's and the update timer's own
+    # `systemctl --user status` lines must appear, not just the first one
+    # found.
+    assert_output_has "the exit-4 (stop) case names the failed unit's status command" \
+        "$out" "systemctl --user status solador-agent.service"
+    assert_output_has "the exit-4 (stop) case names a second failed unit's status command too" \
+        "$out" "systemctl --user status solador-agent-update.timer"
+    # No disable call failed here (only stop was made to fail), so the
+    # dangling-enablement-link listing must NOT appear — it is specific to a
+    # failed disable, not printed unconditionally.
+    case "$out" in
+        *".wants"*)
+            fail "the exit-4 (stop) case never names the wants listing (no disable failure)" \
+                "\".wants\" appeared in the output" ;;
+        *) pass "the exit-4 (stop) case never names the wants listing (no disable failure)" ;;
     esac
 
     # ---- an unmigrated /opt host: --uninstall says what it leaves behind ----

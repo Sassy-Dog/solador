@@ -959,10 +959,12 @@ longer contending for anything, and both believe they hold the lock. Fixed
 by splitting the refusal branches on what they actually are: a **busy**
 result (the flock reported held, by anyone) now **never** deletes the lock
 file, created by this run or not — deleting it is the one thing a busy
-refusal must never do. The two **non-busy** failures (the open itself
-failing, or perl unable to reopen its own already-open fd) delete the file
-only when the atomic create above proved THIS run is the one that made it
-(`created_lock`); a file that pre-existed is left alone there too. Once
+refusal must never do. Of the two **non-busy** failures, only the open
+itself failing deletes the file, and only when the atomic create above
+proved THIS run is the one that made it (`created_lock`); a file that
+pre-existed is left alone there too. A perl reopen failure never deletes
+the file, this run's or not — it proves nothing about whether the lock is
+free, so it is held to the same rule as a genuinely busy result. Once
 held, a note (`pid=<pid> since=<epoch>`, the same
 shape `agent/src/update.rs` writes) is left in the file so a racing
 `update`/`rollback`'s own busy message names *this* uninstall rather than a
@@ -978,8 +980,12 @@ unit whose FILE is already gone never stops anything, it just fails
 outright. Both calls run under the SAME gate: the unit's own FILE existing
 on disk, checked once per unit, and that file is deliberately the ONLY
 signal. Both calls take the unit's FULL name — `solador-agent.service`,
-never bare `solador-agent` — because `disable` in particular needs the
-exact name to find its own file. A failed `stop`, or a failed `disable`
+never bare `solador-agent` — not because `disable` needs the exact name to
+find its own file (`systemctl` expands a bare name to `<name>.service` for
+`disable` too), but because the update *timer* does: a bare
+`solador-agent-update` resolves to the oneshot `.service`, never the
+`.timer`, so the timer must be named in full, and full names are used
+everywhere for consistency. A failed `stop`, or a failed `disable`
 while the file exists, both mean exit **4** — an enablement symlink
 `disable` could not clear is exactly as unconfirmed as a process `stop`
 could not stop, though the two are reported as separate, distinct claims

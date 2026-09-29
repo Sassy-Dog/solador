@@ -867,13 +867,13 @@ tests build (#417); the crate still has zero dependencies.
   another process has locked and letting a third opener recreate the same
   name gives that third opener a lock on a *different* inode
   (`agent/src/update.rs:1349-1351` names this explicitly). Fixed by never
-  deleting the lock file on a busy result, whoever created it, and by
-  deleting it on the narrower non-busy failures (the open itself failing,
-  or perl unable to reopen its own fd) only when the atomic create proved
-  THIS run is the one that made it. Once held, a note (`pid=<pid>
-  since=<epoch>`, the same shape `agent/src/update.rs` writes) is left in
-  the file so a racing update/rollback names THIS uninstall, not a stale
-  holder. **Stop and disable are two separate `systemctl` calls, never a
+  deleting the lock file on a busy result, whoever created it. Of the two
+  narrower non-busy failures, only the open itself failing deletes a lock
+  this run created; a perl reopen failure never deletes one, this run's or
+  not — it proves nothing about whether the lock is free. Once held, a note
+  (`pid=<pid> since=<epoch>`, the same shape `agent/src/update.rs` writes)
+  is left in the file so a racing update/rollback names THIS uninstall, not
+  a stale holder. **Stop and disable are two separate `systemctl` calls, never a
   combined `disable --now`** (#454 round-4 review's own follow-up): real
   systemd's `disable` needs a unit's own FILE to know which enablement
   symlinks to remove, and fails "Unit file <u> does not exist" without one
