@@ -59,7 +59,7 @@ unset STUB_SYSTEMCTL_TIMER_EXIT STUB_SYSTEMCTL_IS_ENABLED STUB_PLUTIL_FAIL_MATCH
 unset STUB_DATE_EPOCH STUB_DATE_EXIT STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SYSCTL_EXIT STUB_SYSCTL_ARGV
 unset STUB_MONO_NOW_US STUB_RESUME_US STUB_GUARD_SYSTEMCTL_ARGV GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
 unset STUB_SYSTEMD_VERSION
-unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_LAUNCHCTL_BOOTOUT_EXIT
+unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_SYSTEMCTL_STOP_EXIT STUB_LAUNCHCTL_BOOTOUT_EXIT
 unset STUB_SYSTEMCTL_ACTIVE_UNITS STUB_SYSTEMCTL_LOADED_UNITS
 unset STUB_SYSTEMCTL_PROBE_LOCK STUB_SYSTEMCTL_PROBE_RESULT
 unset STUB_LAUNCHCTL_PROBE_LOCK STUB_LAUNCHCTL_PROBE_RESULT
@@ -389,7 +389,13 @@ STUB
 # unit's own FILE is install.sh's real signal — asks these two nothing new:
 # a host with neither variable set behaves exactly as it did before this
 # unit-name matching existed, which is what keeps every pre-existing
-# "no manager calls on a no-op" assertion true unmodified.
+# "no manager calls on a no-op" assertion true unmodified. BOTH variables
+# take FULL unit names ("solador-agent.service", never bare
+# "solador-agent") — matching real `list-units`/`is-active`, which do not
+# append `.service` and match the given pattern against full unit names
+# only (`systemctl-list-units.c:275`, `dbus-manager.c:1227-1228`); a test
+# that sets a bare name here matches nothing, on the stub exactly as on the
+# real thing.
 cat > "$STUBS/systemctl" <<'STUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_SYSTEMCTL_ARGV:-}" ]; then
@@ -431,22 +437,33 @@ case "${2:-}" in
         [ "${STUB_SYSTEMCTL_IS_ENABLED:-enabled}" = "enabled" ] && exit 0
         exit 1
         ;;
-    # --uninstall's own disable --now calls (#439): STUB_SYSTEMCTL_DISABLE_EXIT
-    # fails BOTH the metrics and the update-timer disable, ahead of the more
-    # specific update-timer-only case below — reachability (show-environment)
-    # already answered above, so this is the narrower "manager reachable, one
-    # stop request still refused" case that path is meant to exercise.
-    # STUB_SYSTEMCTL_PROBE_LOCK proves the continuous lock hold (install.sh's
-    # `run_uninstall`) rather than assuming it: it independently attempts a
-    # real, non-blocking flock() on the named lock file — `flock(1)` where
-    # the CURRENT PATH has one (the synthetic `TOOLBIN_FAKEFLOCK`, standing
-    # in for a real one no host running this suite has), else the identical
-    # question through the stock `perl`'s Fcntl flock, the same fallback
-    # install.sh's own lock acquisition uses — and writes "busy" or "free" to
+    # --uninstall's own `stop` call (#454 round-4 review's own follow-up:
+    # stop and disable are two separate calls now, never a combined
+    # `disable --now`). This is the FIRST mutating call
+    # stop_and_disable_linux_unit makes on a gated unit, so it is also
+    # where the continuous-lock-hold proof (STUB_SYSTEMCTL_PROBE_LOCK,
+    # below) now attaches: it independently attempts a real, non-blocking
+    # flock() on the named lock file — `flock(1)` where the CURRENT PATH has
+    # one (the synthetic `TOOLBIN_FAKEFLOCK`, standing in for a real one no
+    # host running this suite has), else the identical question through the
+    # stock `perl`'s Fcntl flock, the same fallback install.sh's own lock
+    # acquisition uses — and writes "busy" or "free" to
     # STUB_SYSTEMCTL_PROBE_RESULT: a genuine, independent process actually
     # contending for the SAME flock() this uninstall is meant to be holding
-    # throughout, not merely a file that exists.
-    disable)
+    # throughout, not merely a file that exists. `stop` succeeds for a unit
+    # STUB_SYSTEMCTL_ACTIVE_UNITS or STUB_SYSTEMCTL_LOADED_UNITS names
+    # (matched on $3, the FULL unit name) and is a no-op success otherwise:
+    # real systemd errors on a unit it has genuinely never heard of, but
+    # install.sh only ever calls `stop` on a unit it has already gated as
+    # file-present-or-loaded (stop_and_disable_linux_unit), so the case this
+    # suite drives most often — a unit whose FILE is on disk, with neither
+    # tracking variable set — is the ordinary one; a no-op success there is
+    # what keeps every "the service is stopped" assertion written before
+    # those two variables existed true, unmodified.
+    # STUB_SYSTEMCTL_STOP_EXIT forces a failure here, independent of
+    # STUB_SYSTEMCTL_DISABLE_EXIT below — proving the two calls fail (and
+    # are reported) independently is the point of having split them.
+    stop)
         if [ -n "${STUB_SYSTEMCTL_PROBE_LOCK:-}" ]; then
             if command -v flock >/dev/null 2>&1; then
                 if flock -n "$STUB_SYSTEMCTL_PROBE_LOCK" true 2>/dev/null; then
@@ -465,9 +482,37 @@ case "${2:-}" in
                 fi
             fi
         fi
+        if [ -n "${STUB_SYSTEMCTL_STOP_EXIT:-}" ] && [ "$STUB_SYSTEMCTL_STOP_EXIT" != "0" ]; then
+            exit "$STUB_SYSTEMCTL_STOP_EXIT"
+        fi
+        exit 0
+        ;;
+    # --uninstall's own `disable` call — no `--now` any more; `stop`, above,
+    # is the separate call that covers it. Real systemd's `disable` needs
+    # the unit's own FILE to know which enablement symlinks to remove, and
+    # fails "Unit file <u> does not exist" (`do_unit_file_disable`'s own
+    # -ENOENT) without one, before it ever reaches a stop it no longer even
+    # asks for — mirrored here against the stub's own $HOME (install.sh's
+    # `disable` calls are gated the same way: stop_and_disable_linux_unit
+    # only calls `disable` when the unit FILE still exists, so this branch
+    # is reachable in this suite only when a test removes the file without
+    # also removing the unit from STUB_SYSTEMCTL_ACTIVE_UNITS/
+    # _LOADED_UNITS — the exit-4-then-re-run cases exercise exactly that).
+    disable)
+        # $3 is the unit name — UNLESS this is the old `--now` form (no
+        # caller in install.sh uses it any more, but the stub still answers
+        # it the way real systemd does, for robustness): then $3 is
+        # literally "--now" and the unit name is $4.
+        disable_unit="$3"
+        [ "$disable_unit" = "--now" ] && disable_unit="$4"
+        if [ ! -f "$HOME/.config/systemd/user/$disable_unit" ]; then
+            echo "Failed to disable unit: Unit file $disable_unit does not exist." >&2
+            exit 1
+        fi
         if [ -n "${STUB_SYSTEMCTL_DISABLE_EXIT:-}" ] && [ "$STUB_SYSTEMCTL_DISABLE_EXIT" != "0" ]; then
             exit "$STUB_SYSTEMCTL_DISABLE_EXIT"
         fi
+        exit 0
         ;;
 esac
 case "$*" in
@@ -5402,6 +5447,15 @@ test_uninstall_linux() {
     else
         pass "a lock-refused uninstall never reaches the service manager"
     fi
+    # Blocking fix (this round): a busy refusal must NEVER delete the lock
+    # file — deleting it while a concurrent holder's flock() is still on it
+    # is exactly how two processes come to hold "the" lock at once
+    # (agent/src/update.rs:1349-1351). hold_fake_lock's own genuinely
+    # competing holder is what makes this file "concurrently created/held"
+    # from install.sh's own point of view, not merely pre-existing on disk;
+    # checked BEFORE release_fake_lock's own cleanup removes it.
+    [ -e "$bin.update.lock" ] && pass "a busy refusal leaves the concurrently held lock file in place" \
+        || fail "a busy refusal leaves the concurrently held lock file in place" "$bin.update.lock is gone"
     release_fake_lock "$bin.update.lock"
     # A leftover lock file from a transaction that already finished — the
     # ordinary case (agent/src/update.rs's TransactionLock never removes its
@@ -5416,15 +5470,22 @@ test_uninstall_linux() {
     run_install "$home" --uninstall
     out="$(cat "$INSTALL_OUT")"
     assert_eq "install.sh --uninstall succeeds (Linux)" "0" "$INSTALL_STATUS"
-    # Exact-line (grep -x), not a substring match: "solador-agent" is a
-    # literal prefix of "solador-agent-update.timer", so a plain substring
-    # search on the metrics line's text would also "find" it on the timer's.
-    if grep -qxF -- "--user disable --now solador-agent" "$STUB_SYSTEMCTL_ARGV"; then
-        pass "the metrics service is disabled and stopped"
+    # Exact-line (grep -x), not a substring match: stop and disable are now
+    # separate calls, each against the unit's FULL name — never a bare one,
+    # which real `list-units`/`is-active` would not match at all (#454
+    # round-4 review's own follow-up).
+    if grep -qxF -- "--user stop solador-agent.service" "$STUB_SYSTEMCTL_ARGV"; then
+        pass "the metrics service is stopped"
     else
-        fail "the metrics service is disabled and stopped" "no exact '--user disable --now solador-agent' line"
+        fail "the metrics service is stopped" "no exact '--user stop solador-agent.service' line"
     fi
-    assert_file_has "the update timer is disabled and stopped" "$STUB_SYSTEMCTL_ARGV" "--user disable --now solador-agent-update.timer"
+    if grep -qxF -- "--user disable solador-agent.service" "$STUB_SYSTEMCTL_ARGV"; then
+        pass "the metrics service is disabled"
+    else
+        fail "the metrics service is disabled" "no exact '--user disable solador-agent.service' line"
+    fi
+    assert_file_has "the update timer is stopped" "$STUB_SYSTEMCTL_ARGV" "--user stop solador-agent-update.timer"
+    assert_file_has "the update timer is disabled" "$STUB_SYSTEMCTL_ARGV" "--user disable solador-agent-update.timer"
     assert_file_has "systemd is reloaded" "$STUB_SYSTEMCTL_ARGV" "--user daemon-reload"
     # #439 nit: reset-failed clears any "failed" state a disable/stop that
     # reported an error can leave behind, for every unit --uninstall knows
@@ -5498,46 +5559,85 @@ test_uninstall_linux() {
         || fail "an unreachable-manager refusal leaves the unit in place" "$unit is gone"
     [ -x "$bin" ] && pass "an unreachable-manager refusal leaves the binary in place" \
         || fail "an unreachable-manager refusal leaves the binary in place" "$bin is gone"
-    if grep -qE "disable|daemon-reload" "$STUB_SYSTEMCTL_ARGV"; then
+    if grep -qE "stop|disable|daemon-reload" "$STUB_SYSTEMCTL_ARGV"; then
         fail "an unreachable-manager refusal never asks systemd to change anything" "a mutating call was made"
     else
         pass "an unreachable-manager refusal never asks systemd to change anything"
     fi
 
-    # ---- a reachable manager that still refuses to stop the service: exit 4, files still removed ----
+    # ---- a reachable manager that still refuses to DISABLE the service: exit 4, files still removed ----
+    # stop and disable are two separate calls now (#454 round-4 review's own
+    # follow-up); STUB_SYSTEMCTL_STOP_EXIT is unset here, so `stop` succeeds
+    # and only the `disable` call (gated on the unit file, which this fresh
+    # fixture still has) is made to fail.
     reset_argv_logs
     STUB_SYSTEMCTL_DISABLE_EXIT=1 run_install "$home" --uninstall
     out="$(cat "$INSTALL_OUT")"
-    assert_eq "install.sh --uninstall exits 4 when a reachable manager refuses to stop the service" "4" "$INSTALL_STATUS"
-    assert_output_has "the exit-4 case says the files were removed anyway" "$out" "files were removed"
-    assert_output_has "the exit-4 case says to verify by hand" "$out" "Verify by hand"
+    assert_eq "install.sh --uninstall exits 4 when a reachable manager refuses to disable the service" "4" "$INSTALL_STATUS"
+    assert_output_has "the exit-4 (disable) case says the files were removed anyway" "$out" "files were removed"
+    assert_output_has "the exit-4 (disable) case says to verify by hand" "$out" "Verify by hand"
     if [ -e "$unit" ] || [ -x "$bin" ]; then
-        fail "the exit-4 case still removes every installer file" "some installer file is still present"
+        fail "the exit-4 (disable) case still removes every installer file" "some installer file is still present"
     else
-        pass "the exit-4 case still removes every installer file"
+        pass "the exit-4 (disable) case still removes every installer file"
     fi
     case "$out" in
         *"uninstall-manager-tok-MUST-NOT-BE-PRINTED"*)
-            fail "the exit-4 case never prints the token" "it appeared in the output" ;;
-        *) pass "the exit-4 case never prints the token" ;;
+            fail "the exit-4 (disable) case never prints the token" "it appeared in the output" ;;
+        *) pass "the exit-4 (disable) case never prints the token" ;;
+    esac
+
+    # ---- a reachable manager that still refuses to STOP the service: exit 4, files still removed ----
+    # A fresh fixture (install with --enable-timer) so the unit file exists
+    # and `stop` is actually attempted; STUB_SYSTEMCTL_STOP_EXIT fails it
+    # independent of STUB_SYSTEMCTL_DISABLE_EXIT — proving the two calls are
+    # reported independently was the point of splitting them.
+    reset_argv_logs
+    INSTALL_STDIN="uninstall-stopfail-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds again, for the stop-failure case (Linux)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_SYSTEMCTL_STOP_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall exits 4 when a reachable manager refuses to stop the service" "4" "$INSTALL_STATUS"
+    assert_output_has "the exit-4 (stop) case says the files were removed anyway" "$out" "files were removed"
+    assert_output_has "the exit-4 (stop) case says to verify by hand" "$out" "Verify by hand"
+    if [ -e "$unit" ] || [ -x "$bin" ]; then
+        fail "the exit-4 (stop) case still removes every installer file" "some installer file is still present"
+    else
+        pass "the exit-4 (stop) case still removes every installer file"
+    fi
+    case "$out" in
+        *"uninstall-stopfail-tok-MUST-NOT-BE-PRINTED"*)
+            fail "the exit-4 (stop) case never prints the token" "it appeared in the output" ;;
+        *) pass "the exit-4 (stop) case never prints the token" ;;
     esac
 
     # ---- #454 round-4 review: a RE-RUN after that exit 4 must still ask  ----
-    # ---- the manager about the metrics unit, even though run 1's exit 4  ----
-    # ---- already removed its FILE — gating the disable/stop call solely  ----
-    # ---- on the file's presence (an earlier revision's whole check) left ----
-    # ---- a re-run nothing to gate that unit on, so it asked systemd      ----
-    # ---- about it not at all and reported "Nothing installed" over a     ----
-    # ---- unit the manager may still be running. STUB_SYSTEMCTL_ACTIVE_   ----
-    # ---- UNITS stands in for exactly that: a unit `is-active` still      ----
-    # ---- reports, with no unit file left on disk to gate on.
+    # ---- the manager about the metrics unit, even though the earlier     ----
+    # ---- exit-4 run (the stop-failure case, directly above — its own     ----
+    # ---- best-effort removal already took the unit FILE with it) already ----
+    # ---- removed its FILE — gating the disable/stop call solely on the   ----
+    # ---- file's presence (an earlier revision's whole check) left a      ----
+    # ---- re-run nothing to gate that unit on, so it asked systemd about  ----
+    # ---- it not at all and reported "Nothing installed" over a unit the  ----
+    # ---- manager may still be running. STUB_SYSTEMCTL_ACTIVE_UNITS       ----
+    # ---- stands in for exactly that: a unit `is-active` still reports,   ----
+    # ---- with no unit file left on disk to gate on — and it takes the    ----
+    # ---- unit's FULL name (#454's own follow-up fix), never a bare one.
     reset_argv_logs
-    STUB_SYSTEMCTL_ACTIVE_UNITS="solador-agent" run_install "$home" --uninstall
+    STUB_SYSTEMCTL_ACTIVE_UNITS="solador-agent.service" run_install "$home" --uninstall
     out="$(cat "$INSTALL_OUT")"
     assert_eq "run 2: install.sh --uninstall stops a unit the manager reports active, with no file left to gate on" \
         "0" "$INSTALL_STATUS"
     assert_file_has "run 2: a stop request is actually issued against the active unit" \
-        "$STUB_SYSTEMCTL_ARGV" "--user disable --now solador-agent"
+        "$STUB_SYSTEMCTL_ARGV" "--user stop solador-agent.service"
+    if grep -qxF -- "--user disable solador-agent.service" "$STUB_SYSTEMCTL_ARGV"; then
+        fail "run 2: no disable request is issued — the unit's file is already gone" \
+            "an exact '--user disable solador-agent.service' line is present"
+    else
+        pass "run 2: no disable request is issued — the unit's file is already gone"
+    fi
     case "$out" in
         *"Nothing installed"*)
             fail "run 2: the run does not claim nothing was installed" "it printed \"Nothing installed\"" ;;
@@ -5546,11 +5646,15 @@ test_uninstall_linux() {
     assert_output_has "run 2: the run reports success" "$out" "uninstalled for"
 
     # The failure form: the manager still reports the unit active AND still
-    # refuses its stop request on the re-run — exit 4 again (never a false
+    # refuses its STOP request on the re-run — exit 4 again (never a false
     # "Done", and never "Nothing installed" either, which is what the old
-    # file-gated check would have reported here).
+    # file-gated check would have reported here). STUB_SYSTEMCTL_STOP_EXIT,
+    # not _DISABLE_EXIT: the unit's file is gone, so `disable` is never even
+    # called here — only `stop` can fail in this exact combination, and this
+    # is also the task's own "a failed stop: exit 4" case, in the round-4
+    # re-run shape specifically.
     reset_argv_logs
-    STUB_SYSTEMCTL_ACTIVE_UNITS="solador-agent" STUB_SYSTEMCTL_DISABLE_EXIT=1 run_install "$home" --uninstall
+    STUB_SYSTEMCTL_ACTIVE_UNITS="solador-agent.service" STUB_SYSTEMCTL_STOP_EXIT=1 run_install "$home" --uninstall
     out="$(cat "$INSTALL_OUT")"
     assert_eq "run 2b: still active and still refused stays exit 4, never 0" "4" "$INSTALL_STATUS"
     case "$out" in
@@ -5558,6 +5662,54 @@ test_uninstall_linux() {
             fail "run 2b: a still-refused stop is never reported as nothing installed" "it was" ;;
         *) pass "run 2b: a still-refused stop is never reported as nothing installed" ;;
     esac
+
+    # ---- a fileless oneshot left `failed` (loaded, not active) is        ----
+    # ---- detected via the list-units fallback (linux_unit_loaded), not   ----
+    # ---- is-active alone, and is stopped — the run must not claim        ----
+    # ---- "Nothing installed" over a unit systemd still tracks.           ----
+    reset_argv_logs
+    INSTALL_STDIN="failed-oneshot-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the failed-oneshot fixture (Linux)" "0" "$INSTALL_STATUS"
+    rm -f "$update_unit"
+    reset_argv_logs
+    STUB_SYSTEMCTL_LOADED_UNITS="solador-agent-update.service" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a fileless failed oneshot is detected via list-units and stopped" "0" "$INSTALL_STATUS"
+    assert_file_has "the failed oneshot receives a stop request" "$STUB_SYSTEMCTL_ARGV" "--user stop solador-agent-update.service"
+    if grep -qxF -- "--user disable solador-agent-update.service" "$STUB_SYSTEMCTL_ARGV"; then
+        fail "no disable request is issued for the failed oneshot — its file is already gone" \
+            "an exact '--user disable solador-agent-update.service' line is present"
+    else
+        pass "no disable request is issued for the failed oneshot — its file is already gone"
+    fi
+    case "$out" in
+        *"Nothing installed"*)
+            fail "a fileless failed oneshot is never reported as nothing installed" "it was" ;;
+        *) pass "a fileless failed oneshot is never reported as nothing installed" ;;
+    esac
+    assert_output_has "the failed-oneshot run reports success" "$out" "uninstalled for"
+
+    # ---- a dangling timers.target.wants symlink for the update timer,    ----
+    # ---- surviving both stop and disable because its own unit FILE is    ----
+    # ---- gone (so disable never even runs to clear it), is removed as    ----
+    # ---- one of the installer's own artefacts and reported like every    ----
+    # ---- other removal.                                                  ----
+    reset_argv_logs
+    INSTALL_STDIN="wants-symlink-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the dangling-wants-symlink fixture (Linux)" "0" "$INSTALL_STATUS"
+    rm -f "$update_timer"
+    mkdir -p "$home/.config/systemd/user/timers.target.wants"
+    ln -s "$update_timer" "$home/.config/systemd/user/timers.target.wants/solador-agent-update.timer"
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall removes a dangling wants-symlink for a fileless unit" "0" "$INSTALL_STATUS"
+    [ -L "$home/.config/systemd/user/timers.target.wants/solador-agent-update.timer" ] \
+        && fail "the dangling wants-symlink is removed" "it is still present" \
+        || pass "the dangling wants-symlink is removed"
+    assert_output_has "the dangling wants-symlink's removal is reported" "$out" "dangling wants-symlink for solador-agent-update.timer"
 
     # ---- an unmigrated /opt host: --uninstall says what it leaves behind ----
     # (#439 nit b) — a unit whose ExecStart= names a binary this user does not
@@ -5597,8 +5749,10 @@ test_uninstall_linux() {
     run_install "$home" --uninstall
     out="$(cat "$INSTALL_OUT")"
     assert_eq "install.sh --uninstall succeeds with a pre-rename unit present (Linux)" "0" "$INSTALL_STATUS"
-    assert_file_has "the pre-rename unit is disabled and stopped" "$STUB_SYSTEMCTL_ARGV" \
-        "--user disable --now devcanopy-agent"
+    assert_file_has "the pre-rename unit is stopped" "$STUB_SYSTEMCTL_ARGV" \
+        "--user stop devcanopy-agent.service"
+    assert_file_has "the pre-rename unit is disabled" "$STUB_SYSTEMCTL_ARGV" \
+        "--user disable devcanopy-agent.service"
     [ -e "$legacy_unit" ] && fail "the pre-rename unit file is removed too" "$legacy_unit still exists" \
         || pass "the pre-rename unit file is removed too"
 

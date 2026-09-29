@@ -50,9 +50,13 @@
 # --enable-timer opt-in failed — the "Done" block above the error is true.
 #
 # --uninstall (#439): removes, for the INVOKING USER ONLY, everything a
-# default install (or an opted-in --enable-timer) put on disk — disables and
-# stops both service-manager jobs (and the pre-rename unit, if a handed-over
-# host still has one), removes both unit/plist pairs, the binary and its
+# default install (or an opted-in --enable-timer) put on disk — stops, and
+# (where its unit file still exists) disables, both service-manager jobs
+# (and the pre-rename unit, if a handed-over host still has one; on Linux
+# stop and disable are two separate systemctl calls on two separate gates —
+# #454 round-4 review's follow-up — since a combined `disable --now` never
+# reaches its own stop when the unit file is already gone), removes both
+# unit/plist pairs, the binary and its
 # .prev/.new/.update.lock/.rollback-displaced siblings, the macOS launcher,
 # the Linux guard, and the update stamp. The env file (the token) is KEPT and
 # named in the output unless --purge is also given, which also removes the
@@ -62,10 +66,14 @@
 # behind" together with its actual remedy (this user cannot delete it; its
 # owner can) rather than silently ignored or pointed at a flag that does not
 # apply post-uninstall. Refusals run in this order and each is untouched:
-# root (same reason --enable-timer refuses it), then the service manager
-# being unreachable (same reachability check the install path makes — a
-# sudo -u/su session, say), then the update transaction lock
-# (<bin>.update.lock): this OPENS the lock file (creating it if missing,
+# root (same reason --enable-timer refuses it); then an unsupported platform
+# (this script supports Linux/systemd and macOS/launchd, named as such);
+# then the service manager being unreachable (same reachability check the
+# install path makes — a sudo -u/su session, say); then the update
+# transaction lock (<bin>.update.lock) — this whole section is skipped
+# outright when ~/.local/bin ($DEST_BIN's own directory) does not exist at
+# all, since nothing can possibly be installed under a directory that is
+# not there. Where it does exist, this OPENS the lock file (creating it if missing,
 # NEVER truncating one that exists — agent/src/update.rs's own
 # create(true).truncate(false)) and takes a non-blocking exclusive flock on
 # it — flock(1) where it is on PATH, else the stock perl's Fcntl flock on
@@ -395,53 +403,99 @@ left_behind_hint() {
     esac
 }
 
-# linux_unit_loaded <systemctl-name>: true when the running user manager
-# currently knows about <systemctl-name> in ANY state — active, failed, or
+# linux_unit_loaded <full-unit-name>: true when the running user manager
+# currently knows about <full-unit-name> in ANY state — active, failed, or
 # merely loaded — even once its own unit FILE is already gone (#454 round-4
-# review). `is-active` alone only catches a unit that is genuinely running
-# RIGHT NOW: the update oneshot's ordinary resting state between firings is
-# "inactive", and after an errored run it is "failed" — neither of which
-# `is-active` reports as active — so `list-units --all` is the fallback
-# that actually finds a unit systemd is still tracking. This is what lets
+# review). The argument MUST be the full unit name (e.g.
+# "solador-agent.service", never bare "solador-agent"): real
+# `systemctl list-units` does not append `.service` on its own
+# (`systemctl-list-units.c`), and the manager matches the pattern given
+# against full unit names (`dbus-manager.c`) — a bare name matches nothing,
+# active or not, on genuine systemd. `is-active` alone only catches a unit
+# that is genuinely running RIGHT NOW: the update oneshot's ordinary resting
+# state between firings is "inactive", and after an errored run it is
+# "failed" — neither of which `is-active` reports as active — so
+# `list-units --all` is the fallback that actually finds a unit systemd is
+# still tracking, loaded but not active included. This is what lets
 # stop_and_disable_linux_unit, below, act on a unit whose FILE a PRIOR
 # --uninstall already removed (exit 4: every file removed, but a reachable
 # manager still refused that unit's own stop request) even though nothing
 # on disk is left to gate a re-run's own attempt on.
 linux_unit_loaded() {
-    local systemctl_name="$1"
-    systemctl --user is-active "$systemctl_name" >/dev/null 2>&1 && return 0
-    [ -n "$(systemctl --user list-units --all --no-legend "$systemctl_name" 2>/dev/null)" ]
+    local unit="$1"
+    systemctl --user is-active "$unit" >/dev/null 2>&1 && return 0
+    [ -n "$(systemctl --user list-units --all --no-legend "$unit" 2>/dev/null)" ]
 }
 
-# stop_and_disable_linux_unit <systemctl-name> <file> <label>: disables and
-# stops <systemctl-name> when EITHER its own unit FILE exists OR the
-# manager itself still knows about it (linux_unit_loaded, above). Gating on
-# the file alone (an earlier revision's whole check) is what let a re-run
-# after exit 4 ask systemd nothing at all about a unit whose file that
-# EARLIER run had already removed while the unit itself stayed active or
-# failed: the run reported "Nothing installed" and exited 0 over a service
-# that, per systemd, was never actually stopped. Sets UNINSTALL_REMOVED
-# when it acts at all (the manager's own state counts as "something was
-# installed" exactly as a leftover file already does), and
-# MANAGER_CALL_FAILED when the stop request itself did not succeed — both
-# are run_uninstall's own locals, set here the same way its other call
-# sites already do, under bash's dynamic scoping (verified: a `local` in a
-# calling function is visible, unshadowed, to a function it calls).
+# stop_and_disable_linux_unit <full-unit-name> <file> <label>: stop and
+# disable are two separate systemctl calls now, on two separate gates —
+# never the combined `disable --now` an earlier revision issued as one call
+# (#454 round-4 review's follow-up). Real systemd's `do_unit_file_disable`
+# (`src/shared/install.c`) returns -ENOENT for a unit file that is not
+# there, and `disable`'s own CLI path (`systemctl-enable.c`) fails at
+# "Failed to %s unit" BEFORE it ever reaches the `--now` stop — so on a
+# unit whose FILE a prior exit-4 run already removed, `disable --now` never
+# stopped anything, and every re-run exited 4 forever over a unit that was
+# never actually asked to stop.
+#
+#   * `stop` runs whenever EITHER the unit FILE exists OR the manager
+#     itself still knows about it (linux_unit_loaded, above) — active,
+#     failed, or merely loaded. Gating on the file alone (the earlier
+#     revision's whole check) is what let a re-run after exit 4 ask systemd
+#     nothing at all about a unit whose file that EARLIER run had already
+#     removed while the unit itself stayed active or failed.
+#   * `disable` (no `--now`; the stop above is now a separate call) runs
+#     only when the unit FILE still exists — real systemd's `disable`
+#     needs the file to know which enablement symlinks to remove, and
+#     fails "Unit file <u> does not exist" without one, so calling it on a
+#     fileless unit would itself be the false failure this fix removes.
+#
+# A failed `stop` means exit 4 (MANAGER_CALL_FAILED); a failed `disable`
+# while the file exists ALSO means exit 4 — an enablement symlink `disable`
+# could not clear is exactly as unconfirmed as a process it could not stop.
+# Sets UNINSTALL_REMOVED whenever either call runs at all (the manager's
+# own state, or the file's presence, each count as "something was
+# installed" on their own). UNINSTALL_REMOVED is a script-global (set
+# unconditionally near the top of this file, before argument parsing even
+# runs — it is not a `local`, unlike MANAGER_CALL_FAILED, which IS
+# run_uninstall's own local); both are visible here, unshadowed, under
+# bash's dynamic scoping (verified: a `local` in a calling function is
+# visible to a function it calls).
+#
+# Finally, a dangling `*.wants/<unit>` symlink under
+# ~/.config/systemd/user: ordinarily `disable` removes this itself, but a
+# unit whose FILE is already gone has nothing left for `disable` to look up
+# (it is not even called, above), so a wants-symlink from an earlier run
+# can outlive both branches here. Removed as one of the installer's own
+# artefacts, reported the same way uninstall_remove reports every other
+# removal — never left to keep systemd trying to start a unit whose file no
+# longer exists.
 stop_and_disable_linux_unit() {
-    local systemctl_name="$1" file="$2" label="$3"
-    if [ -f "$file" ] || linux_unit_loaded "$systemctl_name"; then
-        # The line printed reflects what actually happened, not what was
-        # attempted: a failed disable/stop is reported as such, never as
-        # "stopped".
-        if systemctl --user disable --now "$systemctl_name" 2>/dev/null; then
-            echo "    stopped and disabled $label"
+    local unit="$1" file="$2" label="$3"
+    if [ -f "$file" ] || linux_unit_loaded "$unit"; then
+        if systemctl --user stop "$unit" 2>/dev/null; then
+            echo "    stopped $label"
         else
-            echo "    (systemctl --user disable --now $systemctl_name reported an error;" >&2
+            echo "    (systemctl --user stop $unit reported an error;" >&2
             echo "     could not confirm it is stopped — removing its files anyway)" >&2
             MANAGER_CALL_FAILED=true
         fi
         UNINSTALL_REMOVED=true
     fi
+    if [ -f "$file" ]; then
+        if systemctl --user disable "$unit" 2>/dev/null; then
+            echo "    disabled $label"
+        else
+            echo "    (systemctl --user disable $unit reported an error;" >&2
+            echo "     could not confirm its enablement is cleared — removing its files anyway)" >&2
+            MANAGER_CALL_FAILED=true
+        fi
+        UNINSTALL_REMOVED=true
+    fi
+    local wants_link
+    for wants_link in "$HOME/.config/systemd/user"/*.wants/"$unit"; do
+        uninstall_remove "$wants_link" "dangling wants-symlink for $label"
+    done
 }
 
 run_uninstall() {
@@ -560,20 +614,39 @@ run_uninstall() {
     local lock_file="$DEST_BIN.update.lock"
     # $INSTALL_DIR (set above, near $DEST_BIN's own definition) IS the
     # directory of $DEST_BIN — reused rather than re-derived with `dirname`.
-    # Recorded BEFORE `exec 9>>` below can create one: on a host where
-    # nothing was ever installed (no unit/plist, no binary, and no lock file
-    # either — a genuine "nothing to do" --uninstall), creating this file
-    # ourselves purely to check for contention must not itself count as
-    # "installed state" this run removed. A lock a real transaction already
-    # left behind is different — cleaning THAT up is real work, reported
-    # like any other removal. The same flag also decides whether a REFUSAL
-    # below may delete the lock file it just opened: never when the file
-    # (or a hold on it) predates this run — only ever a file this run's own
-    # `exec 9>>` created purely to ask the question.
+    #
+    # created_lock records whether THIS run's own open is what brought the
+    # file into existence — decided by an ATOMIC create-if-missing, before
+    # `exec 9>>` below (which would otherwise silently create the same file
+    # and leave no way to tell) ever touches it. `( set -C; : > "$lock_file"
+    # )` — noclobber — refuses to write through a path that already exists,
+    # so success is proof of authorship even against a second process
+    # racing this exact instant, and failure is equally atomic proof this
+    # run did NOT create it. On a host where nothing was ever installed (no
+    # unit/plist, no binary, and no lock file either — a genuine
+    # "nothing to do" --uninstall), creating this file ourselves purely to
+    # check for contention must not itself count as "installed state" this
+    # run removed; a lock a real transaction already left behind is
+    # different — cleaning THAT up is real work, reported like any other
+    # removal (lock_pre_existed, its exact inverse, is what the
+    # successful-completion accounting further down reads for that).
+    #
+    # created_lock is also the ONLY thing that may ever delete this file,
+    # and even then never on a busy result: `agent/src/update.rs:1349-1351`
+    # is explicit that unlinking a lock file while another process holds a
+    # lock on it is how two processes come to hold "the" lock at once —
+    # flock() locks the open file description, not the path, so a second
+    # process that later opens the SAME NAME after this one unlinks it
+    # opens a DIFFERENT inode and neither is actually contending with the
+    # other any more. A busy refusal below — the file IS held, by anyone,
+    # whether or not this run created it — therefore deletes nothing at
+    # all. The narrower failure branches (the open itself failing, or perl
+    # being unable to reopen its own fd) are not busy results — nobody is
+    # holding anything — so THOSE may delete the file, but only when
+    # created_lock proves this run is the one that made it.
+    local created_lock=false
     local lock_pre_existed=false
     if [ -d "$INSTALL_DIR" ]; then
-        [ -e "$lock_file" ] && lock_pre_existed=true
-
         local lock_tool=""
         if command -v flock >/dev/null 2>&1; then
             lock_tool=flock
@@ -589,11 +662,17 @@ run_uninstall() {
         fi
 
         # $INSTALL_DIR already exists (checked above), so no mkdir is needed
-        # to open this file — unlike the parent directory, which a genuinely
-        # fresh host would not yet have.
+        # before this create — unlike the parent directory, which a
+        # genuinely fresh host would not yet have.
+        if ( set -C; : > "$lock_file" ) 2>/dev/null; then
+            created_lock=true
+        else
+            lock_pre_existed=true
+        fi
+
         exec 9>>"$lock_file" || {
             echo "ERROR: could not open $lock_file to take the update lock." >&2
-            [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
+            [ "$created_lock" = true ] && rm -f "$lock_file" 2>/dev/null || true
             return 1
         }
         if [ "$lock_tool" = flock ]; then
@@ -602,7 +681,9 @@ run_uninstall() {
                 echo "       Uninstalling now would race that transaction's own binary swap." >&2
                 echo "       Wait for it to finish (or fail) and re-run." >&2
                 exec 9>&-
-                [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
+                # NEVER deleted on a busy result — see the comment above this
+                # whole section: unlinking a held lock file is how two
+                # processes end up holding "the" lock at once.
                 return 1
             fi
         else
@@ -618,7 +699,7 @@ run_uninstall() {
                     echo "       reopen its already-open file descriptor. Refusing rather than" >&2
                     echo "       guessing free. Nothing has been changed." >&2
                     exec 9>&-
-                    [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
+                    [ "$created_lock" = true ] && rm -f "$lock_file" 2>/dev/null || true
                     return 1
                     ;;
                 *)
@@ -626,7 +707,8 @@ run_uninstall() {
                     echo "       Uninstalling now would race that transaction's own binary swap." >&2
                     echo "       Wait for it to finish (or fail) and re-run." >&2
                     exec 9>&-
-                    [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
+                    # NEVER deleted on a busy result — see the flock branch's
+                    # own comment, above.
                     return 1
                     ;;
             esac
@@ -666,22 +748,25 @@ run_uninstall() {
             # Each of the four units below is checked, and stopped, on
             # EITHER of two independent signals — its own unit FILE, or the
             # running manager's own state (linux_unit_loaded) — never the
-            # file alone (#454 round-4 review). A PRIOR --uninstall that hit
-            # exit 4 already removed every file while a reachable manager
-            # still refused one specific stop request; gating solely on the
-            # file left THIS run nothing to check that unit against, so it
-            # asked systemd about it not at all and reported "Nothing
-            # installed" over a unit systemd itself may still be running.
-            stop_and_disable_linux_unit "$BIN_NAME" "$UNIT_DST" "$BIN_NAME.service"
+            # file alone (#454 round-4 review); disable runs only when the
+            # file itself still exists (stop_and_disable_linux_unit's own
+            # comment: real systemd's disable needs the file, and never
+            # reaches its own --now stop when the file is missing, which is
+            # what made an earlier combined `disable --now` call exit 4
+            # forever on a re-run). Every argument here is the unit's FULL
+            # name — never a bare one: real `list-units`/`is-active` match
+            # full unit names only, so a bare name matches nothing on
+            # genuine systemd, active or not.
+            stop_and_disable_linux_unit "$BIN_NAME.service" "$UNIT_DST" "$BIN_NAME.service"
             stop_and_disable_linux_unit "$UPDATE_NAME.timer" "$UPDATE_TIMER_DST" "$UPDATE_NAME.timer"
-            stop_and_disable_linux_unit "$UPDATE_NAME" "$UPDATE_UNIT_DST" "$UPDATE_NAME.service"
+            stop_and_disable_linux_unit "$UPDATE_NAME.service" "$UPDATE_UNIT_DST" "$UPDATE_NAME.service"
             # The pre-rename unit: a host handed over (#392) without ever
             # having run a fresh install afterwards can still carry it
             # alongside the current one. Stopped and disabled the same way,
             # and named in the same daemon-reload/reset-failed below, so a
             # handed-over host ends up exactly as clean as one that was
             # always solador-agent.
-            stop_and_disable_linux_unit "$LEGACY_BIN_NAME" "$LEGACY_UNIT" "$LEGACY_BIN_NAME.service (pre-rename)"
+            stop_and_disable_linux_unit "$LEGACY_BIN_NAME.service" "$LEGACY_UNIT" "$LEGACY_BIN_NAME.service (pre-rename)"
             uninstall_remove "$UNIT_DST" "systemd unit"
             uninstall_remove "$UNIT_DST.prev" "systemd unit (previous, from a migration)"
             uninstall_remove "$UPDATE_UNIT_DST" "update oneshot unit"

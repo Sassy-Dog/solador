@@ -943,28 +943,59 @@ the binary's own removal — and what a review of #439's follow-up found could
 still return **exit 1** ("refused, nothing changed") **after** the service
 had already been stopped and its unit/plist already removed, a false claim;
 that second check, and the exit code it produced, no longer exist (see
-**Exit status**, below). A refusal reached AFTER `exec 9>>` succeeds (the
-lock reported busy, or perl could not reopen its own fd) never deletes the
-lock file when it predates this run (`lock_pre_existed`, tracked before
-`exec 9>>` can create one) — only ever a file this run's own open created
-purely to ask the question, the same rule the successful-completion path
-already applied. Once held, a note (`pid=<pid> since=<epoch>`, the same
+**Exit status**, below). Whether THIS run's own open is what created the
+lock file is decided by an ATOMIC create-if-missing — `( set -C; : >
+"$lock_file" )`, noclobber, run BEFORE `exec 9>>` ever touches the file —
+never by a separate `[ -e ]` check followed by a later open, which is
+exactly the TOCTOU window a second, genuinely competing process can win. A
+follow-up review found the previous revision could still `rm -f` a lock
+file that PRE-EXISTED on a "lock is busy" refusal, which is precisely how
+two processes come to hold "the" lock at once
+(`agent/src/update.rs:1349-1351` names the hazard explicitly): `flock()`
+locks the open file description, not the path, so unlinking a file another
+process holds a lock on and letting a third opener recreate the same name
+gives that third opener a lock on a *different* inode — the two are no
+longer contending for anything, and both believe they hold the lock. Fixed
+by splitting the refusal branches on what they actually are: a **busy**
+result (the flock reported held, by anyone) now **never** deletes the lock
+file, created by this run or not — deleting it is the one thing a busy
+refusal must never do. The two **non-busy** failures (the open itself
+failing, or perl unable to reopen its own already-open fd) delete the file
+only when the atomic create above proved THIS run is the one that made it
+(`created_lock`); a file that pre-existed is left alone there too. Once
+held, a note (`pid=<pid> since=<epoch>`, the same
 shape `agent/src/update.rs` writes) is left in the file so a racing
 `update`/`rollback`'s own busy message names *this* uninstall rather than a
 stale previous holder.
 
-It then disables and stops both service-manager jobs, and the pre-rename
-one if a handed-over host still has it
-(`systemctl --user disable --now` on Linux, `launchctl bootout
-gui/<uid>/…` on macOS) — on Linux, decided **per unit** (all four: metrics,
-update timer, update oneshot, pre-rename) from either its own unit file OR
-the manager's own state (`is-active`, falling back to `list-units --all`
-for a unit left `failed` rather than actively running), never the file
-alone (a round-4 review fix, #454): a PRIOR `--uninstall` that hit exit 4
-already removed every file regardless of whether its own stop request
-succeeded, so gating solely on the file left a re-run nothing to check that
-unit against and it asked the manager about it not at all — the macOS path
-already asked `launchctl print` this way and needed no equivalent fix.
+`stop` and `disable` are two separate `systemctl` calls now, on two
+separate gates, never the single combined `disable --now` an earlier
+revision issued (#454 round-4 review's own follow-up finding). Real
+systemd's `do_unit_file_disable` (`src/shared/install.c`) returns
+`-ENOENT` for a unit file that is not there, and `disable`'s CLI path
+(`systemctl-enable.c`) fails at "Failed to %s unit" BEFORE it ever reaches
+the `--now` stop — so on a unit whose FILE a PRIOR exit-4 run had already
+removed, the combined call never actually asked systemd to stop anything,
+and every re-run exited 4 forever over a unit that was never asked to
+stop. Now: `stop` runs for a unit whenever EITHER its own unit FILE exists
+OR the manager itself still knows about it (`linux_unit_loaded`, above) —
+active, failed, or merely loaded; `disable` (no `--now` — the stop above is
+the separate call that covers it) runs only when the unit FILE still
+exists, because real systemd's `disable` needs the file to know which
+enablement symlinks to remove and fails without one. Both calls take the
+unit's FULL name — `solador-agent.service`, never bare `solador-agent`:
+real `systemctl list-units` does not append `.service`
+(`systemctl-list-units.c:275`), and the manager matches the given pattern
+against full unit names (`dbus-manager.c:1227-1228`), so a bare name
+matched nothing on genuine systemd, active or not, until this fix. A failed
+`stop`, or a failed `disable` while the file exists, both mean exit **4** —
+an enablement symlink `disable` could not clear is exactly as unconfirmed
+as a process `stop` could not stop. A dangling `*.wants/<unit>` symlink
+under `~/.config/systemd/user` that survives both calls — `disable` would
+ordinarily remove it, but is never even called once the unit's file is
+gone — is swept up as one of the installer's own artefacts, reported the
+same way `uninstall_remove` reports everything else, decided **per unit**
+(all four: metrics, update timer, update oneshot, pre-rename).
 **Before either unit/plist is removed**, the binary
 path it currently names is read (`unowned_service_binary`, never assumed to
 be `$DEST_BIN`) — reading `ExecStart=` on Linux, the second
@@ -997,9 +1028,9 @@ already existed, or a run that removed something else too, reports it.
 
 **Exit status is not always 0 or 1 for a run that changed something**: a
 manager the reachability check found reachable can still refuse one
-specific stop request (rarer than unreachable, and not grounds for the
-refusal above, since the files genuinely can be removed) — that case still
-removes every file (best-effort) but exits **4**. And `uninstall_remove`
+specific `stop` or `disable` request (rarer than unreachable, and not
+grounds for the refusal above, since the files genuinely can be removed) —
+that case still removes every file (best-effort) but exits **4**. And `uninstall_remove`
 checks every `rm -f`'s own result, not merely that it ran: a read-only
 parent directory or an immutable file (both reproduced with `chmod 555` —
 see **Testing**, below) previously still printed `removed:` and ended in
@@ -1106,10 +1137,15 @@ Also required:
   platforms (the same stubbed managers) and asserts every installer file is
   gone — seeding `.prev`, `.new` and `.rollback-displaced` by hand first, so
   each removal is asserted for real rather than by vacuous absence — that
-  `disable --now` / `bootout` reached both jobs (an exact-line match —
-  "solador-agent" is a literal prefix of "solador-agent-update.timer", so a
-  plain substring check would pass even if only the timer, never the metrics
-  service, had been disabled), the env file survives without `--purge` and
+  `stop` (and, where the unit file still exists, the separate `disable`
+  call) / `bootout` reached both jobs (an exact-line match against the
+  unit's FULL name — "solador-agent" was a literal prefix of
+  "solador-agent-update.timer" under the OLD bare-name calls, so a plain
+  substring check on those would have passed even if only the timer, never
+  the metrics service, had been stopped; the full names this fix now uses,
+  "solador-agent.service" and "solador-agent-update.timer", share no such
+  prefix relationship, and the test still checks the exact line rather than
+  leaning on that), the env file survives without `--purge` and
   is gone (along with the legacy `devcanopy-agent.env`) with it, a second
   `--uninstall` (with or without `--purge`) is a no-op that exits 0 and asks
   the service manager for nothing, `--purge` alone and `--uninstall` beside
@@ -1193,19 +1229,42 @@ Also required:
   unreachable service manager (`STUB_SYSTEMCTL_USER_EXIT` / a
   `STUB_LAUNCHCTL_DOMAIN_EXIT` no gui domain) and an unsupported platform are
   each asserted to refuse before anything changes — including, since a
-  round-4 review fix (#454), the lock file itself: on a clean host that never
-  had anything installed, neither an unsupported-OS refusal, nor one where
-  neither `flock(1)` nor `perl` is on PATH, nor a genuine "nothing installed"
-  success run creates `<bin>.update.lock` or even `~/.local/bin`, and a
+  round-4 review fix (#454), the lock file itself, split by precondition
+  since the two cases below start from different hosts. On a genuinely
+  clean host — no `~/.local/bin` at all, nothing solador-related or
+  otherwise ever installed there — both an unsupported-OS refusal and a
+  genuine "nothing installed" success run are asserted (`assert_untouched`)
+  to create neither `<bin>.update.lock` nor `~/.local/bin` itself. Separately,
+  the refusal where neither `flock(1)` nor `perl` is on PATH is asserted on
+  a host where `~/.local/bin` already exists (the test creates it first,
+  standing in for an operator's own directory, or one left over from an
+  earlier full uninstall install.sh never `rmdir`s) but holds nothing
+  solador-related: that case creates no lock file inside it, and a
   follow-up run made WITH a lock tool available still reports "Nothing
-  installed" rather than "Done" (proving the first run's refusal left no
-  stray artifact for the second to find and report as removed); a hostile
+  installed" rather than "Done" (proving the earlier refusal left no
+  stray artifact for the second run to find and report as removed); a hostile
   `SOLADOR_AGENT_LAUNCHD_LABEL` (`../x`, `x@BINARY@y`, `.hidden`, `a b`) is
   asserted to refuse `--uninstall` the same way it refuses a normal install.
-  A manager that answers reachable but still refuses one specific stop
-  request (`STUB_SYSTEMCTL_DISABLE_EXIT` / `STUB_LAUNCHCTL_BOOTOUT_EXIT`) is
+  A manager that answers reachable but still refuses one specific stop or
+  disable request (`STUB_SYSTEMCTL_DISABLE_EXIT` / `STUB_LAUNCHCTL_BOOTOUT_EXIT`) is
   asserted to still remove every file, exit 4 rather than 0, and never print
-  the token.
+  the token. The `systemctl` stub itself now models real systemd for both
+  calls install.sh makes: `disable` fails "Unit file <u> does not exist"
+  with no stop when the unit file is absent from the stub's own `$HOME`,
+  `stop` succeeds for a loaded-or-active unit and is a no-op success
+  otherwise (matching the ordinary case — a file on disk with neither
+  `STUB_SYSTEMCTL_ACTIVE_UNITS` nor `STUB_SYSTEMCTL_LOADED_UNITS` set — since
+  install.sh only ever calls `stop` on a unit it has already gated as file-
+  present-or-loaded), `is-active`/`list-units --all` match FULL unit names
+  only, and `STUB_SYSTEMCTL_ACTIVE_UNITS`/`STUB_SYSTEMCTL_LOADED_UNITS` take
+  full unit names to match. A re-run after exit 4 where the metrics unit is
+  still active but its file is already gone is asserted to `stop` it (no
+  `disable` — there is no file left to disable), exit 0, and report
+  "uninstalled for" rather than "Nothing installed"; a fileless oneshot left
+  `failed` (loaded, not active) is asserted to be detected and stopped the
+  same way; a dangling `timers.target.wants` symlink is asserted removed and
+  reported; and a clean host makes neither call and reports "Nothing
+  installed".
 
 Which halves of the rejection test exist is worth saying precisely rather
 than letting a checked box imply all of them:

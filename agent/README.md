@@ -808,12 +808,17 @@ it created, is user-owned):
 ```
 
 Its refusals run in this order, each untouched: **root** first (same reason
-`--enable-timer` refuses it), then the **service manager being unreachable**
+`--enable-timer` refuses it), then an **unsupported platform** (this script
+supports Linux/systemd and macOS/launchd, named as such), then the
+**service manager being unreachable**
 (`systemctl --user show-environment` on Linux, the `gui/<uid>` domain on
 macOS — the same check the install path makes: a `sudo -u`/`su` session, or
 one with no `XDG_RUNTIME_DIR`, cannot ask systemd to stop anything), then the
-**update transaction lock** (`<bin>.update.lock`, see **Updating**, below):
-this opens the lock file — creating it if missing, and never truncating one
+**update transaction lock** (`<bin>.update.lock`, see **Updating**, below) —
+whose own section is skipped outright when `~/.local/bin` (the binary's own
+directory) does not exist at all, since nothing can possibly be installed
+under a directory that is not there. Where it does exist: this opens the
+lock file — creating it if missing, and never truncating one
 that exists, the same `create(true).truncate(false)` `agent/src/update.rs`'s
 own `TransactionLock` opens it with — and takes a non-blocking exclusive
 flock on it, `flock(1)` where it is on `PATH`, else the stock `perl`'s Fcntl
@@ -831,18 +836,47 @@ is what makes the earlier "wherever `flock(1)` exists" caveat, and the exit
 left in the file so a racing `update`/`rollback`'s own busy message names
 *this* uninstall rather than a stale previous holder.
 
-On Linux it then runs `systemctl --user disable --now` on each of the four
-units it knows about — the metrics service, the update timer, the update
-oneshot and the pre-rename unit — deciding **per unit** whether one needs it
-from either of two independent signals: its own unit file, or the running
-manager's own state (`systemctl --user is-active`, falling back to
-`list-units --all` for a unit `is-active` alone would not catch, such as
-one left `failed` rather than genuinely running). The second signal is what
+Whether THIS run created the lock file is decided atomically — a `set -C`
+(noclobber) write, before the file is ever opened for the flock itself — not
+by a separate existence check that a second process racing the same instant
+could invalidate. A later review found the previous revision could still
+delete a file that *pre-existed* on a "lock is busy" refusal, which is
+exactly how a second process can end up holding a lock on a *different*
+inode than the one it believes it shares: `flock()` locks the open file
+description, not the path, so unlinking a file another process has locked
+and letting a third opener recreate the same name hands that third opener a
+lock nobody is actually contending over (`agent/src/update.rs` documents the
+same hazard for its own transaction lock). The lock file is now **never**
+deleted on a busy result, whoever created it; the narrower non-busy failures
+(the open itself failing, or `perl` unable to reopen its own fd) delete it
+only when this run's own atomic create proved authorship.
+
+On Linux it then runs `systemctl --user stop`, and — only when the unit's
+own file still exists — `systemctl --user disable` (no `--now`; the two are
+now separate calls, never combined) on each of the four units it knows
+about — the metrics service, the update timer, the update oneshot and the
+pre-rename unit — deciding **per unit** whether `stop` needs it from either
+of two independent signals: its own unit file, or the running manager's own
+state (`systemctl --user is-active`, falling back to `list-units --all` for
+a unit `is-active` alone would not catch, such as one left `failed` rather
+than genuinely running — matched against the unit's FULL name, e.g.
+`solador-agent.service`, never a bare one: real `list-units`/`is-active`
+match full unit names only, never a bare prefix). The second signal is what
 makes a re-run after exit **4** (below) actually retry the unit the manager
 previously refused to stop: that earlier run already removed the unit's own
 file regardless of whether the stop succeeded, so a check gated on the file
 alone would find nothing left to ask the manager about and wrongly report
-the host as already clean (#454 round-4 review). It then removes
+the host as already clean (#454 round-4 review). `disable` is gated on the
+file alone, deliberately: real systemd's `disable` needs the file to know
+which enablement symlinks to remove, and fails "Unit file <u> does not
+exist" without one — this is also why the OLD combined `disable --now` call
+never reached its own stop on a fileless unit, and why every re-run after
+exit 4 used to exit 4 forever, over a unit that was never actually asked to
+stop (#454's own follow-up review — the fix this section now describes). A
+dangling `*.wants/<unit>` symlink that survives both calls — `disable` would
+ordinarily remove it, but is never called at all once the file is gone — is
+removed as one of the installer's own artefacts, reported the same way
+every other removal is. It then removes
 `solador-agent.service`, `solador-agent.service.prev`,
 `solador-agent-update.service`, `solador-agent-update.timer` and
 `devcanopy-agent.service`, then `daemon-reload`s and `reset-failed`s all
@@ -879,13 +913,13 @@ carries the bearer token; `--purge` also removes the pre-rename
 never deleted it.
 
 **Exit status**: 0 uninstalled (or already clean); 1 refused before anything
-changed (root, an unreachable manager, the update lock held or uncheckable, a
-hostile `SOLADOR_AGENT_LAUNCHD_LABEL`, an unsupported platform); 2 usage
+changed (root, an unsupported platform, an unreachable manager, the update
+lock held or uncheckable, a hostile `SOLADOR_AGENT_LAUNCHD_LABEL`); 2 usage
 (`--purge` without `--uninstall`, or the combinations above); 4 every file
-was still removed, but a *reachable* manager refused a specific stop
-request anyway — the summary names what to check by hand, since this run
-cannot promise the process actually stopped; 6 at least one file that
-should have been removable — the service and other files may already be
+was still removed, but a *reachable* manager refused a specific `stop` or
+`disable` request anyway — the summary names what to check by hand, since
+this run cannot promise the process actually stopped; 6 at least one file
+that should have been removable — the service and other files may already be
 gone — could not actually be deleted (a read-only parent directory, an
 immutable file, or similar); fix that and re-run — 6 wins over 4 when both
 apply. There is no exit 5: an earlier revision held the lock continuously
@@ -964,15 +998,21 @@ Each step is independently re-runnable: re-installing as the new user, or
 re-uninstalling as the old one, is a no-op or a safe refresh, never a
 failure — so a move interrupted partway through resumes by continuing from
 wherever it stopped. That holds even when step 3 itself exited **4** (every
-file removed, but the manager refused one specific unit's own stop request,
-below): on Linux, a re-run of `--uninstall` decides whether each of the
-four units it knows about (the metrics service, the update timer and
-oneshot, and the pre-rename `devcanopy-agent.service`) still needs stopping
-from the running manager's own state as well as its unit file, so it keeps
-asking the manager about a unit whose FILE an earlier run already removed
-rather than finding no file left to check and reporting nothing more to do
-(#454 round-4 review) — the macOS path already asked `launchctl print`
-this way and needed no equivalent fix.
+file removed, but the manager refused one specific unit's own `stop` or
+`disable` request, below): on Linux, a re-run of `--uninstall` decides
+whether each of the four units it knows about (the metrics service, the
+update timer and oneshot, and the pre-rename `devcanopy-agent.service`)
+still needs *stopping* from the running manager's own state as well as its
+unit file, so it keeps asking the manager about a unit whose FILE an
+earlier run already removed rather than finding no file left to check and
+reporting nothing more to do (#454 round-4 review) — the macOS path already
+asked `launchctl print` this way and needed no equivalent fix. `disable` is
+gated on the unit file alone (real systemd's `disable` needs it, and fails
+without one), so a re-run only reissues `disable` for a unit whose file the
+first run's own failure left behind; a unit whose file the first run
+already removed has nothing left for `disable` to do, and any wants-symlink
+it left dangling is swept up as one of the installer's own artefacts
+instead.
 
 ## Updating (`solador-agent update`)
 
