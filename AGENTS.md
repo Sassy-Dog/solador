@@ -857,7 +857,13 @@ tests build (#417); the crate still has zero dependencies.
   shape `agent/src/update.rs` writes) is left in the file so a racing
   update/rollback names THIS uninstall, not a stale holder. It then disables
   and stops both service-manager jobs, and the pre-rename one if present
-  (`systemctl --user disable --now` / `launchctl bootout gui/<uid>/…`).
+  (`systemctl --user disable --now` / `launchctl bootout gui/<uid>/…`) — on
+  Linux, decided per unit from its own unit file OR the manager's own state
+  (`is-active`, falling back to `list-units --all` for one left `failed`
+  rather than active), never the file alone: a round-4 review fix (#454)
+  after which a re-run following exit 4 (below) keeps asking the manager
+  about a unit whose file that earlier run already removed, rather than
+  finding nothing left to gate the check on and reporting the host clean.
   Before either unit/plist is removed, the binary path it currently names is
   read (`unowned_service_binary`) — one outside `~/.local/bin` (an
   unmigrated `/opt` host, most likely) is reported as left behind with the

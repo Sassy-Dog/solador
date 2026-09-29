@@ -359,7 +359,14 @@ unowned_service_binary() {
             path="$(printf '%s' "$path" | sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e "s/&apos;/'/g" -e 's/&quot;/"/g' -e 's/&amp;/\&/g')"
             ;;
     esac
-    [ -n "$path" ] && [ "$path" != "$DEST_BIN" ] && printf '%s\n' "$path"
+    if [ -n "$path" ] && [ "$path" != "$DEST_BIN" ]; then
+        printf '%s\n' "$path"
+    fi
+    # Explicit, never the `&&` chain's own status: the common case (a unit
+    # that already names $DEST_BIN, or none at all) makes the condition
+    # above false, and this function's job is read-only reporting, not a
+    # pass/fail signal — a caller under `set -e` must survive it either way.
+    return 0
 }
 
 # left_behind_hint <path>: the actual remedy for a binary this run found
@@ -388,6 +395,55 @@ left_behind_hint() {
     esac
 }
 
+# linux_unit_loaded <systemctl-name>: true when the running user manager
+# currently knows about <systemctl-name> in ANY state — active, failed, or
+# merely loaded — even once its own unit FILE is already gone (#454 round-4
+# review). `is-active` alone only catches a unit that is genuinely running
+# RIGHT NOW: the update oneshot's ordinary resting state between firings is
+# "inactive", and after an errored run it is "failed" — neither of which
+# `is-active` reports as active — so `list-units --all` is the fallback
+# that actually finds a unit systemd is still tracking. This is what lets
+# stop_and_disable_linux_unit, below, act on a unit whose FILE a PRIOR
+# --uninstall already removed (exit 4: every file removed, but a reachable
+# manager still refused that unit's own stop request) even though nothing
+# on disk is left to gate a re-run's own attempt on.
+linux_unit_loaded() {
+    local systemctl_name="$1"
+    systemctl --user is-active "$systemctl_name" >/dev/null 2>&1 && return 0
+    [ -n "$(systemctl --user list-units --all --no-legend "$systemctl_name" 2>/dev/null)" ]
+}
+
+# stop_and_disable_linux_unit <systemctl-name> <file> <label>: disables and
+# stops <systemctl-name> when EITHER its own unit FILE exists OR the
+# manager itself still knows about it (linux_unit_loaded, above). Gating on
+# the file alone (an earlier revision's whole check) is what let a re-run
+# after exit 4 ask systemd nothing at all about a unit whose file that
+# EARLIER run had already removed while the unit itself stayed active or
+# failed: the run reported "Nothing installed" and exited 0 over a service
+# that, per systemd, was never actually stopped. Sets UNINSTALL_REMOVED
+# when it acts at all (the manager's own state counts as "something was
+# installed" exactly as a leftover file already does), and
+# MANAGER_CALL_FAILED when the stop request itself did not succeed — both
+# are run_uninstall's own locals, set here the same way its other call
+# sites already do, under bash's dynamic scoping (verified: a `local` in a
+# calling function is visible, unshadowed, to a function it calls).
+stop_and_disable_linux_unit() {
+    local systemctl_name="$1" file="$2" label="$3"
+    if [ -f "$file" ] || linux_unit_loaded "$systemctl_name"; then
+        # The line printed reflects what actually happened, not what was
+        # attempted: a failed disable/stop is reported as such, never as
+        # "stopped".
+        if systemctl --user disable --now "$systemctl_name" 2>/dev/null; then
+            echo "    stopped and disabled $label"
+        else
+            echo "    (systemctl --user disable --now $systemctl_name reported an error;" >&2
+            echo "     could not confirm it is stopped — removing its files anyway)" >&2
+            MANAGER_CALL_FAILED=true
+        fi
+        UNINSTALL_REMOVED=true
+    fi
+}
+
 run_uninstall() {
     # Same refusal, and the same reason, as --enable-timer's: the install is
     # user-owned, so removing it is too.
@@ -398,6 +454,22 @@ run_uninstall() {
         echo "       agent is installed as." >&2
         return 1
     fi
+
+    # An unsupported platform is refused HERE — before the manager-reachability
+    # check below, and before the lock section further down touches anything
+    # (#439 follow-up review). It used to be caught only by the removal
+    # switch's own default arm, well after `mkdir -p`/`exec 9>>` had already
+    # created a lock file (and, on a host with no install directory yet, that
+    # directory too): an "unsupported platform (e.g. FreeBSD)" refusal claimed
+    # "Nothing has been changed" while leaving exactly that behind. Checked
+    # first, so nothing below ever runs for an OS this does not name.
+    case "$OS" in
+        Linux | Darwin) ;;
+        *)
+            echo "ERROR: --uninstall supports Linux (systemd) and macOS (launchd); this is $OS." >&2
+            return 1
+            ;;
+    esac
 
     # The same service-manager reachability the install path refuses on
     # (preflight, below) before touching anything — a `sudo -u`/`su` session,
@@ -439,9 +511,9 @@ run_uninstall() {
     # create(true).truncate(false) agent/src/update.rs's own
     # TransactionLock::try_acquire opens it with, so a note a genuine
     # transaction already wrote there survives until THIS run actually takes
-    # the lock, below. (Its parent directory may not exist yet either — a
-    # host nothing was ever installed on — so that is created first; a
-    # directory `install.sh` itself would create on its very first run.)
+    # the lock, below. (Its parent directory — $INSTALL_DIR — is never
+    # created here: a host where it does not exist yet has nothing installed
+    # and nothing to lock, so the whole section below is skipped instead.)
     #
     # A non-blocking exclusive flock is then taken on fd 9, and HELD for the
     # rest of this function — never a one-shot check — with `flock -n 9`
@@ -472,70 +544,103 @@ run_uninstall() {
     # answer (an uninstall, or a fresh transaction, racing one this host
     # cannot see) — so this fails toward busy: refused before anything
     # changes, the same direction every other preflight refusal above fails.
+    #
+    # Both checks below run BEFORE any `mkdir`/`exec` (#439 follow-up
+    # review): an earlier revision opened — and thereby created — the lock
+    # file first and only THEN asked whether a lock tool exists, so "neither
+    # flock(1) nor perl" exited 1 "Nothing has been changed" while leaving
+    # exactly that lock file (and, on a host with no install directory yet,
+    # the directory itself) behind. The install directory not existing at
+    # all is the stronger case: nothing can possibly be installed under it,
+    # so the whole lock section — tool check, mkdir, exec, note — is skipped
+    # rather than materializing $INSTALL_DIR just to find it empty; the
+    # removal switch below still runs and still correctly reports "nothing
+    # installed" for a host in that state (or removes a stray unit/plist an
+    # unmigrated /opt host can carry even with no local install directory).
     local lock_file="$DEST_BIN.update.lock"
+    # $INSTALL_DIR (set above, near $DEST_BIN's own definition) IS the
+    # directory of $DEST_BIN — reused rather than re-derived with `dirname`.
     # Recorded BEFORE `exec 9>>` below can create one: on a host where
     # nothing was ever installed (no unit/plist, no binary, and no lock file
     # either — a genuine "nothing to do" --uninstall), creating this file
     # ourselves purely to check for contention must not itself count as
     # "installed state" this run removed. A lock a real transaction already
     # left behind is different — cleaning THAT up is real work, reported
-    # like any other removal.
+    # like any other removal. The same flag also decides whether a REFUSAL
+    # below may delete the lock file it just opened: never when the file
+    # (or a hold on it) predates this run — only ever a file this run's own
+    # `exec 9>>` created purely to ask the question.
     local lock_pre_existed=false
-    [ -e "$lock_file" ] && lock_pre_existed=true
-    mkdir -p "$(dirname "$lock_file")" 2>/dev/null || true
-    exec 9>>"$lock_file" || {
-        echo "ERROR: could not open $lock_file to take the update lock." >&2
-        return 1
-    }
-    if command -v flock >/dev/null 2>&1; then
-        if ! flock -n 9; then
-            echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
-            echo "       Uninstalling now would race that transaction's own binary swap." >&2
-            echo "       Wait for it to finish (or fail) and re-run." >&2
-            exec 9>&-
+    if [ -d "$INSTALL_DIR" ]; then
+        [ -e "$lock_file" ] && lock_pre_existed=true
+
+        local lock_tool=""
+        if command -v flock >/dev/null 2>&1; then
+            lock_tool=flock
+        elif command -v perl >/dev/null 2>&1; then
+            lock_tool=perl
+        else
+            echo "ERROR: cannot check the update lock ($lock_file) — neither flock(1) nor perl" >&2
+            echo "       is on PATH, so this cannot tell whether an update or rollback is" >&2
+            echo "       running right now. Refusing rather than guessing free. Install one of" >&2
+            echo "       them (flock(1) ships in util-linux on Linux; perl ships with macOS)" >&2
+            echo "       and re-run. Nothing has been changed." >&2
             return 1
         fi
-    elif command -v perl >/dev/null 2>&1; then
-        local perl_lock_status=0
-        perl -MFcntl=:flock -e '
-            open(my $fh, "<&=", 9) or exit 2;
-            exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1);
-        ' || perl_lock_status=$?
-        case "$perl_lock_status" in
-            0) ;; # acquired — held on fd 9 for the rest of this function
-            2)
-                echo "ERROR: cannot check the update lock ($lock_file) — perl could not" >&2
-                echo "       reopen its already-open file descriptor. Refusing rather than" >&2
-                echo "       guessing free. Nothing has been changed." >&2
-                exec 9>&-
-                return 1
-                ;;
-            *)
+
+        # $INSTALL_DIR already exists (checked above), so no mkdir is needed
+        # to open this file — unlike the parent directory, which a genuinely
+        # fresh host would not yet have.
+        exec 9>>"$lock_file" || {
+            echo "ERROR: could not open $lock_file to take the update lock." >&2
+            [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
+            return 1
+        }
+        if [ "$lock_tool" = flock ]; then
+            if ! flock -n 9; then
                 echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
                 echo "       Uninstalling now would race that transaction's own binary swap." >&2
                 echo "       Wait for it to finish (or fail) and re-run." >&2
                 exec 9>&-
+                [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
                 return 1
-                ;;
-        esac
-    else
-        echo "ERROR: cannot check the update lock ($lock_file) — neither flock(1) nor perl" >&2
-        echo "       is on PATH, so this cannot tell whether an update or rollback is" >&2
-        echo "       running right now. Refusing rather than guessing free. Install one of" >&2
-        echo "       them (flock(1) ships in util-linux on Linux; perl ships with macOS)" >&2
-        echo "       and re-run. Nothing has been changed." >&2
-        exec 9>&-
-        return 1
+            fi
+        else
+            local perl_lock_status=0
+            perl -MFcntl=:flock -e '
+                open(my $fh, "<&=", 9) or exit 2;
+                exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1);
+            ' || perl_lock_status=$?
+            case "$perl_lock_status" in
+                0) ;; # acquired — held on fd 9 for the rest of this function
+                2)
+                    echo "ERROR: cannot check the update lock ($lock_file) — perl could not" >&2
+                    echo "       reopen its already-open file descriptor. Refusing rather than" >&2
+                    echo "       guessing free. Nothing has been changed." >&2
+                    exec 9>&-
+                    [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
+                    return 1
+                    ;;
+                *)
+                    echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
+                    echo "       Uninstalling now would race that transaction's own binary swap." >&2
+                    echo "       Wait for it to finish (or fail) and re-run." >&2
+                    exec 9>&-
+                    [ "$lock_pre_existed" = true ] || rm -f "$lock_file" 2>/dev/null || true
+                    return 1
+                    ;;
+            esac
+        fi
+        # Held: leave a note for the NEXT update/rollback's own busy message to
+        # read — "pid=<pid> since=<epoch>", the same shape agent/src/update.rs
+        # writes — so it names THIS uninstall rather than a stale previous
+        # holder. A fresh `>` write is safe here, unlike the flock/perl calls
+        # above: opening a file for writing never itself attempts a lock, and
+        # nothing else can hold $lock_file while this process does. Best effort,
+        # like update.rs's own note: a lock whose note could not be written is
+        # still a lock.
+        printf 'pid=%s since=%s\n' "$$" "$(date +%s)" > "$lock_file" 2>/dev/null || true
     fi
-    # Held: leave a note for the NEXT update/rollback's own busy message to
-    # read — "pid=<pid> since=<epoch>", the same shape agent/src/update.rs
-    # writes — so it names THIS uninstall rather than a stale previous
-    # holder. A fresh `>` write is safe here, unlike the flock/perl calls
-    # above: opening a file for writing never itself attempts a lock, and
-    # nothing else can hold $lock_file while this process does. Best effort,
-    # like update.rs's own note: a lock whose note could not be written is
-    # still a lock.
-    printf 'pid=%s since=%s\n' "$$" "$(date +%s)" > "$lock_file" 2>/dev/null || true
 
     echo "==> Uninstalling $BIN_NAME for $(id -un) ($OS)"
 
@@ -553,47 +658,30 @@ run_uninstall() {
     local foreign_bin
     foreign_bin="$(unowned_service_binary)"
 
+    # No `*)` arm here: $OS is already Linux or Darwin, refused at the very
+    # top of this function otherwise (#439 follow-up review) — a dead arm,
+    # untestable now that nothing can reach it, is worse than none.
     case "$OS" in
         Linux)
-            if [ -f "$UNIT_DST" ]; then
-                # The line printed reflects what actually happened, not what
-                # was attempted: a failed disable/stop is reported as such,
-                # never as "stopped".
-                if systemctl --user disable --now "$BIN_NAME" 2>/dev/null; then
-                    echo "    stopped and disabled $BIN_NAME.service"
-                else
-                    echo "    (systemctl --user disable --now $BIN_NAME reported an error;" >&2
-                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
-                    MANAGER_CALL_FAILED=true
-                fi
-                UNINSTALL_REMOVED=true
-            fi
-            if [ -f "$UPDATE_TIMER_DST" ]; then
-                if systemctl --user disable --now "$UPDATE_NAME.timer" 2>/dev/null; then
-                    echo "    stopped and disabled $UPDATE_NAME.timer"
-                else
-                    echo "    (systemctl --user disable --now $UPDATE_NAME.timer reported an error;" >&2
-                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
-                    MANAGER_CALL_FAILED=true
-                fi
-                UNINSTALL_REMOVED=true
-            fi
+            # Each of the four units below is checked, and stopped, on
+            # EITHER of two independent signals — its own unit FILE, or the
+            # running manager's own state (linux_unit_loaded) — never the
+            # file alone (#454 round-4 review). A PRIOR --uninstall that hit
+            # exit 4 already removed every file while a reachable manager
+            # still refused one specific stop request; gating solely on the
+            # file left THIS run nothing to check that unit against, so it
+            # asked systemd about it not at all and reported "Nothing
+            # installed" over a unit systemd itself may still be running.
+            stop_and_disable_linux_unit "$BIN_NAME" "$UNIT_DST" "$BIN_NAME.service"
+            stop_and_disable_linux_unit "$UPDATE_NAME.timer" "$UPDATE_TIMER_DST" "$UPDATE_NAME.timer"
+            stop_and_disable_linux_unit "$UPDATE_NAME" "$UPDATE_UNIT_DST" "$UPDATE_NAME.service"
             # The pre-rename unit: a host handed over (#392) without ever
             # having run a fresh install afterwards can still carry it
             # alongside the current one. Stopped and disabled the same way,
             # and named in the same daemon-reload/reset-failed below, so a
             # handed-over host ends up exactly as clean as one that was
             # always solador-agent.
-            if [ -f "$LEGACY_UNIT" ]; then
-                if systemctl --user disable --now "$LEGACY_BIN_NAME" 2>/dev/null; then
-                    echo "    stopped and disabled $LEGACY_BIN_NAME.service (pre-rename)"
-                else
-                    echo "    (systemctl --user disable --now $LEGACY_BIN_NAME reported an error;" >&2
-                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
-                    MANAGER_CALL_FAILED=true
-                fi
-                UNINSTALL_REMOVED=true
-            fi
+            stop_and_disable_linux_unit "$LEGACY_BIN_NAME" "$LEGACY_UNIT" "$LEGACY_BIN_NAME.service (pre-rename)"
             uninstall_remove "$UNIT_DST" "systemd unit"
             uninstall_remove "$UNIT_DST.prev" "systemd unit (previous, from a migration)"
             uninstall_remove "$UPDATE_UNIT_DST" "update oneshot unit"
@@ -646,11 +734,6 @@ run_uninstall() {
             if [ -n "$foreign_bin" ]; then
                 left_behind_hint "$foreign_bin"
             fi
-            ;;
-        *)
-            echo "ERROR: --uninstall supports Linux (systemd) and macOS (launchd); this is $OS." >&2
-            exec 9>&-
-            return 1
             ;;
     esac
 

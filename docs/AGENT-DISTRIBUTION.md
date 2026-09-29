@@ -892,50 +892,80 @@ user (#439).** `install.sh --uninstall` — `--uninstall --purge` also removes
 the env file, and the pre-rename `devcanopy-agent.env` beside it, since
 install copied its token out of that file and never deleted it. Its
 refusals run in this order, each untouched: **root** first, for the same
-reason `--enable-timer` refuses it; then the **service manager being
-unreachable** (the same `systemctl --user show-environment` / `gui/<uid>`
-domain check the install path makes in its own preflight, below: a
-`sudo -u`/`su` session cannot ask systemd to stop anything, and discovering
-that mid-uninstall — after a unit file is already gone — is exactly the
-half-changed state this check exists to prevent); then the **update
-transaction lock** (`<bin>.update.lock`, §4's own transaction lock —
-uninstalling mid-swap would race that transaction's own binary rename).
-This opens the lock file — creating it if missing, and never truncating one
-that exists, matching `TransactionLock::try_acquire`'s own
-`create(true).truncate(false)` — and takes a non-blocking exclusive flock on
-it, `flock -n 9` where `flock(1)` is on PATH (`man flock`'s own
-bash-3.2-safe EXAMPLES idiom for locking the CALLER's own already-open fd in
-place), else the stock `perl`'s Fcntl flock asking the identical question on
-that SAME fd (`open(my $fh,"<&=",9)` reopens fd 9 by number rather than
-dup()ing a new one, so the lock it takes is the SAME open file description
-bash's own fd refers to, and persists after that perl process exits —
-verified empirically against a genuinely competing process before this was
-trusted, not merely assumed) — the same primitive `TransactionLock` itself
-uses, per its own comments on `std::fs::File::try_lock` being
-`flock()`-based, never `fcntl()`/`F_SETLK`. **Held for the rest of the run,
-on both platforms, in every tier that can check it at all**: a transaction
-that would otherwise start in the window this spends stopping the service
-and removing its unit/plist meets that hold as busy on its own terms (exit
-75) rather than racing anything here. Where *neither* tool is on PATH there
-is no way left to ask the kernel whether a transaction is running, and
-guessing "free" is the wrong direction — so this refuses (busy) before
-anything changes instead, the same direction every other uncertain case
-here already fails toward. This closes the window rather than merely
-narrowing it, which is what the previous revision did — checking once up
-front only when the file already existed and `flock(1)` was on PATH, then
-re-checking once more right before the binary's own removal — and what a
-review of #439's follow-up found could still return **exit 1** ("refused,
-nothing changed") **after** the service had already been stopped and its
-unit/plist already removed, a false claim; that second check, and the exit
-code it produced, no longer exist (see **Exit status**, below). Once held,
-a note (`pid=<pid> since=<epoch>`, the same shape `agent/src/update.rs`
-writes) is left in the file so a racing `update`/`rollback`'s own busy
-message names *this* uninstall rather than a stale previous holder.
+reason `--enable-timer` refuses it; then an **unsupported platform** (this
+script supports Linux/systemd and macOS/launchd, named as such); then the
+**service manager being unreachable** (the same `systemctl --user
+show-environment` / `gui/<uid>` domain check the install path makes in its
+own preflight, below: a `sudo -u`/`su` session cannot ask systemd to stop
+anything, and discovering that mid-uninstall — after a unit file is already
+gone — is exactly the half-changed state this check exists to prevent); then
+the **update transaction lock** (`<bin>.update.lock`, §4's own transaction
+lock — uninstalling mid-swap would race that transaction's own binary
+rename). Two further checks — which lock tool is on PATH, and whether
+`~/.local/bin` (`$DEST_BIN`'s own directory) exists at all — run **before**
+any `mkdir` or `exec` touches that lock file (a round-4 review fix, #454):
+the earlier revision opened, and thereby created, the lock file FIRST and
+only then asked either question, so "neither flock(1) nor perl" and an
+unsupported platform each exited 1 "Nothing has been changed" while actually
+leaving that lock file — and, on a host with no install directory yet, the
+directory itself — behind; the very next run then reported "removed: update
+transaction lock" for a host nothing was ever installed on. A missing
+`~/.local/bin` is the strongest case: nothing can possibly be installed
+under a directory that does not exist, so the whole lock section (tool
+check, `exec`, the held-note write) is skipped outright rather than
+materializing that directory just to find it empty; the removal switch below
+still runs unconditionally, so a stray unit/plist an unmigrated `/opt` host
+can carry with no local install directory is still found and removed. Where
+`~/.local/bin` DOES exist but *neither* lock tool is on PATH, there is no way
+left to ask the kernel whether a transaction is running, and guessing "free"
+is the wrong direction — so this refuses (busy) before opening anything.
+Once the directory exists and a tool is available, `exec 9>>` opens the lock
+file — creating it if missing, and never truncating one that exists,
+matching `TransactionLock::try_acquire`'s own `create(true).truncate(false)`
+— and takes a non-blocking exclusive flock on it, `flock -n 9` where
+`flock(1)` is on PATH (`man flock`'s own bash-3.2-safe EXAMPLES idiom for
+locking the CALLER's own already-open fd in place), else the stock `perl`'s
+Fcntl flock asking the identical question on that SAME fd (`open(my
+$fh,"<&=",9)` reopens fd 9 by number rather than dup()ing a new one, so the
+lock it takes is the SAME open file description bash's own fd refers to, and
+persists after that perl process exits — verified empirically against a
+genuinely competing process before this was trusted, not merely assumed) —
+the same primitive `TransactionLock` itself uses, per its own comments on
+`std::fs::File::try_lock` being `flock()`-based, never `fcntl()`/`F_SETLK`.
+**Held for the rest of the run, on both platforms, in every tier that can
+check it at all**: a transaction that would otherwise start in the window
+this spends stopping the service and removing its unit/plist meets that hold
+as busy on its own terms (exit 75) rather than racing anything here. This
+closes the window rather than merely narrowing it, which is what the
+previous revision did — checking once up front only when the file already
+existed and `flock(1)` was on PATH, then re-checking once more right before
+the binary's own removal — and what a review of #439's follow-up found could
+still return **exit 1** ("refused, nothing changed") **after** the service
+had already been stopped and its unit/plist already removed, a false claim;
+that second check, and the exit code it produced, no longer exist (see
+**Exit status**, below). A refusal reached AFTER `exec 9>>` succeeds (the
+lock reported busy, or perl could not reopen its own fd) never deletes the
+lock file when it predates this run (`lock_pre_existed`, tracked before
+`exec 9>>` can create one) — only ever a file this run's own open created
+purely to ask the question, the same rule the successful-completion path
+already applied. Once held, a note (`pid=<pid> since=<epoch>`, the same
+shape `agent/src/update.rs` writes) is left in the file so a racing
+`update`/`rollback`'s own busy message names *this* uninstall rather than a
+stale previous holder.
 
 It then disables and stops both service-manager jobs, and the pre-rename
 one if a handed-over host still has it
 (`systemctl --user disable --now` on Linux, `launchctl bootout
-gui/<uid>/…` on macOS). **Before either unit/plist is removed**, the binary
+gui/<uid>/…` on macOS) — on Linux, decided **per unit** (all four: metrics,
+update timer, update oneshot, pre-rename) from either its own unit file OR
+the manager's own state (`is-active`, falling back to `list-units --all`
+for a unit left `failed` rather than actively running), never the file
+alone (a round-4 review fix, #454): a PRIOR `--uninstall` that hit exit 4
+already removed every file regardless of whether its own stop request
+succeeded, so gating solely on the file left a re-run nothing to check that
+unit against and it asked the manager about it not at all — the macOS path
+already asked `launchctl print` this way and needed no equivalent fix.
+**Before either unit/plist is removed**, the binary
 path it currently names is read (`unowned_service_binary`, never assumed to
 be `$DEST_BIN`) — reading `ExecStart=` on Linux, the second
 `<string>` of the plist's `ProgramArguments` on macOS (the first is the
@@ -1162,7 +1192,14 @@ Also required:
   under bootstrap's own (already-removed) staging directory. Root, an
   unreachable service manager (`STUB_SYSTEMCTL_USER_EXIT` / a
   `STUB_LAUNCHCTL_DOMAIN_EXIT` no gui domain) and an unsupported platform are
-  each asserted to refuse before anything changes; a hostile
+  each asserted to refuse before anything changes — including, since a
+  round-4 review fix (#454), the lock file itself: on a clean host that never
+  had anything installed, neither an unsupported-OS refusal, nor one where
+  neither `flock(1)` nor `perl` is on PATH, nor a genuine "nothing installed"
+  success run creates `<bin>.update.lock` or even `~/.local/bin`, and a
+  follow-up run made WITH a lock tool available still reports "Nothing
+  installed" rather than "Done" (proving the first run's refusal left no
+  stray artifact for the second to find and report as removed); a hostile
   `SOLADOR_AGENT_LAUNCHD_LABEL` (`../x`, `x@BINARY@y`, `.hidden`, `a b`) is
   asserted to refuse `--uninstall` the same way it refuses a normal install.
   A manager that answers reachable but still refuses one specific stop

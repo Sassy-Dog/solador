@@ -60,6 +60,7 @@ unset STUB_DATE_EPOCH STUB_DATE_EXIT STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SY
 unset STUB_MONO_NOW_US STUB_RESUME_US STUB_GUARD_SYSTEMCTL_ARGV GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
 unset STUB_SYSTEMD_VERSION
 unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_LAUNCHCTL_BOOTOUT_EXIT
+unset STUB_SYSTEMCTL_ACTIVE_UNITS STUB_SYSTEMCTL_LOADED_UNITS
 unset STUB_SYSTEMCTL_PROBE_LOCK STUB_SYSTEMCTL_PROBE_RESULT
 unset STUB_LAUNCHCTL_PROBE_LOCK STUB_LAUNCHCTL_PROBE_RESULT
 
@@ -375,6 +376,20 @@ STUB
 # STUB_SYSTEMCTL_IS_ENABLED (default `enabled`, exit 1 for anything else,
 # like the real one); enabling the update timer answers
 # STUB_SYSTEMCTL_TIMER_EXIT; everything else succeeds.
+#
+# `is-active <unit>` and `list-units --all --no-legend <unit>` (#454 round-4
+# review — run_uninstall's own linux_unit_loaded, install.sh) answer from
+# two space-separated unit-name lists, DEFAULT EMPTY: a unit is "active"
+# only when it is named in STUB_SYSTEMCTL_ACTIVE_UNITS (prints "active",
+# exits 0 — otherwise "inactive", exits 3, the real is-active shape for a
+# unit nothing has ever heard of) and "loaded" only when named in
+# STUB_SYSTEMCTL_LOADED_UNITS (prints one list-units-shaped line — otherwise
+# nothing, the real shape for a glob matching zero loaded units, still exit
+# 0). Empty by default so an ordinary install/uninstall cycle — where the
+# unit's own FILE is install.sh's real signal — asks these two nothing new:
+# a host with neither variable set behaves exactly as it did before this
+# unit-name matching existed, which is what keeps every pre-existing
+# "no manager calls on a no-op" assertion true unmodified.
 cat > "$STUBS/systemctl" <<'STUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_SYSTEMCTL_ARGV:-}" ]; then
@@ -383,6 +398,29 @@ fi
 case "$*" in
     "--user show -p Version --value")
         printf '%s\n' "${STUB_SYSTEMD_VERSION-256.11-1.stub}"
+        exit 0
+        ;;
+    "--user is-active "*)
+        # $3, not a `${*#...}` strip: that expansion does not operate on the
+        # joined `$*` the way it does on a real scalar (proven the hard way —
+        # it silently no-ops and left every unit reading "inactive" no
+        # matter what STUB_SYSTEMCTL_ACTIVE_UNITS said).
+        case " ${STUB_SYSTEMCTL_ACTIVE_UNITS:-} " in
+            *" $3 "*)
+                printf 'active\n'
+                exit 0
+                ;;
+            *)
+                printf 'inactive\n'
+                exit 3
+                ;;
+        esac
+        ;;
+    "--user list-units --all --no-legend "*)
+        # $5, for the same reason $3 stands in for a `${*#...}` strip above.
+        case " ${STUB_SYSTEMCTL_LOADED_UNITS:-} " in
+            *" $5 "*) printf '%s loaded failed failed stub\n' "$5" ;;
+        esac
         exit 0
         ;;
 esac
@@ -1860,11 +1898,20 @@ reset_argv_logs() {
 }
 
 # assert_untouched <name> <home>: no env file, no binary, no unit, no plist,
-# and no service-manager call — the state a refusal must leave behind.
+# no update-transaction lock, no ~/.local/bin directory at all, and no
+# service-manager call — the state a refusal must leave behind. The lock
+# file and the bare directory are their own checks (#454 round-4 review),
+# not folded into "binary": an --uninstall refusal used to open (and
+# thereby create) <bin>.update.lock, and on a host with no install
+# directory yet, ~/.local/bin itself, before ever checking whether it
+# could actually do anything — leaving both behind despite claiming
+# "Nothing has been changed".
 assert_untouched() {
     local name="$1" home="$2" problems=""
     [ -e "$home/.config/solador-agent.env" ] && problems="$problems env-file"
     [ -e "$home/.local/bin/solador-agent" ] && problems="$problems binary"
+    [ -e "$home/.local/bin/solador-agent.update.lock" ] && problems="$problems lock-file"
+    [ -d "$home/.local/bin" ] && problems="$problems local-bin-dir"
     [ -e "$home/.config/systemd/user/solador-agent.service" ] && problems="$problems unit"
     [ -e "$home/Library/LaunchAgents/app.solador.agent.plist" ] && problems="$problems plist"
     updater_installed "$home" && problems="$problems updater"
@@ -5475,6 +5522,43 @@ test_uninstall_linux() {
         *) pass "the exit-4 case never prints the token" ;;
     esac
 
+    # ---- #454 round-4 review: a RE-RUN after that exit 4 must still ask  ----
+    # ---- the manager about the metrics unit, even though run 1's exit 4  ----
+    # ---- already removed its FILE — gating the disable/stop call solely  ----
+    # ---- on the file's presence (an earlier revision's whole check) left ----
+    # ---- a re-run nothing to gate that unit on, so it asked systemd      ----
+    # ---- about it not at all and reported "Nothing installed" over a     ----
+    # ---- unit the manager may still be running. STUB_SYSTEMCTL_ACTIVE_   ----
+    # ---- UNITS stands in for exactly that: a unit `is-active` still      ----
+    # ---- reports, with no unit file left on disk to gate on.
+    reset_argv_logs
+    STUB_SYSTEMCTL_ACTIVE_UNITS="solador-agent" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "run 2: install.sh --uninstall stops a unit the manager reports active, with no file left to gate on" \
+        "0" "$INSTALL_STATUS"
+    assert_file_has "run 2: a stop request is actually issued against the active unit" \
+        "$STUB_SYSTEMCTL_ARGV" "--user disable --now solador-agent"
+    case "$out" in
+        *"Nothing installed"*)
+            fail "run 2: the run does not claim nothing was installed" "it printed \"Nothing installed\"" ;;
+        *) pass "run 2: the run does not claim nothing was installed" ;;
+    esac
+    assert_output_has "run 2: the run reports success" "$out" "uninstalled for"
+
+    # The failure form: the manager still reports the unit active AND still
+    # refuses its stop request on the re-run — exit 4 again (never a false
+    # "Done", and never "Nothing installed" either, which is what the old
+    # file-gated check would have reported here).
+    reset_argv_logs
+    STUB_SYSTEMCTL_ACTIVE_UNITS="solador-agent" STUB_SYSTEMCTL_DISABLE_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "run 2b: still active and still refused stays exit 4, never 0" "4" "$INSTALL_STATUS"
+    case "$out" in
+        *"Nothing installed"*)
+            fail "run 2b: a still-refused stop is never reported as nothing installed" "it was" ;;
+        *) pass "run 2b: a still-refused stop is never reported as nothing installed" ;;
+    esac
+
     # ---- an unmigrated /opt host: --uninstall says what it leaves behind ----
     # (#439 nit b) — a unit whose ExecStart= names a binary this user does not
     # own (the pre-#392 layout --migrate-from-opt exists to repoint) must not
@@ -5695,6 +5779,36 @@ test_uninstall_linux() {
     fi
 
     unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
+}
+
+# #439 review fix: unowned_service_binary's last line used to be an `&&`
+# chain — `[ -n "$path" ] && [ "$path" != "$DEST_BIN" ] && printf ...` — so
+# it returned 1 in the NORMAL case, where the existing unit/plist already
+# names $DEST_BIN. That only survived in run_uninstall because it is called
+# as `foreign_bin="$(unowned_service_binary)"` under `run_uninstall || …`,
+# which disables errexit for that one statement. Sourcing the function body
+# directly and calling it under `set -e`, outside that protection, is what
+# proves the fix rather than the caller's happenstance.
+test_unowned_service_binary_survives_set_e() {
+    local body="$TMP/unowned-service-binary.sh" unit_dst dest_bin result status
+    extract_function "$SCRIPT_DIR/install.sh" "unowned_service_binary" > "$body"
+    unit_dst="$TMP/unowned-normal-case.service"
+    dest_bin="$TMP/unowned-normal-case-bin"
+    printf 'ExecStart=%s\n' "$dest_bin" > "$unit_dst"
+    result="$(
+        set -e
+        export OS=Linux
+        export UNIT_DST="$unit_dst"
+        export PLIST_DST="$TMP/unowned-normal-case-does-not-exist.plist"
+        export DEST_BIN="$dest_bin"
+        # shellcheck source=/dev/null
+        source "$body"
+        unowned_service_binary
+        printf 'SURVIVED\n'
+    )"
+    status=$?
+    assert_eq "unowned_service_binary survives a bare call under set -e (unit names \$DEST_BIN)" "0" "$status"
+    assert_eq "unowned_service_binary prints nothing when the unit already names \$DEST_BIN" "SURVIVED" "$result"
 }
 
 test_uninstall_macos() {
@@ -5927,7 +6041,7 @@ test_uninstall_macos() {
 }
 
 test_uninstall_arguments_and_refusals() {
-    local home="$TMP/home-uninstall-args"
+    local home="$TMP/home-uninstall-args" out
     mkdir -p "$home"
     INSTALL_PATH="$NOVERIFY_PATH"
     make_checkout "$SCRIPT_DIR/../release-signing-key.pub"
@@ -5984,6 +6098,69 @@ STUB
     assert_eq "install.sh --uninstall refuses an unsupported OS" "1" "$?"
     assert_output_has "the unsupported-OS refusal names the two it supports" "$(cat "$INSTALL_OUT")" "Linux (systemd) and macOS (launchd)"
     assert_untouched "an unsupported-OS uninstall changes nothing" "$home"
+
+    # ---- #454 round-4 review: a genuinely clean host (no ~/.local/bin at ----
+    # ---- all — nothing solador-related, or anything else, was ever      ----
+    # ---- installed there) must create neither <bin>.update.lock nor the ----
+    # ---- directory itself. mkdir -p and exec 9>>"$lock_file" used to run ----
+    # ---- unconditionally, before the lock-tool check and before the OS   ----
+    # ---- check further down could refuse, so EVERY refusal on a host     ----
+    # ---- like this — including the unsupported-OS one just above —      ----
+    # ---- left exactly that behind despite "Nothing has been changed".    ----
+    # ---- Fixed by skipping the whole lock section outright when          ----
+    # ---- $DEST_BIN's own directory does not exist: nothing can possibly  ----
+    # ---- be installed under a directory that is not there, so there is   ----
+    # ---- nothing to lock and nothing to create just to check.            ----
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall on a clean host (no ~/.local/bin at all) exits 0" "0" "$INSTALL_STATUS"
+    assert_output_has "a clean-host uninstall says nothing was installed" "$out" "Nothing installed"
+    assert_untouched "a clean-host 'nothing installed' run creates neither the lock file nor ~/.local/bin" "$home"
+
+    # ---- the no-tool refusal, on a host where ~/.local/bin EXISTS (an   ----
+    # ---- operator's own directory, unrelated to solador, or simply one   ----
+    # ---- left over from an earlier full uninstall — install.sh never     ----
+    # ---- rmdir's it) but nothing solador-related is in it. This is the   ----
+    # ---- case that actually reaches the lock-tool check at all (the      ----
+    # ---- clean-host case above skips it outright), and is where the old  ----
+    # ---- `mkdir -p`/`exec 9>>`-before-the-check bug is observable: it     ----
+    # ---- created <bin>.update.lock — and, on a directory-less host,       ----
+    # ---- ~/.local/bin too — before ever asking whether flock(1) or perl   ----
+    # ---- exists, so "neither flock(1) nor perl" still left the lock file  ----
+    # ---- behind despite exiting 1 "Nothing has been changed".
+    mkdir -p "$home/.local/bin"
+    reset_argv_logs
+    INSTALL_PATH="$STUBS:$TOOLBIN_NOFLOCK_NOPERL" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --uninstall refuses (busy) when neither flock(1) nor perl exists (pre-existing, empty ~/.local/bin)" \
+        "1" "$INSTALL_STATUS"
+    assert_output_has "the no-tool refusal says it cannot check" "$out" "cannot check the update lock"
+    [ -e "$home/.local/bin/solador-agent.update.lock" ] \
+        && fail "the no-tool refusal creates no lock file" "$home/.local/bin/solador-agent.update.lock exists" \
+        || pass "the no-tool refusal creates no lock file"
+    if systemctl_mutated; then
+        fail "the no-tool refusal never reaches the service manager" "systemctl was called"
+    else
+        pass "the no-tool refusal never reaches the service manager"
+    fi
+    INSTALL_PATH="$NOVERIFY_PATH"
+
+    # The follow-up case the review named explicitly: after the no-tool
+    # refusal above left nothing behind, a run WITH a lock tool back on PATH
+    # must still say "Nothing installed" — not "Done", which is what it
+    # would say if the earlier refusal had left a stray lock file for THIS
+    # run to find, remove, and report as something it uninstalled.
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "follow-up: install.sh --uninstall with a lock tool available exits 0" "0" "$INSTALL_STATUS"
+    assert_output_has "follow-up: the run says nothing was installed, not Done" "$out" "Nothing installed"
+    case "$out" in
+        *"==> Done"*) fail "follow-up: the run never claims Done" "it did" ;;
+        *) pass "follow-up: the run never claims Done" ;;
+    esac
+    rm -rf "$home/.local"
 
     # ---- a hostile SOLADOR_AGENT_LAUNCHD_LABEL is refused on --uninstall ----
     # too, not only on a normal install — run_uninstall derives
@@ -6631,6 +6808,7 @@ test_launchd_launcher_update
 test_update_guard_linux
 test_launchd_smoke
 test_uninstall_linux
+test_unowned_service_binary_survives_set_e
 test_uninstall_macos
 test_standby_key_script
 test_deploy_script_invariants

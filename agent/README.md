@@ -831,9 +831,19 @@ is what makes the earlier "wherever `flock(1)` exists" caveat, and the exit
 left in the file so a racing `update`/`rollback`'s own busy message names
 *this* uninstall rather than a stale previous holder.
 
-On Linux it then runs `systemctl --user disable --now` on the metrics
-service, the update timer and the pre-rename unit (whichever exist),
-removes `solador-agent.service`, `solador-agent.service.prev`,
+On Linux it then runs `systemctl --user disable --now` on each of the four
+units it knows about — the metrics service, the update timer, the update
+oneshot and the pre-rename unit — deciding **per unit** whether one needs it
+from either of two independent signals: its own unit file, or the running
+manager's own state (`systemctl --user is-active`, falling back to
+`list-units --all` for a unit `is-active` alone would not catch, such as
+one left `failed` rather than genuinely running). The second signal is what
+makes a re-run after exit **4** (below) actually retry the unit the manager
+previously refused to stop: that earlier run already removed the unit's own
+file regardless of whether the stop succeeded, so a check gated on the file
+alone would find nothing left to ask the manager about and wrongly report
+the host as already clean (#454 round-4 review). It then removes
+`solador-agent.service`, `solador-agent.service.prev`,
 `solador-agent-update.service`, `solador-agent-update.timer` and
 `devcanopy-agent.service`, then `daemon-reload`s and `reset-failed`s all
 four unit names (clearing any "failed" state a disable/stop that reported an
@@ -953,7 +963,16 @@ host instead. Give the new user's install a distinct port for the overlap:
 Each step is independently re-runnable: re-installing as the new user, or
 re-uninstalling as the old one, is a no-op or a safe refresh, never a
 failure — so a move interrupted partway through resumes by continuing from
-wherever it stopped.
+wherever it stopped. That holds even when step 3 itself exited **4** (every
+file removed, but the manager refused one specific unit's own stop request,
+below): on Linux, a re-run of `--uninstall` decides whether each of the
+four units it knows about (the metrics service, the update timer and
+oneshot, and the pre-rename `devcanopy-agent.service`) still needs stopping
+from the running manager's own state as well as its unit file, so it keeps
+asking the manager about a unit whose FILE an earlier run already removed
+rather than finding no file left to check and reporting nothing more to do
+(#454 round-4 review) — the macOS path already asked `launchctl print`
+this way and needed no equivalent fix.
 
 ## Updating (`solador-agent update`)
 
