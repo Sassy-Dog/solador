@@ -968,34 +968,43 @@ shape `agent/src/update.rs` writes) is left in the file so a racing
 `update`/`rollback`'s own busy message names *this* uninstall rather than a
 stale previous holder.
 
-`stop` and `disable` are two separate `systemctl` calls now, on two
-separate gates, never the single combined `disable --now` an earlier
-revision issued (#454 round-4 review's own follow-up finding). Real
-systemd's `do_unit_file_disable` (`src/shared/install.c`) returns
-`-ENOENT` for a unit file that is not there, and `disable`'s CLI path
-(`systemctl-enable.c`) fails at "Failed to %s unit" BEFORE it ever reaches
-the `--now` stop — so on a unit whose FILE a PRIOR exit-4 run had already
-removed, the combined call never actually asked systemd to stop anything,
-and every re-run exited 4 forever over a unit that was never asked to
-stop. Now: `stop` runs for a unit whenever EITHER its own unit FILE exists
-OR the manager itself still knows about it (`linux_unit_loaded`, above) —
-active, failed, or merely loaded; `disable` (no `--now` — the stop above is
-the separate call that covers it) runs only when the unit FILE still
-exists, because real systemd's `disable` needs the file to know which
-enablement symlinks to remove and fails without one. Both calls take the
-unit's FULL name — `solador-agent.service`, never bare `solador-agent`:
-real `systemctl list-units` does not append `.service`
-(`systemctl-list-units.c:275`), and the manager matches the given pattern
-against full unit names (`dbus-manager.c:1227-1228`), so a bare name
-matched nothing on genuine systemd, active or not, until this fix. A failed
-`stop`, or a failed `disable` while the file exists, both mean exit **4** —
-an enablement symlink `disable` could not clear is exactly as unconfirmed
-as a process `stop` could not stop. A dangling `*.wants/<unit>` symlink
-under `~/.config/systemd/user` that survives both calls — `disable` would
-ordinarily remove it, but is never even called once the unit's file is
-gone — is swept up as one of the installer's own artefacts, reported the
-same way `uninstall_remove` reports everything else, decided **per unit**
-(all four: metrics, update timer, update oneshot, pre-rename).
+`stop` and `disable` are two separate `systemctl` calls, never the single
+combined `disable --now` an earlier revision issued (#454 round-4 review's
+own follow-up finding). Real systemd's `do_unit_file_disable`
+(`src/shared/install.c`) returns `-ENOENT` for a unit file that is not
+there, and `disable`'s CLI path (`systemctl-enable.c`) fails at "Failed to
+%s unit" BEFORE it ever reaches the `--now` stop — so a combined call on a
+unit whose FILE is already gone never stops anything, it just fails
+outright. Both calls run under the SAME gate: the unit's own FILE existing
+on disk, checked once per unit, and that file is deliberately the ONLY
+signal. Both calls take the unit's FULL name — `solador-agent.service`,
+never bare `solador-agent` — because `disable` in particular needs the
+exact name to find its own file. A failed `stop`, or a failed `disable`
+while the file exists, both mean exit **4** — an enablement symlink
+`disable` could not clear is exactly as unconfirmed as a process `stop`
+could not stop, though the two are reported as separate, distinct claims
+(see **Exit status**, below): a failed `stop` says the process may still be
+running; a failed `disable` with a successful `stop` says only that the
+unit's future auto-start is unconfirmed, and does not claim the process is
+still running.
+
+**Known limit ([#455](https://github.com/Sassy-Dog/solador/issues/455)):**
+an earlier revision also asked the running manager's own state
+(`systemctl --user is-active`, falling back to `list-units --all` for a
+unit left `failed` rather than active — only `list-units`'s pattern had to
+be the unit's FULL name, since it matches literally with no auto-suffix;
+`is-active` needs no such care) so that `stop` would run
+for a unit whenever EITHER its own file existed OR the manager itself
+still knew about it, which is what let a re-run after exit 4 retry the
+unit the manager had previously refused to stop even though the earlier
+run's best-effort removal had already taken that unit's FILE with it.
+Every review round on that logic found a new Blocking problem in it, so it
+was backed out rather than shipped, and the finding is tracked at #455
+instead of lost. Until it lands: once a unit's file is gone, a re-run has
+nothing left to gate that unit on and reports "Nothing installed" even if
+the manager is still holding it — confirm by hand with `systemctl --user
+status <unit>`. (The macOS path is unaffected: `launchctl print` is
+always asked directly, with no file-existence gate in between.)
 **Before either unit/plist is removed**, the binary
 path it currently names is read (`unowned_service_binary`, never assumed to
 be `$DEST_BIN`) — reading `ExecStart=` on Linux, the second
@@ -1038,9 +1047,9 @@ see **Testing**, below) previously still printed `removed:` and ended in
 That case now prints `FAILED to remove: <desc> (<path>)`, no `removed:`
 line for that file, no `Done`, and exits **6**, which wins over 4 when both
 apply (a provably-failed removal is the more severe claim). 4 and 6 are
-each distinct from 0 ("Done", earned only when every stop request succeeded
-and every file that should be gone actually is) and 1 ("refused, nothing
-changed" — false in both). **There is no exit 5.** The previous revision's
+each distinct from 0 ("Done", earned only when every stop AND disable
+request succeeded and every file that should be gone actually is) and 1
+("refused, nothing changed" — false in both). **There is no exit 5.** The previous revision's
 narrower hold left a real window — a transaction starting between the
 service being stopped and the binary being removed, reachable only where
 the lock was not held continuously (no pre-existing file, or no `flock(1)`
@@ -1246,25 +1255,26 @@ Also required:
   `SOLADOR_AGENT_LAUNCHD_LABEL` (`../x`, `x@BINARY@y`, `.hidden`, `a b`) is
   asserted to refuse `--uninstall` the same way it refuses a normal install.
   A manager that answers reachable but still refuses one specific stop or
-  disable request (`STUB_SYSTEMCTL_DISABLE_EXIT` / `STUB_LAUNCHCTL_BOOTOUT_EXIT`) is
-  asserted to still remove every file, exit 4 rather than 0, and never print
-  the token. The `systemctl` stub itself now models real systemd for both
-  calls install.sh makes: `disable` fails "Unit file <u> does not exist"
-  with no stop when the unit file is absent from the stub's own `$HOME`,
-  `stop` succeeds for a loaded-or-active unit and is a no-op success
-  otherwise (matching the ordinary case — a file on disk with neither
-  `STUB_SYSTEMCTL_ACTIVE_UNITS` nor `STUB_SYSTEMCTL_LOADED_UNITS` set — since
-  install.sh only ever calls `stop` on a unit it has already gated as file-
-  present-or-loaded), `is-active`/`list-units --all` match FULL unit names
-  only, and `STUB_SYSTEMCTL_ACTIVE_UNITS`/`STUB_SYSTEMCTL_LOADED_UNITS` take
-  full unit names to match. A re-run after exit 4 where the metrics unit is
-  still active but its file is already gone is asserted to `stop` it (no
-  `disable` — there is no file left to disable), exit 0, and report
-  "uninstalled for" rather than "Nothing installed"; a fileless oneshot left
-  `failed` (loaded, not active) is asserted to be detected and stopped the
-  same way; a dangling `timers.target.wants` symlink is asserted removed and
-  reported; and a clean host makes neither call and reports "Nothing
-  installed".
+  disable request (`STUB_SYSTEMCTL_STOP_EXIT` / `STUB_SYSTEMCTL_DISABLE_EXIT`
+  on Linux, `STUB_LAUNCHCTL_BOOTOUT_EXIT` on macOS) is asserted to still
+  remove every file, exit 4 rather than 0, name the two claims separately —
+  a failed `stop` is asserted to say the process may still be running; a
+  failed `disable` with a successful `stop` is asserted to name only the
+  unit's unconfirmed future auto-start and to NEVER claim the process may
+  still be running — and never print the token. The `systemctl` stub's
+  `disable` models one piece of real systemd faithfully: it fails "Unit file
+  <u> does not exist" with no stop when the unit file is absent from the
+  stub's own `$HOME`, the same shape a genuine `disable` fails with — but
+  install.sh only ever calls `disable` once it has gated the unit on that
+  same file existing, so this branch is not reachable through install.sh's
+  own calls any more; it stays in the stub as a record of what real systemd
+  does. `stop` makes no claim about matching real systemd's own "unit never
+  heard of" behaviour: install.sh gates `stop` on the unit's FILE too now
+  (**Known limit**, #455, above — an earlier revision's `is-active`/
+  `list-units --all` emulation is gone from the stub along with the
+  install.sh logic it existed to test), so the stub simply succeeds unless
+  `STUB_SYSTEMCTL_STOP_EXIT` forces a failure. A clean host makes neither
+  call and reports "Nothing installed".
 
 Which halves of the rejection test exist is worth saying precisely rather
 than letting a checked box imply all of them:

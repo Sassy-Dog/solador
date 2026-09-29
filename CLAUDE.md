@@ -873,24 +873,35 @@ tests build (#417); the crate still has zero dependencies.
   THIS run is the one that made it. Once held, a note (`pid=<pid>
   since=<epoch>`, the same shape `agent/src/update.rs` writes) is left in
   the file so a racing update/rollback names THIS uninstall, not a stale
-  holder. **Stop and disable are two separate `systemctl` calls, on two
-  separate gates, never a combined `disable --now`** (#454 round-4 review's
-  own follow-up): real systemd's `disable` needs a unit's own FILE to know
-  which enablement symlinks to remove, and fails "Unit file <u> does not
-  exist" without one — *before* it ever reaches its own `--now` stop — so
-  on a unit whose FILE a prior exit-4 run had already removed, the old
-  combined call never actually asked systemd to stop it, and every re-run
-  exited 4 forever. `stop` now runs whenever EITHER the unit FILE exists OR
-  the manager's own state says it is loaded (`is-active`, falling back to
-  `list-units --all` for one left `failed` rather than active, matched
-  against the unit's FULL name — `solador-agent.service`, never bare
-  `solador-agent`: real `list-units`/`is-active` match full unit names
-  only); `disable` (no `--now`) runs only when the FILE still exists. A
+  holder. **Stop and disable are two separate `systemctl` calls, never a
+  combined `disable --now`** (#454 round-4 review's own follow-up): real
+  systemd's `disable` needs a unit's own FILE to know which enablement
+  symlinks to remove, and fails "Unit file <u> does not exist" without one
+  — *before* it ever reaches its own `--now` stop — so a combined call on
+  a unit whose FILE is already gone never stops anything, it just fails
+  outright. Both calls run under the SAME gate — the unit's own FILE
+  existing on disk, and that is deliberately the ONLY signal — against the
+  unit's FULL name (`solador-agent.service`, never bare `solador-agent`). A
   failed `stop`, OR a failed `disable` while the file exists, both mean
-  exit 4. A dangling `*.wants/<unit>` symlink surviving both — `disable`
-  would ordinarily remove it, but never runs at all once the file is gone
-  — is removed as one of the installer's own artefacts and reported the
-  same way everything else is. On macOS: `launchctl bootout
+  exit 4, reported as two DIFFERENT claims: a failed `stop` says the
+  process may still be running; a failed `disable` with a successful
+  `stop` says only that the unit's future auto-start is unconfirmed, and
+  must never claim the process may still be running.
+
+  **Known limit (#455):** an earlier revision also asked the running
+  manager's own state (`is-active`, falling back to `list-units --all` for
+  one left `failed` rather than active — `list-units`'s pattern had to be
+  the unit's FULL name, since it matches literally with no auto-suffix;
+  `is-active` needs no such care, since systemctl appends `.service`
+  itself) so that `stop` ran whenever EITHER the unit FILE existed OR the manager
+  still knew about it, letting a re-run after exit 4 retry a unit whose
+  FILE that earlier run had already removed. Every review round on that
+  logic found a new Blocking problem in it, so it was backed out rather
+  than shipped — tracked at #455, not lost. Until it lands: once a unit's
+  file is gone, a re-run has nothing left to gate that unit on and reports
+  "Nothing installed" even if the manager is still holding it — confirm by
+  hand with `systemctl --user status <unit>` (macOS is unaffected:
+  `launchctl print` is always asked directly). On macOS: `launchctl bootout
   gui/<uid>/…`. Before either unit/plist is removed, the binary path it
   currently names is read (`unowned_service_binary`) — one outside
   `~/.local/bin` (an unmigrated `/opt` host, most likely) is reported as
@@ -911,7 +922,9 @@ tests build (#417); the crate still has zero dependencies.
   left and says so. **Exit status is not always 0 or 1 for a run that
   changed something**: a manager found reachable can still refuse one
   specific stop or disable request, which still removes everything
-  (best-effort) but exits 4; a file that should have been removable but
+  (best-effort) but exits 4 — the operator message names which: a failed
+  stop may mean the process is still running, a failed disable alone does
+  not; a file that should have been removable but
   genuinely could not be (`uninstall_remove` checks every `rm -f`'s own
   result now, not just that it ran) exits 6, which wins over 4 when both
   apply — distinct from 0 ("Done", earned) and 1 ("refused, nothing

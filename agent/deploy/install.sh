@@ -50,13 +50,14 @@
 # --enable-timer opt-in failed — the "Done" block above the error is true.
 #
 # --uninstall (#439): removes, for the INVOKING USER ONLY, everything a
-# default install (or an opted-in --enable-timer) put on disk — stops, and
-# (where its unit file still exists) disables, both service-manager jobs
-# (and the pre-rename unit, if a handed-over host still has one; on Linux
-# stop and disable are two separate systemctl calls on two separate gates —
-# #454 round-4 review's follow-up — since a combined `disable --now` never
-# reaches its own stop when the unit file is already gone), removes both
-# unit/plist pairs, the binary and its
+# default install (or an opted-in --enable-timer) put on disk — where a
+# unit's own FILE still exists, stops it then disables it (and the
+# pre-rename unit, if a handed-over host still has one; on Linux stop and
+# disable are two separate systemctl calls — #454 round-4 review's
+# follow-up — since a combined `disable --now` never reaches its own stop
+# when the unit file is already gone, and splitting them means a stop
+# failure and a disable failure are never reported as the same claim),
+# removes both unit/plist pairs, the binary and its
 # .prev/.new/.update.lock/.rollback-displaced siblings, the macOS launcher,
 # the Linux guard, and the update stamp. The env file (the token) is KEPT and
 # named in the output unless --purge is also given, which also removes the
@@ -65,7 +66,23 @@
 # ~/.local/bin — an unmigrated /opt host, most likely — is named as "left
 # behind" together with its actual remedy (this user cannot delete it; its
 # owner can) rather than silently ignored or pointed at a flag that does not
-# apply post-uninstall. Refusals run in this order and each is untouched:
+# apply post-uninstall.
+#
+# KNOWN LIMIT (#455): on Linux, whether a unit counts as present is decided
+# ONLY by whether its own unit FILE still exists on disk. A prior revision
+# also asked the running manager's own state (`is-active`, falling back to
+# `list-units --all`) so a re-run could still find and act on a unit whose
+# file an earlier exit-4 run had already removed — every review round on
+# that logic found a new Blocking problem in it, so it was backed out rather
+# than shipped, and the finding lives on at #455 rather than being lost.
+# Until it lands: an exit-4 run's best-effort removal has already taken the
+# unit's file with it, so a RE-RUN sees nothing left to gate on and reports
+# "Nothing installed" even though the manager may still be holding the unit.
+# Confirm by hand with `systemctl --user status <unit>`. (macOS is
+# unaffected: launchd is always asked directly, via `launchctl print
+# gui/$(id -u)/<label>`, with no file-existence gate in between.)
+#
+# Refusals run in this order and each is untouched:
 # root (same reason --enable-timer refuses it); then an unsupported platform
 # (this script supports Linux/systemd and macOS/launchd, named as such);
 # then the service manager being unreachable (same reachability check the
@@ -97,8 +114,10 @@
 # without --uninstall, or --uninstall combined with --migrate-from-opt or
 # --enable-timer — the two do not combine); 4 every file was still removed
 # (best-effort), but at least one reachable manager refused a specific stop
-# request — verify by hand that nothing is still running before trusting
-# this host is clean; 6 at least one file that should have been removable —
+# or disable request — verify by hand before trusting this host is clean
+# (the operator message names which: a failed stop may mean the process is
+# still running, a failed disable alone does not); 6 at least one file that
+# should have been removable —
 # the service and other files may already be gone — could not actually be
 # deleted (a read-only parent directory, an immutable file, or similar); fix
 # that and re-run — 6 wins over 4 when both apply, since "a file provably
@@ -294,9 +313,10 @@ UNINSTALL_REMOVED=false
 # failure was going unchecked: every other file still got its "removed:"
 # line, the run still ended in "==> Done", and the exit status was still 0 —
 # a failed removal reported as a successful one. Read at the end, same as
-# MANAGER_CALL_FAILED below: it is a DIFFERENT, more severe case (a file that
-# should be gone is provably still there, not merely unconfirmed), so it gets
-# its own exit status rather than folding into 4's.
+# MANAGER_STOP_FAILED/MANAGER_DISABLE_FAILED below: it is a DIFFERENT, more
+# severe case (a file that should be gone is provably still there, not
+# merely unconfirmed), so it gets its own exit status rather than folding
+# into 4's.
 UNINSTALL_FAILED=false
 
 # uninstall_remove <path> <description>: rm -f, and note the OUTCOME — not
@@ -403,99 +423,60 @@ left_behind_hint() {
     esac
 }
 
-# linux_unit_loaded <full-unit-name>: true when the running user manager
-# currently knows about <full-unit-name> in ANY state — active, failed, or
-# merely loaded — even once its own unit FILE is already gone (#454 round-4
-# review). The argument MUST be the full unit name (e.g.
-# "solador-agent.service", never bare "solador-agent"): real
-# `systemctl list-units` does not append `.service` on its own
-# (`systemctl-list-units.c`), and the manager matches the pattern given
-# against full unit names (`dbus-manager.c`) — a bare name matches nothing,
-# active or not, on genuine systemd. `is-active` alone only catches a unit
-# that is genuinely running RIGHT NOW: the update oneshot's ordinary resting
-# state between firings is "inactive", and after an errored run it is
-# "failed" — neither of which `is-active` reports as active — so
-# `list-units --all` is the fallback that actually finds a unit systemd is
-# still tracking, loaded but not active included. This is what lets
-# stop_and_disable_linux_unit, below, act on a unit whose FILE a PRIOR
-# --uninstall already removed (exit 4: every file removed, but a reachable
-# manager still refused that unit's own stop request) even though nothing
-# on disk is left to gate a re-run's own attempt on.
-linux_unit_loaded() {
-    local unit="$1"
-    systemctl --user is-active "$unit" >/dev/null 2>&1 && return 0
-    [ -n "$(systemctl --user list-units --all --no-legend "$unit" 2>/dev/null)" ]
-}
-
 # stop_and_disable_linux_unit <full-unit-name> <file> <label>: stop and
-# disable are two separate systemctl calls now, on two separate gates —
-# never the combined `disable --now` an earlier revision issued as one call
+# disable are two separate systemctl calls, never a combined `disable --now`
 # (#454 round-4 review's follow-up). Real systemd's `do_unit_file_disable`
 # (`src/shared/install.c`) returns -ENOENT for a unit file that is not
 # there, and `disable`'s own CLI path (`systemctl-enable.c`) fails at
-# "Failed to %s unit" BEFORE it ever reaches the `--now` stop — so on a
-# unit whose FILE a prior exit-4 run already removed, `disable --now` never
-# stopped anything, and every re-run exited 4 forever over a unit that was
-# never actually asked to stop.
+# "Failed to %s unit" BEFORE it ever reaches the `--now` stop — so a
+# combined call on a unit whose file is already gone never stops anything,
+# it just fails outright. Splitting the two calls also means a stop failure
+# and a disable failure are never reported as the same claim
+# (MANAGER_STOP_FAILED vs MANAGER_DISABLE_FAILED, below): only a failed
+# `stop` means the process itself may still be running.
 #
-#   * `stop` runs whenever EITHER the unit FILE exists OR the manager
-#     itself still knows about it (linux_unit_loaded, above) — active,
-#     failed, or merely loaded. Gating on the file alone (the earlier
-#     revision's whole check) is what let a re-run after exit 4 ask systemd
-#     nothing at all about a unit whose file that EARLIER run had already
-#     removed while the unit itself stayed active or failed.
-#   * `disable` (no `--now`; the stop above is now a separate call) runs
-#     only when the unit FILE still exists — real systemd's `disable`
-#     needs the file to know which enablement symlinks to remove, and
-#     fails "Unit file <u> does not exist" without one, so calling it on a
-#     fileless unit would itself be the false failure this fix removes.
+# Both calls run under the SAME gate — the unit's own FILE existing on disk
+# — and that is deliberately the ONLY signal. A prior revision also asked
+# the running manager's own state (`is-active`, falling back to
+# `list-units --all` for a unit left `failed` rather than active) so a
+# re-run after exit 4 could still find and act on a unit whose file an
+# earlier run had already removed. Every review round on that logic found a
+# new Blocking problem in it, so it was backed out rather than shipped; the
+# finding is tracked at #455, not lost. The KNOWN LIMIT this leaves: once a
+# unit's file is gone (an earlier exit-4 run's best-effort removal, most
+# likely), a re-run cannot see it and reports "Nothing installed" even if
+# the manager is still holding it — confirm by hand with `systemctl --user
+# status <unit>`.
 #
-# A failed `stop` means exit 4 (MANAGER_CALL_FAILED); a failed `disable`
-# while the file exists ALSO means exit 4 — an enablement symlink `disable`
-# could not clear is exactly as unconfirmed as a process it could not stop.
-# Sets UNINSTALL_REMOVED whenever either call runs at all (the manager's
-# own state, or the file's presence, each count as "something was
-# installed" on their own). UNINSTALL_REMOVED is a script-global (set
-# unconditionally near the top of this file, before argument parsing even
-# runs — it is not a `local`, unlike MANAGER_CALL_FAILED, which IS
-# run_uninstall's own local); both are visible here, unshadowed, under
+# A failed `stop` sets MANAGER_STOP_FAILED; a failed `disable` (it only ever
+# runs once the file is confirmed to exist) sets MANAGER_DISABLE_FAILED.
+# Either means exit 4. Sets UNINSTALL_REMOVED whenever the unit's file
+# exists (the unit is treated as installed on that signal alone).
+# UNINSTALL_REMOVED is a script-global, set after the argument-parsing loop
+# in the `---- uninstall (#439) ----` section above — it is not a `local`,
+# unlike MANAGER_STOP_FAILED/MANAGER_DISABLE_FAILED, which ARE
+# run_uninstall's own locals; all three are visible here, unshadowed, under
 # bash's dynamic scoping (verified: a `local` in a calling function is
 # visible to a function it calls).
-#
-# Finally, a dangling `*.wants/<unit>` symlink under
-# ~/.config/systemd/user: ordinarily `disable` removes this itself, but a
-# unit whose FILE is already gone has nothing left for `disable` to look up
-# (it is not even called, above), so a wants-symlink from an earlier run
-# can outlive both branches here. Removed as one of the installer's own
-# artefacts, reported the same way uninstall_remove reports every other
-# removal — never left to keep systemd trying to start a unit whose file no
-# longer exists.
 stop_and_disable_linux_unit() {
     local unit="$1" file="$2" label="$3"
-    if [ -f "$file" ] || linux_unit_loaded "$unit"; then
+    if [ -f "$file" ]; then
         if systemctl --user stop "$unit" 2>/dev/null; then
             echo "    stopped $label"
         else
             echo "    (systemctl --user stop $unit reported an error;" >&2
             echo "     could not confirm it is stopped — removing its files anyway)" >&2
-            MANAGER_CALL_FAILED=true
+            MANAGER_STOP_FAILED=true
         fi
-        UNINSTALL_REMOVED=true
-    fi
-    if [ -f "$file" ]; then
         if systemctl --user disable "$unit" 2>/dev/null; then
             echo "    disabled $label"
         else
             echo "    (systemctl --user disable $unit reported an error;" >&2
             echo "     could not confirm its enablement is cleared — removing its files anyway)" >&2
-            MANAGER_CALL_FAILED=true
+            MANAGER_DISABLE_FAILED=true
         fi
         UNINSTALL_REMOVED=true
     fi
-    local wants_link
-    for wants_link in "$HOME/.config/systemd/user"/*.wants/"$unit"; do
-        uninstall_remove "$wants_link" "dangling wants-symlink for $label"
-    done
 }
 
 run_uninstall() {
@@ -631,19 +612,24 @@ run_uninstall() {
     # removal (lock_pre_existed, its exact inverse, is what the
     # successful-completion accounting further down reads for that).
     #
-    # created_lock is also the ONLY thing that may ever delete this file,
-    # and even then never on a busy result: `agent/src/update.rs:1349-1351`
-    # is explicit that unlinking a lock file while another process holds a
-    # lock on it is how two processes come to hold "the" lock at once —
-    # flock() locks the open file description, not the path, so a second
-    # process that later opens the SAME NAME after this one unlinks it
-    # opens a DIFFERENT inode and neither is actually contending with the
-    # other any more. A busy refusal below — the file IS held, by anyone,
-    # whether or not this run created it — therefore deletes nothing at
-    # all. The narrower failure branches (the open itself failing, or perl
-    # being unable to reopen its own fd) are not busy results — nobody is
-    # holding anything — so THOSE may delete the file, but only when
-    # created_lock proves this run is the one that made it.
+    # created_lock is also the ONLY thing that may ever delete this file, and
+    # even that comes with its own limit: never on a busy result, and never
+    # when this run could not actually verify the lock is free.
+    # `agent/src/update.rs:1349-1351` is explicit that unlinking a lock file
+    # while another process holds a lock on it is how two processes come to
+    # hold "the" lock at once — flock() locks the open file description, not
+    # the path, so a second process that later opens the SAME NAME after
+    # this one unlinks it opens a DIFFERENT inode and neither is actually
+    # contending with the other any more. A busy refusal below — the file IS
+    # held, by anyone, whether or not this run created it — therefore
+    # deletes nothing at all, and neither does perl's own "could not reopen
+    # fd 9" branch further down: that failure proves nothing about whether
+    # the lock is actually free, so it is held to the same rule as a
+    # genuinely busy result rather than assumed safe to clean up. Only the
+    # narrower branch where `exec 9>>` itself fails to open the file — a
+    # permission or I/O error, never a locking outcome — may still delete
+    # it, and only when created_lock proves this run is the one that made
+    # it.
     local created_lock=false
     local lock_pre_existed=false
     if [ -d "$INSTALL_DIR" ]; then
@@ -699,7 +685,10 @@ run_uninstall() {
                     echo "       reopen its already-open file descriptor. Refusing rather than" >&2
                     echo "       guessing free. Nothing has been changed." >&2
                     exec 9>&-
-                    [ "$created_lock" = true ] && rm -f "$lock_file" 2>/dev/null || true
+                    # NEVER deleted, even when created_lock is true — this
+                    # run could not actually verify the lock is free, so it
+                    # is held to the same rule as the genuinely busy branch,
+                    # below.
                     return 1
                     ;;
                 *)
@@ -728,13 +717,18 @@ run_uninstall() {
 
     # Set when a service-manager call the reachability check above should
     # have let succeed reports an error anyway — a narrower, rarer case than
-    # "the manager was unreachable" (already refused above), but one where
-    # this run cannot promise the live process actually stopped even though
-    # its files are all still removed below (best-effort, per this script's
-    # own --uninstall contract). Read at the end to pick the summary line and
-    # the exit status: 0 ("Done") is a claim only a manager that agreed to
-    # every stop request has earned.
-    local MANAGER_CALL_FAILED=false
+    # "the manager was unreachable" (already refused above). Two separate
+    # flags, not one: a failed `stop` (or, on macOS, `bootout`) means this
+    # run cannot promise the live process actually stopped; a failed
+    # `disable` while `stop` succeeded means only its future auto-start (at
+    # next login/boot) is unconfirmed — a DIFFERENT, weaker claim, and
+    # conflating the two would either overstate a disable-only failure ("may
+    # still be running" when it is not) or understate a stop failure. Read
+    # at the end to pick the summary line and the exit status: 0 ("Done") is
+    # a claim only a manager that agreed to every stop AND disable request
+    # has earned.
+    local MANAGER_STOP_FAILED=false
+    local MANAGER_DISABLE_FAILED=false
     # Read BEFORE the unit/plist is removed below — unowned_service_binary
     # needs the file that is about to be deleted.
     local foreign_bin
@@ -745,18 +739,13 @@ run_uninstall() {
     # untestable now that nothing can reach it, is worse than none.
     case "$OS" in
         Linux)
-            # Each of the four units below is checked, and stopped, on
-            # EITHER of two independent signals — its own unit FILE, or the
-            # running manager's own state (linux_unit_loaded) — never the
-            # file alone (#454 round-4 review); disable runs only when the
-            # file itself still exists (stop_and_disable_linux_unit's own
-            # comment: real systemd's disable needs the file, and never
-            # reaches its own --now stop when the file is missing, which is
-            # what made an earlier combined `disable --now` call exit 4
-            # forever on a re-run). Every argument here is the unit's FULL
-            # name — never a bare one: real `list-units`/`is-active` match
-            # full unit names only, so a bare name matches nothing on
-            # genuine systemd, active or not.
+            # Each of the four units below is checked, stopped and disabled
+            # solely on its own unit FILE existing (#455 — see
+            # stop_and_disable_linux_unit's own comment for what this leaves
+            # unhandled, and why). Every argument here is the unit's FULL
+            # name (e.g. "solador-agent.service", never bare
+            # "solador-agent") — `disable` in particular needs the exact
+            # unit name to find its own file.
             stop_and_disable_linux_unit "$BIN_NAME.service" "$UNIT_DST" "$BIN_NAME.service"
             stop_and_disable_linux_unit "$UPDATE_NAME.timer" "$UPDATE_TIMER_DST" "$UPDATE_NAME.timer"
             stop_and_disable_linux_unit "$UPDATE_NAME.service" "$UPDATE_UNIT_DST" "$UPDATE_NAME.service"
@@ -799,7 +788,7 @@ run_uninstall() {
                 else
                     echo "    (launchctl bootout $metrics_svc reported an error;" >&2
                     echo "     could not confirm it is stopped — removing its files anyway)" >&2
-                    MANAGER_CALL_FAILED=true
+                    MANAGER_STOP_FAILED=true
                 fi
                 UNINSTALL_REMOVED=true
             fi
@@ -809,7 +798,7 @@ run_uninstall() {
                 else
                     echo "    (launchctl bootout $update_svc reported an error;" >&2
                     echo "     could not confirm it is stopped — removing its files anyway)" >&2
-                    MANAGER_CALL_FAILED=true
+                    MANAGER_STOP_FAILED=true
                 fi
                 UNINSTALL_REMOVED=true
             fi
@@ -868,8 +857,9 @@ run_uninstall() {
 
     echo
     if [ "$UNINSTALL_FAILED" = true ]; then
-        # A more severe, and different, claim than MANAGER_CALL_FAILED below:
-        # something that SHOULD be an ordinary `rm -f` provably did not
+        # A more severe, and different, claim than MANAGER_STOP_FAILED/
+        # MANAGER_DISABLE_FAILED below: something that SHOULD be an ordinary
+        # `rm -f` provably did not
         # happen (see uninstall_remove's own comment — the FAILED lines
         # above this name which path and why), so this is not "Done" and not
         # "refused, nothing changed" either, since the service was likely
@@ -883,17 +873,29 @@ run_uninstall() {
         echo "    immutable file, or similar) and re-run to finish." >&2
         return 6
     fi
-    if [ "$MANAGER_CALL_FAILED" = true ]; then
+    if [ "$MANAGER_STOP_FAILED" = true ] || [ "$MANAGER_DISABLE_FAILED" = true ]; then
         # Every file this run knows about is gone (or was already gone), but
         # "Done: uninstalled" is a claim about the SERVICE, not the files —
         # and a manager that answered `show-environment`/`print gui/<uid>`
         # (the reachability check above) yet still refused a specific stop
-        # request is a narrower, rarer thing than unreachable, not a reason
-        # to fabricate the stronger claim. Exit 4 is distinct from both 0
-        # ("Done", earned) and 1 ("refused, nothing changed" — false here).
+        # or disable request is a narrower, rarer thing than unreachable,
+        # not a reason to fabricate the stronger claim. Exit 4 is distinct
+        # from both 0 ("Done", earned) and 1 ("refused, nothing changed" —
+        # false here). The message below distinguishes the two flags rather
+        # than folding them into one sentence: a failed `stop` means the
+        # process itself may still be running; a failed `disable` with a
+        # successful `stop` means only its future auto-start (at next
+        # login/boot) is unconfirmed, and saying "may still be running"
+        # there would be false.
         echo "==> $BIN_NAME's files were removed for $(id -un), but at least one" >&2
-        echo "    service-manager call above could not confirm the service actually" >&2
-        echo "    stopped. Verify by hand that nothing is still running:" >&2
+        echo "    service-manager call above could not confirm a stop or disable request" >&2
+        echo "    actually succeeded." >&2
+        if [ "$MANAGER_STOP_FAILED" = true ]; then
+            echo "    Verify by hand that nothing is still running:" >&2
+        else
+            echo "    The service itself was told to stop; only its future auto-start (at" >&2
+            echo "    next login/boot) is unconfirmed. Verify by hand:" >&2
+        fi
         service_inspect_hint "$LAUNCHD_LABEL" >&2
         return 4
     fi
