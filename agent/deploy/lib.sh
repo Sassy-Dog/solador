@@ -413,63 +413,26 @@ calver_newer() {
 # their lifetime (agent/src/update.rs's TransactionLock) — created once and
 # NEVER removed, so the file's mere existence proves nothing: it is exactly as
 # present the instant after a transaction finishes cleanly as it is while one
-# is running. What install.sh's `--uninstall` needs to know is "is it HELD
-# right now", not "does it exist" — uninstalling mid-transaction would race the
-# exact binary rename that transaction is in the middle of.
+# is running.
 #
-# TransactionLock::try_acquire takes the lock via `std::fs::File::try_lock`,
-# which is `flock()` on Unix (not `fcntl()`/`F_SETLK`) — confirmed by reading
-# its own comments on the module (a lock surviving `fork()` until `exec()`,
-# which is `flock()`'s open-file-description semantics; a `fcntl()` lock is
-# per-process and does not survive `fork()` at all). So this asks the SAME
-# kernel primitive `try_lock()` uses, never the note the holder writes into
-# the file alongside it for a *human* reading a busy error (`pid=<pid>
-# since=<epoch>`, still written for that reason and unrelated to what
-# follows): a real `flock()` attempt failing IS the same contention the
-# updater's own attempt would meet, with no format to keep in step across two
-# languages and no false-busy from an unrelated process reusing an old pid
-# number — #439's review found exactly that coupling untested and asked for
-# it to be removed rather than pinned down with a cross-format test.
-#
-# Three tiers, most to least capable:
-#   1. util-linux's `flock(1)`, present on the Linux hosts this repo targets:
-#      a real, non-blocking flock() on the path itself.
-#   2. Where flock(1) does not exist (stock macOS ships none), the stock
-#      `perl` almost every macOS ships (Fcntl's `flock`) asks the identical
-#      question through the identical syscall — never the note.
-#   3. Neither on PATH: there is no way left to ask the kernel, and guessing
-#      "free" is the one wrong answer here (a fresh update/rollback, or an
-#      uninstall, racing a transaction this host cannot actually see). Every
-#      existing lock file reads as busy unconditionally, the same direction
-#      every uncertain case below already fails toward.
-#
-# A read/open that FAILS on a file the `-f` check just confirmed exists (a
-# permission change, or the file removed between the two checks) is
-# uncertainty, not evidence of "free", so it fails toward busy too — the exit
-# code perl's helper below reserves for exactly that (2: could not even open
-# it), distinct from 0 (busy) and 1 (free, flock() acquired and released).
-update_lock_busy() {
-    local lock_file="$1"
-    [ -f "$lock_file" ] || return 1
-    if command -v flock >/dev/null 2>&1; then
-        if flock -n "$lock_file" true 2>/dev/null; then
-            return 1
-        fi
-        return 0
-    fi
-    if command -v perl >/dev/null 2>&1; then
-        perl -MFcntl=:flock -e '
-            open(my $fh, "<", $ARGV[0]) or exit 2;
-            exit(flock($fh, LOCK_EX | LOCK_NB) ? 1 : 0);
-        ' "$lock_file"
-        case $? in
-            0) return 0 ;;
-            1) return 1 ;;
-            *) return 0 ;;
-        esac
-    fi
-    return 0
-}
+# There is no standalone "is it busy" checker here any more. An earlier
+# revision had one (`update_lock_busy`, a one-shot path-based check with the
+# same flock(1)/perl/neither tiers described in install.sh's own comments on
+# its lock acquisition) for the case where install.sh's `--uninstall` could
+# not hold the lock continuously — but a review of #439's follow-up found
+# that case avoidable rather than merely narrowable: `--uninstall` now opens
+# and holds the SAME fd (via `flock -n` or the equivalent perl one-liner,
+# see install.sh's `run_uninstall`) for its entire run in every tier it can
+# reach, so a one-shot, non-holding check no longer has a caller. Kept out
+# rather than kept unused: an elaborate three-tier implementation with no
+# production caller is a worse trap for the next reader than its absence.
+# TransactionLock::try_acquire itself still takes the lock via
+# `std::fs::File::try_lock`, which is `flock()` on Unix (not
+# `fcntl()`/`F_SETLK`) — confirmed by reading its own comments on the module
+# (a lock surviving `fork()` until `exec()`, which is `flock()`'s
+# open-file-description semantics; a `fcntl()` lock is per-process and does
+# not survive `fork()` at all) — which is exactly the primitive install.sh's
+# own hold asks the same question through.
 
 # ---- the env file -----------------------------------------------------------
 # Read one key's value out of an env file, the way systemd's EnvironmentFile=

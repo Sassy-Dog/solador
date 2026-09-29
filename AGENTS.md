@@ -835,46 +835,59 @@ tests build (#417); the crate still has zero dependencies.
   user only (#439).** Its refusals run in this order, each untouched: root
   first (same reason `--enable-timer` refuses it), then the service manager
   being unreachable — the same `systemctl --user show-environment` /
-  `gui/<uid>` domain check the install path makes — then `<bin>.update.lock`
-  being held by a `solador-agent update`/`rollback` already in progress. On
-  Linux that lock check HOLDS the same flock (`exec 9<"$lock_file"; flock -n
-  9`, `man flock`'s own fd-only idiom) for the rest of the run wherever
-  `flock(1)` exists, rather than a one-shot check: a transaction starting in
-  the window this spends stopping the service and removing its unit/plist
-  meets that hold as busy on its own terms (exit 75), so nothing here needs
-  to re-ask afterwards. It then disables and stops both service-manager jobs
+  `gui/<uid>` domain check the install path makes — then the update
+  transaction lock (`<bin>.update.lock`): this OPENS the lock file (`exec
+  9>>"$lock_file"`, creating it if missing and never truncating one that
+  exists — the same `create(true).truncate(false)` `TransactionLock` opens
+  it with) and takes a non-blocking exclusive flock on it — `flock -n 9`
+  where `flock(1)` is on PATH, else the stock `perl`'s Fcntl flock on that
+  SAME already-open fd (`open($fh,"<&=",9)`, confirmed empirically to
+  persist after perl exits, not merely assumed) — and HOLDS it for the rest
+  of the run, on both platforms, in every tier that can check it at all: a
+  transaction starting in the window this spends stopping the service and
+  removing its unit/plist meets that hold as busy on its own terms (exit
+  75). Where NEITHER tool exists there is no way left to check, and this
+  refuses (busy) before anything changes rather than guessing free — a
+  follow-up review found the previous revision's hold conditional (only
+  held when the file already existed *and* `flock(1)` was on PATH) and its
+  second, later check capable of returning exit 1 ("nothing changed") after
+  the service and its unit/plist were already gone; both are fixed by
+  holding continuously in every checkable tier and refusing up front in the
+  one that is not. Once held, a note (`pid=<pid> since=<epoch>`, the same
+  shape `agent/src/update.rs` writes) is left in the file so a racing
+  update/rollback names THIS uninstall, not a stale holder. It then disables
+  and stops both service-manager jobs, and the pre-rename one if present
   (`systemctl --user disable --now` / `launchctl bootout gui/<uid>/…`).
   Before either unit/plist is removed, the binary path it currently names is
   read (`unowned_service_binary`) — one outside `~/.local/bin` (an
-  unmigrated `/opt` host, most likely) is reported as `left behind: <path>
-  (not owned by this user; see --migrate-from-opt)` rather than silently
-  forgotten, since it is never this user's to delete. It then removes both
-  unit/plist pairs (Linux `daemon-reload`s once something changed), the
-  binary and its `.prev`/`.new`/`.update.lock`/`.rollback-displaced`
-  siblings, the macOS launcher, the Linux guard, and the update stamp. The
-  env file is **kept** and named in the output unless `--purge` also runs
-  (it deletes the token, and the pre-rename `devcanopy-agent.env` beside
-  it — install copied its token out of that file and never deleted it);
-  `--purge` alone, or `--uninstall` beside `--migrate-from-opt` or
-  `--enable-timer`, is a usage error. Where `flock(1)` is not on PATH
-  (`update_lock_busy`, `lib.sh`: a real `flock(1)` where the host has one,
-  else the stock `perl`'s Fcntl flock asking the SAME kernel question —
-  never a note's content, which #439's review found untested and asked
-  removed; confirmed against `agent/src/update.rs`'s own comments that
-  `TransactionLock` is flock()-based, not `fcntl()`/`F_SETLK` — else, with
-  neither tool, every existing lock file reads as busy unconditionally) the
-  lock is re-checked once more right before the binary itself is removed,
-  narrowing but not closing the window a manager call can take. Never runs
+  unmigrated `/opt` host, most likely) is reported as left behind with the
+  actual remedy (`sudo rm -rf /opt/solador-agent` for that layout; "remove
+  it as its owner" otherwise), never the old unchecked
+  `--migrate-from-opt` pointer, which does nothing useful post-uninstall.
+  It then removes both unit/plist pairs (Linux `daemon-reload`s and
+  `reset-failed`s all four unit names once something changed), the binary
+  and its `.prev`/`.new`/`.update.lock`/`.rollback-displaced` siblings, the
+  macOS launcher, the Linux guard, and the update stamp — a lock file THIS
+  run had to create just to check for contention does not itself count as
+  "something removed". The env file is **kept** and named in the output
+  unless `--purge` also runs (it deletes the token, and the pre-rename
+  `devcanopy-agent.env` beside it — install copied its token out of that
+  file and never deleted it); `--purge` alone, or `--uninstall` beside
+  `--migrate-from-opt` or `--enable-timer`, is a usage error. Never runs
   `loginctl disable-linger`, and is idempotent — a second run finds nothing
   left and says so. **Exit status is not always 0 or 1 for a run that
   changed something**: a manager found reachable can still refuse one
   specific stop request, which still removes everything (best-effort) but
-  exits 4; a transaction that started in the window above (only reachable
-  where nothing was held continuously) exits 5, the binary and lock
-  deliberately left alone; a file that should have been removable but
-  genuinely could not be (`uninstall_remove` checks every `rm -f`'s own
-  result now, not just that it ran) exits 6 — distinct from 0 ("Done",
-  earned) and 1 ("refused, nothing changed" — false in all three).
+  exits 4; a file that should have been removable but genuinely could not
+  be (`uninstall_remove` checks every `rm -f`'s own result now, not just
+  that it ran) exits 6, which wins over 4 when both apply — distinct from 0
+  ("Done", earned) and 1 ("refused, nothing changed" — false in both).
+  **There is no exit 5**: the window it used to name (a transaction starting
+  between the service being stopped and the binary being removed) no longer
+  exists once the lock is held continuously in every tier that can check
+  it, so the second check that produced it was removed rather than kept as
+  unreachable code. `lib.sh`'s old one-shot `update_lock_busy` helper is
+  gone with its only caller, for the same reason.
   `agent/README.md`'s "Moving the agent to another user" is the ordered
   procedure this exists for: install as the new user, re-pair the token,
   `--uninstall --purge` as the old one.
@@ -939,9 +952,11 @@ tests build (#417); the crate still has zero dependencies.
   `SOLADOR_AGENT_LAUNCHD_LABEL` — the one `SOLADOR_AGENT_*` it reads that the
   metrics service does not, which `lib_test.sh`'s launcher allow-list test
   names as the exception. The lock serialises `update`/`rollback` (and the
-  scheduled job, which is `update`) against each other only; `install.sh`
-  and `redeploy.sh` write the same `.new`/`.prev` without it, so do not run
-  them during an update.
+  scheduled job, which is `update`) against each other — and, since #439's
+  follow-up review, against `install.sh --uninstall` too, which now holds
+  the same lock for its whole run rather than merely checking it once. A
+  normal, no-flag `install.sh` and `redeploy.sh` still write the same
+  `.new`/`.prev` without taking it, so do not run those during an update.
 - **Unattended updating is opt-in, off by default, daily, and never catches
   up (#394).** `install.sh --enable-timer` — and only that flag — installs a
   job **separate from the metrics service** that runs the installed

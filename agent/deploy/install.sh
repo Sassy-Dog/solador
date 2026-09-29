@@ -51,40 +51,60 @@
 #
 # --uninstall (#439): removes, for the INVOKING USER ONLY, everything a
 # default install (or an opted-in --enable-timer) put on disk — disables and
-# stops both service-manager jobs, removes both unit/plist pairs, the binary
-# and its .prev/.new/.update.lock/.rollback-displaced siblings, the macOS
-# launcher, the Linux guard, and the update stamp. The env file (the token)
-# is KEPT and named in the output unless --purge is also given, which also
-# removes the pre-rename devcanopy-agent.env (install copied its token out of
-# that file and never deleted it). A binary an existing unit/plist names
-# OUTSIDE ~/.local/bin — an unmigrated /opt host, most likely — is named as
-# "left behind" rather than silently ignored; it is never this user's to
-# delete. Refusals run in this order and each is untouched: root (same
-# reason --enable-timer refuses it), then the service manager being
-# unreachable (same reachability check the install path makes — a sudo -u/su
-# session, say), then <bin>.update.lock being held by a solador-agent
-# update/rollback already in progress — an uninstall mid-transaction would
-# race that transaction's own binary swap, so this holds the SAME flock for
-# the rest of the run wherever flock(1) exists, closing the window a
-# transaction could start in rather than merely re-checking it afterwards.
-# Idempotent: a second run finds nothing left and says so. Exit status: 0
-# uninstalled (or already clean — a second run is a no-op) — earned only when
-# every service-manager call the reachability check let through actually
-# succeeded and every file that should be gone actually is; 1 refused before
-# anything changed (root, the manager unreachable, the lock already held at
-# the start, a hostile SOLADOR_AGENT_LAUNCHD_LABEL, an unsupported platform);
-# 2 usage (--purge without --uninstall, or --uninstall combined with
-# --migrate-from-opt or --enable-timer — the two do not combine); 4 every
-# file was still removed (best-effort), but at least one reachable manager
-# refused a specific stop request — verify by hand that nothing is still
-# running before trusting this host is clean; 5 the lock became held AFTER
-# the service was stopped and its unit/plist removed (a transaction started
-# in that window, on a host with no flock(1) to have closed it) — the binary
-# and lock file are deliberately left alone rather than raced, re-run once it
-# finishes; 6 at least one file that should have been removable — the
-# service and other files may already be gone — could not actually be
+# stops both service-manager jobs (and the pre-rename unit, if a handed-over
+# host still has one), removes both unit/plist pairs, the binary and its
+# .prev/.new/.update.lock/.rollback-displaced siblings, the macOS launcher,
+# the Linux guard, and the update stamp. The env file (the token) is KEPT and
+# named in the output unless --purge is also given, which also removes the
+# pre-rename devcanopy-agent.env (install copied its token out of that file
+# and never deleted it). A binary an existing unit/plist names OUTSIDE
+# ~/.local/bin — an unmigrated /opt host, most likely — is named as "left
+# behind" together with its actual remedy (this user cannot delete it; its
+# owner can) rather than silently ignored or pointed at a flag that does not
+# apply post-uninstall. Refusals run in this order and each is untouched:
+# root (same reason --enable-timer refuses it), then the service manager
+# being unreachable (same reachability check the install path makes — a
+# sudo -u/su session, say), then the update transaction lock
+# (<bin>.update.lock): this OPENS the lock file (creating it if missing,
+# NEVER truncating one that exists — agent/src/update.rs's own
+# create(true).truncate(false)) and takes a non-blocking exclusive flock on
+# it — flock(1) where it is on PATH, else the stock perl's Fcntl flock on
+# that same already-open file descriptor — and HOLDS it for the rest of the
+# run, on both platforms: a transaction starting in the window this spends
+# stopping the service and removing its unit/plist meets that hold as busy
+# on its own terms (exit 75, its own code), never a race this process must
+# re-check afterwards. Where NEITHER tool is on PATH there is no way left to
+# ask the kernel whether a transaction is running, and guessing "free" is the
+# wrong direction, so this refuses (busy) before anything changes, the same
+# as every other preflight refusal. Once held, a note (pid=<pid>
+# since=<epoch>, the same shape agent/src/update.rs writes) is written into
+# the file so a racing update/rollback's own busy message names THIS
+# uninstall rather than a stale previous holder. Idempotent: a second run
+# finds nothing left and says so. Exit status: 0 uninstalled (or already
+# clean — a second run is a no-op) — earned only when every service-manager
+# call the reachability check let through actually succeeded and every file
+# that should be gone actually is; 1 refused before anything changed (root,
+# the manager unreachable, the update lock held or uncheckable, a hostile
+# SOLADOR_AGENT_LAUNCHD_LABEL, an unsupported platform); 2 usage (--purge
+# without --uninstall, or --uninstall combined with --migrate-from-opt or
+# --enable-timer — the two do not combine); 4 every file was still removed
+# (best-effort), but at least one reachable manager refused a specific stop
+# request — verify by hand that nothing is still running before trusting
+# this host is clean; 6 at least one file that should have been removable —
+# the service and other files may already be gone — could not actually be
 # deleted (a read-only parent directory, an immutable file, or similar); fix
-# that and re-run.
+# that and re-run — 6 wins over 4 when both apply, since "a file provably
+# could not be removed" is the more severe claim. There is deliberately no
+# exit 5 any more: an earlier revision re-checked the lock a second time
+# right before removing the binary, for the one case (no flock(1) on PATH)
+# where the first check did not hold it continuously, and a transaction
+# starting in that narrow window used to exit 5 there. Now every reachable
+# case holds the lock continuously from before the first service-manager
+# call through the last removal, and the one remaining case (neither
+# flock(1) nor perl at all) refuses before the first service-manager call
+# instead — so that window, and the second check that watched for it, no
+# longer exist; keeping the dead branch "just in case" would have been
+# untestable, since nothing can reach it.
 #
 # Re-running is safe: it reuses the token, replaces the binary and restarts.
 # Nothing here uses sudo. redeploy.sh remains the from-source path for our own
@@ -342,6 +362,32 @@ unowned_service_binary() {
     [ -n "$path" ] && [ "$path" != "$DEST_BIN" ] && printf '%s\n' "$path"
 }
 
+# left_behind_hint <path>: the actual remedy for a binary this run found
+# named by an existing unit/plist but never installed and cannot delete —
+# never the unchecked "see --migrate-from-opt" guess an earlier revision
+# printed here (#439's review: post-uninstall, --migrate-from-opt either
+# reinstalls fresh on Linux or is refused outright on macOS — see the
+# --uninstall/--migrate-from-opt usage check above — neither of which
+# touches a leftover binary, so pointing at it was never a real remedy).
+# The /opt layout this repo's own migration path creates is named
+# explicitly, with the same `sudo rm -rf /opt/solador-agent` the migration
+# step's own error text already suggests (existing_exec_start's caller,
+# below); anything else just names the path and says whose job it is.
+left_behind_hint() {
+    local path="$1"
+    case "$path" in
+        /opt/solador-agent/*)
+            echo "    left behind: $path"
+            echo "                 this user cannot delete it; its owner can, e.g.:"
+            echo "                   sudo rm -rf /opt/solador-agent"
+            ;;
+        *)
+            echo "    left behind: $path"
+            echo "                 this user cannot delete it; remove it as its owner."
+            ;;
+    esac
+}
+
 run_uninstall() {
     # Same refusal, and the same reason, as --enable-timer's: the install is
     # user-owned, so removing it is too.
@@ -383,50 +429,113 @@ run_uninstall() {
 
     # The transaction lock solador-agent update/rollback hold for their
     # lifetime (agent/src/update.rs, #393). It is never removed once created,
-    # so its mere presence proves nothing — update_lock_busy (lib.sh) is what
-    # asks whether it is actually HELD right now. Checked before anything else
-    # touches disk: uninstalling mid-transaction would race that transaction's
-    # own binary swap, the same race install.sh itself must not run either.
+    # so its mere presence proves nothing about whether it is HELD right now.
+    # Taken (and held) before anything else touches disk: uninstalling
+    # mid-transaction would race that transaction's own binary swap, the same
+    # race install.sh itself must not run either.
     #
-    # Where flock(1) is on PATH, HOLD it — `exec 9<"$lock_file"` then
-    # `flock -n 9` — for the rest of this function, rather than a one-shot
-    # check: this is the exact bash-3.2-safe idiom `man flock`'s EXAMPLES
-    # documents (a numeric-fd-only invocation locks the CALLER's own open fd
-    # and returns; the lock then persists for as long as that fd stays open,
-    # which here is until this process exits), and it is the same primitive
-    # `TransactionLock` itself uses (lib.sh's own comment on update_lock_busy
-    # has the proof). Held continuously, an `update`/`rollback` arriving in
-    # the window this uninstall spends stopping the service and removing its
-    # unit/plist sees the SAME contention it would meet racing a real
-    # transaction — reported as *busy*, exit 75, by its own code — so this
-    # process never again needs to ask; the second check the previous
-    # revision made after that window used to answer a question that had
-    # already changed underneath it (see below). `9<`, never `9<>`: the file
-    # already exists (checked by update_lock_busy just above having reached
-    # here at all — a MISSING file has nothing to hold, see `held_lock`
-    # below), so this never creates or truncates one, and a note a genuine
-    # transaction wrote there for a human to read survives untouched.
+    # `exec 9>>"$lock_file"` opens fd 9 on it — creating the file if it is
+    # missing, and NEVER truncating one that already exists, the same
+    # create(true).truncate(false) agent/src/update.rs's own
+    # TransactionLock::try_acquire opens it with, so a note a genuine
+    # transaction already wrote there survives until THIS run actually takes
+    # the lock, below. (Its parent directory may not exist yet either — a
+    # host nothing was ever installed on — so that is created first; a
+    # directory `install.sh` itself would create on its very first run.)
+    #
+    # A non-blocking exclusive flock is then taken on fd 9, and HELD for the
+    # rest of this function — never a one-shot check — with `flock -n 9`
+    # where flock(1) is on PATH: `man flock`'s own EXAMPLES idiom for locking
+    # the CALLER's own already-open fd in place (a numeric-fd-only invocation
+    # locks that fd itself, and the lock persists for as long as the fd stays
+    # open, which here is until this function releases it at the very end).
+    # Where flock(1) is not on PATH (stock macOS ships none), the stock
+    # perl's Fcntl flock asks the SAME kernel question on the SAME fd:
+    # `open(my $fh,"<&=",9)` reopens fd 9 by number without dup()ing a new
+    # file description, so the flock it takes is the SAME open file
+    # description bash's fd 9 refers to, and — confirmed empirically against
+    # a genuinely competing process before this was trusted, not merely
+    # assumed from `perlfunc` — it persists after that perl process exits,
+    # for as long as bash's own fd 9 stays open. This is the exact primitive
+    # `TransactionLock` itself uses (`std::fs::File::try_lock`, which is
+    # `flock()` on Unix, never `fcntl()`/`F_SETLK` — confirmed by reading its
+    # own comments on the module: a lock surviving `fork()` until `exec()` is
+    # `flock()`'s open-file-description semantics, not `fcntl()`'s
+    # per-process one), so an `update`/`rollback` arriving in the window this
+    # uninstall spends stopping the service and removing its unit/plist meets
+    # the SAME contention a real transaction would, reported as *busy* (exit
+    # 75) by its own code — never a race this process needs to re-check
+    # afterwards, on either platform.
+    #
+    # Where NEITHER tool is on PATH there is no way left to ask the kernel
+    # whether a transaction is running, and guessing "free" is the one wrong
+    # answer (an uninstall, or a fresh transaction, racing one this host
+    # cannot see) — so this fails toward busy: refused before anything
+    # changes, the same direction every other preflight refusal above fails.
     local lock_file="$DEST_BIN.update.lock"
-    local held_lock=false
-    if [ -e "$lock_file" ] && command -v flock >/dev/null 2>&1; then
-        exec 9<"$lock_file" || {
-            echo "ERROR: could not open $lock_file to check it." >&2
-            return 1
-        }
+    # Recorded BEFORE `exec 9>>` below can create one: on a host where
+    # nothing was ever installed (no unit/plist, no binary, and no lock file
+    # either — a genuine "nothing to do" --uninstall), creating this file
+    # ourselves purely to check for contention must not itself count as
+    # "installed state" this run removed. A lock a real transaction already
+    # left behind is different — cleaning THAT up is real work, reported
+    # like any other removal.
+    local lock_pre_existed=false
+    [ -e "$lock_file" ] && lock_pre_existed=true
+    mkdir -p "$(dirname "$lock_file")" 2>/dev/null || true
+    exec 9>>"$lock_file" || {
+        echo "ERROR: could not open $lock_file to take the update lock." >&2
+        return 1
+    }
+    if command -v flock >/dev/null 2>&1; then
         if ! flock -n 9; then
             echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
             echo "       Uninstalling now would race that transaction's own binary swap." >&2
             echo "       Wait for it to finish (or fail) and re-run." >&2
-            exec 9<&-
+            exec 9>&-
             return 1
         fi
-        held_lock=true
-    elif update_lock_busy "$lock_file"; then
-        echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
-        echo "       Uninstalling now would race that transaction's own binary swap." >&2
-        echo "       Wait for it to finish (or fail) and re-run." >&2
+    elif command -v perl >/dev/null 2>&1; then
+        local perl_lock_status=0
+        perl -MFcntl=:flock -e '
+            open(my $fh, "<&=", 9) or exit 2;
+            exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1);
+        ' || perl_lock_status=$?
+        case "$perl_lock_status" in
+            0) ;; # acquired — held on fd 9 for the rest of this function
+            2)
+                echo "ERROR: cannot check the update lock ($lock_file) — perl could not" >&2
+                echo "       reopen its already-open file descriptor. Refusing rather than" >&2
+                echo "       guessing free. Nothing has been changed." >&2
+                exec 9>&-
+                return 1
+                ;;
+            *)
+                echo "ERROR: $lock_file is held — an update or rollback is in progress." >&2
+                echo "       Uninstalling now would race that transaction's own binary swap." >&2
+                echo "       Wait for it to finish (or fail) and re-run." >&2
+                exec 9>&-
+                return 1
+                ;;
+        esac
+    else
+        echo "ERROR: cannot check the update lock ($lock_file) — neither flock(1) nor perl" >&2
+        echo "       is on PATH, so this cannot tell whether an update or rollback is" >&2
+        echo "       running right now. Refusing rather than guessing free. Install one of" >&2
+        echo "       them (flock(1) ships in util-linux on Linux; perl ships with macOS)" >&2
+        echo "       and re-run. Nothing has been changed." >&2
+        exec 9>&-
         return 1
     fi
+    # Held: leave a note for the NEXT update/rollback's own busy message to
+    # read — "pid=<pid> since=<epoch>", the same shape agent/src/update.rs
+    # writes — so it names THIS uninstall rather than a stale previous
+    # holder. A fresh `>` write is safe here, unlike the flock/perl calls
+    # above: opening a file for writing never itself attempts a lock, and
+    # nothing else can hold $lock_file while this process does. Best effort,
+    # like update.rs's own note: a lock whose note could not be written is
+    # still a lock.
+    printf 'pid=%s since=%s\n' "$$" "$(date +%s)" > "$lock_file" 2>/dev/null || true
 
     echo "==> Uninstalling $BIN_NAME for $(id -un) ($OS)"
 
@@ -469,19 +578,42 @@ run_uninstall() {
                 fi
                 UNINSTALL_REMOVED=true
             fi
+            # The pre-rename unit: a host handed over (#392) without ever
+            # having run a fresh install afterwards can still carry it
+            # alongside the current one. Stopped and disabled the same way,
+            # and named in the same daemon-reload/reset-failed below, so a
+            # handed-over host ends up exactly as clean as one that was
+            # always solador-agent.
+            if [ -f "$LEGACY_UNIT" ]; then
+                if systemctl --user disable --now "$LEGACY_BIN_NAME" 2>/dev/null; then
+                    echo "    stopped and disabled $LEGACY_BIN_NAME.service (pre-rename)"
+                else
+                    echo "    (systemctl --user disable --now $LEGACY_BIN_NAME reported an error;" >&2
+                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
+                    MANAGER_CALL_FAILED=true
+                fi
+                UNINSTALL_REMOVED=true
+            fi
             uninstall_remove "$UNIT_DST" "systemd unit"
             uninstall_remove "$UNIT_DST.prev" "systemd unit (previous, from a migration)"
             uninstall_remove "$UPDATE_UNIT_DST" "update oneshot unit"
             uninstall_remove "$UPDATE_TIMER_DST" "update timer"
+            uninstall_remove "$LEGACY_UNIT" "systemd unit (pre-rename)"
             # Only when something above actually changed: a no-op second run
             # asks systemd for nothing, the same "no manager calls" contract
             # every other refusal/no-op path in this script keeps.
             if [ "$UNINSTALL_REMOVED" = true ]; then
                 systemctl --user daemon-reload 2>/dev/null || true
+                # Clears the "failed" state a disable/stop that reported an
+                # error above can leave behind on any of these units —
+                # reset-failed takes unit names, never paths, and tolerates
+                # one that was never loaded or never existed.
+                systemctl --user reset-failed "$BIN_NAME.service" "$UPDATE_NAME.service" \
+                    "$UPDATE_NAME.timer" "$LEGACY_BIN_NAME.service" 2>/dev/null || true
             fi
             uninstall_remove "$GUARD_DST" "update guard"
             if [ -n "$foreign_bin" ]; then
-                echo "    left behind: $foreign_bin (not owned by this user; see --migrate-from-opt)"
+                left_behind_hint "$foreign_bin"
             fi
             ;;
         Darwin)
@@ -512,42 +644,21 @@ run_uninstall() {
             uninstall_remove "$UPDATE_PLIST_DST" "update LaunchAgent plist"
             uninstall_remove "$LAUNCHER_DST" "launcher"
             if [ -n "$foreign_bin" ]; then
-                echo "    left behind: $foreign_bin (not owned by this user; see --migrate-from-opt)"
+                left_behind_hint "$foreign_bin"
             fi
             ;;
         *)
             echo "ERROR: --uninstall supports Linux (systemd) and macOS (launchd); this is $OS." >&2
+            exec 9>&-
             return 1
             ;;
     esac
 
-    # A concurrently started `solador-agent update`/`rollback` cannot have
-    # acquired `$lock_file` in the window since the check above when
-    # `held_lock` is true: this process has held the SAME flock continuously
-    # since then, so a transaction attempting to start met THIS run's hold as
-    # busy on its own terms (exit 75) rather than racing anything here, and
-    # re-checking would only ask this process whether it is busy holding its
-    # own lock. Only where nothing was held — flock(1) is not on PATH, or the
-    # file did not exist yet at the first check and so had nothing to hold —
-    # is the service-manager calls' own window still open, and this asks once
-    # more rather than assuming it stayed clear; that narrows the window, it
-    # does not close it (the manager calls above are not themselves
-    # reversible), which is the accepted residual scope for a host with no
-    # flock(1) to hold. The exit status here is NOT 1: the service and its
-    # unit/plist are already stopped and removed above, so "refused, nothing
-    # changed" would be false; and it is NOT 4 either, since the binary and
-    # lock file are deliberately left alone here rather than "removed
-    # anyway" — a transaction that may have just started must not have its
-    # own binary swap raced out from under it.
-    if [ "$held_lock" != true ] && update_lock_busy "$lock_file"; then
-        echo "ERROR: $lock_file is now held — an update or rollback started while this" >&2
-        echo "       uninstall was stopping the service. The service and its unit/plist" >&2
-        echo "       files are already removed above; leaving the binary and the lock" >&2
-        echo "       alone rather than deleting them out from under that transaction." >&2
-        echo "       Wait for it to finish (or fail) and re-run to finish removing the binary." >&2
-        return 5
-    fi
-
+    # No second lock check here any more (#439's follow-up review): this
+    # process has held the SAME flock (or refused before starting) since
+    # before the service-manager calls above, so a transaction attempting to
+    # start during them met THIS run's hold as busy on its own terms (exit
+    # 75) rather than racing anything — there is no window left to re-check.
     uninstall_remove "$DEST_BIN" "binary"
     uninstall_remove "$DEST_BIN.prev" "binary (previous)"
     uninstall_remove "$DEST_BIN.new" "binary (staged)"
@@ -556,7 +667,22 @@ run_uninstall() {
     # operator moves it by hand. Once the whole install is going away there is
     # nothing left for it to be a backup of.
     uninstall_remove "$DEST_BIN.rollback-displaced" "binary (rollback-displaced, from a half-done rollback)"
-    uninstall_remove "$lock_file" "update transaction lock"
+    # A lock file THIS run created purely to check for contention (nothing
+    # pre-existed, and nothing else above needed removing either) is not
+    # "installed state" — deleted quietly, own failure and all, so it never
+    # turns a genuine no-op into a false "Done" or a false exit 6. One that
+    # pre-existed (a real transaction's leftover) or that this run is
+    # already reporting as a real uninstall goes through the same accounted
+    # path as everything else.
+    if [ "$lock_pre_existed" = true ] || [ "$UNINSTALL_REMOVED" = true ]; then
+        uninstall_remove "$lock_file" "update transaction lock"
+    else
+        rm -f "$lock_file" 2>/dev/null || true
+    fi
+    # Release the hold taken above. Harmless if $lock_file's own removal just
+    # failed (uninstall_remove's own FAILED path, above): the fd, and the
+    # flock on it, are independent of the directory entry.
+    exec 9>&-
     uninstall_remove "$UPDATE_STAMP" "update stamp"
 
     if [ "$PURGE" = true ]; then
@@ -622,8 +748,9 @@ ARCH="$(uname -m)"
 # --uninstall is its own path, dispatched before any of the install-only
 # preflight below (minisign, the macOS floor, Tailscale, a release download —
 # none of it applies to removing files this user's own earlier run created).
-# run_uninstall's own return is propagated as-is (0, 1 or 4 — see its header
-# comment), never collapsed to a bare 0/1: 4 is a distinct claim from both.
+# run_uninstall's own return is propagated as-is (0, 1, 4 or 6 — see its
+# header comment), never collapsed to a bare 0/1: 4 and 6 are each a
+# distinct claim from both, and from each other.
 if [ "$UNINSTALL" = true ]; then
     uninstall_status=0
     run_uninstall || uninstall_status=$?
