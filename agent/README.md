@@ -1,8 +1,15 @@
 # Solador Agent
 
 A small per-host metrics agent. It exposes host metrics and a container/VM list
-over HTTP (JSON), guarded by a bearer token. The [Solador](../) macOS app polls
-it over **Tailscale** to render a dashboard.
+as JSON, guarded by a bearer token. The [Solador](../) macOS app polls it over
+**Tailscale** to render a dashboard.
+
+Plain HTTP by default; `SOLADOR_AGENT_TLS=1` serves HTTPS instead, with a
+self-signed certificate the agent generates once and keeps for the host's
+lifetime (#447 — see **TLS**, below). Either way the transport stays inside
+the tailnet: Tailscale is what makes the bearer token safe on the wire, TLS
+on top of it is defense in depth, not a substitute for it — relaxing the
+Tailscale-only bind is a separate change (#449) this repo has not made.
 
 Runs on Linux (e.g. `ubu-01`) and macOS. Metrics come from
 [`sysinfo`](https://crates.io/crates/sysinfo); the server is
@@ -138,6 +145,7 @@ rootless, so it works as a normal user.
 | `SOLADOR_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
 | `SOLADOR_AGENT_BIND`   | no       | tailnet IP | Host/interface to bind. Defaults to the detected Tailscale IP (`100.x`), so the agent only listens on the tailnet. Set to `0.0.0.0` (or `::`) to bind all interfaces — opt-in only, behind a firewall. If unset and no Tailscale IP can be detected, the server refuses to start rather than exposing the public NIC. |
 | `SOLADOR_AGENT_PORT`   | no       | `7878`  | TCP port. Bound on `SOLADOR_AGENT_BIND`. |
+| `SOLADOR_AGENT_TLS`    | no       | unset (HTTP) | `1` serves HTTPS on the same port, with a self-signed certificate kept for the host's lifetime. **Turn it on with `install.sh --enable-tls`, not by hand-editing this line**: an *older*, pre-#447 installed agent reacts differently per platform to a hand-set key. **On Linux**, `EnvironmentFile=` passes it straight through: `update` swaps in a new HTTPS-only binary but its own pre-#447 code still probes it with `http://` — the health check fails, `.prev` is restored, and `update` exits 5. **On macOS**, the launcher installed before #447 forwards only `TOKEN`, `BIND`, `PORT`, `SKIP_FSTYPES` and `RUST_LOG` to the agent — never this key, and `update` replaces only the binary, never the launcher — so the new binary never sees `SOLADOR_AGENT_TLS`, keeps serving plain HTTP, and `update` exits 0 with TLS silently off. See **TLS**, below. Any other value (or absent) is plain HTTP. |
 | `SOLADOR_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
 | `RUST_LOG`               | no       | `info`  | Log filter (tracing).            |
 
@@ -170,20 +178,22 @@ what proves a published binary starts at all before a release attaches it. It
 exits non-zero when this build carries no version, rather than printing a
 plausible one.
 
-Two **commands** exist as well
-([#393](https://github.com/Sassy-Dog/solador/issues/393)), dispatched at the
-same point — before tracing, the token check, the sampler or a listener — so
-they are always a separate process from the service they act on:
+Three **commands** exist as well, dispatched at the same point — before
+tracing, the token check, the sampler or a listener — so they are always a
+separate process from the service they act on:
 
 ```bash
-solador-agent update      # move this install to the latest published release, verified; see Updating
-solador-agent rollback    # put the previous binary back, offline; see Roll back
+solador-agent update           # move this install to the latest published release, verified; see Updating
+solador-agent rollback         # put the previous binary back, offline; see Roll back
+solador-agent tls-fingerprint  # print the served certificate's SHA-256 fingerprint, colon-hex, and nothing else; see TLS
 ```
 
-Neither takes arguments of its own: `update --force` is refused, not ignored
-into an unforced update. Their exit codes are a contract (the opt-in
-scheduled job, **Unattended updates** below, reads them): `0` updated, or
-already current *and serving*;
+`update` and `rollback` are [#393](https://github.com/Sassy-Dog/solador/issues/393);
+`tls-fingerprint` is [#447](https://github.com/Sassy-Dog/solador/issues/447).
+None takes arguments of its own: `update --force` is refused, not ignored
+into an unforced update. `update`/`rollback`'s exit codes are a contract (the
+opt-in scheduled job, **Unattended updates** below, reads them): `0` updated,
+or already current *and serving*;
 `1` failed with nothing changed (a refusal, a network error, a rejected
 signature — and, for `rollback`, a swap that did not come back or was left
 half done, both named); `3` failed **and** the previous binary could not be
@@ -196,12 +206,106 @@ line names the holder's pid and start time); `2` usage. (On macOS the
 scheduled job's exit status is the launcher's when the launcher did not run
 `update` at all: `0` for a firing it discarded by design, `6` for a check it
 **held** because it could not read a clock or its stamp — see **Unattended
-updates**. The agent itself never exits 6.)
+updates**. The agent itself never exits 6.) `tls-fingerprint` is simpler: `0`
+printed, `1` no certificate exists yet (it never generates one — see **TLS**).
 
 An argument the agent does not recognise is **refused** (exit 2), never ignored:
 it takes none in normal operation, so one arriving means something upstream is
 wrong — a hand-edited `ExecStart`, or a wrapper passing flags meant for
 something else.
+
+## TLS
+
+[#447](https://github.com/Sassy-Dog/solador/issues/447), part 1 of
+[#445](https://github.com/Sassy-Dog/solador/issues/445). `SOLADOR_AGENT_TLS=1`
+in the env file serves `/v1/snapshot`, `/v1/containers` and `/v1/health` over
+HTTPS on the same `SOLADOR_AGENT_PORT` instead of plain HTTP — routes, auth
+and JSON are unchanged either way.
+
+**Known limit, until [#448](https://github.com/Sassy-Dog/solador/issues/448)
+ships: no released Solador build can dial or pin an HTTPS agent yet.**
+`install.sh` still defaults a *fresh* install to `SOLADOR_AGENT_TLS=1` (see
+below) — that is #447's own acceptance criterion — but until the cockpit
+gains the matching half, a host running with TLS on reads as **unreachable**
+in Solador, not as a different scheme. If that host needs to show up in the
+cockpit today, set `SOLADOR_AGENT_TLS=0` in its env file and restart the
+service (or pass `SOLADOR_AGENT_TLS=0` to `install.sh` itself, which — like
+`SOLADOR_AGENT_BIND`/`_PORT` — always wins over the fresh-install default).
+`install.sh`'s Done block repeats this whenever TLS ends up on.
+
+**The certificate is self-signed, ECDSA P-256, and generated exactly once.**
+On its first TLS-enabled start the agent generates a keypair
+([`rcgen`](https://crates.io/crates/rcgen)) and writes it beside the env
+file — `solador-agent.tls.key` (mode `0600`) and `solador-agent.tls.crt`,
+namespaced the same way `solador-agent.env` itself is, not bare
+`tls.key`/`tls.crt` in an XDG root every app shares — then keeps it for the
+host's lifetime: every later start loads the same files rather than
+regenerating. **Never delete them unless you mean to re-pair** — a new
+certificate has a new fingerprint, and every cockpit that pinned the old one
+(the sibling child, #448) stops trusting this host until it is re-paired.
+The key is never logged anywhere; the certificate is not secret (its whole
+purpose is to be handed out, as a fingerprint, for pinning).
+
+**The directory is resolved from the env file, never from `$HOME` alone.**
+`run-agent.sh` and `solador-agent.service` both export
+`SOLADOR_AGENT_CONFIG_DIR` pointing at the exact directory the env file was
+written into; the agent uses that when set, and falls back to
+`$HOME/.config` otherwise. `install.sh` never exports the var itself — its
+own `tls-fingerprint` calls resolve through that same `$HOME/.config`
+fallback, which is exactly where `install.sh`'s own process writes the env
+file, so the two agree without it needing to export anything. The fallback
+otherwise applies only to a manual invocation with no launcher in front of
+it. This matters on macOS specifically: launchd's `HOME` (the target user
+record's) need not be the `HOME` `install.sh` ran under, so deriving the
+certificate's location from `$HOME` alone could point the running service
+at a directory that holds no env file at all — which is why the launcher
+exports the var explicitly rather than relying on the fallback. **Never set
+`SOLADOR_AGENT_CONFIG_DIR` in the env file itself**: on Linux,
+`EnvironmentFile=` would then override the unit's own line above it, so the
+agent would serve out of a different directory from the one the health
+checks pin. On macOS such a line has no effect: the launcher does not forward
+that key (it logs and ignores it) and always exports the env file's own
+directory itself.
+
+**`solador-agent tls-fingerprint`** prints the certificate's SHA-256
+fingerprint, colon-hex, and nothing else — give that to Solador to pin. It is
+**read-only**: unlike the agent's own startup, it never generates a
+certificate, so it cannot race the running service over which host ends up
+in the certificate's SAN list (see below). Run it any time after the agent
+has started at least once with TLS on; before that, it refuses, naming the
+reason.
+
+**The certificate's SAN list is `localhost`, `127.0.0.1`, `::1`, plus the
+resolved bind host** (the detected Tailscale IP, in the common case) — added
+at generation time, since only the agent's own startup knows what it is
+about to bind to. This is what lets standard TLS verification — trusting
+exactly this one certificate as its own root, via `--cacert`/
+`add_root_certificate`, never with verification disabled — succeed against
+the *literal* address a local health probe dials, which is the configured
+bind, not loopback, whenever it names a concrete host. `install.sh`'s
+post-install check and `solador-agent update`'s post-restart probe both
+verify this way.
+
+**`install.sh` writes `SOLADOR_AGENT_TLS=1` on a fresh install** (no env file
+existed yet) and prints the fingerprint in its Done block — **but only when
+the STAGED binary actually supports TLS.** The decision is made after the
+release is downloaded and verified, by asking those exact bytes
+(`solador-agent tls-fingerprint`, which a release published before #447
+refuses as an unrecognized argument, exit 2); a fresh install that lands on
+such a release — `SOLADOR_AGENT_RELEASE` pinned to one, or simply run before
+the first tag that carries #447 — stays plain HTTP rather than writing a
+setting the agent cannot honour. `--enable-tls` against such a release is
+refused outright, naming the reason, rather than silently doing nothing. A
+re-run otherwise leaves an existing env file's choice alone unless given
+`--enable-tls`; there is no `--disable-tls` — turning TLS back off, like
+rotating the token, is an env-file edit made by hand. Without the flag ever
+having taken effect, behaviour is byte-for-byte the agent's original
+plain-HTTP form.
+
+**`install.sh` re-runs, `solador-agent update` and `rollback` never touch the
+key or certificate.** `install.sh --uninstall` keeps them, exactly as it keeps
+the env file, and names them in its "left" output; `--uninstall --purge`
+removes them too, because purging the host's credentials means a re-pair.
 
 ## Releases
 
@@ -649,8 +753,9 @@ The script:
 5. Writes `~/.config/solador-agent.env` with the token (prompted **without
    echo**; press Enter to auto-generate; reused on a re-run), the bind address
    (`SOLADOR_AGENT_BIND`, else the existing file's, else the detected
-   Tailscale IP, else refuse) and the port (`SOLADOR_AGENT_PORT`, else the
-   existing file's, else `7878`), mode `600`, written beside the live file and
+   Tailscale IP, else refuse), the port (`SOLADOR_AGENT_PORT`, else the
+   existing file's, else `7878`), and `SOLADOR_AGENT_TLS` (see **TLS**, below,
+   for how its value is decided), mode `600`, written beside the live file and
    renamed into place. Any other line already in the file
    (`SOLADOR_AGENT_SKIP_FSTYPES=`, `RUST_LOG=`) is carried through. The full
    token is never printed — the script reports only the env-file path and the
@@ -969,7 +1074,10 @@ host instead. Give the new user's install a distinct port for the overlap:
    gui/$(id -u)/app.solador.agent` — before touching the old user at all;
    that is what keeps a working agent serving throughout the move. A new
    user installing fresh **generates a new bearer token**; it does not, and
-   cannot, inherit the old user's.
+   cannot, inherit the old user's. If TLS is on ([#447](https://github.com/Sassy-Dog/solador/issues/447)),
+   it generates a new **certificate** too, with a different fingerprint —
+   once [#448](https://github.com/Sassy-Dog/solador/issues/448) ships and a cockpit can pin one, re-homing this
+   way means a re-pair, the same as the token.
 2. **In the cockpit**, replace that host's stored token *and port* with the
    new user's (Settings → Hosts). Until this step the cockpit is still
    polling the old user's agent — the new one is up but not yet the one
@@ -1536,9 +1644,13 @@ systemctl --user restart solador-agent                    # Linux
 
 ## How Solador connects
 
-- Solador reaches the host at `http://<the configured bind address>:7878` —
+- Solador reaches the host at `<the configured bind address>:7878` —
   the Tailscale IP by default, or whatever `SOLADOR_AGENT_BIND` was set to on
-  a LAN/VPN host.
+  a LAN/VPN host — over `http://` when `SOLADOR_AGENT_TLS` is unset, or
+  `https://` when it is `1`. **No released Solador build can dial or pin an
+  HTTPS agent yet** — see **TLS**'s own known-limit paragraph, above, and
+  [#448](https://github.com/Sassy-Dog/solador/issues/448) — so a host running
+  with TLS on reads as unreachable here today, not as a different scheme.
 - It sends `Authorization: Bearer <token>` (the same token from the env file) on
   every request, polling `/v1/snapshot` and `/v1/containers`.
 - The agent binds only that address (`SOLADOR_AGENT_BIND`), so by default the

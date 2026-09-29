@@ -11,7 +11,7 @@ mod server;
 use std::sync::Arc;
 
 use server::{build_router, AppState};
-use solador_agent::update;
+use solador_agent::{tls, update};
 
 /// The version this build ships as: the repo's CalVer, derived once by
 /// `scripts/get-version-info.sh` and compiled in by `build.rs` (#390).
@@ -50,6 +50,10 @@ enum Invocation {
     Update,
     /// `rollback`: put the previous binary back, offline (#393).
     Rollback,
+    /// `tls-fingerprint`: print the SHA-256 fingerprint of the certificate
+    /// `SOLADOR_AGENT_TLS=1` serves, colon-hex, and nothing else (#447).
+    /// Read-only — it never generates one; see `tls::read_cert`.
+    TlsFingerprint,
     /// Anything else, carried verbatim so the message can name it. Refused
     /// rather than ignored: the agent takes no arguments in normal operation,
     /// so an argument that reaches it is a mistake somewhere (a hand-edited
@@ -67,7 +71,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Invocation {
         match arg.as_str() {
             "--version" | "-V" => return Invocation::Version,
             "--help" | "-h" => return Invocation::Help,
-            "update" | "rollback" if command.is_none() && unknown.is_none() => {
+            "update" | "rollback" | "tls-fingerprint" if command.is_none() && unknown.is_none() => {
                 command = Some(arg);
             }
             other => {
@@ -79,6 +83,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Invocation {
         (_, Some(a)) => Invocation::Unknown(a),
         (Some("update"), None) => Invocation::Update,
         (Some("rollback"), None) => Invocation::Rollback,
+        (Some("tls-fingerprint"), None) => Invocation::TlsFingerprint,
         (_, None) => Invocation::Serve,
     }
 }
@@ -111,7 +116,7 @@ fn print_version() -> i32 {
 const USAGE: &str = "\
 solador-agent — per-host metrics agent for Solador
 
-Usage: solador-agent [update | rollback | --version | --help]
+Usage: solador-agent [update | rollback | tls-fingerprint | --version | --help]
 
 Takes no arguments in normal operation; it is configured entirely from the
 environment (systemd EnvironmentFile on Linux, launchd on macOS):
@@ -119,22 +124,28 @@ environment (systemd EnvironmentFile on Linux, launchd on macOS):
   SOLADOR_AGENT_TOKEN  required bearer token; the agent refuses to start without it
   SOLADOR_AGENT_BIND   bind address (default: the detected Tailscale IP)
   SOLADOR_AGENT_PORT   listen port (default: 7878)
+  SOLADOR_AGENT_TLS    1 serves HTTPS with a self-signed certificate kept for
+                       the host's lifetime, instead of plain HTTP (default: unset)
 
 Commands (run from a shell, never as the service itself):
-  update    replace the installed agent with the latest published release:
-            verify the signed feed and binary under the compiled-in keys,
-            skip when the installed bytes already match, stage beside the
-            live path, swap atomically (previous kept as .prev), restart the
-            service and require /v1/health to report the new version — or
-            restore .prev automatically and exit non-zero
-  rollback  put .prev back and restart, offline; refuses when there is none
+  update           replace the installed agent with the latest published release:
+                   verify the signed feed and binary under the compiled-in keys,
+                   skip when the installed bytes already match, stage beside the
+                   live path, swap atomically (previous kept as .prev), restart the
+                   service and require /v1/health to report the new version — or
+                   restore .prev automatically and exit non-zero
+  rollback         put .prev back and restart, offline; refuses when there is none
+  tls-fingerprint  print the SHA-256 fingerprint of the certificate
+                   SOLADOR_AGENT_TLS=1 serves, colon-hex, and nothing else;
+                   refuses if the agent has never started with TLS on (it
+                   never generates a certificate itself)
 
 Exit codes: 0 updated, or already current and serving; 1 failed with nothing
 changed (for rollback also: swapped but not back, or half done — both say so);
 3 failed AND the previous binary could not be restored — inspect the service;
 4 no applicable release (the feed is not newer than what is installed);
 5 failed, the previous binary is back and serving; 75 another update/rollback
-holds the lock; 2 usage.
+holds the lock; 2 usage. tls-fingerprint: 0 printed, 1 no certificate yet.
 
 Options:
   -V, --version  print the version and nothing else, then exit
@@ -162,6 +173,7 @@ async fn main() {
         // process from the service it restarts, and must never become one.
         Invocation::Update => std::process::exit(run_maintenance(Maintenance::Update).await),
         Invocation::Rollback => std::process::exit(run_maintenance(Maintenance::Rollback).await),
+        Invocation::TlsFingerprint => std::process::exit(run_tls_fingerprint()),
         Invocation::Unknown(arg) => {
             eprintln!("solador-agent: unrecognized argument '{arg}'");
             eprint!("{}", usage());
@@ -215,6 +227,14 @@ async fn main() {
     };
 
     let addr = format_bind_addr(&bind_host, port);
+
+    // TLS is opt-in by config (#447): SOLADOR_AGENT_TLS=1 in the env file.
+    // Without it, everything below this point is unchanged from before #447.
+    if tls::flag_enabled(std::env::var("SOLADOR_AGENT_TLS").ok().as_deref()) {
+        serve_tls(app, &addr, &bind_host, &hostname).await;
+        return;
+    }
+
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -231,6 +251,172 @@ async fn main() {
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("FATAL: server error: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Where `tls::KEY_FILE` / `tls::CERT_FILE` live: beside
+/// `solador-agent.env`, the agent's config directory (#447).
+///
+/// Resolution order:
+/// 1. `SOLADOR_AGENT_CONFIG_DIR`, when set — the directory the env file
+///    that configured THIS process actually lives in. `run-agent.sh`
+///    (macOS) and `solador-agent.service` (Linux, `%h/.config` — a systemd
+///    specifier the manager resolves from the target user's own account,
+///    not this process's `HOME`) both export it, derived the same way
+///    `agent/deploy/lib.sh` and `update.rs` already do:
+///    `dirname(<the env file's path>)`.
+/// 2. `$HOME/.config`, when `SOLADOR_AGENT_CONFIG_DIR` is unset — a manual
+///    `solador-agent` invocation with no launcher in front of it (a
+///    from-source Linux host, a developer running it directly), where this
+///    process's own `HOME` IS the installer's.
+///
+/// The two can disagree: launchd's `HOME` (the target user record's) need
+/// not be the `HOME` `install.sh` ran under (see `run-agent.sh`'s own
+/// header comment), so deriving this from `$HOME` alone — as an earlier
+/// revision did — could point the running service at a directory that
+/// holds no env file at all while `lib.sh`'s `verify_health` and
+/// `update.rs`'s `health_pin`, which both derive it from the actual env
+/// file's path, keep looking in the right place.
+fn tls_config_dir() -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = std::env::var_os("SOLADOR_AGENT_CONFIG_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        return if dir.is_absolute() {
+            Ok(dir)
+        } else {
+            Err(format!(
+                "SOLADOR_AGENT_CONFIG_DIR={} is not an absolute path; SOLADOR_AGENT_TLS=1 needs \
+                 one to find or create the certificate beside the env file",
+                dir.display()
+            ))
+        };
+    }
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.is_absolute())
+        .map(|h| h.join(".config"))
+        .ok_or_else(|| {
+            "neither SOLADOR_AGENT_CONFIG_DIR nor HOME (as an absolute path) is set; \
+             SOLADOR_AGENT_TLS=1 needs one of them to find or create the certificate beside \
+             the env file"
+                .to_string()
+        })
+}
+
+/// Serve HTTPS on `addr` with the self-signed certificate kept for the
+/// host's lifetime (#447): loaded from, or generated once into, the agent's
+/// config directory (`tls::load_or_generate` — the ONLY call site in this
+/// binary that may generate one; `tls-fingerprint`, `update` and `rollback`
+/// only ever read). `bind_host` goes into the certificate's SAN list beside
+/// the loopback baseline, because the health probes in `install.sh` and
+/// `solador-agent update` dial the configured bind address, not loopback,
+/// whenever it names a concrete host (the default: a detected Tailscale IP).
+/// Exits the process on any fatal error, the same way the plain-HTTP path
+/// above does.
+async fn serve_tls(app: axum::Router, addr: &str, bind_host: &str, hostname: &str) {
+    let dir = match tls_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("FATAL: {e}");
+            std::process::exit(1);
+        }
+    };
+    let material = match tls::load_or_generate(&dir, &[bind_host.to_string()]) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("FATAL: {e}");
+            std::process::exit(1);
+        }
+    };
+    // Not secret (see tls::fingerprint_hex's doc comment) — logging it is
+    // what lets an operator confirm which certificate is serving without a
+    // separate `tls-fingerprint` invocation. The key itself is never logged
+    // anywhere in this binary.
+    let fingerprint = tls::fingerprint_hex(&material.cert_der);
+
+    // rustls needs a process-wide default crypto provider installed once.
+    // axum-server's "tls-rustls-no-provider" feature deliberately picks
+    // none, so this is the one place that chooses — `ring`, the same
+    // backend `reqwest`'s `rustls-tls` feature already resolves for the
+    // whole workspace (see agent/Cargo.toml), so the binary never links a
+    // second crypto implementation. Already-installed is not an error: some
+    // other path (a `reqwest::Client` built first) may have gotten there first.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let rustls_config = match axum_server::tls_rustls::RustlsConfig::from_der(
+        vec![material.cert_der.clone()],
+        material.key_der.clone(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "FATAL: could not build a TLS server config from {} / {}: {e}",
+                dir.join(tls::KEY_FILE).display(),
+                dir.join(tls::CERT_FILE).display()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // Bound the same way, with the same message, as the plain-HTTP path
+    // (#447 review round 2): `axum_server::bind_rustls` takes a
+    // `SocketAddr`, which `addr.parse()` cannot produce for a hostname bind
+    // (`SOLADOR_AGENT_BIND=localhost`, say) that `tokio::net::TcpListener`
+    // accepts directly via its own async resolution — a difference that did
+    // not matter before TLS became the fresh-install default, and does now.
+    // `into_std()` hands axum-server a socket already in non-blocking mode,
+    // which is what `tokio::net::TcpListener::from_std` (what
+    // `from_tcp_rustls` calls internally) requires.
+    let tokio_listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("FATAL: failed to bind {addr}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let std_listener = match tokio_listener.into_std() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("FATAL: could not prepare {addr} for TLS: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Logged only now, after the bind actually succeeded — a port already
+    // in use must not read as a success line followed by an unrelated
+    // "server error".
+    tracing::info!(
+        "solador-agent {} listening on https://{addr} (host={hostname}, tls fingerprint {fingerprint})",
+        VERSION.map_or_else(|| "(no version)".to_string(), |v| format!("v{v}"))
+    );
+
+    if let Err(e) = axum_server::from_tcp_rustls(std_listener, rustls_config)
+        .serve(app.into_make_service())
+        .await
+    {
+        eprintln!("FATAL: server error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// `solador-agent tls-fingerprint`: print the SHA-256 fingerprint of the
+/// certificate `SOLADOR_AGENT_TLS=1` serves — colon-hex, one line, nothing
+/// else, the same "print exactly this and nothing else" contract
+/// `print_version` keeps. Read-only: it never generates a certificate (see
+/// `tls::read_cert`), so it cannot race the agent's own first start over
+/// which SAN list wins.
+fn run_tls_fingerprint() -> i32 {
+    let outcome = tls_config_dir().and_then(|dir| tls::read_cert(&dir).map_err(|e| e.to_string()));
+    match outcome {
+        Ok(cert_der) => {
+            println!("{}", tls::fingerprint_hex(&cert_der));
+            0
+        }
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            1
+        }
     }
 }
 
@@ -519,6 +705,29 @@ mod tests {
         );
     }
 
+    /// `tls-fingerprint` (#447) is a third command beside `update` and
+    /// `rollback`, parsed the same way: recognized bare, refused with
+    /// anything else beside it.
+    #[test]
+    fn tls_fingerprint_is_a_command_and_takes_nothing_else() {
+        assert_eq!(
+            parse_args(args(&["tls-fingerprint"])),
+            Invocation::TlsFingerprint
+        );
+        assert_eq!(
+            parse_args(args(&["tls-fingerprint", "--force"])),
+            Invocation::Unknown("--force".to_string())
+        );
+        assert_eq!(
+            parse_args(args(&["tls-fingerprint", "update"])),
+            Invocation::Unknown("update".to_string())
+        );
+        assert_eq!(
+            parse_args(args(&["update", "tls-fingerprint"])),
+            Invocation::Unknown("tls-fingerprint".to_string())
+        );
+    }
+
     /// The one line `--version` prints IS the machine contract — `lib.sh`'s
     /// `binary_version` and the release workflow both read it verbatim. A
     /// prefix here would break both silently, so the shape is pinned.
@@ -538,6 +747,8 @@ mod tests {
         assert!(text.contains("SOLADOR_AGENT_TOKEN"), "{text}");
         assert!(text.contains("update"), "{text}");
         assert!(text.contains("rollback"), "{text}");
+        assert!(text.contains("tls-fingerprint"), "{text}");
+        assert!(text.contains("SOLADOR_AGENT_TLS"), "{text}");
         assert!(text.contains("75"), "{text}");
         match VERSION {
             Some(v) => assert!(text.contains(v), "{text}"),

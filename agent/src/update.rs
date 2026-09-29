@@ -1213,6 +1213,10 @@ pub struct Serving {
     token: String,
     pub bind: String,
     pub port: u16,
+    /// `SOLADOR_AGENT_TLS=1` in the env file (#447): the health probe must
+    /// speak HTTPS, and verify against the pinned certificate beside the env
+    /// file rather than the system trust store.
+    pub tls: bool,
 }
 
 impl fmt::Debug for Serving {
@@ -1221,6 +1225,7 @@ impl fmt::Debug for Serving {
             .field("token", &"<redacted>")
             .field("bind", &self.bind)
             .field("port", &self.port)
+            .field("tls", &self.tls)
             .finish()
     }
 }
@@ -1235,10 +1240,10 @@ impl Serving {
 
     /// The URL the health probe dials — `lib.sh`'s `health_url`: a wildcard
     /// bind is not an address you can dial, so loopback; an IPv6 literal is
-    /// bracketed.
+    /// bracketed; `https://` when `tls` is on.
     #[must_use]
     pub fn health_url(&self) -> String {
-        health_url(&self.bind, self.port)
+        health_url(&self.bind, self.port, self.tls)
     }
 }
 
@@ -1312,19 +1317,27 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
         .get("SOLADOR_AGENT_PORT")
         .and_then(|p| p.trim().parse().ok())
         .unwrap_or(7878);
-    Ok(Serving { token, bind, port })
+    let tls = crate::tls::flag_enabled(map.get("SOLADOR_AGENT_TLS").map(String::as_str));
+    Ok(Serving {
+        token,
+        bind,
+        port,
+        tls,
+    })
 }
 
-/// `lib.sh`'s `health_url`, verbatim.
+/// `lib.sh`'s `health_url`, verbatim but for the scheme (#447): `https://`
+/// when `tls` is on, `http://` otherwise — never inferred from the port.
 #[must_use]
-pub fn health_url(bind: &str, port: u16) -> String {
+pub fn health_url(bind: &str, port: u16, tls: bool) -> String {
     let host = match bind {
         "" | "0.0.0.0" => "127.0.0.1".to_string(),
         "::" | "[::]" => "[::1]".to_string(),
         b if b.contains(':') && !b.starts_with('[') => format!("[{b}]"),
         b => b.to_string(),
     };
-    format!("http://{host}:{port}/v1/health")
+    let scheme = if tls { "https" } else { "http" };
+    format!("{scheme}://{host}:{port}/v1/health")
 }
 
 // ---------------------------------------------------------------------------
@@ -1644,23 +1657,61 @@ fn release_client(
         })
 }
 
-/// The client for the local health probe: plain HTTP, no redirects, short
-/// per-attempt bounds (`lib.sh`: connect 2s, total 5s), and **no proxy** —
-/// an `HTTP_PROXY` in the environment without a `NO_PROXY` for loopback
-/// would route the probe of this host's own service through a proxy and
-/// roll back every update.
-fn health_client(running_version: Option<&str>) -> Result<reqwest::Client, UpdateError> {
-    reqwest::Client::builder()
+/// The client for the local health probe: no redirects, short per-attempt
+/// bounds (`lib.sh`: connect 2s, total 5s), and **no proxy** — an
+/// `HTTP_PROXY` in the environment without a `NO_PROXY` for loopback would
+/// route the probe of this host's own service through a proxy and roll back
+/// every update.
+///
+/// `pin`, when `Some`, is the DER bytes of the agent's own
+/// `solador-agent.tls.crt` (#447):
+/// the client trusts **exactly that certificate** — not the system CA
+/// bundle, which a self-signed certificate could never chain to anyway —
+/// still through the standard chain-and-hostname verifier, never with
+/// verification disabled. `wait_for_health` always dials the configured
+/// bind host (loopback only for a wildcard bind), which is why that same
+/// host is in the certificate's SAN list (`tls::load_or_generate`).
+fn health_client(
+    running_version: Option<&str>,
+    pin: Option<&[u8]>,
+) -> Result<reqwest::Client, UpdateError> {
+    let mut builder = reqwest::Client::builder()
         .user_agent(user_agent(running_version))
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| UpdateError::Network {
-            what: "http client".to_string(),
+        .timeout(Duration::from_secs(5));
+    if let Some(der) = pin {
+        let cert = reqwest::Certificate::from_der(der).map_err(|e| UpdateError::Network {
+            what: "loading the agent's TLS certificate".to_string(),
             reason: e.to_string(),
-        })
+        })?;
+        builder = builder
+            .add_root_certificate(cert)
+            .tls_built_in_root_certs(false);
+    }
+    builder.build().map_err(|e| UpdateError::Network {
+        what: "http client".to_string(),
+        reason: e.to_string(),
+    })
+}
+
+/// The pinned certificate bytes for the health probe, when `serving.tls` is
+/// on — read only, per [`crate::tls::read_cert`]'s own contract: `update`
+/// and `rollback` must never be the reason a certificate exists.
+fn health_pin(serving: &Serving, install: &Install) -> Result<Option<Vec<u8>>, UpdateError> {
+    if !serving.tls {
+        return Ok(None);
+    }
+    let dir = install.env_file.parent().ok_or_else(|| {
+        UpdateError::Install(format!(
+            "{} has no parent directory; cannot locate the TLS certificate beside it",
+            install.env_file.display()
+        ))
+    })?;
+    crate::tls::read_cert(dir)
+        .map(Some)
+        .map_err(|e| UpdateError::Install(format!("SOLADOR_AGENT_TLS=1 but {e}")))
 }
 
 /// Resolve the concrete release behind `/releases/latest`: the redirect's
@@ -1838,10 +1889,53 @@ fn error_chain(e: &reqwest::Error) -> String {
     parts.join(": ")
 }
 
+/// Does this error's chain name a TLS/certificate failure? A soft signal —
+/// substring matching on `rustls`/`webpki`'s own error text — deliberately
+/// never a hard `matches!` on a reqwest error variant, since reqwest does
+/// not expose one for "TLS" specifically. Two shapes of needle: the ones
+/// rustls names when a *certificate* is wrong (`certificate`,
+/// `invalidcertificate`, `unknownissuer`, `notvalidforname`, `handshake`,
+/// `tls`), and the one it names when the agent isn't speaking TLS **at
+/// all** — a pre-#447 `.prev` binary, dialed over `https://` after
+/// `rollback`, answers with `received corrupt message of type
+/// InvalidContentType` rather than anything sounding like a certificate
+/// problem.
+fn is_tls_error(e: &reqwest::Error) -> bool {
+    let chain = error_chain(e).to_lowercase();
+    [
+        "certificate",
+        "handshake",
+        "tls",
+        "invalidcertificate",
+        "unknownissuer",
+        "notvalidforname",
+        "corrupt message",
+        "invalidcontenttype",
+    ]
+    .iter()
+    .any(|needle| chain.contains(needle))
+}
+
 /// One line of meaning for a reqwest error, with no URL in it (the URL is
 /// already in the message and never carries the token, but the habit is
 /// the rule).
 fn transport_summary(e: reqwest::Error) -> String {
+    // Checked BEFORE `is_connect()` (#447 review): establishing an HTTPS
+    // connection includes the TLS handshake, so reqwest/hyper classify a
+    // certificate failure as a connect error too — "could not connect —
+    // nothing listening" would be actively wrong there, since the port
+    // *is* listening and answering, just not with the pinned certificate.
+    // A substring check on the error chain is inherently soft, but every
+    // TLS backend this repo's dependencies resolve (rustls/webpki) names
+    // the failure in terms recognisable this way, and a false negative
+    // here only falls through to the ordinary is_connect() message rather
+    // than misreporting something worse.
+    if is_tls_error(&e) {
+        return format!(
+            "TLS handshake or certificate verification failed — {}",
+            error_chain(&e)
+        );
+    }
     if e.is_connect() {
         "could not connect — nothing listening at that address/port, or no route to it".to_string()
     } else if e.is_timeout() {
@@ -1918,7 +2012,8 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
     // before the swap: a client that cannot be built must be a refusal with
     // nothing changed, never a failure discovered with the candidate live.
     let client = release_client(&ctx.release_base, ctx.running_version.as_deref())?;
-    let health = health_client(ctx.running_version.as_deref())?;
+    let pin = health_pin(&ctx.serving, &ctx.install)?;
+    let health = health_client(ctx.running_version.as_deref(), pin.as_deref())?;
 
     // 3. The concrete release, and its feed — exact bytes verified first.
     let discovery = reqwest::Client::builder()
@@ -2175,7 +2270,8 @@ pub async fn run_rollback(ctx: &mut Context<'_>) -> Result<RollbackOutcome, Upda
     }
     // Built before the swap, for the same reason run_update builds its
     // clients before it fetches.
-    let health = health_client(ctx.running_version.as_deref())?;
+    let pin = health_pin(&ctx.serving, &ctx.install)?;
+    let health = health_client(ctx.running_version.as_deref(), pin.as_deref())?;
     // Staged first (mode 0755, whatever mode .prev carries — a hand-placed
     // .prev may well be 0644), and asked its version from there. Known where
     // it can be known: a previous binary that names its version is held to
@@ -2740,20 +2836,38 @@ mod tests {
 
     #[test]
     fn health_url_mirrors_lib_sh() {
-        assert_eq!(health_url("", 7878), "http://127.0.0.1:7878/v1/health");
         assert_eq!(
-            health_url("0.0.0.0", 7878),
+            health_url("", 7878, false),
             "http://127.0.0.1:7878/v1/health"
         );
-        assert_eq!(health_url("::", 7878), "http://[::1]:7878/v1/health");
-        assert_eq!(health_url("[::]", 9000), "http://[::1]:9000/v1/health");
         assert_eq!(
-            health_url("fd7a::1", 9000),
+            health_url("0.0.0.0", 7878, false),
+            "http://127.0.0.1:7878/v1/health"
+        );
+        assert_eq!(health_url("::", 7878, false), "http://[::1]:7878/v1/health");
+        assert_eq!(
+            health_url("[::]", 9000, false),
+            "http://[::1]:9000/v1/health"
+        );
+        assert_eq!(
+            health_url("fd7a::1", 9000, false),
             "http://[fd7a::1]:9000/v1/health"
         );
         assert_eq!(
-            health_url("100.64.0.9", 7878),
+            health_url("100.64.0.9", 7878, false),
             "http://100.64.0.9:7878/v1/health"
+        );
+    }
+
+    #[test]
+    fn health_url_uses_https_when_tls_is_on() {
+        assert_eq!(
+            health_url("", 7878, true),
+            "https://127.0.0.1:7878/v1/health"
+        );
+        assert_eq!(
+            health_url("100.64.0.9", 7878, true),
+            "https://100.64.0.9:7878/v1/health"
         );
     }
 
@@ -2828,6 +2942,45 @@ mod tests {
             assert!(
                 err.to_string().contains("names no SOLADOR_AGENT_BIND"),
                 "{err}"
+            );
+        }
+    }
+
+    /// `SOLADOR_AGENT_TLS=1` is the one spelling that turns the probe on
+    /// (#447) — matching `crate::tls::flag_enabled`, the one place this is
+    /// decided so `main.rs` and this reader cannot disagree about it.
+    /// Absent, or anything else, is HTTP: `read_serving` must not default an
+    /// unrelated cockpit into probing HTTPS against a plain-HTTP agent.
+    #[test]
+    fn read_serving_parses_the_tls_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join("agent.env");
+
+        fs::write(
+            &env,
+            "SOLADOR_AGENT_TOKEN=t\nSOLADOR_AGENT_BIND=127.0.0.1\nSOLADOR_AGENT_TLS=1\n",
+        )
+        .unwrap();
+        let serving = read_serving(&env).unwrap();
+        assert!(serving.tls);
+        assert!(
+            serving.health_url().starts_with("https://"),
+            "{}",
+            serving.health_url()
+        );
+
+        for text in [
+            "SOLADOR_AGENT_TOKEN=t\nSOLADOR_AGENT_BIND=127.0.0.1\n",
+            "SOLADOR_AGENT_TOKEN=t\nSOLADOR_AGENT_BIND=127.0.0.1\nSOLADOR_AGENT_TLS=0\n",
+            "SOLADOR_AGENT_TOKEN=t\nSOLADOR_AGENT_BIND=127.0.0.1\nSOLADOR_AGENT_TLS=true\n",
+        ] {
+            fs::write(&env, text).unwrap();
+            let serving = read_serving(&env).unwrap();
+            assert!(!serving.tls, "{text:?}");
+            assert!(
+                serving.health_url().starts_with("http://"),
+                "{}",
+                serving.health_url()
             );
         }
     }
@@ -3261,5 +3414,131 @@ mod tests {
         assert!(err.contains("did not answer"), "{err}");
         let err = binary_version(&dir.path().join("absent"), Duration::from_secs(5)).unwrap_err();
         assert!(err.contains("could not execute"), "{err}");
+    }
+
+    // --- TLS health probe (#447) -----------------------------------------------
+
+    /// A real TLS round trip: `health_client`'s pin, built the way
+    /// `health_pin` builds it, both accepts the agent's own certificate
+    /// (standard chain-and-hostname verification against it, nothing
+    /// disabled) and refuses a different one — the negative control that
+    /// proves the positive result is the pin doing something, not an
+    /// accidentally-permissive client.
+    #[tokio::test]
+    async fn health_client_trusts_only_the_pinned_certificate() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let served_dir = tempfile::tempdir().unwrap();
+        let served = crate::tls::load_or_generate(served_dir.path(), &[]).unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let config = axum_server::tls_rustls::RustlsConfig::from_der(
+            vec![served.cert_der.clone()],
+            served.key_der.clone(),
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new().route("/v1/health", axum::routing::get(|| async { "ok" }));
+        let server = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, config)
+                .serve(app.into_make_service())
+                .await
+        });
+        // Give the acceptor a moment to start listening.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let url = format!("https://127.0.0.1:{}/v1/health", addr.port());
+
+        // Pinned to the certificate actually served: succeeds.
+        let right = health_client(None, Some(&served.cert_der)).unwrap();
+        let resp = right.get(&url).send().await.unwrap();
+        assert!(resp.status().is_success());
+
+        // Pinned to a DIFFERENT, equally self-signed certificate: refused.
+        // Not `danger_accept_invalid_certs` anywhere in this path — the
+        // failure IS the verifier doing its job.
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = crate::tls::load_or_generate(other_dir.path(), &[]).unwrap();
+        assert_ne!(other.cert_der, served.cert_der);
+        let wrong = health_client(None, Some(&other.cert_der)).unwrap();
+        let err = wrong
+            .get(&url)
+            .send()
+            .await
+            .expect_err("a certificate that does not match the pin must be refused");
+        assert!(
+            err.is_connect() || err.to_string().to_lowercase().contains("certificate"),
+            "{err}"
+        );
+        // transport_summary must name this a TLS/certificate failure, not
+        // "could not connect — nothing listening": the port IS listening
+        // and answering, just not with the pinned certificate (#447 review —
+        // reqwest classifies a handshake failure as `is_connect()` too, so
+        // that check alone would have produced exactly the wrong message).
+        let summary = transport_summary(err);
+        assert!(
+            summary.to_lowercase().contains("certificate")
+                || summary.to_lowercase().contains("tls")
+                || summary.to_lowercase().contains("handshake"),
+            "transport_summary must name the real cause, not a generic connect failure: {summary}"
+        );
+        assert!(
+            !summary.starts_with("could not connect"),
+            "transport_summary must not call a TLS failure \"could not connect\": {summary}"
+        );
+
+        // No pin at all (TLS off): the plain client has no root for a
+        // self-signed certificate either, so it also refuses — pinning is
+        // not the only thing standing between this client and a forged cert.
+        let unpinned = health_client(None, None).unwrap();
+        assert!(unpinned.get(&url).send().await.is_err());
+
+        server.abort();
+    }
+
+    /// `health_pin` never creates a certificate — only reads one that
+    /// already exists, per `crate::tls::read_cert`'s contract (#447): update
+    /// and rollback must never be the reason a certificate exists.
+    #[test]
+    fn health_pin_is_read_only_and_off_when_tls_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join("solador-agent.env");
+        fs::write(
+            &env_file,
+            "SOLADOR_AGENT_TOKEN=t\nSOLADOR_AGENT_BIND=127.0.0.1\n",
+        )
+        .unwrap();
+        let install = Install {
+            binary: dir.path().join("solador-agent"),
+            env_file: env_file.clone(),
+            service: Service::Systemd {
+                unit: "solador-agent".to_string(),
+            },
+            log: None,
+        };
+
+        // TLS off: no pin, regardless of whether a certificate exists.
+        let off = Serving {
+            token: "t".to_string(),
+            bind: "127.0.0.1".to_string(),
+            port: 7878,
+            tls: false,
+        };
+        assert_eq!(health_pin(&off, &install).unwrap(), None);
+        assert!(!dir.path().join(crate::tls::CERT_FILE).exists());
+
+        // TLS on, no certificate yet: refused, and still nothing written.
+        let on = Serving {
+            tls: true,
+            ..off.clone()
+        };
+        let err = health_pin(&on, &install).unwrap_err();
+        assert!(err.to_string().contains("SOLADOR_AGENT_TLS=1"), "{err}");
+        assert!(!dir.path().join(crate::tls::CERT_FILE).exists());
+
+        // TLS on, certificate present: read back exactly those bytes.
+        let material = crate::tls::load_or_generate(dir.path(), &[]).unwrap();
+        let pin = health_pin(&on, &install).unwrap().unwrap();
+        assert_eq!(pin, material.cert_der);
     }
 }

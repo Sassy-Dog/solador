@@ -492,7 +492,12 @@ the bundle's floor.
 │   │                       #   `crons`, `openclaw` + `settings_*` (src/settings.rs)
 │   └── ui/                 # Frontend: plain HTML/CSS/JS, no bundler
 ├── agent/                  # Per-host metrics agent (workspace member, Linux CI)
-│   ├── src/main.rs         #   the daemon. `src/lib.rs` exists for one module:
+│   ├── src/main.rs         #   the daemon. `src/lib.rs` re-exports the two
+│   │                       #   modules `tests/` needs to reach (a binary
+│   │                       #   crate's own modules cannot be):
+│   ├── src/tls.rs          #   SOLADOR_AGENT_TLS=1 (#447) — the self-signed
+│   │                       #   keypair's whole lifecycle, kept for the host's
+│   │                       #   lifetime; PEM on disk, DER in memory
 │   ├── src/update.rs       #   `solador-agent update`/`rollback` (#393) — the
 │   │                       #   compiled-in trust set, the feed consumer, the
 │   │                       #   stage/swap/restart/verify/restore transaction
@@ -512,7 +517,14 @@ the bundle's floor.
 - **Frontend**: plain HTML/CSS/JS, no bundler
 - **Credential storage**: OS credential store (macOS Keychain, Windows
   Credential Manager)
-- **Transport**: HTTP/JSON over Tailscale, guarded by a bearer token
+- **Transport**: HTTP/JSON over Tailscale, guarded by a bearer token —
+  `SOLADOR_AGENT_TLS=1` (#447) serves HTTPS instead, with a self-signed
+  certificate the agent keeps for the host's lifetime. Two different
+  defaults, deliberately: the AGENT ITSELF is plain HTTP unless that env var
+  is set; `install.sh` is what opts a *fresh* install into TLS (capability
+  permitting — see **Working on the Agent**), which is not the same claim.
+  Tailscale is still what makes either transport safe (relaxing the
+  Tailscale-only bind is #449, not done)
 
 ## Key Implementation Notes
 
@@ -938,6 +950,64 @@ tests build (#417); the crate still has zero dependencies.
   `agent/README.md`'s "Moving the agent to another user" is the ordered
   procedure this exists for: install as the new user, re-pair the token,
   `--uninstall --purge` as the old one.
+- **`SOLADOR_AGENT_TLS=1` serves HTTPS with a self-signed certificate kept
+  for the host's lifetime (#447, part 1 of #445).** `agent/src/tls.rs`
+  generates it ONCE — ECDSA P-256 via `rcgen`, `solador-agent.tls.key`
+  (0600) and `solador-agent.tls.crt`, beside the env file and namespaced the
+  same way `solador-agent.env` itself is (not bare `tls.key`/`tls.crt` in an
+  XDG root every app shares) — and only the code that is
+  about to *serve* it (the agent's own startup) may generate: everything
+  else, `tls-fingerprint` included, is read-only, which is what keeps a
+  `tls-fingerprint` run from racing the service over which bind host lands
+  in the certificate's SAN list. The SAN list is the loopback baseline plus
+  the resolved bind host, which is what lets `install.sh`'s post-install
+  check and `solador-agent update`'s post-restart probe verify with
+  standard chain-and-hostname TLS (trusting exactly this certificate as its
+  own root — never `danger_accept_invalid_certs`) against the *literal*
+  address they dial, not merely loopback. Axum's TLS comes from
+  `axum-server`'s `tls-rustls-no-provider` feature rather than its default
+  `tls-rustls`, specifically to avoid pulling in `aws-lc-rs` (a second
+  crypto backend, and a `cmake`/C build the musl cross-compile does not
+  need): the agent installs `rustls::crypto::ring::default_provider()`
+  itself, the same `ring` the workspace already resolves for `reqwest`.
+  `install.sh` writes `SOLADOR_AGENT_TLS=1` on a fresh install only, and
+  only when the STAGED, verified release actually supports it — decided
+  after staging, not before: `tls-fingerprint` exiting 2 (an unrecognized
+  argument) on those exact bytes means a release published before #447,
+  and a fresh install onto one stays plain HTTP rather than writing a
+  setting the agent would silently ignore; `--enable-tls` against such a
+  release is refused outright, naming the reason. A re-run otherwise
+  respects an existing env file's choice unless given `--enable-tls`, and
+  prints the fingerprint (read via `tls-fingerprint`, never parsed from the
+  DER itself) in its Done block. `solador-agent.tls.key`/`solador-agent.tls.crt`
+  are PEM on disk (DER
+  stays the in-memory form `rcgen`/`rustls`/`reqwest` all want) —
+  `agent/deploy/lib.sh`'s `verify_health` pins them into curl's `cacert`
+  config option, which refuses raw DER outright (exit 77) on every TLS
+  backend this repo's `curl`s use; that existence check runs on every
+  retry attempt, not once up front, since a fresh install's own
+  `systemctl --user restart` can return before the agent has generated the
+  file. **The directory is resolved from the env file, never `$HOME`
+  alone**: `run-agent.sh` and `solador-agent.service` both export
+  `SOLADOR_AGENT_CONFIG_DIR` — the exact directory the env file was
+  written into, keyed the same way the env file's own path is — and
+  `main.rs`'s `tls_config_dir()` reads it before falling back to
+  `$HOME/.config`. `install.sh` never exports the var itself: its own
+  `tls-fingerprint` calls resolve through that same `$HOME/.config`
+  fallback, which is exactly where `install.sh`'s own process writes the
+  env file, so the two agree without it needing to export anything. The
+  fallback otherwise matters only for a manual invocation with no launcher
+  in front of it; launchd's `HOME` need not be the `HOME`
+  `install.sh` ran under. `install.sh` re-runs, `update` and `rollback` never touch the key
+  or certificate; `--uninstall` keeps them like the env file, `--uninstall
+  --purge` removes them too, since purging the host's credentials means a
+  re-pair. **Known limit, until #448 ships: no released Solador build can
+  dial or pin an HTTPS agent yet** — a host running with TLS on reads as
+  unreachable in the cockpit, not as a different scheme; `install.sh`'s
+  Done block and `agent/README.md`'s TLS section both say so and name the
+  `SOLADOR_AGENT_TLS=0` fallback. Pinning the fingerprint on the cockpit
+  side is #448; relaxing the Tailscale-only bind is the last child (#449)
+  — neither is this change.
 - **`solador-agent update` / `rollback` are in the binary (#393), and the
   order of operations is the security design.** `agent/src/update.rs`:
   refuse root; resolve #392's install — reading only — from the unit's

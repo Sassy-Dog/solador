@@ -45,6 +45,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use solador_agent::tls;
 #[cfg(target_os = "macos")]
 use solador_agent::update::Expect;
 use solador_agent::update::{
@@ -570,6 +571,35 @@ async fn serve_health(served: Arc<Mutex<Served>>, bind: &str) -> Option<u16> {
     Some(port)
 }
 
+/// Serve `/v1/health` over HTTPS on loopback for `served`, terminating TLS
+/// with `material` — the real path (#447): `axum_server::tls_rustls`, not a
+/// stub. Returns the port.
+async fn serve_health_tls(
+    served: Arc<Mutex<Served>>,
+    bind: &str,
+    material: &tls::Material,
+) -> Option<u16> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let listener = std::net::TcpListener::bind(format!("{bind}:0")).ok()?;
+    let port = listener.local_addr().unwrap().port();
+    let config = axum_server::tls_rustls::RustlsConfig::from_der(
+        vec![material.cert_der.clone()],
+        material.key_der.clone(),
+    )
+    .await
+    .ok()?;
+    let app = Router::new()
+        .route("/v1/health", get(health))
+        .with_state(served);
+    tokio::spawn(async move {
+        axum_server::from_tcp_rustls(listener, config)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    });
+    Some(port)
+}
+
 /// A temporary install tree: `HOME/.local/bin/solador-agent` (the fake
 /// agent), `HOME/.config/solador-agent.env` (token, bind, port), plus the
 /// fake service and its health endpoint.
@@ -632,6 +662,64 @@ impl Harness {
             lines: Arc::new(Mutex::new(Vec::new())),
             env_file,
         }
+    }
+
+    /// Like [`Harness::new`], but the health endpoint speaks HTTPS against
+    /// the agent's own self-signed certificate (#447): generated once, into
+    /// the same `.config` directory as the env file, exactly the way
+    /// `main.rs`'s `serve_tls` generates it — `bind` as an extra SAN,
+    /// alongside the baseline loopback names — and `SOLADOR_AGENT_TLS=1` is
+    /// written into the env file so `read_serving` picks it up.
+    async fn new_tls(installed: &[u8], bind: &str) -> (Harness, tls::Material) {
+        let home = tempfile::tempdir().unwrap();
+        let bin_dir = home.path().join(".local/bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let binary = bin_dir.join("solador-agent");
+        fs::write(&binary, installed).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let served = Arc::new(Mutex::new(Served::default()));
+
+        let config_dir = home.path().join(".config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let material = tls::load_or_generate(&config_dir, &[bind.to_string()]).unwrap();
+
+        let port = serve_health_tls(served.clone(), bind, &material)
+            .await
+            .unwrap_or_else(|| panic!("cannot listen on {bind}"));
+        let env_file = config_dir.join("solador-agent.env");
+        fs::write(
+            &env_file,
+            format!(
+                "SOLADOR_AGENT_TOKEN={TOKEN}\nSOLADOR_AGENT_BIND={bind}\n\
+                 SOLADOR_AGENT_PORT={port}\nSOLADOR_AGENT_TLS=1\n"
+            ),
+        )
+        .unwrap();
+        let service = Arc::new(FakeService {
+            live: binary.clone(),
+            served: served.clone(),
+            restarts: AtomicUsize::new(0),
+            mode: Mutex::new(RestartMode::Faithful),
+            pid: Mutex::new(None),
+            reachable: Mutex::new(true),
+        });
+        service.start();
+        let harness = Harness {
+            install: Install {
+                binary,
+                env_file: env_file.clone(),
+                service: Service::Systemd {
+                    unit: "solador-agent".into(),
+                },
+                log: None,
+            },
+            _home: home,
+            service,
+            served,
+            lines: Arc::new(Mutex::new(Vec::new())),
+            env_file,
+        };
+        (harness, material)
     }
 
     fn live(&self) -> Vec<u8> {
@@ -778,6 +866,135 @@ async fn a_valid_feed_and_binary_update_stage_swap_restart_and_verify() {
     assert!(
         h.install.sibling(".update.lock").exists(),
         "the lock file is left in place, never unlinked"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TLS (#447): the health probe over a real HTTPS agent
+// ---------------------------------------------------------------------------
+
+/// The same happy path, but the agent's `/v1/health` is real TLS
+/// (`Harness::new_tls`) and the probe must verify it against the pinned
+/// certificate — `health_url` speaks `https://`, `health_client` trusts
+/// exactly that certificate, nothing disabled. The certificate and key on
+/// disk are byte-identical before and after: `update` never touches them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_valid_feed_and_binary_update_over_tls_stage_swap_restart_and_verify() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let (h, _material) = Harness::new_tls(&installed, "127.0.0.1").await;
+    let cert_path = h.env_file.with_file_name(tls::CERT_FILE);
+    let key_path = h.env_file.with_file_name(tls::KEY_FILE);
+    let cert_before = fs::read(&cert_path).unwrap();
+    let key_before = fs::read(&key_path).unwrap();
+    assert!(
+        cert_before.starts_with(b"-----BEGIN CERTIFICATE-----"),
+        "solador-agent.tls.crt is PEM on disk (curl's --cacert refuses raw DER)"
+    );
+
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    let outcome = h
+        .update(&rig.base, trust(&[&key_a(), &key_b()]))
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        UpdateOutcome::Updated {
+            from: OLD.into(),
+            to: NEW.into(),
+            key: key_a().id(),
+        }
+    );
+    assert_eq!(h.live(), candidate, "the candidate is live");
+    assert_eq!(h.service.restarts(), 1);
+    assert_eq!(h.served_version().as_deref(), Some(NEW));
+    assert!(!h.output().contains(TOKEN), "{}", h.output());
+    assert!(h.output().contains("Health OK"), "{}", h.output());
+    assert!(
+        h.output().contains("https://"),
+        "the probe must have dialed https://: {}",
+        h.output()
+    );
+
+    assert_eq!(
+        fs::read(&cert_path).unwrap(),
+        cert_before,
+        "update must never touch the certificate"
+    );
+    assert_eq!(
+        fs::read(&key_path).unwrap(),
+        key_before,
+        "update must never touch the key"
+    );
+}
+
+/// `read_serving` reads `SOLADOR_AGENT_TLS=1` off the SAME env file
+/// `update`/`rollback` already read the token/bind/port from, so there is no
+/// separate opt-in to forget: the harness only had to write one more line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rollback_over_tls_leaves_the_certificate_and_key_untouched() {
+    let old = fake_agent(Some(OLD), "old");
+    let new = fake_agent(Some(NEW), "new");
+    let (h, _material) = Harness::new_tls(&new, "127.0.0.1").await;
+    fs::write(h.install.sibling(".prev"), &old).unwrap();
+    let cert_path = h.env_file.with_file_name(tls::CERT_FILE);
+    let key_path = h.env_file.with_file_name(tls::KEY_FILE);
+    let cert_before = fs::read(&cert_path).unwrap();
+    let key_before = fs::read(&key_path).unwrap();
+
+    let out = h.rollback().await.unwrap();
+    assert_eq!(out.restored_version.as_deref(), Some(OLD));
+    assert_eq!(out.served_version.as_deref(), Some(OLD));
+    assert_eq!(h.live(), old);
+    assert!(!h.output().contains(TOKEN));
+
+    assert_eq!(
+        fs::read(&cert_path).unwrap(),
+        cert_before,
+        "rollback must never touch the certificate"
+    );
+    assert_eq!(
+        fs::read(&key_path).unwrap(),
+        key_before,
+        "rollback must never touch the key"
+    );
+}
+
+/// A pinned health client refuses an agent presenting a DIFFERENT
+/// certificate than the one on disk — the negative control for the happy
+/// path above, driven through the real transaction rather than
+/// `health_client` directly (that lower-level case is
+/// `update::tests::health_client_trusts_only_the_pinned_certificate`).
+/// Nothing here disables verification; the mismatch is refused because the
+/// verifier does its job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_health_endpoint_presenting_a_different_certificate_than_the_pin_is_refused() {
+    let installed = fake_agent(Some(OLD), "old");
+    let (h, _material) = Harness::new_tls(&installed, "127.0.0.1").await;
+
+    // Swap the pinned file for an unrelated certificate — the on-disk pin
+    // now disagrees with what the loopback server is actually presenting.
+    // Copying the OTHER generated solador-agent.tls.crt verbatim (rather
+    // than writing `other.cert_der` directly) keeps this on-disk file in
+    // the same PEM format `load_or_generate` always writes.
+    let other_dir = tempfile::tempdir().unwrap();
+    tls::load_or_generate(other_dir.path(), &[]).unwrap();
+    fs::copy(
+        other_dir.path().join(tls::CERT_FILE),
+        h.env_file.with_file_name(tls::CERT_FILE),
+    )
+    .unwrap();
+
+    let rig = release_for(NEW, &fake_agent(Some(NEW), "new"), &key_a()).await;
+    let err = h
+        .update(&rig.base, trust(&[&key_a()]))
+        .await
+        .expect_err("a certificate mismatch must not verify");
+    // The same broken pin is used to verify the recovery, so that fails
+    // too — this is "refused", not "quietly trusted a different cert".
+    assert!(
+        matches!(err, UpdateError::UpdateFailedRecoveryFailed { .. }),
+        "{err}"
     );
 }
 

@@ -57,7 +57,12 @@ impl Host {
     /// This host's agent base URL, e.g. `http://100.100.100.100:7878`.
     ///
     /// Plain HTTP is correct here: the transport is Tailscale, which is what
-    /// carries the encryption (see `agent/README.md`).
+    /// carries the encryption (see `agent/README.md`). Unconditional on
+    /// purpose, still: the agent can now opt into serving HTTPS instead
+    /// (`SOLADOR_AGENT_TLS=1`, #447), but nothing on this side knows how to
+    /// dial that or pin its self-signed certificate yet — that's the sibling
+    /// child, #448. Until it lands, a host an operator has opted into TLS
+    /// reads as unreachable here, not as a different scheme.
     #[must_use]
     pub fn base_url(&self) -> String {
         format!("http://{}:{}", self.address, self.port)

@@ -18,6 +18,18 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=@SOLADOR_AGENT_BIN@
+# Where SOLADOR_AGENT_TLS=1 finds/creates solador-agent.tls.key/
+# solador-agent.tls.crt (#447): the SAME directory EnvironmentFile= reads
+# the env file out of, both keyed off %h (a systemd specifier the manager
+# resolves from the target user's own account, never this process's
+# inherited HOME) so the two can never point at different directories the
+# way `$HOME` alone could on a host where a process's HOME does not match
+# its account's. main.rs's tls_config_dir() reads this before falling back
+# to $HOME/.config on its own. Never set SOLADOR_AGENT_CONFIG_DIR in the
+# env file itself: EnvironmentFile= would then override this line, and the
+# health checks would pin a different directory from the one the agent
+# actually serves out of.
+Environment=SOLADOR_AGENT_CONFIG_DIR=%h/.config
 EnvironmentFile=%h/.config/solador-agent.env
 Restart=always
 RestartSec=3

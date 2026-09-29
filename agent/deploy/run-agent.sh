@@ -245,7 +245,7 @@ while IFS= read -r line || [ -n "$line" ]; do
         '' | '#'*)
             ;;
         SOLADOR_AGENT_TOKEN=* | SOLADOR_AGENT_BIND=* | SOLADOR_AGENT_PORT=* | \
-        SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)
+        SOLADOR_AGENT_TLS=* | SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)
             key="${line%%=*}"
             value="${line#*=}"
             # Trim surrounding whitespace.
@@ -263,6 +263,21 @@ while IFS= read -r line || [ -n "$line" ]; do
             ;;
     esac
 done < "$env_file"
+
+# SOLADOR_AGENT_CONFIG_DIR (#447): where SOLADOR_AGENT_TLS=1 finds or
+# creates solador-agent.tls.key/solador-agent.tls.crt — the same directory
+# $env_file (an argument this launcher was already handed) lives in.
+# Exported here, from that argument, rather than read from a line INSIDE
+# the file above: main.rs must not derive this directory from $HOME on its
+# own, because launchd's HOME (the user record's) need not be the HOME
+# install.sh ran under — see this file's own header comment — the same gap
+# lib.sh's verify_health and update.rs's health_pin never had, since both
+# already derive it from the env file's actual path rather than $HOME. A
+# second named exception in lib_test.sh's launcher/agent key-parity check,
+# beside SOLADOR_AGENT_LAUNCHD_LABEL: it carries no `KEY=*` case pattern
+# above, because it is never meant to be set by a line in the file itself.
+SOLADOR_AGENT_CONFIG_DIR="$(dirname "$env_file")"
+export SOLADOR_AGENT_CONFIG_DIR
 
 # The container CLIs that no-admin installs put under the home directory —
 # Docker Desktop (~/.docker/bin), OrbStack (~/.orbstack/bin), Rancher Desktop
