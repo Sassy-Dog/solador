@@ -1458,10 +1458,10 @@ test_verify_health() {
     mkdir -p "$tls_stub_dir"
     ln -sf "$STUBS/curl" "$tls_stub_dir/curl"
     : > "$STUB_CURL_ARGV"
-    rm -f "$tls_dir/tls.crt"
+    rm -f "$tls_dir/solador-agent.tls.crt"
     (
         sleep 0.3
-        printf 'FAKE-PEM-FOR-THIS-SHELL-LEVEL-TEST' > "$tls_dir/tls.crt"
+        printf 'FAKE-PEM-FOR-THIS-SHELL-LEVEL-TEST' > "$tls_dir/solador-agent.tls.crt"
     ) &
     out="$(
         PATH="$tls_stub_dir:$PATH"
@@ -1474,7 +1474,7 @@ test_verify_health() {
     assert_file_has "once found, the probe dials https://" "$STUB_CURL_ARGV" \
         "https://127.0.0.1:7878/v1/health"
     assert_file_has "once found, the probe pins via cacert" "$STUB_CURL_ARGV" \
-        "[config] cacert = \"$tls_dir/tls.crt\""
+        "[config] cacert = \"$tls_dir/solador-agent.tls.crt\""
 
     rm -rf "$tls_dir"
     unset STUB_CURL_BODY STUB_CURL_ARGV
@@ -3571,13 +3571,13 @@ RUST_LOG=debug" \
 # The fixture "agent" is a shell stub (make_fixture) with no real TLS server
 # behind it, and the stub systemctl/launchctl never actually run it as a
 # live process — so nothing in this harness generates a real certificate.
-# Every scenario below pre-seeds $home/.config/tls.crt itself, standing in
+# Every scenario below pre-seeds $home/.config/solador-agent.tls.crt itself, standing in
 # for what the real Rust agent would have written on its own first start,
 # before the health probe (also stubbed — STUB_CURL_BODY, not a real TLS
 # handshake) needs it to exist. What IS real and asserted here is
 # install.sh's own logic: which value SOLADOR_AGENT_TLS gets and why
 # (TLS_SOURCE, in the "==> TLS:" line), that the probe switches to https://
-# and to `cacert = "…tls.crt"` on curl's stdin config, and that the Done
+# and to `cacert = "…solador-agent.tls.crt"` on curl's stdin config, and that the Done
 # block reads the fingerprint back through `tls-fingerprint` rather than
 # generating or parsing anything itself.
 test_install_tls() {
@@ -3601,7 +3601,7 @@ test_install_tls() {
 
     # ---- a fresh install defaults SOLADOR_AGENT_TLS=1: https://, cacert, and the fingerprint in the Done block ----
     mkdir -p "$home/.config"
-    printf 'FAKE-DER-BYTES' > "$home/.config/tls.crt"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
     reset_argv_logs
     INSTALL_TLS=unset INSTALL_STDIN="tok-tls-fresh
 " run_install "$home"
@@ -3611,7 +3611,7 @@ test_install_tls() {
     assert_output_has "the run reports TLS on, sourced from a fresh install" "$out" "TLS: on (fresh install)"
     assert_file_has "the health probe dials https://" "$STUB_CURL_ARGV" "https://100.64.0.9:7878/v1/health"
     assert_file_has "the health probe pins the certificate via cacert" "$STUB_CURL_ARGV" \
-        "[config] cacert = \"$home/.config/tls.crt\""
+        "[config] cacert = \"$home/.config/solador-agent.tls.crt\""
     assert_output_has "the Done block prints the fingerprint" "$out" "$FIXTURE_TLS_FINGERPRINT"
     assert_output_has "the Done block warns against deleting the key/cert" "$out" "Never delete"
     [ -x "$bin" ] || fail "the binary is installed before the fingerprint is read" "$out"
@@ -3643,7 +3643,7 @@ test_install_tls() {
     assert_output_has "the re-run says how to opt in" "$out" "re-run with --enable-tls"
 
     # ---- only --enable-tls turns an existing off install on ----
-    printf 'FAKE-DER-BYTES' > "$home/.config/tls.crt"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
     reset_argv_logs
     INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home" --enable-tls
     out="$(cat "$INSTALL_OUT")"
@@ -4824,21 +4824,39 @@ STUB
         skip "the launcher rotates a log over the cap" "no dd"
     fi
 
+    # SOLADOR_AGENT_CONFIG_DIR (#447): where SOLADOR_AGENT_TLS=1 finds or
+    # creates tls.key/tls.crt. The launcher exports it derived from $env_file
+    # itself (dirname), never read from a line inside the file — so
+    # main.rs's tls_config_dir() need not fall back to $HOME, which can
+    # differ from install.sh's HOME under launchd (see run-agent.sh's own
+    # header comment).
+    cat > "$probe" <<'STUB'
+#!/bin/sh
+printf 'CONFIG_DIR=%s\n' "${SOLADOR_AGENT_CONFIG_DIR:-<unset>}"
+STUB
+    run_launcher "$probe" "$env_file" "$log"
+    assert_eq "the launcher exports SOLADOR_AGENT_CONFIG_DIR as the env file's own directory" \
+        "CONFIG_DIR=$(dirname "$env_file")" "$(cat "$INSTALL_OUT")"
+
     # The launcher's allow-list is a copy of the keys the agent reads. Bind
     # the two: every SOLADOR_AGENT_* the Rust source names must be in the
     # launcher, or a key added to the agent reaches Linux (EnvironmentFile=
     # passes everything) and is silently dropped on macOS.
     #
-    # One named exception, and it is a positive list so the next key still
-    # trips this: SOLADOR_AGENT_LAUNCHD_LABEL is read by `solador-agent
+    # Two named exceptions, and it is a positive list so the next key still
+    # trips this. SOLADOR_AGENT_LAUNCHD_LABEL is read by `solador-agent
     # update`/`rollback` (#393) from the MAINTENANCE command's own
     # environment — the same test seam install.sh honours, so a throwaway
     # LaunchAgent can be updated beside a real one — and never from the env
-    # file. The metrics service does not read it, so the launcher has
-    # nothing to export.
+    # file. SOLADOR_AGENT_CONFIG_DIR (#447, above) is exported by the
+    # launcher itself, derived from $env_file's own path — never read from a
+    # line IN the file — so it carries no `KEY=*` case pattern for this grep
+    # to find; checked separately just above instead. The metrics service
+    # does not read either from a line of the file, so the launcher's
+    # case-statement has nothing to export for them.
     local agent_keys launcher_keys
     agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u \
-        | grep -vx 'SOLADOR_AGENT_LAUNCHD_LABEL' | tr '\n' ' ')"
+        | grep -vx -e 'SOLADOR_AGENT_LAUNCHD_LABEL' -e 'SOLADOR_AGENT_CONFIG_DIR' | tr '\n' ' ')"
     launcher_keys="$(grep -oE 'SOLADOR_AGENT_[A-Z_]+=\*' "$launcher" | sed 's/=\*$//' | sort -u | tr '\n' ' ')"
     assert_eq "the launcher allow-lists every SOLADOR_AGENT_* key the agent reads" \
         "$agent_keys" "$launcher_keys"
@@ -5720,8 +5738,8 @@ test_uninstall_linux() {
     unit="$home/.config/systemd/user/solador-agent.service"
     update_unit="$home/.config/systemd/user/solador-agent-update.service"
     update_timer="$home/.config/systemd/user/solador-agent-update.timer"
-    tls_key="$home/.config/tls.key"
-    tls_cert="$home/.config/tls.crt"
+    tls_key="$home/.config/solador-agent.tls.key"
+    tls_cert="$home/.config/solador-agent.tls.crt"
     bin="$home/.local/bin/solador-agent"
     guard="$home/.local/bin/solador-agent-update-guard"
 
@@ -6250,6 +6268,7 @@ test_unowned_service_binary_survives_set_e() {
 
 test_uninstall_macos() {
     local home="$TMP/home-uninstall-macos" env_file plist update_plist launcher bin out
+    local tls_key tls_cert
     if [ "$HAVE_MINISIGN" != true ]; then
         skip_needs_minisign "install.sh --uninstall (macOS)"
         return
@@ -6267,6 +6286,8 @@ test_uninstall_macos() {
     update_plist="$home/Library/LaunchAgents/app.solador.agent.update.plist"
     launcher="$home/.local/bin/solador-agent-launchd"
     bin="$home/.local/bin/solador-agent"
+    tls_key="$home/.config/solador-agent.tls.key"
+    tls_cert="$home/.config/solador-agent.tls.crt"
 
     reset_argv_logs
     INSTALL_STDIN="mac-uninstall-tok-MUST-NOT-BE-PRINTED
@@ -6279,6 +6300,13 @@ test_uninstall_macos() {
     # anything this run actually removed.
     cp "$bin" "$bin.prev"
     : > "$bin.rollback-displaced"
+    # A TLS keypair (#447), seeded by hand for the same reason as the Linux
+    # variant: this install ran with TLS off (the harness default), so
+    # nothing here would create one on its own, and "survives without
+    # --purge, gone with it" needs a real file to make either half of that
+    # claim about.
+    printf 'FAKE-KEY-BYTES' > "$tls_key"
+    printf 'FAKE-CERT-BYTES' > "$tls_cert"
 
     # ---- the real uninstall: both loaded services must be bootout, both plists removed ----
     reset_argv_logs
@@ -6302,6 +6330,15 @@ test_uninstall_macos() {
     [ -e "$env_file" ] && pass "macOS: the env file survives without --purge" \
         || fail "macOS: the env file survives without --purge" "$env_file is gone"
     assert_output_has "macOS: the kept env file is named in the output" "$out" "$env_file"
+    # The TLS key/certificate (#447) follow the same rule as the env file:
+    # kept without --purge, named in the output — the macOS analogue of the
+    # Linux variant's own assertion.
+    if [ -e "$tls_key" ] && [ -e "$tls_cert" ]; then
+        pass "macOS: the TLS key and certificate survive without --purge"
+    else
+        fail "macOS: the TLS key and certificate survive without --purge" "$tls_key or $tls_cert is gone"
+    fi
+    assert_output_has "macOS: the kept TLS key/certificate are named in the output" "$out" "$tls_key, $tls_cert"
     if systemctl_mutated; then
         fail "macOS: install.sh --uninstall never calls systemctl" "it did"
     else
@@ -6325,6 +6362,14 @@ test_uninstall_macos() {
     STUB_LAUNCHCTL_LOADED_EXIT=113 run_install "$home" --uninstall --purge
     [ -e "$env_file" ] && fail "macOS: --purge removes the env file" "$env_file still exists" \
         || pass "macOS: --purge removes the env file"
+    # --purge removes the TLS key/certificate too (#447), the same as the
+    # Linux variant: re-pairing means a fresh certificate on the agent's
+    # next start.
+    if [ -e "$tls_key" ] || [ -e "$tls_cert" ]; then
+        fail "macOS: --purge removes the TLS key and certificate" "$tls_key or $tls_cert still exists"
+    else
+        pass "macOS: --purge removes the TLS key and certificate"
+    fi
 
     # ---- a fresh install, for the two manager-related cases below ----
     reset_argv_logs

@@ -511,8 +511,8 @@ verify_health() {
     fi
 
     # SOLADOR_AGENT_TLS=1 (#447): verify against the certificate beside the
-    # env file — tls.crt, the same directory `agent/src/tls.rs` writes it
-    # into — never with verification disabled. `cacert` (below, in the SAME
+    # env file — solador-agent.tls.crt, the same directory `agent/src/tls.rs`
+    # writes it into — never with verification disabled. `cacert` (below, in the SAME
     # -K config curl already reads the Authorization header from — a bash
     # array of extra argv, the more obvious way to make this conditional,
     # is a real portability trap: `"${arr[@]}"` on an EMPTY array throws
@@ -525,13 +525,13 @@ verify_health() {
     # The existence check happens INSIDE the retry loop below, not here:
     # on a fresh install this function is often called moments after
     # `systemctl --user restart` / `launchctl kickstart`, and the agent
-    # generates tls.crt during its own startup — after reading settings and
-    # spawning the sampler, on Linux's Type=simple unit `restart` returns as
-    # soon as the process forks, before any of that has run. Checking once,
-    # here, would race that startup and report "never started with TLS on"
-    # about a service that is about to be fine.
+    # generates solador-agent.tls.crt during its own startup — after reading
+    # settings and spawning the sampler, on Linux's Type=simple unit `restart`
+    # returns as soon as the process forks, before any of that has run.
+    # Checking once, here, would race that startup and report "never started
+    # with TLS on" about a service that is about to be fine.
     local cert_file=""
-    cert_file="$(dirname "$env_file")/tls.crt"
+    cert_file="$(dirname "$env_file")/solador-agent.tls.crt"
 
     if [ -n "$expected_version" ]; then
         echo "==> Verifying $url reports version $expected_version ..."

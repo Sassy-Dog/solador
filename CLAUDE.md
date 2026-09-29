@@ -952,8 +952,10 @@ tests build (#417); the crate still has zero dependencies.
   `--uninstall --purge` as the old one.
 - **`SOLADOR_AGENT_TLS=1` serves HTTPS with a self-signed certificate kept
   for the host's lifetime (#447, part 1 of #445).** `agent/src/tls.rs`
-  generates it ONCE — ECDSA P-256 via `rcgen`, `~/.config/tls.key` (0600)
-  and `~/.config/tls.crt`, beside the env file — and only the code that is
+  generates it ONCE — ECDSA P-256 via `rcgen`, `solador-agent.tls.key`
+  (0600) and `solador-agent.tls.crt`, beside the env file and namespaced the
+  same way `solador-agent.env` itself is (not bare `tls.key`/`tls.crt` in an
+  XDG root every app shares) — and only the code that is
   about to *serve* it (the agent's own startup) may generate: everything
   else, `tls-fingerprint` included, is read-only, which is what keeps a
   `tls-fingerprint` run from racing the service over which bind host lands
@@ -977,14 +979,22 @@ tests build (#417); the crate still has zero dependencies.
   release is refused outright, naming the reason. A re-run otherwise
   respects an existing env file's choice unless given `--enable-tls`, and
   prints the fingerprint (read via `tls-fingerprint`, never parsed from the
-  DER itself) in its Done block. `tls.key`/`tls.crt` are PEM on disk (DER
+  DER itself) in its Done block. `solador-agent.tls.key`/`solador-agent.tls.crt`
+  are PEM on disk (DER
   stays the in-memory form `rcgen`/`rustls`/`reqwest` all want) —
   `agent/deploy/lib.sh`'s `verify_health` pins them into curl's `cacert`
   config option, which refuses raw DER outright (exit 77) on every TLS
   backend this repo's `curl`s use; that existence check runs on every
   retry attempt, not once up front, since a fresh install's own
   `systemctl --user restart` can return before the agent has generated the
-  file. `install.sh` re-runs, `update` and `rollback` never touch the key
+  file. **The directory is resolved from the env file, never `$HOME`
+  alone**: `install.sh`, `run-agent.sh` and `solador-agent.service` all
+  export `SOLADOR_AGENT_CONFIG_DIR` — the exact directory the env file was
+  written into, keyed the same way the env file's own path is — and
+  `main.rs`'s `tls_config_dir()` reads it before falling back to
+  `$HOME/.config`, which matters only for a manual invocation with no
+  launcher in front of it; launchd's `HOME` need not be the `HOME`
+  `install.sh` ran under. `install.sh` re-runs, `update` and `rollback` never touch the key
   or certificate; `--uninstall` keeps them like the env file, `--uninstall
   --purge` removes them too, since purging the host's credentials means a
   re-pair. **Known limit, until #448 ships: no released Solador build can

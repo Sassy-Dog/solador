@@ -855,7 +855,12 @@ or acquires a helper.
 **Both services render the actual paths.** The systemd unit is a template
 whose `ExecStart` is rendered with the chosen absolute path (double-quoted
 when it needs to be), and `EnvironmentFile=%h/.config/solador-agent.env` is
-unchanged. On macOS the service is a **LaunchAgent** —
+unchanged; a static `Environment=SOLADOR_AGENT_CONFIG_DIR=%h/.config` line
+beside it (#447) is what lets `SOLADOR_AGENT_TLS=1` find or create
+`solador-agent.tls.key`/`solador-agent.tls.crt` in the SAME directory
+`EnvironmentFile=` reads out of, both keyed off the one systemd specifier —
+never off this process's own inherited `HOME`. On macOS the service is a
+**LaunchAgent** —
 `~/Library/LaunchAgents/app.solador.agent.plist`, label `app.solador.agent`,
 domain `gui/<uid>`, running as the invoking user, never a LaunchDaemon —
 whose `ProgramArguments` is a launcher (`~/.local/bin/solador-agent-launchd`,
@@ -863,7 +868,11 @@ a copy of `deploy/run-agent.sh`) plus the binary and env-file paths. The
 launcher exists because launchd has no `EnvironmentFile=` and its
 `EnvironmentVariables` key would put the token into the plist; it reads the
 same mode-0600 env file line by line at every start, exports the documented
-keys only, never `source`s the file, and `exec`s the agent. So token rotation
+keys only, never `source`s the file, and `exec`s the agent. It also exports
+`SOLADOR_AGENT_CONFIG_DIR` as that env file's own directory (#447) — derived
+from the path argument it was already handed, not from `$HOME` — because
+launchd's `HOME` (the target user record's) need not be the `HOME`
+`install.sh` ran under. So token rotation
 is "edit the file, restart the service" on both platforms, and the token
 appears in neither the plist nor the log. The plist does set `PATH`
 (`/opt/homebrew/bin:/usr/local/bin:/opt/podman/bin` ahead of the system
@@ -891,8 +900,8 @@ now. See "Open items".
 user (#439).** `install.sh --uninstall` — `--uninstall --purge` also removes
 the env file, the pre-rename `devcanopy-agent.env` beside it (since
 install copied its token out of that file and never deleted it), and the
-TLS keypair (`tls.key`/`tls.crt`, #447), on the same reasoning: purging
-credentials means a re-pair. Its
+TLS keypair (`solador-agent.tls.key`/`solador-agent.tls.crt`, #447), on the
+same reasoning: purging credentials means a re-pair. Its
 refusals run in this order, each untouched: **root** first, for the same
 reason `--enable-timer` refuses it; then an **unsupported platform** (this
 script supports Linux/systemd and macOS/launchd, named as such); then the
@@ -1032,8 +1041,9 @@ changed, clearing any "failed" state a disable/stop that reported an error
 left on one of them), and removes the binary with its
 `.prev`/`.new`/`.update.lock`/`.rollback-displaced` siblings, the macOS
 launcher, the Linux guard, and the update stamp. The env file — the file
-that holds the bearer token — and the TLS keypair (`tls.key`/`tls.crt`,
-#447, beside it) are both **kept** and named in the output unless
+that holds the bearer token — and the TLS keypair
+(`solador-agent.tls.key`/`solador-agent.tls.crt`, #447, beside it) are both
+**kept** and named in the output unless
 `--purge` says otherwise, for the same reason: a re-install as this user
 reuses them, so an operator's existing cockpit pairing (and, once #448
 ships, an existing TLS pin) survives. `--purge` alone is refused (it modifies

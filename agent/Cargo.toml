@@ -111,12 +111,14 @@ rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 # the same "ring" reqwest already resolves, never a second backend.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # The TLS server itself: `axum_server::bind_rustls` around the same `Router`
-# the plain-HTTP path serves. Pinned to an exact patch (0.7.3, not "0.7") and
-# on the "tls-rustls-no-provider" feature specifically — NOT the crate's own
-# default "tls-rustls", which pulls `rustls/aws-lc-rs` unconditionally (the
-# same C/cmake backend `rcgen` above is kept off); "tls-rustls-no-provider"
-# was added between 0.7.0 and 0.7.3, so the exact version is load-bearing,
-# not habit.
+# the plain-HTTP path serves. The floor is 0.7.3, not "0.7" (a bare "0.7"
+# would let cargo resolve down to 0.7.0) — a MINIMUM, via cargo's ordinary
+# caret requirement (a later 0.7.x is still allowed and wanted), not an
+# exact pin — and on the "tls-rustls-no-provider" feature specifically —
+# NOT the crate's own default "tls-rustls", which pulls `rustls/aws-lc-rs`
+# unconditionally (the same C/cmake backend `rcgen` above is kept off);
+# "tls-rustls-no-provider" was added between 0.7.0 and 0.7.3, so the floor
+# is load-bearing, not habit.
 axum-server = { version = "0.7.3", default-features = false, features = ["tls-rustls-no-provider"] }
 
 [target.'cfg(unix)'.dependencies]

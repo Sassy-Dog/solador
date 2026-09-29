@@ -254,17 +254,50 @@ async fn main() {
     }
 }
 
-/// `~/.config`, beside `~/.config/solador-agent.env` — the agent's config
-/// directory (#447), where `tls.key` / `tls.crt` live. The same convention
-/// `agent/deploy/install.sh` uses for the env file itself.
+/// Where `tls::KEY_FILE` / `tls::CERT_FILE` live: beside
+/// `solador-agent.env`, the agent's config directory (#447).
+///
+/// Resolution order:
+/// 1. `SOLADOR_AGENT_CONFIG_DIR`, when set — the directory the env file
+///    that configured THIS process actually lives in. `run-agent.sh`
+///    (macOS) and `solador-agent.service` (Linux, `%h/.config` — a systemd
+///    specifier the manager resolves from the target user's own account,
+///    not this process's `HOME`) both export it, derived the same way
+///    `agent/deploy/lib.sh` and `update.rs` already do:
+///    `dirname(<the env file's path>)`.
+/// 2. `$HOME/.config`, when `SOLADOR_AGENT_CONFIG_DIR` is unset — a manual
+///    `solador-agent` invocation with no launcher in front of it (a
+///    from-source Linux host, a developer running it directly), where this
+///    process's own `HOME` IS the installer's.
+///
+/// The two can disagree: launchd's `HOME` (the target user record's) need
+/// not be the `HOME` `install.sh` ran under (see `run-agent.sh`'s own
+/// header comment), so deriving this from `$HOME` alone — as an earlier
+/// revision did — could point the running service at a directory that
+/// holds no env file at all while `lib.sh`'s `verify_health` and
+/// `update.rs`'s `health_pin`, which both derive it from the actual env
+/// file's path, keep looking in the right place.
 fn tls_config_dir() -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = std::env::var_os("SOLADOR_AGENT_CONFIG_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        return if dir.is_absolute() {
+            Ok(dir)
+        } else {
+            Err(format!(
+                "SOLADOR_AGENT_CONFIG_DIR={} is not an absolute path; SOLADOR_AGENT_TLS=1 needs \
+                 one to find or create the certificate beside the env file",
+                dir.display()
+            ))
+        };
+    }
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .filter(|h| h.is_absolute())
         .map(|h| h.join(".config"))
         .ok_or_else(|| {
-            "HOME is not set to an absolute path; SOLADOR_AGENT_TLS=1 needs it to find or \
-             create the certificate beside ~/.config/solador-agent.env"
+            "neither SOLADOR_AGENT_CONFIG_DIR nor HOME (as an absolute path) is set; \
+             SOLADOR_AGENT_TLS=1 needs one of them to find or create the certificate beside \
+             the env file"
                 .to_string()
         })
 }
@@ -318,7 +351,8 @@ async fn serve_tls(app: axum::Router, addr: &str, bind_host: &str, hostname: &st
         Ok(c) => c,
         Err(e) => {
             eprintln!(
-                "FATAL: could not build a TLS server config from {}: {e}",
+                "FATAL: could not build a TLS server config from {} / {}: {e}",
+                dir.join(tls::KEY_FILE).display(),
                 dir.join(tls::CERT_FILE).display()
             );
             std::process::exit(1);

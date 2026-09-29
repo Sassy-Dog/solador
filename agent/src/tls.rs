@@ -5,14 +5,16 @@
 //! it, `main.rs` terminates TLS itself with a self-signed ECDSA P-256
 //! certificate instead of serving plain HTTP. The keypair lives beside
 //! `~/.config/solador-agent.env` — the same directory
-//! `agent/deploy/install.sh` already writes that file into — as `tls.key`
-//! (mode 0600) and `tls.crt`, generated **once** by [`load_or_generate`] and
-//! never touched again by anything else in this binary: not `solador-agent
-//! update`, not `rollback`, not a re-run of `install.sh`. A new certificate
-//! would silently break every cockpit that has pinned the old one's
-//! fingerprint (the sibling child, #448), so a half-present pair (one file
-//! without the other — a crash mid-write, or manual tampering) is refused
-//! rather than "repaired" by regenerating.
+//! `agent/deploy/install.sh` already writes that file into — as
+//! `solador-agent.tls.key` (mode 0600) and `solador-agent.tls.crt`,
+//! namespaced the same way the env file itself is rather than as bare
+//! `tls.key`/`tls.crt` in an XDG root every app shares. Generated **once**
+//! by [`load_or_generate`] and never touched again by anything else in this
+//! binary: not `solador-agent update`, not `rollback`, not a re-run of
+//! `install.sh`. A new certificate would silently break every cockpit that
+//! has pinned the old one's fingerprint (the sibling child, #448), so a
+//! half-present pair (one file without the other — a crash mid-write, or
+//! manual tampering) is refused rather than "repaired" by regenerating.
 //!
 //! Only the code that will actually *serve* the certificate — the running
 //! agent's own startup — ever generates it, because only that call site knows
@@ -49,12 +51,15 @@ use sha2::{Digest, Sha256};
 /// The private key, in the agent's config directory, mode 0600. PEM on disk,
 /// PKCS#8 inside — what `rcgen::KeyPair::serialize_der()` produces and what
 /// `rustls_pki_types::PrivateKeyDer::try_from` recognizes without help, once
-/// [`from_pem`] has decoded it back to DER.
-pub const KEY_FILE: &str = "tls.key";
+/// [`from_pem`] has decoded it back to DER. Namespaced beside the env file
+/// (`solador-agent.tls.key`, not a bare `tls.key` in an XDG root every app
+/// shares) — the same convention `agent/deploy/install.sh` already uses for
+/// `solador-agent.env` itself.
+pub const KEY_FILE: &str = "solador-agent.tls.key";
 
 /// The self-signed certificate beside [`KEY_FILE`], PEM-encoded X.509 on
 /// disk. Not secret — `tls-fingerprint` exists to hand its hash out.
-pub const CERT_FILE: &str = "tls.crt";
+pub const CERT_FILE: &str = "solador-agent.tls.crt";
 
 const CERT_PEM_LABEL: &str = "CERTIFICATE";
 const KEY_PEM_LABEL: &str = "PRIVATE KEY";
@@ -111,7 +116,7 @@ pub fn fingerprint_hex(cert_der: &[u8]) -> String {
         .join(":")
 }
 
-/// Load `tls.key` / `tls.crt` from `dir`, generating a self-signed ECDSA
+/// Load [`KEY_FILE`] / [`CERT_FILE`] from `dir`, generating a self-signed ECDSA
 /// P-256 keypair **once** if both are absent. Never regenerates while a key
 /// exists. `extra_sans` are additional Subject Alternative Names beyond the
 /// baseline `localhost` / `127.0.0.1` / `::1` — the caller's resolved bind
@@ -147,7 +152,7 @@ pub fn load_or_generate(dir: &Path, extra_sans: &[String]) -> Result<Material, T
     }
 }
 
-/// Read `tls.crt` only — never creates anything. What `tls-fingerprint` and
+/// Read [`CERT_FILE`] only — never creates anything. What `tls-fingerprint` and
 /// the update/rollback health probes use: they must never be the reason a
 /// certificate exists, or the SAN list the *serving* agent chose (see
 /// [`load_or_generate`]) could be for a different bind than the one this

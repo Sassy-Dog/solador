@@ -69,8 +69,9 @@
 # the Linux guard, and the update stamp. The env file (the token) is KEPT and
 # named in the output unless --purge is also given, which also removes the
 # pre-rename devcanopy-agent.env (install copied its token out of that file
-# and never deleted it). The TLS key/certificate (#447, tls.key / tls.crt
-# beside the env file) follow the SAME rule: KEPT — a re-install as this
+# and never deleted it). The TLS key/certificate (#447, solador-agent.tls.key
+# / solador-agent.tls.crt beside the env file, namespaced the same way the
+# env file itself is) follow the SAME rule: KEPT — a re-install as this
 # user reuses them, so every cockpit that has pinned the fingerprint keeps
 # working — unless --purge is given, which removes them too (re-pairing is
 # then a fresh certificate on the next start). A binary an existing unit/plist names OUTSIDE
@@ -163,11 +164,13 @@ SIGNING_PUBKEY="$SCRIPT_DIR/../release-signing-key.pub"
 ENV_FILE="$HOME/.config/${BIN_NAME}.env"
 # The self-signed keypair SOLADOR_AGENT_TLS=1 serves (#447), generated once
 # by the agent itself on its first start — never by this script — and kept
-# for the host's lifetime beside the env file. Named here only so
+# for the host's lifetime beside the env file. Namespaced the same way the
+# env file itself is (${BIN_NAME}.tls.key / ${BIN_NAME}.tls.crt), not bare
+# tls.key/tls.crt in an XDG root every app shares. Named here only so
 # --uninstall can KEEP them (like the env file) or, with --purge, remove
 # them; this script never reads or writes their contents.
-TLS_KEY_FILE="$HOME/.config/tls.key"
-TLS_CERT_FILE="$HOME/.config/tls.crt"
+TLS_KEY_FILE="$HOME/.config/${BIN_NAME}.tls.key"
+TLS_CERT_FILE="$HOME/.config/${BIN_NAME}.tls.crt"
 # User-owned, no sudo — the owner decision recorded on #392. /opt is no longer
 # a destination; an existing /opt install is detected below and migrated only
 # on request.

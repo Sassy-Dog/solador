@@ -145,7 +145,7 @@ rootless, so it works as a normal user.
 | `SOLADOR_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
 | `SOLADOR_AGENT_BIND`   | no       | tailnet IP | Host/interface to bind. Defaults to the detected Tailscale IP (`100.x`), so the agent only listens on the tailnet. Set to `0.0.0.0` (or `::`) to bind all interfaces — opt-in only, behind a firewall. If unset and no Tailscale IP can be detected, the server refuses to start rather than exposing the public NIC. |
 | `SOLADOR_AGENT_PORT`   | no       | `7878`  | TCP port. Bound on `SOLADOR_AGENT_BIND`. |
-| `SOLADOR_AGENT_TLS`    | no       | unset (HTTP) | `1` serves HTTPS on the same port, with a self-signed certificate kept for the host's lifetime. See **TLS**, below. Any other value (or absent) is plain HTTP. |
+| `SOLADOR_AGENT_TLS`    | no       | unset (HTTP) | `1` serves HTTPS on the same port, with a self-signed certificate kept for the host's lifetime. **Turn it on with `install.sh --enable-tls`, not by hand-editing this line**: an *older*, pre-#447 installed agent's own `update` command does not know this key exists, so hand-setting it, then updating, swaps in a new HTTPS-only binary but still probes it with `http://` — the health check fails, `.prev` is restored, and `update` exits 5. See **TLS**, below. Any other value (or absent) is plain HTTP. |
 | `SOLADOR_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
 | `RUST_LOG`               | no       | `info`  | Log filter (tracing).            |
 
@@ -235,14 +235,26 @@ service (or pass `SOLADOR_AGENT_TLS=0` to `install.sh` itself, which — like
 
 **The certificate is self-signed, ECDSA P-256, and generated exactly once.**
 On its first TLS-enabled start the agent generates a keypair
-([`rcgen`](https://crates.io/crates/rcgen)) and writes it beside the env file
-— `~/.config/tls.key` (mode `0600`) and `~/.config/tls.crt` — then keeps it
-for the host's lifetime: every later start loads the same files rather than
+([`rcgen`](https://crates.io/crates/rcgen)) and writes it beside the env
+file — `solador-agent.tls.key` (mode `0600`) and `solador-agent.tls.crt`,
+namespaced the same way `solador-agent.env` itself is, not bare
+`tls.key`/`tls.crt` in an XDG root every app shares — then keeps it for the
+host's lifetime: every later start loads the same files rather than
 regenerating. **Never delete them unless you mean to re-pair** — a new
 certificate has a new fingerprint, and every cockpit that pinned the old one
 (the sibling child, #448) stops trusting this host until it is re-paired.
 The key is never logged anywhere; the certificate is not secret (its whole
 purpose is to be handed out, as a fingerprint, for pinning).
+
+**The directory is resolved from the env file, never from `$HOME` alone.**
+`install.sh` and `run-agent.sh`/`solador-agent.service` all export
+`SOLADOR_AGENT_CONFIG_DIR` pointing at the exact directory the env file was
+written into; the agent uses that when set, and falls back to
+`$HOME/.config` only for a manual invocation with no launcher in front of
+it. This matters on macOS specifically: launchd's `HOME` (the target user
+record's) need not be the `HOME` `install.sh` ran under, so deriving the
+certificate's location from `$HOME` alone could point the running service
+at a directory that holds no env file at all.
 
 **`solador-agent tls-fingerprint`** prints the certificate's SHA-256
 fingerprint, colon-hex, and nothing else — give that to Solador to pin. It is
@@ -730,8 +742,9 @@ The script:
 5. Writes `~/.config/solador-agent.env` with the token (prompted **without
    echo**; press Enter to auto-generate; reused on a re-run), the bind address
    (`SOLADOR_AGENT_BIND`, else the existing file's, else the detected
-   Tailscale IP, else refuse) and the port (`SOLADOR_AGENT_PORT`, else the
-   existing file's, else `7878`), mode `600`, written beside the live file and
+   Tailscale IP, else refuse), the port (`SOLADOR_AGENT_PORT`, else the
+   existing file's, else `7878`), and `SOLADOR_AGENT_TLS` (see **TLS**, below,
+   for how its value is decided), mode `600`, written beside the live file and
    renamed into place. Any other line already in the file
    (`SOLADOR_AGENT_SKIP_FSTYPES=`, `RUST_LOG=`) is carried through. The full
    token is never printed — the script reports only the env-file path and the
@@ -1620,9 +1633,13 @@ systemctl --user restart solador-agent                    # Linux
 
 ## How Solador connects
 
-- Solador reaches the host at `http://<the configured bind address>:7878` —
+- Solador reaches the host at `<the configured bind address>:7878` —
   the Tailscale IP by default, or whatever `SOLADOR_AGENT_BIND` was set to on
-  a LAN/VPN host.
+  a LAN/VPN host — over `http://` when `SOLADOR_AGENT_TLS` is unset, or
+  `https://` when it is `1`. **No released Solador build can dial or pin an
+  HTTPS agent yet** — see **TLS**'s own known-limit paragraph, above, and
+  [#448](https://github.com/Sassy-Dog/solador/issues/448) — so a host running
+  with TLS on reads as unreachable here today, not as a different scheme.
 - It sends `Authorization: Bearer <token>` (the same token from the env file) on
   every request, polling `/v1/snapshot` and `/v1/containers`.
 - The agent binds only that address (`SOLADOR_AGENT_BIND`), so by default the
