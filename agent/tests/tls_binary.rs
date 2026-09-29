@@ -5,9 +5,11 @@
 //! Neither ever starts the actual server and dials it, so neither would
 //! have caught a build that quietly served plain HTTP under
 //! `SOLADOR_AGENT_TLS=1` — proven red by temporarily forcing the server to
-//! answer plain HTTP on the TLS port and watching this test's plain-`http://`
-//! assertion fail (recorded on the PR that added this file, not kept as a
-//! permanent branch here).
+//! answer plain HTTP on the TLS port and watching this test fail at its
+//! certificate-never-appeared wait (recorded on the PR that added this file,
+//! not kept as a permanent branch here). The later plain-`http://` assertion
+//! guards a different regression: a server answering both TLS and plain HTTP
+//! on the same port.
 //!
 //! What's real, and what this test actually proves: the compiled
 //! `solador-agent` binary, spawned as the actual HTTPS server; that the

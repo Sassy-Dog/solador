@@ -261,10 +261,11 @@ certificate's location from `$HOME` alone could point the running service
 at a directory that holds no env file at all — which is why the launcher
 exports the var explicitly rather than relying on the fallback. **Never set
 `SOLADOR_AGENT_CONFIG_DIR` in the env file itself**: on Linux,
-`EnvironmentFile=` would then override the unit's own line above it, while
-on macOS the launcher drops any key it does not forward before the agent
-ever sees it; either way the health checks would end up pinning a
-different directory from the one the agent actually serves out of.
+`EnvironmentFile=` would then override the unit's own line above it, so the
+agent would serve out of a different directory from the one the health
+checks pin. On macOS such a line has no effect: the launcher does not forward
+that key (it logs and ignores it) and always exports the env file's own
+directory itself.
 
 **`solador-agent tls-fingerprint`** prints the certificate's SHA-256
 fingerprint, colon-hex, and nothing else — give that to Solador to pin. It is
