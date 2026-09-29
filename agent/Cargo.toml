@@ -78,7 +78,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # producer and `tauri-plugin-updater` resolve, so one implementation exists in
 # the workspace and the consumer cannot disagree with the producer about what
 # verifies.
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 # SHA-256 over the installed executable, compared against the feed's per-target
 # hash to decide whether a release changed the agent at all. Same pin as
 # crates/openclaw and crates/updatefeed, so one sha2 resolves.
