@@ -988,12 +988,16 @@ tests build (#417); the crate still has zero dependencies.
   retry attempt, not once up front, since a fresh install's own
   `systemctl --user restart` can return before the agent has generated the
   file. **The directory is resolved from the env file, never `$HOME`
-  alone**: `install.sh`, `run-agent.sh` and `solador-agent.service` all
-  export `SOLADOR_AGENT_CONFIG_DIR` — the exact directory the env file was
+  alone**: `run-agent.sh` and `solador-agent.service` both export
+  `SOLADOR_AGENT_CONFIG_DIR` — the exact directory the env file was
   written into, keyed the same way the env file's own path is — and
   `main.rs`'s `tls_config_dir()` reads it before falling back to
-  `$HOME/.config`, which matters only for a manual invocation with no
-  launcher in front of it; launchd's `HOME` need not be the `HOME`
+  `$HOME/.config`. `install.sh` never exports the var itself: its own
+  `tls-fingerprint` calls resolve through that same `$HOME/.config`
+  fallback, which is exactly where `install.sh`'s own process writes the
+  env file, so the two agree without it needing to export anything. The
+  fallback otherwise matters only for a manual invocation with no launcher
+  in front of it; launchd's `HOME` need not be the `HOME`
   `install.sh` ran under. `install.sh` re-runs, `update` and `rollback` never touch the key
   or certificate; `--uninstall` keeps them like the env file, `--uninstall
   --purge` removes them too, since purging the host's credentials means a

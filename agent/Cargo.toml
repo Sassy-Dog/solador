@@ -108,8 +108,11 @@ rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 # (main.rs's TLS startup path): rustls needs a process-wide default crypto
 # provider installed once, and axum-server's "tls-rustls-no-provider" feature
 # (below) deliberately picks none, so this is the one place that chooses —
-# the same "ring" reqwest already resolves, never a second backend.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# the same "ring" reqwest already resolves, never a second backend. The
+# floor is 0.23.45, not "0.23" (a bare "0.23" would let cargo resolve down
+# to 0.23.0) — a MINIMUM, via cargo's ordinary caret requirement (a later
+# 0.23.x is still allowed and wanted), not an exact pin: RUSTSEC-2026-0285.
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 # The TLS server itself: `axum_server::bind_rustls` around the same `Router`
 # the plain-HTTP path serves. The floor is 0.7.3, not "0.7" (a bare "0.7"
 # would let cargo resolve down to 0.7.0) — a MINIMUM, via cargo's ordinary

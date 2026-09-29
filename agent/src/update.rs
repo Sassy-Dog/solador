@@ -1663,7 +1663,8 @@ fn release_client(
 /// route the probe of this host's own service through a proxy and roll back
 /// every update.
 ///
-/// `pin`, when `Some`, is the DER bytes of the agent's own `tls.crt` (#447):
+/// `pin`, when `Some`, is the DER bytes of the agent's own
+/// `solador-agent.tls.crt` (#447):
 /// the client trusts **exactly that certificate** — not the system CA
 /// bundle, which a self-signed certificate could never chain to anyway —
 /// still through the standard chain-and-hostname verifier, never with

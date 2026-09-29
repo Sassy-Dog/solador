@@ -549,13 +549,14 @@ mod tests {
         );
     }
 
-    /// The exact failure the review found: a genuinely DER `tls.crt` makes
-    /// curl's `cacert` config option refuse it (exit 77, "error setting
-    /// certificate verify locations") before a request is even sent — which
-    /// is how `agent/deploy/lib.sh`'s `verify_health` and `install.sh`'s
-    /// printed "Verify locally" command both use it. Runs the REAL `curl` on
-    /// this machine against a real TLS handshake, not a stub — skips (rather
-    /// than fails) when `curl` is not on `PATH`.
+    /// The exact failure the review found: a genuinely DER
+    /// `solador-agent.tls.crt` makes curl's `cacert` config option refuse it
+    /// (exit 77, "error setting certificate verify locations") before a
+    /// request is even sent — which is how `agent/deploy/lib.sh`'s
+    /// `verify_health` and `install.sh`'s printed "Verify locally" command
+    /// both use it. Runs the REAL `curl` on this machine against a real TLS
+    /// handshake, not a stub — skips (rather than fails) when `curl` is not
+    /// on `PATH`.
     ///
     /// `cfg(unix)` deliberately: `lib.sh`/`install.sh` — what this guards —
     /// are unix shell scripts with no Windows counterpart, but `cargo test
@@ -590,7 +591,7 @@ mod tests {
         let on_disk = fs::read_to_string(&cert_path).unwrap();
         assert!(
             on_disk.starts_with("-----BEGIN CERTIFICATE-----"),
-            "tls.crt must be PEM, not DER, for curl's cacert to accept it"
+            "solador-agent.tls.crt must be PEM, not DER, for curl's cacert to accept it"
         );
 
         let cert_der = rustls_pki_types::CertificateDer::from(material.cert_der.clone());

@@ -4825,8 +4825,9 @@ STUB
     fi
 
     # SOLADOR_AGENT_CONFIG_DIR (#447): where SOLADOR_AGENT_TLS=1 finds or
-    # creates tls.key/tls.crt. The launcher exports it derived from $env_file
-    # itself (dirname), never read from a line inside the file — so
+    # creates solador-agent.tls.key/solador-agent.tls.crt. The launcher
+    # exports it derived from $env_file itself (dirname), never read from a
+    # line inside the file — so
     # main.rs's tls_config_dir() need not fall back to $HOME, which can
     # differ from install.sh's HOME under launchd (see run-agent.sh's own
     # header comment).

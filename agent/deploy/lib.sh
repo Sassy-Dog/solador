@@ -277,13 +277,13 @@ curl_exit_hint() {
         6) echo "could not resolve the host" ;;
         # TLS/certificate failures (#447): 77 is the one this repo has hit —
         # cacert pointed at a file curl's TLS backend could not load (an
-        # earlier revision wrote tls.crt as DER, which every backend here
-        # refuses; see agent/src/tls.rs). 35/51/60 are the handshake and
-        # verification failures the same misconfiguration, or a genuinely
-        # mismatched pin, would produce.
+        # earlier revision wrote solador-agent.tls.crt as DER, which every
+        # backend here refuses; see agent/src/tls.rs). 35/51/60 are the
+        # handshake and verification failures the same misconfiguration, or
+        # a genuinely mismatched pin, would produce.
         77) echo "could not load the certificate cacert points at — it must be PEM, not DER" ;;
         35) echo "TLS handshake failed — the agent may not actually be speaking TLS on that port" ;;
-        60 | 51) echo "certificate verification failed — the served certificate does not match the pinned tls.crt" ;;
+        60 | 51) echo "certificate verification failed — the served certificate does not match the pinned solador-agent.tls.crt" ;;
         *) echo "see curl(1) EXIT CODES" ;;
     esac
 }

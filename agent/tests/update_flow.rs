@@ -889,7 +889,7 @@ async fn a_valid_feed_and_binary_update_over_tls_stage_swap_restart_and_verify()
     let key_before = fs::read(&key_path).unwrap();
     assert!(
         cert_before.starts_with(b"-----BEGIN CERTIFICATE-----"),
-        "tls.crt is PEM on disk (curl's --cacert refuses raw DER)"
+        "solador-agent.tls.crt is PEM on disk (curl's --cacert refuses raw DER)"
     );
 
     let rig = release_for(NEW, &candidate, &key_a()).await;
@@ -974,9 +974,9 @@ async fn a_health_endpoint_presenting_a_different_certificate_than_the_pin_is_re
 
     // Swap the pinned file for an unrelated certificate — the on-disk pin
     // now disagrees with what the loopback server is actually presenting.
-    // Copying the OTHER generated tls.crt verbatim (rather than writing
-    // `other.cert_der` directly) keeps this on-disk file in the same PEM
-    // format `load_or_generate` always writes.
+    // Copying the OTHER generated solador-agent.tls.crt verbatim (rather
+    // than writing `other.cert_der` directly) keeps this on-disk file in
+    // the same PEM format `load_or_generate` always writes.
     let other_dir = tempfile::tempdir().unwrap();
     tls::load_or_generate(other_dir.path(), &[]).unwrap();
     fs::copy(

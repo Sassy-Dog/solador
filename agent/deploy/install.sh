@@ -1459,7 +1459,8 @@ elif [ -n "$EXISTING_TLS" ]; then
     # below recommends for other problems — must not keep re-writing
     # SOLADOR_AGENT_TLS=1 against a binary that will silently ignore it.
     # Refused before anything changes, like every other capability refusal
-    # here; the operator's already-generated tls.crt is untouched either way.
+    # here; the operator's already-generated solador-agent.tls.crt is
+    # untouched either way.
     if [ "$EXISTING_TLS" = "1" ] && [ "$STAGED_BIN_SUPPORTS_TLS" != true ]; then
         echo "ERROR: the env file already has SOLADOR_AGENT_TLS=1, but $ASSET ($TARGET_VERSION)" >&2
         echo "       predates #447 and does not support TLS (solador-agent tls-fingerprint is" >&2

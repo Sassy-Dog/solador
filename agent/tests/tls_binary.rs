@@ -3,21 +3,31 @@
 //! `agent/src/tls.rs`'s functions directly (its own unit tests) or drives
 //! `update`/`rollback` against a FAKE service (`tests/update_flow.rs`).
 //! Neither ever starts the actual server and dials it, so neither would
-//! have caught a build that quietly served plain HTTP, or dropped the
-//! bind-host SAN, under `SOLADOR_AGENT_TLS=1` — proven by temporarily
-//! breaking each in turn and watching this test go red (recorded on the PR
-//! that added this file, not kept as a permanent branch here).
+//! have caught a build that quietly served plain HTTP under
+//! `SOLADOR_AGENT_TLS=1` — proven red by temporarily forcing the server to
+//! answer plain HTTP on the TLS port and watching this test's plain-`http://`
+//! assertion fail (recorded on the PR that added this file, not kept as a
+//! permanent branch here).
 //!
-//! What's real: the compiled `solador-agent` binary, spawned as the actual
-//! HTTPS server; a `/v1/health` poll over a genuine TLS handshake, verified
-//! (never with verification disabled) against exactly the certificate the
-//! agent wrote to disk; a second, independent raw rustls handshake that
-//! pulls the certificate the server *actually presented* mid-connection and
-//! hashes it, compared against `solador-agent tls-fingerprint`'s own
-//! stdout; a kill-and-restart of the same binary, proving the key file is
-//! untouched (byte-identical) and the served certificate does not change;
-//! and a plain `http://` request against the same HTTPS-only port, which
-//! must fail rather than silently falling back to plain HTTP.
+//! What's real, and what this test actually proves: the compiled
+//! `solador-agent` binary, spawned as the actual HTTPS server; that the
+//! served certificate is exactly the one `solador-agent tls-fingerprint`
+//! reports — a second, independent raw rustls handshake pulls the
+//! certificate the server *actually presented* mid-connection and hashes
+//! it, compared against the CLI's own stdout, so this is "what's on the
+//! wire" rather than a from-disk read standing in for it; that a
+//! kill-and-restart of the same binary leaves the key file untouched
+//! (byte-identical) and the served certificate unchanged; and that a plain
+//! `http://` request against the same HTTPS-only port fails rather than
+//! silently falling back to plain HTTP. The key file is also asserted mode
+//! 0600.
+//!
+//! What this does NOT prove: SAN coverage. Every dial here — the health
+//! poll and the raw handshake alike — targets `127.0.0.1`, a host
+//! `tls.rs`'s baseline always adds to the SAN list independent of the
+//! resolved bind (see its own doc comment), so a build that dropped the
+//! *bind host* specifically from the SAN list would pass this test
+//! unchanged. That gap is not exercised by anything in this file.
 //!
 //! `SOLADOR_AGENT_CONFIG_DIR` (#447, this round) is deliberately exercised
 //! by pointing `HOME` at an EMPTY decoy directory that is never touched:
@@ -42,9 +52,12 @@ use solador_agent::tls;
 const TOKEN: &str = "tls-binary-test-token-MUST-NOT-BE-PRINTED";
 
 /// Kills the child on drop, so a panicking assertion never leaves a stray
-/// `solador-agent` listening past this test — `cargo test` runs every test
-/// binary's tests in one process, and an orphaned listener on a bound port
-/// would make some LATER test's `free_port()` a lie.
+/// `solador-agent` process running past this test. This is ordinary test
+/// hygiene, not a `free_port()` safeguard: each `tests/*.rs` file is its own
+/// process, and the OS never hands out a port that is already in use, so a
+/// leaked listener here could not make a later `free_port()` call return
+/// one that is not actually free. The guard exists so a panic here does not
+/// leave an orphaned agent process behind.
 struct Server(Child);
 
 impl Drop for Server {
