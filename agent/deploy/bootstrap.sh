@@ -68,12 +68,12 @@
 # called on the LAST LINE. bash cannot call a function whose closing brace
 # it never read, so a truncated transfer downloads nothing and runs nothing.
 #
-# Exit status: whatever the extracted install.sh exits with (0 installed
-# and serving, 1 failed/refused, 2 usage, 3 the metrics service is fine but
-# --enable-timer's opt-in failed — see install.sh's own header), or this
-# script's own refusals: 1 a download/extraction failure, a --ref GitHub
-# does not confirm as reachable from main, or refusing to run as root; 2 a
-# missing or malformed --ref value.
+# Exit status: this script's own refusals are 1 (a download/extraction
+# failure, a --ref GitHub does not confirm as reachable from main, or
+# refusing to run as root) and 2 (a missing or malformed --ref value);
+# otherwise install.sh's exit status is passed through unchanged — see its
+# own header for the full table, kept there rather than duplicated here so
+# the two cannot drift apart.
 
 set -euo pipefail
 

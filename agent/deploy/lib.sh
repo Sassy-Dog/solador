@@ -408,6 +408,32 @@ calver_newer() {
     [ "$a3" -gt "$b3" ]
 }
 
+# ---- the update transaction lock (#393, #439) --------------------------------
+# `<bin>.update.lock` is the flock `solador-agent update`/`rollback` hold for
+# their lifetime (agent/src/update.rs's TransactionLock) — created once and
+# NEVER removed, so the file's mere existence proves nothing: it is exactly as
+# present the instant after a transaction finishes cleanly as it is while one
+# is running.
+#
+# There is no standalone "is it busy" checker here any more. An earlier
+# revision had one (`update_lock_busy`, a one-shot path-based check with the
+# same flock(1)/perl/neither tiers described in install.sh's own comments on
+# its lock acquisition) for the case where install.sh's `--uninstall` could
+# not hold the lock continuously — but a review of #439's follow-up found
+# that case avoidable rather than merely narrowable: `--uninstall` now opens
+# and holds the SAME fd (via `flock -n` or the equivalent perl one-liner,
+# see install.sh's `run_uninstall`) for its entire run in every tier it can
+# reach, so a one-shot, non-holding check no longer has a caller. Kept out
+# rather than kept unused: an elaborate three-tier implementation with no
+# production caller is a worse trap for the next reader than its absence.
+# TransactionLock::try_acquire itself still takes the lock via
+# `std::fs::File::try_lock`, which is `flock()` on Unix (not
+# `fcntl()`/`F_SETLK`) — confirmed by reading its own comments on the module
+# (a lock surviving `fork()` until `exec()`, which is `flock()`'s
+# open-file-description semantics; a `fcntl()` lock is per-process and does
+# not survive `fork()` at all) — which is exactly the primitive install.sh's
+# own hold asks the same question through.
+
 # ---- the env file -----------------------------------------------------------
 # Read one key's value out of an env file, the way systemd's EnvironmentFile=
 # and the macOS launcher (run-agent.sh) read it: first matching line, trailing
