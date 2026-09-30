@@ -62,6 +62,7 @@ unset STUB_SYSTEMD_VERSION
 unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_SYSTEMCTL_STOP_EXIT STUB_LAUNCHCTL_BOOTOUT_EXIT
 unset STUB_SYSTEMCTL_PROBE_LOCK STUB_SYSTEMCTL_PROBE_RESULT STUB_SYSTEMCTL_UNIT_STATE STUB_SYSTEMCTL_SHOW_EXIT
 unset STUB_LAUNCHCTL_PROBE_LOCK STUB_LAUNCHCTL_PROBE_RESULT
+unset STUB_SYSTEMCTL_STOP_FAIL_UNITS STUB_SYSTEMCTL_DISABLE_FAIL_UNITS STUB_FD9_LOG
 
 # ---- harness ----------------------------------------------------------------
 
@@ -397,11 +398,33 @@ STUB
 # what makes counting such a unit as present a false exit 4 (req 3). `stop`
 # of anything else succeeds unless STUB_SYSTEMCTL_STOP_EXIT says otherwise.
 # `disable` fails ENOENT when the unit FILE is gone and stops nothing (req 1).
+#
+# STUB_SYSTEMCTL_STOP_FAIL_UNITS / STUB_SYSTEMCTL_DISABLE_FAIL_UNITS (#464)
+# are the PER-UNIT forms of STUB_SYSTEMCTL_STOP_EXIT / _DISABLE_EXIT: a
+# space-separated list of exact full unit names whose `stop` (resp.
+# `disable`) exits 1 while every other unit succeeds, so a test can fail one
+# unit of four, or one unit's stop AND disable (the `kind=both` hint).
+#
+# STUB_FD9_LOG (#464) names a file; when set, every call appends
+# "systemctl <subcommand> open|closed", whether file descriptor 9 — the one
+# --uninstall holds the update lock on — was inherited by this child.
 cat > "$STUBS/systemctl" <<'STUB'
 #!/usr/bin/env bash
+if [ -n "${STUB_FD9_LOG:-}" ]; then
+    if { true >&9; } 2>/dev/null; then fd9_state=open; else fd9_state=closed; fi
+    printf 'systemctl %s %s\n' "${2:-}" "$fd9_state" >> "$STUB_FD9_LOG"
+fi
 if [ -n "${STUB_SYSTEMCTL_ARGV:-}" ]; then
     printf '%s\n' "$*" >> "$STUB_SYSTEMCTL_ARGV"
 fi
+# unit_listed <space-separated list> <unit>: exact-name membership.
+unit_listed() {
+    local u
+    for u in $1; do
+        [ "$u" = "$2" ] && return 0
+    done
+    return 1
+}
 # unit_state <unit>: prints "<LoadState> <ActiveState>". Exact-name match
 # against STUB_SYSTEMCTL_UNIT_STATE; see the suite's comment above.
 unit_state() {
@@ -493,6 +516,10 @@ EOF_STATE
                 fi
             fi
         fi
+        if unit_listed "${STUB_SYSTEMCTL_STOP_FAIL_UNITS:-}" "$3"; then
+            echo "Failed to stop $3: stubbed per-unit failure." >&2
+            exit 1
+        fi
         if [ -n "${STUB_SYSTEMCTL_STOP_EXIT:-}" ] && [ "$STUB_SYSTEMCTL_STOP_EXIT" != "0" ]; then
             exit "$STUB_SYSTEMCTL_STOP_EXIT"
         fi
@@ -507,16 +534,17 @@ EOF_STATE
     # runs `disable` only while the unit FILE exists (#463), so a fileless
     # unit the manager still holds is stopped and never disabled; a
     # regression that disables it anyway gets this branch's failure, which
-    # is what real systemd does.
+    # is what real systemd does. (No `--now` form is modelled: nothing in
+    # install.sh issues one any more, and the documented pause/revoke
+    # commands in agent/README.md are operator-typed, never stub-driven.)
     disable)
-        # $3 is the unit name — UNLESS this is the old `--now` form (no
-        # caller in install.sh uses it any more, but the stub still answers
-        # it the way real systemd does, for robustness): then $3 is
-        # literally "--now" and the unit name is $4.
         disable_unit="$3"
-        [ "$disable_unit" = "--now" ] && disable_unit="$4"
         if [ ! -f "$HOME/.config/systemd/user/$disable_unit" ]; then
             echo "Failed to disable unit: Unit file $disable_unit does not exist." >&2
+            exit 1
+        fi
+        if unit_listed "${STUB_SYSTEMCTL_DISABLE_FAIL_UNITS:-}" "$disable_unit"; then
+            echo "Failed to disable unit $disable_unit: stubbed per-unit failure." >&2
             exit 1
         fi
         if [ -n "${STUB_SYSTEMCTL_DISABLE_EXIT:-}" ] && [ "$STUB_SYSTEMCTL_DISABLE_EXIT" != "0" ]; then
@@ -545,6 +573,10 @@ STUB
 # answers STUB_LAUNCHCTL_BOOTSTRAP_EXIT.
 cat > "$STUBS/launchctl" <<'STUB'
 #!/usr/bin/env bash
+if [ -n "${STUB_FD9_LOG:-}" ]; then
+    if { true >&9; } 2>/dev/null; then fd9_state=open; else fd9_state=closed; fi
+    printf 'launchctl %s %s\n' "${1:-}" "$fd9_state" >> "$STUB_FD9_LOG"
+fi
 if [ -n "${STUB_LAUNCHCTL_ARGV:-}" ]; then
     printf '%s\n' "$*" >> "$STUB_LAUNCHCTL_ARGV"
 fi
@@ -815,6 +847,48 @@ STUB
     chmod +x "$TOOLBIN_FAKEFLOCK/flock"
     HAVE_FAKEFLOCK=true
 fi
+
+# TOOLBIN_PERLFAIL (#464): TOOLBIN_NOFLOCK (so install.sh takes the perl
+# tier) with a `perl` that exits 2 — the status install.sh's own
+# `open(my $fh, "<&=", 9) or exit 2` reports when it cannot reopen fd 9 —
+# so the "could not reopen its already-open file descriptor" branch is
+# reachable without a host whose real perl misbehaves.
+TOOLBIN_PERLFAIL="$TMP/toolbin-perlfail"
+mkdir -p "$TOOLBIN_PERLFAIL"
+for f in "$TOOLBIN_NOFLOCK"/*; do
+    [ "$(basename "$f")" = "perl" ] || ln -s "$f" "$TOOLBIN_PERLFAIL/$(basename "$f")"
+done
+cat > "$TOOLBIN_PERLFAIL/perl" <<'STUB'
+#!/usr/bin/env bash
+exit 2
+STUB
+chmod +x "$TOOLBIN_PERLFAIL/perl"
+
+# TOOLBIN_FD9PROBE (#464): TOOLBIN with `rm`, `awk`, `sed`, `date` and `id`
+# — the external tools run_uninstall runs while it holds the update lock on
+# fd 9 — replaced by wrappers that append "<tool> open|closed" to
+# $STUB_FD9_LOG (whether fd 9 reached them) and then exec the real tool.
+# (systemctl and launchctl log the same way, from their own stubs.) `flock`
+# and `perl` are left alone: they are the two children that NEED fd 9.
+TOOLBIN_FD9PROBE="$TMP/toolbin-fd9probe"
+mkdir -p "$TOOLBIN_FD9PROBE"
+for f in "$TOOLBIN"/*; do
+    ln -s "$f" "$TOOLBIN_FD9PROBE/$(basename "$f")"
+done
+for tool in rm awk sed date id; do
+    real="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$real" ] || continue
+    rm -f "$TOOLBIN_FD9PROBE/$tool"
+    cat > "$TOOLBIN_FD9PROBE/$tool" <<STUB
+#!/usr/bin/env bash
+if [ -n "\${STUB_FD9_LOG:-}" ]; then
+    if { true >&9; } 2>/dev/null; then fd9_state=open; else fd9_state=closed; fi
+    printf '%s %s\\n' "$tool" "\$fd9_state" >> "\$STUB_FD9_LOG"
+fi
+exec "$real" "\$@"
+STUB
+    chmod +x "$TOOLBIN_FD9PROBE/$tool"
+done
 # The throwaway keypair the signature cases sign with. Generated up front so
 # "minisign is usable" is one fact decided once: present, AND new enough for
 # `-W` (unencrypted keys, minisign ≥ 0.11 — what Debian 12 and Ubuntu 24.04
@@ -4655,7 +4729,7 @@ test_install_update_timer_linux() {
     fi
 
     # ---- the documented removal: only the updater goes ----
-    # `systemctl --user disable --now` is stubbed; what the test can observe
+    # the removal is simulated below by deleting the files (the fake systemctl does not model `--now`); what the test can observe
     # is that a no-flag re-run after the files are removed — the two units
     # and the guard, the three the README's remove command names — does not
     # bring any of them back.
@@ -6387,6 +6461,10 @@ test_uninstall_linux() {
     else
         pass "a no-op uninstall asks the service manager for nothing"
     fi
+    # #464: the lock file this run created just to check for contention is
+    # not installed state, and a no-op must not leave it behind.
+    [ ! -e "$bin.update.lock" ] && pass "a no-op uninstall leaves no update lock file behind" \
+        || fail "a no-op uninstall leaves no update lock file behind" "$bin.update.lock exists"
     [ -e "$env_file" ] && pass "a no-op uninstall still leaves the env file" \
         || fail "a no-op uninstall still leaves the env file" "$env_file is gone"
     if [ -e "$tls_key" ] && [ -e "$tls_cert" ]; then
@@ -6416,7 +6494,16 @@ test_uninstall_linux() {
     # ---- idempotent again, even with --purge ----
     reset_argv_logs
     run_install "$home" --uninstall --purge
-    assert_eq "a repeated --uninstall --purge is still a no-op that exits 0" "0" "$?"
+    assert_eq "a repeated --uninstall --purge is still a no-op that exits 0" "0" "$INSTALL_STATUS"
+    out="$(cat "$INSTALL_OUT")"
+    assert_output_has "a repeated --uninstall --purge says nothing was installed" "$out" "Nothing installed"
+    if systemctl_mutated; then
+        fail "a repeated --uninstall --purge asks the manager to stop or disable nothing" "$(grep -E 'stop|disable' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a repeated --uninstall --purge asks the manager to stop or disable nothing"
+    fi
+    [ ! -e "$bin.update.lock" ] && pass "a repeated --uninstall --purge leaves no update lock file behind" \
+        || fail "a repeated --uninstall --purge leaves no update lock file behind" "$bin.update.lock exists"
 
     # ---- a fresh install, for the two manager-related cases below ----
     reset_argv_logs
@@ -7007,6 +7094,8 @@ test_uninstall_macos() {
     else
         pass "macOS: a no-op uninstall asks launchd for nothing"
     fi
+    [ ! -e "$bin.update.lock" ] && pass "macOS: a no-op uninstall leaves no update lock file behind" \
+        || fail "macOS: a no-op uninstall leaves no update lock file behind" "$bin.update.lock exists"
 
     # ---- --purge removes the env file ----
     reset_argv_logs
@@ -7051,6 +7140,9 @@ test_uninstall_macos() {
     assert_eq "macOS: install.sh --uninstall exits 4 when a reachable manager refuses to stop the service" "4" "$INSTALL_STATUS"
     assert_output_has "macOS: the exit-4 case says the files were removed anyway" "$out" "files were removed"
     assert_output_has "macOS: the exit-4 case says to verify by hand" "$out" "Verify by hand"
+    # A failed bootout is a failed STOP: the process may still be running
+    # (#464; the Linux case asserts both wordings).
+    assert_output_has "macOS: the exit-4 (bootout) case claims the process may still be running" "$out" "still running"
     if [ -e "$plist" ] || [ -x "$bin" ]; then
         fail "macOS: the exit-4 case still removes every installer file" "some installer file is still present"
     else
@@ -7544,6 +7636,231 @@ reset_standby_logs() {
     : > "$TMP/cargo-argv"
 }
 
+# ---- install.sh --uninstall hardening (#464, part of #455) --------------------
+#
+# Branches and claims of the uninstall path that no other case reached: the
+# lock file that cannot be OPENED, perl that cannot REOPEN fd 9, the no-op
+# runs' leftovers, fd 9 staying out of every child, and the per-unit failure
+# hints. Linux and macOS variants share the fixture shape of the two
+# test_uninstall_* functions above.
+
+# fd9_assert <label> <log> <tool>...: every tool appears in the log at least
+# once (so "closed" is not vacuous) and no line of the log says "open".
+fd9_assert() {
+    local label="$1" log="$2" tool
+    shift 2
+    for tool in "$@"; do
+        if grep -q "^$tool " "$log" 2>/dev/null; then
+            pass "$label: $tool was seen by the probe"
+        else
+            fail "$label: $tool was seen by the probe" "no '$tool' line in: $(cat "$log" 2>/dev/null)"
+        fi
+    done
+    if grep -q " open$" "$log" 2>/dev/null; then
+        fail "$label: no child inherits fd 9" "$(grep ' open$' "$log" | sort | uniq -c)"
+    else
+        pass "$label: no child inherits fd 9"
+    fi
+}
+
+test_uninstall_hardening_linux() {
+    local home="$TMP/home-uninstall-hardening-linux" bin unit out log probe_wrapper
+    local lock wants_count status_count
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh --uninstall hardening (Linux)"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
+    export STUB_TAILSCALE_IP="100.64.0.9"
+    bin="$home/.local/bin/solador-agent"
+    unit="$home/.config/systemd/user/solador-agent.service"
+    lock="$bin.update.lock"
+
+    reset_argv_logs
+    INSTALL_STDIN="hardening-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the hardening fixture (Linux)" "0" "$INSTALL_STATUS"
+
+    # ---- 1. the lock file cannot be OPENED: refuse, exit 1, change nothing ----
+    # The lock path is a directory: `( set -C; : > dir )` fails (so the run did
+    # not create it) and `exec 9>>dir` fails with EISDIR — the open itself.
+    mkdir "$lock"
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "an uninstall whose lock file cannot be opened exits 1 (Linux)" "1" "$INSTALL_STATUS"
+    assert_output_has "the open failure names the lock file and says it could not open it" "$out" \
+        "could not open $lock to take the update lock"
+    [ -e "$unit" ] && [ -x "$bin" ] && pass "an open failure leaves the unit and the binary in place" \
+        || fail "an open failure leaves the unit and the binary in place" "$unit or $bin is gone"
+    [ -d "$lock" ] && pass "an open failure leaves the lock path as it found it" \
+        || fail "an open failure leaves the lock path as it found it" "$lock is gone"
+    if systemctl_mutated; then
+        fail "an open failure never reaches the service manager" "$(cat "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "an open failure never reaches the service manager"
+    fi
+    rmdir "$lock"
+
+    # ---- 2. perl cannot REOPEN fd 9: refuse, exit 1, NEVER delete the lock ----
+    # (a) this run created the lock file: an empty file may remain, and the
+    # message must promise only what the code does.
+    rm -f "$lock"
+    reset_argv_logs
+    INSTALL_PATH="$STUBS:$TOOLBIN_PERLFAIL" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "an uninstall whose perl cannot reopen fd 9 exits 1 (Linux, lock created by this run)" "1" "$INSTALL_STATUS"
+    assert_output_has "the reopen failure says perl could not reopen its file descriptor" "$out" \
+        "reopen its already-open file descriptor"
+    assert_output_has "the reopen failure says an empty lock file may remain" "$out" "an empty lock file may remain"
+    assert_output_has "the reopen failure promises only that a later run that gets past the check removes it" "$out" \
+        "a later run that gets past this check removes it"
+    case "$out" in
+        *"the next run removes it"*) fail "the reopen failure no longer promises the next run removes the file" "old wording present" ;;
+        *) pass "the reopen failure no longer promises the next run removes the file" ;;
+    esac
+    [ -f "$lock" ] && pass "a reopen failure never deletes the lock file it created" \
+        || fail "a reopen failure never deletes the lock file it created" "$lock is gone"
+    [ -e "$unit" ] && [ -x "$bin" ] && pass "a reopen failure leaves the unit and the binary in place" \
+        || fail "a reopen failure leaves the unit and the binary in place" "$unit or $bin is gone"
+    if systemctl_mutated; then
+        fail "a reopen failure never reaches the service manager" "$(cat "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a reopen failure never reaches the service manager"
+    fi
+    # (b) the lock file pre-existed: same refusal, "Nothing has been changed",
+    # and the file is still there.
+    printf 'pid=999999999 since=1\n' > "$lock"
+    reset_argv_logs
+    INSTALL_PATH="$STUBS:$TOOLBIN_PERLFAIL" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "an uninstall whose perl cannot reopen fd 9 exits 1 (Linux, lock pre-existing)" "1" "$INSTALL_STATUS"
+    assert_output_has "a reopen failure over a pre-existing lock says nothing has been changed" "$out" "Nothing has been changed"
+    [ -f "$lock" ] && pass "a reopen failure never deletes a pre-existing lock file" \
+        || fail "a reopen failure never deletes a pre-existing lock file" "$lock is gone"
+    rm -f "$lock"
+
+    # ---- 4. no child of run_uninstall inherits fd 9 ----
+    # Positive control first: the wrapper DOES see an open fd 9 when one is
+    # there, so "closed" below is a measurement and not a blind probe.
+    probe_wrapper="$TOOLBIN_FD9PROBE/rm"
+    log="$TMP/fd9-control.log"
+    : > "$log"
+    (
+        exec 9>>"$TMP/fd9-control.file"
+        STUB_FD9_LOG="$log" "$probe_wrapper" -f "$TMP/fd9-control.file"
+    )
+    assert_eq "the fd 9 probe reports an open descriptor when one is inherited (positive control)" "rm open" "$(cat "$log")"
+    log="$TMP/fd9-linux.log"
+    : > "$log"
+    reset_argv_logs
+    STUB_FD9_LOG="$log" INSTALL_PATH="$STUBS:$TOOLBIN_FD9PROBE" run_install "$home" --uninstall
+    assert_eq "the fd 9 probe run uninstalls cleanly (Linux)" "0" "$INSTALL_STATUS"
+    fd9_assert "Linux uninstall" "$log" systemctl rm awk sed date id
+
+    # ---- 6. per-unit failures: one unit's hint, never a bystander's ----
+    # (a) only the timer's stop fails: one status line, for the timer alone,
+    # and no .wants listing (nothing failed to disable).
+    reset_argv_logs
+    INSTALL_STDIN="hardening-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, for the per-unit stop case (Linux)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_SYSTEMCTL_STOP_FAIL_UNITS="solador-agent-update.timer" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "one unit's failed stop exits 4 (Linux)" "4" "$INSTALL_STATUS"
+    assert_output_has "the failed unit gets its status hint" "$out" "systemctl --user status solador-agent-update.timer"
+    case "$out" in
+        *"status solador-agent.service"*) fail "a unit whose stop succeeded gets no status hint (metrics service)" "$out" ;;
+        *) pass "a unit whose stop succeeded gets no status hint (metrics service)" ;;
+    esac
+    case "$out" in
+        *"status solador-agent-update.service"*) fail "a unit whose stop succeeded gets no status hint (update oneshot)" "$out" ;;
+        *) pass "a unit whose stop succeeded gets no status hint (update oneshot)" ;;
+    esac
+    case "$out" in
+        *".wants"*) fail "a stop-only failure never names the wants listing" "$out" ;;
+        *) pass "a stop-only failure never names the wants listing" ;;
+    esac
+    assert_output_has "a failed stop claims the process may still be running" "$out" "still running"
+    # The stub really failed just that one unit: the others were stopped.
+    assert_file_has "the other units were still stopped" "$STUB_SYSTEMCTL_ARGV" "--user stop solador-agent.service"
+
+    # (b) kind=both: one unit whose stop AND disable both fail gets exactly
+    # one status line, plus the .wants listing; its siblings get nothing.
+    reset_argv_logs
+    INSTALL_STDIN="hardening-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, for the kind=both case (Linux)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_SYSTEMCTL_STOP_FAIL_UNITS="solador-agent.service" STUB_SYSTEMCTL_DISABLE_FAIL_UNITS="solador-agent.service" \
+        run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a unit whose stop and disable both fail exits 4 (Linux)" "4" "$INSTALL_STATUS"
+    status_count="$(grep -c "systemctl --user status " "$INSTALL_OUT")"
+    assert_eq "kind=both names exactly one status line" "1" "$status_count"
+    assert_output_has "kind=both names the failed unit's status command" "$out" "systemctl --user status solador-agent.service"
+    wants_count="$(grep -c 'ls -l ~/.config/systemd/user/\*.wants/' "$INSTALL_OUT")"
+    assert_eq "kind=both names the wants listing once" "1" "$wants_count"
+    assert_output_has "kind=both claims the process may still be running (the stop failed)" "$out" "still running"
+
+    # (c) only a disable fails for one unit: its status line plus the wants
+    # listing, and never the "still running" claim.
+    reset_argv_logs
+    INSTALL_STDIN="hardening-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, for the per-unit disable case (Linux)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_SYSTEMCTL_DISABLE_FAIL_UNITS="solador-agent-update.service" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "one unit's failed disable exits 4 (Linux)" "4" "$INSTALL_STATUS"
+    status_count="$(grep -c "systemctl --user status " "$INSTALL_OUT")"
+    assert_eq "a single disable failure names exactly one status line" "1" "$status_count"
+    assert_output_has "the disable-failed unit gets its status hint" "$out" "systemctl --user status solador-agent-update.service"
+    assert_output_has "a disable failure names the wants listing" "$out" "ls -l ~/.config/systemd/user/*.wants/"
+    case "$out" in
+        *"still running"*) fail "a disable-only failure never claims the process may still be running" "$out" ;;
+        *) pass "a disable-only failure never claims the process may still be running" ;;
+    esac
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
+}
+
+test_uninstall_hardening_macos() {
+    local home="$TMP/home-uninstall-hardening-macos" bin log
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh --uninstall hardening (macOS)"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.8 aarch64-apple-darwin "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"mac","version":"2026.9.8"}'
+    export STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 STUB_SW_VERS=15.6
+    bin="$home/.local/bin/solador-agent"
+
+    reset_argv_logs
+    INSTALL_STDIN="mac-hardening-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --enable-timer
+    assert_eq "install.sh --enable-timer succeeds, setting up the hardening fixture (macOS)" "0" "$INSTALL_STATUS"
+
+    log="$TMP/fd9-macos.log"
+    : > "$log"
+    reset_argv_logs
+    STUB_FD9_LOG="$log" STUB_LAUNCHCTL_LOADED_EXIT=0 INSTALL_PATH="$STUBS:$TOOLBIN_FD9PROBE" run_install "$home" --uninstall
+    assert_eq "the fd 9 probe run uninstalls cleanly (macOS)" "0" "$INSTALL_STATUS"
+    fd9_assert "macOS uninstall" "$log" launchctl rm awk sed date id
+
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS
+}
+
 test_standby_key_script() {
     local name="agent-standby-key.sh"
     if [ "$HAVE_MINISIGN" != true ]; then
@@ -7946,6 +8263,8 @@ test_launchd_smoke
 test_uninstall_linux
 test_unowned_service_binary_survives_set_e
 test_uninstall_macos
+test_uninstall_hardening_linux
+test_uninstall_hardening_macos
 test_standby_key_script
 test_deploy_script_invariants
 
