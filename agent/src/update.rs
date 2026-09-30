@@ -1337,10 +1337,11 @@ pub fn probe_target(bind: &str, port: u16, tls: bool) -> (String, Dial) {
 /// `run_rollback` before anything is fetched or swapped, never a failure found
 /// with the candidate live and misreported as a failed recovery.
 ///
-/// A zone-id bind (`fe80::1%en0`) is refused under TLS: neither `resolve` nor a
-/// URL can carry a zone id portably, and a link-local bind is not a reachable
-/// address for anything but its own link. (`lib.sh` hands it to curl
-/// unchanged; the two differ only there.)
+/// A zone-id bind (`fe80::1%en0`) is refused under TLS: the probe's
+/// `localhost` URL and pinned address have no portable place for an
+/// interface-local zone, and a link-local bind is not a reachable address for
+/// anything but its own link. (`lib.sh` hands it to curl unchanged.) Both
+/// refusals apply to `update` and `rollback` alike, before any change.
 pub async fn resolve_dial(dial: &Dial) -> Result<Vec<SocketAddr>, UpdateError> {
     match dial {
         Dial::Url => Ok(Vec::new()),
@@ -1462,8 +1463,10 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
 /// bind is probed as `localhost`, and [`probe_target`]'s [`Dial`] is
 /// `lib.sh`'s `connect_line` — where [`health_client`] connects it. Hostname
 /// verification stays on. The table test
-/// `probe_target_matches_lib_sh_for_every_bind_form` and `lib_test.sh`'s
-/// `verify_health` table pin the two sides to the same rows.
+/// `probe_target_matches_lib_sh_for_the_tls_bind_forms` and `lib_test.sh`'s
+/// `verify_health` table pin the two sides to the same TLS rows; the plain-HTTP
+/// and bracketed-non-IPv6 forms are not pinned together (see `lib.sh`'s
+/// `health_url` comment).
 #[must_use]
 pub fn health_url(bind: &str, port: u16, tls: bool) -> String {
     probe_target(bind, port, tls).0
@@ -1798,10 +1801,12 @@ fn release_client(
 /// could never chain to anyway — through the standard chain **and hostname**
 /// verifier. Nothing is disabled. The URL names `localhost` (in every
 /// generated certificate's baseline SAN list), and `dial` is where the
-/// connection really goes (the bind, its resolved addresses for a name, or
-/// loopback for a wildcard — [`resolve_dial`]): `resolve_to_addrs` pins the
-/// name to them, as `lib.sh`'s `verify_health` does with `curl --connect-to`
-/// (#449). Empty `dial` leaves the URL's host alone.
+/// connection really goes (the bind's IP, or the resolved addresses of a DNS
+/// name — [`resolve_dial`]): `resolve_to_addrs` pins the name to them, as
+/// `lib.sh`'s `verify_health` does with `curl --connect-to` (#449). Empty
+/// `dial` leaves the URL's host alone, which is the case for a wildcard bind:
+/// [`probe_target`] dials it at loopback as written (`https://127.0.0.1:P` or
+/// `https://[::1]:P`), unpinned, verified against the baseline loopback IP SANs.
 fn health_client(
     running_version: Option<&str>,
     pin: Option<&[u8]>,
@@ -2972,11 +2977,14 @@ mod tests {
         }
     }
 
-    /// Every bind form `lib.sh`'s `health_url` + `connect_line` handle, with
-    /// what each yields on the Rust side (#449): the URL, and where it is
-    /// dialled. `lib_test.sh` asserts the same rows against the shell side.
+    /// The TLS bind forms `lib.sh`'s `health_url` + `connect_line` handle,
+    /// with what each yields on the Rust side (#449): the URL, and where it is
+    /// dialled. `lib_test.sh`'s table (TLS=1 rows only) asserts the same rows
+    /// against the shell side. Plain-HTTP rows and bracketed non-IPv6 binds
+    /// (`[100.64.0.9]`, `[host]`) are not pinned to lib.sh and are known to
+    /// differ there.
     #[test]
-    fn probe_target_matches_lib_sh_for_every_bind_form() {
+    fn probe_target_matches_lib_sh_for_the_tls_bind_forms() {
         let sa = |s: &str| Dial::Addr(s.parse().unwrap());
         let name = |h: &str| Dial::Name {
             host: h.to_string(),
@@ -3663,7 +3671,7 @@ mod tests {
     /// A real TLS round trip: `health_client`'s pin, built the way
     /// `health_pin` builds it, both accepts the agent's own certificate
     /// and refuses any other. The URL is the one `Serving::health_url`
-    /// produces (`localhost`), connected to the bind through `resolve`.
+    /// produces (`localhost`), connected to the bind through `resolve_to_addrs`.
     #[tokio::test]
     async fn health_client_trusts_only_the_pinned_certificate() {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -3758,10 +3766,10 @@ mod tests {
 
     /// #449: the bind can change after the certificate was generated, and a
     /// certificate's SAN list cannot. The probe dials `localhost` and
-    /// connects to the bind through `resolve`, so a concrete non-loopback
+    /// connects to the bind through `resolve_to_addrs`, so a concrete non-loopback
     /// bind whose IP is NOT in the certificate's SAN list still verifies —
     /// with hostname verification on. Dialling that IP directly (the
-    /// negative control) is refused, which is what shows the resolve path,
+    /// negative control) is refused, which is what shows the `resolve_to_addrs` path,
     /// not a relaxed check, is what makes the probe work.
     #[tokio::test]
     async fn health_client_reaches_a_non_loopback_bind_absent_from_the_san_list() {
@@ -3777,8 +3785,9 @@ mod tests {
             .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
         let Some(ip) = local else {
             // CI sets this so a runner with no route cannot turn the test
-            // into a silent pass; the never-skipping loopback control below
-            // guards the same invariant everywhere else.
+            // into a silent pass. The never-skipping loopback control below
+            // checks hostname verification only, not the `resolve_to_addrs`
+            // pin, so it does not cover what this test skips.
             assert!(
                 std::env::var_os("SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK").is_none(),
                 "SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK is set but this host has no \
@@ -3851,13 +3860,15 @@ mod tests {
         server.abort();
     }
 
-    /// The invariant, with no dependence on the host's interfaces (so it can
-    /// never skip): a certificate naming only `localhost`, served on
-    /// 127.0.0.1, is refused when the client verifies the IP it dialled and
-    /// accepted when the URL names `localhost` and the connection is pinned
-    /// to the same address. The refusal is the verifier's, not a relaxation.
+    /// A hostname-verification control, with no dependence on the host's
+    /// interfaces (so it can never skip): a certificate naming only
+    /// `localhost`, served on 127.0.0.1, is refused when the client verifies
+    /// the IP it dialled and accepted when the URL names `localhost`. The
+    /// refusal is the verifier's, not a relaxation. It does NOT guard the
+    /// `resolve_to_addrs` pin: `localhost` already reaches 127.0.0.1 without
+    /// one, so the pin here is redundant.
     #[tokio::test]
-    async fn loopback_control_hostname_is_verified_and_resolve_is_what_reaches_it() {
+    async fn loopback_control_verifies_the_hostname_not_the_pin() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3891,8 +3902,10 @@ mod tests {
     async fn health_client_reaches_a_dns_name_bind_absent_from_the_san_list() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         // 127.0.0.2 is loopback on Linux but not where `localhost` points, so
-        // the pin is what reaches it there; macOS refuses to bind it and falls
-        // back to 127.0.0.1 (the URL-shape and negative-control halves hold).
+        // the pin is what reaches it there. macOS refuses to bind it and falls
+        // back to 127.0.0.1, where the pin is redundant: the `resolve_to_addrs`
+        // pin is exercised only where 127.0.0.2 binds (Linux CI), not on macOS.
+        // The URL-shape and negative-control halves hold on both.
         let listener = std::net::TcpListener::bind("127.0.0.2:0")
             .or_else(|_| std::net::TcpListener::bind("127.0.0.1:0"))
             .unwrap();

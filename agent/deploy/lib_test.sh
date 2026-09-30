@@ -1482,7 +1482,7 @@ test_verify_health() {
         "[config] cacert = \"$tls_dir/solador-agent.tls.crt\""
 
     # Every bind form's probe URL and connect target — the rows of
-    # agent/src/update.rs's `probe_target_matches_lib_sh_for_every_bind_form`,
+    # agent/src/update.rs's `probe_target_matches_lib_sh_for_the_tls_bind_forms`,
     # which must agree with these (#449). A wildcard is dialled at loopback
     # with no connect-to; every other bind, a DNS name included, is probed as
     # `localhost` and connected to the bind.
@@ -5237,8 +5237,9 @@ STUB
     # the Rust source does not read it. Excluded from the launcher's side, and
     # from the agent's side only as a NAME in a message (the TLS-off wildcard
     # warning tells an operator what to remove): an env::var/var_os read of it,
-    # or a read of it through the env-file map, is asserted absent right below,
-    # so an agent that starts reading it cannot pass unnoticed.
+    # or a `.get(`/`.remove(`/`.contains_key(` call or match arm naming it as a
+    # string literal, is asserted absent right below. Reads that go through
+    # `map["…"]` indexing or through a constant are NOT matched.
     local agent_keys launcher_keys
     # SOLADOR_AGENT_TEST_* are test-harness switches read only by #[cfg(test)]
     # code (SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK): not service configuration.

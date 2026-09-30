@@ -954,17 +954,21 @@ probes stopped depending on it rather than leaving a path where every `update`
 rolls back: `verify_health` verifies the pinned certificate as the name
 `localhost` — in every certificate's baseline — while `curl --connect-to` dials
 the bind address, and `solador-agent update`'s post-restart probe trusts the
-pinned certificate as its only root and dials `localhost` too, with the
-connection pinned to the bind (reqwest `resolve_to_addrs`, the counterpart of
-`--connect-to`): the bind's IP, the looked-up addresses of a DNS-name bind
-(before the swap; unresolvable is a refusal), or loopback for a wildcard.
+pinned certificate as its only root. For an IP or DNS-name bind it dials
+`localhost` with the connection pinned to the bind (reqwest
+`resolve_to_addrs`, the counterpart of `--connect-to`): the bind's IP, or the
+looked-up addresses of a DNS-name bind (before the swap; unresolvable is a
+refusal, as is an IPv6 zone id, for `update` and `rollback` alike). A wildcard
+bind is not pinned: the probe dials loopback as written (`https://127.0.0.1:P`
+for `0.0.0.0` or an empty bind, `https://[::1]:P` for `::` / `[::]`) and
+verifies against the baseline loopback IP SANs.
 Neither disables certificate or hostname verification, and a different
 certificate — including a CA-signed `localhost` one — is still refused. The
 tests that guard it: `health_client_reaches_a_dns_name_bind_absent_from_the_san_list`
 and `health_client_reaches_a_non_loopback_bind_absent_from_the_san_list` (the
 probe works for a bind the certificate does not name, each with a
-direct-dial negative control), `loopback_control_hostname_is_verified_and_resolve_is_what_reaches_it`
-(never skips), `health_client_refuses_a_localhost_certificate_from_another_ca`
+direct-dial negative control), `loopback_control_verifies_the_hostname_not_the_pin`
+(never skips; checks hostname verification only, not the pin), `health_client_refuses_a_localhost_certificate_from_another_ca`
 and `health_client_trusts_only_the_pinned_certificate` (the pin). The
 non-loopback one skips on a host with no route unless
 `SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK` is set, which CI does. The cockpit checks no hostname. What #457 still tracks is the list itself

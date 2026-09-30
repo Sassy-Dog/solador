@@ -1045,16 +1045,25 @@ tests build (#417); the crate still has zero dependencies.
   post-install check verifies the certificate as the name `localhost` (in every
   certificate's baseline) while `curl --connect-to` dials the bind address, and
   `solador-agent update`'s post-restart probe trusts exactly this certificate
-  as its only root and dials `localhost` too, with the connection pinned
-  (`resolve_to_addrs`) to the bind: its IP, the addresses a DNS-name bind
-  resolves to (looked up before anything is swapped; a name that does not
-  resolve is a refusal, not a failed recovery), or loopback for a wildcard.
+  as its only root. For an IP or a DNS-name bind it dials `localhost` with the
+  connection pinned (`resolve_to_addrs`) to the bind: its IP, or the addresses
+  the name resolves to (looked up before anything is swapped). A wildcard bind
+  is **not** pinned: the probe dials loopback as written (`https://127.0.0.1:P`
+  for `0.0.0.0` or an empty bind, `https://[::1]:P` for `::` / `[::]`) and
+  verifies against the baseline `127.0.0.1` / `::1` IP SANs.
   Both verify the chain **and** the hostname — verification is never
   disabled, no `danger_accept_invalid_certs` or `danger_accept_invalid_hostnames`
   anywhere — and neither breaks when the bind changes after the certificate
-  exists, an IP or a name alike. The one bind form `update` refuses under TLS is
-  an IPv6 zone id (`fe80::1%en0`): neither `resolve` nor a URL carries one
-  portably, so it names the problem before changing anything. Axum's TLS comes from
+  exists, an IP or a name alike. Under TLS both `update` and `rollback` refuse
+  two bind forms, before changing anything (`resolve_dial`): an IPv6 zone id
+  (`fe80::1%en0`), which the probe has no portable place to carry (a zone is
+  interface-local, and the probe's `localhost` URL and pinned address name none),
+  and a DNS name this host cannot resolve (5s bound). "Bind the address without
+  the zone" does not fix the first for a link-local address, which is reachable
+  only through its zone: bind a non-link-local address, or turn TLS off for that
+  host. An operator who must roll back meanwhile does it by hand — stop the
+  service, rename `<bin>.prev` over `<bin>`, start it — which bypasses the health
+  verification (`agent/README.md`, **Roll back**). Axum's TLS comes from
   `axum-server`'s `tls-rustls-no-provider` feature rather than its default
   `tls-rustls`, specifically to avoid pulling in `aws-lc-rs` (a second
   crypto backend, and a `cmake`/C build the musl cross-compile does not

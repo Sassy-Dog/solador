@@ -325,16 +325,27 @@ certificate as their only root — never with verification disabled — but chec
 it by identity, not by the address they dial. `install.sh`'s check verifies it
 as the name `localhost` (in every certificate's baseline) while `curl
 --connect-to` dials the bind address; `solador-agent update`'s post-restart
-probe trusts the certificate as its only root and dials `localhost` too, with
-the connection pinned to the bind (`resolve_to_addrs`): its IP, the addresses a
-DNS-name bind resolves to (looked up before anything is swapped — a name that
-does not resolve is a refusal with nothing changed, never a failed recovery),
-or loopback for a wildcard — chain and hostname are both verified. A bind that
-changes after the certificate exists therefore breaks neither, whether it is
-an IP or a name (the MagicDNS name of a host first installed on all
-interfaces, say). The exception is an IPv6 zone-id bind (`fe80::1%en0`), which
-`update` refuses under TLS before changing anything — neither a resolver pin
-nor a URL carries a zone id portably.
+probe trusts the certificate as its only root. For an IP or a DNS-name bind it
+dials `localhost` with the connection pinned to the bind (`resolve_to_addrs`,
+the counterpart of `--connect-to`): its IP, or the addresses the name resolves
+to (looked up before anything is swapped). A wildcard bind is **not** pinned:
+the probe dials loopback as written — `https://127.0.0.1:P` for `0.0.0.0` or an
+empty bind, `https://[::1]:P` for `::` / `[::]` — and verifies against the
+baseline `127.0.0.1` / `::1` IP SANs. Chain and hostname are both verified. A
+bind that changes after the certificate exists therefore breaks neither,
+whether it is an IP or a name (the MagicDNS name of a host first installed on
+all interfaces, say).
+
+Two bind forms are **refused under TLS by both `solador-agent update` and
+`solador-agent rollback`**, before anything is fetched, swapped or restarted:
+an IPv6 zone id (`fe80::1%en0`), which the probe has no portable place to carry
+(a zone is interface-local, and the probe's `localhost` URL and pinned address
+name none), and a DNS name this host cannot resolve (bounded at 5 s) — a
+refusal with nothing changed, never a failed recovery. Advice to "bind the
+address without the zone" does not work for a link-local address, which is
+reachable only through its zone: bind a non-link-local address, or turn TLS off
+for that host. Until then, an operator who needs to roll back does it by hand
+(see **Roll back**, "When `rollback` refuses the bind").
 
 **A wildcard bind (#449) adds nothing to the list, and needs nothing.**
 `0.0.0.0` and `::` are dropped from the SANs (nothing dials them), and the
@@ -1714,6 +1725,28 @@ service did not come back* (the swap stands and is reversible — run
 binary is live but the displaced one could not be moved into `.prev`, so it
 sits at `solador-agent.rollback-displaced` and nothing was restarted; the
 message names all three files and the `mv` that finishes it.
+
+**When `rollback` refuses the bind** (a TLS host bound to an IPv6 zone id or to
+a name that does not resolve — see the certificate section above), the
+command changes nothing, and on macOS it is the only documented path. The
+escape is a manual swap that **bypasses the health verification entirely** —
+nothing checks that the restored binary came back — and, unlike `rollback`, is
+not reversible (the displaced binary is overwritten, not kept as `.prev`):
+
+```bash
+# Linux
+systemctl --user stop solador-agent
+mv -f ~/.local/bin/solador-agent.prev ~/.local/bin/solador-agent
+systemctl --user start solador-agent
+
+# macOS
+launchctl bootout gui/$(id -u)/app.solador.agent
+mv -f ~/.local/bin/solador-agent.prev ~/.local/bin/solador-agent
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/app.solador.agent.plist
+```
+
+Then fix the bind (a non-link-local address, or TLS off) before the next
+`update`.
 
 **The from-source script, Linux only**:
 

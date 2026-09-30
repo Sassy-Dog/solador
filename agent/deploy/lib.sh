@@ -388,9 +388,11 @@ build_release_binary() {
 # "1" means https://, anything else (including absent) means http:// — never
 # inferred from the port. agent/src/update.rs's `probe_target` carries the same
 # rows — this URL, and for TLS `verify_health`'s `connect_line` — and its table
-# test plus lib_test.sh's `verify_health` table pin the two to each other. They
-# agree on every bind form but one: an IPv6 zone id, which `update` refuses
-# under TLS and curl is handed unchanged.
+# test plus lib_test.sh's `verify_health` table (TLS=1 rows only) pin the two
+# to each other for those TLS forms. Known differences, tracked in a follow-up:
+# an IPv6 zone id (`update` refuses it under TLS, curl is handed it unchanged),
+# plain-HTTP rows (unpinned), and already-bracketed non-IPv6 binds
+# (`[100.64.0.9]`, `[host]`), and this function double-brackets `[fd7a::1]`.
 health_url() {
     local bind="${1:-}" port="${2:-7878}" tls="${3:-}" host scheme
     case "$bind" in
