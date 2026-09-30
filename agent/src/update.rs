@@ -1297,7 +1297,8 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
             ))
         })?;
     // Required, not defaulted: with no bind the agent detects a tailnet
-    // address at start that this command cannot dial, and a probe of
+    // address at start (or, with TLS on and no tailnet, binds all interfaces
+    // — #449) that this command cannot dial, and a probe of
     // loopback would then swap, fail health, restore and exit 3 on a
     // perfectly healthy host. install.sh always writes the key; a hand-made
     // env file without it is refused, naming the fix.
@@ -1308,7 +1309,7 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
         .ok_or_else(|| {
             UpdateError::Install(format!(
                 "{} names no SOLADOR_AGENT_BIND; the service binds a detected tailnet address \
-                 this command cannot dial. Add SOLADOR_AGENT_BIND=<the address the agent \
+                 (or all interfaces, with TLS on) this command cannot dial. Add SOLADOR_AGENT_BIND=<the address the agent \
                  listens on> to the env file (install.sh always writes it)",
                 env_file.display()
             ))
@@ -1667,10 +1668,16 @@ fn release_client(
 /// `solador-agent.tls.crt` (#447):
 /// the client trusts **exactly that certificate** — not the system CA
 /// bundle, which a self-signed certificate could never chain to anyway —
-/// still through the standard chain-and-hostname verifier, never with
-/// verification disabled. `wait_for_health` always dials the configured
-/// bind host (loopback only for a wildcard bind), which is why that same
-/// host is in the certificate's SAN list (`tls::load_or_generate`).
+/// still through the standard chain verifier, never with verification
+/// disabled — **except the hostname**. `wait_for_health` dials the configured
+/// bind address, and a certificate's SAN list is fixed when it is generated
+/// (`tls::load_or_generate`) while the bind can change afterwards (#449: all
+/// interfaces to a tailnet address the day Tailscale comes up). Checking the
+/// name would then fail a healthy host and roll back every update. The
+/// certificate is the identity here — the client's ONLY trust root is this one
+/// file, so a peer without its private key cannot pass — which is also what
+/// `lib.sh`'s `verify_health` checks, by other means (`localhost` +
+/// `connect-to`).
 fn health_client(
     running_version: Option<&str>,
     pin: Option<&[u8]>,
@@ -1688,7 +1695,8 @@ fn health_client(
         })?;
         builder = builder
             .add_root_certificate(cert)
-            .tls_built_in_root_certs(false);
+            .tls_built_in_root_certs(false)
+            .danger_accept_invalid_hostnames(true);
     }
     builder.build().map_err(|e| UpdateError::Network {
         what: "http client".to_string(),
@@ -3492,6 +3500,57 @@ mod tests {
         // not the only thing standing between this client and a forged cert.
         let unpinned = health_client(None, None).unwrap();
         assert!(unpinned.get(&url).send().await.is_err());
+
+        server.abort();
+    }
+
+    /// #449: the bind can change after the certificate was generated (all
+    /// interfaces to a tailnet address), and a certificate's SAN list cannot.
+    /// The probe must accept the pinned certificate whatever name it is dialled
+    /// by — and still refuse every other certificate, which is the whole of its
+    /// identity check (and the negative control for the hostname relaxation:
+    /// it is not `danger_accept_invalid_certs`).
+    #[tokio::test]
+    async fn health_client_ignores_the_hostname_but_never_the_certificate() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        // A certificate whose SAN list names neither loopback nor the address
+        // the probe will dial: exactly what a bind changing later produces.
+        let mint = |name: &str| {
+            let key = rcgen::KeyPair::generate().unwrap();
+            let cert = rcgen::CertificateParams::new(vec![name.to_string()])
+                .unwrap()
+                .self_signed(&key)
+                .unwrap();
+            (cert.der().to_vec(), key.serialize_der())
+        };
+        let (cert_der, key_der) = mint("some-other-name.example");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let config =
+            axum_server::tls_rustls::RustlsConfig::from_der(vec![cert_der.clone()], key_der)
+                .await
+                .unwrap();
+        let app = axum::Router::new().route("/v1/health", axum::routing::get(|| async { "ok" }));
+        let server = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, config)
+                .serve(app.into_make_service())
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let url = format!("https://127.0.0.1:{}/v1/health", addr.port());
+
+        // The name does not match the SAN list, and the pinned certificate is
+        // accepted anyway.
+        let pinned = health_client(None, Some(&cert_der)).unwrap();
+        assert!(pinned.get(&url).send().await.unwrap().status().is_success());
+
+        // A different certificate — even one that DOES name the address — is
+        // refused: the certificate is the identity.
+        let (other_der, _) = mint("127.0.0.1");
+        let wrong = health_client(None, Some(&other_der)).unwrap();
+        assert!(wrong.get(&url).send().await.is_err());
 
         server.abort();
     }

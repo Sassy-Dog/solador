@@ -244,6 +244,12 @@ while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
         '' | '#'*)
             ;;
+        # install.sh's own marker (#449) for a bind it chose provisionally. The
+        # agent does not read it, so it is deliberately not exported — but it is
+        # a recognised line, and must not log "ignoring unrecognised line" on
+        # every start of an auto-bound host.
+        SOLADOR_AGENT_BIND_AUTO=*)
+            ;;
         SOLADOR_AGENT_TOKEN=* | SOLADOR_AGENT_BIND=* | SOLADOR_AGENT_PORT=* | \
         SOLADOR_AGENT_TLS=* | SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)
             key="${line%%=*}"

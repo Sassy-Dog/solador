@@ -28,6 +28,11 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 sha2 = "0.11"
 serde_json = { workspace = true }
 thiserror = "2"
+# The system resolver behind the plain-HTTP guard (#449) -- `lookup_host` only,
+# the same tokio reqwest already pulls in. `url` is reqwest's own URL type,
+# used to tell an IP literal from a name.
+tokio = { version = "1", features = ["net"] }
+url = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }

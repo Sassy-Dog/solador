@@ -1254,20 +1254,40 @@ elif [ "$MIGRATE_FROM_OPT" = true ]; then
 fi
 
 # ---- bind address and port ---------------------------------------------------
-# Resolved HERE, in preflight, because a host with no Tailscale and no
-# SOLADOR_AGENT_BIND is refused — and that refusal must land before a download,
-# a signature check and a token prompt, not after them.
-# Default to the host's Tailscale IP so the agent only listens on the tailnet,
-# never the public NIC. Honor a pre-set SOLADOR_AGENT_BIND (e.g. to opt into
-# 0.0.0.0 behind a firewall) and reuse an existing value from the env file.
+# The order is the same as solador-agent's own resolve_bind_host (#449): an
+# explicit SOLADOR_AGENT_BIND, then the value the env file already carries,
+# then the host's Tailscale IP. A host with none of the three is decided
+# below, once TLS is: with TLS on the token is encrypted and the certificate
+# pinned, so the answer is all interfaces (0.0.0.0) rather than a refusal;
+# with TLS off the tailnet is the only thing protecting the token on the wire,
+# and the host is refused. The refusal still lands before a download, a
+# signature check and a token prompt whenever TLS is known to be off by then.
 # Every env-file read goes through env_value (lib.sh): the same CR/whitespace/
 # quote stripping the launcher and systemd apply, so what is verified is what
 # the service actually starts with.
 EXISTING_BIND="$(env_value "$ENV_FILE" SOLADOR_AGENT_BIND)"
+# SOLADOR_AGENT_BIND_AUTO=1 (#449) is written beside an all-interfaces bind THIS
+# script chose because TLS was on and there was no tailnet. It marks that bind
+# as *provisional*: on every re-run it is set aside and the bind is resolved
+# again from scratch (a tailnet IP if one is up now; all interfaces only while
+# TLS is on; otherwise the plain-HTTP refusal), so it never survives TLS being
+# turned off and never pins a host to the wildcard after Tailscale arrives. A
+# bind WITHOUT the marker is an operator's explicit choice and is honoured as it
+# always was, plain HTTP included. The agent and the launcher ignore the key.
+EXISTING_BIND_AUTO="$(env_value "$ENV_FILE" SOLADOR_AGENT_BIND_AUTO)"
+BIND_AUTO=false
+AUTO_BIND_SET_ASIDE=""
 # ...and the same carry-over, so a host that deliberately opted out of the
 # tailnet default keeps its choice instead of silently reverting to detection.
 if [ -z "$EXISTING_BIND" ]; then
     EXISTING_BIND="$(env_value "$LEGACY_ENV_FILE" DEVCANOPY_AGENT_BIND)"
+elif [ "$EXISTING_BIND_AUTO" = "1" ]; then
+    case "$EXISTING_BIND" in
+        0.0.0.0 | "::" | "[::]")
+            AUTO_BIND_SET_ASIDE="$EXISTING_BIND"
+            EXISTING_BIND=""
+            ;;
+    esac
 fi
 
 detect_tailscale_ip() {
@@ -1295,14 +1315,31 @@ elif [ -n "$EXISTING_BIND" ]; then
 else
     BIND="$(detect_tailscale_ip || true)"
     BIND_SOURCE="detected Tailscale IP"
+    if [ -n "$AUTO_BIND_SET_ASIDE" ] && [ -n "$BIND" ]; then
+        BIND_SOURCE="detected Tailscale IP; the all-interfaces bind an earlier install chose is replaced"
+    fi
 fi
-if [ -z "$BIND" ]; then
-    echo "ERROR: could not detect a Tailscale IP for SOLADOR_AGENT_BIND." >&2
-    echo "       Bring up Tailscale, or set SOLADOR_AGENT_BIND explicitly" >&2
-    echo "       (e.g. SOLADOR_AGENT_BIND=0.0.0.0 $RERUN_CMD — only behind a firewall)." >&2
+# Empty here means "no explicit bind, no existing bind, no tailnet": resolved
+# once TLS is decided (the block after the "TLS:" line, below).
+
+# The refusal for a host with no bind address and no TLS. One place, so the
+# early (pre-download) and late (post-staging) callers say the same thing.
+refuse_no_bind() {
+    echo "ERROR: could not detect a Tailscale IP for SOLADOR_AGENT_BIND, and TLS is off," >&2
+    echo "       so the bearer token would cross the network in the clear." >&2
+    echo "       Bring up Tailscale, set SOLADOR_AGENT_BIND to the address the cockpit" >&2
+    echo "       dials, or serve HTTPS (SOLADOR_AGENT_TLS=1 $RERUN_CMD), which binds" >&2
+    echo "       all interfaces when there is no tailnet." >&2
+    if [ -n "$AUTO_BIND_SET_ASIDE" ]; then
+        echo "       The env file's SOLADOR_AGENT_BIND=$AUTO_BIND_SET_ASIDE was chosen by an earlier install (marked" >&2
+        echo "       SOLADOR_AGENT_BIND_AUTO=1) for TLS with no tailnet, so it is not kept over plain" >&2
+        echo "       HTTP. If you turn TLS off by editing $ENV_FILE yourself, remove BOTH" >&2
+        echo "       SOLADOR_AGENT_BIND and SOLADOR_AGENT_BIND_AUTO from it, or set SOLADOR_AGENT_BIND" >&2
+        echo "       to one address: the agent honours a bind it finds there, wildcard included." >&2
+    fi
+    echo "       Nothing has been changed." >&2
     exit 1
-fi
-echo "==> Binding to $BIND ($BIND_SOURCE)"
+}
 
 # Same precedence as the bind: an explicit SOLADOR_AGENT_PORT, then the port
 # the env file already carries, then the default. Reading the existing value
@@ -1346,6 +1383,21 @@ if [ -f "$ENV_FILE" ] || [ -f "$LEGACY_ENV_FILE" ]; then
     FRESH_INSTALL=false
 fi
 EXISTING_TLS="$(env_value "$ENV_FILE" SOLADOR_AGENT_TLS)"
+
+# Early refusal (#449): with no bind address at all, TLS is the only way this
+# run can proceed. Whether TLS will be on is not final until the staged binary
+# has been asked about it, but the cases where it cannot be are known now —
+# SOLADOR_AGENT_TLS set to something other than 1, or an existing env file
+# whose TLS choice is not 1 and no --enable-tls — so refuse those before any
+# download, exactly as before. The remaining case (a fresh install whose
+# staged binary predates TLS) is refused after staging by the same function.
+if [ -z "$BIND" ]; then
+    if [ -n "${SOLADOR_AGENT_TLS:-}" ]; then
+        [ "$SOLADOR_AGENT_TLS" = "1" ] || refuse_no_bind
+    elif [ "$FRESH_INSTALL" = false ] && [ "$ENABLE_TLS" != true ] && [ "$EXISTING_TLS" != "1" ]; then
+        refuse_no_bind
+    fi
+fi
 
 # ---- resolve the release -----------------------------------------------------
 if [ -n "${SOLADOR_AGENT_RELEASE:-}" ]; then
@@ -1481,6 +1533,38 @@ else
     echo "==> TLS: off ($TLS_SOURCE; re-run with --enable-tls to turn it on)"
 fi
 
+# The host with no bind address, now that TLS is decided (#449). TLS on: all
+# interfaces, and BIND_SOURCE says why. TLS off: the refusal, as before.
+# It takes a TLS the staged binary can actually serve: an explicit
+# SOLADOR_AGENT_TLS=1 against a release that predates TLS is served as plain HTTP.
+if [ -z "$BIND" ]; then
+    if [ "$TLS_VALUE" != "1" ] || [ "$STAGED_BIN_SUPPORTS_TLS" != true ]; then
+        refuse_no_bind
+    fi
+    BIND="0.0.0.0"
+    BIND_SOURCE="all interfaces: no Tailscale IP detected, and TLS is on"
+    BIND_AUTO=true
+fi
+case "$BIND" in
+    0.0.0.0 | "::" | "[::]") BIND_ALL_INTERFACES=true ;;
+    *) BIND_ALL_INTERFACES=false ;;
+esac
+echo "==> Binding to $BIND ($BIND_SOURCE)"
+if [ "$BIND_ALL_INTERFACES" = true ]; then
+    if [ "$TLS_VALUE" = "1" ] && [ "$STAGED_BIN_SUPPORTS_TLS" = true ]; then
+        echo "    The agent will be reachable on EVERY network this host is on, including any"
+        echo "    public address. The bearer token and the pinned TLS certificate protect it;"
+        echo "    firewall port ${PORT} or set SOLADOR_AGENT_BIND to one interface on a host with"
+        echo "    a public address."
+    else
+        echo "    WARNING: PLAIN HTTP ON EVERY INTERFACE. This bind is an explicit choice"
+        echo "    ($BIND_SOURCE) and is honoured, but the bearer token crosses every network"
+        echo "    this host is on in the clear. The cockpit will not send it here over plain"
+        echo "    HTTP unless the address it dials is loopback or Tailscale. Turn TLS on"
+        echo "    (--enable-tls), or set SOLADOR_AGENT_BIND to one address."
+    fi
+fi
+
 # A re-run is the update path, and `/releases/latest` is the one unsigned
 # link in the chain (docs/AGENT-DISTRIBUTION.md §6): an intercepting proxy
 # could steer it to an older, validly signed release. A FRESH install has
@@ -1569,8 +1653,11 @@ ENV_NEW="$ENV_FILE.new"
         printf 'SOLADOR_AGENT_BIND=%s\n' "$BIND"
         printf 'SOLADOR_AGENT_PORT=%s\n' "$PORT"
         printf 'SOLADOR_AGENT_TLS=%s\n' "$TLS_VALUE"
+        if [ "$BIND_AUTO" = true ]; then
+            printf 'SOLADOR_AGENT_BIND_AUTO=1\n'
+        fi
         if [ -f "$ENV_FILE" ]; then
-            grep -vE '^SOLADOR_AGENT_(TOKEN|BIND|PORT|TLS)=' "$ENV_FILE" || true
+            grep -vE '^SOLADOR_AGENT_(TOKEN|BIND|PORT|TLS|BIND_AUTO)=' "$ENV_FILE" || true
         fi
     } > "$ENV_NEW"
 )
@@ -1784,6 +1871,13 @@ fi
 
 echo
 echo "==> Done: $BIN_NAME $TARGET_VERSION installed and serving."
+if [ "$BIND_ALL_INTERFACES" = true ] && [ "$TLS_VALUE" != "1" ]; then
+    echo "    Bind:    $BIND:$PORT — ALL interfaces, PLAIN HTTP ($BIND_SOURCE)"
+elif [ "$BIND_ALL_INTERFACES" = true ]; then
+    echo "    Bind:    $BIND:$PORT — ALL interfaces ($BIND_SOURCE)"
+else
+    echo "    Bind:    $BIND:$PORT — that interface only ($BIND_SOURCE)"
+fi
 case "$OS" in
     Linux)
         systemctl --user --no-pager status "$BIN_NAME" || true
@@ -1814,6 +1908,12 @@ if [ "$TLS_VALUE" = "1" ]; then
         echo "      A Solador cockpit older than certificate pairing (#448) cannot dial an HTTPS"
         echo "      agent and reads this host as unreachable: update the cockpit, or edit"
         echo "      $ENV_FILE, set SOLADOR_AGENT_TLS=0, and restart the service."
+        if [ "$BIND_ALL_INTERFACES" = true ]; then
+            echo "      Plain HTTP on all interfaces sends the token in the clear: in that file ALSO"
+            echo "      remove BOTH SOLADOR_AGENT_BIND and SOLADOR_AGENT_BIND_AUTO (so the agent"
+            echo "      finds the tailnet address itself), or set SOLADOR_AGENT_BIND to the one address"
+            echo "      the cockpit dials. The agent honours a bind it finds there, wildcard included."
+        fi
     else
         echo "    TLS: on, but the fingerprint could not be read (this should not happen right" >&2
         echo "       after a verified HTTPS health check): $TLS_FINGERPRINT" >&2

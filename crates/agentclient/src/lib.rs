@@ -7,7 +7,9 @@
 //! # Two ways to dial
 //!
 //! [`AgentClient::new`] is plain HTTP, for a host that was never paired — over
-//! Tailscale the transport is what carries the encryption. [`AgentClient::pinned`]
+//! loopback or Tailscale the network is what protects the token, and **only**
+//! there: it refuses to send the token to any other address (see [`plain`],
+//! #449). [`AgentClient::pinned`]
 //! is for a host the operator paired (#448): HTTPS to one certificate, no
 //! authority consulted, and **never** a fall back to `http://` (see `pin`).
 //! [`probe_certificate`] is the pairing step itself: it fetches the certificate
@@ -15,12 +17,14 @@
 //! nothing.
 
 mod pin;
+mod plain;
 
 use std::time::Duration;
 
 use fault::Fault;
 
 pub use pin::fingerprint;
+pub use plain::{all_plain_http_permitted, plain_http_permitted};
 
 /// The operator-facing name of what failed, and the only thing
 /// [`Fault::message`] interpolates.
@@ -50,6 +54,12 @@ pub enum AgentError {
     /// retried over `http://`.
     #[error("the agent does not speak TLS")]
     NoTls,
+    /// A host that was never paired sits at an address that is neither
+    /// loopback nor Tailscale (#449), so **nothing was sent**: the bearer
+    /// token is never put on plain HTTP off those two. Not a network failure;
+    /// the fix is to pair the host.
+    #[error("plain HTTP refused: the address is neither loopback nor Tailscale")]
+    PlainHttpRefused,
 }
 
 impl AgentError {
@@ -91,6 +101,10 @@ impl AgentError {
             // network for a problem that is the pairing.
             AgentError::CertificateChanged => Fault::CertificateChanged.message(AGENT),
             AgentError::NoTls => Fault::NoTls.message(AGENT),
+            // Its own sentence too (#449): the machine may be perfectly
+            // reachable, and nothing was sent. "Check the host is up" would be
+            // the wrong fix; pairing it is the right one.
+            AgentError::PlainHttpRefused => Fault::PlainHttpRefused.message(AGENT),
         }
     }
 }
@@ -236,9 +250,34 @@ fn tls_failure(error: &reqwest::Error) -> Option<&rustls::Error> {
     None
 }
 
+/// Did the plain-HTTP guard's resolver refuse this send (#449)? Looks through
+/// `io::Error` wrappers the same way [`tls_failure`] does, because the
+/// resolver's error reaches the caller boxed inside the connector's.
+fn refused_by_guard(error: &reqwest::Error) -> bool {
+    fn inside(err: &(dyn std::error::Error + 'static)) -> bool {
+        if err.downcast_ref::<plain::Refused>().is_some() {
+            return true;
+        }
+        err.downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .is_some_and(|wrapped| inside(wrapped))
+    }
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(err) = current {
+        if inside(err) {
+            return true;
+        }
+        current = err.source();
+    }
+    false
+}
+
 /// How a failed send is classified: a certificate the pin refused, a peer that
 /// is not speaking TLS, or — for everything else — unreachable.
 fn send_failed(error: &reqwest::Error) -> AgentError {
+    if refused_by_guard(error) {
+        return AgentError::PlainHttpRefused;
+    }
     match tls_failure(error) {
         Some(rustls::Error::InvalidCertificate(_)) => AgentError::CertificateChanged,
         Some(rustls::Error::InvalidMessage(_)) => AgentError::NoTls,
@@ -250,6 +289,10 @@ pub struct AgentClient {
     base_url: String,
     token: String,
     http: reqwest::Client,
+    /// `Some` for a client that was never paired: the rule an address must pass
+    /// before the token is put on plain HTTP to it (#449). `None` for a pinned
+    /// client, whose transport is TLS to one certificate and needs no such rule.
+    plain_policy: Option<plain::Policy>,
 }
 
 impl AgentClient {
@@ -271,13 +314,43 @@ impl AgentClient {
     /// operator-facing error string. Nothing in this crate violates the
     /// invariant today — this is here so a future caller doesn't.
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
+        Self::plain(
+            base_url,
+            token,
+            plain::system_lookup(),
+            all_plain_http_permitted,
+        )
+    }
+
+    /// [`AgentClient::new`] with the resolver and the address rule spelled out,
+    /// so the tests can map a name to an address whose listener is local and
+    /// prove what the guard does — and, with a rule that permits everything,
+    /// that the same test goes red without it.
+    fn plain(
+        base_url: impl Into<String>,
+        token: impl Into<String>,
+        lookup: plain::Lookup,
+        policy: plain::Policy,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token: token.into(),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
+                // The guard's resolver is the ONLY resolution this client
+                // performs, so the addresses it connects to are the addresses
+                // that were vetted. An IP literal skips resolvers, and is
+                // vetted in `get_body`.
+                .dns_resolver(std::sync::Arc::new(plain::Vetted::new(lookup, policy)))
+                // A proxy would receive the token and resolve the name where
+                // this client cannot see it, so the guarantee could not be
+                // made. An agent on loopback or the tailnet is not behind one.
+                .no_proxy()
+                // A redirect is a second destination nobody vetted.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("reqwest client"),
+            plain_policy: Some(policy),
         }
     }
 
@@ -319,6 +392,7 @@ impl AgentClient {
                 .use_preconfigured_tls(pin::PinnedVerifier::config(fingerprint))
                 .build()
                 .expect("reqwest client"),
+            plain_policy: None,
         }
     }
 
@@ -356,6 +430,7 @@ impl AgentClient {
     /// so it should break that test rather than drift.
     async fn get_body(&self, path: &str) -> Result<String, AgentError> {
         let url = format!("{}{path}", self.base_url);
+        self.vet_literal_host(&url)?;
         let resp = self
             .http
             .get(&url)
@@ -376,6 +451,34 @@ impl AgentClient {
     }
 }
 
+impl AgentClient {
+    /// The half of the plain-HTTP rule (#449) a resolver cannot see: an IP
+    /// **literal** in the URL is never resolved, so it is judged here, before
+    /// anything is written to a socket. A name is judged by [`plain::Vetted`],
+    /// inside the connection.
+    fn vet_literal_host(&self, url: &str) -> Result<(), AgentError> {
+        let Some(policy) = self.plain_policy else {
+            return Ok(());
+        };
+        let Ok(url) = reqwest::Url::parse(url) else {
+            return Ok(());
+        };
+        if url.scheme() != "http" {
+            return Ok(());
+        }
+        let ip = match url.host() {
+            Some(url::Host::Ipv4(v4)) => std::net::IpAddr::V4(v4),
+            Some(url::Host::Ipv6(v6)) => std::net::IpAddr::V6(v6),
+            _ => return Ok(()),
+        };
+        if policy(&[ip]) {
+            Ok(())
+        } else {
+            Err(AgentError::PlainHttpRefused)
+        }
+    }
+}
+
 /// One place that turns a deserialisation failure into `DecodeFailed`, so all
 /// three endpoints report agent/app skew identically.
 fn decode_failed(e: serde_json::Error) -> AgentError {
@@ -384,6 +487,8 @@ fn decode_failed(e: serde_json::Error) -> AgentError {
 
 #[cfg(test)]
 mod pinning_tests;
+#[cfg(test)]
+mod plain_tests;
 
 #[cfg(test)]
 mod tests {

@@ -22,7 +22,8 @@ pub struct Host {
     pub id: Uuid,
     /// Display name in the cockpit.
     pub name: String,
-    /// Tailscale IP or MagicDNS name.
+    /// Any address the cockpit can reach the agent on: a Tailscale IP or
+    /// MagicDNS name, a LAN address, a DNS name. Tailscale is optional.
     pub address: String,
     #[serde(default = "default_agent_port")]
     pub port: u16,
@@ -81,7 +82,8 @@ impl Host {
     /// (`fault::Fault::NoTls`), not followed down.
     ///
     /// A host with no pin stays plain HTTP: over Tailscale the transport is
-    /// what carries the encryption (see `agent/README.md`), and a store from
+    /// what carries the encryption, and it is the only network an agent serving
+    /// plain HTTP binds (see `agent/README.md`), and a store from
     /// before pinning existed must keep polling the agents it always polled.
     /// `Some("")` is still a pin — an unusable one, which no certificate
     /// matches — so a hand-edited store cannot turn pinning *off* by blanking

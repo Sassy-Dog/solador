@@ -1,7 +1,8 @@
 //! Solador per-host metrics agent.
 //!
 //! An axum HTTP server exposing host metrics and a container list as JSON,
-//! guarded by a bearer token. Solador (a macOS app) polls it over Tailscale.
+//! guarded by a bearer token. Solador polls it over whatever network path reaches
+//! the host (Tailscale is optional).
 
 mod containers;
 mod gpu;
@@ -122,7 +123,8 @@ Takes no arguments in normal operation; it is configured entirely from the
 environment (systemd EnvironmentFile on Linux, launchd on macOS):
 
   SOLADOR_AGENT_TOKEN  required bearer token; the agent refuses to start without it
-  SOLADOR_AGENT_BIND   bind address (default: the detected Tailscale IP)
+  SOLADOR_AGENT_BIND   bind address (default: the detected Tailscale IP; with
+                       none, all interfaces if SOLADOR_AGENT_TLS=1, else refuse)
   SOLADOR_AGENT_PORT   listen port (default: 7878)
   SOLADOR_AGENT_TLS    1 serves HTTPS with a self-signed certificate kept for
                        the host's lifetime, instead of plain HTTP (default: unset)
@@ -212,11 +214,18 @@ async fn main() {
 
     let app = build_router(state);
 
-    // Resolve the bind host. Default is the host's Tailscale (tailnet) IP so the
-    // agent is *not* reachable on the public NIC. Binding all interfaces
-    // (0.0.0.0 / ::) requires explicit opt-in via SOLADOR_AGENT_BIND.
+    // TLS is opt-in by config (#447): SOLADOR_AGENT_TLS=1 in the env file.
+    let tls_on = tls::flag_enabled(std::env::var("SOLADOR_AGENT_TLS").ok().as_deref());
+
+    // Resolve the bind host. Over plain HTTP the default is the host's
+    // Tailscale (tailnet) IP, and no tailnet means a refusal to start — the
+    // tailnet is the only thing protecting the token on the wire. With TLS on
+    // (#449) the token no longer crosses the network in the clear, so a host
+    // with no tailnet binds all interfaces instead. An explicit
+    // SOLADOR_AGENT_BIND wins over both.
     let bind_host = match resolve_bind_host(
         std::env::var("SOLADOR_AGENT_BIND").ok(),
+        tls_on,
         detect_tailscale_ip,
     ) {
         Ok(h) => h,
@@ -228,9 +237,22 @@ async fn main() {
 
     let addr = format_bind_addr(&bind_host, port);
 
-    // TLS is opt-in by config (#447): SOLADOR_AGENT_TLS=1 in the env file.
-    // Without it, everything below this point is unchanged from before #447.
-    if tls::flag_enabled(std::env::var("SOLADOR_AGENT_TLS").ok().as_deref()) {
+    if is_wildcard_host(&bind_host) {
+        tracing::warn!(
+            "binding all interfaces ({addr}): the agent is reachable on every network this \
+             host is on; its only protection is the bearer token{}. \
+             Firewall the port, or set SOLADOR_AGENT_BIND to one interface, on a host with \
+             a public address.",
+            if tls_on {
+                " and pinned TLS certificate"
+            } else {
+                ""
+            }
+        );
+    }
+
+    // Without TLS, everything below this point is unchanged from before #447.
+    if tls_on {
         serve_tls(app, &addr, &bind_host, &hostname).await;
         return;
     }
@@ -307,9 +329,10 @@ fn tls_config_dir() -> Result<std::path::PathBuf, String> {
 /// config directory (`tls::load_or_generate` — the ONLY call site in this
 /// binary that may generate one; `tls-fingerprint`, `update` and `rollback`
 /// only ever read). `bind_host` goes into the certificate's SAN list beside
-/// the loopback baseline, because the health probes in `install.sh` and
-/// `solador-agent update` dial the configured bind address, not loopback,
-/// whenever it names a concrete host (the default: a detected Tailscale IP).
+/// the loopback baseline, so a client that dials the bind address by name can
+/// verify it. The list is fixed at first start, and the local health probes do
+/// not depend on it (they pin the certificate itself, #449). A wildcard bind
+/// adds nothing.
 /// Exits the process on any fatal error, the same way the plain-HTTP path
 /// above does.
 async fn serve_tls(app: axum::Router, addr: &str, bind_host: &str, hostname: &str) {
@@ -528,19 +551,26 @@ fn is_tailscale_ipv4(ip: std::net::Ipv4Addr) -> bool {
     o[0] == 100 && (64..=127).contains(&o[1])
 }
 
+/// Is this bind host a wildcard (all interfaces)?
+fn is_wildcard_host(host: &str) -> bool {
+    matches!(host, "0.0.0.0" | "::" | "[::]")
+}
+
 /// Decide the host portion of the bind address.
 ///
-/// - If `SOLADOR_AGENT_BIND` is set (non-empty), honor it verbatim. This is
-///   the only way to bind a non-tailnet interface, including the explicit
-///   opt-ins `0.0.0.0` / `::` for all-interfaces.
-/// - Otherwise default to the detected Tailscale IP so the agent only listens
-///   on the tailnet.
-/// - If neither is available, refuse to start rather than silently falling back
-///   to `0.0.0.0` and exposing the host on its public NIC.
+/// - If `SOLADOR_AGENT_BIND` is set (non-empty), honor it verbatim, in every
+///   case below. This is how to bind a specific non-tailnet interface, or
+///   `0.0.0.0` / `::` for all-interfaces over plain HTTP.
+/// - Otherwise default to the detected Tailscale IP.
+/// - With no tailnet IP, `tls_on` decides (#449): over plain HTTP, refuse to
+///   start rather than silently falling back to `0.0.0.0` and sending the
+///   bearer token in the clear on whatever network the host is on; with TLS
+///   on the token is encrypted and the certificate pinned, so bind all
+///   interfaces (`0.0.0.0`) instead of forcing Tailscale on the host.
 ///
 /// `detect` is injected so the decision is unit-testable without touching the
 /// real network.
-fn resolve_bind_host<F>(env_bind: Option<String>, detect: F) -> Result<String, String>
+fn resolve_bind_host<F>(env_bind: Option<String>, tls_on: bool, detect: F) -> Result<String, String>
 where
     F: FnOnce() -> Option<String>,
 {
@@ -553,10 +583,13 @@ where
 
     match detect() {
         Some(ip) => Ok(ip),
+        None if tls_on => Ok("0.0.0.0".to_string()),
         None => Err(
-            "could not detect a Tailscale IP to bind to. Set SOLADOR_AGENT_BIND \
-             to the tailnet address (e.g. 100.x.y.z), or to 0.0.0.0 to bind all \
-             interfaces (only do this behind a firewall)."
+            "could not detect a Tailscale IP to bind to, and TLS is off (the token \
+             would cross the network in the clear). Set SOLADOR_AGENT_BIND to the \
+             tailnet address (e.g. 100.x.y.z), turn TLS on (SOLADOR_AGENT_TLS=1) to \
+             bind all interfaces by default, or set SOLADOR_AGENT_BIND=0.0.0.0 to \
+             bind all interfaces anyway (only do this behind a firewall)."
                 .to_string(),
         ),
     }
@@ -768,36 +801,68 @@ mod tests {
         assert!(!is_tailscale_ipv4("192.168.1.1".parse().unwrap()));
     }
 
-    #[test]
-    fn resolve_bind_host_prefers_explicit_env() {
-        // Explicit env wins; detection is never consulted.
-        let got = resolve_bind_host(Some("0.0.0.0".to_string()), || {
-            panic!("detect must not be called when env is set")
-        });
-        assert_eq!(got.unwrap(), "0.0.0.0");
+    const TAILNET: &str = "100.5.6.7";
 
-        let got = resolve_bind_host(Some("  100.1.2.3  ".to_string()), || {
-            panic!("detect must not be called when env is set")
-        });
-        assert_eq!(got.unwrap(), "100.1.2.3");
+    fn bind(env: Option<&str>, tls_on: bool, tailnet: bool) -> Result<String, String> {
+        resolve_bind_host(env.map(str::to_string), tls_on, || {
+            tailnet.then(|| TAILNET.to_string())
+        })
     }
 
     #[test]
-    fn resolve_bind_host_falls_back_to_detection_when_env_blank() {
-        let got = resolve_bind_host(None, || Some("100.5.6.7".to_string()));
-        assert_eq!(got.unwrap(), "100.5.6.7");
+    fn resolve_bind_host_prefers_explicit_env_in_every_case() {
+        // Explicit env wins over TLS on/off and a detected tailnet; detection
+        // is never consulted.
+        for tls_on in [false, true] {
+            let got = resolve_bind_host(Some("192.168.1.20".to_string()), tls_on, || {
+                panic!("detect must not be called when env is set")
+            });
+            assert_eq!(got.unwrap(), "192.168.1.20");
+            let got = resolve_bind_host(Some("  100.1.2.3  ".to_string()), tls_on, || {
+                panic!("detect must not be called when env is set")
+            });
+            assert_eq!(got.unwrap(), "100.1.2.3");
+            // An explicit wildcard is honoured verbatim, with or without TLS.
+            assert_eq!(bind(Some("0.0.0.0"), tls_on, true).unwrap(), "0.0.0.0");
+            assert_eq!(bind(Some("::"), tls_on, false).unwrap(), "::");
+        }
+    }
 
+    #[test]
+    fn resolve_bind_host_uses_the_tailnet_ip_when_there_is_one() {
+        // TLS does not change the choice when a tailnet IP exists.
+        assert_eq!(bind(None, false, true).unwrap(), TAILNET);
+        assert_eq!(bind(None, true, true).unwrap(), TAILNET);
         // Empty / whitespace env is treated as unset.
-        let got = resolve_bind_host(Some("   ".to_string()), || Some("100.5.6.7".to_string()));
-        assert_eq!(got.unwrap(), "100.5.6.7");
+        assert_eq!(bind(Some("   "), false, true).unwrap(), TAILNET);
+        assert_eq!(bind(Some(""), true, true).unwrap(), TAILNET);
     }
 
     #[test]
-    fn resolve_bind_host_errors_when_no_tailnet_and_no_opt_in() {
-        let got = resolve_bind_host(None, || None);
+    fn resolve_bind_host_binds_all_interfaces_with_tls_and_no_tailnet() {
+        assert_eq!(bind(None, true, false).unwrap(), "0.0.0.0");
+        assert_eq!(bind(Some("  "), true, false).unwrap(), "0.0.0.0");
+    }
+
+    #[test]
+    fn resolve_bind_host_errors_when_no_tailnet_and_no_tls() {
+        // Unchanged from before #449: plain HTTP stays tailnet-only.
+        let got = bind(None, false, false);
         assert!(got.is_err(), "must refuse to start, not default to 0.0.0.0");
         let msg = got.unwrap_err();
         assert!(msg.contains("SOLADOR_AGENT_BIND"));
+        assert!(msg.contains("SOLADOR_AGENT_TLS"));
+        assert!(bind(Some("\t"), false, false).is_err());
+    }
+
+    #[test]
+    fn wildcard_hosts_are_recognised() {
+        for h in ["0.0.0.0", "::", "[::]"] {
+            assert!(is_wildcard_host(h), "{h}");
+        }
+        for h in ["127.0.0.1", "100.5.6.7", "192.168.1.20", "::1", ""] {
+            assert!(!is_wildcard_host(h), "{h}");
+        }
     }
 
     #[test]

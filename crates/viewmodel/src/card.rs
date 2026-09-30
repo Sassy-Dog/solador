@@ -51,6 +51,14 @@ pub const ERROR_KIND_CERTIFICATE_CHANGED: &str = "certificate-changed";
 /// HTTP (#448). See [`ERROR_KIND_CERTIFICATE_CHANGED`].
 pub const ERROR_KIND_NO_TLS: &str = "no-tls";
 
+/// A card's `error.kind` when an **unpaired** host sits at an address that is
+/// neither loopback nor Tailscale, so the cockpit refused to send the bearer
+/// token over plain HTTP to it (#449). Nothing was sent, and the machine may
+/// be perfectly reachable: like the two above it is the host's pairing, not
+/// the network, and the dashboard's "is this machine's network or VPN up?"
+/// hint must not count it. See [`ERROR_KIND_CERTIFICATE_CHANGED`].
+pub const ERROR_KIND_PLAIN_HTTP_REFUSED: &str = "plain-http-refused";
+
 /// What a card shows for a value nobody measured.
 ///
 /// One character, one meaning, everywhere on every card — the shell reads it

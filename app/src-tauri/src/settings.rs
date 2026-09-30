@@ -216,6 +216,13 @@ pub fn health_result(result: &Result<wire::Health, AgentError>) -> String {
             "✗ certificate changed — re-pair this host if that was expected".to_owned()
         }
         Err(AgentError::NoTls) => "✗ no TLS — this agent answers plain HTTP".to_owned(),
+        // (#449) Nothing was sent: an unpaired host is only dialled over plain
+        // HTTP on loopback or Tailscale. Says what to do, not that it is down.
+        Err(AgentError::PlainHttpRefused) => {
+            "✗ not paired — the cockpit sends the token over plain HTTP only to loopback or \
+             Tailscale addresses; check this host's certificate and trust it"
+                .to_owned()
+        }
     }
 }
 
@@ -251,7 +258,9 @@ pub fn host_probe_answer(
             "no-tls",
             None,
             "This agent answers plain HTTP: it isn't serving TLS, so there is no certificate to \
-             pair. Set SOLADOR_AGENT_TLS=1 on the host to pair it, or add it as it is."
+             pair. Set SOLADOR_AGENT_TLS=1 on the host to pair it. Unpaired, it is only polled \
+             while its address is this machine or a Tailscale address: the cockpit never sends \
+             the token over plain HTTP anywhere else."
                 .to_owned(),
         ),
         Err(error) => ("failed", None, error.user_message()),
@@ -756,6 +765,12 @@ pub struct StoreSections<'a> {
     /// after the cockpit has said the certificate changed. Empty is the normal
     /// case.
     pub certificate_changed: &'a [Uuid],
+    /// The hosts whose poll is failing because they are **unpaired** and their
+    /// address is neither loopback nor Tailscale (#449 part 3): the cockpit
+    /// refused to send the token over plain HTTP. Live, like the list above,
+    /// and it is what makes an unpaired host's edit form say why it is not
+    /// being polled and point at the pairing step beside it.
+    pub plain_refused: &'a [Uuid],
 }
 
 /// What the crash-reporting section needs to say beyond the stored toggle.
@@ -799,6 +814,7 @@ pub fn view(
         vendors,
         accounts,
         certificate_changed,
+        plain_refused,
     } = store;
     json!({
         "title": OPEN_LABEL,
@@ -814,7 +830,7 @@ pub fn view(
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
-        "hosts": hosts_tab(settings, hosts, rules, stored, certificate_changed),
+        "hosts": hosts_tab(settings, hosts, rules, stored, certificate_changed, plain_refused),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
         "services": services_tab(vendors),
@@ -2154,6 +2170,7 @@ fn hosts_tab(
     rules: &[ContainerGroupRule],
     stored: &StoredSecrets,
     certificate_changed: &[Uuid],
+    plain_refused: &[Uuid],
 ) -> Value {
     json!({
         "heading": "Remote Hosts",
@@ -2183,6 +2200,11 @@ fn hosts_tab(
                 // state in which the row offers to replace the pin.
                 "certificateChanged": host.tls_fingerprint.is_some()
                     && certificate_changed.contains(&host.id),
+                // Live, and only ever true for an UNPINNED host (#449): the
+                // pinned ones are dialled over TLS, which the guard does not
+                // touch. The row explains itself and points at Check.
+                "plainRefused": host.tls_fingerprint.is_none()
+                    && plain_refused.contains(&host.id),
             }))
             .collect::<Vec<_>>(),
         // Rendered only when it has entries. This shell has no local-machine
@@ -2196,12 +2218,12 @@ fn hosts_tab(
         "add": {
             "heading": "Add Host",
             "nameLabel": "Name (e.g. ubu-01)",
-            "addressLabel": "Address (Tailscale IP or MagicDNS name)",
+            "addressLabel": "Address (IP or host name the agent is reachable on)",
             "portLabel": "Port",
             "portDefault": DEFAULT_AGENT_PORT.to_string(),
             "tokenLabel": "Agent token",
             "buttonLabel": "Add Host",
-            "help": "The agent serves metrics on the host's tailnet address. The token is stored in your OS credential store, never in the settings file. If the agent serves TLS, check its certificate first and trust it before adding the host.",
+            "help": "The agent serves metrics on the address you enter here — Tailscale is optional. The token is stored in your OS credential store, never in the settings file. If the agent serves TLS, check its certificate first and trust it before adding the host.",
         },
         // Pairing (#448): the certificate an agent presents is fetched, shown,
         // and pinned only when the operator presses Trust. Nothing on this
@@ -2216,6 +2238,7 @@ fn hosts_tab(
             "pinnedLabel": "Pinned certificate",
             "repairLabel": "Re-pair",
             "repairHelp": "The agent now presents a different certificate than the one pinned. If you replaced or reset its certificate, check it again and trust the new one; otherwise leave it, because something else may be answering at this address.",
+            "unpairedHelp": "This host isn't paired, and its address is neither this machine nor a Tailscale address, so the cockpit is not polling it: it never sends the token over plain HTTP anywhere else. Check its certificate and trust it, then save.",
             "help": "Fetches the certificate this address presents so you can compare its fingerprint with the one `solador-agent tls-fingerprint` printed on the host. Nothing is trusted until you press Trust.",
         },
         // Same tab as the original's, and for the same reason: the rules are scoped by
@@ -2729,6 +2752,46 @@ mod tests {
         }
     }
 
+    /// (#449) An unpaired host at an address the cockpit will not put the token
+    /// on plain HTTP for has its own Test line: nothing was sent, it is not
+    /// "unreachable", and it says how to fix it.
+    #[test]
+    fn a_refused_plain_http_host_is_told_to_pair_not_that_it_is_down() {
+        let line = health_result(&Err(AgentError::PlainHttpRefused));
+        assert!(line.contains("not paired"), "{line}");
+        assert!(line.contains("trust it"), "{line}");
+        assert_ne!(
+            line,
+            health_result(&Err(AgentError::Unreachable("x".into())))
+        );
+        assert!(!line.contains("unreachable"), "{line}");
+    }
+
+    /// The row says so only for an UNPINNED host: a pinned one is dialled over
+    /// TLS, which the guard does not touch.
+    #[test]
+    fn only_an_unpinned_host_row_carries_the_plain_refused_flag() {
+        let (settings, mut hosts, _repos, stored) = sample();
+        hosts[0].tls_fingerprint = Some("45:39:AF".into());
+        let refused = [hosts[0].id, hosts[1].id];
+        let tab = hosts_tab(&settings, &hosts, &[], &stored, &[], &refused);
+        assert_eq!(tab["rows"][0]["plainRefused"], false);
+        assert_eq!(tab["rows"][1]["plainRefused"], true);
+        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[]);
+        assert_eq!(calm["rows"][1]["plainRefused"], false);
+        assert!(tab["pair"]["unpairedHelp"].is_string());
+    }
+
+    /// The probe's plain-HTTP finding no longer suggests "add it as it is" as
+    /// though that always worked: off loopback and the tailnet it is refused.
+    #[test]
+    fn the_no_tls_probe_answer_says_where_an_unpaired_host_is_polled() {
+        let answer = probe_of(&Ok(agentclient::CertProbe::NoTls));
+        let message = answer["message"].as_str().unwrap();
+        assert!(message.contains("Tailscale"), "{message}");
+        assert!(message.contains("never sends"), "{message}");
+    }
+
     fn probe_of(outcome: &Result<agentclient::CertProbe, agentclient::ProbeError>) -> Value {
         host_probe_answer("100.100.100.100", 7878, outcome)
     }
@@ -2796,14 +2859,14 @@ mod tests {
         let (settings, mut hosts, _repos, stored) = sample();
         hosts[0].tls_fingerprint = Some("45:39:AF".into());
         let changed = [hosts[0].id, hosts[1].id];
-        let tab = hosts_tab(&settings, &hosts, &[], &stored, &changed);
+        let tab = hosts_tab(&settings, &hosts, &[], &stored, &changed, &[]);
         assert_eq!(tab["rows"][0]["pinned"], true);
         // Only a *pinned* host can have a changed certificate: the second is
         // in the live set but unpinned, so it must not offer to replace a pin
         // it does not have.
         assert_eq!(tab["rows"][0]["certificateChanged"], true);
         assert_eq!(tab["rows"][1]["certificateChanged"], false);
-        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[]);
+        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[]);
         assert_eq!(calm["rows"][0]["certificateChanged"], false);
         assert_eq!(tab["rows"][0]["fingerprint"], "45:39:AF");
         assert_eq!(tab["rows"][1]["pinned"], false);
@@ -3143,6 +3206,7 @@ mod tests {
             vendors: &[],
             accounts: &[],
             certificate_changed: &[],
+            plain_refused: &[],
         }
     }
 

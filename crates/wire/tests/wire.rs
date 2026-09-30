@@ -316,7 +316,7 @@ fn battery_deserialises_from_shared_contract_fixture() {
 ///
 /// Write straight to the path below: a capture that lands anywhere else makes
 /// this test silently return instead of failing (#144). `<agent-host>` is the
-/// Tailscale address of any host running `agent/`.
+/// address of any host running `agent/`.
 ///
 /// If this then fails, the committed `snapshot.json` is wrong — fix the types
 /// or the fixture, not the test.

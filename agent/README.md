@@ -1,15 +1,28 @@
 # Solador Agent
 
 A small per-host metrics agent. It exposes host metrics and a container/VM list
-as JSON, guarded by a bearer token. The [Solador](../) macOS app polls it over
-**Tailscale** to render a dashboard.
+as JSON, guarded by a bearer token. The [Solador](../) app polls it to render
+a dashboard, over any network path that reaches the host: **Tailscale is
+optional**, not required.
 
 Plain HTTP by default; `SOLADOR_AGENT_TLS=1` serves HTTPS instead, with a
 self-signed certificate the agent generates once and keeps for the host's
-lifetime (#447 — see **TLS**, below). Either way the transport stays inside
-the tailnet: Tailscale is what makes the bearer token safe on the wire, TLS
-on top of it is defense in depth, not a substitute for it — relaxing the
-Tailscale-only bind is a separate change (#449) this repo has not made.
+lifetime (#447 — see **TLS**, below), which the cockpit pins by fingerprint
+(#448). The two transports differ in what protects the bearer token:
+
+- **Over plain HTTP the tailnet is the protection**, so the agent binds only
+  the host's Tailscale IP and refuses to start without one (unless
+  `SOLADOR_AGENT_BIND` says otherwise).
+- **Over HTTPS the token is encrypted and the certificate pinned**, so a host
+  with no Tailscale binds **all interfaces** instead of refusing (#449). See
+  **Network exposure**, below — that is a real change in who can reach the
+  port.
+- **The cockpit never sends the token over plain HTTP off loopback and the
+  tailnet (#449).** A paired host is dialled over pinned TLS; a host that was
+  never paired is dialled over plain HTTP only when its address is loopback or
+  Tailscale (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), and is otherwise not
+  polled at all until it is paired. That rule — not the port being closed to
+  the internet — is what keeps the token off an open network.
 
 Runs on Linux (e.g. `ubu-01`) and macOS. Metrics come from
 [`sysinfo`](https://crates.io/crates/sysinfo); the server is
@@ -143,7 +156,7 @@ rootless, so it works as a normal user.
 | Env var                  | Required | Default | Meaning                          |
 |--------------------------|----------|---------|----------------------------------|
 | `SOLADOR_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
-| `SOLADOR_AGENT_BIND`   | no       | tailnet IP | Host/interface to bind. Defaults to the detected Tailscale IP (`100.x`), so the agent only listens on the tailnet. Set to `0.0.0.0` (or `::`) to bind all interfaces — opt-in only, behind a firewall. If unset and no Tailscale IP can be detected, the server refuses to start rather than exposing the public NIC. |
+| `SOLADOR_AGENT_BIND`   | no       | tailnet IP, else see below | Host/interface to bind. **An explicit value always wins**, with TLS on or off. Unset: the detected Tailscale IP (`100.x`) if there is one. With no Tailscale IP, it depends on TLS (#449): **`SOLADOR_AGENT_TLS=1` binds all interfaces (`0.0.0.0`)**; plain HTTP **refuses to start** rather than send the token in the clear on whatever network the host is on. Set to `0.0.0.0` (or `::`) explicitly to bind all interfaces over plain HTTP too — only behind a firewall. See **Network exposure**. |
 | `SOLADOR_AGENT_PORT`   | no       | `7878`  | TCP port. Bound on `SOLADOR_AGENT_BIND`. |
 | `SOLADOR_AGENT_TLS`    | no       | unset (HTTP) | `1` serves HTTPS on the same port, with a self-signed certificate kept for the host's lifetime. **Turn it on with `install.sh --enable-tls`, not by hand-editing this line**: an *older*, pre-#447 installed agent reacts differently per platform to a hand-set key. **On Linux**, `EnvironmentFile=` passes it straight through: `update` swaps in a new HTTPS-only binary but its own pre-#447 code still probes it with `http://` — the health check fails, `.prev` is restored, and `update` exits 5. **On macOS**, the launcher installed before #447 forwards only `TOKEN`, `BIND`, `PORT`, `SKIP_FSTYPES` and `RUST_LOG` to the agent — never this key, and `update` replaces only the binary, never the launcher — so the new binary never sees `SOLADOR_AGENT_TLS`, keeps serving plain HTTP, and `update` exits 0 with TLS silently off. See **TLS**, below. Any other value (or absent) is plain HTTP. |
 | `SOLADOR_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
@@ -304,13 +317,61 @@ reason.
 **The certificate's SAN list is `localhost`, `127.0.0.1`, `::1`, plus the
 resolved bind host** (the detected Tailscale IP, in the common case) — added
 at generation time, since only the agent's own startup knows what it is
-about to bind to. This is what lets standard TLS verification — trusting
-exactly this one certificate as its own root, via `--cacert`/
-`add_root_certificate`, never with verification disabled — succeed against
-the *literal* address a local health probe dials, which is the configured
-bind, not loopback, whenever it names a concrete host. `install.sh`'s
-post-install check and `solador-agent update`'s post-restart probe both
-verify this way.
+about to bind to. It is fixed from then on, and **the agent's own health
+probes do not depend on it (#449, #457)**: both trust exactly this one
+certificate as their only root — never with verification disabled — but check
+it by identity, not by the address they dial. `install.sh`'s check verifies it
+as the name `localhost` (in every certificate's baseline) while `curl
+--connect-to` dials the bind address; `solador-agent update`'s post-restart
+probe trusts the certificate as its only root with the hostname check off. A
+bind that changes after the certificate exists therefore breaks neither.
+
+**A wildcard bind (#449) adds nothing to the list, and needs nothing.**
+`0.0.0.0` and `::` are dropped from the SANs (nothing dials them), and the
+local probes dial loopback for a wildcard. The cockpit is unaffected: it pins
+the certificate's fingerprint and checks no hostname, so it reaches the agent
+on any address. A host that generated its certificate under a wildcard bind and
+is later bound to a concrete address (a Tailscale IP that appeared; an edited
+`SOLADOR_AGENT_BIND`) keeps working for the same reason — the certificate's
+name list is not consulted by anything that matters, so nothing needs
+regenerating and nobody needs re-pairing. (An *external* client that verifies
+the certificate by the name it dials would still see a mismatch; the SAN list
+itself is unchanged and tracked in #457.)
+
+### Network exposure
+
+Binding all interfaces makes the authenticated agent reachable on **every
+network the host is on** — on a cloud VM, that can include a public
+interface. What protects it then is the bearer token and the encrypted,
+pinned transport, and nothing about the network. (A cockpit paired with the
+host uses that transport; an *unpaired* one is only ever allowed to use plain
+HTTP on loopback or Tailscale, so it cannot put the token on an open network
+by mistake.) So:
+
+- On a host with a public address, **firewall the agent's port** (default
+  `7878`) to the networks that should reach it, or set `SOLADOR_AGENT_BIND`
+  to the one interface the cockpit dials (`SOLADOR_AGENT_BIND=192.168.1.20`).
+- `install.sh` says which interface it bound and why, twice: when it decides
+  (`==> Binding to 0.0.0.0 (all interfaces: no Tailscale IP detected, and TLS
+  is on)`) and in the Done block (`Bind: 0.0.0.0:7878 — ALL interfaces`).
+  The agent logs a warning at start whenever it binds a wildcard.
+- `install.sh` marks a bind it chose this way with `SOLADOR_AGENT_BIND_AUTO=1`
+  in the env file (the agent ignores the key). That bind is **provisional**:
+  every re-run sets it aside and resolves the bind again — the Tailscale IP if
+  there is one now, `0.0.0.0` only while TLS is on, and with TLS off and no
+  tailnet the same refusal a fresh host gets (nothing changed, nothing
+  downloaded). Name one address with `SOLADOR_AGENT_BIND` to keep plain HTTP on
+  a host with no tailnet. A bind **without** the marker is your explicit choice
+  and is kept, plain HTTP included; the installer then says, loudly, that the
+  token is crossing every network in the clear. The same holds by hand: if you
+  edit `SOLADOR_AGENT_TLS=0` into the env file without re-running the
+  installer, **remove both `SOLADOR_AGENT_BIND` and `SOLADOR_AGENT_BIND_AUTO`**
+  (so the agent finds the tailnet address itself) or set `SOLADOR_AGENT_BIND` to
+  one address, because the agent honours the `0.0.0.0` already there.
+- A host with Tailscale keeps today's default: the tailnet IP only.
+- Plain HTTP is unchanged: tailnet-only, and no tailnet is a refusal. That is
+  the case where the network is the only thing between the token and a
+  listener.
 
 **`install.sh` writes `SOLADOR_AGENT_TLS=1` on a fresh install** (no env file
 existed yet) and prints the fingerprint in its Done block — **but only when
@@ -441,9 +502,13 @@ No Rust toolchain. A supported clean host needs:
   signer — treats `-V` as "print the version" and exits 0.
 - **bash** and the usual coreutils (`install`, `mktemp`, `cmp`, `awk`, `sed`, …).
 - **A bind address the cockpit can dial.** By default the installer binds the
-  host's Tailscale IP; a LAN or VPN host without Tailscale must set
-  `SOLADOR_AGENT_BIND=<that address>` (or `0.0.0.0`, only behind a firewall).
-  With neither, the installer refuses in preflight — before any download.
+  host's Tailscale IP. A host without Tailscale gets **all interfaces
+  (`0.0.0.0`)** on a TLS install — the default for a fresh install (#449; see
+  **Network exposure**) — or can set `SOLADOR_AGENT_BIND=<that address>` to
+  pin one interface. Only with TLS off (`SOLADOR_AGENT_TLS=0`, or a binary
+  that predates it) and neither a Tailscale IP nor `SOLADOR_AGENT_BIND` does
+  the installer refuse; when it can tell in preflight, that is before any
+  download.
 - **Linux:** systemd with a reachable user manager (`systemctl --user`, so a
   real login session — not `sudo -u` or `su`). A non-systemd Linux (Alpine's
   OpenRC, say) is not supported by the installer; the musl binaries still run
@@ -779,7 +844,7 @@ The script:
 5. Writes `~/.config/solador-agent.env` with the token (prompted **without
    echo**; press Enter to auto-generate; reused on a re-run), the bind address
    (`SOLADOR_AGENT_BIND`, else the existing file's, else the detected
-   Tailscale IP, else refuse), the port (`SOLADOR_AGENT_PORT`, else the
+   Tailscale IP, else all interfaces if TLS is on, else refuse), the port (`SOLADOR_AGENT_PORT`, else the
    existing file's, else `7878`), and `SOLADOR_AGENT_TLS` (see **TLS**, below,
    for how its value is decided), mode `600`, written beside the live file and
    renamed into place. Any other line already in the file
@@ -1076,7 +1141,8 @@ another user" operation.
 
 **Both agents will be live on the same host at once, briefly — they cannot
 share a bind address and port.** `SOLADOR_AGENT_BIND` defaults to the
-*host's* Tailscale IP (one per machine, not one per Unix user) and
+*host's* Tailscale IP, or all interfaces on a TLS host without one (one per
+machine, not one per Unix user), and
 `SOLADOR_AGENT_PORT` defaults to `7878`; a fresh install has no env file of
 its own to carry a different choice forward, so a plain `install.sh` as the
 new user binds the exact socket the old user's agent already holds — the
@@ -1172,7 +1238,8 @@ not come up.** In order, each step refusing before the next changes anything:
    file beside it, and the token/bind/port from that file with the same
    rules the service starts under (never `source`d). `SOLADOR_AGENT_BIND`
    must be in that file (the installer always writes it): with no bind the
-   service listens on a tailnet address this command could not dial, and a
+   service listens on a detected tailnet address (or all interfaces, with TLS
+   on) this command could not dial, and a
    probe of loopback would swap, fail, restore and exit 3 on a healthy host,
    so its absence is refused instead. Running as root is refused; an install
    this user cannot replace — the pre-#392 `/opt` layout — is refused with
@@ -1673,19 +1740,24 @@ systemctl --user restart solador-agent                    # Linux
 ## How Solador connects
 
 - Solador reaches the host at `<the configured bind address>:7878` —
-  the Tailscale IP by default, or whatever `SOLADOR_AGENT_BIND` was set to on
-  a LAN/VPN host — over `http://` when `SOLADOR_AGENT_TLS` is unset, or
+  the Tailscale IP by default, all interfaces on a TLS host without Tailscale,
+  or whatever `SOLADOR_AGENT_BIND` was set to — over `http://` when `SOLADOR_AGENT_TLS` is unset, or
   `https://` when it is `1`. The cockpit dials `https://` only for a host the
   operator **paired** — it fetched the certificate, showed the fingerprint and
   the operator pressed Trust — and then accepts exactly that certificate; see
   **TLS** above and
   [#448](https://github.com/Sassy-Dog/solador/issues/448). A host that was
-  never paired is dialled over `http://`, so an agent with TLS on but no
-  pairing reads as unreachable until it is paired.
+  never paired is dialled over `http://` — **only when its address is loopback
+  or Tailscale (#449)**; anywhere else the cockpit sends nothing (no request,
+  no token) and the host reads "unpaired, off-tailnet — pair it in Settings"
+  until it is paired. An agent with TLS on but no pairing, on the tailnet, still
+  reads as unreachable until it is paired.
 - It sends `Authorization: Bearer <token>` (the same token from the env file) on
   every request, polling `/v1/snapshot` and `/v1/containers`.
-- The agent binds only that address (`SOLADOR_AGENT_BIND`), so by default the
-  port is not served on the public NIC. Verify with `ss -tlnp | grep 7878`
-  (Linux) or `lsof -nP -iTCP:7878 -sTCP:LISTEN` (macOS) — it should show only
-  the configured address. Binding all interfaces (`0.0.0.0`) is opt-in and
-  should only be done behind a firewall.
+- The agent binds only that address (`SOLADOR_AGENT_BIND`). With Tailscale that
+  is the tailnet IP, so the port is not served on the public NIC. **On a TLS
+  host with no Tailscale the default is all interfaces (`0.0.0.0`) (#449)** —
+  the port *is* reachable on every network the host is on, so firewall it or
+  pin `SOLADOR_AGENT_BIND` (**Network exposure**). Verify what is bound with
+  `ss -tlnp | grep 7878` (Linux) or `lsof -nP -iTCP:7878 -sTCP:LISTEN` (macOS):
+  it shows the configured address, or `0.0.0.0` / `*` for all interfaces.

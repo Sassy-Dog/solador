@@ -1471,8 +1471,13 @@ test_verify_health() {
     status=$?
     wait
     assert_eq "verify_health survives the certificate appearing mid-retry" "0" "$status"
-    assert_file_has "once found, the probe dials https://" "$STUB_CURL_ARGV" \
-        "https://127.0.0.1:7878/v1/health"
+    # Verified as `localhost` (in every certificate's baseline SAN list) while
+    # connecting to the bind address (#449): the bind can change after the
+    # certificate's SAN list was fixed.
+    assert_file_has "once found, the probe dials https:// as localhost" "$STUB_CURL_ARGV" \
+        "https://localhost:7878/v1/health"
+    assert_file_has "once found, the probe still connects to the bind address" "$STUB_CURL_ARGV" \
+        '[config] connect-to = "localhost:7878:127.0.0.1:7878"'
     assert_file_has "once found, the probe pins via cacert" "$STUB_CURL_ARGV" \
         "[config] cacert = \"$tls_dir/solador-agent.tls.crt\""
 
@@ -3145,7 +3150,8 @@ test_bootstrap_signature_gate() {
 # removed) staging directory. The "no bind address" preflight refusal is the
 # earliest hint site reachable without a signed release fixture, so it is
 # the one driven here, the same way test_bootstrap_signature_gate reaches a
-# real install.sh: no Tailscale on PATH, no SOLADOR_AGENT_BIND set.
+# real install.sh: no Tailscale on PATH, no SOLADOR_AGENT_BIND set, and
+# SOLADOR_AGENT_TLS=0 (#449: with TLS on there is no refusal to reach).
 test_bootstrap_rerun_hint_names_bootstrap() {
     local home="$TMP/home-bootstrap-rerun-hint" out
     mkdir -p "$home"
@@ -3153,7 +3159,7 @@ test_bootstrap_rerun_hint_names_bootstrap() {
     rm -rf "$FIXTURES"
     make_bootstrap_checkout_archive main "$SCRIPT_DIR/../release-signing-key.pub"
     reset_argv_logs
-    BOOTSTRAP_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" run_bootstrap "$home"
+    SOLADOR_AGENT_TLS=0 BOOTSTRAP_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" run_bootstrap "$home"
     out="$(cat "$BOOTSTRAP_OUT")"
     assert_eq "install.sh (reached through bootstrap.sh) still refuses without a bind address" \
         "1" "$BOOTSTRAP_STATUS"
@@ -3611,7 +3617,9 @@ test_install_tls() {
     assert_eq "install.sh: TLS defaults on for a fresh install" "0" "$INSTALL_STATUS"
     assert_file_has "the env file carries SOLADOR_AGENT_TLS=1" "$env_file" "SOLADOR_AGENT_TLS=1"
     assert_output_has "the run reports TLS on, sourced from a fresh install" "$out" "TLS: on (fresh install)"
-    assert_file_has "the health probe dials https://" "$STUB_CURL_ARGV" "https://100.64.0.9:7878/v1/health"
+    assert_file_has "the health probe dials https:// as localhost" "$STUB_CURL_ARGV" "https://localhost:7878/v1/health"
+    assert_file_has "the health probe connects to the tailnet bind" "$STUB_CURL_ARGV" \
+        '[config] connect-to = "localhost:7878:100.64.0.9:7878"'
     assert_file_has "the health probe pins the certificate via cacert" "$STUB_CURL_ARGV" \
         "[config] cacert = \"$home/.config/solador-agent.tls.crt\""
     assert_output_has "the Done block prints the fingerprint" "$out" "$FIXTURE_TLS_FINGERPRINT"
@@ -3671,6 +3679,327 @@ test_install_tls() {
         "TLS: off (kept from the existing env file (was unset)"
 
     unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_TAILSCALE_IP
+}
+
+# The bind default once TLS is on (#449). A host with no Tailscale, no
+# SOLADOR_AGENT_BIND and no existing env file used to be refused; with TLS on
+# the token is encrypted and the certificate pinned, so it binds all
+# interfaces instead — and says so, by name, in the summary. With TLS off the
+# refusal is unchanged (the existing "refuses without a bind address" case).
+test_install_tls_no_tailnet_bind() {
+    local home="$TMP/home-tls-no-tailnet" env_file out env_before
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh: a fresh TLS install with no Tailscale binds all interfaces"
+        skip_needs_minisign "install.sh: the summary names the interface and says all interfaces"
+        skip_needs_minisign "install.sh: a TLS install with no Tailscale still refuses with TLS off"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home/.config"
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
+    unset STUB_TAILSCALE_IP
+    env_file="$home/.config/solador-agent.env"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+
+    # ---- fresh, TLS on, no Tailscale: not refused, binds every interface ----
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="tok-no-tailnet
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a fresh TLS install with no Tailscale binds all interfaces" "0" "$INSTALL_STATUS"
+    assert_file_has "the env file carries the all-interfaces bind" "$env_file" "SOLADOR_AGENT_BIND=0.0.0.0"
+    assert_file_has "the env file carries SOLADOR_AGENT_TLS=1" "$env_file" "SOLADOR_AGENT_TLS=1"
+    assert_output_has "the run names the bind and why" "$out" \
+        "Binding to 0.0.0.0 (all interfaces: no Tailscale IP detected, and TLS is on)"
+    assert_output_has "the run warns that every network can reach it" "$out" "EVERY network this host is on"
+    assert_output_has "the run tells the operator to firewall or narrow the bind" "$out" "firewall port 7878"
+    assert_output_has "the Done summary names the bind as all interfaces" "$out" \
+        "Bind:    0.0.0.0:7878 — ALL interfaces"
+    # A wildcard is not dialable: the probe goes to loopback, which the
+    # certificate's baseline SAN list always carries.
+    assert_file_has "the health probe dials loopback over https" "$STUB_CURL_ARGV" "https://127.0.0.1:7878/v1/health"
+    if grep -q "connect-to" "$STUB_CURL_ARGV"; then
+        fail "a wildcard bind needs no connect-to (loopback is dialled directly)" "$(grep connect-to "$STUB_CURL_ARGV")"
+    else
+        pass "a wildcard bind needs no connect-to (loopback is dialled directly)"
+    fi
+    case "$out" in
+        *"tok-no-tailnet"*) fail "install.sh never prints the full token" "the token appeared in its output" ;;
+        *) pass "install.sh never prints the full token" ;;
+    esac
+
+    # ---- a re-run resolves the bind again (it is provisional, #449) ----
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a re-run over the no-tailnet TLS install" "0" "$INSTALL_STATUS"
+    assert_output_has "the re-run reports the bind it resolved, not one it kept" "$out" \
+        "Binding to 0.0.0.0 (all interfaces: no Tailscale IP detected, and TLS is on)"
+
+    # ---- a Tailscale IP still wins over all interfaces when TLS is on ----
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+    reset_argv_logs
+    STUB_TAILSCALE_IP="100.64.0.9" INSTALL_TLS=unset INSTALL_STDIN="tok-tailnet
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a TLS install with Tailscale" "0" "$INSTALL_STATUS"
+    assert_file_has "the tailnet IP is still the default bind" "$env_file" "SOLADOR_AGENT_BIND=100.64.0.9"
+    assert_output_has "the summary says that interface only" "$out" "Bind:    100.64.0.9:7878 — that interface only"
+
+    # ---- TLS off, no Tailscale: refused, exactly as before, before a download ----
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=0 INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: no Tailscale and TLS off is still refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the refusal names SOLADOR_AGENT_BIND and the TLS way out" "$out" "SOLADOR_AGENT_TLS=1"
+    if [ -e "$home/.local/bin/solador-agent" ] || [ -e "$env_file" ]; then
+        fail "the refusal changes nothing" "the binary or env file exists"
+    else
+        pass "the refusal changes nothing"
+    fi
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the TLS-off refusal happens before a download" "curl was invoked: $(head -n1 "$STUB_CURL_ARGV")"
+    else
+        pass "the TLS-off refusal happens before a download"
+    fi
+
+    # ---- a bind chosen for TLS is provisional: set aside on every re-run (#449) ----
+    # The env file carries 0.0.0.0 only because this script picked it for a TLS
+    # host with no tailnet, and it said so with SOLADOR_AGENT_BIND_AUTO=1. A
+    # re-run does not keep it: it resolves the bind again from scratch.
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="tok-auto
+" run_install "$home"
+    assert_eq "install.sh: no-tailnet TLS install (for the re-runs below)" "0" "$INSTALL_STATUS"
+    assert_file_has "the auto-chosen bind is marked as such" "$env_file" "SOLADOR_AGENT_BIND_AUTO=1"
+    env_before="$(cat "$env_file")"
+
+    # ...TLS turned off, still no tailnet: refused, nothing changed, nothing
+    # downloaded, and the remedy names BOTH keys (removing only the marker would
+    # leave a bare 0.0.0.0 that the agent honours as an explicit bind).
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=0 INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a TLS-off re-run over an auto-chosen wildcard is refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the refusal says the bind was chosen by an earlier install" "$out" \
+        "was chosen by an earlier install"
+    assert_output_has "the refusal names BOTH keys to remove" "$out" \
+        "remove BOTH"
+    assert_output_has "the refusal names SOLADOR_AGENT_BIND_AUTO" "$out" "SOLADOR_AGENT_BIND_AUTO"
+    assert_eq "the refused re-run leaves the env file unchanged" "$env_before" "$(cat "$env_file")"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the refused re-run downloads nothing" "curl was invoked: $(head -n1 "$STUB_CURL_ARGV")"
+    else
+        pass "the refused re-run downloads nothing"
+    fi
+
+    # ...TLS stays on, still no tailnet: the wildcard is chosen again, and the
+    # marker is REWRITTEN (a re-run that dropped it would turn a provisional
+    # bind into an explicit one).
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a TLS re-run over an auto-chosen wildcard" "0" "$INSTALL_STATUS"
+    assert_output_has "the re-run resolves the bind again rather than keeping it" "$out" \
+        "Binding to 0.0.0.0 (all interfaces: no Tailscale IP detected, and TLS is on)"
+    assert_file_has "the auto marker is rewritten" "$env_file" "SOLADOR_AGENT_BIND_AUTO=1"
+    assert_eq "the marker is written exactly once" "1" "$(grep -c '^SOLADOR_AGENT_BIND_AUTO=' "$env_file")"
+
+    # ...a tailnet appears later, TLS on: the bind MOVES to the tailnet IP, the
+    # marker goes with the wildcard it described, and the health probe (over
+    # TLS) verifies the certificate as `localhost` while connecting to the new
+    # bind, because the certificate's SAN list was fixed before that address.
+    reset_argv_logs
+    STUB_TAILSCALE_IP="100.64.0.9" INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a tailnet appearing after an auto wildcard (TLS on)" "0" "$INSTALL_STATUS"
+    assert_file_has "the bind moves to the tailnet IP" "$env_file" "SOLADOR_AGENT_BIND=100.64.0.9"
+    if grep -q "SOLADOR_AGENT_BIND_AUTO\|^SOLADOR_AGENT_BIND=0.0.0.0" "$env_file"; then
+        fail "the wildcard and its marker are gone" "$(cat "$env_file")"
+    else
+        pass "the wildcard and its marker are gone"
+    fi
+    assert_output_has "the summary says that interface only" "$out" "Bind:    100.64.0.9:7878 — that interface only"
+    assert_file_has "the probe verifies the certificate as localhost" "$STUB_CURL_ARGV" \
+        "https://localhost:7878/v1/health"
+    assert_file_has "the probe connects to the bind address" "$STUB_CURL_ARGV" \
+        '[config] connect-to = "localhost:7878:100.64.0.9:7878"'
+    unset STUB_TAILSCALE_IP
+
+    # ...and with TLS turned off and a tailnet now up: the bind is the tailnet
+    # IP too (plain HTTP on the tailnet only), never the kept wildcard.
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="tok-auto2
+" run_install "$home"
+    assert_file_has "the auto-chosen bind is marked as such (second host)" "$env_file" "SOLADOR_AGENT_BIND_AUTO=1"
+    reset_argv_logs
+    STUB_TAILSCALE_IP="100.64.0.9" INSTALL_TLS=0 INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a tailnet appearing after an auto wildcard (TLS off)" "0" "$INSTALL_STATUS"
+    assert_file_has "TLS off: the bind is the tailnet IP" "$env_file" "SOLADOR_AGENT_BIND=100.64.0.9"
+    assert_file_has "TLS off is recorded" "$env_file" "SOLADOR_AGENT_TLS=0"
+    if grep -q "SOLADOR_AGENT_BIND_AUTO\|0\.0\.0\.0" "$env_file"; then
+        fail "TLS off with a tailnet: no wildcard and no marker survive" "$(cat "$env_file")"
+    else
+        pass "TLS off with a tailnet: no wildcard and no marker survive"
+    fi
+    assert_output_has "the summary says that interface only, over plain HTTP on the tailnet" "$out" \
+        "Bind:    100.64.0.9:7878 — that interface only"
+    unset STUB_TAILSCALE_IP
+
+    # An operator who names the address gets plain HTTP on that one interface,
+    # and the marker goes with the bind it described.
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="tok-auto3
+" run_install "$home"
+    reset_argv_logs
+    SOLADOR_AGENT_BIND="192.168.1.20" INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=0 \
+        INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a TLS-off re-run with an explicit bind" "0" "$INSTALL_STATUS"
+    assert_file_has "the explicit bind replaces the auto one" "$env_file" "SOLADOR_AGENT_BIND=192.168.1.20"
+    if grep -q "SOLADOR_AGENT_BIND_AUTO" "$env_file"; then
+        fail "the auto marker is dropped with the bind it described" "still in the env file"
+    else
+        pass "the auto marker is dropped with the bind it described"
+    fi
+
+    # ---- negative control: a wildcard WITHOUT the marker is the operator's choice ----
+    # The documented plain-HTTP opt-in: honoured as it always was, so the
+    # marker-driven set-aside above is proven to be the marker's doing — and the
+    # summary says loudly what it is.
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'SOLADOR_AGENT_TOKEN=explicit-tok\nSOLADOR_AGENT_BIND=0.0.0.0\nSOLADOR_AGENT_TLS=0\n' > "$env_file"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=0 INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: an explicit wildcard with TLS off is honoured" "0" "$INSTALL_STATUS"
+    assert_file_has "the explicit wildcard is kept" "$env_file" "SOLADOR_AGENT_BIND=0.0.0.0"
+    if grep -q "SOLADOR_AGENT_BIND_AUTO" "$env_file"; then
+        fail "an explicit wildcard is never marked automatic" "the marker was written"
+    else
+        pass "an explicit wildcard is never marked automatic"
+    fi
+    assert_output_has "the run says it is kept from the env file" "$out" \
+        "Binding to 0.0.0.0 (kept from the existing env file)"
+    assert_output_has "the run warns loudly: plain HTTP on every interface" "$out" \
+        "PLAIN HTTP ON EVERY INTERFACE"
+    assert_output_has "the Done summary says plain HTTP on all interfaces" "$out" \
+        "Bind:    0.0.0.0:7878 — ALL interfaces, PLAIN HTTP"
+
+    # ---- an env file with a token but no bind, and no Tailscale ----
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'SOLADOR_AGENT_TOKEN=nobind-tok\nSOLADOR_AGENT_TLS=0\n' > "$env_file"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: existing TLS=0 and no bind is refused" "1" "$INSTALL_STATUS"
+    out="$(cat "$INSTALL_OUT")"
+    assert_output_has "the existing-TLS=0 refusal says no tailnet was found" "$out" \
+        "could not detect a Tailscale IP for SOLADOR_AGENT_BIND, and TLS is off"
+    assert_output_has "the existing-TLS=0 refusal names the TLS way out" "$out" "SOLADOR_AGENT_TLS=1"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the early refusal downloads nothing" "curl was invoked"
+    else
+        pass "the early refusal downloads nothing"
+    fi
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+    printf 'SOLADOR_AGENT_TOKEN=nobind-tok\nSOLADOR_AGENT_TLS=1\n' > "$env_file"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: existing TLS=1 and no bind proceeds" "0" "$INSTALL_STATUS"
+    assert_file_has "existing TLS=1 gets the all-interfaces bind" "$env_file" "SOLADOR_AGENT_BIND=0.0.0.0"
+    printf 'SOLADOR_AGENT_TOKEN=nobind-tok\nSOLADOR_AGENT_TLS=0\n' > "$env_file"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home" --enable-tls
+    assert_eq "install.sh: --enable-tls with no bind proceeds" "0" "$INSTALL_STATUS"
+    assert_file_has "--enable-tls gets the all-interfaces bind" "$env_file" "SOLADOR_AGENT_BIND=0.0.0.0"
+
+    # ---- an explicit bind wins over the all-interfaces default ----
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+    reset_argv_logs
+    SOLADOR_AGENT_BIND="192.168.1.20" INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset \
+        INSTALL_STDIN="tok-explicit
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: an explicit bind with TLS on and no Tailscale" "0" "$INSTALL_STATUS"
+    assert_file_has "the explicit bind reaches the env file" "$env_file" "SOLADOR_AGENT_BIND=192.168.1.20"
+    assert_output_has "the summary says that interface only" "$out" "Bind:    192.168.1.20:7878 — that interface only"
+
+    # ---- fresh, no Tailscale, staged binary predates TLS: refused after staging ----
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_pre_tls_fixture 2026.9.5 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    SOLADOR_AGENT_RELEASE="v2026.9.5" reset_argv_logs
+    SOLADOR_AGENT_RELEASE="v2026.9.5" INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset \
+        INSTALL_STDIN="tok-late
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a no-tailnet fresh install onto a pre-TLS binary is refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the late refusal is printed" "$out" "TLS is off"
+    # AFTER staging: the release was downloaded and its signature verified, the
+    # candidate binary was run, and TLS was decided — that is what makes this the
+    # late refusal and not the early one (which downloads nothing).
+    assert_output_has "the late refusal came after the release was verified" "$out" "==> Verified "
+    assert_output_has "the late refusal came after TLS was decided" "$out" "==> TLS: off"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        pass "the late refusal came after a download"
+    else
+        fail "the late refusal came after a download" "curl was never invoked"
+    fi
+    if [ -e "$env_file" ] || [ -e "$home/.local/bin/solador-agent" ]; then
+        fail "the late refusal writes no env file and installs no binary" "one exists"
+    else
+        pass "the late refusal writes no env file and installs no binary"
+    fi
+    case "$out" in
+        *"Binding to 0.0.0.0"*) fail "the late refusal never binds 0.0.0.0" "it did" ;;
+        *) pass "the late refusal never binds 0.0.0.0" ;;
+    esac
+
+    # ---- an EXPLICIT SOLADOR_AGENT_TLS=1 against that same pre-TLS release ----
+    # The staged binary would ignore the variable and serve plain HTTP, so the
+    # wildcard fallback ("TLS is on") must not be taken on the strength of a
+    # setting the binary cannot honour: refused after staging, nothing written.
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    SOLADOR_AGENT_RELEASE="v2026.9.5" INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=1 \
+        INSTALL_STDIN="tok-late2
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: explicit TLS=1, no tailnet, pre-TLS binary is refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the refusal came after staging" "$out" "==> Verified "
+    if [ -e "$env_file" ] || [ -e "$home/.local/bin/solador-agent" ]; then
+        fail "explicit TLS=1 against a pre-TLS binary binds nothing and installs nothing" "one exists"
+    else
+        pass "explicit TLS=1 against a pre-TLS binary binds nothing and installs nothing"
+    fi
+    case "$out" in
+        *"Binding to 0.0.0.0"*) fail "explicit TLS=1 against a pre-TLS binary never binds 0.0.0.0" "it did" ;;
+        *) pass "explicit TLS=1 against a pre-TLS binary never binds 0.0.0.0" ;;
+    esac
+
+    INSTALL_PATH=""
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY
 }
 
 # A release published before #447 answers `--version` but refuses
@@ -4857,12 +5186,38 @@ STUB
     # to find; checked separately just above instead. The metrics service
     # does not read either from a line of the file, so the launcher's
     # case-statement has nothing to export for them.
+    #
+    # And ONE the other way round (#449): SOLADOR_AGENT_BIND_AUTO is written by
+    # install.sh, never read by the agent, so the launcher names it (a silent
+    # arm, so it is a recognised line and is not logged as "unrecognised") and
+    # the Rust source does not. Excluded from the launcher's side, then pinned
+    # by its own test below.
     local agent_keys launcher_keys
     agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u \
         | grep -vx -e 'SOLADOR_AGENT_LAUNCHD_LABEL' -e 'SOLADOR_AGENT_CONFIG_DIR' | tr '\n' ' ')"
-    launcher_keys="$(grep -oE 'SOLADOR_AGENT_[A-Z_]+=\*' "$launcher" | sed 's/=\*$//' | sort -u | tr '\n' ' ')"
+    launcher_keys="$(grep -oE 'SOLADOR_AGENT_[A-Z_]+=\*' "$launcher" | sed 's/=\*$//' | sort -u \
+        | grep -vx 'SOLADOR_AGENT_BIND_AUTO' | tr '\n' ' ')"
     assert_eq "the launcher allow-lists every SOLADOR_AGENT_* key the agent reads" \
         "$agent_keys" "$launcher_keys"
+
+    # The marker is a silent arm (#449): an auto-bound host's env file carries
+    # SOLADOR_AGENT_BIND_AUTO=1, and the launcher must neither log "ignoring
+    # unrecognised line" about it on every start nor export it. A truly unknown
+    # key on the next line still IS logged, so the arm is not a blanket
+    # silencer.
+    cat > "$probe" <<'STUB'
+#!/bin/sh
+printf 'AUTO=%s\n' "${SOLADOR_AGENT_BIND_AUTO:-<unset>}"
+STUB
+    printf 'SOLADOR_AGENT_TOKEN=tok\nSOLADOR_AGENT_BIND=0.0.0.0\nSOLADOR_AGENT_TLS=1\nSOLADOR_AGENT_BIND_AUTO=1\nSOLADOR_AGENT_BOGUS=1\n' > "$env_file"
+    run_launcher "$probe" "$env_file" "$log"
+    assert_eq "the launcher does not export the auto-bind marker" "AUTO=<unset>" "$(cat "$INSTALL_OUT")"
+    if grep -q "unrecognised line 4" "$STDERR"; then
+        fail "the auto-bind marker is a recognised line" "the launcher logged it as unrecognised"
+    else
+        pass "the auto-bind marker is a recognised line"
+    fi
+    assert_file_has "an unknown key IS still logged as unrecognised" "$STDERR" "unrecognised line 5"
 }
 
 # The launcher in update mode (#394): forwards exactly `update` to the binary,
@@ -7287,6 +7642,7 @@ test_bootstrap_uninstall_rerun_hint
 test_install_linux_flow
 test_install_tls
 test_install_tls_capability_gate
+test_install_tls_no_tailnet_bind
 test_install_macos_flow
 test_install_update_timer_linux
 test_install_update_timer_macos

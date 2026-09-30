@@ -16,8 +16,12 @@ is for a desktop app.
 
 **The agent is the part to look at.** `agent/` is an HTTP service that reports
 host metrics and container lists, guarded by a single bearer token. It is
-designed to be reachable **only over a private tailnet**, never on a public
-interface, and it binds accordingly. If you can make it answer from somewhere
+designed so that, over plain HTTP, it is reachable **only over a private
+tailnet** and refuses to start without one. With TLS on (the default for a fresh
+install) and no Tailscale it binds **all interfaces**, and TLS plus the bearer
+token protect it; the cockpit, for its part, never sends the token over plain
+HTTP to an address that is neither loopback nor Tailscale. See "Network
+exposure" in `agent/README.md`. If you can make it answer from somewhere
 it shouldn't, or make it leak beyond the metrics it is meant to serve, that is
 a report worth filing.
 

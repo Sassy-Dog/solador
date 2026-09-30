@@ -13,7 +13,8 @@ It has three parts:
 - **Crates** (`crates/*`) — all the logic: polling, view models, storage,
   vendor clients. The shell is thin on purpose; panels are testable without a UI.
 - **Agent** (`agent/`) — Rust (axum) HTTP service exposing host metrics +
-  container list as JSON behind a bearer token, reached over Tailscale. It is a
+  container list as JSON behind a bearer token, reached over any network path
+  (Tailscale is optional). It is a
   member of the root workspace and has its own CI job (`agent-tests`, on Linux).
   See `agent/README.md`.
 
@@ -469,7 +470,9 @@ the bundle's floor.
 │   │                       #   here is added to all of them. `viewmodel::fault`
 │   │                       #   re-exports it
 │   ├── viewmodel/          # every string/colour the frontend paints
-│   ├── agentclient/        # HTTP client polling the agent
+│   ├── agentclient/        # HTTP client polling the agent; owns the rule that
+│   │                       #   the token never crosses plain HTTP off loopback
+│   │                       #   and Tailscale (`plain`, #449)
 │   ├── store/              # settings/hosts/repos/container-rules/runner-roster/
 │   │                       #   cockpit-layout JSON + OS credential-store wrappers
 │   ├── github/             # GitHub client (REST + one GraphQL walk) + the "is it us?" verdict
@@ -525,22 +528,46 @@ the bundle's floor.
 - **Frontend**: plain HTML/CSS/JS, no bundler
 - **Credential storage**: OS credential store (macOS Keychain, Windows
   Credential Manager)
-- **Transport**: HTTP/JSON over Tailscale, guarded by a bearer token —
-  `SOLADOR_AGENT_TLS=1` (#447) serves HTTPS instead, with a self-signed
+- **Transport**: HTTPS pinned to the agent's certificate for a paired host,
+  guarded by a bearer token; Tailscale is optional. Plain HTTP/JSON still exists — the agent serves
+  it unless `SOLADOR_AGENT_TLS=1` (#447) is set, which serves HTTPS instead, with a self-signed
   certificate the agent keeps for the host's lifetime, and the cockpit dials a
   host over HTTPS only once the operator has **paired** it (#448): the
   certificate is fetched, its fingerprint shown, and pinned only when the
-  operator presses Trust. An unpaired host is still dialled over plain HTTP.
+  operator presses Trust. An unpaired host is still dialled over plain HTTP,
+  but only on loopback or Tailscale (below).
   Two different defaults, deliberately: the AGENT ITSELF is plain HTTP unless
   that env var is set; `install.sh` is what opts a *fresh* install into TLS
   (capability permitting — see **Working on the Agent**), which is not the
-  same claim. Tailscale is still what makes either transport safe (relaxing
-  the Tailscale-only bind is #449, not done)
+  same claim. **Plain HTTP is protected by the network, and only two networks
+  qualify (#449).** Without TLS the agent binds only the Tailscale IP and
+  refuses to start without one; with TLS on and no Tailscale it binds all
+  interfaces instead, an explicit `SOLADOR_AGENT_BIND` always winning. That
+  exposes the authenticated agent on every network the host is on (a cloud VM's
+  public interface included), so `install.sh` names the interface it bound and
+  says "all interfaces" when that is the result, and the docs tell the operator
+  to firewall the port or pin `SOLADOR_AGENT_BIND`. **The cockpit enforces the
+  other half: it never sends the bearer token over plain HTTP to an address that
+  is not loopback or Tailscale** (`crates/agentclient`'s `plain`: IPv4
+  `100.64.0.0/10`, IPv6 `fd7a:115c:a1e0::/48`; a host name counts only if
+  *every* address it resolves to does, and the connection is made to the
+  addresses that were vetted, so check and connect cannot disagree; a name that
+  does not resolve sends nothing). So a **paired** host uses pinned TLS, and an
+  **unpaired** host is only ever dialled over plain HTTP on loopback or
+  Tailscale — that, not "the token plus the pinned certificate", is the whole
+  defence, and it holds for an agent listening on any interface. An unpaired
+  host anywhere else is not polled and reads "unpaired, off-tailnet — pair it in
+  Settings" (`Fault::PlainHttpRefused`), never *Unreachable*; Settings fixes it
+  with the existing Check certificate / Trust flow.
 
 ## Key Implementation Notes
 
 ### Hosts & metrics
-- Remote hosts run the Rust agent (`agent/`), polled over Tailscale.
+- Remote hosts run the Rust agent (`agent/`), polled over any address the
+  cockpit can reach — Tailscale, a LAN, a VPN. A **paired** host (#448) is
+  dialled over HTTPS pinned to its agent's certificate; an **unpaired** host is
+  dialled over plain HTTP, and only when its address is loopback or Tailscale —
+  anywhere else the cockpit sends nothing until the host is paired (#449).
 - **The agent measures a GPU on a Mac and on an NVIDIA host** — IOKit through
   `crates/accelerator` (the cockpit's own reader, so a Mac host's remote card
   matches its local one) and `nvidia-smi` respectively, on a probe task off the
@@ -552,7 +579,14 @@ the bundle's floor.
   both, and never a fallback (#448).** `Host.tls_fingerprint` (`store.json`,
   non-secret, canonical form from `crates/certpin`) makes `Host::base_url()`
   `https://`; `None` is `http://`, so a store from before pairing polls
-  exactly as it did. `AgentClient::pinned` accepts **exactly one certificate**
+  exactly as it did — **on loopback or Tailscale only (#449):** the unpaired
+  client (`AgentClient::new`) is built with the guard's resolver, refuses an IP
+  literal that fails the rule before opening a socket, follows no redirects and
+  uses no proxy (a proxy would receive the token and resolve the name where the
+  guard cannot see it), and reports the refusal as `AgentError::PlainHttpRefused`,
+  whose `error.kind` (`plain-http-refused`) — like the two pairing kinds — the
+  dashboard paints as its own state and does not count toward "All remote hosts
+  unreachable": nothing was tried, so nothing was learned about the network. `AgentClient::pinned` accepts **exactly one certificate**
   (SHA-256 of the end-entity DER; a chain is refused) with no system roots and
   no hostname check — the agent's SANs are fixed at first start, so the
   certificate is the identity, not the name — and still verifies the handshake
@@ -1002,11 +1036,14 @@ tests build (#417); the crate still has zero dependencies.
   else, `tls-fingerprint` included, is read-only, which is what keeps a
   `tls-fingerprint` run from racing the service over which bind host lands
   in the certificate's SAN list. The SAN list is the loopback baseline plus
-  the resolved bind host, which is what lets `install.sh`'s post-install
-  check and `solador-agent update`'s post-restart probe verify with
-  standard chain-and-hostname TLS (trusting exactly this certificate as its
-  own root — never `danger_accept_invalid_certs`) against the *literal*
-  address they dial, not merely loopback. Axum's TLS comes from
+  the resolved bind host, fixed when the certificate is generated — which is
+  why the local probes do not depend on it (#449): `install.sh`'s
+  post-install check verifies the certificate as the name `localhost` (in every
+  certificate's baseline) while `curl --connect-to` dials the bind address, and
+  `solador-agent update`'s post-restart probe trusts exactly this certificate
+  as its only root with the hostname check off. Both still verify the
+  certificate itself — never `danger_accept_invalid_certs` — and neither breaks
+  when the bind changes after the certificate exists. Axum's TLS comes from
   `axum-server`'s `tls-rustls-no-provider` feature rather than its default
   `tls-rustls`, specifically to avoid pulling in `aws-lc-rs` (a second
   crypto backend, and a `cmake`/C build the musl cross-compile does not
@@ -1048,8 +1085,26 @@ tests build (#417); the crate still has zero dependencies.
   it, and reports a regenerated one as *certificate changed* with a Re-pair
   action. **A cockpit older than #448 cannot dial an HTTPS agent** and reads
   it as unreachable — `install.sh`'s Done block and `agent/README.md`'s TLS
-  section say so and name the `SOLADOR_AGENT_TLS=0` fallback. Relaxing the
-  Tailscale-only bind is the last child (#449), still open.
+  section say so and name the `SOLADOR_AGENT_TLS=0` fallback. The
+  Tailscale-only bind is relaxed for TLS hosts only (#449, below).
+  **The bind default follows the transport (#449).** `resolve_bind_host` takes
+  `tls_on`: an explicit `SOLADOR_AGENT_BIND` wins; else the detected Tailscale
+  IP; else `0.0.0.0` with TLS on, or a refusal with it off (unchanged).
+  `install.sh` mirrors it, and because TLS is not final until the staged
+  binary has been asked about it, a host with no bind address is refused
+  before any download only when TLS is already known to be off, and after
+  staging otherwise. **A bind `install.sh` chose for TLS is provisional
+  (#449):** it writes `SOLADOR_AGENT_BIND_AUTO=1` beside the `0.0.0.0` it
+  picked (the agent ignores the key; the launcher recognises it silently), and
+  every re-run sets that bind aside and resolves again — the tailnet IP if one
+  is up now, `0.0.0.0` only while TLS is on, otherwise the plain-HTTP refusal —
+  so it neither survives TLS being turned off nor pins a host to the wildcard
+  after Tailscale arrives. A bind *without* the marker is the operator's
+  explicit choice and is honoured, plain HTTP included, with a loud summary.
+  Anyone turning TLS off by editing the env file by hand must remove **both**
+  `SOLADOR_AGENT_BIND` and `SOLADOR_AGENT_BIND_AUTO` (or set one address), since
+  the agent honours a bind it finds there. The wildcard-to-tailnet move is what
+  the SAN-independent probes above exist for.
 - **`solador-agent update` / `rollback` are in the binary (#393), and the
   order of operations is the security design.** `agent/src/update.rs`:
   refuse root; resolve #392's install — reading only — from the unit's

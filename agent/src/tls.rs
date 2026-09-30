@@ -18,10 +18,13 @@
 //!
 //! Only the code that will actually *serve* the certificate — the running
 //! agent's own startup — ever generates it, because only that call site knows
-//! the resolved bind host to put in the certificate's SAN list (loopback
-//! alone is not enough: the agent's default bind is a detected Tailscale
-//! address, and the local health probes in `install.sh` and
-//! `solador-agent update` dial that literal address, not loopback). Every
+//! the resolved bind host to put in the certificate's SAN list — so an
+//! ordinary client that dials the bind address by name can verify it. (The
+//! agent's own local health probes, in `install.sh` and `solador-agent
+//! update`, no longer depend on that list: it is fixed at first start while the
+//! bind can change afterwards, e.g. all interfaces to a tailnet address (#449),
+//! so they check the pinned certificate itself and not the name it is dialled
+//! by. A wildcard bind adds nothing to the list.) Every
 //! other reader — `tls-fingerprint`, the update/rollback health probes — is
 //! read-only: [`read_cert`] never creates anything, so there is no ordering
 //! hazard between "the first thing to ask" and "the thing that actually
