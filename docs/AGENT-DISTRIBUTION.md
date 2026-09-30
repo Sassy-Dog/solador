@@ -1070,15 +1070,13 @@ own follow-up finding). Real systemd's `do_unit_file_disable`
 there, and `disable`'s CLI path (`systemctl-enable.c`) fails at "Failed to
 %s unit" BEFORE it ever reaches the `--now` stop — so a combined call on a
 unit whose FILE is already gone never stops anything, it just fails
-outright. Both calls run under the SAME gate: the unit's own FILE existing
-on disk, checked once per unit, and that file is deliberately the ONLY
-signal. Both calls take the unit's FULL name — `solador-agent.service`,
-never bare `solador-agent` — not because `disable` needs the exact name to
-find its own file (`systemctl` expands a bare name to `<name>.service` for
-`disable` too), but because the update *timer* does: a bare
+outright. `disable` runs only while the unit's own FILE exists; `stop`
+runs when the FILE exists **or** the user manager still holds the unit
+([#463](https://github.com/Sassy-Dog/solador/issues/463)). Both calls take the unit's FULL name —
+`solador-agent.service`, never bare `solador-agent`: `list-units` does not
+append `.service` (`systemctl-list-units.c:275`), and a bare
 `solador-agent-update` resolves to the oneshot `.service`, never the
-`.timer`, so the timer must be named in full, and full names are used
-everywhere for consistency. A failed `stop`, or a failed `disable`
+`.timer`. A failed `stop`, or a failed `disable`
 while the file exists, both mean exit **4** — an enablement symlink
 `disable` could not clear is exactly as unconfirmed as a process `stop`
 could not stop, though the two are reported as separate, distinct claims
@@ -1087,23 +1085,35 @@ running; a failed `disable` with a successful `stop` says only that the
 unit's future auto-start is unconfirmed, and does not claim the process is
 still running.
 
-**Known limit ([#455](https://github.com/Sassy-Dog/solador/issues/455)):**
-an earlier revision also asked the running manager's own state
-(`systemctl --user is-active`, falling back to `list-units --all` for a
-unit left `failed` rather than active — only `list-units`'s pattern had to
-be the unit's FULL name, since it matches literally with no auto-suffix;
-`is-active` needs no such care) so that `stop` would run
-for a unit whenever EITHER its own file existed OR the manager itself
-still knew about it, which is what let a re-run after exit 4 retry the
-unit the manager had previously refused to stop even though the earlier
-run's best-effort removal had already taken that unit's FILE with it.
-Every review round on that logic found a new Blocking problem in it, so it
-was backed out rather than shipped, and the finding is tracked at #455
-instead of lost. Until it lands: once a unit's file is gone, a re-run has
-nothing left to gate that unit on and reports "Nothing installed" even if
-the manager is still holding it — confirm by hand with `systemctl --user
-status <unit>`. (The macOS path is unaffected: `launchctl print` is
-always asked directly, with no file-existence gate in between.)
+**A re-run after exit 4 converges (#463, part of #455).** The first run's
+best-effort removal has already deleted the unit files while the manager may
+still run a unit, so the re-run asks it, per unit and by full name:
+`systemctl --user show -p LoadState -p ActiveState <unit>`, each property
+read by key. A unit is **held** when `LoadState != not-found` OR
+`ActiveState != inactive`, and a held unit is stopped. Five systemd
+behaviours (source citations are v256) shaped that, each found by a review
+round of the backed-out #454 and each modelled by the test stub:
+
+1. `disable` fails ENOENT when the unit file is gone
+   (`do_unit_file_disable`, `src/shared/install.c`) and
+   `systemctl-enable.c` returns before its `--now` stop, so stop and disable
+   stay separate calls and a fileless unit is only stopped.
+2. `list-units` does not append `.service`, so full names everywhere.
+3. `list-units --all` also shows fileless units something merely references
+   (a dangling `*.wants` link, the update oneshot's own
+   `After=solador-agent.service`, an operator's unit): `not-found` +
+   `inactive`. `stop` on one fails "Unit ... not loaded."
+   (`dbus-unit.c:1811-1814`), exit 5, so counting them held would be a false
+   exit 4 forever. They are left alone.
+4. A fileless oneshot left `failed` reads `not-found` + `failed`: held, and
+   `stop` works on it.
+5. A unit the manager never loaded is not an error: `show` exits 0 with
+   `not-found` + `inactive`. Absent: no stop call, and "Nothing installed".
+
+A `show` that itself fails is not evidence of absence, so it is exit 4
+naming the unit rather than a quiet "Nothing installed". macOS asks
+`launchctl print` directly, with no file-existence gate.
+
 **Before either unit/plist is removed**, the binary
 path it currently names is read (`unowned_service_binary`, never assumed to
 be `$DEST_BIN`) — reading `ExecStart=` on Linux, the second
@@ -1371,13 +1381,14 @@ Also required:
   install.sh only ever calls `disable` once it has gated the unit on that
   same file existing, so this branch is not reachable through install.sh's
   own calls any more; it stays in the stub as a record of what real systemd
-  does. `stop` makes no claim about matching real systemd's own "unit never
-  heard of" behaviour: install.sh gates `stop` on the unit's FILE too now
-  (**Known limit**, #455, above — an earlier revision's `is-active`/
-  `list-units --all` emulation is gone from the stub along with the
-  install.sh logic it existed to test), so the stub simply succeeds unless
-  `STUB_SYSTEMCTL_STOP_EXIT` forces a failure. A clean host makes neither
-  call and reports "Nothing installed".
+  does. `show -p LoadState -p ActiveState <unit>` answers from
+  `STUB_SYSTEMCTL_UNIT_STATE` (`<full-name>=<LoadState>:<ActiveState>` records,
+  exact full-name match; an unlisted unit is `not-found:inactive`, or
+  `loaded:inactive` with a file), and `stop` on a `not-found:inactive` unit
+  exits 5 "not loaded". The fileless cases (held and stopped, stop refused
+  exits 4, fileless `failed` oneshot, a `not-found:inactive` reference left
+  alone, all four held, an unreadable state) are pinned, and a clean host
+  makes neither call and reports "Nothing installed".
 
 Which halves of the rejection test exist is worth saying precisely rather
 than letting a checked box imply all of them:

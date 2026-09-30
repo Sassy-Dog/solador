@@ -1081,29 +1081,29 @@ nothing about whether the lock is free.
 On Linux it then runs `systemctl --user stop`, and then `systemctl --user
 disable` (no `--now`; the two are separate calls, never combined) on each of
 the four units it knows about — the metrics service, the update timer, the
-update oneshot and the pre-rename unit — wherever, and *only* wherever, the
-unit's own file still exists on disk. That file is the ONLY signal: a
-failure of either call means exit **4** (below), and both calls are made
+update oneshot and the pre-rename unit. `disable` runs only where the unit's
+own file still exists on disk; `stop` runs where the file exists **or** the
+user manager still holds the unit ([#463](https://github.com/Sassy-Dog/solador/issues/463)).
+A failure of either call means exit **4** (below), and both calls are made
 against the unit's FULL name (e.g. `solador-agent.service`, never a bare
-one) — not because `disable` needs the exact name to find its own file
-(`systemctl` expands a bare name to `<name>.service` for `disable` too), but
-because the update *timer* does: a bare `solador-agent-update` resolves to
-the oneshot `.service`, never the `.timer`, so the timer must be named in
-full, and full names are used everywhere for consistency.
+one): `systemctl list-units` does not append `.service`, and a bare
+`solador-agent-update` resolves to the oneshot `.service`, never the
+`.timer`.
 
-**Known limit ([#455](https://github.com/Sassy-Dog/solador/issues/455)):** an
-earlier revision also asked the running manager's own state
-(`systemctl --user is-active`, falling back to `list-units --all` for a unit
-left `failed` rather than genuinely active) so that a re-run after exit 4
-could still find and stop a unit whose file that *earlier* run had already
-removed regardless of whether the stop itself succeeded. Every review round
-on that logic found a new Blocking problem in it, so it was backed out
-rather than shipped — the finding lives on at #455, not lost. Until it
-lands: once a unit's file is gone, a re-run has nothing left to gate that
-unit on, so it reports "Nothing installed" even if the manager is still
-holding it. **Confirm by hand** with `systemctl --user status <unit>` after
-an exit 4 — the macOS path is unaffected, since `launchctl print` is always
-asked directly with no file-existence gate in between. It then removes
+**A re-run after exit 4 converges.** The first run's best-effort removal has
+already taken the unit files, but the manager may still be running a unit, so
+a re-run asks it: `systemctl --user show -p LoadState -p ActiveState <unit>`,
+and a unit counts as held when `LoadState` is not `not-found` **or**
+`ActiveState` is not `inactive`. A held unit with no file is stopped (never
+disabled — `disable` fails without the file) and the run is not reported as
+"Nothing installed"; that includes a fileless oneshot left `failed`. A unit
+the manager merely references — a dangling `*.wants` link, or the update
+oneshot's own `After=solador-agent.service` — reads `not-found` and
+`inactive`, is left alone, and does not cause an exit 4. A state read that
+itself fails is exit 4 too, never a silent "Nothing installed". Still use
+`systemctl --user status <unit>` (the exit-4 output names each unit) to check
+the result by hand. The macOS path always asked `launchctl print` directly.
+It then removes
 `solador-agent.service`, `solador-agent.service.prev`,
 `solador-agent-update.service`, `solador-agent-update.timer` and
 `devcanopy-agent.service`, then `daemon-reload`s and `reset-failed`s all
@@ -1238,17 +1238,13 @@ Step 3 exiting **4** is different, and worth knowing about before you rely
 on a re-run to finish the move: every file was removed, but the manager
 refused a specific `stop` or `disable` request for one of the four units it
 knows about (the metrics service, the update timer and oneshot, and the
-pre-rename `devcanopy-agent.service`). **Known limit
-([#455](https://github.com/Sassy-Dog/solador/issues/455)):** whether a unit
-counts as present is decided ONLY by whether its own unit file still exists
-(see **Uninstall**, above) — so once that first run's best-effort removal
-has taken the file with it, a RE-RUN has nothing left to gate the unit on
-and reports "Nothing installed" rather than retrying the stop or disable the
-manager refused. **Confirm by hand** — `systemctl --user status <unit>` —
-that the old user's service is actually gone before treating the move as
-finished; a clean re-run does not prove it on its own. (The macOS path is
-unaffected: `launchctl print` is asked directly every time, with no
-file-existence gate in between.)
+pre-rename `devcanopy-agent.service`). A re-run asks the user manager about
+each unit as well as looking for its file (see **Uninstall**, above), so it
+retries the `stop` the manager refused; a `disable` that failed cannot be
+retried once the file is gone, so check for a dangling link in
+`~/.config/systemd/user/*.wants/`. Confirm with `systemctl --user status
+<unit>` that the old user's service is actually gone before treating the
+move as finished.
 
 ## Updating (`solador-agent update`)
 

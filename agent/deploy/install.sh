@@ -80,19 +80,13 @@
 # owner can) rather than silently ignored or pointed at a flag that does not
 # apply post-uninstall.
 #
-# KNOWN LIMIT (#455): on Linux, whether a unit counts as present is decided
-# ONLY by whether its own unit FILE still exists on disk. A prior revision
-# also asked the running manager's own state (`is-active`, falling back to
-# `list-units --all`) so a re-run could still find and act on a unit whose
-# file an earlier exit-4 run had already removed — every review round on
-# that logic found a new Blocking problem in it, so it was backed out rather
-# than shipped, and the finding lives on at #455 rather than being lost.
-# Until it lands: an exit-4 run's best-effort removal has already taken the
-# unit's file with it, so a RE-RUN sees nothing left to gate on and reports
-# "Nothing installed" even though the manager may still be holding the unit.
-# Confirm by hand with `systemctl --user status <unit>`. (macOS is
-# unaffected: launchd is always asked directly, via `launchctl print
-# gui/$(id -u)/<label>`, with no file-existence gate in between.)
+# RE-RUN AFTER EXIT 4 (#463, part of #455): on Linux a unit counts as present
+# when its unit FILE exists OR the user manager still holds it (see
+# linux_unit_present), so a re-run after an exit 4 — whose first run already
+# deleted the files — still finds and stops a unit the manager is running,
+# rather than reporting "Nothing installed". Only `stop` is gated on the
+# manager's word; `disable` needs the file. (macOS has always asked launchd
+# directly, via `launchctl print gui/$(id -u)/<label>`.)
 #
 # Refusals run in this order and each is untouched:
 # root (same reason --enable-timer refuses it); then an unsupported platform
@@ -471,6 +465,52 @@ left_behind_hint() {
     esac
 }
 
+# linux_unit_present <full-unit-name>: does the running user manager still
+# hold this unit? Exit 0 present, 1 absent, 2 the state could not be read.
+# Written against five systemd behaviours (#463; #454 found them one review
+# round at a time, source citations are v256):
+#  - the name is always the FULL name: `list-units` does not append
+#    `.service` (systemctl-list-units.c:275), so a bare `solador-agent`
+#    matches nothing;
+#  - the state is read with `show -p LoadState -p ActiveState <unit>`, never
+#    by parsing `list-units` columns, and each property is read by KEY, so
+#    the order systemd prints them in cannot matter;
+#  - present means `LoadState != not-found` OR `ActiveState != inactive`.
+#    `list-units --all` also lists fileless units something merely
+#    references (a dangling *.wants link, this repo's own
+#    `After=solador-agent.service` in the update oneshot, an operator's
+#    unit); those read `not-found` + `inactive`, and `stop` on one fails
+#    "Unit ... not loaded." (dbus-unit.c:1811-1814), which systemctl reports
+#    as exit 5 — counting them present would make a clean host exit 4
+#    forever;
+#  - a fileless oneshot left `failed` reads `not-found` + `failed`: present,
+#    and `stop` works on it;
+#  - a unit the manager never loaded is not an error: `show` exits 0 with
+#    `LoadState=not-found`, `ActiveState=inactive` — absent.
+# A `show` that fails, or prints neither property, is exit 2: not evidence
+# of absence, so the caller says so instead of reporting "Nothing installed".
+linux_unit_present() {
+    local unit="$1" props line load="" active=""
+    if ! props="$(systemctl --user show -p LoadState -p ActiveState "$unit" 2>/dev/null)"; then
+        return 2
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            LoadState=*) load="${line#LoadState=}" ;;
+            ActiveState=*) active="${line#ActiveState=}" ;;
+        esac
+    done <<EOF_PROPS
+$props
+EOF_PROPS
+    if [ -z "$load" ] || [ -z "$active" ]; then
+        return 2
+    fi
+    if [ "$load" != "not-found" ] || [ "$active" != "inactive" ]; then
+        return 0
+    fi
+    return 1
+}
+
 # stop_and_disable_linux_unit <full-unit-name> <file> <label>: stop and
 # disable are two separate systemctl calls, never a combined `disable --now`
 # (#454 round-4 review's follow-up). Real systemd's `do_unit_file_disable`
@@ -483,23 +523,23 @@ left_behind_hint() {
 # (MANAGER_STOP_FAILED vs MANAGER_DISABLE_FAILED, below): only a failed
 # `stop` means the process itself may still be running.
 #
-# Both calls run under the SAME gate — the unit's own FILE existing on disk
-# — and that is deliberately the ONLY signal. A prior revision also asked
-# the running manager's own state (`is-active`, falling back to
-# `list-units --all` for a unit left `failed` rather than active) so a
-# re-run after exit 4 could still find and act on a unit whose file an
-# earlier run had already removed. Every review round on that logic found a
-# new Blocking problem in it, so it was backed out rather than shipped; the
-# finding is tracked at #455, not lost. The KNOWN LIMIT this leaves: once a
-# unit's file is gone (an earlier exit-4 run's best-effort removal, most
-# likely), a re-run cannot see it and reports "Nothing installed" even if
-# the manager is still holding it — confirm by hand with `systemctl --user
-# status <unit>`.
+# The two calls are gated differently (#463, part of #455):
+#  - `stop` runs when the unit's FILE exists OR the user manager still holds
+#    the unit (linux_unit_present, above). The second half is what lets a
+#    re-run converge after an exit 4: that run's best-effort removal has
+#    already deleted the file, and the manager may still be running the unit.
+#  - `disable` runs only while the FILE exists, because without one real
+#    systemd fails it ENOENT. A fileless unit's enablement symlinks are not
+#    something `disable` can find; `daemon-reload` and `reset-failed` below
+#    are what clear the rest.
+# The file-exists path never asks the manager, so a normal uninstall makes
+# exactly the calls it always did.
 #
 # A failed `stop` sets MANAGER_STOP_FAILED; a failed `disable` (it only ever
 # runs once the file is confirmed to exist) sets MANAGER_DISABLE_FAILED.
-# Either means exit 4. Sets UNINSTALL_REMOVED whenever the unit's file
-# exists (the unit is treated as installed on that signal alone).
+# Either means exit 4, as does a state that could not be read (recorded as a
+# stop failure: the run cannot say the unit is not running). Sets
+# UNINSTALL_REMOVED whenever the unit's file exists or the manager held it.
 # UNINSTALL_REMOVED is a script-global, set after the argument-parsing loop
 # in the `---- uninstall (#439) ----` section above — it is not a `local`,
 # unlike MANAGER_STOP_FAILED/MANAGER_DISABLE_FAILED, which ARE
@@ -517,15 +557,37 @@ left_behind_hint() {
 stop_and_disable_linux_unit() {
     local unit="$1" file="$2" label="$3"
     local this_stop_failed=false this_disable_failed=false
+    local has_file=false held=false present_rc=1
     if [ -f "$file" ]; then
+        has_file=true
+    else
+        linux_unit_present "$unit" && present_rc=0 || present_rc=$?
+        case "$present_rc" in
+            0) held=true ;;
+            2)
+                echo "    (systemctl --user show $unit: could not read the state of $label;" >&2
+                echo "     cannot confirm it is stopped)" >&2
+                MANAGER_STOP_FAILED=true
+                this_stop_failed=true
+                ;;
+        esac
+    fi
+    if [ "$has_file" = true ] || [ "$held" = true ]; then
         if systemctl --user stop "$unit" 2>/dev/null; then
             echo "    stopped $label"
         else
             echo "    (systemctl --user stop $unit reported an error;" >&2
-            echo "     could not confirm it is stopped — removing its files anyway)" >&2
+            if [ "$has_file" = true ]; then
+                echo "     could not confirm it is stopped — removing its files anyway)" >&2
+            else
+                echo "     could not confirm it is stopped)" >&2
+            fi
             MANAGER_STOP_FAILED=true
             this_stop_failed=true
         fi
+        UNINSTALL_REMOVED=true
+    fi
+    if [ "$has_file" = true ]; then
         if systemctl --user disable "$unit" 2>/dev/null; then
             echo "    disabled $label"
         else
@@ -534,14 +596,13 @@ stop_and_disable_linux_unit() {
             MANAGER_DISABLE_FAILED=true
             this_disable_failed=true
         fi
-        UNINSTALL_REMOVED=true
-        if [ "$this_stop_failed" = true ] && [ "$this_disable_failed" = true ]; then
-            LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=both"
-        elif [ "$this_stop_failed" = true ]; then
-            LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=stop"
-        elif [ "$this_disable_failed" = true ]; then
-            LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=disable"
-        fi
+    fi
+    if [ "$this_stop_failed" = true ] && [ "$this_disable_failed" = true ]; then
+        LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=both"
+    elif [ "$this_stop_failed" = true ]; then
+        LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=stop"
+    elif [ "$this_disable_failed" = true ]; then
+        LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=disable"
     fi
 }
 
@@ -855,18 +916,15 @@ run_uninstall() {
     # untestable now that nothing can reach it, is worse than none.
     case "$OS" in
         Linux)
-            # Each of the four units below is checked, stopped and disabled
-            # solely on its own unit FILE existing (#455 — see
-            # stop_and_disable_linux_unit's own comment for what this leaves
-            # unhandled, and why). Every argument here is the unit's FULL
+            # Each of the four units below is stopped when its unit FILE exists
+            # or the manager still holds it, and disabled only while the
+            # FILE exists (#463 — see stop_and_disable_linux_unit's own
+            # comment). Every argument here is the unit's FULL
             # name (e.g. "solador-agent.service", never bare
-            # "solador-agent") — not because `disable` needs the exact name
-            # to find its own file (systemctl expands a bare name to
-            # "<name>.service" for `disable` too), but because the update
-            # TIMER does: a bare "solador-agent-update" resolves to the
-            # oneshot ".service", never the ".timer", so the timer must be
-            # named in full, and full names are used everywhere for
-            # consistency.
+            # "solador-agent"): `list-units` never appends `.service`, and
+            # the update TIMER needs it besides — a bare
+            # "solador-agent-update" resolves to the oneshot ".service",
+            # never the ".timer".
             stop_and_disable_linux_unit "$BIN_NAME.service" "$UNIT_DST" "$BIN_NAME.service"
             stop_and_disable_linux_unit "$UPDATE_NAME.timer" "$UPDATE_TIMER_DST" "$UPDATE_NAME.timer"
             stop_and_disable_linux_unit "$UPDATE_NAME.service" "$UPDATE_UNIT_DST" "$UPDATE_NAME.service"
@@ -883,8 +941,8 @@ run_uninstall() {
             uninstall_remove "$UPDATE_TIMER_DST" "update timer"
             uninstall_remove "$LEGACY_UNIT" "systemd unit (pre-rename)"
             # Only when something above actually changed: a no-op second run
-            # asks systemd for nothing, the same "no manager calls" contract
-            # every other refusal/no-op path in this script keeps.
+            # makes no MUTATING manager call (its read-only `show` state
+            # reads above change nothing).
             if [ "$UNINSTALL_REMOVED" = true ]; then
                 systemctl --user daemon-reload 2>/dev/null || true
                 # Clears the "failed" state a disable/stop that reported an
