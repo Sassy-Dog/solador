@@ -187,6 +187,7 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 match pairing_kind(h) {
                     Some(card::ERROR_KIND_CERTIFICATE_CHANGED) => "Cert changed",
                     Some(card::ERROR_KIND_NO_TLS) => "No TLS",
+                    Some(card::ERROR_KIND_PLAIN_HTTP_REFUSED) => "Not paired",
                     _ => "Unreachable",
                 }
                 .to_owned()
@@ -266,7 +267,9 @@ fn pairing_kind(h: &Value) -> Option<&str> {
     h["error"]["kind"].as_str().filter(|k| {
         matches!(
             *k,
-            card::ERROR_KIND_CERTIFICATE_CHANGED | card::ERROR_KIND_NO_TLS
+            card::ERROR_KIND_CERTIFICATE_CHANGED
+                | card::ERROR_KIND_NO_TLS
+                | card::ERROR_KIND_PLAIN_HTTP_REFUSED
         )
     })
 }
@@ -280,7 +283,9 @@ fn pairing_kind(h: &Value) -> Option<&str> {
 ///
 /// **A host whose failure is its pairing does not count as down here** (#448):
 /// a certificate that is not the pinned one, or a pinned host answering plain
-/// HTTP, means the machine *answered*. The hint asks whether this machine's
+/// HTTP, means the machine *answered*; and an unpaired host the cockpit refused
+/// to send its token to over plain HTTP (#449) was never dialled at all, so
+/// nothing was learned about the network from it. The hint asks whether this machine's
 /// network or VPN is up, and for those hosts the honest answer is "yes" — so
 /// counting them would send the operator to check a VPN that is fine. Since
 /// the hint claims *every* remote is unreachable, one such host also silences
@@ -622,8 +627,8 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         }
     }
     // Amber, because it's a question ("is the VPN up?"), not a finding — each
-    // card keeps its own red `Unreachable`. Names no vendor: Tailscale becomes
-    // optional once #445 lands.
+    // card keeps its own red `Unreachable`. Names no vendor: Tailscale is
+    // optional.
     if id == "hosts" && all_remote_hosts_unreachable(payload) {
         warnings.push(json!({
             "text": "All remote hosts unreachable — is this machine's network or VPN up?",
@@ -1054,6 +1059,7 @@ mod tests {
         for kind in [
             card::ERROR_KIND_CERTIFICATE_CHANGED,
             card::ERROR_KIND_NO_TLS,
+            card::ERROR_KIND_PLAIN_HTTP_REFUSED,
         ] {
             // Every remote failing on pairing: no network claim at all.
             let all_pairing = json!({"hosts": [
@@ -1092,11 +1098,13 @@ mod tests {
         let rows = host_rows(&json!({"hosts": [
             paired_badly("changed", card::ERROR_KIND_CERTIFICATE_CHANGED),
             paired_badly("plain", card::ERROR_KIND_NO_TLS),
+            paired_badly("unpaired", card::ERROR_KIND_PLAIN_HTTP_REFUSED),
             remote("dead", true, false),
         ]}));
         assert_eq!(rows[0]["value"], "Cert changed");
         assert_eq!(rows[1]["value"], "No TLS");
-        assert_eq!(rows[2]["value"], "Unreachable");
+        assert_eq!(rows[2]["value"], "Not paired");
+        assert_eq!(rows[3]["value"], "Unreachable");
         // Still a problem row (red, attention) — only the word differs — and
         // still blanked: a host we cannot verify has no readings to show.
         for row in &rows {
@@ -1130,7 +1138,7 @@ mod tests {
             })
             .expect("the all-remote-unreachable warning");
         assert_eq!(warning["color"], color::hex(color::AMBER));
-        // Names no vendor: Tailscale becomes optional once #445 lands.
+        // Names no vendor: Tailscale is optional.
         assert!(!warning["text"]
             .as_str()
             .unwrap()

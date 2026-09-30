@@ -35,7 +35,7 @@ name = "solador-agent"
 # fabricated thread rows).
 version = "0.5.1"
 edition = "2021"
-description = "Per-host metrics agent polled by Solador over Tailscale"
+description = "Per-host metrics agent polled by Solador"
 license = "MIT"
 
 [[bin]]

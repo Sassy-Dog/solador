@@ -892,6 +892,88 @@ port in the env file is now kept on a re-run, the way the bind already was.
 Success still means the authenticated `/v1/health` reports the verified
 artifact's own version, and anything else is non-zero.
 
+**The bind follows the transport, and Tailscale is optional (#449, part 3 of
+#445).** The agent and the installer resolve the bind the same way: an
+explicit `SOLADOR_AGENT_BIND` always wins; else the env file's existing value
+(installer only, and not a bind the installer itself chose — below); else the
+detected Tailscale IP; else — and only with TLS on — all interfaces (`0.0.0.0`). With TLS off the last step is still a refusal, as
+it always was: over plain HTTP the tailnet is the only thing between the
+bearer token and the network, so a host with no tailnet is refused rather than
+exposed. With TLS on the token is encrypted and the certificate is pinned by
+the cockpit (#448), which is why the tailnet requirement was retired for that
+transport and only that one. Because TLS is not final until the staged binary
+has been asked whether it supports it (§6, above), the installer refuses a
+host with no bind address before any download only when TLS is already known
+to be off (`SOLADOR_AGENT_TLS=0`, or an existing env file without it), and
+after staging when the staged release predates TLS.
+
+**All-interfaces is a real exposure and the installer says so.** The
+authenticated agent is then reachable on every network the host is on — on a
+cloud VM, a public interface included. The installer names the interface and the
+reason in both its `Binding to` line and its Done block (`Bind: 0.0.0.0:7878 —
+ALL interfaces`), and points the operator at the two mitigations:
+firewall the port, or set `SOLADOR_AGENT_BIND` to the one interface the
+cockpit dials. The agent also logs a warning at every start that binds a
+wildcard.
+
+**What keeps the token off an open network is the client's rule, not the
+listener's (#449 part 3).** The earlier statement here — that the token plus the
+pinned certificate are the whole defence — was true only of a *paired* host. A
+host added in the cockpit without pairing is dialled over plain HTTP, and an
+agent that may now listen off the tailnet would have been sent the bearer token
+in the clear before the connection ever failed. So the cockpit refuses:
+**it never sends the bearer token over plain HTTP to an address that is not
+loopback or Tailscale** (IPv4 `100.64.0.0/10`, IPv6 `fd7a:115c:a1e0::/48` minus
+the 4via6 prefix `fd7a:115c:a1e0:b1a::/64`; an address range, not tailnet
+membership — `100.64.0.0/10` is RFC 6598 CGNAT space other networks use; a
+name only if every address it resolves to is, connecting to the addresses it
+vetted; nothing sent if it does not resolve). The accurate statement is
+therefore: a paired host uses pinned TLS, and an unpaired host is only ever
+dialled over plain HTTP on loopback or Tailscale. An unpaired host elsewhere is
+not polled and reads "unpaired, off-tailnet — pair it in Settings" (its own
+state, not *unreachable*); the fix is the pairing flow already there. The
+guard lives in `crates/agentclient` (`plain`), where the address table is unit
+tested exhaustively and the "no connection is made" property is tested against
+a live listener, with a guard-off negative control.
+
+**A bind the installer chose is provisional.** It writes
+`SOLADOR_AGENT_BIND_AUTO=1` beside the `0.0.0.0` it picked for a TLS host with no
+tailnet; every re-run sets that bind aside and resolves it again (tailnet IP if
+one is up, `0.0.0.0` only with TLS on, else the refusal), so it survives neither
+TLS being turned off nor Tailscale arriving. A bind without the marker is the
+operator's explicit choice and is kept. (This replaces an earlier draft of this
+section that pinned the chosen bind so that "a host does not change interface
+behind the operator's back": pinning it is what left plain HTTP on every
+interface after TLS was turned off.)
+
+**The certificate's SAN list no longer matters to the local probes (#457).**
+The list is fixed at first start: the loopback baseline plus the concrete bind
+host then; wildcards are dropped. Because the bind can now change after that
+(all interfaces to a tailnet address the day Tailscale comes up), the two local
+probes stopped depending on it rather than leaving a path where every `update`
+rolls back: `verify_health` verifies the pinned certificate as the name
+`localhost` — in every certificate's baseline — while `curl --connect-to` dials
+the bind address, and `solador-agent update`'s post-restart probe trusts the
+pinned certificate as its only root. For an IP or DNS-name bind it dials
+`localhost` with the connection pinned to the bind (reqwest
+`resolve_to_addrs`, the counterpart of `--connect-to`): the bind's IP, or the
+looked-up addresses of a DNS-name bind (before the swap; unresolvable is a
+refusal, as is an IPv6 zone id, for `update` and `rollback` alike). A wildcard
+bind is not pinned: the probe dials loopback as written (`https://127.0.0.1:P`
+for `0.0.0.0` or an empty bind, `https://[::1]:P` for `::` / `[::]`) and
+verifies against the baseline loopback IP SANs.
+Neither disables certificate or hostname verification, and a different
+certificate — including a CA-signed `localhost` one — is still refused. The
+tests that guard it: `health_client_reaches_a_dns_name_bind_absent_from_the_san_list`
+and `health_client_reaches_a_non_loopback_bind_absent_from_the_san_list` (the
+probe works for a bind the certificate does not name, each with a
+direct-dial negative control), `loopback_control_verifies_the_hostname_not_the_pin`
+(never skips; checks hostname verification only, not the pin), `health_client_refuses_a_localhost_certificate_from_another_ca`
+and `health_client_trusts_only_the_pinned_certificate` (the pin). The
+non-loopback one skips on a host with no route unless
+`SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK` is set, which CI does. The cockpit checks no hostname. What #457 still tracks is the list itself
+for an external client that verifies by name.
+
 The from-source path is deliberately still there: `redeploy.sh` builds with
 `cargo` for our own Linux hosts and is `build_release_binary`'s only caller
 now. See "Open items".

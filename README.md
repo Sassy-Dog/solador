@@ -104,9 +104,12 @@ or HTTPS, for an agent you have paired with, in which case it trusts exactly
 the certificate whose fingerprint you compared and approved — so **any network
 path works**: a LAN, a VPN, WireGuard, ExpressRoute, Tailscale, an SSH tunnel.
 It does not care how the packets get there. The agent
-itself binds a private address by default rather than `0.0.0.0`, so installing
-it doesn't quietly publish your metrics to the internet; set `SOLADOR_AGENT_BIND`
-if you want it somewhere else. See [`agent/README.md`](agent/README.md).
+binds the host's Tailscale address when there is one. A TLS host with no
+Tailscale binds all interfaces (`0.0.0.0`), protected by the bearer token and TLS,
+so firewall its port or set `SOLADOR_AGENT_BIND` on a host with a public address.
+The cockpit, for its part, never sends the token over plain HTTP anywhere but
+loopback or Tailscale: a host you have not paired is only polled there. See
+[`agent/README.md`](agent/README.md).
 
 ## The one design rule
 

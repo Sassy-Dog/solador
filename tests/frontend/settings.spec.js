@@ -1886,3 +1886,55 @@ test("an unpinned host shows no pin line and no Re-pair", async ({ page, baseURL
   await expect(page.locator(".pair-check")).toHaveText(settings.hosts.pair.checkLabel);
   await expect(page.locator(".host-details")).not.toContainText(settings.hosts.pair.repairHelp);
 });
+
+test("an unpaired host the cockpit refuses to dial over plain HTTP says so, and is fixed with the pairing step (#449)", async ({ page, baseURL }) => {
+  // The live flag is Rust's; the fixture's unpaired host is marked here, the way
+  // the "fine pinned host" case clears the pinned one.
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const settings = await fixture(baseURL, "sample-settings.json");
+  const host = settings.hosts.rows.find((h) => !h.pinned);
+  host.plainRefused = true;
+  await stubIpc(page, cockpit, settings);
+  await page.goto("/index.html?view=details");
+  await page.locator("#settingsToggle").click();
+  await openConnection(page, `host:${host.id}`);
+
+  // Why it is not polled, above the step that fixes it -- and no Re-pair, which
+  // is for a pin that changed.
+  await expect(page.locator(".pair-unpaired")).toHaveText(settings.hosts.pair.unpairedHelp);
+  await expect(page.locator(".pair-check")).toHaveText(settings.hosts.pair.checkLabel);
+  await expect(page.locator(".host-details")).not.toContainText(settings.hosts.pair.repairHelp);
+
+  // Fixed with the existing probe / Trust flow, and only Trust sends the pin.
+  await stubHostProbe(page, TLS_FOUND);
+  await page.locator(".pair-check").click();
+  await expect(page.locator(".pair-found .pair-fingerprint")).toHaveText(FINGERPRINT_A);
+  await page.locator(".pair-trust").click();
+  await page.locator(".host-save").click();
+  expect((await calls(page, "settings_save_host")).at(-1).args).toMatchObject({
+    id: host.id,
+    tlsFingerprint: FINGERPRINT_A,
+  });
+});
+
+test("an unpaired host shows no refusal note until Test finds it refused, and a pinned one never does (#449)", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const host = settings.hosts.rows.find((h) => !h.pinned);
+  expect(host.plainRefused).toBe(false);
+  await openConnection(page, `host:${host.id}`);
+  await expect(page.locator(".pair-unpaired")).toHaveCount(0);
+
+  await page.evaluate((id) => {
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) =>
+      command === "settings_test_host"
+        ? { id, result: "✗ not paired", certificateChanged: false, plainRefused: true }
+        : original(command, args);
+  }, host.id);
+  await page.locator(".host-row .test").first().click();
+  await expect(page.locator(".pair-unpaired")).toBeVisible();
+
+  // A pinned host is dialled over TLS, which the guard does not touch.
+  const pinned = settings.hosts.rows.find((h) => h.pinned);
+  expect(pinned.plainRefused).toBe(false);
+});

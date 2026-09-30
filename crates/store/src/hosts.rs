@@ -22,7 +22,8 @@ pub struct Host {
     pub id: Uuid,
     /// Display name in the cockpit.
     pub name: String,
-    /// Tailscale IP or MagicDNS name.
+    /// Any address the cockpit can reach the agent on: a Tailscale IP or
+    /// MagicDNS name, a LAN address, a DNS name. Tailscale is optional.
     pub address: String,
     #[serde(default = "default_agent_port")]
     pub port: u16,
@@ -80,9 +81,13 @@ impl Host {
     /// agent that has stopped speaking TLS is reported as such
     /// (`fault::Fault::NoTls`), not followed down.
     ///
-    /// A host with no pin stays plain HTTP: over Tailscale the transport is
-    /// what carries the encryption (see `agent/README.md`), and a store from
-    /// before pinning existed must keep polling the agents it always polled.
+    /// A host with no pin stays plain HTTP, and a store from before pinning
+    /// existed must keep polling the agents it always polled. The cockpit only
+    /// dials plain HTTP to loopback or Tailscale addresses, enforced by
+    /// `agentclient`'s `plain` module. A plain-HTTP agent is tailnet-only
+    /// by default (a fresh install serves TLS, bound to all interfaces when
+    /// there is no tailnet), and an explicit `SOLADOR_AGENT_BIND` can change
+    /// that (see `agent/README.md`).
     /// `Some("")` is still a pin — an unusable one, which no certificate
     /// matches — so a hand-edited store cannot turn pinning *off* by blanking
     /// the string.

@@ -54,7 +54,11 @@ jobs:
       - name: Build
         run: cargo build --locked -p solador-agent --verbose
 
+      # The one test that dials a non-loopback bind skips on a host with no
+      # route; here that would be a silent pass, so it is a failure instead.
       - name: Test
+        env:
+          SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK: "1"
         run: cargo test --locked -p solador-agent --verbose
 
       # agent/deploy/ is the agent's only path onto a host, and until #269
@@ -145,7 +149,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # As in agent-tests: the non-loopback health-probe test must not skip
+      # silently on a runner without a route.
       - name: Test
+        env:
+          SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK: "1"
         run: cargo test --locked --workspace
 
       # The deploy suite once more, under the bash this repo actually promises

@@ -115,8 +115,10 @@ struct HostState {
     /// Back-to-back failed polls; reset to 0 on any success. `error` is only
     /// published once this reaches [`FAILURE_THRESHOLD`] — see `record_poll`.
     consecutive_failures: u32,
-    /// Which pairing failure `error` is, when it is one (#448): a certificate
-    /// that is not the pinned one, or a pinned host that answers plain HTTP.
+    /// Which pairing failure `error` is, when it is one (#448, #449): a
+    /// certificate that is not the pinned one, a pinned host that answers plain
+    /// HTTP, or an unpaired host the cockpit refused to send the token to over
+    /// plain HTTP because its address is neither loopback nor Tailscale.
     /// `None` for everything else, including every network failure.
     ///
     /// Carried beside `error` rather than recovered from its sentence, because
@@ -709,7 +711,7 @@ fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at
     }
 }
 
-/// Which of the two pairing failures (#448) an error is, or `None` — see
+/// Which of the pairing failures (#448, #449) an error is, or `None` — see
 /// [`HostState::error_kind`]. A wildcard is the right shape here and not a
 /// hidden default: `None` is "this is an ordinary failure", which is every
 /// other variant's answer by definition.
@@ -717,6 +719,7 @@ fn error_kind(e: &AgentError) -> Option<&'static str> {
     match e {
         AgentError::CertificateChanged => Some(viewmodel::card::ERROR_KIND_CERTIFICATE_CHANGED),
         AgentError::NoTls => Some(viewmodel::card::ERROR_KIND_NO_TLS),
+        AgentError::PlainHttpRefused => Some(viewmodel::card::ERROR_KIND_PLAIN_HTTP_REFUSED),
         AgentError::Unreachable(_)
         | AgentError::AuthFailed
         | AgentError::HttpStatus(_)
@@ -2471,6 +2474,22 @@ fn certificate_changed_hosts(app: &App) -> Vec<Uuid> {
         .collect()
 }
 
+/// The hosts whose published error is "plain HTTP refused" (#449 part 3): an
+/// unpaired host at an address that is neither loopback nor Tailscale. The
+/// live half of what the host row needs to say why it is not being polled.
+fn plain_refused_hosts(app: &App) -> Vec<Uuid> {
+    let hosts = app.hosts.lock().expect("poll set poisoned");
+    hosts
+        .iter()
+        .filter(|polled| {
+            let state = polled.state.lock().expect("host state poisoned");
+            state.error.is_some()
+                && state.error_kind == Some(viewmodel::card::ERROR_KIND_PLAIN_HTTP_REFUSED)
+        })
+        .map(|polled| polled.key.id)
+        .collect()
+}
+
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
     // Read before the store's lock is taken, and never while it is held: the
@@ -2486,6 +2505,7 @@ fn settings_payload(app: &App) -> Value {
     // The poll set's lock, taken and released before the store's: the same
     // one-at-a-time order every other reader of both uses.
     let certificate_changed = certificate_changed_hosts(app);
+    let plain_refused = plain_refused_hosts(app);
     let store = app.store.lock().expect("store poisoned");
     let stored = stored_secrets(app.credentials.as_ref(), store.hosts(), store.accounts());
     settings::view(
@@ -2498,6 +2518,7 @@ fn settings_payload(app: &App) -> Value {
             vendors: store.status_vendors(),
             accounts: store.accounts(),
             certificate_changed: &certificate_changed,
+            plain_refused: &plain_refused,
         },
         &stored,
         &facts,
@@ -4303,6 +4324,9 @@ async fn settings_test_host(
         // certificate changed (#448), without waiting for the next Settings
         // payload to carry the poll set's view of it.
         "certificateChanged": matches!(result, Err(AgentError::CertificateChanged)),
+        // Likewise (#449): the moment Test finds an unpaired host refused, its
+        // edit form can say why and point at the pairing step.
+        "plainRefused": matches!(result, Err(AgentError::PlainHttpRefused)),
     }))
 }
 
@@ -5318,6 +5342,7 @@ fn dump_settings() -> Value {
             layout: Some(&layout),
             vendors: &vendors,
             certificate_changed: &certificate_changed,
+            plain_refused: &[],
             accounts: &accounts,
         },
         &stored,
@@ -8696,6 +8721,19 @@ mod tests {
             view_for(&s)["error"]["kind"],
             viewmodel::card::ERROR_KIND_NO_TLS
         );
+
+        // An unpaired host off loopback and the tailnet (#449): its own kind.
+        for _ in 0..FAILURE_THRESHOLD {
+            record_poll(&mut s, Err(AgentError::PlainHttpRefused), Instant::now());
+        }
+        assert_eq!(
+            view_for(&s)["error"]["kind"],
+            viewmodel::card::ERROR_KIND_PLAIN_HTTP_REFUSED
+        );
+        assert!(view_for(&s)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&AgentError::PlainHttpRefused.user_message()));
 
         // An ordinary failure replaces it, and is untagged.
         for _ in 0..FAILURE_THRESHOLD {

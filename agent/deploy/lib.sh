@@ -379,14 +379,20 @@ build_release_binary() {
 # Build the URL to probe from the agent's configured bind address.
 #
 # The bind is whatever SOLADOR_AGENT_BIND resolved to at install time — a
-# tailnet IPv4 by default, but the operator can opt into a wildcard behind a
-# firewall. A wildcard is not an address you can dial, so probe loopback there;
-# an IPv6 literal needs brackets before it is a legal URL host.
+# tailnet IPv4 when there is one, all interfaces (a wildcard) for a TLS host with
+# no tailnet (#449), or whatever address the operator set explicitly. A wildcard
+# is not an address you can dial, so probe loopback there; an IPv6 literal needs
+# brackets before it is a legal URL host.
 #
 # The optional third argument is SOLADOR_AGENT_TLS's value (#447): exactly
 # "1" means https://, anything else (including absent) means http:// — never
-# inferred from the port. Mirrors agent/src/update.rs's `health_url`, which
-# is why the two cannot disagree about what a bind/port/tls triple dials.
+# inferred from the port. agent/src/update.rs's `probe_target` carries the same
+# rows — this URL, and for TLS `verify_health`'s `connect_line` — and its table
+# test plus lib_test.sh's `verify_health` table (TLS=1 rows only) pin the two
+# to each other for those TLS forms. Known differences, tracked in a follow-up:
+# an IPv6 zone id (`update` refuses it under TLS, curl is handed it unchanged),
+# plain-HTTP rows (unpinned), and already-bracketed non-IPv6 binds
+# (`[100.64.0.9]`, `[host]`), and this function double-brackets `[fd7a::1]`.
 health_url() {
     local bind="${1:-}" port="${2:-7878}" tls="${3:-}" host scheme
     case "$bind" in
@@ -550,6 +556,30 @@ verify_health() {
     header_line="$(printf '%s' "$token" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
     header_line="header = \"Authorization: Bearer ${header_line}\""
 
+    # Over TLS the certificate is checked as the name `localhost`, which every
+    # certificate this agent generates carries, whatever the bind is (#449):
+    # the URL names `localhost` and curl is told to CONNECT to the bind address
+    # (`connect-to`, in the same -K config). A certificate's SAN list is fixed
+    # when it is generated, and the bind can change afterwards — all interfaces
+    # to a tailnet address the day Tailscale comes up — so verifying by the
+    # bind address would fail a healthy host. Still chain-checked against the
+    # one pinned file (`cacert`); nothing is disabled.
+    local connect_line="" probe_url="$url"
+    if [ "$tls" = "1" ]; then
+        case "$bind" in
+            "" | 0.0.0.0 | "::" | "[::]") ;;
+            *)
+                local dial_host="$bind"
+                case "$bind" in
+                    \[*) ;;
+                    *:*) dial_host="[${bind}]" ;;
+                esac
+                probe_url="https://localhost:${port:-7878}/v1/health"
+                connect_line="connect-to = \"localhost:${port:-7878}:${dial_host}:${port:-7878}\""
+                ;;
+        esac
+    fi
+
     local attempt body got cacert_line cert_missing
     body=""
     got=""
@@ -578,7 +608,7 @@ verify_health() {
             cert_missing=false
             cacert_line="cacert = \"$(printf '%s' "$cert_file" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')\""
         fi
-        body="$(printf '%s\n%s\n' "$header_line" "$cacert_line" | curl -fsS --connect-timeout 2 --max-time 5 -K - "$url" 2>/dev/null)" || curl_rc=$?
+        body="$(printf '%s\n%s\n%s\n' "$header_line" "$cacert_line" "$connect_line" | curl -fsS --connect-timeout 2 --max-time 5 -K - "$probe_url" 2>/dev/null)" || curl_rc=$?
         if [ -n "$body" ]; then
             got="$(health_version "$body")"
             if [ -z "$expected_version" ]; then

@@ -131,6 +131,13 @@ pub enum Fault {
     /// the whole point of the pin is that the client does not downgrade — so
     /// this is a state to report, not a fallback to take.
     NoTls,
+    /// A host that was never paired sits at an address that is neither
+    /// loopback nor Tailscale (#449 part 3), so the cockpit refused to send
+    /// the bearer token to it over plain HTTP. **Nothing was sent.** Not a
+    /// network failure — the machine may be perfectly reachable — and not a
+    /// credential problem: the fix is to pair the host (check its certificate
+    /// and trust it) in Settings, which moves it onto pinned TLS.
+    PlainHttpRefused,
     /// None of the above.
     ///
     /// Its sentence promises nothing except that something failed and the log
@@ -225,6 +232,9 @@ impl Fault {
                 format!("{vendor}'s certificate changed — re-pair it in Settings")
             }
             Fault::NoTls => format!("{vendor} doesn't speak TLS yet — enable it on the host"),
+            Fault::PlainHttpRefused => {
+                format!("{vendor} is unpaired, off-tailnet — pair it in Settings")
+            }
             Fault::Unexpected => format!("{vendor} failed — details in the log"),
         }
     }
@@ -283,6 +293,7 @@ mod tests {
         Fault::ToolUnavailable,
         Fault::CertificateChanged,
         Fault::NoTls,
+        Fault::PlainHttpRefused,
         Fault::Unexpected,
     ];
 
@@ -451,7 +462,7 @@ mod tests {
         }
     }
 
-    /// The two pairing states (#448) are the ones an operator is most likely to
+    /// The pairing states (#448, #449) are the ones an operator is most likely to
     /// mistake for a dead network, so the sentence must be the thing that
     /// tells them apart — from `Unreachable` and from each other, for every
     /// vendor name, and byte-for-byte for the one they are rendered against.
@@ -459,7 +470,11 @@ mod tests {
     fn the_pairing_states_never_read_as_unreachable() {
         for vendor in all_vendors() {
             let unreachable = Fault::Unreachable.message(vendor);
-            for fault in [Fault::CertificateChanged, Fault::NoTls] {
+            for fault in [
+                Fault::CertificateChanged,
+                Fault::NoTls,
+                Fault::PlainHttpRefused,
+            ] {
                 assert_ne!(fault.message(vendor), unreachable, "{fault:?} for {vendor}");
             }
             assert_ne!(
@@ -474,6 +489,10 @@ mod tests {
         assert_eq!(
             Fault::NoTls.message("the agent"),
             "the agent doesn't speak TLS yet — enable it on the host"
+        );
+        assert_eq!(
+            Fault::PlainHttpRefused.message("the agent"),
+            "the agent is unpaired, off-tailnet — pair it in Settings"
         );
     }
 

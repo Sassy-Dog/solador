@@ -169,7 +169,29 @@ typed in. A found-but-untrusted certificate holds **Add Host** back — adding t
 host anyway would poll a TLS agent over plain HTTP. "No TLS" (an agent
 answering plain HTTP) and "couldn't reach" are findings too, each in its own
 sentence, and neither offers Trust. A host that is never paired stays plain
-HTTP, exactly as before.
+HTTP, exactly as before — **on loopback and Tailscale only** (below).
+
+**The bearer token is never sent over plain HTTP to an address that is not
+loopback or Tailscale** ([#449](https://github.com/Sassy-Dog/solador/issues/449),
+part 3). An agent may now listen on any interface, so an unpaired host at a LAN
+or public address would otherwise be sent its token in the clear on every poll.
+`agentclient` (`plain`) refuses: IPv4 `100.64.0.0/10` and IPv6
+`fd7a:115c:a1e0::/48` minus its 4via6 prefix `fd7a:115c:a1e0:b1a::/64` (plus loopback, and an IPv4-mapped address judged as the
+IPv4 it stands for) are the only destinations; a host name counts only if
+*every* address it resolves to does, and the connection is made to those vetted
+addresses — one resolution, so the check and the connect cannot disagree; a
+name that does not resolve sends nothing. The unpaired client also follows no
+redirect and uses no proxy, either of which would be a destination the check
+never saw. The result is `Fault::PlainHttpRefused` — "unpaired, off-tailnet —
+pair it in Settings" — **not** *Unreachable*: the card carries the
+`plain-http-refused` kind, the Machines row reads "Not paired", Test says
+"not paired", the host's edit form explains why the host is not being polled
+beside the same **Check certificate** → **Trust** flow, and the dashboard's "All
+remote hosts unreachable" hint does not count it (nothing was tried, so nothing
+was learned about the network). What protects the token is therefore: a
+paired host uses pinned TLS, and an unpaired host is only ever dialled over
+plain HTTP on loopback or Tailscale. Hosts already on Tailscale keep working
+exactly as before.
 
 A paired host is dialled over `https://` and **never over `http://`**, and
 `agentclient` accepts exactly the pinned certificate: no system roots, no
@@ -265,7 +287,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | crate | what it owns |
 |---|---|
 | [`wire`](../crates/wire) | the agent's JSON contract (package `solador-wire`, imported as `wire`) |
-| [`agentclient`](../crates/agentclient) | the HTTP client for `/v1/snapshot`, `/v1/containers`, `/v1/health` — plain HTTP, or HTTPS pinned to one certificate for a paired host — and the certificate probe pairing starts from |
+| [`agentclient`](../crates/agentclient) | the HTTP client for `/v1/snapshot`, `/v1/containers`, `/v1/health` — plain HTTP (only to loopback or Tailscale addresses, #449), or HTTPS pinned to one certificate for a paired host — and the certificate probe pairing starts from |
 | [`certpin`](../crates/certpin) | the certificate fingerprint format (package `solador-certpin`), shared with the agent's `tls-fingerprint`; no dependencies |
 | [`viewmodel`](../crates/viewmodel) | every string, colour and layout number the frontend paints |
 | [`store`](../crates/store) | settings / hosts / repos / rules / roster JSON + the OS credential store |
@@ -1367,14 +1389,15 @@ source's `warnings` when the payload's remote cards (every card but
 `host_rows`' own `down` test reads, and none is still `connecting`. Amber,
 because "is the network or VPN down" is a question, not a finding — each card
 keeps its own red `Unreachable`, and the line names no vendor (Tailscale
-becomes optional once #445 lands). **A host whose failure is its pairing does
+is optional). **A host whose failure is its pairing does
 not count as down** ([#448](https://github.com/Sassy-Dog/solador/issues/448)):
 a certificate that is not the pinned one, or a pinned host answering plain
-HTTP, means the machine *answered*, so the honest answer to the hint's question
+HTTP, means the machine *answered* (and an unpaired host refused off loopback
+and Tailscale, #449, was never dialled at all), so the honest answer to the hint's question
 is "yes, the network is up". The card carries `error.kind`
-(`certificate-changed` / `no-tls`, set from the typed `AgentError`, never
-parsed from the sentence); `host_rows` paints those as `Cert changed` / `No TLS`
-instead of `Unreachable`, and `all_remote_hosts_unreachable` requires *every*
+(`certificate-changed` / `no-tls` / `plain-http-refused` (#449), set from the
+typed `AgentError`, never parsed from the sentence); `host_rows` paints those as
+`Cert changed` / `No TLS` / `Not paired` instead of `Unreachable`, and `all_remote_hosts_unreachable` requires *every*
 remote to be an ordinary failure — one pairing failure among them silences the
 hint, since its claim that every remote is unreachable would be false. It rides the Machines tile's fixed-height
 warning line (#436), so it moves no geometry, and it is recomputed from the

@@ -55,6 +55,11 @@ const S = {
    *  appears the moment that is known rather than at the next Settings
    *  payload. Rust's `certificateChanged`, remembered per host. */
   repair: new Set(),
+  /** Host ids whose last Test said the cockpit refused to send the token over
+   *  plain HTTP (#449): an unpaired host off loopback and the tailnet. Lets the
+   *  edit form explain itself and point at pairing the moment Test knows,
+   *  as `repair` does. Rust's `plainRefused`, remembered per host. */
+  unpaired: new Set(),
   /** Per-account discovery answers, keyed by account id: `"pending"` while
    *  the walk runs, then Rust's `settings_discover_repos` payload verbatim
    *  (`reason` set when it failed). Held here like `probe` is — which
@@ -741,9 +746,12 @@ function hostsTab(t, options = {}) {
       // The certificate-changed finding is what offers Re-pair; repaint only
       // when it flips, so an ordinary Test never rebuilds the form.
       const flagged = !!answer.certificateChanged;
-      if (flagged !== S.repair.has(answer.id)) {
+      const refused = !!answer.plainRefused;
+      if (flagged !== S.repair.has(answer.id) || refused !== S.unpaired.has(answer.id)) {
         if (flagged) S.repair.add(answer.id);
         else S.repair.delete(answer.id);
+        if (refused) S.unpaired.add(answer.id);
+        else S.unpaired.delete(answer.id);
         renderKeepingEdits();
       }
     });
@@ -878,11 +886,17 @@ function hostDetails(t, host) {
     token.value = "";
     delete S.pair[host.id];
     S.repair.delete(host.id);
+    S.unpaired.delete(host.id);
     mutate("settings_save_host", args);
   });
   box.append(fields);
   if (pair) {
     if (changed) box.appendChild(help(t.pair.repairHelp));
+    // An unpaired host the cockpit will not put the token on plain HTTP for
+    // (#449): say why it is not being polled, right above the step that fixes it.
+    if (!host.pinned && (host.plainRefused || S.unpaired.has(host.id))) {
+      box.appendChild(node("p", "help pair-unpaired", t.pair.unpairedHelp));
+    }
     box.appendChild(pair.node);
   }
   box.append(actionRow(node("span", "lbl", t.add.tokenLabel), replace), credential, actionRow(save));
@@ -2038,6 +2052,7 @@ async function openSettings(tab) {
     S.probe = null;
     S.pair = {};
     S.repair = new Set();
+    S.unpaired = new Set();
     S.discover = {};
     render();
   };
@@ -2061,6 +2076,7 @@ async function openSettings(tab) {
   S.probe = null;
   S.pair = {};
   S.repair = new Set();
+  S.unpaired = new Set();
   settingsOpen = true;
   document.dispatchEvent(new CustomEvent("solador:settings", { detail: true }));
   $s("cockpitView").hidden = true;
