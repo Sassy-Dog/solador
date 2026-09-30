@@ -633,8 +633,12 @@ bash -n agent/deploy/*.sh
 with a warning if it isn't installed). All three run unconditionally in CI.
 
 Since #390 both shell gates cover `scripts/*.sh` and `dev`/`prd` too, not just
-`agent/deploy/`: `scripts/build-agent.sh` runs only on a `v*` tag, and an
-ungated break there would be found mid-release.
+`agent/deploy/`: `scripts/build-agent.sh`'s full four-target, signed run happens
+only in `release.yml` on a `v*` tag, and an ungated break there would be found
+mid-release. PR CI does build one target
+through it, `x86_64-unknown-linux-musl` (#457), so a static-link break shows
+up before a tag; the other three targets and the signing still run only at
+release.
 
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs every host command (`cargo`,
