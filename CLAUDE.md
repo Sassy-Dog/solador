@@ -1191,6 +1191,16 @@ tests build (#417); the crate still has zero dependencies.
   the same lock for its whole run rather than merely checking it once. A
   normal, no-flag `install.sh` and `redeploy.sh` still write the same
   `.new`/`.prev` without taking it, so do not run those during an update.
+  **`update`'s own children cannot pin the lock** (#458): it is opened
+  `O_CLOEXEC`, so the `--version` probe and the service manager's restart lose
+  it at exec, and `update_flow.rs` audits exactly that (descriptors 0-1023 the
+  candidate is handed, after a positive control). **A test that needs the lock
+  held must not hold it through a `File` in the test binary's own process**:
+  tests run on parallel threads and each spawns children, so any descriptor on
+  the open file description can be inherited across another test's fork and
+  outlive the `drop`. `a_competing_transaction…` holds it from a real `perl`
+  child; the stale-own-lock unit test hands one deliberate `try_clone` to one
+  child as its stdin rather than a `CLOEXEC`-less `dup`.
 - **Unattended updating is opt-in, off by default, daily, and never catches
   up (#394).** `install.sh --enable-timer` — and only that flag — installs a
   job **separate from the metrics service** that runs the installed
