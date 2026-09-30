@@ -31,11 +31,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-// Consumed only by the macOS launchd smoke below; gated like it, so the
-// Linux clippy leg (`-D unused-imports`) sees no unused import.
-#[cfg(target_os = "macos")]
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1627,30 +1623,89 @@ async fn a_stale_new_and_an_older_prev_do_not_stop_the_next_update() {
     assert!(!h.new_exists());
 }
 
+/// Another process holding the transaction lock (#458).
+///
+/// The holder is a `perl` child that opens the lock file itself, takes a
+/// non-blocking exclusive `flock`, writes the same `pid=<pid> since=<epoch>`
+/// note `TransactionLock` writes (naming its OWN pid, which is foreign to
+/// this process), tells us it holds it, and then waits. `perl` is what
+/// `agent/deploy/install.sh --uninstall` already falls back to for `flock`
+/// where `flock(1)` is absent (macOS), and is on every runner this suite
+/// runs on.
+///
+/// The point of a process rather than a `File` here: the open file
+/// description lives only in the child. Nothing this test binary's other
+/// threads fork can inherit it, so [`ForeignLockHolder::release`] frees the
+/// lock exactly when the child is reaped — not whenever some concurrent
+/// test's child finishes its exec.
+struct ForeignLockHolder {
+    child: std::process::Child,
+}
+
+impl ForeignLockHolder {
+    fn spawn(lock: &Path) -> Self {
+        use std::io::BufRead as _;
+        let mut child = Command::new("perl")
+            .arg("-e")
+            .arg(
+                r#"use Fcntl qw(:flock);
+open(my $f, "+>>", $ARGV[0]) or die "open: $!";
+flock($f, LOCK_EX | LOCK_NB) or die "flock: $!";
+truncate($f, 0) or die "truncate: $!";
+select((select($f), $| = 1)[0]);
+print $f "pid=$$ since=1\n";
+$| = 1;
+print "held\n";
+sleep 600;"#,
+            )
+            .arg(lock)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("perl is needed to hold the lock from another process");
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line.trim(), "held", "the holder process took the lock");
+        Self { child }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Kill the holder and reap it: the lock is free once this returns.
+    fn release(mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+    }
+}
+
+impl Drop for ForeignLockHolder {
+    fn drop(&mut self) {
+        // A failed assertion before `release` must not leave a perl sleeping.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_competing_transaction_reports_busy_without_a_request_or_a_change() {
     let installed = fake_agent(Some(OLD), "old");
     let candidate = fake_agent(Some(NEW), "new");
     let h = Harness::new(&installed, "127.0.0.1").await;
     let rig = release_for(NEW, &candidate, &key_a()).await;
-    // The competing transaction is ANOTHER process's: the lock is held
-    // through a plain handle whose note names a foreign pid, which is what
-    // a second `update`/`rollback` on the host writes. (A note naming our
-    // own pid is the stale-inherited-reference case `acquire` waits out.)
-    let foreign_pid = std::process::id().wrapping_add(7919);
-    let mut held = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(h.install.sibling(".update.lock"))
-        .unwrap();
-    held.try_lock().unwrap();
-    {
-        use std::io::Write as _;
-        writeln!(held, "pid={foreign_pid} since=1").unwrap();
-        held.sync_all().unwrap();
-    }
+    // The competing transaction is ANOTHER process's: the lock is held by a
+    // real child process, which is also what a second `update`/`rollback`
+    // on the host is. It is deliberately NOT held through a handle in this
+    // test's own process (#458): a `flock` lives as long as any descriptor
+    // on its open file description does, and every other test in this
+    // binary spawns children on parallel threads, so a descriptor held here
+    // can be inherited across someone else's fork and outlive our `drop`.
+    // A descriptor that only the holder process ever had cannot be.
+    let held = ForeignLockHolder::spawn(&h.install.sibling(".update.lock"));
+    let foreign_pid = held.pid();
 
     let started = std::time::Instant::now();
     let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
@@ -1674,9 +1729,110 @@ async fn a_competing_transaction_reports_busy_without_a_request_or_a_change() {
     assert!(matches!(err, UpdateError::Busy { .. }), "{err}");
     h.assert_untouched(&installed, "busy rollback");
 
-    drop(held);
+    held.release();
     let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
     assert!(matches!(outcome, UpdateOutcome::Updated { .. }));
+}
+
+/// A fake agent that, when asked `--version`, records which of its open file
+/// descriptors (0..=1023) refer to the transaction lock, then answers
+/// normally. One line is appended to `<dir>/fd-audit` per run: `none`, or
+/// the descriptor numbers that name the lock file.
+///
+/// `perl` does the looking because it can `fstat` a descriptor by number and
+/// compare device and inode, on Linux and macOS alike. (`test -ef
+/// /dev/fd/N` does not: on macOS `/dev/fd/N` is a device node, and its
+/// `stat` is not the descriptor's.)
+fn fd_auditing_agent(version: &str) -> Vec<u8> {
+    format!(
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  lock="$0.update.lock"
+  case "$0" in *.new) lock="${{0%.new}}.update.lock";; esac
+  perl -e 'my @l = stat($ARGV[0]) or die "no lock: $!"; my (@hit, @keep);
+    for my $n (0 .. 1023) {{
+      open(my $fh, "<&=", $n) or next;
+      push @keep, $fh;
+      my @s = stat($fh);
+      push @hit, $n if @s && $s[0] == $l[0] && $s[1] == $l[1];
+    }}
+    print @hit ? "@hit" : "none", "\n";' "$lock" >> "$(dirname "$0")/fd-audit"
+  printf '%s\n' '{version}'
+  exit 0
+fi
+exit 0
+"#
+    )
+    .into_bytes()
+}
+
+/// Can `update`'s own child processes pin its lock (#458)? They would if the
+/// lock's descriptor survived an exec: the candidate's `--version` probe and
+/// the service manager's restart are both children spawned while the lock is
+/// held. The auditing candidate reports every descriptor it was handed that
+/// names the lock file, and none may.
+///
+/// The detector is proven first, against a child that is deliberately given
+/// the lock as its stdin: a check that has only ever said `none` is
+/// indistinguishable from one that cannot say anything else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_s_child_processes_do_not_inherit_the_transaction_lock() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fd_auditing_agent(NEW);
+    let h = Harness::new(&installed, "127.0.0.1").await;
+    let audit = h.install.binary.parent().unwrap().join("fd-audit");
+    let lock_path = h.install.sibling(".update.lock");
+
+    // Positive control: a lock-file descriptor handed to a child IS seen.
+    let probe = h.install.binary.parent().unwrap().join("control-agent");
+    fs::write(&probe, fd_auditing_agent("0")).unwrap();
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+    let control_lock = h
+        .install
+        .binary
+        .parent()
+        .unwrap()
+        .join("control-agent.update.lock");
+    let handed = fs::File::create(&control_lock).unwrap();
+    // Through `sh`, which READS the script: a freshly written executable
+    // exec'd directly can hit ETXTBSY on Linux if a parallel test's child
+    // forked while it was open for writing. `$0` is still the probe path.
+    let status = Command::new("sh")
+        .arg(&probe)
+        .arg("--version")
+        .stdin(Stdio::from(handed))
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let control = fs::read_to_string(&audit).unwrap();
+    assert_eq!(
+        control.trim(),
+        "0",
+        "the audit must see a lock descriptor it was handed as stdin"
+    );
+    fs::remove_file(&audit).unwrap();
+
+    // The real thing.
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
+    assert!(matches!(outcome, UpdateOutcome::Updated { .. }));
+    assert!(lock_path.exists(), "the update took the lock");
+    let runs: Vec<String> = fs::read_to_string(&audit)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    // The staged `.new` probe and the fake manager's restart of the live
+    // path each ran the candidate's `--version` while the lock was held.
+    assert!(
+        runs.len() >= 2,
+        "both the staged probe and the restart were audited: {runs:?}"
+    );
+    assert!(
+        runs.iter().all(|r| r == "none"),
+        "a child of `update` held the transaction lock: {runs:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -3383,29 +3383,35 @@ mod tests {
     /// that child execs or exits. In the test binary the child is another
     /// test's `sh` helper caught between fork and exec; on a host it is
     /// anything that spawns while `update` holds the lock. Made
-    /// deterministic: the descriptor is `dup`ed WITHOUT `CLOEXEC` (`dup`
-    /// clears the flag) so a `sleep` child keeps it past its exec for a
-    /// moment. The note in the file names this process, so `acquire` must
+    /// deterministic: a clone of the descriptor is handed to ONE child as its
+    /// stdin, so that child (a `sleep`) keeps the open file description past
+    /// the drop. The note in the file names this process, so `acquire` must
     /// recognise its own stale lock and wait it out — and a note naming
     /// someone else must stay an immediate busy.
+    ///
+    /// The clone is made with `try_clone` (`F_DUPFD_CLOEXEC`) and given to
+    /// the child through `Stdio`, never a bare `dup`: a `dup` has no
+    /// `CLOEXEC`, so every other test's child spawned on a parallel thread
+    /// while it was open would inherit it too — and one of those, a
+    /// `sleep 4` holder, outlives `STALE_OWN_LOCK_RETRY_BUDGET` (#458). Here
+    /// the only long-lived reference is the one this test hands out on
+    /// purpose.
     #[cfg(unix)]
     #[test]
     fn a_stale_reference_to_our_own_lock_held_by_a_child_is_waited_out_not_reported_busy() {
-        use std::os::fd::AsRawFd as _;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("solador-agent.update.lock");
         let first = TransactionLock::acquire(path.clone()).expect("first holder");
-        // SAFETY: dup of a valid descriptor; the result is closed below.
-        let inherited = unsafe { libc::dup(first._file.as_raw_fd()) };
-        assert!(inherited >= 0);
-        let mut child = Command::new("sh")
-            .args(["-c", "sleep 0.7"])
-            .stdin(Stdio::null())
-            .spawn()
-            .expect("sleep child");
-        // Our copies are gone; the child's inherited one is not.
-        // SAFETY: closing the descriptor dup() returned, once.
-        unsafe { libc::close(inherited) };
+        let mut child = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 0.7"]).stdin(Stdio::from(
+                first._file.try_clone().expect("clone the lock"),
+            ));
+            let child = command.spawn().expect("sleep child");
+            // `command` (and the clone it owns) drops here: from now on the
+            // child's stdin is the only reference besides `first`.
+            child
+        };
         drop(first);
         let started = Instant::now();
         let again = TransactionLock::acquire(path.clone());
