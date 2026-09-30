@@ -145,6 +145,11 @@ struct HostState {
     /// successful *request* is a second old however long the sampler has been
     /// dead.
     sample_age_seconds: Option<u64>,
+    /// Whether the last poll was the plain-HTTP guard's refusal (#461). What
+    /// makes the log line fire on the *transition* into that state rather
+    /// than on every 1 Hz poll; cleared by anything else, so a host that
+    /// recovers and is refused again is logged again.
+    plain_refused: bool,
 }
 
 /// What identifies a poll task's *subject*: which host, on which endpoint.
@@ -692,6 +697,11 @@ fn panel_rows(layout: &CockpitLayout, available: f64) -> Value {
 /// the first failure, but the card keeps its previous badge until the streak
 /// is long enough to mean something.
 fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at: Instant) {
+    // The shell's logging convention is `eprintln!`; the decision and the words
+    // are `refusal_transition`'s, so they can be tested without a stderr.
+    if let Some(line) = refusal_transition(s, result.as_ref().err()) {
+        eprintln!("{line}");
+    }
     match result {
         Ok(snap) => {
             s.histories.record(&snap);
@@ -711,6 +721,49 @@ fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at
     }
 }
 
+/// Tracks the plain-HTTP guard's refusal across polls and returns the one log
+/// line for the poll that *enters* the refused state (#461): previously not
+/// refused, now refused. Later refused polls return `None`; any other outcome
+/// (a success, or a different failure) leaves the state, so a fresh refusal
+/// after it is a new entry and logs again. The same log-on-transition rule
+/// `crates/localhost` follows.
+fn refusal_transition(s: &mut HostState, error: Option<&AgentError>) -> Option<String> {
+    match error {
+        Some(AgentError::PlainHttpRefused(refused)) => {
+            let entering = !s.plain_refused;
+            s.plain_refused = true;
+            entering.then(|| refusal_log_line(&s.name, refused))
+        }
+        _ => {
+            s.plain_refused = false;
+            None
+        }
+    }
+}
+
+/// The log line for a host entering the refused state: the host and the
+/// addresses the guard refused. Built from the evidence alone — no client, no
+/// credential is in reach — so the bearer token cannot appear in it.
+fn refusal_log_line(host: &str, refused: &agentclient::Refused) -> String {
+    let addrs = if refused.addrs().is_empty() {
+        "no addresses (the name resolved to nothing)".to_owned()
+    } else {
+        refused
+            .addrs()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let target = refused
+        .name()
+        .map_or_else(String::new, |name| format!(" ({name})"));
+    format!(
+        "host {host:?}{target}: plain HTTP refused, nothing sent — \
+         not loopback or Tailscale: {addrs}"
+    )
+}
+
 /// Which of the pairing failures (#448, #449) an error is, or `None` — see
 /// [`HostState::error_kind`]. A wildcard is the right shape here and not a
 /// hidden default: `None` is "this is an ordinary failure", which is every
@@ -719,7 +772,7 @@ fn error_kind(e: &AgentError) -> Option<&'static str> {
     match e {
         AgentError::CertificateChanged => Some(viewmodel::card::ERROR_KIND_CERTIFICATE_CHANGED),
         AgentError::NoTls => Some(viewmodel::card::ERROR_KIND_NO_TLS),
-        AgentError::PlainHttpRefused => Some(viewmodel::card::ERROR_KIND_PLAIN_HTTP_REFUSED),
+        AgentError::PlainHttpRefused(_) => Some(viewmodel::card::ERROR_KIND_PLAIN_HTTP_REFUSED),
         AgentError::Unreachable(_)
         | AgentError::AuthFailed
         | AgentError::HttpStatus(_)
@@ -1026,6 +1079,7 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
         // not spoken to yet.
         sampler_stale: None,
         sample_age_seconds: None,
+        plain_refused: false,
     }));
 
     let (token, blocked) = match host_token(&*app.credentials, key.id) {
@@ -4326,7 +4380,7 @@ async fn settings_test_host(
         "certificateChanged": matches!(result, Err(AgentError::CertificateChanged)),
         // Likewise (#449): the moment Test finds an unpaired host refused, its
         // edit form can say why and point at the pairing step.
-        "plainRefused": matches!(result, Err(AgentError::PlainHttpRefused)),
+        "plainRefused": matches!(result, Err(AgentError::PlainHttpRefused(_))),
     }))
 }
 
@@ -6313,6 +6367,7 @@ mod tests {
             error_kind: None,
             sampler_stale: None,
             sample_age_seconds: None,
+            plain_refused: false,
         }
     }
 
@@ -8724,7 +8779,7 @@ mod tests {
 
         // An unpaired host off loopback and the tailnet (#449): its own kind.
         for _ in 0..FAILURE_THRESHOLD {
-            record_poll(&mut s, Err(AgentError::PlainHttpRefused), Instant::now());
+            record_poll(&mut s, Err(refused_error()), Instant::now());
         }
         assert_eq!(
             view_for(&s)["error"]["kind"],
@@ -8733,7 +8788,7 @@ mod tests {
         assert!(view_for(&s)["error"]["message"]
             .as_str()
             .unwrap()
-            .contains(&AgentError::PlainHttpRefused.user_message()));
+            .contains(&refused_error().user_message()));
 
         // An ordinary failure replaces it, and is untagged.
         for _ in 0..FAILURE_THRESHOLD {
@@ -8752,6 +8807,86 @@ mod tests {
         record_poll(&mut s, Ok(fixture()), Instant::now());
         let card = view_for(&s);
         assert!(card["error"].is_null(), "{card}");
+    }
+
+    /// A refusal to hand to `record_poll`, as the guard would for a LAN host.
+    fn refused_error() -> AgentError {
+        AgentError::PlainHttpRefused(agentclient::Refused::new(
+            Some("agent.lan".into()),
+            vec!["192.168.1.20".parse().unwrap()],
+        ))
+    }
+
+    /// #461: the first refused poll is the only one that logs. Later refused
+    /// polls say nothing, and a host that leaves the state and is refused
+    /// again is logged again.
+    #[test]
+    fn a_refusal_logs_once_on_entry_and_again_only_after_it_clears() {
+        let mut s = live_state();
+        let refused = refused_error();
+        let first = refusal_transition(&mut s, Some(&refused));
+        let line = first.expect("entering the refused state logs");
+        assert!(line.contains(&s.name), "{line}");
+        assert!(line.contains("192.168.1.20"), "{line}");
+        assert!(line.contains("agent.lan"), "{line}");
+        for _ in 0..25 {
+            assert_eq!(refusal_transition(&mut s, Some(&refused)), None);
+        }
+        // A success ends the state; the next refusal is a new entry.
+        assert_eq!(refusal_transition(&mut s, None), None);
+        assert!(refusal_transition(&mut s, Some(&refused)).is_some());
+        // So does a different failure in between.
+        let other = AgentError::Unreachable("x".into());
+        assert_eq!(refusal_transition(&mut s, Some(&other)), None);
+        assert!(refusal_transition(&mut s, Some(&refused)).is_some());
+    }
+
+    /// The same, through `record_poll` itself, which is what owns the flag.
+    #[test]
+    fn record_poll_tracks_the_refused_state_and_leaves_the_card_words_alone() {
+        let mut s = live_state();
+        record_poll(&mut s, Err(refused_error()), Instant::now());
+        assert!(s.plain_refused);
+        record_poll(&mut s, Ok(fixture()), Instant::now());
+        assert!(!s.plain_refused);
+        for _ in 0..FAILURE_THRESHOLD {
+            record_poll(&mut s, Err(refused_error()), Instant::now());
+        }
+        assert!(s.plain_refused);
+        assert_eq!(
+            s.error_kind,
+            Some(viewmodel::card::ERROR_KIND_PLAIN_HTTP_REFUSED)
+        );
+        assert_eq!(s.error, Some(refused_error().user_message()));
+    }
+
+    /// An address-less refusal (a name that resolved to nothing) and a literal
+    /// host each read sensibly.
+    #[test]
+    fn the_log_line_names_a_literal_and_an_empty_answer() {
+        let literal = agentclient::Refused::new(None, vec!["10.0.0.5".parse().unwrap()]);
+        let line = refusal_log_line("nas", &literal);
+        assert!(line.contains("nas") && line.contains("10.0.0.5"), "{line}");
+        let empty = agentclient::Refused::new(Some("gone.example".into()), vec![]);
+        let line = refusal_log_line("nas", &empty);
+        assert!(line.contains("gone.example"), "{line}");
+        assert!(line.contains("no addresses"), "{line}");
+    }
+
+    /// #461: a real client built with a known token, refused for real, and the
+    /// line made from that refusal never holds the token.
+    #[tokio::test]
+    async fn the_log_line_never_contains_the_token() {
+        const TOKEN: &str = "tok-461-do-not-log";
+        let client = AgentClient::new("http://192.168.1.20:7878", TOKEN);
+        let err = client.health().await.unwrap_err();
+        let AgentError::PlainHttpRefused(refused) = &err else {
+            panic!("expected a refusal, got {err:?}");
+        };
+        let line = refusal_log_line("nas", refused);
+        assert!(line.contains("192.168.1.20"), "{line}");
+        assert!(!line.contains(TOKEN), "{line}");
+        assert!(!format!("{err:?}").contains(TOKEN));
     }
 
     /// The debounce applies to pairing failures like any other: the card keeps

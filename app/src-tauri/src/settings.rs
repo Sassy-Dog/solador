@@ -218,7 +218,7 @@ pub fn health_result(result: &Result<wire::Health, AgentError>) -> String {
         Err(AgentError::NoTls) => "✗ no TLS — this agent answers plain HTTP".to_owned(),
         // (#449) Nothing was sent: an unpaired host is only dialled over plain
         // HTTP on loopback or Tailscale. Says what to do, not that it is down.
-        Err(AgentError::PlainHttpRefused) => {
+        Err(AgentError::PlainHttpRefused(_)) => {
             "✗ not paired — the cockpit sends the token over plain HTTP only to loopback or \
              Tailscale addresses; check this host's certificate and trust it"
                 .to_owned()
@@ -2757,7 +2757,9 @@ mod tests {
     /// "unreachable", and it says how to fix it.
     #[test]
     fn a_refused_plain_http_host_is_told_to_pair_not_that_it_is_down() {
-        let line = health_result(&Err(AgentError::PlainHttpRefused));
+        let line = health_result(&Err(AgentError::PlainHttpRefused(
+            agentclient::Refused::new(None, vec!["192.168.1.20".parse().unwrap()]),
+        )));
         assert!(line.contains("not paired"), "{line}");
         assert!(line.contains("trust it"), "{line}");
         assert_ne!(

@@ -188,7 +188,10 @@ pair it in Settings" — **not** *Unreachable*: the card carries the
 "not paired", the host's edit form explains why the host is not being polled
 beside the same **Check certificate** → **Trust** flow, and the dashboard's "All
 remote hosts unreachable" hint does not count it (nothing was tried, so nothing
-was learned about the network). What protects the token is therefore: a
+was learned about the network). The first refused poll writes one line to
+stderr naming the host and the refused addresses (#461); later refused polls
+write nothing until the host leaves the state and is refused again. What
+protects the token is therefore: a
 paired host uses pinned TLS, and an unpaired host is only ever dialled over
 plain HTTP on loopback or Tailscale. Hosts already on Tailscale keep working
 exactly as before.

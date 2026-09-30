@@ -590,7 +590,13 @@ the bundle's floor.
   guard cannot see it), and reports the refusal as `AgentError::PlainHttpRefused`,
   whose `error.kind` (`plain-http-refused`) — like the two pairing kinds — the
   dashboard paints as its own state and does not count toward "All remote hosts
-  unreachable": nothing was tried, so nothing was learned about the network. `AgentClient::pinned` accepts **exactly one certificate**
+  unreachable": nothing was tried, so nothing was learned about the network.
+  The refusal carries its evidence (#461) — `AgentError::PlainHttpRefused(Refused)`
+  holds the looked-up name and only the addresses the guard refused — and the
+  shell logs one `eprintln!` line naming the host and those addresses on the
+  poll that *enters* the refused state, never on later refused polls, never with
+  the token (`refusal_transition` in `app/src-tauri/src/main.rs`); the card's
+  words are unchanged. `AgentClient::pinned` accepts **exactly one certificate**
   (SHA-256 of the end-entity DER; a chain is refused) with no system roots and
   no hostname check — the agent's SANs are fixed at first start, so the
   certificate is the identity, not the name — and still verifies the handshake

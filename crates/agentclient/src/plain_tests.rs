@@ -73,7 +73,7 @@ async fn poll_named_host(policy: plain::Policy) -> (Result<wire::Health, AgentEr
 async fn a_name_that_resolves_off_tailnet_is_refused_and_nothing_connects() {
     let (result, received) = poll_named_host(everything_is_off_tailnet).await;
     assert!(
-        matches!(result, Err(AgentError::PlainHttpRefused)),
+        matches!(result, Err(AgentError::PlainHttpRefused(_))),
         "{result:?}"
     );
     assert!(
@@ -113,10 +113,29 @@ async fn a_name_with_one_off_tailnet_address_among_good_ones_is_refused() {
         lookup,
         all_plain_http_permitted,
     );
-    assert!(matches!(
-        client.health().await,
-        Err(AgentError::PlainHttpRefused)
-    ));
+    // #461: the evidence names the host and only the address that tripped the
+    // guard, not the Tailscale ones beside it.
+    let Err(AgentError::PlainHttpRefused(refused)) = client.health().await else {
+        panic!("expected a refusal");
+    };
+    assert_eq!(refused.name(), Some("mixed.example"));
+    assert_eq!(refused.addrs(), ["192.168.1.20".parse::<IpAddr>().unwrap()]);
+}
+
+#[tokio::test]
+async fn a_name_that_resolves_to_nothing_is_refused_with_no_addresses() {
+    let lookup: plain::Lookup = Arc::new(|_| Box::pin(async { Ok(vec![]) }));
+    let client = AgentClient::plain(
+        "http://empty.example:7878",
+        TOKEN,
+        lookup,
+        all_plain_http_permitted,
+    );
+    let Err(AgentError::PlainHttpRefused(refused)) = client.health().await else {
+        panic!("expected a refusal");
+    };
+    assert_eq!(refused.name(), Some("empty.example"));
+    assert!(refused.addrs().is_empty());
 }
 
 #[tokio::test]
@@ -157,10 +176,21 @@ async fn an_ip_literal_off_tailnet_is_refused_before_any_connection() {
         let client = AgentClient::new(base, TOKEN);
         let started = std::time::Instant::now();
         let result = client.snapshot().await;
-        assert!(
-            matches!(result, Err(AgentError::PlainHttpRefused)),
-            "{base}: {result:?}"
-        );
+        // #461: a literal is named by its address alone, there being no name.
+        let literal: IpAddr = reqwest::Url::parse(base)
+            .unwrap()
+            .host_str()
+            .unwrap()
+            .trim_matches(|c| c == '[' || c == ']')
+            .parse()
+            .unwrap();
+        match &result {
+            Err(AgentError::PlainHttpRefused(refused)) => {
+                assert_eq!(refused.name(), None, "{base}");
+                assert_eq!(refused.addrs(), [literal], "{base}");
+            }
+            other => panic!("{base}: {other:?}"),
+        }
         assert!(started.elapsed() < Duration::from_secs(2), "{base}");
     }
 }
@@ -188,9 +218,35 @@ async fn loopback_and_tailscale_literals_are_not_refused_by_the_guard() {
     ));
 }
 
+/// #461: the token is the one thing the evidence must never carry, through
+/// `Debug` (the derived one prints every field) and `Display` alike.
+#[tokio::test]
+async fn the_refusal_evidence_never_contains_the_token() {
+    let client = AgentClient::plain(
+        "http://mixed.example:7878",
+        TOKEN,
+        Arc::new(|_| Box::pin(async { Ok(vec!["192.168.1.20".parse().unwrap()]) })),
+        all_plain_http_permitted,
+    );
+    let err = client.health().await.unwrap_err();
+    for text in [format!("{err:?}"), err.to_string(), err.user_message()] {
+        assert!(!text.contains(TOKEN), "{text}");
+    }
+    let literal = AgentClient::new("http://192.168.1.20:7878", TOKEN);
+    let err = literal.health().await.unwrap_err();
+    for text in [format!("{err:?}"), err.to_string(), err.user_message()] {
+        assert!(!text.contains(TOKEN), "{text}");
+    }
+}
+
+/// Any refusal will do where only the words are under test.
+fn refusal() -> AgentError {
+    AgentError::PlainHttpRefused(plain::Refused::for_literal("192.168.1.20".parse().unwrap()))
+}
+
 #[test]
 fn the_refusal_reads_as_neither_unreachable_nor_a_pairing_fault() {
-    let refused = AgentError::PlainHttpRefused.user_message();
+    let refused = refusal().user_message();
     for other in [
         AgentError::Unreachable(String::new()),
         AgentError::CertificateChanged,
