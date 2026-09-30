@@ -222,16 +222,40 @@ in the env file serves `/v1/snapshot`, `/v1/containers` and `/v1/health` over
 HTTPS on the same `SOLADOR_AGENT_PORT` instead of plain HTTP — routes, auth
 and JSON are unchanged either way.
 
-**Known limit, until [#448](https://github.com/Sassy-Dog/solador/issues/448)
-ships: no released Solador build can dial or pin an HTTPS agent yet.**
-`install.sh` still defaults a *fresh* install to `SOLADOR_AGENT_TLS=1` (see
-below) — that is #447's own acceptance criterion — but until the cockpit
-gains the matching half, a host running with TLS on reads as **unreachable**
-in Solador, not as a different scheme. If that host needs to show up in the
-cockpit today, set `SOLADOR_AGENT_TLS=0` in its env file and restart the
-service (or pass `SOLADOR_AGENT_TLS=0` to `install.sh` itself, which — like
+**The cockpit pairs with a TLS agent, and pins its certificate
+([#448](https://github.com/Sassy-Dog/solador/issues/448)).** `install.sh`
+defaults a *fresh* install to `SOLADOR_AGENT_TLS=1` (see below), and a cockpit
+that has the pairing half reaches it like this: Settings → Connections → add
+(or edit) the host → **Check certificate** fetches the certificate the
+address presents *without trusting it* and shows its SHA-256 fingerprint →
+compare that with what `install.sh` printed (or `solador-agent
+tls-fingerprint`) → press **Trust**. Nothing is stored until you do, and the
+fingerprint is never typed in. From then on the cockpit dials that host over
+HTTPS and accepts **exactly that one certificate**: no certificate authority
+is consulted, the name is not checked (the certificate is the identity, not
+its SANs), and the handshake signature is still verified with the
+certificate's own key, so a copy of the certificate without its private key is
+refused. All of that happens inside the handshake, before a byte of HTTP — the
+bearer token is never sent to a peer that has not proved it is the pinned
+agent. A pinned host is **never dialled over `http://`**, not even after a
+failure.
+
+Two failures get their own words and are never shown as *unreachable*:
+**certificate changed** (the agent presents something other than the pinned
+certificate — for example after its `solador-agent.tls.*` files were deleted
+and regenerated; the host's row in Settings then offers **Re-pair**, which
+runs the same Check → compare → Trust flow and replaces the pin) and
+**doesn't speak TLS yet** (a pinned host answered plain HTTP — its agent has
+`SOLADOR_AGENT_TLS` off). To take a host back to plain HTTP, delete it in
+Settings and add it again; there is deliberately no one-click downgrade.
+A host that was never paired keeps polling over `http://` exactly as before.
+
+A **cockpit older than #448 cannot dial an HTTPS agent** at all — it reads
+such a host as unreachable. Update the cockpit, or set `SOLADOR_AGENT_TLS=0`
+in the agent's env file and restart the service (or pass
+`SOLADOR_AGENT_TLS=0` to `install.sh` itself, which — like
 `SOLADOR_AGENT_BIND`/`_PORT` — always wins over the fresh-install default).
-`install.sh`'s Done block repeats this whenever TLS ends up on.
+`install.sh`'s Done block says so whenever TLS ends up on.
 
 **The certificate is self-signed, ECDSA P-256, and generated exactly once.**
 On its first TLS-enabled start the agent generates a keypair
@@ -242,7 +266,8 @@ namespaced the same way `solador-agent.env` itself is, not bare
 host's lifetime: every later start loads the same files rather than
 regenerating. **Never delete them unless you mean to re-pair** — a new
 certificate has a new fingerprint, and every cockpit that pinned the old one
-(the sibling child, #448) stops trusting this host until it is re-paired.
+reports this host as *certificate changed* and stops polling it until it is
+re-paired.
 The key is never logged anywhere; the certificate is not secret (its whole
 purpose is to be handed out, as a fingerprint, for pinning).
 
@@ -268,7 +293,8 @@ that key (it logs and ignores it) and always exports the env file's own
 directory itself.
 
 **`solador-agent tls-fingerprint`** prints the certificate's SHA-256
-fingerprint, colon-hex, and nothing else — give that to Solador to pin. It is
+fingerprint, colon-hex, and nothing else — compare it with the fingerprint the
+cockpit shows next to **Trust** when you pair this host. It is
 **read-only**: unlike the agent's own startup, it never generates a
 certificate, so it cannot race the running service over which host ends up
 in the certificate's SAN list (see below). Run it any time after the agent
@@ -1075,9 +1101,11 @@ host instead. Give the new user's install a distinct port for the overlap:
    that is what keeps a working agent serving throughout the move. A new
    user installing fresh **generates a new bearer token**; it does not, and
    cannot, inherit the old user's. If TLS is on ([#447](https://github.com/Sassy-Dog/solador/issues/447)),
-   it generates a new **certificate** too, with a different fingerprint —
-   once [#448](https://github.com/Sassy-Dog/solador/issues/448) ships and a cockpit can pin one, re-homing this
-   way means a re-pair, the same as the token.
+   it generates a new **certificate** too, with a different fingerprint — a
+   cockpit that had paired this host reports *certificate changed*
+   ([#448](https://github.com/Sassy-Dog/solador/issues/448)), so re-homing this
+   way means a re-pair (Settings → the host → **Re-pair**), the same as the
+   token.
 2. **In the cockpit**, replace that host's stored token *and port* with the
    new user's (Settings → Hosts). Until this step the cockpit is still
    polling the old user's agent — the new one is up but not yet the one
@@ -1647,10 +1675,13 @@ systemctl --user restart solador-agent                    # Linux
 - Solador reaches the host at `<the configured bind address>:7878` —
   the Tailscale IP by default, or whatever `SOLADOR_AGENT_BIND` was set to on
   a LAN/VPN host — over `http://` when `SOLADOR_AGENT_TLS` is unset, or
-  `https://` when it is `1`. **No released Solador build can dial or pin an
-  HTTPS agent yet** — see **TLS**'s own known-limit paragraph, above, and
-  [#448](https://github.com/Sassy-Dog/solador/issues/448) — so a host running
-  with TLS on reads as unreachable here today, not as a different scheme.
+  `https://` when it is `1`. The cockpit dials `https://` only for a host the
+  operator **paired** — it fetched the certificate, showed the fingerprint and
+  the operator pressed Trust — and then accepts exactly that certificate; see
+  **TLS** above and
+  [#448](https://github.com/Sassy-Dog/solador/issues/448). A host that was
+  never paired is dialled over `http://`, so an agent with TLS on but no
+  pairing reads as unreachable until it is paired.
 - It sends `Authorization: Bearer <token>` (the same token from the env file) on
   every request, polling `/v1/snapshot` and `/v1/containers`.
 - The agent binds only that address (`SOLADOR_AGENT_BIND`), so by default the

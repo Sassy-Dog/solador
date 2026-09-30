@@ -99,6 +99,16 @@ fn the_migrated_transport_arms_are_the_vocabularys() {
         AgentError::AuthFailed.user_message(),
         Fault::CredentialRejected.message("the agent")
     );
+    // The two pairing states (#448) are the vocabulary's own sentences, and
+    // neither is the unreachable one.
+    assert_eq!(
+        AgentError::CertificateChanged.user_message(),
+        Fault::CertificateChanged.message("the agent")
+    );
+    assert_eq!(
+        AgentError::NoTls.user_message(),
+        Fault::NoTls.message("the agent")
+    );
 }
 
 /// The arms that say more than the stock sentence still *start* with it. This

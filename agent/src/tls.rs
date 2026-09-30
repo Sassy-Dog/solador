@@ -12,7 +12,7 @@
 //! by [`load_or_generate`] and never touched again by anything else in this
 //! binary: not `solador-agent update`, not `rollback`, not a re-run of
 //! `install.sh`. A new certificate would silently break every cockpit that
-//! has pinned the old one's fingerprint (the sibling child, #448), so a
+//! has pinned the old one's fingerprint (the cockpit's pin, #448), so a
 //! half-present pair (one file without the other — a crash mid-write, or
 //! manual tampering) is refused rather than "repaired" by regenerating.
 //!
@@ -105,15 +105,15 @@ pub fn flag_enabled(raw: Option<&str>) -> bool {
 }
 
 /// The certificate's SHA-256 fingerprint, colon-hex, uppercase — the form
-/// `solador-agent tls-fingerprint` prints and the form an operator would
-/// paste into the cockpit's pin.
+/// `solador-agent tls-fingerprint` prints and the form the cockpit shows next
+/// to its **Trust** button, so an operator can compare the two by eye.
+///
+/// The digest is this crate's (`sha2`); how it is *written* is
+/// `crates/certpin`'s, shared with the cockpit's client (#448) so the two ends
+/// cannot disagree about case or separators.
 #[must_use]
 pub fn fingerprint_hex(cert_der: &[u8]) -> String {
-    Sha256::digest(cert_der)
-        .iter()
-        .map(|b| format!("{b:02X}"))
-        .collect::<Vec<_>>()
-        .join(":")
+    certpin::format(&Sha256::digest(cert_der).into())
 }
 
 /// Load [`KEY_FILE`] / [`CERT_FILE`] from `dir`, generating a self-signed ECDSA
@@ -359,6 +359,18 @@ mod tests {
              7A:53:80:EE:90:88:F7:AC:E2:EF:CD:E9"
         );
         assert_eq!(fp.split(':').count(), 32);
+    }
+
+    /// The shared vector (#448): the same certificate and expected string
+    /// `crates/agentclient` asserts with ITS SHA-256. `tls-fingerprint`'s
+    /// output must stay byte-identical to what it printed before the format
+    /// moved into `crates/certpin`, and the string is independently the one
+    /// `openssl x509 -noout -fingerprint -sha256` prints for this file.
+    #[test]
+    fn the_shared_fixture_certificate_fingerprints_to_its_expected_string() {
+        const CERT: &[u8] = include_bytes!("../../tests/fixtures/tls/pinned-cert.der");
+        const EXPECTED: &str = include_str!("../../tests/fixtures/tls/pinned-cert.sha256");
+        assert_eq!(fingerprint_hex(CERT), EXPECTED);
     }
 
     #[test]

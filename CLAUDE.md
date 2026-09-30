@@ -455,6 +455,14 @@ the bundle's floor.
 │   │                       #   app/src-tauri and agent/, so the plumbing around
 │   │                       #   scripts/get-version-info.sh has one home. NO
 │   │                       #   dependencies, for the same reason fault has none
+│   ├── certpin/            # the certificate fingerprint FORMAT (package
+│   │                       #   `solador-certpin`, imported as `certpin`):
+│   │                       #   uppercase colon-hex SHA-256, plus the parser an
+│   │                       #   operator's paste goes through. NO dependencies —
+│   │                       #   each consumer hashes with what it already has;
+│   │                       #   the agent's `tls-fingerprint` and the cockpit's
+│   │                       #   pin both write through it, so they cannot drift.
+│   │                       #   Shared test vector: `tests/fixtures/tls/`
 │   ├── fault/              # the stock message vocabulary: one sentence per
 │   │                       #   anticipated failure. NO dependencies, deliberately —
 │   │                       #   every vendor crate points at it, so anything added
@@ -519,12 +527,15 @@ the bundle's floor.
   Credential Manager)
 - **Transport**: HTTP/JSON over Tailscale, guarded by a bearer token —
   `SOLADOR_AGENT_TLS=1` (#447) serves HTTPS instead, with a self-signed
-  certificate the agent keeps for the host's lifetime. Two different
-  defaults, deliberately: the AGENT ITSELF is plain HTTP unless that env var
-  is set; `install.sh` is what opts a *fresh* install into TLS (capability
-  permitting — see **Working on the Agent**), which is not the same claim.
-  Tailscale is still what makes either transport safe (relaxing the
-  Tailscale-only bind is #449, not done)
+  certificate the agent keeps for the host's lifetime, and the cockpit dials a
+  host over HTTPS only once the operator has **paired** it (#448): the
+  certificate is fetched, its fingerprint shown, and pinned only when the
+  operator presses Trust. An unpaired host is still dialled over plain HTTP.
+  Two different defaults, deliberately: the AGENT ITSELF is plain HTTP unless
+  that env var is set; `install.sh` is what opts a *fresh* install into TLS
+  (capability permitting — see **Working on the Agent**), which is not the
+  same claim. Tailscale is still what makes either transport safe (relaxing
+  the Tailscale-only bind is #449, not done)
 
 ## Key Implementation Notes
 
@@ -537,6 +548,36 @@ the bundle's floor.
   Graphics card read `—`. `crates/accelerator` must not reference a symbol newer
   than the agent's macOS 11.0 floor: `kIOMainPortDefault` is 12.0, so the walk
   passes its value, `0`, instead — a check `vtool` cannot make.
+- **A host is pinned to its agent's certificate, or it is plain HTTP — never
+  both, and never a fallback (#448).** `Host.tls_fingerprint` (`store.json`,
+  non-secret, canonical form from `crates/certpin`) makes `Host::base_url()`
+  `https://`; `None` is `http://`, so a store from before pairing polls
+  exactly as it did. `AgentClient::pinned` accepts **exactly one certificate**
+  (SHA-256 of the end-entity DER; a chain is refused) with no system roots and
+  no hostname check — the agent's SANs are fixed at first start, so the
+  certificate is the identity, not the name — and still verifies the handshake
+  signature with that certificate's key, so a copy without the key fails. It
+  all happens inside the handshake, so an impostor never sees the
+  `Authorization` header. `https_only` plus no redirects means a pinned host is
+  never dialled over `http://`, including after a failure (a `302` to `http://`
+  is a downgrade the client would otherwise take itself). The rustls provider
+  is `ring`, passed to the config builder explicitly — the one backend the
+  workspace already resolves — never `aws-lc-rs`, whose C/cmake build the
+  macOS and Windows cockpit builds should not gain. **Pairing is
+  confirm-on-add**: `agentclient::probe_certificate` fetches the certificate
+  without trusting it (one unauthenticated request; it also falls back to one
+  plain-HTTP request to tell "no TLS" from "nothing there", which is allowed
+  only because no pin exists yet), Settings shows the fingerprint, and only the
+  **Trust** click puts one in the arguments of Add / Save. A probe alone
+  persists nothing; an untrusted found certificate holds Add back; editing the
+  address drops the answer. Two `Fault` states — `CertificateChanged` and
+  `NoTls` — are their own sentences and never `Unreachable`; the host card's
+  `error.kind` tags them so the dashboard's Machines row reads `Cert changed` /
+  `No TLS`, and **neither counts as "the network is down"** for the
+  all-remote-hosts-unreachable hint (the machine answered, and the hint asks
+  about the VPN). **Re-pair** (Settings → the host) appears only when the
+  certificate changed and replaces the pin through the same probe → Trust flow.
+  There is no unpin: to go back to plain HTTP, delete the host and add it again.
 - Agent endpoints: `GET /v1/snapshot` (CPU/mem/disk/net/gpu/battery),
   `GET /v1/containers`, `GET /v1/health`. All require `Authorization: Bearer <token>`.
 - **`/v1/health`'s `version` is the repo CalVer, and it is optional (#390).**
@@ -631,7 +672,8 @@ the bundle's floor.
   **Actions**, **Contents**, **Issues**, and **Pull requests**, plus the
   *organization* permission **Projects** (read) for the READY column — without
   it that one column reads `—` and everything else is unaffected.
-- **Remote hosts**: per-host bearer token.
+- **Remote hosts**: per-host bearer token, plus — once paired (#448) — the
+  pinned certificate fingerprint, which is public and lives in `store.json`.
 - **Usage → Claude**: no credential — and **no account either**. The rollups
   are a walk of `~/.claude/projects`, and those logs record what was consumed,
   never who paid for it: a full key survey of a real session file — 50+
@@ -1001,13 +1043,13 @@ tests build (#417); the crate still has zero dependencies.
   `install.sh` ran under. `install.sh` re-runs, `update` and `rollback` never touch the key
   or certificate; `--uninstall` keeps them like the env file, `--uninstall
   --purge` removes them too, since purging the host's credentials means a
-  re-pair. **Known limit, until #448 ships: no released Solador build can
-  dial or pin an HTTPS agent yet** — a host running with TLS on reads as
-  unreachable in the cockpit, not as a different scheme; `install.sh`'s
-  Done block and `agent/README.md`'s TLS section both say so and name the
-  `SOLADOR_AGENT_TLS=0` fallback. Pinning the fingerprint on the cockpit
-  side is #448; relaxing the Tailscale-only bind is the last child (#449)
-  — neither is this change.
+  re-pair. **The cockpit half is #448:** a cockpit that has it pairs with this
+  certificate (Check certificate → compare the fingerprint → Trust) and pins
+  it, and reports a regenerated one as *certificate changed* with a Re-pair
+  action. **A cockpit older than #448 cannot dial an HTTPS agent** and reads
+  it as unreachable — `install.sh`'s Done block and `agent/README.md`'s TLS
+  section say so and name the `SOLADOR_AGENT_TLS=0` fallback. Relaxing the
+  Tailscale-only bind is the last child (#449), still open.
 - **`solador-agent update` / `rollback` are in the binary (#393), and the
   order of operations is the security design.** `agent/src/update.rs`:
   refuse root; resolve #392's install — reading only — from the unit's

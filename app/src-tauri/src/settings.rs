@@ -209,7 +209,70 @@ pub fn health_result(result: &Result<wire::Health, AgentError>) -> String {
         Err(AgentError::DecodeFailed(_)) => "✗ decode failed — agent/app version skew?".to_owned(),
         Err(AgentError::HttpStatus(code)) => format!("✗ HTTP {code}"),
         Err(AgentError::Unreachable(_)) => "✗ unreachable — host down or agent stopped".to_owned(),
+        // The two pairing states (#448) name the pairing, not the network: the
+        // machine answered. The first is the one the row's **Re-pair** button
+        // is for.
+        Err(AgentError::CertificateChanged) => {
+            "✗ certificate changed — re-pair this host if that was expected".to_owned()
+        }
+        Err(AgentError::NoTls) => "✗ no TLS — this agent answers plain HTTP".to_owned(),
     }
+}
+
+/// The pairing step's answer for one address (#448), in the shape the Add and
+/// Edit forms paint: `status` is `tls` / `no-tls` / `failed`, `fingerprint` is
+/// set only for `tls`, and `message` is Rust's own sentence for what was found.
+///
+/// Deliberately not a `Result`, for the reason [`probe_answer`] is not: a probe
+/// that finds nothing has *found something*, and the three findings send an
+/// operator to three different places. `address` and `port` are echoed back as
+/// probed so the frontend can tell an answer that belongs to what is now typed
+/// in the form from one that does not.
+///
+/// Nothing here is a decision to trust. `tls` says only "this is the
+/// certificate the peer presented and proved it holds"; the operator compares
+/// its fingerprint with what the host printed and presses **Trust**, and only
+/// that press carries a fingerprint back to be stored.
+#[must_use]
+pub fn host_probe_answer(
+    address: &str,
+    port: u16,
+    outcome: &Result<agentclient::CertProbe, agentclient::ProbeError>,
+) -> Value {
+    let (status, fingerprint, message) = match outcome {
+        Ok(agentclient::CertProbe::Tls { fingerprint }) => (
+            "tls",
+            Some(fingerprint.as_str()),
+            "This agent presented the certificate below. Compare its fingerprint with the one \
+             `solador-agent tls-fingerprint` printed on the host, and trust it only if they match."
+                .to_owned(),
+        ),
+        Ok(agentclient::CertProbe::NoTls) => (
+            "no-tls",
+            None,
+            "This agent answers plain HTTP: it isn't serving TLS, so there is no certificate to \
+             pair. Set SOLADOR_AGENT_TLS=1 on the host to pair it, or add it as it is."
+                .to_owned(),
+        ),
+        Err(error) => ("failed", None, error.user_message()),
+    };
+    json!({
+        "address": address,
+        "port": port,
+        "status": status,
+        "fingerprint": fingerprint,
+        "message": message,
+    })
+}
+
+/// A pin the operator just confirmed, in the canonical form the store keeps.
+///
+/// The frontend sends back the fingerprint the probe reported — never one
+/// typed in — but this is still the gate: whatever reaches `store.json` has
+/// been through `crates/certpin`'s parser, so a malformed string cannot become
+/// a pin that matches nothing and looks like one that matters.
+pub fn validated_pin(raw: &str) -> Result<String, &'static str> {
+    certpin::normalise(raw).ok_or("Skipped — that is not a certificate fingerprint.")
 }
 
 /// The Add-Host form's port field, with the original's `Int(newPort) ?? 7878`
@@ -685,6 +748,14 @@ pub struct StoreSections<'a> {
     /// not a missing one: a store that has never had a GitHub token has no
     /// account, and the v1 credential is what the GitHub tab still holds.
     pub accounts: &'a [VendorAccount],
+    /// The hosts whose poll is failing because the certificate their agent
+    /// presents is not the one pinned (#448) — a **live** fact, read from the
+    /// poll set and not from any file, which is why it rides here beside the
+    /// store's sections rather than in them. It is what makes a host row offer
+    /// **Re-pair**: the pin is only ever replaced by the operator, and only
+    /// after the cockpit has said the certificate changed. Empty is the normal
+    /// case.
+    pub certificate_changed: &'a [Uuid],
 }
 
 /// What the crash-reporting section needs to say beyond the stored toggle.
@@ -727,6 +798,7 @@ pub fn view(
         layout,
         vendors,
         accounts,
+        certificate_changed,
     } = store;
     json!({
         "title": OPEN_LABEL,
@@ -742,7 +814,7 @@ pub fn view(
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
-        "hosts": hosts_tab(settings, hosts, rules, stored),
+        "hosts": hosts_tab(settings, hosts, rules, stored, certificate_changed),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
         "services": services_tab(vendors),
@@ -2081,6 +2153,7 @@ fn hosts_tab(
     hosts: &[Host],
     rules: &[ContainerGroupRule],
     stored: &StoredSecrets,
+    certificate_changed: &[Uuid],
 ) -> Value {
     json!({
         "heading": "Remote Hosts",
@@ -2102,6 +2175,14 @@ fn hosts_tab(
                 "enabled": host.enabled,
                 "tokenStored": stored.hosts.contains(&host.id),
                 "hiddenVolumes": host.hidden_volume_mounts,
+                // The pin is a public certificate's hash, so it is shown in
+                // full: it is what the operator compares against the host.
+                "pinned": host.tls_fingerprint.is_some(),
+                "fingerprint": host.tls_fingerprint,
+                // Live, and only ever true for a pinned host: this is the one
+                // state in which the row offers to replace the pin.
+                "certificateChanged": host.tls_fingerprint.is_some()
+                    && certificate_changed.contains(&host.id),
             }))
             .collect::<Vec<_>>(),
         // Rendered only when it has entries. This shell has no local-machine
@@ -2120,7 +2201,22 @@ fn hosts_tab(
             "portDefault": DEFAULT_AGENT_PORT.to_string(),
             "tokenLabel": "Agent token",
             "buttonLabel": "Add Host",
-            "help": "The agent serves metrics on the host's tailnet address. The token is stored in your OS credential store, never in the settings file.",
+            "help": "The agent serves metrics on the host's tailnet address. The token is stored in your OS credential store, never in the settings file. If the agent serves TLS, check its certificate first and trust it before adding the host.",
+        },
+        // Pairing (#448): the certificate an agent presents is fetched, shown,
+        // and pinned only when the operator presses Trust. Nothing on this
+        // block is persisted until the form it sits in is saved, and then only
+        // a fingerprint that was trusted.
+        "pair": {
+            "checkLabel": "Check certificate",
+            "checkingLabel": "Checking…",
+            "fingerprintLabel": "Certificate fingerprint (SHA-256)",
+            "trustLabel": "Trust",
+            "trustedLabel": "Trusted. It is saved with this host.",
+            "pinnedLabel": "Pinned certificate",
+            "repairLabel": "Re-pair",
+            "repairHelp": "The agent now presents a different certificate than the one pinned. If you replaced or reset its certificate, check it again and trust the new one; otherwise leave it, because something else may be answering at this address.",
+            "help": "Fetches the certificate this address presents so you can compare its fingerprint with the one `solador-agent tls-fingerprint` printed on the host. Nothing is trusted until you press Trust.",
         },
         // Same tab as the original's, and for the same reason: the rules are scoped by
         // host, so the picker that names one belongs beside the list that
@@ -2614,6 +2710,107 @@ mod tests {
         );
     }
 
+    /// The Test line for the two pairing states (#448) is its own, not
+    /// "unreachable": the machine answered, and "host down or agent stopped"
+    /// would send the operator to the wrong layer.
+    #[test]
+    fn the_pairing_failures_are_not_reported_as_unreachable() {
+        let unreachable = health_result(&Err(AgentError::Unreachable("x".into())));
+        let changed = health_result(&Err(AgentError::CertificateChanged));
+        let no_tls = health_result(&Err(AgentError::NoTls));
+        assert_eq!(
+            changed,
+            "✗ certificate changed — re-pair this host if that was expected"
+        );
+        assert_eq!(no_tls, "✗ no TLS — this agent answers plain HTTP");
+        for line in [&changed, &no_tls] {
+            assert_ne!(line, &unreachable);
+            assert!(!line.contains("unreachable"), "{line}");
+        }
+    }
+
+    fn probe_of(outcome: &Result<agentclient::CertProbe, agentclient::ProbeError>) -> Value {
+        host_probe_answer("100.100.100.100", 7878, outcome)
+    }
+
+    #[test]
+    fn a_found_certificate_is_offered_not_trusted() {
+        let answer = probe_of(&Ok(agentclient::CertProbe::Tls {
+            fingerprint: "45:39:AF".into(),
+        }));
+        assert_eq!(answer["status"], "tls");
+        assert_eq!(answer["fingerprint"], "45:39:AF");
+        assert_eq!(answer["address"], "100.100.100.100");
+        assert_eq!(answer["port"], 7878);
+        assert!(
+            answer["message"]
+                .as_str()
+                .unwrap()
+                .contains("tls-fingerprint"),
+            "the sentence must say what to compare it with: {answer}"
+        );
+    }
+
+    /// The three findings send an operator to three different places, so none
+    /// may read like another, and only `tls` carries a fingerprint at all —
+    /// "no TLS" is never a fingerprint of nothing.
+    #[test]
+    fn the_three_findings_stay_apart_and_only_one_has_a_fingerprint() {
+        let tls = probe_of(&Ok(agentclient::CertProbe::Tls {
+            fingerprint: "AA".into(),
+        }));
+        let none = probe_of(&Ok(agentclient::CertProbe::NoTls));
+        let failed = probe_of(&Err(agentclient::ProbeError::Unreachable("refused".into())));
+        let unproven = probe_of(&Err(agentclient::ProbeError::Unproven));
+        assert_eq!(none["status"], "no-tls");
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(unproven["status"], "failed");
+        for answer in [&none, &failed, &unproven] {
+            assert!(answer["fingerprint"].is_null(), "{answer}");
+        }
+        let messages: Vec<&str> = [&tls, &none, &failed, &unproven]
+            .iter()
+            .map(|a| a["message"].as_str().unwrap())
+            .collect();
+        for (i, a) in messages.iter().enumerate() {
+            for b in &messages[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        // The transport's own text (a URL, an OS error) never reaches the form.
+        assert!(!failed["message"].as_str().unwrap().contains("refused"));
+    }
+
+    #[test]
+    fn a_pin_is_stored_in_the_canonical_form_or_refused() {
+        let canonical = certpin::format(&[0xAB; certpin::DIGEST_LEN]);
+        assert_eq!(validated_pin(&canonical), Ok(canonical.clone()));
+        assert_eq!(validated_pin(&canonical.to_lowercase()), Ok(canonical));
+        for bad in ["", "AB:CD", "not a fingerprint"] {
+            assert!(validated_pin(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_pinned_host_row_carries_its_fingerprint_and_an_unpinned_one_does_not() {
+        let (settings, mut hosts, _repos, stored) = sample();
+        hosts[0].tls_fingerprint = Some("45:39:AF".into());
+        let changed = [hosts[0].id, hosts[1].id];
+        let tab = hosts_tab(&settings, &hosts, &[], &stored, &changed);
+        assert_eq!(tab["rows"][0]["pinned"], true);
+        // Only a *pinned* host can have a changed certificate: the second is
+        // in the live set but unpinned, so it must not offer to replace a pin
+        // it does not have.
+        assert_eq!(tab["rows"][0]["certificateChanged"], true);
+        assert_eq!(tab["rows"][1]["certificateChanged"], false);
+        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[]);
+        assert_eq!(calm["rows"][0]["certificateChanged"], false);
+        assert_eq!(tab["rows"][0]["fingerprint"], "45:39:AF");
+        assert_eq!(tab["rows"][1]["pinned"], false);
+        assert!(tab["rows"][1]["fingerprint"].is_null());
+        assert!(tab["pair"]["repairLabel"].is_string());
+    }
+
     /// The transport detail inside `Unreachable`/`DecodeFailed` is diagnostic
     /// noise for this line, and can carry a URL. It must not reach the row.
     #[test]
@@ -2945,6 +3142,7 @@ mod tests {
             layout: None,
             vendors: &[],
             accounts: &[],
+            certificate_changed: &[],
         }
     }
 

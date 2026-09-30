@@ -152,7 +152,37 @@ are shown as presence badges; an input appears only after **Replace…** or
 Remote hosts can be renamed or moved to another address/port without changing
 their persisted id, token key, enabled state or hidden-volume selections.
 Replacing a host token restarts only that host's client; ordinary renames retain
-its history. Existing settings and credentials require no migration. Preferences,
+its history. Existing settings and credentials require no migration.
+
+**Pairing a TLS agent** ([#448](https://github.com/Sassy-Dog/solador/issues/448)).
+An agent serving TLS ([#447](https://github.com/Sassy-Dog/solador/issues/447))
+presents a self-signed certificate, so there is no authority to ask whether it
+is the right one; the operator is. In the Add Host form, or a host's edit form,
+**Check certificate** (`settings_probe_host_certificate`) fetches the
+certificate the address presents *without trusting it* and shows its SHA-256
+fingerprint — the same string `solador-agent tls-fingerprint` prints, written by
+[`crates/certpin`](../crates/certpin) on both sides. The operator compares the
+two and presses **Trust**. Nothing is stored by the probe; the fingerprint is
+in the arguments of Add / Save only after Trust (`tlsFingerprint`), only for the
+address and port it was read from (editing either drops the answer), and never
+typed in. A found-but-untrusted certificate holds **Add Host** back — adding the
+host anyway would poll a TLS agent over plain HTTP. "No TLS" (an agent
+answering plain HTTP) and "couldn't reach" are findings too, each in its own
+sentence, and neither offers Trust. A host that is never paired stays plain
+HTTP, exactly as before.
+
+A paired host is dialled over `https://` and **never over `http://`**, and
+`agentclient` accepts exactly the pinned certificate: no system roots, no
+hostname check, one certificate (a chain is refused), and the handshake
+signature is still verified with that certificate's key — so a copy without its
+private key fails. All of it happens in the handshake, so the `Authorization`
+header is never sent to an impostor. Two failures get their own words, never
+*Unreachable*: **certificate changed** and **doesn't speak TLS yet**
+(`Fault::CertificateChanged` / `Fault::NoTls`). On *certificate changed* the
+host's edit form offers **Re-pair** — the same Check → compare → Trust flow,
+replacing the pin on Save — and that is the only way a pin changes: there is no
+one-click unpin, so going back to plain HTTP means deleting the host and adding
+it again. Preferences,
 Detailed layout and About remain available in the side navigation.
 
 Settings tests cover source routing, credential replacement, unsaved drafts,
@@ -235,7 +265,8 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | crate | what it owns |
 |---|---|
 | [`wire`](../crates/wire) | the agent's JSON contract (package `solador-wire`, imported as `wire`) |
-| [`agentclient`](../crates/agentclient) | the HTTP client for `/v1/snapshot`, `/v1/containers`, `/v1/health` |
+| [`agentclient`](../crates/agentclient) | the HTTP client for `/v1/snapshot`, `/v1/containers`, `/v1/health` — plain HTTP, or HTTPS pinned to one certificate for a paired host — and the certificate probe pairing starts from |
+| [`certpin`](../crates/certpin) | the certificate fingerprint format (package `solador-certpin`), shared with the agent's `tls-fingerprint`; no dependencies |
 | [`viewmodel`](../crates/viewmodel) | every string, colour and layout number the frontend paints |
 | [`store`](../crates/store) | settings / hosts / repos / rules / roster JSON + the OS credential store |
 | [`localhost`](../crates/localhost) | this machine's metrics; every field the platform can decline is an `Option` |
@@ -1336,7 +1367,16 @@ source's `warnings` when the payload's remote cards (every card but
 `host_rows`' own `down` test reads, and none is still `connecting`. Amber,
 because "is the network or VPN down" is a question, not a finding — each card
 keeps its own red `Unreachable`, and the line names no vendor (Tailscale
-becomes optional once #445 lands). It rides the Machines tile's fixed-height
+becomes optional once #445 lands). **A host whose failure is its pairing does
+not count as down** ([#448](https://github.com/Sassy-Dog/solador/issues/448)):
+a certificate that is not the pinned one, or a pinned host answering plain
+HTTP, means the machine *answered*, so the honest answer to the hint's question
+is "yes, the network is up". The card carries `error.kind`
+(`certificate-changed` / `no-tls`, set from the typed `AgentError`, never
+parsed from the sentence); `host_rows` paints those as `Cert changed` / `No TLS`
+instead of `Unreachable`, and `all_remote_hosts_unreachable` requires *every*
+remote to be an ordinary failure — one pairing failure among them silences the
+hint, since its claim that every remote is unreachable would be false. It rides the Machines tile's fixed-height
 warning line (#436), so it moves no geometry, and it is recomputed from the
 payload on every frame with no state kept, so it clears the instant any
 remote host answers. The full detailed Hosts panel (`?view=details`) carries
@@ -1463,10 +1503,12 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_save_providers` | Neon org id + rates, Sentry slug + quota, Azure budget (every non-secret provider preference in one go) |
 | `settings_set_account_org` | one org checked or unchecked on one account's runner-org selection. Checkbox semantics — saved on the spot, like the crash toggle: a selection is not a draft. An org another account already watches is **refused at this gate** (`settings::validated_org`), visibly, rather than tie-broken at poll time; the last deselect leaves the deliberate "watch nothing", never a fall back to never-configured. Wakes the GitHub loop — the selection is what the runners half of the pass polls |
 | `settings_save_azure` | where the cost export lives: storage account + container. Its own command for the same reason, and it **wakes the Azure poll** — that loop runs on a four-hour rhythm, so without the nudge an operator who just fixed a typo waits until teatime to learn whether it worked |
-| `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it |
+| `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it. Add takes an optional `tlsFingerprint` — the one the operator **trusted** — validated through `crates/certpin` and stored as `Host.tls_fingerprint` (absent ⇒ plain HTTP) |
+| `settings_probe_host_certificate` | pairing step one (#448): the certificate an address presents, fetched **without trusting it** → `{status: "tls" \| "no-tls" \| "failed", fingerprint, message}`. One unauthenticated request; nothing stored, no token sent |
+| `settings_save_host` | edit a host's name / address / port and, on request, replace its token. An optional `tlsFingerprint` **replaces the pin** (Re-pair); absent leaves it exactly as it is, so a rename can never touch it |
 | `settings_unhide_volume` | one mount, on a host or on the local list |
 | `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
-| `settings_test_host` | one `/v1/health` probe → the original result line |
+| `settings_test_host` | one `/v1/health` probe → the original result line, through the pinned client for a paired host. The answer also carries `certificateChanged`, which is what offers **Re-pair** the moment Test finds it |
 | `settings_save_account` | create or edit a [vendor account](#the-accounts-tab) — `id: null` adds, an id edits. The token is minted as **its own** credential-store item (`SecretKey::VendorToken`), never shared with another account. An empty token is a legitimate save, not a failure: the row reads **No token** and the operator fills it in later. Wakes the GitHub loop, because accounts *are* that pass's identities |
 | `settings_set_account_enabled` | one account in or out of the GitHub pass, without deleting it or its token |
 | `settings_remove_account` | delete the account and the one credential item it named. **Its repos are not re-homed** — they stay tracked and become unattributed, because moving them onto whichever account survived would invent an owner. Returns a receipt naming the same repos the confirmation prompt did |
@@ -2059,7 +2101,8 @@ cargo run -p solador-app -- --dump-services sample-services.json   # the Service
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
 (one enabled host with a token and a hidden volume, one disabled host with
-neither; two credentials stored, two not) with hard-coded uuids, so it is
+neither and a **pinned certificate that has changed**, so the pin line and the
+Re-pair button render; two credentials stored, two not) with hard-coded uuids, so it is
 byte-stable across regenerations and covers both sides of every badge. Its
 **container group rules** are the seeded three plus the two renderings seeding
 alone never reaches — an Expect rule (whose Collapse-only fields must therefore
@@ -2218,6 +2261,7 @@ and that immediacy is itself the check on the corresponding wake:
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
 | the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Connections → GitHub (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
+| pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Connections → **Add connection** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
 | the rules editor | under Settings → Connections → This machine, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
 | the tabs mode, per breakpoint | with two hosts configured, set Settings → **Detailed layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
 | `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Detailed layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |

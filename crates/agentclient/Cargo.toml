@@ -10,10 +10,31 @@ rust-version.workspace = true
 # layer: `viewmodel` re-exports the same enum rather than owning it.
 solador-fault = { path = "../fault" }
 solador-wire = { path = "../wire" }
+# How a certificate fingerprint is WRITTEN and read back (#448). Shared with
+# the agent's `tls-fingerprint`, so the pin the operator confirms and the
+# string the agent prints cannot drift. Dependency-free.
+solador-certpin = { path = "../certpin" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The pinning verifier (#448). "ring", not "aws_lc_rs": `reqwest`'s `rustls-tls`
+# above already resolves `ring` as the workspace's one crypto backend, and the
+# alternative is a C/cmake build the macOS and Windows cockpit builds should
+# not gain. The same feature set `agent/` names, so one rustls resolves. The
+# provider is passed to the config builder explicitly (`pin::provider`) rather
+# than installed as a process default, so this crate never depends on -- or
+# changes -- what any other crate in the process chose.
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# SHA-256 of the end-entity certificate. Same pin as `agent/` and
+# crates/openclaw, so one sha2 resolves.
+sha2 = "0.11"
 serde_json = { workspace = true }
 thiserror = "2"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
 wiremock = "0.6"
+# The in-test TLS agent (#448): a real rustls server on a loopback port, so the
+# pinning tests run an actual handshake rather than calling the verifier.
+# `ring` for the same reason as above; `rcgen` mints the throwaway certificates,
+# with the same feature set `agent/` uses for the certificate it ships.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }

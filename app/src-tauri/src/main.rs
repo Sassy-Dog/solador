@@ -115,6 +115,16 @@ struct HostState {
     /// Back-to-back failed polls; reset to 0 on any success. `error` is only
     /// published once this reaches [`FAILURE_THRESHOLD`] — see `record_poll`.
     consecutive_failures: u32,
+    /// Which pairing failure `error` is, when it is one (#448): a certificate
+    /// that is not the pinned one, or a pinned host that answers plain HTTP.
+    /// `None` for everything else, including every network failure.
+    ///
+    /// Carried beside `error` rather than recovered from its sentence, because
+    /// two consumers need the *kind* and neither may parse words: the dashboard
+    /// paints these hosts as their own state instead of `Unreachable`, and its
+    /// "is this machine's network or VPN up?" hint must not count them as the
+    /// network being down. Always set and cleared together with `error`.
+    error_kind: Option<&'static str>,
     /// The agent's own verdict on its sampler, from `/v1/health` on
     /// [`HEALTH_POLL_INTERVAL`]. `Some(true)` is the one thing that can tell
     /// this side that a *succeeding* snapshot poll is serving frozen numbers —
@@ -144,6 +154,11 @@ struct HostState {
 struct HostKey {
     id: Uuid,
     base_url: String,
+    /// The pinned certificate, in the key because a **re-pair** changes it
+    /// while leaving `base_url` (already `https://`) exactly as it was — a task
+    /// keyed on the URL alone would keep polling with the old client, and the
+    /// old pin, after the operator replaced it.
+    tls_fingerprint: Option<String>,
 }
 
 /// One host's live poll task and the state it writes into.
@@ -375,6 +390,11 @@ fn view_for(s: &HostState) -> Value {
         (None, None) => pending_card(&s.name, &Pending::Connecting),
     };
     card["id"] = json!(s.id);
+    // The kind rides beside the sentence (#448), only while `error` is what
+    // published it: a card that recovered has neither.
+    if let (Some(kind), Some(_)) = (s.error_kind, &s.error) {
+        card["error"]["kind"] = json!(kind);
+    }
     card
 }
 
@@ -675,6 +695,7 @@ fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at
             s.histories.record(&snap);
             s.latest = Some(snap);
             s.error = None;
+            s.error_kind = None;
             s.last_success = Some(at);
             s.consecutive_failures = 0;
         }
@@ -682,8 +703,24 @@ fn record_poll(s: &mut HostState, result: Result<wire::Snapshot, AgentError>, at
             s.consecutive_failures = s.consecutive_failures.saturating_add(1);
             if s.consecutive_failures >= FAILURE_THRESHOLD {
                 s.error = Some(e.user_message());
+                s.error_kind = error_kind(&e);
             }
         }
+    }
+}
+
+/// Which of the two pairing failures (#448) an error is, or `None` — see
+/// [`HostState::error_kind`]. A wildcard is the right shape here and not a
+/// hidden default: `None` is "this is an ordinary failure", which is every
+/// other variant's answer by definition.
+fn error_kind(e: &AgentError) -> Option<&'static str> {
+    match e {
+        AgentError::CertificateChanged => Some(viewmodel::card::ERROR_KIND_CERTIFICATE_CHANGED),
+        AgentError::NoTls => Some(viewmodel::card::ERROR_KIND_NO_TLS),
+        AgentError::Unreachable(_)
+        | AgentError::AuthFailed
+        | AgentError::HttpStatus(_)
+        | AgentError::DecodeFailed(_) => None,
     }
 }
 
@@ -791,6 +828,7 @@ const HOST_TOKEN_UNREADABLE_MESSAGE: &str =
 fn record_token_unavailable(s: &mut HostState, message: &str) {
     s.consecutive_failures = FAILURE_THRESHOLD;
     s.error = Some(message.to_string());
+    s.error_kind = None;
 }
 
 /// One host's poll loop: tick, poll, record. Lifted out of the spawn site so
@@ -979,6 +1017,7 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
         error: None,
         last_success: None,
         consecutive_failures: 0,
+        error_kind: None,
         // Unknown until the first health poll lands — never `Some(false)`,
         // which would be this process asserting a fact about an agent it has
         // not spoken to yet.
@@ -993,7 +1032,7 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
     let token_available = blocked.is_none();
     // Immutable, so it is shared rather than guarded: the snapshot loop and
     // the containers loop both poll this host through this one client.
-    let client = Arc::new(AgentClient::new(key.base_url.clone(), token));
+    let client = Arc::new(agent_client(&key, token));
 
     let task_state = Arc::clone(&state);
     let task_client = Arc::clone(&client);
@@ -1006,6 +1045,18 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
         client,
         token_available,
         task,
+    }
+}
+
+/// The client for one host: pinned to its certificate when it has one (#448),
+/// plain HTTP otherwise. The one place that decides, so the poll loops, the
+/// Test button and any future caller cannot disagree about which hosts get
+/// which — the pinned constructor is what guarantees a host with a fingerprint
+/// is never dialled over `http://`.
+fn agent_client(key: &HostKey, token: String) -> AgentClient {
+    match &key.tls_fingerprint {
+        Some(fingerprint) => AgentClient::pinned(key.base_url.clone(), token, fingerprint),
+        None => AgentClient::new(key.base_url.clone(), token),
     }
 }
 
@@ -1047,6 +1098,7 @@ fn reload_hosts(app: &App) {
                     HostKey {
                         id: host.id,
                         base_url: host.base_url(),
+                        tls_fingerprint: host.tls_fingerprint.clone(),
                     },
                     host.name.clone(),
                 )
@@ -2404,6 +2456,21 @@ fn stored_secrets(
     }
 }
 
+/// The hosts whose published error is "the certificate changed" (#448): the
+/// live half of what the host row needs to offer **Re-pair**.
+fn certificate_changed_hosts(app: &App) -> Vec<Uuid> {
+    let hosts = app.hosts.lock().expect("poll set poisoned");
+    hosts
+        .iter()
+        .filter(|polled| {
+            let state = polled.state.lock().expect("host state poisoned");
+            state.error.is_some()
+                && state.error_kind == Some(viewmodel::card::ERROR_KIND_CERTIFICATE_CHANGED)
+        })
+        .map(|polled| polled.key.id)
+        .collect()
+}
+
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
     // Read before the store's lock is taken, and never while it is held: the
@@ -2416,6 +2483,9 @@ fn settings_payload(app: &App) -> Value {
         let state = app.update.lock().expect("update state poisoned");
         update::view(&state, settings::VERSION)
     };
+    // The poll set's lock, taken and released before the store's: the same
+    // one-at-a-time order every other reader of both uses.
+    let certificate_changed = certificate_changed_hosts(app);
     let store = app.store.lock().expect("store poisoned");
     let stored = stored_secrets(app.credentials.as_ref(), store.hosts(), store.accounts());
     settings::view(
@@ -2427,6 +2497,7 @@ fn settings_payload(app: &App) -> Value {
             layout: store.layout(),
             vendors: store.status_vendors(),
             accounts: store.accounts(),
+            certificate_changed: &certificate_changed,
         },
         &stored,
         &facts,
@@ -3881,6 +3952,11 @@ fn settings_add_host(
     address: String,
     port: String,
     token: String,
+    // The fingerprint of a certificate the operator was shown and **trusted**
+    // (#448) — `None` for a host that was never paired, which stays plain HTTP.
+    // Only the Trust button's state carries one; the form never sends a typed
+    // value, and nothing is pinned by a probe alone.
+    tls_fingerprint: Option<String>,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
     let name = name.trim().to_owned();
@@ -3891,11 +3967,17 @@ fn settings_add_host(
             Some("Skipped — name and address are required.".into()),
         );
     }
+    let pin = match tls_fingerprint.as_deref().map(settings::validated_pin) {
+        Some(Ok(pin)) => Some(pin),
+        Some(Err(reason)) => return settings_response(&state, Some(reason.into())),
+        None => None,
+    };
 
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
         let mut host = Host::new(&name, address);
         host.port = settings::parse_port(&port);
+        host.tls_fingerprint = pin;
         let id = host.id;
         store.upsert_host(host);
         let status = save_status(&store, format!("Added {name}."));
@@ -3919,6 +4001,27 @@ fn settings_add_host(
     settings_response(&state, status)
 }
 
+/// Step one of pairing a host (#448): fetch the certificate its agent presents,
+/// **without trusting it**, and report the fingerprint.
+///
+/// Nothing is stored and no token is sent — `agentclient::probe_certificate`
+/// makes one unauthenticated request. The answer is a finding, not a `Result`
+/// (`settings::host_probe_answer`): "no TLS" and "couldn't reach" are results
+/// the form paints, and the operator's decision to trust is a separate
+/// command's argument, made only by pressing Trust.
+#[tauri::command]
+async fn settings_probe_host_certificate(address: String, port: String) -> Value {
+    let address = address.trim().to_owned();
+    let port = settings::parse_port(&port);
+    let outcome = agentclient::probe_certificate(&address, port).await;
+    // The form gets one sentence; the transport's detail (DNS, refused,
+    // timeout, a TLS alert) goes to the log, where it cannot reach a panel.
+    if let Err(error) = &outcome {
+        eprintln!("pairing: probe of {address}:{port} found nothing: {error}");
+    }
+    settings::host_probe_answer(&address, port, &outcome)
+}
+
 #[tauri::command]
 fn settings_save_host(
     id: String,
@@ -3926,6 +4029,11 @@ fn settings_save_host(
     address: String,
     port: String,
     token: String,
+    // Absent leaves the host's pin exactly as it is. Present **replaces** it
+    // with a fingerprint the operator was just shown and trusted (#448) — the
+    // Re-pair path — so a plain rename can never touch the pin, and only the
+    // Trust button can change it.
+    tls_fingerprint: Option<String>,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
     let Ok(id) = Uuid::parse_str(&id) else {
@@ -3939,6 +4047,7 @@ fn settings_save_host(
             id,
             (&name, &address, &port),
             &token,
+            tls_fingerprint.as_deref(),
         )
     };
     if result == Ok(true) {
@@ -3968,10 +4077,14 @@ fn save_host_connection(
     id: Uuid,
     (name, address, port): (&str, &str, &str),
     token: &str,
+    pin: Option<&str>,
 ) -> Result<bool, String> {
     let original = store.host(id).cloned().ok_or("Skipped — unknown host.")?;
     let mut edited = original.clone();
     settings::edit_host(&mut edited, name, address, port)?;
+    if let Some(raw) = pin {
+        edited.tls_fingerprint = Some(settings::validated_pin(raw)?);
+    }
     store.upsert_host(edited);
     if let Err(error) = store.save() {
         store.upsert_host(original);
@@ -4165,11 +4278,15 @@ async fn settings_test_host(
     let uuid = Uuid::parse_str(&id).map_err(|_| "unknown host".to_owned())?;
     // Scoped so no lock is alive across the await below — the guard is not
     // `Send`, so this is enforced by the compiler rather than by care.
-    let base_url = {
+    let key = {
         let store = state.store.lock().expect("store poisoned");
         store
             .host(uuid)
-            .map(Host::base_url)
+            .map(|host| HostKey {
+                id: host.id,
+                base_url: host.base_url(),
+                tls_fingerprint: host.tls_fingerprint.clone(),
+            })
             .ok_or_else(|| "unknown host".to_owned())?
     };
     let token = state
@@ -4178,8 +4295,15 @@ async fn settings_test_host(
         .unwrap_or_default()
         .unwrap_or_default();
 
-    let result = AgentClient::new(base_url, token).health().await;
-    Ok(json!({ "id": id, "result": settings::health_result(&result) }))
+    let result = agent_client(&key, token).health().await;
+    Ok(json!({
+        "id": id,
+        "result": settings::health_result(&result),
+        // So the row can offer **Re-pair** the moment Test finds the
+        // certificate changed (#448), without waiting for the next Settings
+        // payload to carry the poll set's view of it.
+        "certificateChanged": matches!(result, Err(AgentError::CertificateChanged)),
+    }))
 }
 
 #[tauri::command]
@@ -5092,6 +5216,12 @@ fn dump_settings() -> Value {
     let mut spare = Host::new("nuc-spare", "100.64.0.7");
     spare.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0002);
     spare.enabled = false;
+    // Paired, and with the certificate its agent presents no longer the pinned
+    // one (#448): the only rendering that carries the pin, the Re-pair button
+    // and its explanation. `live` stays unpinned so the ordinary edit form —
+    // and its exact `settings_save_host` arguments — keep their coverage.
+    spare.tls_fingerprint = Some(certpin::format(&[0xAB; certpin::DIGEST_LEN]));
+    let certificate_changed = [spare.id];
 
     // Two accounts and, between them, every rendering the row has: one with a
     // token and two repos depending on it (so the removal prompt exists), one
@@ -5187,6 +5317,7 @@ fn dump_settings() -> Value {
             rules: &dump_container_rules(),
             layout: Some(&layout),
             vendors: &vendors,
+            certificate_changed: &certificate_changed,
             accounts: &accounts,
         },
         &stored,
@@ -5983,6 +6114,7 @@ fn main() {
             settings_save_azure,
             settings_save_providers,
             settings_add_host,
+            settings_probe_host_certificate,
             settings_set_host_enabled,
             settings_remove_host,
             settings_unhide_volume,
@@ -6153,6 +6285,7 @@ mod tests {
             } else {
                 0
             },
+            error_kind: None,
             sampler_stale: None,
             sample_age_seconds: None,
         }
@@ -7582,7 +7715,8 @@ mod tests {
                 &credentials,
                 id,
                 ("after", "new.example", "9000"),
-                ""
+                "",
+                None,
             ),
             Ok(false)
         );
@@ -7602,7 +7736,8 @@ mod tests {
                 &credentials,
                 id,
                 ("after", "new.example", "9000"),
-                "replacement-token"
+                "replacement-token",
+                None,
             ),
             Ok(true)
         );
@@ -7616,6 +7751,74 @@ mod tests {
         assert!(!std::fs::read_to_string(store.path())
             .unwrap()
             .contains("replacement-token"));
+    }
+
+    /// The pin is only ever changed by the Trust path (#448): an ordinary edit
+    /// — a rename, a new address — leaves it alone, and one that carries a
+    /// confirmed fingerprint replaces it (Re-pair), in the canonical form.
+    #[test]
+    fn a_host_edit_leaves_its_pin_alone_and_a_repair_replaces_it() {
+        let (dir, mut store) = scratch_store();
+        let credentials = MemoryCredentialStore::new();
+        let mut host = Host::new("before", "old.example");
+        let first = certpin::format(&[0x11; certpin::DIGEST_LEN]);
+        let second = certpin::format(&[0x22; certpin::DIGEST_LEN]);
+        host.tls_fingerprint = Some(first.clone());
+        let id = host.id;
+        store.upsert_host(host);
+
+        save_host_connection(
+            &mut store,
+            &credentials,
+            id,
+            ("renamed", "new.example", "9000"),
+            "",
+            None,
+        )
+        .expect("plain edit");
+        assert_eq!(store.host(id).unwrap().tls_fingerprint, Some(first));
+
+        // Re-pair: the operator confirmed a new fingerprint (any notation).
+        save_host_connection(
+            &mut store,
+            &credentials,
+            id,
+            ("renamed", "new.example", "9000"),
+            "",
+            Some(&second.to_lowercase()),
+        )
+        .expect("re-pair");
+        let reopened = Store::open_in(dir.path(), false).unwrap();
+        assert_eq!(reopened.host(id).unwrap().tls_fingerprint, Some(second));
+        assert!(reopened
+            .host(id)
+            .unwrap()
+            .base_url()
+            .starts_with("https://"));
+    }
+
+    /// Something that is not a fingerprint is refused before anything is
+    /// stored — it must not become a pin that matches nothing and looks like
+    /// one that matters — and the previous host is untouched.
+    #[test]
+    fn a_pin_that_is_not_a_fingerprint_is_refused_and_changes_nothing() {
+        let (_dir, mut store) = scratch_store();
+        let credentials = MemoryCredentialStore::new();
+        let host = Host::new("before", "old.example");
+        let id = host.id;
+        store.upsert_host(host.clone());
+
+        let result = save_host_connection(
+            &mut store,
+            &credentials,
+            id,
+            ("after", "new.example", "9000"),
+            "",
+            Some("not a fingerprint"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(store.host(id), Some(&host));
     }
 
     #[test]
@@ -7636,7 +7839,8 @@ mod tests {
             &credentials,
             id,
             ("after", "new.example", "9000"),
-            "replacement-token"
+            "replacement-token",
+            None,
         )
         .is_err());
         assert_eq!(store.host(id), Some(&original));
@@ -8444,7 +8648,85 @@ mod tests {
         HostKey {
             id: Uuid::from_u128(id),
             base_url: base_url.to_owned(),
+            tls_fingerprint: None,
         }
+    }
+
+    /// A re-pair changes the fingerprint and nothing else: the URL was already
+    /// `https://`. If the key ignored the pin the reconcile would keep the old
+    /// task — polling with the old client, and the old pin — after the
+    /// operator replaced it.
+    #[test]
+    fn re_pairing_a_host_restarts_its_task_and_only_its_task() {
+        let mut old = key(1, "https://10.0.0.1:7878");
+        old.tls_fingerprint = Some("AA".into());
+        let mut repaired = old.clone();
+        repaired.tls_fingerprint = Some("BB".into());
+        let other = key(2, "http://10.0.0.2:7878");
+
+        let plan = reconcile(&[old.clone(), other.clone()], &[repaired, other]);
+
+        assert_eq!(plan, vec![None, Some(1)]);
+    }
+
+    /// A pairing failure is tagged on the card (#448) so the dashboard can tell
+    /// it from the network being down without reading a sentence; an ordinary
+    /// failure carries no tag; and recovery clears it with the error.
+    #[test]
+    fn a_pairing_failure_is_tagged_on_the_card_and_recovery_clears_the_tag() {
+        let mut s = live_state();
+        for _ in 0..FAILURE_THRESHOLD {
+            record_poll(&mut s, Err(AgentError::CertificateChanged), Instant::now());
+        }
+        let card = view_for(&s);
+        assert_eq!(
+            card["error"]["kind"],
+            viewmodel::card::ERROR_KIND_CERTIFICATE_CHANGED
+        );
+        assert!(card["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&AgentError::CertificateChanged.user_message()));
+
+        // The same host, now answering plain HTTP.
+        for _ in 0..FAILURE_THRESHOLD {
+            record_poll(&mut s, Err(AgentError::NoTls), Instant::now());
+        }
+        assert_eq!(
+            view_for(&s)["error"]["kind"],
+            viewmodel::card::ERROR_KIND_NO_TLS
+        );
+
+        // An ordinary failure replaces it, and is untagged.
+        for _ in 0..FAILURE_THRESHOLD {
+            record_poll(
+                &mut s,
+                Err(AgentError::Unreachable("x".into())),
+                Instant::now(),
+            );
+        }
+        assert!(view_for(&s)["error"]["kind"].is_null());
+
+        // Pairing failure again, then the host recovers: no error, no tag.
+        for _ in 0..FAILURE_THRESHOLD {
+            record_poll(&mut s, Err(AgentError::CertificateChanged), Instant::now());
+        }
+        record_poll(&mut s, Ok(fixture()), Instant::now());
+        let card = view_for(&s);
+        assert!(card["error"].is_null(), "{card}");
+    }
+
+    /// The debounce applies to pairing failures like any other: the card keeps
+    /// what it had until the streak means something, so the tag cannot appear
+    /// ahead of the sentence it describes.
+    #[test]
+    fn the_tag_is_published_with_the_error_and_not_before() {
+        let mut s = live_state();
+        for _ in 0..FAILURE_THRESHOLD - 1 {
+            record_poll(&mut s, Err(AgentError::CertificateChanged), Instant::now());
+        }
+        assert_eq!(s.error_kind, None);
+        assert_eq!(s.error, None);
     }
 
     /// The point of reconciling instead of rebuilding: an edit to one host

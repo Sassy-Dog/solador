@@ -27,7 +27,7 @@
 //!
 //! Retyping a sentence in seven crates is not a smaller problem than retyping
 //! it in two. The rule was never "the words are presentation"; it is "data
-//! access must not point at presentation", and a vocabulary of eight sentences
+//! access must not point at presentation", and a vocabulary of a dozen sentences
 //! is not presentation — it renders no colour, reads no panel, and knows
 //! nothing about a layout. So it moved down to a leaf crate with no
 //! dependencies at all, which `viewmodel` and every vendor crate can point at
@@ -53,13 +53,13 @@
 //! The slot is an untyped `&str` filled from two grammatical categories:
 //! **proper nouns** — `"Neon"`, `"Sentry"`, `"Vercel"`, `"GitHub"`,
 //! `"Azure CLI"`, `"Azure Storage"` — and **names that carry their own
-//! determiner** — `"the agent"`, `"the status page"`, `"that host"`. Eight of
-//! the nine templates read correctly against both. [`Fault::ToolUnavailable`]
+//! determiner** — `"the agent"`, `"the status page"`, `"that host"`. Ten of
+//! the eleven templates read correctly against both. [`Fault::ToolUnavailable`]
 //! does not: it tells the operator to install what it names, and *"that host
 //! not found — install it and sign in"* is broken English about a machine
 //! nobody can install.
 //!
-//! Typing the vendor is deliberately **not** the fix (#364). Nine sentences do
+//! Typing the vendor is deliberately **not** the fix (#364). Eleven sentences do
 //! not justify a vendor-category type, and the slot stays `&str`. What the
 //! constraint needed was to be *said*: the crate's own sweeps iterated the
 //! whole (state × vendor) cross product, so the one pairing production never
@@ -69,7 +69,7 @@
 //! sentence a widening would ship.
 //!
 //! No test here can see a caller in another crate; only a type could, and a
-//! type is not warranted at nine sentences. This states the rule and stops
+//! type is not warranted at eleven sentences. This states the rule and stops
 //! this crate from endorsing its violation.
 //!
 //! # The fallback is not a category
@@ -118,6 +118,19 @@ pub enum Fault {
     /// categories. Rendered against `"that host"` it reads "that host not
     /// found — install it and sign in".
     ToolUnavailable,
+    /// The endpoint presented a certificate other than the one pinned for it
+    /// (#448) — or could not prove it holds that certificate's key. The only
+    /// state that is neither a network failure nor a credential problem: the
+    /// machine answered, it just is not, cryptographically, the one the
+    /// operator trusted. Sending them to check the network or rotate a token
+    /// would be the wrong fix; **Re-pair** in Settings is the right one, after
+    /// deciding the change was expected.
+    CertificateChanged,
+    /// A host pinned to a certificate answered in plain text (#448): its agent
+    /// does not serve TLS (yet, or any more). Never retried over `http://` —
+    /// the whole point of the pin is that the client does not downgrade — so
+    /// this is a state to report, not a fallback to take.
+    NoTls,
     /// None of the above.
     ///
     /// Its sentence promises nothing except that something failed and the log
@@ -208,6 +221,10 @@ impl Fault {
             Fault::VendorFailure => format!("{vendor} is failing on its side"),
             Fault::Undecodable => format!("couldn't read {vendor}'s response"),
             Fault::ToolUnavailable => format!("{vendor} not found — install it and sign in"),
+            Fault::CertificateChanged => {
+                format!("{vendor}'s certificate changed — re-pair it in Settings")
+            }
+            Fault::NoTls => format!("{vendor} doesn't speak TLS yet — enable it on the host"),
             Fault::Unexpected => format!("{vendor} failed — details in the log"),
         }
     }
@@ -264,6 +281,8 @@ mod tests {
         Fault::VendorFailure,
         Fault::Undecodable,
         Fault::ToolUnavailable,
+        Fault::CertificateChanged,
+        Fault::NoTls,
         Fault::Unexpected,
     ];
 
@@ -430,6 +449,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The two pairing states (#448) are the ones an operator is most likely to
+    /// mistake for a dead network, so the sentence must be the thing that
+    /// tells them apart — from `Unreachable` and from each other, for every
+    /// vendor name, and byte-for-byte for the one they are rendered against.
+    #[test]
+    fn the_pairing_states_never_read_as_unreachable() {
+        for vendor in all_vendors() {
+            let unreachable = Fault::Unreachable.message(vendor);
+            for fault in [Fault::CertificateChanged, Fault::NoTls] {
+                assert_ne!(fault.message(vendor), unreachable, "{fault:?} for {vendor}");
+            }
+            assert_ne!(
+                Fault::CertificateChanged.message(vendor),
+                Fault::NoTls.message(vendor)
+            );
+        }
+        assert_eq!(
+            Fault::CertificateChanged.message("the agent"),
+            "the agent's certificate changed — re-pair it in Settings"
+        );
+        assert_eq!(
+            Fault::NoTls.message("the agent"),
+            "the agent doesn't speak TLS yet — enable it on the host"
+        );
     }
 
     #[test]

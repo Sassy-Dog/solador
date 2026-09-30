@@ -53,6 +53,10 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 # The wire contract itself. One definition, shared with the app.
 solador-wire = { path = "../crates/wire" }
+# How a certificate fingerprint is WRITTEN (#448), shared with the cockpit's
+# pinning client so `tls-fingerprint` and Settings' Trust dialog cannot drift.
+# Dependency-free, so this edge costs the musl cross-build nothing.
+solador-certpin = { path = "../crates/certpin" }
 serde_json = "1"
 # Same explicit feature set as crates/localhost, not sysinfo's defaults.
 # Both are workspace members now, and cargo unifies features across a workspace

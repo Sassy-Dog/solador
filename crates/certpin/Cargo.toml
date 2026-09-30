@@ -1,0 +1,17 @@
+[package]
+# Prefixed like `solador-wire` and `solador-fault`: the short name is taken on
+# crates.io. The lib keeps the short import name.
+name = "solador-certpin"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "certpin"
+
+# NO dependencies, deliberately -- the `crates/fault` and `crates/buildversion`
+# precedent. The agent and the cockpit's client both depend on this crate, so
+# anything added here is added to both. Each consumer computes the SHA-256 with
+# what it already resolves; this crate owns only how the digest is WRITTEN and
+# how what an operator typed is READ.
+[dependencies]

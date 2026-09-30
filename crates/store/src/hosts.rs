@@ -36,6 +36,21 @@ pub struct Host {
     /// Mount paths the user hid from this host's Volumes section.
     #[serde(default)]
     pub hidden_volume_mounts: Vec<String>,
+    /// The SHA-256 fingerprint of the one certificate this host's agent may
+    /// present (#448), in `crates/certpin`'s canonical form. `None` means the
+    /// host is dialled over plain HTTP, exactly as every host was before.
+    ///
+    /// A non-secret preference that lives in `store.json` beside the address:
+    /// it is a public certificate's hash, and the only thing it can do is make
+    /// the client *refuse* more. It is set only by the operator clicking
+    /// **Trust** on a fingerprint the cockpit just fetched, never typed in and
+    /// never adopted from a poll — a pin learned silently is not a pin.
+    ///
+    /// Absent on disk is `None`, and omitted when `None`, so a store written
+    /// before this field existed loads unchanged and one that never pins a
+    /// host stays byte-for-byte what it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_fingerprint: Option<String>,
 }
 
 impl Host {
@@ -51,21 +66,34 @@ impl Host {
             enabled: true,
             created_at: now_unix(),
             hidden_volume_mounts: Vec::new(),
+            tls_fingerprint: None,
         }
     }
 
-    /// This host's agent base URL, e.g. `http://100.100.100.100:7878`.
+    /// This host's agent base URL: `https://100.100.100.100:7878` when it is
+    /// pinned to a certificate (#448), `http://100.100.100.100:7878` otherwise.
     ///
-    /// Plain HTTP is correct here: the transport is Tailscale, which is what
-    /// carries the encryption (see `agent/README.md`). Unconditional on
-    /// purpose, still: the agent can now opt into serving HTTPS instead
-    /// (`SOLADOR_AGENT_TLS=1`, #447), but nothing on this side knows how to
-    /// dial that or pin its self-signed certificate yet — that's the sibling
-    /// child, #448. Until it lands, a host an operator has opted into TLS
-    /// reads as unreachable here, not as a different scheme.
+    /// **The scheme follows the pin and nothing else.** A host with a
+    /// fingerprint is *never* `http://` — not after a failure, not because the
+    /// agent stopped answering TLS — because a client that falls back to plain
+    /// HTTP when the pinned handshake fails has only made the pin advisory. An
+    /// agent that has stopped speaking TLS is reported as such
+    /// (`fault::Fault::NoTls`), not followed down.
+    ///
+    /// A host with no pin stays plain HTTP: over Tailscale the transport is
+    /// what carries the encryption (see `agent/README.md`), and a store from
+    /// before pinning existed must keep polling the agents it always polled.
+    /// `Some("")` is still a pin — an unusable one, which no certificate
+    /// matches — so a hand-edited store cannot turn pinning *off* by blanking
+    /// the string.
     #[must_use]
     pub fn base_url(&self) -> String {
-        format!("http://{}:{}", self.address, self.port)
+        let scheme = if self.tls_fingerprint.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        format!("{scheme}://{}:{}", self.address, self.port)
     }
 }
 
@@ -102,6 +130,58 @@ mod tests {
         assert_eq!(host.base_url(), "http://100.100.100.100:7878");
         host.port = 9000;
         assert_eq!(host.base_url(), "http://100.100.100.100:9000");
+    }
+
+    #[test]
+    fn a_pinned_host_is_dialled_over_https_and_only_https() {
+        let mut host = Host::new("ubu-01", "100.100.100.100");
+        host.tls_fingerprint = Some("AB:CD".into());
+        assert_eq!(host.base_url(), "https://100.100.100.100:7878");
+        host.port = 9000;
+        assert_eq!(host.base_url(), "https://100.100.100.100:9000");
+        // A blanked pin is an unusable pin, not the absence of one.
+        host.tls_fingerprint = Some(String::new());
+        assert!(host.base_url().starts_with("https://"));
+    }
+
+    /// The downgrade guard at the store layer: whatever else changes about a
+    /// pinned host, none of it turns its URL back into `http://`.
+    #[test]
+    fn nothing_but_removing_the_pin_makes_a_pinned_host_plain_http() {
+        let mut host = Host::new("ubu-01", "100.100.100.100");
+        host.tls_fingerprint = Some("AB:CD".into());
+        for (address, port) in [("localhost", 1), ("[::1]", 65535), ("a.b.c", 7878)] {
+            host.address = address.into();
+            host.port = port;
+            host.enabled = !host.enabled;
+            assert!(host.base_url().starts_with("https://"), "{address}:{port}");
+        }
+        host.tls_fingerprint = None;
+        assert!(host.base_url().starts_with("http://"));
+    }
+
+    #[test]
+    fn a_store_from_before_pinning_loads_unpinned_and_saves_unchanged() {
+        let id = Uuid::new_v4();
+        let json = format!(r#"{{"id":"{id}","name":"box","address":"10.0.0.1","port":7878}}"#);
+        let host: Host = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(host.tls_fingerprint, None);
+        assert_eq!(host.base_url(), "http://10.0.0.1:7878");
+        // Omitted, not `null`: an unpinned host's entry gains no key.
+        let saved = serde_json::to_string(&host).expect("serialize");
+        assert!(!saved.contains("tls_fingerprint"), "{saved}");
+    }
+
+    #[test]
+    fn a_pin_round_trips_through_json() {
+        let mut host = Host::new("ubu-01", "100.100.100.100");
+        host.tls_fingerprint = Some("45:39:AF".into());
+        let json = serde_json::to_string(&host).expect("serialize");
+        assert!(json.contains(r#""tls_fingerprint":"45:39:AF""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<Host>(&json).expect("deserialize"),
+            host
+        );
     }
 
     #[test]
