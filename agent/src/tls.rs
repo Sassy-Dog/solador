@@ -564,7 +564,7 @@ mod tests {
         );
     }
 
-    /// The exact failure the review found: a genuinely DER
+    /// Why the certificate is PEM on disk: a genuinely DER
     /// `solador-agent.tls.crt` makes curl's `cacert` config option refuse it
     /// (exit 77, "error setting certificate verify locations") before a
     /// request is even sent — which is how `agent/deploy/lib.sh`'s

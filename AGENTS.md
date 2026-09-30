@@ -946,34 +946,33 @@ tests build (#417); the crate still has zero dependencies.
   on it — `flock -n 9` where `flock(1)` is on PATH, else the stock `perl`'s
   Fcntl flock on that SAME already-open fd (`open($fh,"<&=",9)`, confirmed
   empirically to persist after perl exits, not merely assumed) — and HOLDS
-  it for the rest of the run, on both platforms, in every tier that can
+  it from before the first service-manager call until the binary and the
+  lock file itself are removed, on both platforms, in every tier that can
   check it at all: a transaction starting in the window this spends
   stopping the service and removing its unit/plist meets that hold as busy
-  on its own terms (exit 75). Where NEITHER tool exists there is no way
-  left to check, and this refuses (busy) before anything changes rather
-  than guessing free — a follow-up review found the previous revision's
-  hold conditional (only held when the file already existed *and*
-  `flock(1)` was on PATH) and its second, later check capable of returning
-  exit 1 ("nothing changed") after the service and its unit/plist were
-  already gone; both are fixed by holding continuously in every checkable
-  tier and refusing up front in the one that is not. **Whether THIS run
-  created the lock file is decided atomically**, `( set -C; : >
-  "$lock_file" )` before `exec 9>>` ever opens it: a later review found the
-  previous revision could still delete a file that PRE-EXISTED on the two
-  "lock is busy" refusal branches, which is exactly how a second process
-  can end up "holding" a lock nobody actually contends for — `flock()`
-  locks the open file description, not the path, so unlinking a file
-  another process has locked and letting a third opener recreate the same
-  name gives that third opener a lock on a *different* inode
-  (`agent/src/update.rs:1349-1351` names this explicitly). Fixed by never
-  deleting the lock file on a busy result, whoever created it. Of the two
+  on its own terms (exit 75). The hold is released (`exec 9>&-`) before the
+  update stamp and, with `--purge`, the env-file, legacy-env and TLS
+  removals, and the lock file is unlinked while still held — the hazard
+  `agent/src/update.rs` documents for its own lock. Nothing runs between the unlink and the release, and on a clean run the unit/plist and the binary
+  are already gone: a transaction
+  starting afterwards has no install to resolve and nothing to swap. Where
+  NEITHER tool exists there is no way left to check, and this refuses
+  (busy) before anything changes rather than guessing free. **Whether THIS
+  run created the lock file is decided atomically**, `( set -C; : >
+  "$lock_file" )` before `exec 9>>` ever opens it: deleting a file that
+  PRE-EXISTED on a "lock is busy" refusal is how a second process can end
+  up "holding" a lock nobody actually contends for — `flock()` locks the
+  open file description, not the path, so unlinking a file another process
+  has locked and letting a third opener recreate the same name gives that
+  third opener a lock on a *different* inode. So a busy result never
+  deletes the lock file, whoever created it. Of the two
   narrower non-busy failures, only the open itself failing deletes a lock
   this run created; a perl reopen failure never deletes one, this run's or
   not — it proves nothing about whether the lock is free. Once held, a note
   (`pid=<pid> since=<epoch>`, the same shape `agent/src/update.rs` writes)
   is left in the file so a racing update/rollback names THIS uninstall, not
   a stale holder. **Stop and disable are two separate `systemctl` calls, never a
-  combined `disable --now`** (#454 round-4 review's own follow-up): real
+  combined `disable --now`**: real
   systemd's `disable` needs a unit's own FILE to know which enablement
   symlinks to remove, and fails "Unit file <u> does not exist" without one
   — *before* it ever reaches its own `--now` stop — so a combined call on
@@ -1002,7 +1001,7 @@ tests build (#417); the crate still has zero dependencies.
   currently names is read (`unowned_service_binary`) — one outside
   `~/.local/bin` (an unmigrated `/opt` host, most likely) is reported as
   left behind with the actual remedy (`sudo rm -rf /opt/solador-agent` for
-  that layout; "remove it as its owner" otherwise), never the old unchecked
+  that layout; "remove it as its owner" otherwise), never a
   `--migrate-from-opt` pointer, which does nothing useful post-uninstall.
   It then removes both unit/plist pairs (Linux `daemon-reload`s and
   `reset-failed`s all four unit names once something changed), the binary
@@ -1015,22 +1014,9 @@ tests build (#417); the crate still has zero dependencies.
   file and never deleted it); `--purge` alone, or `--uninstall` beside
   `--migrate-from-opt` or `--enable-timer`, is a usage error. Never runs
   `loginctl disable-linger`, and is idempotent — a second run finds nothing
-  left and says so. **Exit status is not always 0 or 1 for a run that
-  changed something**: a manager found reachable can still refuse one
-  specific stop or disable request, which still removes everything
-  (best-effort) but exits 4 — the operator message names which: a failed
-  stop may mean the process is still running, a failed disable alone does
-  not; a file that should have been removable but
-  genuinely could not be (`uninstall_remove` checks every `rm -f`'s own
-  result now, not just that it ran) exits 6, which wins over 4 when both
-  apply — distinct from 0 ("Done", earned) and 1 ("refused, nothing
-  changed" — false in both). **There is no exit 5**: the window it used to
-  name (a transaction starting between the service being stopped and the
-  binary being removed) no longer exists once the lock is held continuously
-  in every tier that can check it, so the second check that produced it was
-  removed rather than kept as unreachable code. `lib.sh`'s old one-shot
-  `update_lock_busy` helper is gone with its only caller, for the same
-  reason.
+  left and says so. **Exit status:** `agent/deploy/install.sh`'s header is
+  the one table of `--uninstall`'s exit codes (`--help` prints it); a run
+  that changed something is not always 0 or 1, so read it there.
   `agent/README.md`'s "Moving the agent to another user" is the ordered
   procedure this exists for: install as the new user, re-pair the token,
   `--uninstall --purge` as the old one.
@@ -1196,9 +1182,9 @@ tests build (#417); the crate still has zero dependencies.
   `SOLADOR_AGENT_LAUNCHD_LABEL` — the one `SOLADOR_AGENT_*` it reads that the
   metrics service does not, which `lib_test.sh`'s launcher allow-list test
   names as the exception. The lock serialises `update`/`rollback` (and the
-  scheduled job, which is `update`) against each other — and, since #439's
-  follow-up review, against `install.sh --uninstall` too, which now holds
-  the same lock for its whole run rather than merely checking it once. A
+  scheduled job, which is `update`) against each other — and against
+  `install.sh --uninstall` too, which holds the same lock for its own run
+  (released before its last removals). A
   normal, no-flag `install.sh` and `redeploy.sh` still write the same
   `.new`/`.prev` without taking it, so do not run those during an update.
   **`update`'s own children cannot pin the lock** (#458): it is opened
@@ -1258,9 +1244,9 @@ tests build (#417); the crate still has zero dependencies.
   kernel's `/sys/power/suspend_stats/success` tells that `0` apart from a
   boot that has not slept; when the kernel counted a suspend the manager
   no longer has, the guard logs one line and the 23 h rule alone decides.
-  The first cut held on that reading, and on a laptop after its first
-  suspend that is a red unit every day until reboot — not fail-closed, a
-  job that never runs (the review of #416). Holds are the launcher's own —
+  Holding on that reading would, on a laptop after its first suspend,
+  leave a red unit every day until reboot — not fail-closed, a job that
+  never runs. Holds are the launcher's own —
   the clock, this activation's time, the stamp — plus the kernel counter
   when present but unreadable, every usage error, and an `EXIT` trap that
   turns a `set -e` death into a HELD 255, because the status such a death

@@ -471,8 +471,7 @@ EOF_STATE
         [ "${STUB_SYSTEMCTL_IS_ENABLED:-enabled}" = "enabled" ] && exit 0
         exit 1
         ;;
-    # --uninstall's own `stop` call (#454 round-4 review's own follow-up:
-    # stop and disable are two separate calls, never a combined
+    # --uninstall's own `stop` call (stop and disable are two separate calls, never a combined
     # `disable --now`; install.sh gates `disable` on the unit's own FILE
     # existing and `stop` on the file OR the manager still holding the unit
     # — #463). This is the FIRST mutating call stop_and_disable_linux_unit
@@ -2247,12 +2246,12 @@ reset_argv_logs() {
 # assert_untouched <name> <home>: no env file, no binary, no unit, no plist,
 # no update-transaction lock, no ~/.local/bin directory at all, and no
 # service-manager call — the state a refusal must leave behind. The lock
-# file and the bare directory are their own checks (#454 round-4 review),
-# not folded into "binary": an --uninstall refusal used to open (and
-# thereby create) <bin>.update.lock, and on a host with no install
-# directory yet, ~/.local/bin itself, before ever checking whether it
-# could actually do anything — leaving both behind despite claiming
-# "Nothing has been changed".
+# file and the bare directory are their own checks, not folded into
+# "binary": an --uninstall refusal that opened (and thereby created)
+# <bin>.update.lock, and on a host with no install directory yet,
+# ~/.local/bin itself, before checking whether it could actually do
+# anything would leave both behind despite claiming "Nothing has been
+# changed".
 assert_untouched() {
     local name="$1" home="$2" problems=""
     [ -e "$home/.config/solador-agent.env" ] && problems="$problems env-file"
@@ -2307,6 +2306,8 @@ test_install_arguments() {
     run_install "$home" --help
     assert_eq "install.sh --help exits 0" "0" "$?"
     assert_output_has "--help prints the usage" "$(cat "$INSTALL_OUT")" "Usage:"
+    assert_output_has "--help prints the canonical --uninstall exit table" "$(cat "$INSTALL_OUT")" "EXIT STATUS of --uninstall"
+    assert_output_has "--help prints the whole exit table, to its last line" "$(cat "$INSTALL_OUT")" "reports when it meets this run's lock"
     assert_untouched "--help changes nothing" "$home"
     INSTALL_PATH=""
 }
@@ -6392,7 +6393,6 @@ test_uninstall_linux() {
     assert_eq "install.sh --uninstall succeeds (Linux)" "0" "$INSTALL_STATUS"
     # Exact-line (grep -x), not a substring match: stop and disable are now
     # separate calls, each against the unit's FULL name — never a bare one
-    # (#454 round-4 review's own follow-up).
     if grep -qxF -- "--user stop solador-agent.service" "$STUB_SYSTEMCTL_ARGV"; then
         pass "the metrics service is stopped"
     else
@@ -6528,8 +6528,7 @@ test_uninstall_linux() {
     fi
 
     # ---- a reachable manager that still refuses to DISABLE the service: exit 4, files still removed ----
-    # stop and disable are two separate calls now (#454 round-4 review's own
-    # follow-up); STUB_SYSTEMCTL_STOP_EXIT is unset here, so `stop` succeeds
+    # stop and disable are two separate calls; STUB_SYSTEMCTL_STOP_EXIT is unset here, so `stop` succeeds
     # and only the `disable` call (gated on the unit file, which this fresh
     # fixture still has) is made to fail.
     reset_argv_logs
@@ -6893,13 +6892,9 @@ test_uninstall_linux() {
     esac
 
     # ---- neither flock(1) nor perl: refuses (busy) BEFORE anything changes ----
-    # ---- (#439 follow-up review) — there is no exit 5 any more: the        ----
-    # ---- previous revision re-checked the lock a second time, right before ----
-    # ---- removing the binary, for exactly this tier (no flock(1) on PATH), ----
-    # ---- and a transaction starting in that window used to exit 5. Now     ----
-    # ---- this tier cannot check the lock AT ALL, so it fails toward busy   ----
+    # ---- This tier cannot check the lock AT ALL, so it fails toward busy   ----
     # ---- up front — before the service-manager calls even run — rather     ----
-    # ---- than reaching that window in the first place.                     ----
+    # ---- than reaching a window where a transaction could start unseen.    ----
     reset_argv_logs
     INSTALL_STDIN="neithertool-tok-MUST-NOT-BE-PRINTED
 " run_install "$home" --enable-timer
@@ -6926,7 +6921,7 @@ test_uninstall_linux() {
     assert_eq "cleanup: a follow-up uninstall finishes (Linux)" "0" "$INSTALL_STATUS"
 
     # ---- the continuous hold, proven with a REAL flock(), starting from NO ----
-    # ---- pre-existing lock file (#439 follow-up review) — exec 9>>"$lock"  ----
+    # ---- pre-existing lock file — exec 9>>"$lock"                          ----
     # ---- must CREATE the file, matching agent/src/update.rs's own          ----
     # ---- create(true).truncate(false), and hold it from before the FIRST   ----
     # ---- service-manager call. Proven in both tiers: TOOLBIN_FAKEFLOCK is  ----
@@ -7193,9 +7188,8 @@ test_uninstall_macos() {
         || pass "macOS: the plist naming a foreign binary is still removed"
 
     # ---- neither flock(1) nor perl: refuses (busy) BEFORE anything changes ----
-    # ---- (#439 follow-up review) — see the Linux test's own comment; the   ----
-    # ---- same code runs before the OS-specific stop calls on both          ----
-    # ---- platforms, so there is no exit 5 here either.                     ----
+    # ---- See the Linux test's own comment; the same code runs before the  ----
+    # ---- OS-specific stop calls on both platforms.                         ----
     reset_argv_logs
     INSTALL_STDIN="mac-neithertool-tok-MUST-NOT-BE-PRINTED
 " run_install "$home" --enable-timer
@@ -7222,7 +7216,7 @@ test_uninstall_macos() {
     assert_eq "cleanup: a follow-up uninstall finishes (macOS)" "0" "$INSTALL_STATUS"
 
     # ---- the continuous hold, proven with a REAL flock(), starting from NO ----
-    # ---- pre-existing lock file (#439 follow-up review) — see the Linux    ----
+    # ---- pre-existing lock file — see the Linux                            ----
     # ---- test's own comment. Proven in both tiers.                         ----
     if [ "$HAVE_FAKEFLOCK" != true ]; then
         skip "macOS: install.sh's continuous flock hold blocks a real competing flock() (flock(1) tier)" "no perl on PATH to back the synthetic flock(1)"
@@ -7324,15 +7318,14 @@ STUB
     assert_output_has "the unsupported-OS refusal names the two it supports" "$(cat "$INSTALL_OUT")" "Linux (systemd) and macOS (launchd)"
     assert_untouched "an unsupported-OS uninstall changes nothing" "$home"
 
-    # ---- #454 round-4 review: a genuinely clean host (no ~/.local/bin at ----
+    # ---- A genuinely clean host (no ~/.local/bin at ----
     # ---- all — nothing solador-related, or anything else, was ever      ----
     # ---- installed there) must create neither <bin>.update.lock nor the ----
-    # ---- directory itself. mkdir -p and exec 9>>"$lock_file" used to run ----
-    # ---- unconditionally, before the lock-tool check and before the OS   ----
-    # ---- check further down could refuse, so EVERY refusal on a host     ----
-    # ---- like this — including the unsupported-OS one just above —      ----
-    # ---- left exactly that behind despite "Nothing has been changed".    ----
-    # ---- Fixed by skipping the whole lock section outright when          ----
+    # ---- directory itself. Running mkdir -p and exec 9>>"$lock_file"     ----
+    # ---- unconditionally would leave exactly that behind on EVERY        ----
+    # ---- refusal on a host like this — including the unsupported-OS one  ----
+    # ---- just above — despite "Nothing has been changed". So the whole   ----
+    # ---- lock section is skipped outright when                           ----
     # ---- $DEST_BIN's own directory does not exist: nothing can possibly  ----
     # ---- be installed under a directory that is not there, so there is   ----
     # ---- nothing to lock and nothing to create just to check.            ----

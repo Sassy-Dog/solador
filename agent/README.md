@@ -1048,16 +1048,20 @@ lock file — creating it if missing, and never truncating one
 that exists, the same `create(true).truncate(false)` `agent/src/update.rs`'s
 own `TransactionLock` opens it with — and takes a non-blocking exclusive
 flock on it, `flock(1)` where it is on `PATH`, else the stock `perl`'s Fcntl
-flock on that same already-open file descriptor, and **holds it for the
-whole run, on both platforms**: uninstalling mid-swap would race that
+flock on that same already-open file descriptor, and **holds it from before
+the first service-manager call until the binary and the lock file itself are
+removed**, on both platforms: uninstalling mid-swap would race that
 transaction's own binary rename, so a transaction starting in the window
 this spends stopping the service and removing its unit/plist meets that hold
 as busy on its own terms (exit 75, its own code) rather than racing anything
-here. Where *neither* tool is on `PATH` there is no way left to ask the
+here. The hold is released before the update stamp and, with `--purge`, the
+env-file, legacy-env and TLS removals. The lock file is unlinked while
+still held — the hazard `agent/src/update.rs` documents for its own lock.
+Nothing runs between the unlink and the release, and on a clean run the unit/plist and the binary are already
+gone, so a transaction starting afterwards has no install to resolve and
+nothing to swap. Where *neither* tool is on `PATH` there is no way left to ask the
 kernel whether a transaction is running, and this refuses — busy — before
-anything changes, rather than guessing free (#439's follow-up review: this
-is what makes the earlier "wherever `flock(1)` exists" caveat, and the exit
-5 it produced, go away — see **Exit status** below). Once held, a note
+anything changes, rather than guessing free. Once held, a note
 (`pid=<pid> since=<epoch>`, the same shape `agent/src/update.rs` writes) is
 left in the file so a racing `update`/`rollback`'s own busy message names
 *this* uninstall rather than a stale previous holder.
@@ -1065,16 +1069,15 @@ left in the file so a racing `update`/`rollback`'s own busy message names
 Whether THIS run created the lock file is decided atomically — a `set -C`
 (noclobber) write, before the file is ever opened for the flock itself — not
 by a separate existence check that a second process racing the same instant
-could invalidate. A later review found the previous revision could still
-delete a file that *pre-existed* on a "lock is busy" refusal, which is
-exactly how a second process can end up holding a lock on a *different*
-inode than the one it believes it shares: `flock()` locks the open file
-description, not the path, so unlinking a file another process has locked
-and letting a third opener recreate the same name hands that third opener a
-lock nobody is actually contending over (`agent/src/update.rs` documents the
-same hazard for its own transaction lock). The lock file is now **never**
-deleted on a busy result, whoever created it. Of the two narrower non-busy
-failures, only the open itself failing deletes a lock this run created; a
+could invalidate. Deleting a file that *pre-existed* on a "lock is busy"
+refusal would be exactly how a second process can end up holding a lock on
+a *different* inode than the one it believes it shares: `flock()` locks the
+open file description, not the path, so unlinking a file another process has
+locked and letting a third opener recreate the same name hands that third
+opener a lock nobody is actually contending over (`agent/src/update.rs`
+documents the same hazard for its own transaction lock). The lock file is
+therefore **never** deleted on a busy result, whoever created it. Of the two
+narrower non-busy failures, only the open itself failing deletes a lock this run created; a
 `perl` reopen failure never deletes one, this run's or not — it proves
 nothing about whether the lock is free.
 
@@ -1084,7 +1087,7 @@ the four units it knows about — the metrics service, the update timer, the
 update oneshot and the pre-rename unit. `disable` runs only where the unit's
 own file still exists on disk; `stop` runs where the file exists **or** the
 user manager still holds the unit ([#463](https://github.com/Sassy-Dog/solador/issues/463)).
-A failure of either call means exit **4** (below), and both calls are made
+A failure of either call means exit **4** (see the exit-status pointer below), and both calls are made
 against the unit's FULL name (e.g. `solador-agent.service`, never a bare
 one): `systemctl list-units` does not append `.service`, and a bare
 `solador-agent-update` resolves to the oneshot `.service`, never the
@@ -1139,25 +1142,9 @@ carries the bearer token; `--purge` also removes the pre-rename
 `devcanopy-agent.env`, since install copied its token out of that file and
 never deleted it.
 
-**Exit status**: 0 uninstalled (or already clean); 1 refused before anything
-changed (root, an unsupported platform, an unreachable manager, the update
-lock held or uncheckable, a hostile `SOLADOR_AGENT_LAUNCHD_LABEL`); 2 usage
-(`--purge` without `--uninstall`, or the combinations above); 4 every file
-was still removed, but a *reachable* manager refused a specific `stop` or
-`disable` request anyway — the summary names *which*, since the two are not
-the same claim: a failed `stop` means the process itself may still be
-running and says so; a failed `disable` with a successful `stop` means only
-its future auto-start (at next login/boot) is unconfirmed, and does not
-claim the process is still running; 6 at least one file
-that should have been removable — the service and other files may already be
-gone — could not actually be deleted (a read-only parent directory, an
-immutable file, or similar); fix that and re-run — 6 wins over 4 when both
-apply. There is no exit 5: an earlier revision held the lock continuously
-only when it already existed *and* `flock(1)` was on `PATH`, so a fresh host
-(no lock file yet) or stock macOS (no `flock(1)`) fell back to a one-shot
-check with a real window between it and the removals, and a transaction
-starting in that window exited 5. #439's follow-up review closed the window
-instead of narrowing it further, so that exit code has nothing left to name.
+**Exit status**: `install.sh`'s header is the one table of `--uninstall`'s
+exit codes (0, 1, 2, 4 and 6, and what each claims); `./deploy/install.sh
+--help` prints it.
 
 ## Moving the agent to another user
 
@@ -1275,9 +1262,8 @@ not come up.** In order, each step refusing before the next changes anything:
    racing a scheduled one, say — reports *busy* (exit 75) and changes
    nothing; the lock dies with the process, so a crashed run cannot wedge
    the next. (The lock covers these two commands, the scheduled job, which
-   is this command, and — since #439's follow-up review — `install.sh
-   --uninstall`, which now holds the same lock for its own run rather than
-   merely checking it once. A normal, no-flag `install.sh` and
+   is this command, and `install.sh --uninstall`, which holds the same
+   lock for its own run (released before its last removals). A normal, no-flag `install.sh` and
    `redeploy.sh` still do not take it, so do not run those during an
    update.)
    Then the service manager must answer — `systemctl --user` or the
