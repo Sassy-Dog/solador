@@ -24,7 +24,7 @@ use std::time::Duration;
 use fault::Fault;
 
 pub use pin::fingerprint;
-pub use plain::{all_plain_http_permitted, plain_http_permitted};
+pub use plain::{all_plain_http_permitted, plain_http_permitted, Refused};
 
 /// The operator-facing name of what failed, and the only thing
 /// [`Fault::message`] interpolates.
@@ -58,8 +58,12 @@ pub enum AgentError {
     /// loopback nor Tailscale (#449), so **nothing was sent**: the bearer
     /// token is never put on plain HTTP off those two. Not a network failure;
     /// the fix is to pair the host.
+    ///
+    /// Carries what was refused (#461) — the looked-up name and the refused
+    /// addresses — for the shell's one-line log. The card's words do not use
+    /// it, and it never holds the token.
     #[error("plain HTTP refused: the address is neither loopback nor Tailscale")]
-    PlainHttpRefused,
+    PlainHttpRefused(Refused),
 }
 
 impl AgentError {
@@ -104,7 +108,7 @@ impl AgentError {
             // Its own sentence too (#449): the machine may be perfectly
             // reachable, and nothing was sent. "Check the host is up" would be
             // the wrong fix; pairing it is the right one.
-            AgentError::PlainHttpRefused => Fault::PlainHttpRefused.message(AGENT),
+            AgentError::PlainHttpRefused(_) => Fault::PlainHttpRefused.message(AGENT),
         }
     }
 }
@@ -250,33 +254,34 @@ fn tls_failure(error: &reqwest::Error) -> Option<&rustls::Error> {
     None
 }
 
-/// Did the plain-HTTP guard's resolver refuse this send (#449)? Looks through
-/// `io::Error` wrappers the same way [`tls_failure`] does, because the
-/// resolver's error reaches the caller boxed inside the connector's.
-fn refused_by_guard(error: &reqwest::Error) -> bool {
-    fn inside(err: &(dyn std::error::Error + 'static)) -> bool {
-        if err.downcast_ref::<plain::Refused>().is_some() {
-            return true;
+/// The guard's refusal (#449) and its evidence (#461), if the plain-HTTP
+/// guard's resolver refused this send. Looks through `io::Error` wrappers the
+/// same way [`tls_failure`] does, because the resolver's error reaches the
+/// caller boxed inside the connector's.
+fn refused_by_guard(error: &reqwest::Error) -> Option<&plain::Refused> {
+    fn inside<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a plain::Refused> {
+        if let Some(refused) = err.downcast_ref::<plain::Refused>() {
+            return Some(refused);
         }
         err.downcast_ref::<std::io::Error>()
             .and_then(std::io::Error::get_ref)
-            .is_some_and(|wrapped| inside(wrapped))
+            .and_then(|wrapped| inside(wrapped))
     }
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(err) = current {
-        if inside(err) {
-            return true;
+        if let Some(refused) = inside(err) {
+            return Some(refused);
         }
         current = err.source();
     }
-    false
+    None
 }
 
 /// How a failed send is classified: a certificate the pin refused, a peer that
 /// is not speaking TLS, or — for everything else — unreachable.
 fn send_failed(error: &reqwest::Error) -> AgentError {
-    if refused_by_guard(error) {
-        return AgentError::PlainHttpRefused;
+    if let Some(refused) = refused_by_guard(error) {
+        return AgentError::PlainHttpRefused(refused.clone());
     }
     match tls_failure(error) {
         Some(rustls::Error::InvalidCertificate(_)) => AgentError::CertificateChanged,
@@ -475,7 +480,9 @@ impl AgentClient {
         if policy(&[ip]) {
             Ok(())
         } else {
-            Err(AgentError::PlainHttpRefused)
+            Err(AgentError::PlainHttpRefused(plain::Refused::for_literal(
+                ip,
+            )))
         }
     }
 }

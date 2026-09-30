@@ -92,9 +92,59 @@ pub fn all_plain_http_permitted(addrs: &[IpAddr]) -> bool {
 }
 
 /// The marker a refused resolution carries through `reqwest`'s error chain, so
-/// [`crate::send_failed`] can tell "the guard said no" from "the network did".
-#[derive(Debug)]
-pub(crate) struct Refused;
+/// [`crate::send_failed`] can tell "the guard said no" from "the network did" —
+/// and the evidence of what it refused (#461), which the shell logs once on the
+/// transition into the refused state. Holds an address list and, for a DNS
+/// host, the name that was looked up; **never** the bearer token, which the
+/// guard does not see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    name: Option<String>,
+    addrs: Vec<IpAddr>,
+}
+
+impl Refused {
+    /// Builds the evidence directly. The guard makes its own; this is for a
+    /// caller that has to name a refusal without dialling one (a test).
+    #[must_use]
+    pub fn new(name: Option<String>, addrs: Vec<IpAddr>) -> Self {
+        Self { name, addrs }
+    }
+
+    /// A name whose resolution the policy refused: `addrs` is only the
+    /// addresses that are **not** permitted on their own, so a mixed answer
+    /// lists just the ones that tripped the guard.
+    pub(crate) fn for_name(name: &str, resolved: &[IpAddr], policy: Policy) -> Self {
+        Self {
+            name: Some(name.to_owned()),
+            addrs: resolved
+                .iter()
+                .copied()
+                .filter(|ip| !policy(&[*ip]))
+                .collect(),
+        }
+    }
+
+    /// An IP-literal host the policy refused.
+    pub(crate) fn for_literal(ip: IpAddr) -> Self {
+        Self {
+            name: None,
+            addrs: vec![ip],
+        }
+    }
+
+    /// The looked-up host name; `None` for an IP-literal host.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// The refused addresses. Empty when a name resolved to nothing.
+    #[must_use]
+    pub fn addrs(&self) -> &[IpAddr] {
+        &self.addrs
+    }
+}
 
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -146,7 +196,8 @@ impl Resolve for Vetted {
         Box::pin(async move {
             let ips = lookup(name.as_str().to_owned()).await?;
             if !policy(&ips) {
-                return Err(Box::new(Refused) as Box<dyn std::error::Error + Send + Sync>);
+                let refused = Refused::for_name(name.as_str(), &ips, policy);
+                return Err(Box::new(refused) as Box<dyn std::error::Error + Send + Sync>);
             }
             let addrs: Addrs = Box::new(
                 ips.into_iter()
