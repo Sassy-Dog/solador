@@ -62,9 +62,10 @@
 # when the unit file is already gone, and splitting them means a stop
 # failure and a disable failure are never reported as the same claim). On
 # macOS, gated on `launchctl print` rather than a file check, it stops the
-# service with `launchctl bootout`; nothing is disabled — launchd has no
-# separate enablement step to clear. Either way this removes both
-# unit/plist pairs, the binary and its
+# service with `launchctl bootout`; nothing is disabled — removing the plist
+# is what disables it, and the only override install writes is a
+# `launchctl enable`, which is inert once the plist is gone. Either way this
+# removes both unit/plist pairs, the binary and its
 # .prev/.new/.update.lock/.rollback-displaced siblings, the macOS launcher,
 # the Linux guard, and the update stamp. The env file (the token) is KEPT and
 # named in the output unless --purge is also given, which also removes the
@@ -373,7 +374,7 @@ LINUX_UNIT_HINTS=""
 uninstall_remove() {
     local path="$1" desc="$2"
     if [ -e "$path" ] || [ -L "$path" ]; then
-        if rm -f "$path" && ! { [ -e "$path" ] || [ -L "$path" ]; }; then
+        if rm -f "$path" 9>&- && ! { [ -e "$path" ] || [ -L "$path" ]; }; then
             UNINSTALL_REMOVED=true
             echo "    removed: $desc ($path)"
         else
@@ -397,8 +398,8 @@ unowned_service_binary() {
     case "$OS" in
         Linux)
             [ -f "$UNIT_DST" ] || return 0
-            path="$(awk '/^ExecStart=/ { sub(/^ExecStart=/, ""); print; exit }' "$UNIT_DST" \
-                | sed -e 's/^"//' -e 's/"$//')"
+            path="$(awk '/^ExecStart=/ { sub(/^ExecStart=/, ""); print; exit }' "$UNIT_DST" 9>&- \
+                | sed -e 's/^"//' -e 's/"$//' 9>&-)"
             ;;
         Darwin)
             [ -f "$PLIST_DST" ] || return 0
@@ -425,8 +426,8 @@ unowned_service_binary() {
                     next
                 }
                 want && /<\/array>/ { exit }
-            ' "$PLIST_DST")"
-            path="$(printf '%s' "$path" | sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e "s/&apos;/'/g" -e 's/&quot;/"/g' -e 's/&amp;/\&/g')"
+            ' "$PLIST_DST" 9>&-)"
+            path="$(printf '%s' "$path" | sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e "s/&apos;/'/g" -e 's/&quot;/"/g' -e 's/&amp;/\&/g' 9>&-)"
             ;;
     esac
     if [ -n "$path" ] && [ "$path" != "$DEST_BIN" ]; then
@@ -491,7 +492,7 @@ left_behind_hint() {
 # of absence, so the caller says so instead of reporting "Nothing installed".
 linux_unit_present() {
     local unit="$1" props line load="" active=""
-    if ! props="$(systemctl --user show -p LoadState -p ActiveState "$unit" 2>/dev/null)"; then
+    if ! props="$(systemctl --user show -p LoadState -p ActiveState "$unit" 9>&- 2>/dev/null)"; then
         return 2
     fi
     while IFS= read -r line; do
@@ -573,7 +574,7 @@ stop_and_disable_linux_unit() {
         esac
     fi
     if [ "$has_file" = true ] || [ "$held" = true ]; then
-        if systemctl --user stop "$unit" 2>/dev/null; then
+        if systemctl --user stop "$unit" 9>&- 2>/dev/null; then
             echo "    stopped $label"
         else
             echo "    (systemctl --user stop $unit reported an error;" >&2
@@ -588,7 +589,7 @@ stop_and_disable_linux_unit() {
         UNINSTALL_REMOVED=true
     fi
     if [ "$has_file" = true ]; then
-        if systemctl --user disable "$unit" 2>/dev/null; then
+        if systemctl --user disable "$unit" 9>&- 2>/dev/null; then
             echo "    disabled $label"
         else
             echo "    (systemctl --user disable $unit reported an error;" >&2
@@ -820,7 +821,7 @@ run_uninstall() {
 
         exec 9>>"$lock_file" || {
             echo "ERROR: could not open $lock_file to take the update lock." >&2
-            [ "$created_lock" = true ] && rm -f "$lock_file" 2>/dev/null || true
+            [ "$created_lock" = true ] && rm -f "$lock_file" 9>&- 2>/dev/null || true
             return 1
         }
         if [ "$lock_tool" = flock ]; then
@@ -861,7 +862,7 @@ run_uninstall() {
                     # $lock_file once lock_pre_existed is true.
                     if [ "$created_lock" = true ]; then
                         echo "       Nothing else has been changed; an empty lock file may remain" >&2
-                        echo "       at $lock_file, and the next run removes it." >&2
+                        echo "       at $lock_file; a later run that gets past this check removes it." >&2
                     else
                         echo "       Nothing has been changed." >&2
                     fi
@@ -887,10 +888,10 @@ run_uninstall() {
         # nothing else can hold $lock_file while this process does. Best effort,
         # like update.rs's own note: a lock whose note could not be written is
         # still a lock.
-        printf 'pid=%s since=%s\n' "$$" "$(date +%s)" > "$lock_file" 2>/dev/null || true
+        printf 'pid=%s since=%s\n' "$$" "$(date +%s 9>&-)" > "$lock_file" 2>/dev/null || true
     fi
 
-    echo "==> Uninstalling $BIN_NAME for $(id -un) ($OS)"
+    echo "==> Uninstalling $BIN_NAME for $(id -un 9>&-) ($OS)"
 
     # Set when a service-manager call the reachability check above should
     # have let succeed reports an error anyway — a narrower, rarer case than
@@ -944,13 +945,13 @@ run_uninstall() {
             # makes no MUTATING manager call (its read-only `show` state
             # reads above change nothing).
             if [ "$UNINSTALL_REMOVED" = true ]; then
-                systemctl --user daemon-reload 2>/dev/null || true
+                systemctl --user daemon-reload 9>&- 2>/dev/null || true
                 # Clears the "failed" state a disable/stop that reported an
                 # error above can leave behind on any of these units —
                 # reset-failed takes unit names, never paths, and tolerates
                 # one that was never loaded or never existed.
                 systemctl --user reset-failed "$BIN_NAME.service" "$UPDATE_NAME.service" \
-                    "$UPDATE_NAME.timer" "$LEGACY_BIN_NAME.service" 2>/dev/null || true
+                    "$UPDATE_NAME.timer" "$LEGACY_BIN_NAME.service" 9>&- 2>/dev/null || true
             fi
             uninstall_remove "$GUARD_DST" "update guard"
             if [ -n "$foreign_bin" ]; then
@@ -959,10 +960,10 @@ run_uninstall() {
             ;;
         Darwin)
             local metrics_svc update_svc
-            metrics_svc="gui/$(id -u)/$LAUNCHD_LABEL"
-            update_svc="gui/$(id -u)/$UPDATE_LABEL"
-            if launchctl print "$metrics_svc" >/dev/null 2>&1; then
-                if launchctl bootout "$metrics_svc" 2>/dev/null; then
+            metrics_svc="gui/$(id -u 9>&-)/$LAUNCHD_LABEL"
+            update_svc="gui/$(id -u 9>&-)/$UPDATE_LABEL"
+            if launchctl print "$metrics_svc" 9>&- >/dev/null 2>&1; then
+                if launchctl bootout "$metrics_svc" 9>&- 2>/dev/null; then
                     echo "    stopped $metrics_svc"
                 else
                     echo "    (launchctl bootout $metrics_svc reported an error;" >&2
@@ -971,8 +972,8 @@ run_uninstall() {
                 fi
                 UNINSTALL_REMOVED=true
             fi
-            if launchctl print "$update_svc" >/dev/null 2>&1; then
-                if launchctl bootout "$update_svc" 2>/dev/null; then
+            if launchctl print "$update_svc" 9>&- >/dev/null 2>&1; then
+                if launchctl bootout "$update_svc" 9>&- 2>/dev/null; then
                     echo "    stopped $update_svc"
                 else
                     echo "    (launchctl bootout $update_svc reported an error;" >&2
@@ -1013,7 +1014,7 @@ run_uninstall() {
     if [ "$lock_pre_existed" = true ] || [ "$UNINSTALL_REMOVED" = true ]; then
         uninstall_remove "$lock_file" "update transaction lock"
     else
-        rm -f "$lock_file" 2>/dev/null || true
+        rm -f "$lock_file" 9>&- 2>/dev/null || true
     fi
     # Release the hold taken above. Harmless if $lock_file's own removal just
     # failed (uninstall_remove's own FAILED path, above): the fd, and the
@@ -1063,7 +1064,7 @@ run_uninstall() {
         # its own code rather than folding into 4's: 4 promises every file
         # WAS removed and only a manager call is unconfirmed; that promise
         # is false here.
-        echo "==> $BIN_NAME's uninstall for $(id -un) did NOT finish: see the FAILED line(s)" >&2
+        echo "==> $BIN_NAME's uninstall for $(id -un 9>&-) did NOT finish: see the FAILED line(s)" >&2
         echo "    above. Whatever else is listed as \"removed\" or \"stopped\" above this is" >&2
         echo "    genuinely gone; fix the reported problem (a read-only parent directory, an" >&2
         echo "    immutable file, or similar) and re-run to finish." >&2
@@ -1083,7 +1084,7 @@ run_uninstall() {
         # successful `stop` means only its future auto-start (at next
         # login/boot) is unconfirmed, and saying "may still be running"
         # there would be false.
-        echo "==> $BIN_NAME's files were removed for $(id -un), but at least one" >&2
+        echo "==> $BIN_NAME's files were removed for $(id -un 9>&-), but at least one" >&2
         echo "    service-manager call above could not confirm a stop or disable request" >&2
         echo "    actually succeeded." >&2
         if [ "$MANAGER_STOP_FAILED" = true ]; then
@@ -1095,14 +1096,14 @@ run_uninstall() {
         if [ "$OS" = "Linux" ]; then
             linux_uninstall_hint
         else
-            service_inspect_hint "$LAUNCHD_LABEL" >&2
+            service_inspect_hint "$LAUNCHD_LABEL" 9>&- >&2
         fi
         return 4
     fi
     if [ "$UNINSTALL_REMOVED" = true ]; then
-        echo "==> Done: $BIN_NAME uninstalled for $(id -un)."
+        echo "==> Done: $BIN_NAME uninstalled for $(id -un 9>&-)."
     else
-        echo "==> Nothing installed for $(id -un); nothing to do."
+        echo "==> Nothing installed for $(id -un 9>&-); nothing to do."
     fi
     return 0
 }
