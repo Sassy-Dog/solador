@@ -47,8 +47,9 @@ fi
 # because neither of them was pointed at those files.
 #
 # scripts/ is the same shape one level up. `build-agent.sh` builds and signs the
-# four published agent binaries and runs ONLY on a `v*` tag, so an ungated break
-# there surfaces mid-release — the exact failure mode above, on the path that has
+# four published agent binaries and signs/publishes ONLY on a `v*` tag (one
+# target is built on every PR, #457), so an ungated break there surfaces
+# mid-release — the exact failure mode above, on the path that has
 # no second chance. The whole directory is covered rather than that one file,
 # because the next release script would otherwise arrive equally unguarded.
 #

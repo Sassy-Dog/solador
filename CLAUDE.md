@@ -870,7 +870,8 @@ as the wire-contract marker and read by nothing at runtime.
 **A shallow clone refuses rather than counts.** CalVer's patch is commits this
 month, and a `fetch-depth: 1` checkout answers that question with `1` instead of
 failing — CI's bundle job already pins `fetch-depth: 0` for exactly this reason,
-and the other jobs are still shallow. So the build script checks
+and the other jobs are still shallow (`agent-tests` unshallows inside the one
+step that needs a CalVer, its musl build). So the build script checks
 `--is-shallow-repository` and emits *no* version there; About renders `Version —`
 and the Sentry release is omitted entirely. Sentry groups and regresses by
 release, so a placeholder is worse than nothing: every un-nameable build would
@@ -1323,9 +1324,14 @@ tests build (#417); the crate still has zero dependencies.
   into a real launchd bootstrap under a throwaway label (macOS only) and is
   deliberately not run in CI.
 - **Those two shell gates now cover `scripts/*.sh` and `dev`/`prd` as well**
-  (#390). `build-agent.sh` runs ONLY on a `v*` tag, so an ungated break there
-  surfaces mid-release — the #269 shape again, on the path with no second
-  chance. The whole directory is covered rather than that one file so the next
+  (#390). `build-agent.sh` signs and publishes only on a `v*` tag, so an ungated
+  break there surfaces mid-release — the #269 shape again, on the path with no
+  second chance. Its build half runs on every PR for one target (#457):
+  `agent-tests` ("Rust agent") runs `./dev agent --targets
+  x86_64-unknown-linux-musl`, which asserts the ELF is static and reads
+  `--version` back out of it. The aarch64 and darwin builds (including the
+  macOS floor check), release.yml's per-target `--version` run and the signing
+  still run only at release. The whole directory is covered rather than that one file so the next
   release script is not equally unguarded. Two comments in `scripts/lint.sh`
   had to be reworded: a comment opening with the linter's own name is parsed as
   a directive, and the file refuses to lint.

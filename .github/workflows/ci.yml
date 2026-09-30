@@ -70,8 +70,9 @@ jobs:
       # future image stops doing so this step goes red, which is the correct
       # outcome — a lint gate that silently skips itself is what got us here.
       # Widened past agent/deploy/ in #390. `scripts/build-agent.sh` builds and
-      # signs the four published agent binaries and runs ONLY on a `v*` tag, so
-      # an ungated break there is discovered mid-release — the same shape as
+      # signs the four published agent binaries and signs/publishes ONLY on a
+      # `v*` tag (one target is built below on every PR, #457), so an ungated
+      # break there is discovered mid-release — the same shape as
       # #268, on the path with no second chance. The whole of scripts/ is
       # covered rather than that one file, so the next release script is not
       # equally unguarded, and `dev`/`prd` because Git Bash executes them on the
@@ -109,13 +110,32 @@ jobs:
           SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN: "1"
         run: bash agent/deploy/lib_test.sh
 
+      # One static musl build on every PR (#457), so a link break shows up here
+      # rather than partway through a `v*` release (the #269 shape). It goes
+      # through `./dev agent` -> scripts/build-agent.sh, which adds the rustup
+      # target, installs the pinned cargo-zigbuild into its own venv, and
+      # asserts the ELF is statically linked with no PT_INTERP segment. One
+      # target, not four: the aarch64 leg uses the same zig path and the darwin
+      # targets need a macOS runner. No secrets, no environment, nothing signed.
+      #
+      # Unshallowed first, and only here: the build derives the CalVer from
+      # this month's commit count, and a depth-1 checkout answers that with 1
+      # (see the `fetch-depth: 0` note in the bundle job). It sits after the
+      # Rust and deploy steps so they keep seeing the checkout they always did.
+      - name: Static musl build (x86_64)
+        run: |
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --quiet --unshallow --filter=blob:none
+          fi
+          ./dev agent --targets x86_64-unknown-linux-musl
+
       # The versioning scripts (#405): the CalVer derivation, the §4 mint and
       # the output contract publish.sh branches on, the build number, and the
       # release workflows' tag assertion (#404) — all against temporary bare
       # origins. Git only — it mints into the scratch origin with the real
-      # `get-version-info.sh --tag --push` and pushes nowhere else. Like
-      # build-agent.sh, the mint otherwise runs ONLY on a release, where a
-      # break surfaces mid-release.
+      # `get-version-info.sh --tag --push` and pushes nowhere else. The
+      # mint otherwise runs ONLY on a release, where a break surfaces
+      # mid-release.
       - name: Versioning suite (scripts/versioning-test.sh)
         run: bash scripts/versioning-test.sh
 

@@ -3281,6 +3281,7 @@ test_install_linux_flow() {
     assert_output_has "install.sh reports the token's last four characters only" "$out" "...7a1e"
     assert_file_has "the unit's ExecStart is the actual installed path" "$unit" "ExecStart=$bin"
     assert_file_has "the unit reads the env file from %h" "$unit" 'EnvironmentFile=%h/.config/solador-agent.env'
+    assert_file_has "the unit tells the agent where its TLS files live (#457)" "$unit" 'Environment=SOLADOR_AGENT_CONFIG_DIR=%h/.config'
     assert_file_has "the unit is a template no longer" "$unit" "ExecStart=/"
     if grep -q '@SOLADOR_AGENT_BIN@' "$unit"; then
         fail "the placeholder was rendered" "@SOLADOR_AGENT_BIN@ survived into the installed unit"

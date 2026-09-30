@@ -290,7 +290,20 @@ async fn main() {
 /// `update.rs`'s `health_pin`, which both derive it from the actual env
 /// file's path, keep looking in the right place.
 fn tls_config_dir() -> Result<std::path::PathBuf, String> {
-    if let Some(dir) = std::env::var_os("SOLADOR_AGENT_CONFIG_DIR") {
+    resolve_tls_config_dir(
+        std::env::var_os("SOLADOR_AGENT_CONFIG_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// The rules of [`tls_config_dir`] with its two environment values passed in,
+/// so a test never has to touch the process environment (the same seam
+/// `resolve_bind_host` has).
+fn resolve_tls_config_dir(
+    config_dir: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = config_dir {
         let dir = std::path::PathBuf::from(dir);
         return if dir.is_absolute() {
             Ok(dir)
@@ -302,8 +315,7 @@ fn tls_config_dir() -> Result<std::path::PathBuf, String> {
             ))
         };
     }
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
+    home.map(std::path::PathBuf::from)
         .filter(|h| h.is_absolute())
         .map(|h| h.join(".config"))
         .ok_or_else(|| {
@@ -840,6 +852,44 @@ mod tests {
         // The TLS-on message stays the calmer one.
         assert!(!on.contains("CLEARTEXT"), "{on}");
         assert!(!on.contains("PLAIN HTTP"), "{on}");
+    }
+
+    fn os(s: &str) -> Option<std::ffi::OsString> {
+        Some(std::ffi::OsString::from(s))
+    }
+
+    #[test]
+    fn tls_config_dir_uses_home_dot_config_when_the_variable_is_unset() {
+        let got = resolve_tls_config_dir(None, os("/home/ops")).unwrap();
+        assert_eq!(got, std::path::Path::new("/home/ops").join(".config"));
+    }
+
+    #[test]
+    fn tls_config_dir_prefers_the_variable_over_home() {
+        let got = resolve_tls_config_dir(os("/srv/agent"), os("/home/ops")).unwrap();
+        assert_eq!(got, std::path::Path::new("/srv/agent"));
+    }
+
+    #[test]
+    fn tls_config_dir_refuses_a_relative_variable_even_with_a_good_home() {
+        let err = resolve_tls_config_dir(os("relative/dir"), os("/home/ops")).unwrap_err();
+        assert!(
+            err.starts_with("SOLADOR_AGENT_CONFIG_DIR=relative/dir is not an absolute path;"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn tls_config_dir_refuses_a_missing_or_relative_home() {
+        for home in [None, os("relative/home"), os("")] {
+            let err = resolve_tls_config_dir(None, home).unwrap_err();
+            assert!(
+                err.starts_with(
+                    "neither SOLADOR_AGENT_CONFIG_DIR nor HOME (as an absolute path) is set;"
+                ),
+                "{err}"
+            );
+        }
     }
 
     #[test]
