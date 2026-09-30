@@ -388,16 +388,28 @@ build_release_binary() {
 # "1" means https://, anything else (including absent) means http:// — never
 # inferred from the port. agent/src/update.rs's `probe_target` carries the same
 # rows — this URL, and for TLS `verify_health`'s `connect_line` — and its table
-# test plus lib_test.sh's `verify_health` table (TLS=1 rows only) pin the two
-# to each other for those TLS forms. Known differences, tracked in a follow-up:
-# an IPv6 zone id (`update` refuses it under TLS, curl is handed it unchanged),
-# plain-HTTP rows (unpinned), and already-bracketed non-IPv6 binds
-# (`[100.64.0.9]`, `[host]`), and this function double-brackets `[fd7a::1]`.
+# test plus lib_test.sh's `verify_health` table (`TLS=0` and `TLS=1`, the same
+# rows) pin the two to each other for every bind form: "", 0.0.0.0, ::, [::],
+# IPv4, bare and bracketed IPv6, bracketed non-IPv6 (`[100.64.0.9]`, `[host]`)
+# and a name. A bracket pair is stripped first (`bind_bare`) and only an IPv6
+# literal is bracketed again, so `[fd7a::1]` is never double-bracketed and
+# `[100.64.0.9]` dials as `100.64.0.9` — brackets are not legal around a non-IPv6
+# host. The one deliberate difference is an IPv6 zone id: `update` refuses it
+# under TLS, while curl is handed it unchanged.
+bind_bare() {
+    local bind="${1:-}"
+    case "$bind" in
+        \[*\]) bind="${bind#\[}"; bind="${bind%\]}" ;;
+    esac
+    printf '%s\n' "$bind"
+}
+
 health_url() {
     local bind="${1:-}" port="${2:-7878}" tls="${3:-}" host scheme
+    bind="$(bind_bare "$bind")"
     case "$bind" in
         "" | 0.0.0.0) host="127.0.0.1" ;;
-        "::" | "[::]") host="[::1]" ;;
+        "::") host="[::1]" ;;
         *:*) host="[${bind}]" ;;
         *) host="$bind" ;;
     esac
@@ -566,13 +578,14 @@ verify_health() {
     # one pinned file (`cacert`); nothing is disabled.
     local connect_line="" probe_url="$url"
     if [ "$tls" = "1" ]; then
-        case "$bind" in
-            "" | 0.0.0.0 | "::" | "[::]") ;;
+        local bare_bind
+        bare_bind="$(bind_bare "$bind")"
+        case "$bare_bind" in
+            "" | 0.0.0.0 | "::") ;;
             *)
-                local dial_host="$bind"
-                case "$bind" in
-                    \[*) ;;
-                    *:*) dial_host="[${bind}]" ;;
+                local dial_host="$bare_bind"
+                case "$bare_bind" in
+                    *:*) dial_host="[${bare_bind}]" ;;
                 esac
                 probe_url="https://localhost:${port:-7878}/v1/health"
                 connect_line="connect-to = \"localhost:${port:-7878}:${dial_host}:${port:-7878}\""
