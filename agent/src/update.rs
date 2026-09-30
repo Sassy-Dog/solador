@@ -99,6 +99,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -1245,6 +1246,30 @@ impl Serving {
     pub fn health_url(&self) -> String {
         health_url(&self.bind, self.port, self.tls)
     }
+
+    /// Where the health probe's connection actually goes: the bind as a
+    /// concrete address, loopback for a wildcard. `None` when the bind is not
+    /// an IP literal at all. Over TLS the URL names `localhost` (see
+    /// [`health_url`]) and the client is told to connect here.
+    #[must_use]
+    pub fn dial_addr(&self) -> Option<SocketAddr> {
+        dial_addr(&self.bind, self.port)
+    }
+}
+
+/// The address `lib.sh`'s `verify_health` connects to: the bind when it is a
+/// concrete IP, loopback for a wildcard (`""`, `0.0.0.0`, `::`).
+fn dial_addr(bind: &str, port: u16) -> Option<SocketAddr> {
+    let bare = bind
+        .strip_prefix('[')
+        .and_then(|b| b.strip_suffix(']'))
+        .unwrap_or(bind);
+    let ip = match bare {
+        "" | "0.0.0.0" => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        "::" => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        other => other.parse::<IpAddr>().ok()?,
+    };
+    Some(SocketAddr::new(ip, port))
 }
 
 /// Parse an env file the way systemd's `EnvironmentFile=` and the launcher
@@ -1329,8 +1354,19 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
 
 /// `lib.sh`'s `health_url`, verbatim but for the scheme (#447): `https://`
 /// when `tls` is on, `http://` otherwise — never inferred from the port.
+///
+/// Over TLS, when the bind is an IP (or a wildcard), the URL names
+/// `localhost` — a name every certificate this agent generates carries — and
+/// [`health_client`] connects to [`dial_addr`] through `resolve` (#449): the
+/// same shape as `lib.sh`'s `connect-to`. The certificate's SAN list is fixed
+/// at generation and the bind can change afterwards, so verifying by the bind
+/// address would fail a healthy host; verifying the name `localhost` keeps
+/// hostname verification on.
 #[must_use]
 pub fn health_url(bind: &str, port: u16, tls: bool) -> String {
+    if tls && dial_addr(bind, port).is_some() {
+        return format!("https://localhost:{port}/v1/health");
+    }
     let host = match bind {
         "" | "0.0.0.0" => "127.0.0.1".to_string(),
         "::" | "[::]" => "[::1]".to_string(),
@@ -1665,22 +1701,18 @@ fn release_client(
 /// every update.
 ///
 /// `pin`, when `Some`, is the DER bytes of the agent's own
-/// `solador-agent.tls.crt` (#447):
-/// the client trusts **exactly that certificate** — not the system CA
-/// bundle, which a self-signed certificate could never chain to anyway —
-/// still through the standard chain verifier, never with verification
-/// disabled — **except the hostname**. `wait_for_health` dials the configured
-/// bind address, and a certificate's SAN list is fixed when it is generated
-/// (`tls::load_or_generate`) while the bind can change afterwards (#449: all
-/// interfaces to a tailnet address the day Tailscale comes up). Checking the
-/// name would then fail a healthy host and roll back every update. The
-/// certificate is the identity here — the client's ONLY trust root is this one
-/// file, so a peer without its private key cannot pass — which is also what
-/// `lib.sh`'s `verify_health` checks, by other means (`localhost` +
-/// `connect-to`).
+/// `solador-agent.tls.crt` (#447): the client trusts **exactly that
+/// certificate** — not the system CA bundle, which a self-signed certificate
+/// could never chain to anyway — through the standard chain **and hostname**
+/// verifier. Nothing is disabled. The URL names `localhost` (in every
+/// generated certificate's baseline SAN list), and `dial` is where the
+/// connection really goes (the bind, or loopback for a wildcard): `resolve`
+/// pins the name to it, as `lib.sh`'s `verify_health` does with `curl
+/// --connect-to` (#449).
 fn health_client(
     running_version: Option<&str>,
     pin: Option<&[u8]>,
+    dial: Option<SocketAddr>,
 ) -> Result<reqwest::Client, UpdateError> {
     let mut builder = reqwest::Client::builder()
         .user_agent(user_agent(running_version))
@@ -1695,8 +1727,10 @@ fn health_client(
         })?;
         builder = builder
             .add_root_certificate(cert)
-            .tls_built_in_root_certs(false)
-            .danger_accept_invalid_hostnames(true);
+            .tls_built_in_root_certs(false);
+        if let Some(addr) = dial {
+            builder = builder.resolve("localhost", addr);
+        }
     }
     builder.build().map_err(|e| UpdateError::Network {
         what: "http client".to_string(),
@@ -2021,7 +2055,11 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
     // nothing changed, never a failure discovered with the candidate live.
     let client = release_client(&ctx.release_base, ctx.running_version.as_deref())?;
     let pin = health_pin(&ctx.serving, &ctx.install)?;
-    let health = health_client(ctx.running_version.as_deref(), pin.as_deref())?;
+    let health = health_client(
+        ctx.running_version.as_deref(),
+        pin.as_deref(),
+        ctx.serving.dial_addr(),
+    )?;
 
     // 3. The concrete release, and its feed — exact bytes verified first.
     let discovery = reqwest::Client::builder()
@@ -2279,7 +2317,11 @@ pub async fn run_rollback(ctx: &mut Context<'_>) -> Result<RollbackOutcome, Upda
     // Built before the swap, for the same reason run_update builds its
     // clients before it fetches.
     let pin = health_pin(&ctx.serving, &ctx.install)?;
-    let health = health_client(ctx.running_version.as_deref(), pin.as_deref())?;
+    let health = health_client(
+        ctx.running_version.as_deref(),
+        pin.as_deref(),
+        ctx.serving.dial_addr(),
+    )?;
     // Staged first (mode 0755, whatever mode .prev carries — a hand-placed
     // .prev may well be 0644), and asked its version from there. Known where
     // it can be known: a previous binary that names its version is held to
@@ -2869,13 +2911,18 @@ mod tests {
 
     #[test]
     fn health_url_uses_https_when_tls_is_on() {
+        // Named `localhost`, connected to the bind through `resolve` (#449).
         assert_eq!(
             health_url("", 7878, true),
-            "https://127.0.0.1:7878/v1/health"
+            "https://localhost:7878/v1/health"
         );
         assert_eq!(
             health_url("100.64.0.9", 7878, true),
-            "https://100.64.0.9:7878/v1/health"
+            "https://localhost:7878/v1/health"
+        );
+        assert_eq!(
+            health_url("fd7a::1", 7878, true),
+            "https://localhost:7878/v1/health"
         );
     }
 
@@ -3426,58 +3473,85 @@ mod tests {
 
     // --- TLS health probe (#447) -----------------------------------------------
 
+    /// Serve `/v1/health` over TLS on an already-bound listener. No settling
+    /// delay: the listener is bound (so connections queue in its backlog)
+    /// before the acceptor task starts.
+    async fn serve_health_tls(
+        listener: std::net::TcpListener,
+        cert_der: Vec<u8>,
+        key_der: Vec<u8>,
+    ) -> tokio::task::JoinHandle<std::io::Result<()>> {
+        let config = axum_server::tls_rustls::RustlsConfig::from_der(vec![cert_der], key_der)
+            .await
+            .unwrap();
+        let app = axum::Router::new().route("/v1/health", axum::routing::get(|| async { "ok" }));
+        tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, config)
+                .serve(app.into_make_service())
+                .await
+        })
+    }
+
+    /// A self-signed certificate naming exactly `names`.
+    fn mint_self_signed(names: &[&str]) -> (Vec<u8>, Vec<u8>) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert =
+            rcgen::CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .unwrap()
+                .self_signed(&key)
+                .unwrap();
+        (cert.der().to_vec(), key.serialize_der())
+    }
+
+    /// The error's whole chain, lowercased — a certificate refusal names
+    /// itself several sources down ("invalid peer certificate: ...").
+    fn chain_lower(e: &reqwest::Error) -> String {
+        error_chain(e).to_lowercase()
+    }
+
+    fn assert_certificate_refusal(e: &reqwest::Error) {
+        let chain = chain_lower(e);
+        assert!(
+            chain.contains("certificate") || chain.contains("unknownissuer"),
+            "expected a certificate-verification error, got: {chain}"
+        );
+    }
+
     /// A real TLS round trip: `health_client`'s pin, built the way
     /// `health_pin` builds it, both accepts the agent's own certificate
-    /// (standard chain-and-hostname verification against it, nothing
-    /// disabled) and refuses a different one — the negative control that
-    /// proves the positive result is the pin doing something, not an
-    /// accidentally-permissive client.
+    /// and refuses any other. The URL is the one `Serving::health_url`
+    /// produces (`localhost`), connected to the bind through `resolve`.
     #[tokio::test]
     async fn health_client_trusts_only_the_pinned_certificate() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-
         let served_dir = tempfile::tempdir().unwrap();
         let served = crate::tls::load_or_generate(served_dir.path(), &[]).unwrap();
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let config = axum_server::tls_rustls::RustlsConfig::from_der(
-            vec![served.cert_der.clone()],
-            served.key_der.clone(),
-        )
-        .await
-        .unwrap();
-        let app = axum::Router::new().route("/v1/health", axum::routing::get(|| async { "ok" }));
-        let server = tokio::spawn(async move {
-            axum_server::from_tcp_rustls(listener, config)
-                .serve(app.into_make_service())
-                .await
-        });
-        // Give the acceptor a moment to start listening.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let url = format!("https://127.0.0.1:{}/v1/health", addr.port());
+        let server =
+            serve_health_tls(listener, served.cert_der.clone(), served.key_der.clone()).await;
+        let url = format!("https://localhost:{}/v1/health", addr.port());
 
-        // Pinned to the certificate actually served: succeeds.
-        let right = health_client(None, Some(&served.cert_der)).unwrap();
+        // Pinned to the certificate actually served: succeeds, by the name
+        // `localhost` that every generated certificate carries.
+        let right = health_client(None, Some(&served.cert_der), Some(addr)).unwrap();
         let resp = right.get(&url).send().await.unwrap();
         assert!(resp.status().is_success());
 
         // Pinned to a DIFFERENT, equally self-signed certificate: refused.
-        // Not `danger_accept_invalid_certs` anywhere in this path — the
-        // failure IS the verifier doing its job.
+        // Nothing is disabled anywhere in this path — the failure IS the
+        // verifier doing its job.
         let other_dir = tempfile::tempdir().unwrap();
         let other = crate::tls::load_or_generate(other_dir.path(), &[]).unwrap();
         assert_ne!(other.cert_der, served.cert_der);
-        let wrong = health_client(None, Some(&other.cert_der)).unwrap();
+        let wrong = health_client(None, Some(&other.cert_der), Some(addr)).unwrap();
         let err = wrong
             .get(&url)
             .send()
             .await
             .expect_err("a certificate that does not match the pin must be refused");
-        assert!(
-            err.is_connect() || err.to_string().to_lowercase().contains("certificate"),
-            "{err}"
-        );
+        assert_certificate_refusal(&err);
         // transport_summary must name this a TLS/certificate failure, not
         // "could not connect — nothing listening": the port IS listening
         // and answering, just not with the pinned certificate (#447 review —
@@ -3498,61 +3572,143 @@ mod tests {
         // No pin at all (TLS off): the plain client has no root for a
         // self-signed certificate either, so it also refuses — pinning is
         // not the only thing standing between this client and a forged cert.
-        let unpinned = health_client(None, None).unwrap();
+        let unpinned = health_client(None, None, None).unwrap();
         assert!(unpinned.get(&url).send().await.is_err());
 
         server.abort();
     }
 
-    /// #449: the bind can change after the certificate was generated (all
-    /// interfaces to a tailnet address), and a certificate's SAN list cannot.
-    /// The probe must accept the pinned certificate whatever name it is dialled
-    /// by — and still refuse every other certificate, which is the whole of its
-    /// identity check (and the negative control for the hostname relaxation:
-    /// it is not `danger_accept_invalid_certs`).
+    /// A certificate that CLAIMS `localhost` but was issued by a CA other than
+    /// the pinned certificate is refused: the pinned certificate is the only
+    /// root, so a valid-looking CA-signed chain proves nothing.
     #[tokio::test]
-    async fn health_client_ignores_the_hostname_but_never_the_certificate() {
+    async fn health_client_refuses_a_localhost_certificate_from_another_ca() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        // A certificate whose SAN list names neither loopback nor the address
-        // the probe will dial: exactly what a bind changing later produces.
-        let mint = |name: &str| {
-            let key = rcgen::KeyPair::generate().unwrap();
-            let cert = rcgen::CertificateParams::new(vec![name.to_string()])
-                .unwrap()
-                .self_signed(&key)
-                .unwrap();
-            (cert.der().to_vec(), key.serialize_der())
-        };
-        let (cert_der, key_der) = mint("some-other-name.example");
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .unwrap()
+            .signed_by(&leaf_key, &ca, &ca_key)
+            .unwrap();
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let config =
-            axum_server::tls_rustls::RustlsConfig::from_der(vec![cert_der.clone()], key_der)
-                .await
-                .unwrap();
-        let app = axum::Router::new().route("/v1/health", axum::routing::get(|| async { "ok" }));
-        let server = tokio::spawn(async move {
-            axum_server::from_tcp_rustls(listener, config)
-                .serve(app.into_make_service())
-                .await
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let url = format!("https://127.0.0.1:{}/v1/health", addr.port());
+        let server =
+            serve_health_tls(listener, leaf.der().to_vec(), leaf_key.serialize_der()).await;
+        let url = format!("https://localhost:{}/v1/health", addr.port());
 
-        // The name does not match the SAN list, and the pinned certificate is
-        // accepted anyway.
-        let pinned = health_client(None, Some(&cert_der)).unwrap();
-        assert!(pinned.get(&url).send().await.unwrap().status().is_success());
-
-        // A different certificate — even one that DOES name the address — is
-        // refused: the certificate is the identity.
-        let (other_der, _) = mint("127.0.0.1");
-        let wrong = health_client(None, Some(&other_der)).unwrap();
-        assert!(wrong.get(&url).send().await.is_err());
+        // Pinned to an unrelated self-signed certificate (the agent's own).
+        let (pinned_der, _) = mint_self_signed(&["localhost"]);
+        let client = health_client(None, Some(&pinned_der), Some(addr)).unwrap();
+        let err =
+            client.get(&url).send().await.expect_err(
+                "a CA-signed localhost certificate that is not the pin must be refused",
+            );
+        assert_certificate_refusal(&err);
 
         server.abort();
+    }
+
+    /// #449: the bind can change after the certificate was generated, and a
+    /// certificate's SAN list cannot. The probe dials `localhost` and
+    /// connects to the bind through `resolve`, so a concrete non-loopback
+    /// bind whose IP is NOT in the certificate's SAN list still verifies —
+    /// with hostname verification on. Dialling that IP directly (the
+    /// negative control) is refused, which is what shows the resolve path,
+    /// not a relaxed check, is what makes the probe work.
+    #[tokio::test]
+    async fn health_client_reaches_a_non_loopback_bind_absent_from_the_san_list() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        // This host's own non-loopback address, found without sending a
+        // packet (a UDP connect only selects a route).
+        let local = std::net::UdpSocket::bind("0.0.0.0:0")
+            .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+            .and_then(|s| s.local_addr())
+            .map(|a| a.ip())
+            .ok()
+            .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
+        let Some(ip) = local else {
+            eprintln!("SKIP: no non-loopback interface address on this host");
+            return;
+        };
+        let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Names `localhost` and something else; not `ip`.
+        let (cert_der, key_der) = mint_self_signed(&["localhost", "some-other-name.example"]);
+        let server = serve_health_tls(listener, cert_der.clone(), key_der).await;
+
+        let serving = Serving {
+            token: "t".to_string(),
+            bind: ip.to_string(),
+            port,
+            tls: true,
+        };
+        assert_eq!(serving.dial_addr(), Some(SocketAddr::new(ip, port)));
+        let client = health_client(None, Some(&cert_der), serving.dial_addr()).unwrap();
+        let resp = client.get(serving.health_url()).send().await.unwrap();
+        assert!(resp.status().is_success());
+
+        // Negative control: verifying by the bind address itself fails, as the
+        // certificate does not name it.
+        let direct = health_client(None, Some(&cert_der), None).unwrap();
+        let err = direct
+            .get(format!("https://{ip}:{port}/v1/health"))
+            .send()
+            .await
+            .expect_err("hostname verification must still be on");
+        assert_certificate_refusal(&err);
+
+        server.abort();
+    }
+
+    /// An IPv6 bind works through the same path: the URL names `localhost`,
+    /// the connection goes to the bracketed literal's address.
+    #[tokio::test]
+    async fn health_client_reaches_an_ipv6_bind() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let Ok(listener) = std::net::TcpListener::bind("[::1]:0") else {
+            eprintln!("SKIP: IPv6 loopback is unavailable on this host");
+            return;
+        };
+        let port = listener.local_addr().unwrap().port();
+        let (cert_der, key_der) = mint_self_signed(&["localhost"]);
+        let server = serve_health_tls(listener, cert_der.clone(), key_der).await;
+
+        for bind in ["::1", "[::1]"] {
+            let serving = Serving {
+                token: "t".to_string(),
+                bind: bind.to_string(),
+                port,
+                tls: true,
+            };
+            assert_eq!(
+                serving.health_url(),
+                format!("https://localhost:{port}/v1/health")
+            );
+            let client = health_client(None, Some(&cert_der), serving.dial_addr()).unwrap();
+            let resp = client.get(serving.health_url()).send().await.unwrap();
+            assert!(resp.status().is_success(), "bind {bind}");
+        }
+        server.abort();
+    }
+
+    #[test]
+    fn dial_addr_is_the_bind_or_loopback_for_a_wildcard() {
+        let a = |b: &str| dial_addr(b, 7878).map(|s| s.to_string());
+        assert_eq!(a(""), Some("127.0.0.1:7878".into()));
+        assert_eq!(a("0.0.0.0"), Some("127.0.0.1:7878".into()));
+        assert_eq!(a("::"), Some("[::1]:7878".into()));
+        assert_eq!(a("[::]"), Some("[::1]:7878".into()));
+        assert_eq!(a("100.64.0.9"), Some("100.64.0.9:7878".into()));
+        assert_eq!(a("fd7a::1"), Some("[fd7a::1]:7878".into()));
+        assert_eq!(a("[fd7a::1]"), Some("[fd7a::1]:7878".into()));
+        assert_eq!(a("not-an-ip.example"), None);
     }
 
     /// `health_pin` never creates a certificate — only reads one that

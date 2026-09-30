@@ -549,7 +549,11 @@ the bundle's floor.
   to firewall the port or pin `SOLADOR_AGENT_BIND`. **The cockpit enforces the
   other half: it never sends the bearer token over plain HTTP to an address that
   is not loopback or Tailscale** (`crates/agentclient`'s `plain`: IPv4
-  `100.64.0.0/10`, IPv6 `fd7a:115c:a1e0::/48`; a host name counts only if
+  `100.64.0.0/10`, IPv6 `fd7a:115c:a1e0::/48` minus Tailscale's 4via6 prefix
+  `fd7a:115c:a1e0:b1a::/64`, whose last hop can leave the tailnet in cleartext.
+  It trusts the address range, not tailnet membership: `100.64.0.0/10` is RFC
+  6598 CGNAT space that some ISP, hotel and VPC networks also use, so pairing is
+  the stronger protection. A host name counts only if
   *every* address it resolves to does, and the connection is made to the
   addresses that were vetted, so check and connect cannot disagree; a name that
   does not resolve sends nothing). So a **paired** host uses pinned TLS, and an
@@ -1041,9 +1045,11 @@ tests build (#417); the crate still has zero dependencies.
   post-install check verifies the certificate as the name `localhost` (in every
   certificate's baseline) while `curl --connect-to` dials the bind address, and
   `solador-agent update`'s post-restart probe trusts exactly this certificate
-  as its only root with the hostname check off. Both still verify the
-  certificate itself — never `danger_accept_invalid_certs` — and neither breaks
-  when the bind changes after the certificate exists. Axum's TLS comes from
+  as its only root and dials `localhost` too, with the connection `resolve`d to
+  the bind address (loopback for a wildcard). Both verify the chain **and** the
+  hostname — verification is never disabled, no `danger_accept_invalid_certs`
+  or `danger_accept_invalid_hostnames` anywhere — and neither breaks when the
+  bind changes after the certificate exists. Axum's TLS comes from
   `axum-server`'s `tls-rustls-no-provider` feature rather than its default
   `tls-rustls`, specifically to avoid pulling in `aws-lc-rs` (a second
   crypto backend, and a `cmake`/C build the musl cross-compile does not

@@ -3988,6 +3988,12 @@ test_install_tls_no_tailnet_bind() {
     out="$(cat "$INSTALL_OUT")"
     assert_eq "install.sh: explicit TLS=1, no tailnet, pre-TLS binary is refused" "1" "$INSTALL_STATUS"
     assert_output_has "the refusal came after staging" "$out" "==> Verified "
+    assert_output_has "the refusal names the pre-TLS binary" "$out" "predates #447 and"
+    case "$out" in
+        *"turn TLS on (SOLADOR_AGENT_TLS=1"* | *"serve HTTPS (SOLADOR_AGENT_TLS=1"*)
+            fail "the refusal does not advise setting the TLS=1 the operator already set" "it did" ;;
+        *) pass "the refusal does not advise setting the TLS=1 the operator already set" ;;
+    esac
     if [ -e "$env_file" ] || [ -e "$home/.local/bin/solador-agent" ]; then
         fail "explicit TLS=1 against a pre-TLS binary binds nothing and installs nothing" "one exists"
     else
@@ -5190,11 +5196,13 @@ STUB
     # And ONE the other way round (#449): SOLADOR_AGENT_BIND_AUTO is written by
     # install.sh, never read by the agent, so the launcher names it (a silent
     # arm, so it is a recognised line and is not logged as "unrecognised") and
-    # the Rust source does not. Excluded from the launcher's side, then pinned
-    # by its own test below.
+    # the Rust source does not read it. Excluded from the launcher's side, then
+    # pinned by its own test below — and from the agent's side too, because the
+    # agent's TLS-off wildcard warning NAMES the key to tell an operator what to
+    # remove (naming it in a message is not reading it).
     local agent_keys launcher_keys
     agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u \
-        | grep -vx -e 'SOLADOR_AGENT_LAUNCHD_LABEL' -e 'SOLADOR_AGENT_CONFIG_DIR' | tr '\n' ' ')"
+        | grep -vx -e 'SOLADOR_AGENT_LAUNCHD_LABEL' -e 'SOLADOR_AGENT_CONFIG_DIR' -e 'SOLADOR_AGENT_BIND_AUTO' | tr '\n' ' ')"
     launcher_keys="$(grep -oE 'SOLADOR_AGENT_[A-Z_]+=\*' "$launcher" | sed 's/=\*$//' | sort -u \
         | grep -vx 'SOLADOR_AGENT_BIND_AUTO' | tr '\n' ' ')"
     assert_eq "the launcher allow-lists every SOLADOR_AGENT_* key the agent reads" \

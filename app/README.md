@@ -176,7 +176,7 @@ loopback or Tailscale** ([#449](https://github.com/Sassy-Dog/solador/issues/449)
 part 3). An agent may now listen on any interface, so an unpaired host at a LAN
 or public address would otherwise be sent its token in the clear on every poll.
 `agentclient` (`plain`) refuses: IPv4 `100.64.0.0/10` and IPv6
-`fd7a:115c:a1e0::/48` (plus loopback, and an IPv4-mapped address judged as the
+`fd7a:115c:a1e0::/48` minus its 4via6 prefix `fd7a:115c:a1e0:b1a::/64` (plus loopback, and an IPv4-mapped address judged as the
 IPv4 it stands for) are the only destinations; a host name counts only if
 *every* address it resolves to does, and the connection is made to those vetted
 addresses — one resolution, so the check and the connect cannot disagree; a

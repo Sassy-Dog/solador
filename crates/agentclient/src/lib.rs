@@ -297,8 +297,9 @@ pub struct AgentClient {
 
 impl AgentClient {
     /// A client for a host that was **never paired**: plain HTTP, no
-    /// certificate checks — over Tailscale the transport is what carries the
-    /// encryption. A paired host is [`AgentClient::pinned`].
+    /// certificate checks, and therefore dialled only to loopback or a
+    /// Tailscale address (the [`plain`] module's rule — a range, not proof of
+    /// tailnet membership). A paired host is [`AgentClient::pinned`].
     ///
     /// # Invariant: no credentials in `base_url`
     ///

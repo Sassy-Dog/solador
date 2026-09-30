@@ -238,17 +238,7 @@ async fn main() {
     let addr = format_bind_addr(&bind_host, port);
 
     if is_wildcard_host(&bind_host) {
-        tracing::warn!(
-            "binding all interfaces ({addr}): the agent is reachable on every network this \
-             host is on; its only protection is the bearer token{}. \
-             Firewall the port, or set SOLADOR_AGENT_BIND to one interface, on a host with \
-             a public address.",
-            if tls_on {
-                " and pinned TLS certificate"
-            } else {
-                ""
-            }
-        );
+        tracing::warn!("{}", wildcard_warning(&addr, tls_on));
     }
 
     // Without TLS, everything below this point is unchanged from before #447.
@@ -556,6 +546,32 @@ fn is_wildcard_host(host: &str) -> bool {
     matches!(host, "0.0.0.0" | "::" | "[::]")
 }
 
+/// The runtime warning for an all-interfaces bind. The two cases are
+/// different claims and read differently on purpose (#449): with TLS on the
+/// token is encrypted and the certificate pinned; with TLS off — most likely
+/// a hand edit of `SOLADOR_AGENT_TLS=0` that left the install-chosen
+/// `0.0.0.0` bind behind — it is plain HTTP on every interface.
+fn wildcard_warning(addr: &str, tls_on: bool) -> String {
+    if tls_on {
+        format!(
+            "binding all interfaces ({addr}): the agent is reachable on every network this \
+             host is on; its only protection is the bearer token and pinned TLS certificate. \
+             Firewall the port, or set SOLADOR_AGENT_BIND to one interface, on a host with \
+             a public address."
+        )
+    } else {
+        format!(
+            "PLAIN HTTP ON EVERY INTERFACE ({addr}): TLS is off and the agent is listening on \
+             all networks this host is on, so the bearer token crosses the network in \
+             CLEARTEXT and anyone who can reach the port can read it. This is usually a hand \
+             edit of SOLADOR_AGENT_TLS=0 that left the all-interfaces bind install.sh chose. \
+             Fix it: remove both SOLADOR_AGENT_BIND and SOLADOR_AGENT_BIND_AUTO from the env \
+             file and re-run install.sh (it will bind the tailnet address), or set \
+             SOLADOR_AGENT_TLS=1."
+        )
+    }
+}
+
 /// Decide the host portion of the bind address.
 ///
 /// - If `SOLADOR_AGENT_BIND` is set (non-empty), honor it verbatim, in every
@@ -807,6 +823,22 @@ mod tests {
         resolve_bind_host(env.map(str::to_string), tls_on, || {
             tailnet.then(|| TAILNET.to_string())
         })
+    }
+
+    #[test]
+    fn the_tls_off_wildcard_warning_is_its_own_loud_message() {
+        let on = wildcard_warning("0.0.0.0:7878", true);
+        let off = wildcard_warning("0.0.0.0:7878", false);
+        assert_ne!(on, off);
+        // Plain about the three things an operator must learn from it.
+        assert!(off.contains("PLAIN HTTP ON EVERY INTERFACE"), "{off}");
+        assert!(off.contains("CLEARTEXT"), "{off}");
+        assert!(off.contains("SOLADOR_AGENT_BIND_AUTO"), "{off}");
+        assert!(off.contains("SOLADOR_AGENT_TLS=1"), "{off}");
+        assert!(off.contains("0.0.0.0:7878"), "{off}");
+        // The TLS-on message stays the calmer one.
+        assert!(!on.contains("CLEARTEXT"), "{on}");
+        assert!(!on.contains("PLAIN HTTP"), "{on}");
     }
 
     #[test]

@@ -923,7 +923,9 @@ host added in the cockpit without pairing is dialled over plain HTTP, and an
 agent that may now listen off the tailnet would have been sent the bearer token
 in the clear before the connection ever failed. So the cockpit refuses:
 **it never sends the bearer token over plain HTTP to an address that is not
-loopback or Tailscale** (IPv4 `100.64.0.0/10`, IPv6 `fd7a:115c:a1e0::/48`; a
+loopback or Tailscale** (IPv4 `100.64.0.0/10`, IPv6 `fd7a:115c:a1e0::/48` minus
+the 4via6 prefix `fd7a:115c:a1e0:b1a::/64`; an address range, not tailnet
+membership — `100.64.0.0/10` is RFC 6598 CGNAT space other networks use; a
 name only if every address it resolves to is, connecting to the addresses it
 vetted; nothing sent if it does not resolve). The accurate statement is
 therefore: a paired host uses pinned TLS, and an unpaired host is only ever
@@ -952,8 +954,10 @@ probes stopped depending on it rather than leaving a path where every `update`
 rolls back: `verify_health` verifies the pinned certificate as the name
 `localhost` — in every certificate's baseline — while `curl --connect-to` dials
 the bind address, and `solador-agent update`'s post-restart probe trusts the
-pinned certificate as its only root with the hostname check off. Neither
-disables certificate verification, and a different certificate is still
+pinned certificate as its only root and dials `localhost` too, with the
+connection resolved to the bind address (reqwest `resolve`, the counterpart of
+`--connect-to`). Neither disables certificate or hostname verification, and a
+different certificate — including a CA-signed `localhost` one — is still
 refused (a test fails without the relaxation and another fails without the
 pin). The cockpit checks no hostname. What #457 still tracks is the list itself
 for an external client that verifies by name.

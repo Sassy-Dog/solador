@@ -20,7 +20,9 @@ lifetime (#447 — see **TLS**, below), which the cockpit pins by fingerprint
 - **The cockpit never sends the token over plain HTTP off loopback and the
   tailnet (#449).** A paired host is dialled over pinned TLS; a host that was
   never paired is dialled over plain HTTP only when its address is loopback or
-  Tailscale (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), and is otherwise not
+  Tailscale (`100.64.0.0/10`, `fd7a:115c:a1e0::/48` minus its 4via6 prefix
+  `fd7a:115c:a1e0:b1a::/64`; a range, not proof of tailnet membership — see
+  `SECURITY.md`), and is otherwise not
   polled at all until it is paired. That rule — not the port being closed to
   the internet — is what keeps the token off an open network.
 
@@ -323,7 +325,9 @@ certificate as their only root — never with verification disabled — but chec
 it by identity, not by the address they dial. `install.sh`'s check verifies it
 as the name `localhost` (in every certificate's baseline) while `curl
 --connect-to` dials the bind address; `solador-agent update`'s post-restart
-probe trusts the certificate as its only root with the hostname check off. A
+probe trusts the certificate as its only root and dials `localhost` too, with
+the connection resolved to the bind address (loopback for a wildcard) — chain
+and hostname are both verified. A
 bind that changes after the certificate exists therefore breaks neither.
 
 **A wildcard bind (#449) adds nothing to the list, and needs nothing.**
@@ -354,7 +358,9 @@ by mistake.) So:
 - `install.sh` says which interface it bound and why, twice: when it decides
   (`==> Binding to 0.0.0.0 (all interfaces: no Tailscale IP detected, and TLS
   is on)`) and in the Done block (`Bind: 0.0.0.0:7878 — ALL interfaces`).
-  The agent logs a warning at start whenever it binds a wildcard.
+  The agent logs a warning at start whenever it binds a wildcard; with TLS off
+  it is a separate, louder one (plain HTTP on every interface, token in
+  cleartext, and how to fix it).
 - `install.sh` marks a bind it chose this way with `SOLADOR_AGENT_BIND_AUTO=1`
   in the env file (the agent ignores the key). That bind is **provisional**:
   every re-run sets it aside and resolves the bind again — the Tailscale IP if
@@ -369,9 +375,12 @@ by mistake.) So:
   (so the agent finds the tailnet address itself) or set `SOLADOR_AGENT_BIND` to
   one address, because the agent honours the `0.0.0.0` already there.
 - A host with Tailscale keeps today's default: the tailnet IP only.
-- Plain HTTP is unchanged: tailnet-only, and no tailnet is a refusal. That is
-  the case where the network is the only thing between the token and a
-  listener.
+- Plain HTTP is tailnet-only **by default**, and no tailnet is a refusal — the
+  case where the network is the only thing between the token and a listener. An
+  explicit `SOLADOR_AGENT_BIND` (or a wildcard bind kept after a hand edit to
+  `SOLADOR_AGENT_TLS=0`) can change that, which is why the cockpit only dials
+  plain HTTP to loopback or Tailscale addresses (`agentclient`'s `plain`
+  module), whatever the agent is listening on.
 
 **`install.sh` writes `SOLADOR_AGENT_TLS=1` on a fresh install** (no env file
 existed yet) and prints the fingerprint in its Done block — **but only when

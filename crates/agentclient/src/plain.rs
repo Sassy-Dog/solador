@@ -11,7 +11,15 @@
 //! > loopback and not Tailscale.
 //!
 //! * Tailscale is IPv4 `100.64.0.0/10` (CGNAT, the range Tailscale assigns
-//!   from) and IPv6 `fd7a:115c:a1e0::/48`.
+//!   from) and IPv6 `fd7a:115c:a1e0::/48` **minus** the 4via6 prefix
+//!   `fd7a:115c:a1e0:b1a::/64`: an address there is a subnet router's
+//!   translation of a *foreign* IPv4 address, and the router's last hop leaves
+//!   the tailnet in cleartext.
+//! * **This trusts an address range, not tailnet membership.** `100.64.0.0/10`
+//!   is RFC 6598 shared (CGNAT) space that some ISPs, hotels and cloud VPCs
+//!   also use, so an address in it may not be on a tailnet at all. The guard
+//!   cannot tell; pairing (pinned TLS) is the stronger protection and the one
+//!   to prefer for any host that is not this machine.
 //! * An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is judged as the IPv4
 //!   address it stands for: it is the same destination on a dual-stack socket.
 //! * A **name** is permitted only if *every* address it resolves to is. One
@@ -38,9 +46,11 @@ fn is_tailscale_v4(ip: Ipv4Addr) -> bool {
     o[0] == 100 && (64..=127).contains(&o[1])
 }
 
-/// Tailscale's IPv6 range, `fd7a:115c:a1e0::/48`.
+/// Tailscale's IPv6 range, `fd7a:115c:a1e0::/48`, without its 4via6 prefix
+/// `fd7a:115c:a1e0:b1a::/64` (see the module docs).
 fn is_tailscale_v6(ip: Ipv6Addr) -> bool {
-    ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0]
+    let s = ip.segments();
+    s[..3] == [0xfd7a, 0x115c, 0xa1e0] && s[3] != 0x0b1a
 }
 
 /// The IPv4 address an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) stands for.
@@ -181,12 +191,17 @@ mod tests {
     }
 
     #[test]
-    fn the_tailscale_ipv6_range_is_exactly_fd7a_115c_a1e0_48() {
+    fn the_tailscale_ipv6_range_is_fd7a_115c_a1e0_48_without_the_4via6_prefix() {
         for a in [
             "fd7a:115c:a1e0::",
             "fd7a:115c:a1e0::1",
             "fd7a:115c:a1e0:ab12:4843:cd96:6265:a1e0",
             "fd7a:115c:a1e0:ffff:ffff:ffff:ffff:ffff",
+            // The edges of the excluded /64, one step outside it.
+            "fd7a:115c:a1e0:b19:ffff:ffff:ffff:ffff",
+            "fd7a:115c:a1e0:b1b::",
+            "fd7a:115c:a1e0:b1a0::1",
+            "fd7a:115c:a1e0:1b1a::1",
         ] {
             assert!(plain_http_permitted(ip(a)), "{a}");
         }
@@ -196,6 +211,11 @@ mod tests {
             "fd7a:115d:a1e0::1",
             "fd7b:115c:a1e0::1",
             "fd00::1",
+            // 4via6 (`fd7a:115c:a1e0:b1a::/64`): both edges and the middle.
+            "fd7a:115c:a1e0:b1a::",
+            "fd7a:115c:a1e0:b1a::1",
+            "fd7a:115c:a1e0:b1a:0:7:c0a8:101",
+            "fd7a:115c:a1e0:b1a:ffff:ffff:ffff:ffff",
         ] {
             assert!(!plain_http_permitted(ip(a)), "{a}");
         }

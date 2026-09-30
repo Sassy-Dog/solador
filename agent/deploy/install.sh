@@ -1538,7 +1538,19 @@ fi
 # It takes a TLS the staged binary can actually serve: an explicit
 # SOLADOR_AGENT_TLS=1 against a release that predates TLS is served as plain HTTP.
 if [ -z "$BIND" ]; then
-    if [ "$TLS_VALUE" != "1" ] || [ "$STAGED_BIN_SUPPORTS_TLS" != true ]; then
+    if [ "$TLS_VALUE" = "1" ] && [ "$STAGED_BIN_SUPPORTS_TLS" != true ]; then
+        # TLS was asked for and cannot be served: telling the operator to set
+        # SOLADOR_AGENT_TLS=1 would be circular. Name the binary, as the
+        # sibling refusals above do.
+        echo "ERROR: SOLADOR_AGENT_TLS=1 was given, but $ASSET ($TARGET_VERSION) predates #447 and" >&2
+        echo "       does not support TLS (solador-agent tls-fingerprint is not a recognized" >&2
+        echo "       command on this binary), and no Tailscale IP was detected for" >&2
+        echo "       SOLADOR_AGENT_BIND — so there is nothing safe to bind. Pin a release that has" >&2
+        echo "       TLS (SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD), bring up Tailscale, or set" >&2
+        echo "       SOLADOR_AGENT_BIND to the address the cockpit dials. Nothing has been changed." >&2
+        exit 1
+    fi
+    if [ "$TLS_VALUE" != "1" ]; then
         refuse_no_bind
     fi
     BIND="0.0.0.0"

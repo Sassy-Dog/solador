@@ -16,12 +16,18 @@ is for a desktop app.
 
 **The agent is the part to look at.** `agent/` is an HTTP service that reports
 host metrics and container lists, guarded by a single bearer token. It is
-designed so that, over plain HTTP, it is reachable **only over a private
-tailnet** and refuses to start without one. With TLS on (the default for a fresh
-install) and no Tailscale it binds **all interfaces**, and TLS plus the bearer
-token protect it; the cockpit, for its part, never sends the token over plain
-HTTP to an address that is neither loopback nor Tailscale. See "Network
-exposure" in `agent/README.md`. If you can make it answer from somewhere
+designed so that, over plain HTTP, it is tailnet-only **by default** and refuses
+to start without a tailnet address; an explicit `SOLADOR_AGENT_BIND` can change
+that. With TLS on (the default for a fresh install) and no Tailscale it binds
+**all interfaces**, and TLS plus the bearer token protect it. The cockpit, for
+its part, only dials plain HTTP to loopback or Tailscale addresses, enforced by
+`agentclient`'s `plain` module. That rule trusts an **address range, not tailnet
+membership**: `100.64.0.0/10` is RFC 6598 CGNAT space that some ISP, hotel and
+cloud-VPC networks also use, so an address there may not be on a tailnet at all
+(Tailscale's 4via6 prefix, `fd7a:115c:a1e0:b1a::/64`, is excluded because its
+last hop can leave the tailnet in cleartext). Pairing a host, which pins its
+TLS certificate, is the stronger protection. See "Network exposure" in
+`agent/README.md`. If you can make it answer from somewhere
 it shouldn't, or make it leak beyond the metrics it is meant to serve, that is
 a report worth filing.
 

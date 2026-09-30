@@ -201,3 +201,149 @@ fn the_refusal_reads_as_neither_unreachable_nor_a_pairing_fault() {
     }
     assert!(refused.contains("pair"), "{refused}");
 }
+
+// --- What the unpaired client does NOT do (#449) -----------------------------
+//
+// `AgentClient::plain` sets `.no_proxy()` and `.redirect(Policy::none())`. Both
+// exist because each would hand the token to a destination the guard never
+// vetted, and neither is visible from any other test: a client without them
+// passes every test above. Each test below has a control — delete the line it
+// pins and it goes red (recorded on the PR that added them).
+
+/// Bytes a listener received within `wait`, or `None` if nothing connected.
+async fn accepted_bytes(listener: TcpListener, wait: Duration) -> Option<Vec<u8>> {
+    let (mut conn, _) = tokio::time::timeout(wait, listener.accept())
+        .await
+        .ok()?
+        .ok()?;
+    let mut buf = vec![0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_millis(800), conn.read(&mut buf))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(0);
+    buf.truncate(n);
+    Some(buf)
+}
+
+/// A `302` from an allowed listener to a second listener must not reach the
+/// second: no connection at all, so no token (`reqwest` would strip
+/// `Authorization` on a cross-origin hop, but the destination was still
+/// contacted, which is a request nobody vetted).
+#[tokio::test]
+async fn a_redirect_is_not_followed_and_the_second_listener_is_never_contacted() {
+    use tokio::io::AsyncWriteExt;
+
+    let allowed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let allowed_port = allowed.local_addr().unwrap().port();
+    let elsewhere = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let elsewhere_port = elsewhere.local_addr().unwrap().port();
+
+    let redirector = tokio::spawn(async move {
+        let (mut conn, _) = allowed.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let _ = conn.read(&mut buf).await;
+        let reply = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{elsewhere_port}/v1/health\r\n\
+             Content-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        conn.write_all(reply.as_bytes()).await.unwrap();
+    });
+    let second = tokio::spawn(accepted_bytes(elsewhere, Duration::from_millis(1500)));
+
+    // Everything permitted: the FIRST listener is an allowed destination; the
+    // redirect target is what must not be followed.
+    let client = AgentClient::plain(
+        format!("http://127.0.0.1:{allowed_port}"),
+        TOKEN,
+        name_to_loopback(),
+        guard_disabled,
+    );
+    let _ = client.health().await;
+    redirector.await.unwrap();
+
+    let got = second.await.unwrap();
+    assert!(
+        got.is_none(),
+        "the redirect target was contacted and received: {:?}",
+        got.map(|b| String::from_utf8_lossy(&b).into_owned())
+    );
+}
+
+/// Set only in the child process of the proxy test below.
+const PROXY_CHILD: &str = "SOLADOR_PLAIN_PROXY_CHILD";
+
+/// The child half of [`the_environment_proxy_is_never_used`]: runs with
+/// `HTTP_PROXY`/`http_proxy` pointing at the parent's listener, and reports by
+/// exit status whether its own target received the request directly. A no-op
+/// unless [`PROXY_CHILD`] is set. It is a separate process because a proxy
+/// variable is process-global, and reqwest reads it when a client is built:
+/// setting it in-process would race every other test that builds a client.
+#[tokio::test]
+async fn proxy_test_child() {
+    if std::env::var_os(PROXY_CHILD).is_none() {
+        return;
+    }
+    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = target.local_addr().unwrap().port();
+    let client = AgentClient::plain(
+        format!("http://127.0.0.1:{port}"),
+        TOKEN,
+        name_to_loopback(),
+        guard_disabled,
+    );
+    let poll = tokio::spawn(async move { client.health().await });
+    let got = accepted_bytes(target, Duration::from_millis(2500)).await;
+    poll.abort();
+    let text = got.map(|b| String::from_utf8_lossy(&b).into_owned());
+    assert!(
+        text.as_deref().is_some_and(|t| t.contains(TOKEN)),
+        "the request did not go straight to its target: {text:?}"
+    );
+}
+
+/// With `HTTP_PROXY` and `http_proxy` set, the proxy's listener receives
+/// nothing: a proxy would be handed the token and would resolve the name where
+/// the guard cannot see it.
+#[test]
+fn the_environment_proxy_is_never_used() {
+    if std::env::var_os(PROXY_CHILD).is_some() {
+        return; // we are the child; the child test does the work.
+    }
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    proxy.set_nonblocking(true).unwrap();
+    let proxy_url = format!("http://127.0.0.1:{}", proxy.local_addr().unwrap().port());
+    // `module_path!()` is `agentclient::plain_tests`; libtest names are
+    // relative to the crate.
+    let name = format!(
+        "{}::proxy_test_child",
+        module_path!().split_once("::").unwrap().1
+    );
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+        .env(PROXY_CHILD, "1")
+        .env("HTTP_PROXY", &proxy_url)
+        .env("http_proxy", &proxy_url)
+        .env("ALL_PROXY", &proxy_url)
+        .env("all_proxy", &proxy_url)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "child failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The child ran the real test (not the no-op path).
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "the child did not run its test:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    match proxy.accept() {
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("the proxy listener was contacted: {other:?}"),
+    }
+}
