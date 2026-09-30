@@ -858,21 +858,35 @@ mod tests {
         Some(std::ffi::OsString::from(s))
     }
 
+    /// An absolute path on whatever OS runs the tests. `/home/ops` is not
+    /// absolute on Windows (no drive), and the workspace's Windows job runs
+    /// these too; `temp_dir()` is absolute everywhere.
+    fn abs(leaf: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(leaf)
+    }
+
+    fn os_path(p: &std::path::Path) -> Option<std::ffi::OsString> {
+        Some(p.as_os_str().to_owned())
+    }
+
     #[test]
     fn tls_config_dir_uses_home_dot_config_when_the_variable_is_unset() {
-        let got = resolve_tls_config_dir(None, os("/home/ops")).unwrap();
-        assert_eq!(got, std::path::Path::new("/home/ops").join(".config"));
+        let home = abs("home-ops");
+        let got = resolve_tls_config_dir(None, os_path(&home)).unwrap();
+        assert_eq!(got, home.join(".config"));
     }
 
     #[test]
     fn tls_config_dir_prefers_the_variable_over_home() {
-        let got = resolve_tls_config_dir(os("/srv/agent"), os("/home/ops")).unwrap();
-        assert_eq!(got, std::path::Path::new("/srv/agent"));
+        let dir = abs("srv-agent");
+        let got = resolve_tls_config_dir(os_path(&dir), os_path(&abs("home-ops"))).unwrap();
+        assert_eq!(got, dir);
     }
 
     #[test]
     fn tls_config_dir_refuses_a_relative_variable_even_with_a_good_home() {
-        let err = resolve_tls_config_dir(os("relative/dir"), os("/home/ops")).unwrap_err();
+        let err =
+            resolve_tls_config_dir(os("relative/dir"), os_path(&abs("home-ops"))).unwrap_err();
         assert!(
             err.starts_with("SOLADOR_AGENT_CONFIG_DIR=relative/dir is not an absolute path;"),
             "{err}"
