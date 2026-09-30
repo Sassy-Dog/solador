@@ -978,30 +978,27 @@ tests build (#417); the crate still has zero dependencies.
   symlinks to remove, and fails "Unit file <u> does not exist" without one
   — *before* it ever reaches its own `--now` stop — so a combined call on
   a unit whose FILE is already gone never stops anything, it just fails
-  outright. Both calls run under the SAME gate — the unit's own FILE
-  existing on disk, and that is deliberately the ONLY signal — against the
-  unit's FULL name (`solador-agent.service`, never bare `solador-agent`). A
-  failed `stop`, OR a failed `disable` while the file exists, both mean
-  exit 4, reported as two DIFFERENT claims: a failed `stop` says the
+  outright. `disable` runs only while the unit's own FILE exists; `stop`
+  runs when the FILE exists OR the user manager still holds the unit (#463),
+  so a re-run after an exit 4 — whose first run already deleted the files —
+  still stops what the manager is running instead of reporting "Nothing
+  installed". Always against the unit's FULL name (`solador-agent.service`,
+  never bare `solador-agent`: `list-units` does not append `.service`).
+  "Holds" is `systemctl --user show -p LoadState -p ActiveState <unit>`
+  reading `LoadState != not-found` OR `ActiveState != inactive`: a fileless
+  unit something merely references (a dangling `*.wants` link, the update
+  oneshot's own `After=solador-agent.service`) reads `not-found` +
+  `inactive`, `stop` on it fails "not loaded" (exit 5), and counting it would
+  be a false exit 4 forever — while a fileless oneshot left `failed` is
+  held and stops fine. A state read that itself fails is exit 4, never a
+  silent "Nothing installed". A failed `stop`, OR a failed `disable` while
+  the file exists, both mean exit 4, reported as two DIFFERENT claims: a failed `stop` says the
   process may still be running; a failed `disable` with a successful
   `stop` says only that the unit's future auto-start is unconfirmed, and
   must never claim the process may still be running.
 
-  **Known limit (#455):** an earlier revision also asked the running
-  manager's own state (`is-active`, falling back to `list-units --all` for
-  one left `failed` rather than active — `list-units`'s pattern had to be
-  the unit's FULL name, since it matches literally with no auto-suffix;
-  `is-active` needs no such care, since systemctl appends `.service`
-  itself) so that `stop` ran whenever EITHER the unit FILE existed OR the manager
-  still knew about it, letting a re-run after exit 4 retry a unit whose
-  FILE that earlier run had already removed. Every review round on that
-  logic found a new Blocking problem in it, so it was backed out rather
-  than shipped — tracked at #455, not lost. Until it lands: once a unit's
-  file is gone, a re-run has nothing left to gate that unit on and reports
-  "Nothing installed" even if the manager is still holding it — confirm by
-  hand with `systemctl --user status <unit>` (macOS is unaffected:
-  `launchctl print` is always asked directly). On macOS: `launchctl bootout
-  gui/<uid>/…`. Before either unit/plist is removed, the binary path it
+  On macOS, which asks `launchctl print` directly with no file gate, the
+  stop is `launchctl bootout gui/<uid>/…`. Before either unit/plist is removed, the binary path it
   currently names is read (`unowned_service_binary`) — one outside
   `~/.local/bin` (an unmigrated `/opt` host, most likely) is reported as
   left behind with the actual remedy (`sudo rm -rf /opt/solador-agent` for

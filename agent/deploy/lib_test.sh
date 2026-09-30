@@ -60,7 +60,7 @@ unset STUB_DATE_EPOCH STUB_DATE_EXIT STUB_WAKETIME_SEC STUB_BOOTTIME_SEC STUB_SY
 unset STUB_MONO_NOW_US STUB_RESUME_US STUB_GUARD_SYSTEMCTL_ARGV GUARD_HOME GUARD_NO_INVOCATION GUARD_BASH_ENV
 unset STUB_SYSTEMD_VERSION
 unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_SYSTEMCTL_STOP_EXIT STUB_LAUNCHCTL_BOOTOUT_EXIT
-unset STUB_SYSTEMCTL_PROBE_LOCK STUB_SYSTEMCTL_PROBE_RESULT
+unset STUB_SYSTEMCTL_PROBE_LOCK STUB_SYSTEMCTL_PROBE_RESULT STUB_SYSTEMCTL_UNIT_STATE STUB_SYSTEMCTL_SHOW_EXIT
 unset STUB_LAUNCHCTL_PROBE_LOCK STUB_LAUNCHCTL_PROBE_RESULT
 
 # ---- harness ----------------------------------------------------------------
@@ -376,20 +376,49 @@ STUB
 # like the real one); enabling the update timer answers
 # STUB_SYSTEMCTL_TIMER_EXIT; everything else succeeds.
 #
-# `stop` and `disable` are --uninstall's own calls, gated by install.sh
-# SOLELY on whether the unit's own FILE exists on disk (#455: a prior
-# revision also asked the running manager's own state — `is-active`,
-# falling back to `list-units --all` — so a re-run could still find and
-# stop a unit whose file an earlier exit-4 run had already removed; every
-# review round on that logic found a new Blocking problem in it, so it was
-# backed out rather than shipped, and is tracked at #455 instead). The stub
-# has no unit-name tracking of its own any more: `stop` and `disable`
-# simply act on whatever unit install.sh actually names, below.
+# NOTE: the exact-name match is deliberately STRICTER than real systemd, whose
+# `show` mangles a bare name to `<name>.service`; stricter cannot hide a bug
+# real systemd would catch, and the timer genuinely needs its full name.
+# `show -p LoadState -p ActiveState <unit>` (#463) is --uninstall's "does the
+# manager still hold this unit" read, answered from STUB_SYSTEMCTL_UNIT_STATE:
+# space-separated `<full-unit-name>=<LoadState>:<ActiveState>` records, matched
+# on the EXACT full name only — real `list-units` never appends `.service`
+# (systemctl-list-units.c:275), so a bare `solador-agent` matching nothing is
+# modelled, and install.sh must use full names. A unit with no record is
+# `loaded:inactive` when its unit FILE is on disk under the stub's $HOME and
+# `not-found:inactive` otherwise — real systemd's answer for a never-loaded
+# unit, which is exit 0 with LoadState=not-found, never an error (#463 req 5).
+# `not-found:inactive` is also what a fileless unit that something still
+# references (a dangling *.wants link, the repo's own `After=`) reads as
+# (req 3); `not-found:failed` is a fileless oneshot left failed (req 4).
+#
+# `stop` on a unit that is `not-found:inactive` fails exit 5 with "Unit … not
+# loaded." (dbus-unit.c:1811-1814, reported by systemctl as exit 5), which is
+# what makes counting such a unit as present a false exit 4 (req 3). `stop`
+# of anything else succeeds unless STUB_SYSTEMCTL_STOP_EXIT says otherwise.
+# `disable` fails ENOENT when the unit FILE is gone and stops nothing (req 1).
 cat > "$STUBS/systemctl" <<'STUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_SYSTEMCTL_ARGV:-}" ]; then
     printf '%s\n' "$*" >> "$STUB_SYSTEMCTL_ARGV"
 fi
+# unit_state <unit>: prints "<LoadState> <ActiveState>". Exact-name match
+# against STUB_SYSTEMCTL_UNIT_STATE; see the suite's comment above.
+unit_state() {
+    local rec
+    for rec in ${STUB_SYSTEMCTL_UNIT_STATE:-}; do
+        if [ "${rec%%=*}" = "$1" ]; then
+            rec="${rec#*=}"
+            printf '%s %s\n' "${rec%%:*}" "${rec##*:}"
+            return 0
+        fi
+    done
+    if [ -f "$HOME/.config/systemd/user/$1" ]; then
+        echo "loaded inactive"
+    else
+        echo "not-found inactive"
+    fi
+}
 case "$*" in
     "--user show -p Version --value")
         printf '%s\n' "${STUB_SYSTEMD_VERSION-256.11-1.stub}"
@@ -398,6 +427,22 @@ case "$*" in
 esac
 case "${2:-}" in
     show-environment) exit "${STUB_SYSTEMCTL_USER_EXIT:-0}" ;;
+    show)
+        # Only the LoadState/ActiveState read install.sh makes (#463); the
+        # unit is the last argument. Exit 0 even for a not-found unit, as
+        # real systemd does (unless STUB_SYSTEMCTL_SHOW_EXIT forces a
+        # failure, the manager-went-away case).
+        if [ -n "${STUB_SYSTEMCTL_SHOW_EXIT:-}" ] && [ "$STUB_SYSTEMCTL_SHOW_EXIT" != "0" ]; then
+            echo "Failed to get properties: Connection reset by peer" >&2
+            exit "$STUB_SYSTEMCTL_SHOW_EXIT"
+        fi
+        eval "show_unit=\${$#}"
+        read -r show_load show_active <<EOF_STATE
+$(unit_state "$show_unit")
+EOF_STATE
+        printf 'LoadState=%s\nActiveState=%s\n' "$show_load" "$show_active"
+        exit 0
+        ;;
     is-enabled)
         printf '%s\n' "${STUB_SYSTEMCTL_IS_ENABLED:-enabled}"
         [ "${STUB_SYSTEMCTL_IS_ENABLED:-enabled}" = "enabled" ] && exit 0
@@ -405,8 +450,9 @@ case "${2:-}" in
         ;;
     # --uninstall's own `stop` call (#454 round-4 review's own follow-up:
     # stop and disable are two separate calls, never a combined
-    # `disable --now`; install.sh gates both on the unit's own FILE existing
-    # — #455). This is the FIRST mutating call stop_and_disable_linux_unit
+    # `disable --now`; install.sh gates `disable` on the unit's own FILE
+    # existing and `stop` on the file OR the manager still holding the unit
+    # — #463). This is the FIRST mutating call stop_and_disable_linux_unit
     # makes on a gated unit, so it is also where the continuous-lock-hold
     # proof (STUB_SYSTEMCTL_PROBE_LOCK, below) now attaches: it
     # independently attempts a real, non-blocking flock() on the named lock
@@ -417,13 +463,18 @@ case "${2:-}" in
     # — and writes "busy" or "free" to STUB_SYSTEMCTL_PROBE_RESULT: a
     # genuine, independent process actually contending for the SAME
     # flock() this uninstall is meant to be holding throughout, not merely
-    # a file that exists. `stop` always succeeds here (install.sh only ever
-    # calls it once it has already gated the unit on its FILE, so the stub
-    # needs no unit-name tracking of its own to be realistic) unless
-    # STUB_SYSTEMCTL_STOP_EXIT forces a failure — independent of
+    # a file that exists. `stop` succeeds here unless the unit reads
+    # `not-found:inactive` (exit 5, above) or STUB_SYSTEMCTL_STOP_EXIT forces a failure — independent of
     # STUB_SYSTEMCTL_DISABLE_EXIT below, proving the two calls fail (and
     # are reported) independently is the point of having split them.
     stop)
+        read -r stop_load stop_active <<EOF_STATE
+$(unit_state "$3")
+EOF_STATE
+        if [ "$stop_load" = "not-found" ] && [ "$stop_active" = "inactive" ]; then
+            echo "Failed to stop $3: Unit $3 not loaded." >&2
+            exit 5
+        fi
         if [ -n "${STUB_SYSTEMCTL_PROBE_LOCK:-}" ]; then
             if command -v flock >/dev/null 2>&1; then
                 if flock -n "$STUB_SYSTEMCTL_PROBE_LOCK" true 2>/dev/null; then
@@ -453,12 +504,10 @@ case "${2:-}" in
     # fails "Unit file <u> does not exist" (`do_unit_file_disable`'s own
     # -ENOENT) without one, before it ever reaches a stop it no longer even
     # asks for — mirrored here against the stub's own $HOME. install.sh
-    # gates `disable` the same way it gates `stop` (#455): both run only
-    # when the unit FILE exists, so this stub's "does not exist" branch is
-    # not reachable through install.sh's own calls any more; it stays here
-    # because it is what real systemd does, and so an unset
-    # STUB_SYSTEMCTL_DISABLE_EXIT does not silently start meaning something
-    # different.
+    # runs `disable` only while the unit FILE exists (#463), so a fileless
+    # unit the manager still holds is stopped and never disabled; a
+    # regression that disables it anyway gets this branch's failure, which
+    # is what real systemd does.
     disable)
         # $3 is the unit name — UNLESS this is the old `--now` form (no
         # caller in install.sh uses it any more, but the stub still answers
@@ -6280,6 +6329,14 @@ test_uninstall_linux() {
     else
         fail "the metrics service is disabled" "no exact '--user disable solador-agent.service' line"
     fi
+    # A unit whose file exists is never asked about: the manager read is only
+    # for the fileless case, so a normal uninstall cannot fail on it.
+    # (devcanopy-agent.service has no file in this fixture, so it is excluded.)
+    if grep -- "--user show -p LoadState" "$STUB_SYSTEMCTL_ARGV" | grep -qv "devcanopy-agent.service"; then
+        fail "a unit with its file present never triggers a manager state read" "$(grep -- 'show -p LoadState' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a unit with its file present never triggers a manager state read"
+    fi
     assert_file_has "the update timer is stopped" "$STUB_SYSTEMCTL_ARGV" "--user stop solador-agent-update.timer"
     assert_file_has "the update timer is disabled" "$STUB_SYSTEMCTL_ARGV" "--user disable solador-agent-update.timer"
     assert_file_has "systemd is reloaded" "$STUB_SYSTEMCTL_ARGV" "--user daemon-reload"
@@ -6519,6 +6576,137 @@ test_uninstall_linux() {
         "--user disable devcanopy-agent.service"
     [ -e "$legacy_unit" ] && fail "the pre-rename unit file is removed too" "$legacy_unit still exists" \
         || pass "the pre-rename unit file is removed too"
+
+    # ---- a re-run asks the user manager too (#463, part of #455) ----
+    # After an exit 4 the first run has already deleted the unit FILES, so a
+    # re-run that gates only on files reports a false "Nothing installed". The
+    # stub's `show -p LoadState -p ActiveState` answers from
+    # STUB_SYSTEMCTL_UNIT_STATE (exact full names; unlisted = not-found:inactive
+    # with no file), `stop` on not-found:inactive exits 5, and `disable` fails
+    # ENOENT with no file — each of the five real-systemd behaviours #454's
+    # three review rounds found. Every fixture below is FILELESS: the state
+    # the first run's best-effort removal leaves behind.
+    local held_state="solador-agent.service=loaded:active"
+    local ghost_state="solador-agent.service=not-found:inactive solador-agent-update.service=not-found:inactive solador-agent-update.timer=not-found:inactive devcanopy-agent.service=not-found:inactive"
+    local show_prefix="--user show -p LoadState -p ActiveState"
+
+    # Requirement 5 + the clean-host criterion: nothing held, nothing stopped.
+    reset_argv_logs
+    run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a clean host (no files, no units) uninstalls as a no-op (Linux)" "0" "$INSTALL_STATUS"
+    assert_output_has "a clean host still says Nothing installed" "$out" "Nothing installed"
+    if systemctl_mutated; then
+        fail "a clean host makes no stop or disable call" "$(grep -E 'stop|disable' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a clean host makes no stop or disable call"
+    fi
+    # Full names, for every one of the four units (requirement 2).
+    for u in solador-agent.service solador-agent-update.timer solador-agent-update.service devcanopy-agent.service; do
+        if grep -qxF -- "$show_prefix $u" "$STUB_SYSTEMCTL_ARGV"; then
+            pass "the manager is asked about $u by its full name"
+        else
+            fail "the manager is asked about $u by its full name" "$(cat "$STUB_SYSTEMCTL_ARGV")"
+        fi
+    done
+
+    # Requirement 3: fileless units something still references read
+    # `not-found inactive`; `stop` on one exits 5, so counting it present is a
+    # false exit 4 forever. This must stay a clean no-op.
+    reset_argv_logs
+    STUB_SYSTEMCTL_UNIT_STATE="$ghost_state" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "fileless not-found:inactive units (dangling wants link, After=) are not exit 4 (Linux)" "0" "$INSTALL_STATUS"
+    assert_output_has "fileless not-found:inactive units still say Nothing installed" "$out" "Nothing installed"
+    if systemctl_mutated; then
+        fail "fileless not-found:inactive units are never stopped" "$(grep -E 'stop|disable' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "fileless not-found:inactive units are never stopped"
+    fi
+
+    # The headline: file gone, manager still holds the unit loaded:active.
+    reset_argv_logs
+    STUB_SYSTEMCTL_UNIT_STATE="$held_state" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a re-run stops a fileless unit the manager still holds and exits 0 (Linux)" "0" "$INSTALL_STATUS"
+    if grep -qxF -- "--user stop solador-agent.service" "$STUB_SYSTEMCTL_ARGV"; then
+        pass "the held unit is stopped by its full name"
+    else
+        fail "the held unit is stopped by its full name" "$(cat "$STUB_SYSTEMCTL_ARGV")"
+    fi
+    if grep -q -- "--user disable" "$STUB_SYSTEMCTL_ARGV"; then
+        fail "a fileless unit is never disabled (real systemd: ENOENT)" "$(grep -- '--user disable' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a fileless unit is never disabled (real systemd: ENOENT)"
+    fi
+    case "$out" in
+        *"Nothing installed"*) fail "a held fileless unit is not reported as Nothing installed" "$out" ;;
+        *) pass "a held fileless unit is not reported as Nothing installed" ;;
+    esac
+    assert_output_has "the held unit's stop is reported" "$out" "stopped solador-agent.service"
+    assert_file_has "a stopped fileless unit is followed by daemon-reload" "$STUB_SYSTEMCTL_ARGV" "--user daemon-reload"
+    assert_file_has "a stopped fileless unit is followed by reset-failed" "$STUB_SYSTEMCTL_ARGV" "--user reset-failed"
+
+    # The same re-run with the stop refused: exit 4 and the per-unit hint.
+    reset_argv_logs
+    STUB_SYSTEMCTL_UNIT_STATE="$held_state" STUB_SYSTEMCTL_STOP_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a re-run whose stop of a held fileless unit fails exits 4 (Linux)" "4" "$INSTALL_STATUS"
+    assert_output_has "the failed re-run names the unit's status command" "$out" "systemctl --user status solador-agent.service"
+    assert_output_has "the failed re-run claims the process may still be running" "$out" "still running"
+    if grep -q -- "--user disable" "$STUB_SYSTEMCTL_ARGV"; then
+        fail "a failed stop of a fileless unit still makes no disable call" "$(grep -- '--user disable' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "a failed stop of a fileless unit still makes no disable call"
+    fi
+
+    # Requirement 4: a fileless oneshot left `failed` is present and stops.
+    reset_argv_logs
+    STUB_SYSTEMCTL_UNIT_STATE="solador-agent-update.service=not-found:failed" run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a fileless failed oneshot is stopped and exits 0 (Linux)" "0" "$INSTALL_STATUS"
+    if grep -qxF -- "--user stop solador-agent-update.service" "$STUB_SYSTEMCTL_ARGV"; then
+        pass "the fileless failed oneshot is stopped by its full name"
+    else
+        fail "the fileless failed oneshot is stopped by its full name" "$(cat "$STUB_SYSTEMCTL_ARGV")"
+    fi
+    case "$out" in
+        *"Nothing installed"*) fail "a fileless failed oneshot is not reported as Nothing installed" "$out" ;;
+        *) pass "a fileless failed oneshot is not reported as Nothing installed" ;;
+    esac
+
+    # All four held at once: four full-name stops, no disable, and the
+    # legacy unit is covered the same way.
+    reset_argv_logs
+    STUB_SYSTEMCTL_UNIT_STATE="solador-agent.service=loaded:active solador-agent-update.timer=loaded:active solador-agent-update.service=not-found:failed devcanopy-agent.service=loaded:active" \
+        run_install "$home" --uninstall
+    assert_eq "a re-run holding all four units stops them all and exits 0 (Linux)" "0" "$INSTALL_STATUS"
+    for u in solador-agent.service solador-agent-update.timer solador-agent-update.service devcanopy-agent.service; do
+        if grep -qxF -- "--user stop $u" "$STUB_SYSTEMCTL_ARGV"; then
+            pass "all four held: $u is stopped"
+        else
+            fail "all four held: $u is stopped" "$(cat "$STUB_SYSTEMCTL_ARGV")"
+        fi
+    done
+    if grep -q -- "--user disable" "$STUB_SYSTEMCTL_ARGV"; then
+        fail "all four held: no disable call for fileless units" "$(grep -- '--user disable' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "all four held: no disable call for fileless units"
+    fi
+
+    # A state read that fails is not evidence either way: no stop is made on
+    # a guess, and the run says it could not tell rather than "Nothing
+    # installed" in silence.
+    reset_argv_logs
+    STUB_SYSTEMCTL_SHOW_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "an unreadable unit state is exit 4, not a false Nothing installed (Linux)" "4" "$INSTALL_STATUS"
+    assert_output_has "an unreadable unit state is named, not silently treated as absent" "$out" "could not read the state of"
+    if systemctl_mutated; then
+        fail "an unreadable unit state makes no stop call" "$(grep -E 'stop|disable' "$STUB_SYSTEMCTL_ARGV")"
+    else
+        pass "an unreadable unit state makes no stop call"
+    fi
 
     # ---- an unremovable binary: exit 6, no Done, no "removed:" line for it ----
     # (#439 fix 1) — chmod 555 on the binary's own parent directory (not the
