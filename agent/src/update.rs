@@ -1298,10 +1298,13 @@ pub fn probe_target(bind: &str, port: u16, tls: bool) -> (String, Dial) {
         .strip_prefix('[')
         .and_then(|b| b.strip_suffix(']'))
         .unwrap_or(bind);
-    let plain_host = match bind {
+    // Brackets are stripped, then added back only around an IPv6 literal:
+    // `[fd7a::1]` is not double-bracketed and `[100.64.0.9]` / `[host]` are
+    // not legal URL hosts as written (`lib.sh`'s `bind_bare`).
+    let plain_host = match bare {
         "" | "0.0.0.0" => "127.0.0.1".to_string(),
-        "::" | "[::]" => "[::1]".to_string(),
-        b if b.contains(':') && !b.starts_with('[') => format!("[{b}]"),
+        "::" => "[::1]".to_string(),
+        b if b.contains(':') => format!("[{b}]"),
         b => b.to_string(),
     };
     let wildcard = matches!(bare, "" | "0.0.0.0" | "::");
@@ -1463,10 +1466,10 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
 /// bind is probed as `localhost`, and [`probe_target`]'s [`Dial`] is
 /// `lib.sh`'s `connect_line` — where [`health_client`] connects it. Hostname
 /// verification stays on. The table test
-/// `probe_target_matches_lib_sh_for_the_tls_bind_forms` and `lib_test.sh`'s
-/// `verify_health` table pin the two sides to the same TLS rows; the plain-HTTP
-/// and bracketed-non-IPv6 forms are not pinned together (see `lib.sh`'s
-/// `health_url` comment).
+/// `probe_target_matches_lib_sh_for_every_bind_form` and `lib_test.sh`'s
+/// `health_url` / `verify_health` tables pin the two sides to the same rows,
+/// TLS off and on. The one form they leave to Rust alone is an IPv6 zone id,
+/// which `update` refuses under TLS (see `lib.sh`'s `health_url` comment).
 #[must_use]
 pub fn health_url(bind: &str, port: u16, tls: bool) -> String {
     probe_target(bind, port, tls).0
@@ -2977,14 +2980,14 @@ mod tests {
         }
     }
 
-    /// The TLS bind forms `lib.sh`'s `health_url` + `connect_line` handle,
-    /// with what each yields on the Rust side (#449): the URL, and where it is
-    /// dialled. `lib_test.sh`'s table (TLS=1 rows only) asserts the same rows
-    /// against the shell side. Plain-HTTP rows and bracketed non-IPv6 binds
-    /// (`[100.64.0.9]`, `[host]`) are not pinned to lib.sh and are known to
-    /// differ there.
+    /// Every bind form `lib.sh`'s `health_url` + `connect_line` handle, with
+    /// what each yields on the Rust side (#449, #462): the URL, and where it is
+    /// dialled, TLS off and on. `lib_test.sh`'s `health_url` and
+    /// `verify_health` tables assert the same rows against the shell side.
+    /// A bracketed non-IPv6 bind (`[100.64.0.9]`, `[host]`) is unbracketed on
+    /// both sides: brackets are only legal around an IPv6 literal.
     #[test]
-    fn probe_target_matches_lib_sh_for_the_tls_bind_forms() {
+    fn probe_target_matches_lib_sh_for_every_bind_form() {
         let sa = |s: &str| Dial::Addr(s.parse().unwrap());
         let name = |h: &str| Dial::Name {
             host: h.to_string(),
@@ -3023,6 +3026,16 @@ mod tests {
                 "[fd7a::1]",
                 plain("http://[fd7a::1]:7878/v1/health"),
                 tls(sa("[fd7a::1]:7878")),
+            ),
+            (
+                "[100.64.0.9]",
+                plain("http://100.64.0.9:7878/v1/health"),
+                tls(sa("100.64.0.9:7878")),
+            ),
+            (
+                "[host]",
+                plain("http://host:7878/v1/health"),
+                tls(name("host")),
             ),
             (
                 "host.tailnet.ts.net",

@@ -1065,7 +1065,13 @@ tests build (#417); the crate still has zero dependencies.
   two bind forms, before changing anything (`resolve_dial`): an IPv6 zone id
   (`fe80::1%en0`), which the probe has no portable place to carry (a zone is
   interface-local, and the probe's `localhost` URL and pinned address name none),
-  and a DNS name this host cannot resolve (5s bound). "Bind the address without
+  and a DNS name this host cannot resolve (5s bound) — each proven through
+  `run_update` and `run_rollback` to change nothing (`update_flow.rs`: exit 1,
+  live and `.prev` byte-identical, no restart, no release request). `lib.sh`
+  and `probe_target` agree on every other bind form, TLS off and on, including
+  the bracketed ones (`[fd7a::1]`, `[100.64.0.9]`, `[host]`: a bracket pair is
+  stripped and only an IPv6 literal is bracketed again); both tables hold the
+  same rows. "Bind the address without
   the zone" does not fix the first for a link-local address, which is reachable
   only through its zone: bind a non-link-local address, or turn TLS off for that
   host. An operator who must roll back meanwhile does it by hand — stop the

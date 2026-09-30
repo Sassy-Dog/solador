@@ -997,6 +997,12 @@ test_health_url() {
     assert_eq "health_url brackets an IPv6 literal" \
         "http://[fd7a:115c:a1e0::1]:7878/v1/health" "$(health_url "fd7a:115c:a1e0::1" "7878")"
 
+    assert_eq "health_url does not double-bracket an already-bracketed IPv6 literal" \
+        "http://[fd7a::1]:7878/v1/health" "$(health_url "[fd7a::1]" "7878" "0")"
+    assert_eq "health_url unbrackets a bracketed IPv4" \
+        "http://100.64.0.9:7878/v1/health" "$(health_url "[100.64.0.9]" "7878" "0")"
+    assert_eq "health_url unbrackets a bracketed hostname" \
+        "http://host:7878/v1/health" "$(health_url "[host]" "7878" "0")"
     assert_eq "health_url dials a hostname as-is" \
         "http://ubu-3xdv:7878/v1/health" "$(health_url "ubu-3xdv" "7878")"
 
@@ -1482,18 +1488,22 @@ test_verify_health() {
         "[config] cacert = \"$tls_dir/solador-agent.tls.crt\""
 
     # Every bind form's probe URL and connect target — the rows of
-    # agent/src/update.rs's `probe_target_matches_lib_sh_for_the_tls_bind_forms`,
-    # which must agree with these (#449). A wildcard is dialled at loopback
-    # with no connect-to; every other bind, a DNS name included, is probed as
-    # `localhost` and connected to the bind.
+    # agent/src/update.rs's `probe_target_matches_lib_sh_for_every_bind_form`,
+    # which must agree with these (#449, #462). A wildcard is dialled at
+    # loopback with no connect-to; every other bind, a DNS name included, is
+    # probed as `localhost` and connected to the bind. A bracketed non-IPv6
+    # bind is connected to unbracketed.
     local row bind_v want_url want_connect
     for row in \
+        "|https://127.0.0.1:7878/v1/health|" \
         "0.0.0.0|https://127.0.0.1:7878/v1/health|" \
         "::|https://[::1]:7878/v1/health|" \
         "[::]|https://[::1]:7878/v1/health|" \
         "100.64.0.9|https://localhost:7878/v1/health|localhost:7878:100.64.0.9:7878" \
         "fd7a::1|https://localhost:7878/v1/health|localhost:7878:[fd7a::1]:7878" \
         "[fd7a::1]|https://localhost:7878/v1/health|localhost:7878:[fd7a::1]:7878" \
+        "[100.64.0.9]|https://localhost:7878/v1/health|localhost:7878:100.64.0.9:7878" \
+        "[host]|https://localhost:7878/v1/health|localhost:7878:host:7878" \
         "host.tailnet.ts.net|https://localhost:7878/v1/health|localhost:7878:host.tailnet.ts.net:7878"; do
         bind_v="${row%%|*}"
         want_url="${row#*|}"
@@ -1515,6 +1525,38 @@ test_verify_health() {
             fail "bind '$bind_v': a wildcard has no connect target" "$(grep connect-to "$STUB_CURL_ARGV")"
         else
             pass "bind '$bind_v': a wildcard has no connect target"
+        fi
+    done
+
+    # The TLS=0 half of the same table (#462): the URL is the target, nothing
+    # is redirected and nothing is pinned, for every bind form — the plain rows
+    # of `probe_target_matches_lib_sh_for_every_bind_form`.
+    for row in \
+        "|http://127.0.0.1:7878/v1/health" \
+        "0.0.0.0|http://127.0.0.1:7878/v1/health" \
+        "::|http://[::1]:7878/v1/health" \
+        "[::]|http://[::1]:7878/v1/health" \
+        "100.64.0.9|http://100.64.0.9:7878/v1/health" \
+        "fd7a::1|http://[fd7a::1]:7878/v1/health" \
+        "[fd7a::1]|http://[fd7a::1]:7878/v1/health" \
+        "[100.64.0.9]|http://100.64.0.9:7878/v1/health" \
+        "[host]|http://host:7878/v1/health" \
+        "host.tailnet.ts.net|http://host.tailnet.ts.net:7878/v1/health"; do
+        bind_v="${row%%|*}"
+        want_url="${row#*|}"
+        printf 'SOLADOR_AGENT_TOKEN=%s\nSOLADOR_AGENT_BIND=%s\nSOLADOR_AGENT_PORT=7878\nSOLADOR_AGENT_TLS=0\n' \
+            "$token" "$bind_v" > "$tls_env"
+        : > "$STUB_CURL_ARGV"
+        (
+            PATH="$STUBS:$PATH"
+            export VERIFY_HEALTH_ATTEMPTS=1
+            verify_health "$tls_env" "0.4.0" >/dev/null 2>&1
+        )
+        assert_file_has "TLS=0, bind '$bind_v': the probe URL" "$STUB_CURL_ARGV" "$want_url"
+        if grep -q "connect-to\|cacert" "$STUB_CURL_ARGV"; then
+            fail "TLS=0, bind '$bind_v': nothing is redirected or pinned" "$(cat "$STUB_CURL_ARGV")"
+        else
+            pass "TLS=0, bind '$bind_v': nothing is redirected or pinned"
         fi
     done
 
@@ -5239,8 +5281,11 @@ STUB
     # from the agent's side only as a NAME in a message (the TLS-off wildcard
     # warning tells an operator what to remove): an env::var/var_os read of it,
     # or a `.get(`/`.remove(`/`.contains_key(` call or match arm naming it as a
-    # string literal, is asserted absent right below. Reads that go through
-    # `map["…"]` indexing or through a constant are NOT matched.
+    # string literal, is asserted absent right below — as is `map["…"]` indexing
+    # and a `const`/`static` binding the name to a constant (the
+    # agent/src/metrics.rs pattern), through which a read would go. A read of a
+    # constant is caught at the constant's definition, so a caller that holds
+    # only the constant's name is covered.
     local agent_keys launcher_keys
     # SOLADOR_AGENT_TEST_* are test-harness switches read only by #[cfg(test)]
     # code (SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK): not service configuration.
@@ -5251,9 +5296,9 @@ STUB
     # Any line naming the key that is not inside a string that is only a
     # message: a read looks like var("..."), var_os("..."), .get("...") or a
     # match arm. Flag every non-comment occurrence that has one of those shapes.
-    if grep -rnE '(var|var_os|get|remove|contains_key)\(\s*"SOLADOR_AGENT_BIND_AUTO"|"SOLADOR_AGENT_BIND_AUTO"\s*=>' "$SCRIPT_DIR/../src" | grep -q .; then
+    if grep -rnE '(var|var_os|get|remove|contains_key)\(\s*"SOLADOR_AGENT_BIND_AUTO"|"SOLADOR_AGENT_BIND_AUTO"\s*=>|\[\s*"SOLADOR_AGENT_BIND_AUTO"\s*\]|(const|static)[^=]*=\s*"SOLADOR_AGENT_BIND_AUTO"' "$SCRIPT_DIR/../src" | grep -q .; then
         fail "the agent source does not read SOLADOR_AGENT_BIND_AUTO" \
-            "$(grep -rnE '(var|var_os|get|remove|contains_key)\(\s*"SOLADOR_AGENT_BIND_AUTO"|"SOLADOR_AGENT_BIND_AUTO"\s*=>' "$SCRIPT_DIR/../src")"
+            "$(grep -rnE '(var|var_os|get|remove|contains_key)\(\s*"SOLADOR_AGENT_BIND_AUTO"|"SOLADOR_AGENT_BIND_AUTO"\s*=>|\[\s*"SOLADOR_AGENT_BIND_AUTO"\s*\]|(const|static)[^=]*=\s*"SOLADOR_AGENT_BIND_AUTO"' "$SCRIPT_DIR/../src")"
     else
         pass "the agent source does not read SOLADOR_AGENT_BIND_AUTO"
     fi

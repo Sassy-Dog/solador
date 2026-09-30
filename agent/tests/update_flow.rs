@@ -718,6 +718,25 @@ impl Harness {
         (harness, material)
     }
 
+    /// Rewrite the env file's `SOLADOR_AGENT_BIND` (#462), leaving the token,
+    /// port and `SOLADOR_AGENT_TLS` as they were: the harness's health
+    /// endpoint keeps listening where it does, so a bind that is refused is
+    /// refused by the updater rather than by nothing answering.
+    fn rebind(&self, bind: &str) {
+        let text = fs::read_to_string(&self.env_file).unwrap();
+        let rewritten: Vec<String> = text
+            .lines()
+            .map(|l| {
+                if l.starts_with("SOLADOR_AGENT_BIND=") {
+                    format!("SOLADOR_AGENT_BIND={bind}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        fs::write(&self.env_file, rewritten.join("\n") + "\n").unwrap();
+    }
+
     fn live(&self) -> Vec<u8> {
         fs::read(&self.install.binary).unwrap()
     }
@@ -1860,6 +1879,105 @@ async fn the_health_probe_brackets_an_ipv6_bind() {
     let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
     assert!(matches!(outcome, UpdateOutcome::Updated { .. }));
     assert!(h.output().contains("http://[::1]:"), "{}", h.output());
+}
+
+// ---------------------------------------------------------------------------
+// TLS bind forms through the transaction (#449, #462)
+// ---------------------------------------------------------------------------
+
+/// Under TLS, `resolve_dial` refuses an IPv6 zone-id bind and a DNS name that
+/// does not resolve, and `run_update` / `run_rollback` call it before any
+/// fetch, swap or restart. Only `resolve_dial` itself was tested, so moving the
+/// call after the swap left every test green; this drives both entry points
+/// and asserts the refusal changed nothing: exit 1, live and `.prev` bytes
+/// identical, no restart, and no request that reached the release server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_tls_bind_changes_nothing_for_update_and_for_rollback() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    // `.invalid` is reserved (RFC 6761) and never resolves.
+    for (bind, says) in [
+        ("does-not-exist.invalid", "cannot resolve"),
+        ("fe80::1%en0", "zone id"),
+    ] {
+        // update: a release is on offer, and must never be asked about.
+        let (h, _material) = Harness::new_tls(&installed, "127.0.0.1").await;
+        h.rebind(bind);
+        let rig = release_for(NEW, &candidate, &key_a()).await;
+        let err = h
+            .update(&rig.base, trust(&[&key_a()]))
+            .await
+            .expect_err("a refused bind must not update");
+        assert!(matches!(err, UpdateError::Install(_)), "{bind}: {err}");
+        assert_eq!(err.exit_code(), 1, "{bind}: {err}");
+        assert!(err.to_string().contains(says), "{bind}: {err}");
+        assert!(err.to_string().contains(bind), "{bind}: {err}");
+        h.assert_untouched(&installed, &format!("update, bind {bind}"));
+        assert!(
+            rig.requests().is_empty(),
+            "update, bind {bind}: the release server was asked: {:?}",
+            rig.requests()
+        );
+
+        // rollback: a `.prev` is there to be restored, and must stay where
+        // it is while the live binary stays what it was.
+        let (h, _material) = Harness::new_tls(&candidate, "127.0.0.1").await;
+        h.rebind(bind);
+        fs::write(h.install.sibling(".prev"), &installed).unwrap();
+        let err = h
+            .rollback()
+            .await
+            .expect_err("a refused bind must not roll back");
+        assert!(matches!(err, UpdateError::Install(_)), "{bind}: {err}");
+        assert_eq!(err.exit_code(), 1, "{bind}: {err}");
+        assert!(err.to_string().contains(says), "{bind}: {err}");
+        assert!(err.to_string().contains(bind), "{bind}: {err}");
+        assert!(
+            !h.new_exists(),
+            "rollback, bind {bind}: a .new was staged before the refusal"
+        );
+        assert_eq!(h.live(), candidate, "rollback, bind {bind}: live changed");
+        assert_eq!(
+            h.prev().as_deref(),
+            Some(installed.as_slice()),
+            "rollback, bind {bind}: .prev changed"
+        );
+        assert!(!h.install.sibling(".rollback-displaced").exists());
+        assert_eq!(h.service.restarts(), 0, "rollback, bind {bind}: restarted");
+        assert!(!h.output().contains(TOKEN), "{}", h.output());
+    }
+}
+
+/// The name-bind success path through `run_update`: the bind is a DNS name, it
+/// resolves, TLS is on, and the post-restart probe passes. `localhost` is the
+/// hermetic name — the hosts file answers it with no network — and, unlike the
+/// `.invalid` refusals above, it resolves. It proves `run_update` accepts a
+/// resolvable name and takes the `Dial::Name` path; it does NOT prove the
+/// address pin (`localhost` is also the probe URL's host, so the pin is
+/// redundant here) — `health_client_reaches_a_dns_name_bind_absent_from_the_san_list`
+/// in `update.rs` covers that, on Linux where 127.0.0.2 binds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dns_name_bind_updates_through_run_update_under_tls() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let (h, _material) = Harness::new_tls(&installed, "localhost").await;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
+    assert!(
+        matches!(outcome, UpdateOutcome::Updated { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(h.live(), candidate, "the candidate is live");
+    assert_eq!(h.prev().unwrap(), installed);
+    assert_eq!(h.service.restarts(), 1);
+    assert_eq!(h.served_version().as_deref(), Some(NEW));
+    assert!(
+        h.output().contains("https://localhost:") && h.output().contains("(via localhost:"),
+        "the probe names localhost and says which name it dialled: {}",
+        h.output()
+    );
+    assert!(!h.output().contains(TOKEN), "{}", h.output());
 }
 
 // ---------------------------------------------------------------------------
