@@ -386,8 +386,11 @@ build_release_binary() {
 #
 # The optional third argument is SOLADOR_AGENT_TLS's value (#447): exactly
 # "1" means https://, anything else (including absent) means http:// — never
-# inferred from the port. Mirrors agent/src/update.rs's `health_url`, which
-# is why the two cannot disagree about what a bind/port/tls triple dials.
+# inferred from the port. agent/src/update.rs's `probe_target` carries the same
+# rows — this URL, and for TLS `verify_health`'s `connect_line` — and its table
+# test plus lib_test.sh's `verify_health` table pin the two to each other. They
+# agree on every bind form but one: an IPv6 zone id, which `update` refuses
+# under TLS and curl is handed unchanged.
 health_url() {
     local bind="${1:-}" port="${2:-7878}" tls="${3:-}" host scheme
     case "$bind" in

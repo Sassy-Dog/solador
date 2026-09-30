@@ -326,9 +326,15 @@ it by identity, not by the address they dial. `install.sh`'s check verifies it
 as the name `localhost` (in every certificate's baseline) while `curl
 --connect-to` dials the bind address; `solador-agent update`'s post-restart
 probe trusts the certificate as its only root and dials `localhost` too, with
-the connection resolved to the bind address (loopback for a wildcard) — chain
-and hostname are both verified. A
-bind that changes after the certificate exists therefore breaks neither.
+the connection pinned to the bind (`resolve_to_addrs`): its IP, the addresses a
+DNS-name bind resolves to (looked up before anything is swapped — a name that
+does not resolve is a refusal with nothing changed, never a failed recovery),
+or loopback for a wildcard — chain and hostname are both verified. A bind that
+changes after the certificate exists therefore breaks neither, whether it is
+an IP or a name (the MagicDNS name of a host first installed on all
+interfaces, say). The exception is an IPv6 zone-id bind (`fe80::1%en0`), which
+`update` refuses under TLS before changing anything — neither a resolver pin
+nor a URL carries a zone id portably.
 
 **A wildcard bind (#449) adds nothing to the list, and needs nothing.**
 `0.0.0.0` and `::` are dropped from the SANs (nothing dials them), and the

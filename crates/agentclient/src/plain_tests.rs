@@ -240,7 +240,12 @@ async fn a_redirect_is_not_followed_and_the_second_listener_is_never_contacted()
     let elsewhere_port = elsewhere.local_addr().unwrap().port();
 
     let redirector = tokio::spawn(async move {
-        let (mut conn, _) = allowed.accept().await.unwrap();
+        // Bounded: a regression that stops the client connecting must fail
+        // this test, not hang CI.
+        let (mut conn, _) = tokio::time::timeout(Duration::from_secs(10), allowed.accept())
+            .await
+            .expect("the allowed listener was never contacted within 10s")
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let _ = conn.read(&mut buf).await;
         let reply = format!(

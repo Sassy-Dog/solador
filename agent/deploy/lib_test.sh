@@ -1481,6 +1481,43 @@ test_verify_health() {
     assert_file_has "once found, the probe pins via cacert" "$STUB_CURL_ARGV" \
         "[config] cacert = \"$tls_dir/solador-agent.tls.crt\""
 
+    # Every bind form's probe URL and connect target — the rows of
+    # agent/src/update.rs's `probe_target_matches_lib_sh_for_every_bind_form`,
+    # which must agree with these (#449). A wildcard is dialled at loopback
+    # with no connect-to; every other bind, a DNS name included, is probed as
+    # `localhost` and connected to the bind.
+    local row bind_v want_url want_connect
+    for row in \
+        "0.0.0.0|https://127.0.0.1:7878/v1/health|" \
+        "::|https://[::1]:7878/v1/health|" \
+        "[::]|https://[::1]:7878/v1/health|" \
+        "100.64.0.9|https://localhost:7878/v1/health|localhost:7878:100.64.0.9:7878" \
+        "fd7a::1|https://localhost:7878/v1/health|localhost:7878:[fd7a::1]:7878" \
+        "[fd7a::1]|https://localhost:7878/v1/health|localhost:7878:[fd7a::1]:7878" \
+        "host.tailnet.ts.net|https://localhost:7878/v1/health|localhost:7878:host.tailnet.ts.net:7878"; do
+        bind_v="${row%%|*}"
+        want_url="${row#*|}"
+        want_connect="${want_url#*|}"
+        want_url="${want_url%%|*}"
+        printf 'SOLADOR_AGENT_TOKEN=%s\nSOLADOR_AGENT_BIND=%s\nSOLADOR_AGENT_PORT=7878\nSOLADOR_AGENT_TLS=1\n' \
+            "$token" "$bind_v" > "$tls_env"
+        : > "$STUB_CURL_ARGV"
+        (
+            PATH="$STUBS:$PATH"
+            export VERIFY_HEALTH_ATTEMPTS=1
+            verify_health "$tls_env" "0.4.0" >/dev/null 2>&1
+        )
+        assert_file_has "bind '$bind_v': the probe URL" "$STUB_CURL_ARGV" "$want_url"
+        if [ -n "$want_connect" ]; then
+            assert_file_has "bind '$bind_v': the connect target" "$STUB_CURL_ARGV" \
+                "[config] connect-to = \"$want_connect\""
+        elif grep -q "connect-to" "$STUB_CURL_ARGV"; then
+            fail "bind '$bind_v': a wildcard has no connect target" "$(grep connect-to "$STUB_CURL_ARGV")"
+        else
+            pass "bind '$bind_v': a wildcard has no connect target"
+        fi
+    done
+
     rm -rf "$tls_dir"
     unset STUB_CURL_BODY STUB_CURL_ARGV
 }
@@ -3989,6 +4026,7 @@ test_install_tls_no_tailnet_bind() {
     assert_eq "install.sh: explicit TLS=1, no tailnet, pre-TLS binary is refused" "1" "$INSTALL_STATUS"
     assert_output_has "the refusal came after staging" "$out" "==> Verified "
     assert_output_has "the refusal names the pre-TLS binary" "$out" "predates #447 and"
+    assert_output_has "the refusal offers dropping the explicit TLS=1" "$out" "drop SOLADOR_AGENT_TLS=1"
     case "$out" in
         *"turn TLS on (SOLADOR_AGENT_TLS=1"* | *"serve HTTPS (SOLADOR_AGENT_TLS=1"*)
             fail "the refusal does not advise setting the TLS=1 the operator already set" "it did" ;;
@@ -5196,15 +5234,27 @@ STUB
     # And ONE the other way round (#449): SOLADOR_AGENT_BIND_AUTO is written by
     # install.sh, never read by the agent, so the launcher names it (a silent
     # arm, so it is a recognised line and is not logged as "unrecognised") and
-    # the Rust source does not read it. Excluded from the launcher's side, then
-    # pinned by its own test below — and from the agent's side too, because the
-    # agent's TLS-off wildcard warning NAMES the key to tell an operator what to
-    # remove (naming it in a message is not reading it).
+    # the Rust source does not read it. Excluded from the launcher's side, and
+    # from the agent's side only as a NAME in a message (the TLS-off wildcard
+    # warning tells an operator what to remove): an env::var/var_os read of it,
+    # or a read of it through the env-file map, is asserted absent right below,
+    # so an agent that starts reading it cannot pass unnoticed.
     local agent_keys launcher_keys
-    agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u \
+    # SOLADOR_AGENT_TEST_* are test-harness switches read only by #[cfg(test)]
+    # code (SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK): not service configuration.
+    agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u | grep -v '^SOLADOR_AGENT_TEST_' \
         | grep -vx -e 'SOLADOR_AGENT_LAUNCHD_LABEL' -e 'SOLADOR_AGENT_CONFIG_DIR' -e 'SOLADOR_AGENT_BIND_AUTO' | tr '\n' ' ')"
     launcher_keys="$(grep -oE 'SOLADOR_AGENT_[A-Z_]+=\*' "$launcher" | sed 's/=\*$//' | sort -u \
         | grep -vx 'SOLADOR_AGENT_BIND_AUTO' | tr '\n' ' ')"
+    # Any line naming the key that is not inside a string that is only a
+    # message: a read looks like var("..."), var_os("..."), .get("...") or a
+    # match arm. Flag every non-comment occurrence that has one of those shapes.
+    if grep -rnE '(var|var_os|get|remove|contains_key)\(\s*"SOLADOR_AGENT_BIND_AUTO"|"SOLADOR_AGENT_BIND_AUTO"\s*=>' "$SCRIPT_DIR/../src" | grep -q .; then
+        fail "the agent source does not read SOLADOR_AGENT_BIND_AUTO" \
+            "$(grep -rnE '(var|var_os|get|remove|contains_key)\(\s*"SOLADOR_AGENT_BIND_AUTO"|"SOLADOR_AGENT_BIND_AUTO"\s*=>' "$SCRIPT_DIR/../src")"
+    else
+        pass "the agent source does not read SOLADOR_AGENT_BIND_AUTO"
+    fi
     assert_eq "the launcher allow-lists every SOLADOR_AGENT_* key the agent reads" \
         "$agent_keys" "$launcher_keys"
 

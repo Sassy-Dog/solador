@@ -321,8 +321,9 @@ fn tls_config_dir() -> Result<std::path::PathBuf, String> {
 /// only ever read). `bind_host` goes into the certificate's SAN list beside
 /// the loopback baseline, so a client that dials the bind address by name can
 /// verify it. The list is fixed at first start, and the local health probes do
-/// not depend on it (they pin the certificate itself, #449). A wildcard bind
-/// adds nothing.
+/// not depend on it (#449): they pin the certificate itself, name `localhost`
+/// (always in the baseline) and connect to the bind, an IP or a DNS name
+/// alike. A wildcard bind adds nothing.
 /// Exits the process on any fatal error, the same way the plain-HTTP path
 /// above does.
 async fn serve_tls(app: axum::Router, addr: &str, bind_host: &str, hostname: &str) {

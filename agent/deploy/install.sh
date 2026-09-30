@@ -1546,8 +1546,10 @@ if [ -z "$BIND" ]; then
         echo "       does not support TLS (solador-agent tls-fingerprint is not a recognized" >&2
         echo "       command on this binary), and no Tailscale IP was detected for" >&2
         echo "       SOLADOR_AGENT_BIND — so there is nothing safe to bind. Pin a release that has" >&2
-        echo "       TLS (SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD), bring up Tailscale, or set" >&2
-        echo "       SOLADOR_AGENT_BIND to the address the cockpit dials. Nothing has been changed." >&2
+        echo "       TLS (SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD), bring up Tailscale, set" >&2
+        echo "       SOLADOR_AGENT_BIND to the address the cockpit dials, or drop SOLADOR_AGENT_TLS=1" >&2
+        echo "       (or set it to 0) and set SOLADOR_AGENT_BIND, which is then a plain-HTTP install." >&2
+        echo "       Nothing has been changed." >&2
         exit 1
     fi
     if [ "$TLS_VALUE" != "1" ]; then

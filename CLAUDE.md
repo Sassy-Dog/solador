@@ -1045,11 +1045,16 @@ tests build (#417); the crate still has zero dependencies.
   post-install check verifies the certificate as the name `localhost` (in every
   certificate's baseline) while `curl --connect-to` dials the bind address, and
   `solador-agent update`'s post-restart probe trusts exactly this certificate
-  as its only root and dials `localhost` too, with the connection `resolve`d to
-  the bind address (loopback for a wildcard). Both verify the chain **and** the
-  hostname — verification is never disabled, no `danger_accept_invalid_certs`
-  or `danger_accept_invalid_hostnames` anywhere — and neither breaks when the
-  bind changes after the certificate exists. Axum's TLS comes from
+  as its only root and dials `localhost` too, with the connection pinned
+  (`resolve_to_addrs`) to the bind: its IP, the addresses a DNS-name bind
+  resolves to (looked up before anything is swapped; a name that does not
+  resolve is a refusal, not a failed recovery), or loopback for a wildcard.
+  Both verify the chain **and** the hostname — verification is never
+  disabled, no `danger_accept_invalid_certs` or `danger_accept_invalid_hostnames`
+  anywhere — and neither breaks when the bind changes after the certificate
+  exists, an IP or a name alike. The one bind form `update` refuses under TLS is
+  an IPv6 zone id (`fe80::1%en0`): neither `resolve` nor a URL carries one
+  portably, so it names the problem before changing anything. Axum's TLS comes from
   `axum-server`'s `tls-rustls-no-provider` feature rather than its default
   `tls-rustls`, specifically to avoid pulling in `aws-lc-rs` (a second
   crypto backend, and a `cmake`/C build the musl cross-compile does not

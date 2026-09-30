@@ -99,7 +99,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -1239,37 +1239,142 @@ impl Serving {
         &self.token
     }
 
-    /// The URL the health probe dials — `lib.sh`'s `health_url`: a wildcard
-    /// bind is not an address you can dial, so loopback; an IPv6 literal is
-    /// bracketed; `https://` when `tls` is on.
+    /// The URL the health probe dials — `lib.sh`'s `health_url` /
+    /// `probe_url`: a wildcard bind is not an address you can dial, so
+    /// loopback; an IPv6 literal is bracketed; `https://` when `tls` is on,
+    /// and then naming `localhost` for every non-wildcard bind (see
+    /// [`probe_target`]).
     #[must_use]
     pub fn health_url(&self) -> String {
         health_url(&self.bind, self.port, self.tls)
     }
 
-    /// Where the health probe's connection actually goes: the bind as a
-    /// concrete address, loopback for a wildcard. `None` when the bind is not
-    /// an IP literal at all. Over TLS the URL names `localhost` (see
-    /// [`health_url`]) and the client is told to connect here.
+    /// Where the probe's connection really goes. See [`Dial`].
     #[must_use]
-    pub fn dial_addr(&self) -> Option<SocketAddr> {
-        dial_addr(&self.bind, self.port)
+    pub fn dial(&self) -> Dial {
+        probe_target(&self.bind, self.port, self.tls).1
+    }
+
+    /// The URL for a human: under TLS the URL names `localhost` whatever the
+    /// bind is, so an operator reading `https://localhost:P/v1/health` would
+    /// debug loopback. This adds the address actually dialled, e.g.
+    /// `https://localhost:7878/v1/health (via 100.64.0.9:7878)`.
+    #[must_use]
+    pub fn probe_label(&self) -> String {
+        let url = self.health_url();
+        match self.dial() {
+            Dial::Url => url,
+            Dial::Addr(a) => format!("{url} (via {a})"),
+            Dial::Name { host, port } => format!("{url} (via {host}:{port})"),
+            Dial::ZoneId(b) => format!("{url} (via {b}, refused)"),
+        }
     }
 }
 
-/// The address `lib.sh`'s `verify_health` connects to: the bind when it is a
-/// concrete IP, loopback for a wildcard (`""`, `0.0.0.0`, `::`).
-fn dial_addr(bind: &str, port: u16) -> Option<SocketAddr> {
+/// Where a TLS health probe's connection goes while its URL names
+/// `localhost` (#449) — `lib.sh`'s `connect_line`, in Rust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dial {
+    /// TLS is off: the URL is the target, nothing is redirected.
+    Url,
+    /// A concrete address: the bind's IP, or loopback for a wildcard.
+    Addr(SocketAddr),
+    /// The bind is a DNS name: it is resolved (see [`resolve_dial`]) and the
+    /// results are what `localhost` connects to.
+    Name { host: String, port: u16 },
+    /// An IPv6 literal with a zone id (`fe80::1%en0`). Refused under TLS
+    /// (see [`resolve_dial`]).
+    ZoneId(String),
+}
+
+/// The URL to probe and where its connection goes, for every bind form
+/// `lib.sh`'s `health_url` + `connect_line` handle. Under TLS the URL always
+/// names `localhost` — a name every generated certificate carries, since the
+/// SAN list is fixed at first start and the bind can change afterwards — and
+/// the connection goes to the bind.
+#[must_use]
+pub fn probe_target(bind: &str, port: u16, tls: bool) -> (String, Dial) {
     let bare = bind
         .strip_prefix('[')
         .and_then(|b| b.strip_suffix(']'))
         .unwrap_or(bind);
-    let ip = match bare {
-        "" | "0.0.0.0" => IpAddr::V4(Ipv4Addr::LOCALHOST),
-        "::" => IpAddr::V6(Ipv6Addr::LOCALHOST),
-        other => other.parse::<IpAddr>().ok()?,
+    let plain_host = match bind {
+        "" | "0.0.0.0" => "127.0.0.1".to_string(),
+        "::" | "[::]" => "[::1]".to_string(),
+        b if b.contains(':') && !b.starts_with('[') => format!("[{b}]"),
+        b => b.to_string(),
     };
-    Some(SocketAddr::new(ip, port))
+    let wildcard = matches!(bare, "" | "0.0.0.0" | "::");
+    if !tls || wildcard {
+        // A wildcard is dialled at loopback as written — `lib.sh`'s
+        // `probe_url` with no `connect_line` — and the loopback IPs are in
+        // every certificate's baseline SAN list.
+        let scheme = if tls { "https" } else { "http" };
+        return (
+            format!("{scheme}://{plain_host}:{port}/v1/health"),
+            Dial::Url,
+        );
+    }
+    let dial = match bare.parse::<IpAddr>() {
+        Ok(ip) => Dial::Addr(SocketAddr::new(ip, port)),
+        Err(_) if bare.contains('%') => Dial::ZoneId(bind.to_string()),
+        Err(_) => Dial::Name {
+            host: bare.to_string(),
+            port,
+        },
+    };
+    (format!("https://localhost:{port}/v1/health"), dial)
+}
+
+/// The addresses `localhost` is pinned to for the probe; empty when the URL
+/// is dialled as written (TLS off).
+///
+/// A DNS-name bind is resolved here, through the host's resolver (bounded at
+/// 5 s), exactly as `curl --connect-to` resolves it in `lib.sh` — so a host
+/// re-bound to its MagicDNS name after its certificate was made (which names
+/// only the loopback baseline plus whatever bind existed then) still verifies.
+/// A name that does not resolve is a **refusal**, called from `run_update` and
+/// `run_rollback` before anything is fetched or swapped, never a failure found
+/// with the candidate live and misreported as a failed recovery.
+///
+/// A zone-id bind (`fe80::1%en0`) is refused under TLS: neither `resolve` nor a
+/// URL can carry a zone id portably, and a link-local bind is not a reachable
+/// address for anything but its own link. (`lib.sh` hands it to curl
+/// unchanged; the two differ only there.)
+pub async fn resolve_dial(dial: &Dial) -> Result<Vec<SocketAddr>, UpdateError> {
+    match dial {
+        Dial::Url => Ok(Vec::new()),
+        Dial::Addr(a) => Ok(vec![*a]),
+        Dial::ZoneId(bind) => Err(UpdateError::Install(format!(
+            "SOLADOR_AGENT_BIND '{bind}' carries an IPv6 zone id, which the TLS health probe \
+             cannot dial; bind the address without the zone (or a name that resolves to it)"
+        ))),
+        Dial::Name { host, port } => {
+            let looked_up = tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::net::lookup_host((host.as_str(), *port)),
+            )
+            .await;
+            let refuse = |why: String| {
+                UpdateError::Install(format!(
+                    "SOLADOR_AGENT_BIND is the name '{host}', which this host cannot resolve \
+                     ({why}); the TLS health probe connects to it, so nothing was changed"
+                ))
+            };
+            match looked_up {
+                Err(_) => Err(refuse("lookup timed out after 5s".to_string())),
+                Ok(Err(e)) => Err(refuse(e.to_string())),
+                Ok(Ok(addrs)) => {
+                    let addrs: Vec<SocketAddr> = addrs.collect();
+                    if addrs.is_empty() {
+                        Err(refuse("no addresses returned".to_string()))
+                    } else {
+                        Ok(addrs)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Parse an env file the way systemd's `EnvironmentFile=` and the launcher
@@ -1352,29 +1457,16 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
     })
 }
 
-/// `lib.sh`'s `health_url`, verbatim but for the scheme (#447): `https://`
-/// when `tls` is on, `http://` otherwise — never inferred from the port.
-///
-/// Over TLS, when the bind is an IP (or a wildcard), the URL names
-/// `localhost` — a name every certificate this agent generates carries — and
-/// [`health_client`] connects to [`dial_addr`] through `resolve` (#449): the
-/// same shape as `lib.sh`'s `connect-to`. The certificate's SAN list is fixed
-/// at generation and the bind can change afterwards, so verifying by the bind
-/// address would fail a healthy host; verifying the name `localhost` keeps
-/// hostname verification on.
+/// `lib.sh`'s `probe_url` (#447, #449): `https://` when `tls` is on, `http://`
+/// otherwise — never inferred from the port. Under TLS every non-wildcard
+/// bind is probed as `localhost`, and [`probe_target`]'s [`Dial`] is
+/// `lib.sh`'s `connect_line` — where [`health_client`] connects it. Hostname
+/// verification stays on. The table test
+/// `probe_target_matches_lib_sh_for_every_bind_form` and `lib_test.sh`'s
+/// `verify_health` table pin the two sides to the same rows.
 #[must_use]
 pub fn health_url(bind: &str, port: u16, tls: bool) -> String {
-    if tls && dial_addr(bind, port).is_some() {
-        return format!("https://localhost:{port}/v1/health");
-    }
-    let host = match bind {
-        "" | "0.0.0.0" => "127.0.0.1".to_string(),
-        "::" | "[::]" => "[::1]".to_string(),
-        b if b.contains(':') && !b.starts_with('[') => format!("[{b}]"),
-        b => b.to_string(),
-    };
-    let scheme = if tls { "https" } else { "http" };
-    format!("{scheme}://{host}:{port}/v1/health")
+    probe_target(bind, port, tls).0
 }
 
 // ---------------------------------------------------------------------------
@@ -1706,13 +1798,14 @@ fn release_client(
 /// could never chain to anyway — through the standard chain **and hostname**
 /// verifier. Nothing is disabled. The URL names `localhost` (in every
 /// generated certificate's baseline SAN list), and `dial` is where the
-/// connection really goes (the bind, or loopback for a wildcard): `resolve`
-/// pins the name to it, as `lib.sh`'s `verify_health` does with `curl
-/// --connect-to` (#449).
+/// connection really goes (the bind, its resolved addresses for a name, or
+/// loopback for a wildcard — [`resolve_dial`]): `resolve_to_addrs` pins the
+/// name to them, as `lib.sh`'s `verify_health` does with `curl --connect-to`
+/// (#449). Empty `dial` leaves the URL's host alone.
 fn health_client(
     running_version: Option<&str>,
     pin: Option<&[u8]>,
-    dial: Option<SocketAddr>,
+    dial: &[SocketAddr],
 ) -> Result<reqwest::Client, UpdateError> {
     let mut builder = reqwest::Client::builder()
         .user_agent(user_agent(running_version))
@@ -1728,8 +1821,8 @@ fn health_client(
         builder = builder
             .add_root_certificate(cert)
             .tls_built_in_root_certs(false);
-        if let Some(addr) = dial {
-            builder = builder.resolve("localhost", addr);
+        if !dial.is_empty() {
+            builder = builder.resolve_to_addrs("localhost", dial);
         }
     }
     builder.build().map_err(|e| UpdateError::Network {
@@ -1861,6 +1954,7 @@ pub async fn wait_for_health(
     report: &mut dyn FnMut(&str),
 ) -> Result<Option<String>, String> {
     let url = serving.health_url();
+    let label = serving.probe_label();
     let started = Instant::now();
     let mut last = String::new();
     for attempt in 1..=attempts {
@@ -1878,24 +1972,24 @@ pub async fn wait_for_health(
                 match (expect, &reported) {
                     (Expect::Online, None) => return Ok(None),
                     (Expect::Online, Some(got)) => format!(
-                        "{url} reports version {got}, but the restored binary carries none — \
+                        "{label} reports version {got}, but the restored binary carries none — \
                          that is the displaced process still answering"
                     ),
                     (Expect::Version(want), Some(got)) if got == want => return Ok(reported),
                     (Expect::Version(want), Some(got)) => {
-                        format!("{url} reports version {got}, want {want}")
+                        format!("{label} reports version {got}, want {want}")
                     }
                     (Expect::Version(want), None) => {
-                        format!("{url} answered but reports no version (want {want})")
+                        format!("{label} answered but reports no version (want {want})")
                     }
                 }
             }
             Ok(resp) => format!(
-                "{url} answered HTTP {} (a 401 means the token in the env file is not the \
+                "{label} answered HTTP {} (a 401 means the token in the env file is not the \
                  one the running agent holds)",
                 resp.status()
             ),
-            Err(e) => format!("{url}: {}", transport_summary(e)),
+            Err(e) => format!("{label}: {}", transport_summary(e)),
         };
         if observation != last {
             report(&format!(
@@ -2055,11 +2149,8 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
     // nothing changed, never a failure discovered with the candidate live.
     let client = release_client(&ctx.release_base, ctx.running_version.as_deref())?;
     let pin = health_pin(&ctx.serving, &ctx.install)?;
-    let health = health_client(
-        ctx.running_version.as_deref(),
-        pin.as_deref(),
-        ctx.serving.dial_addr(),
-    )?;
+    let dial = resolve_dial(&ctx.serving.dial()).await?;
+    let health = health_client(ctx.running_version.as_deref(), pin.as_deref(), &dial)?;
 
     // 3. The concrete release, and its feed — exact bytes verified first.
     let discovery = reqwest::Client::builder()
@@ -2126,7 +2217,7 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
         })?;
         (ctx.report)(&format!(
             "==> Verifying {} is serving {v} ...",
-            ctx.serving.health_url()
+            ctx.serving.probe_label()
         ));
         if let Err(reason) = wait_for_health(
             &health,
@@ -2146,7 +2237,7 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
         }
         (ctx.report)(&format!(
             "==> Health OK: {} reports version {v}",
-            ctx.serving.health_url()
+            ctx.serving.probe_label()
         ));
         return Ok(UpdateOutcome::AlreadyCurrent {
             version: feed.version.clone(),
@@ -2245,7 +2336,7 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
             Ok(_) => {
                 (ctx.report)(&format!(
                     "==> Health OK: {} reports version {}",
-                    ctx.serving.health_url(),
+                    ctx.serving.probe_label(),
                     feed.version
                 ));
                 return Ok(UpdateOutcome::Updated {
@@ -2317,11 +2408,8 @@ pub async fn run_rollback(ctx: &mut Context<'_>) -> Result<RollbackOutcome, Upda
     // Built before the swap, for the same reason run_update builds its
     // clients before it fetches.
     let pin = health_pin(&ctx.serving, &ctx.install)?;
-    let health = health_client(
-        ctx.running_version.as_deref(),
-        pin.as_deref(),
-        ctx.serving.dial_addr(),
-    )?;
+    let dial = resolve_dial(&ctx.serving.dial()).await?;
+    let health = health_client(ctx.running_version.as_deref(), pin.as_deref(), &dial)?;
     // Staged first (mode 0755, whatever mode .prev carries — a hand-placed
     // .prev may well be 0644), and asked its version from there. Known where
     // it can be known: a previous binary that names its version is held to
@@ -2397,7 +2485,7 @@ pub async fn run_rollback(ctx: &mut Context<'_>) -> Result<RollbackOutcome, Upda
         .map_err(|reason| UpdateError::RollbackUnhealthy { reason, inspect })?;
     (ctx.report)(&format!(
         "==> Health OK: {} is back online{}",
-        ctx.serving.health_url(),
+        ctx.serving.probe_label(),
         served_version
             .as_deref()
             .map(|v| format!(", reports version {v}"))
@@ -2516,11 +2604,11 @@ async fn restart_and_verify(
     match expect {
         Expect::Version(v) => (ctx.report)(&format!(
             "==> Verifying {} reports version {v} ...",
-            ctx.serving.health_url()
+            ctx.serving.probe_label()
         )),
         Expect::Online => (ctx.report)(&format!(
             "==> Verifying {} is back online ...",
-            ctx.serving.health_url()
+            ctx.serving.probe_label()
         )),
     }
     wait_for_health(
@@ -2590,7 +2678,7 @@ async fn restore_previous(
     })?;
     (ctx.report)(&format!(
         "==> Health OK (recovery): {} reports {}",
-        ctx.serving.health_url(),
+        ctx.serving.probe_label(),
         served
             .as_deref()
             .map(|v| format!("version {v}"))
@@ -2884,46 +2972,101 @@ mod tests {
         }
     }
 
+    /// Every bind form `lib.sh`'s `health_url` + `connect_line` handle, with
+    /// what each yields on the Rust side (#449): the URL, and where it is
+    /// dialled. `lib_test.sh` asserts the same rows against the shell side.
     #[test]
-    fn health_url_mirrors_lib_sh() {
+    fn probe_target_matches_lib_sh_for_every_bind_form() {
+        let sa = |s: &str| Dial::Addr(s.parse().unwrap());
+        let name = |h: &str| Dial::Name {
+            host: h.to_string(),
+            port: 7878,
+        };
+        let plain = |u: &str| (u.to_string(), Dial::Url);
+        // (bind, tls off, tls on)
+        let tls = |d: Dial| ("https://localhost:7878/v1/health".to_string(), d);
+        // A wildcard is dialled at loopback as written, no connect target.
+        let wild = |h: &str| (format!("https://{h}:7878/v1/health"), Dial::Url);
+        type Target = (String, Dial);
+        let rows: Vec<(&str, Target, Target)> = vec![
+            (
+                "",
+                plain("http://127.0.0.1:7878/v1/health"),
+                wild("127.0.0.1"),
+            ),
+            (
+                "0.0.0.0",
+                plain("http://127.0.0.1:7878/v1/health"),
+                wild("127.0.0.1"),
+            ),
+            ("::", plain("http://[::1]:7878/v1/health"), wild("[::1]")),
+            ("[::]", plain("http://[::1]:7878/v1/health"), wild("[::1]")),
+            (
+                "100.64.0.9",
+                plain("http://100.64.0.9:7878/v1/health"),
+                tls(sa("100.64.0.9:7878")),
+            ),
+            (
+                "fd7a::1",
+                plain("http://[fd7a::1]:7878/v1/health"),
+                tls(sa("[fd7a::1]:7878")),
+            ),
+            (
+                "[fd7a::1]",
+                plain("http://[fd7a::1]:7878/v1/health"),
+                tls(sa("[fd7a::1]:7878")),
+            ),
+            (
+                "host.tailnet.ts.net",
+                plain("http://host.tailnet.ts.net:7878/v1/health"),
+                tls(name("host.tailnet.ts.net")),
+            ),
+        ];
+        for (bind, off, on) in rows {
+            assert_eq!(
+                probe_target(bind, 7878, false),
+                off,
+                "bind {bind:?}, TLS off"
+            );
+            assert_eq!(probe_target(bind, 7878, true), on, "bind {bind:?}, TLS on");
+            assert_eq!(health_url(bind, 7878, true), on.0);
+        }
+        // The one form with no lib.sh-equivalent decision: a zone id.
         assert_eq!(
-            health_url("", 7878, false),
-            "http://127.0.0.1:7878/v1/health"
+            probe_target("fe80::1%en0", 7878, true).1,
+            Dial::ZoneId("fe80::1%en0".to_string())
         );
+        // The operator-facing label names the address really dialled.
+        let serving = Serving {
+            token: "t".into(),
+            bind: "100.64.0.9".into(),
+            port: 7878,
+            tls: true,
+        };
         assert_eq!(
-            health_url("0.0.0.0", 7878, false),
-            "http://127.0.0.1:7878/v1/health"
-        );
-        assert_eq!(health_url("::", 7878, false), "http://[::1]:7878/v1/health");
-        assert_eq!(
-            health_url("[::]", 9000, false),
-            "http://[::1]:9000/v1/health"
-        );
-        assert_eq!(
-            health_url("fd7a::1", 9000, false),
-            "http://[fd7a::1]:9000/v1/health"
-        );
-        assert_eq!(
-            health_url("100.64.0.9", 7878, false),
-            "http://100.64.0.9:7878/v1/health"
+            serving.probe_label(),
+            "https://localhost:7878/v1/health (via 100.64.0.9:7878)"
         );
     }
 
-    #[test]
-    fn health_url_uses_https_when_tls_is_on() {
-        // Named `localhost`, connected to the bind through `resolve` (#449).
-        assert_eq!(
-            health_url("", 7878, true),
-            "https://localhost:7878/v1/health"
-        );
-        assert_eq!(
-            health_url("100.64.0.9", 7878, true),
-            "https://localhost:7878/v1/health"
-        );
-        assert_eq!(
-            health_url("fd7a::1", 7878, true),
-            "https://localhost:7878/v1/health"
-        );
+    #[tokio::test]
+    async fn resolve_dial_refuses_an_unresolvable_name_and_a_zone_id_before_anything_changes() {
+        let (_, dial) = probe_target("does-not-exist.invalid", 7878, true);
+        let err = resolve_dial(&dial).await.unwrap_err();
+        assert!(matches!(err, UpdateError::Install(_)), "{err:?}");
+        assert!(err.to_string().contains("does-not-exist.invalid"), "{err}");
+        assert!(err.to_string().contains("nothing was changed"), "{err}");
+
+        let (_, zone) = probe_target("fe80::1%en0", 7878, true);
+        let err = resolve_dial(&zone).await.unwrap_err();
+        assert!(err.to_string().contains("zone"), "{err}");
+
+        // A name that does resolve yields addresses carrying the port.
+        let (_, ok) = probe_target("localhost", 7878, true);
+        let addrs = resolve_dial(&ok).await.unwrap();
+        assert!(!addrs.is_empty() && addrs.iter().all(|a| a.port() == 7878));
+        // TLS off resolves nothing: the URL is dialled as written.
+        assert!(resolve_dial(&Dial::Url).await.unwrap().is_empty());
     }
 
     #[test]
@@ -3535,7 +3678,7 @@ mod tests {
 
         // Pinned to the certificate actually served: succeeds, by the name
         // `localhost` that every generated certificate carries.
-        let right = health_client(None, Some(&served.cert_der), Some(addr)).unwrap();
+        let right = health_client(None, Some(&served.cert_der), &[addr]).unwrap();
         let resp = right.get(&url).send().await.unwrap();
         assert!(resp.status().is_success());
 
@@ -3545,7 +3688,7 @@ mod tests {
         let other_dir = tempfile::tempdir().unwrap();
         let other = crate::tls::load_or_generate(other_dir.path(), &[]).unwrap();
         assert_ne!(other.cert_der, served.cert_der);
-        let wrong = health_client(None, Some(&other.cert_der), Some(addr)).unwrap();
+        let wrong = health_client(None, Some(&other.cert_der), &[addr]).unwrap();
         let err = wrong
             .get(&url)
             .send()
@@ -3572,7 +3715,7 @@ mod tests {
         // No pin at all (TLS off): the plain client has no root for a
         // self-signed certificate either, so it also refuses — pinning is
         // not the only thing standing between this client and a forged cert.
-        let unpinned = health_client(None, None, None).unwrap();
+        let unpinned = health_client(None, None, &[]).unwrap();
         assert!(unpinned.get(&url).send().await.is_err());
 
         server.abort();
@@ -3603,7 +3746,7 @@ mod tests {
 
         // Pinned to an unrelated self-signed certificate (the agent's own).
         let (pinned_der, _) = mint_self_signed(&["localhost"]);
-        let client = health_client(None, Some(&pinned_der), Some(addr)).unwrap();
+        let client = health_client(None, Some(&pinned_der), &[addr]).unwrap();
         let err =
             client.get(&url).send().await.expect_err(
                 "a CA-signed localhost certificate that is not the pin must be refused",
@@ -3633,6 +3776,14 @@ mod tests {
             .ok()
             .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
         let Some(ip) = local else {
+            // CI sets this so a runner with no route cannot turn the test
+            // into a silent pass; the never-skipping loopback control below
+            // guards the same invariant everywhere else.
+            assert!(
+                std::env::var_os("SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK").is_none(),
+                "SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK is set but this host has no \
+                 non-loopback interface address"
+            );
             eprintln!("SKIP: no non-loopback interface address on this host");
             return;
         };
@@ -3649,14 +3800,15 @@ mod tests {
             port,
             tls: true,
         };
-        assert_eq!(serving.dial_addr(), Some(SocketAddr::new(ip, port)));
-        let client = health_client(None, Some(&cert_der), serving.dial_addr()).unwrap();
+        assert_eq!(serving.dial(), Dial::Addr(SocketAddr::new(ip, port)));
+        let dial = resolve_dial(&serving.dial()).await.unwrap();
+        let client = health_client(None, Some(&cert_der), &dial).unwrap();
         let resp = client.get(serving.health_url()).send().await.unwrap();
         assert!(resp.status().is_success());
 
         // Negative control: verifying by the bind address itself fails, as the
         // certificate does not name it.
-        let direct = health_client(None, Some(&cert_der), None).unwrap();
+        let direct = health_client(None, Some(&cert_der), &[]).unwrap();
         let err = direct
             .get(format!("https://{ip}:{port}/v1/health"))
             .send()
@@ -3691,24 +3843,101 @@ mod tests {
                 serving.health_url(),
                 format!("https://localhost:{port}/v1/health")
             );
-            let client = health_client(None, Some(&cert_der), serving.dial_addr()).unwrap();
+            let dial = resolve_dial(&serving.dial()).await.unwrap();
+            let client = health_client(None, Some(&cert_der), &dial).unwrap();
             let resp = client.get(serving.health_url()).send().await.unwrap();
             assert!(resp.status().is_success(), "bind {bind}");
         }
         server.abort();
     }
 
-    #[test]
-    fn dial_addr_is_the_bind_or_loopback_for_a_wildcard() {
-        let a = |b: &str| dial_addr(b, 7878).map(|s| s.to_string());
-        assert_eq!(a(""), Some("127.0.0.1:7878".into()));
-        assert_eq!(a("0.0.0.0"), Some("127.0.0.1:7878".into()));
-        assert_eq!(a("::"), Some("[::1]:7878".into()));
-        assert_eq!(a("[::]"), Some("[::1]:7878".into()));
-        assert_eq!(a("100.64.0.9"), Some("100.64.0.9:7878".into()));
-        assert_eq!(a("fd7a::1"), Some("[fd7a::1]:7878".into()));
-        assert_eq!(a("[fd7a::1]"), Some("[fd7a::1]:7878".into()));
-        assert_eq!(a("not-an-ip.example"), None);
+    /// The invariant, with no dependence on the host's interfaces (so it can
+    /// never skip): a certificate naming only `localhost`, served on
+    /// 127.0.0.1, is refused when the client verifies the IP it dialled and
+    /// accepted when the URL names `localhost` and the connection is pinned
+    /// to the same address. The refusal is the verifier's, not a relaxation.
+    #[tokio::test]
+    async fn loopback_control_hostname_is_verified_and_resolve_is_what_reaches_it() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (cert_der, key_der) = mint_self_signed(&["localhost"]);
+        let server = serve_health_tls(listener, cert_der.clone(), key_der).await;
+
+        let direct = health_client(None, Some(&cert_der), &[]).unwrap();
+        let err = direct
+            .get(format!("https://127.0.0.1:{}/v1/health", addr.port()))
+            .send()
+            .await
+            .expect_err("an IP the certificate does not name must be refused");
+        assert_certificate_refusal(&err);
+
+        let pinned = health_client(None, Some(&cert_der), &[addr]).unwrap();
+        let resp = pinned
+            .get(format!("https://localhost:{}/v1/health", addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        server.abort();
+    }
+
+    /// #449 review: a TLS host re-bound to a DNS NAME absent from the
+    /// certificate's SAN list. The name resolves (an injected result — here
+    /// loopback, standing in for a MagicDNS record) and `localhost` is pinned
+    /// to it; the probe must succeed, and dialling the name directly must be
+    /// refused, which is what shows `resolve_to_addrs` is what makes it work.
+    #[tokio::test]
+    async fn health_client_reaches_a_dns_name_bind_absent_from_the_san_list() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // 127.0.0.2 is loopback on Linux but not where `localhost` points, so
+        // the pin is what reaches it there; macOS refuses to bind it and falls
+        // back to 127.0.0.1 (the URL-shape and negative-control halves hold).
+        let listener = std::net::TcpListener::bind("127.0.0.2:0")
+            .or_else(|_| std::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (cert_der, key_der) = mint_self_signed(&["localhost"]);
+        let server = serve_health_tls(listener, cert_der.clone(), key_der).await;
+
+        let serving = Serving {
+            token: "t".to_string(),
+            bind: "host.tailnet.ts.net".to_string(),
+            port: addr.port(),
+            tls: true,
+        };
+        assert_eq!(
+            serving.dial(),
+            Dial::Name {
+                host: "host.tailnet.ts.net".to_string(),
+                port: addr.port()
+            }
+        );
+        // The injected lookup result: what `resolve_dial` would return.
+        let client = health_client(None, Some(&cert_der), &[addr]).unwrap();
+        let resp = client.get(serving.health_url()).send().await.unwrap();
+        assert!(resp.status().is_success());
+
+        // Negative control: dialling the name itself (its address pinned
+        // through `resolve`, so no DNS is needed) verifies the name and is
+        // refused, the certificate not naming it.
+        let direct = reqwest::Client::builder()
+            .no_proxy()
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(reqwest::Certificate::from_der(&cert_der).unwrap())
+            .resolve("host.tailnet.ts.net", addr)
+            .build()
+            .unwrap();
+        let err = direct
+            .get(format!(
+                "https://host.tailnet.ts.net:{}/v1/health",
+                addr.port()
+            ))
+            .send()
+            .await
+            .expect_err("the name is not in the SAN list");
+        assert_certificate_refusal(&err);
+        server.abort();
     }
 
     /// `health_pin` never creates a certificate — only reads one that
