@@ -862,6 +862,13 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .reason, .confirm { font-size:11px; color:var(--red); margin:0; max-width:640px; }
 .host-name, .slug { font-size:13px; font-weight:700; }
 .result { font-size:10px; color:var(--muted); }
+/* A certificate fingerprint (#448): 95 characters of colon-hex that the
+   operator compares by eye with the host's own output, so it wraps anywhere
+   rather than scrolling and selects whole on a triple-click. */
+.pair-fingerprint { font-family:ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size:11px;
+  overflow-wrap:anywhere; user-select:all; }
+.pairing { gap:8px; }
+.pair-trusted { color:var(--green); }
 .hidden-row { display:flex; align-items:center; gap:8px; padding-left:12px; }
 .hidden-row .mount { font-size:10px; font-weight:700; }
 /* The Layout editor: one row per panel — name, width picker, and the two move

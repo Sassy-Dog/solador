@@ -37,6 +37,20 @@ use serde_json::{json, Value};
 pub const SAMPLER_STALLED_MESSAGE: &str =
     "Agent is up but its sampler has stalled; these numbers are frozen";
 
+/// A card's `error.kind` when the failure is the host's **pairing** (#448) and
+/// not the network: the certificate presented is not the pinned one.
+///
+/// A machine-readable tag beside the sentence, because two consumers must tell
+/// these apart from an unreachable host and neither may parse words to do it —
+/// the dashboard paints them as their own state, and its "is this machine's
+/// network or VPN up?" hint must not count them as the network being down. Any
+/// other failure carries no `kind` at all.
+pub const ERROR_KIND_CERTIFICATE_CHANGED: &str = "certificate-changed";
+
+/// A card's `error.kind` when a host pinned to a certificate answered plain
+/// HTTP (#448). See [`ERROR_KIND_CERTIFICATE_CHANGED`].
+pub const ERROR_KIND_NO_TLS: &str = "no-tls";
+
 /// What a card shows for a value nobody measured.
 ///
 /// One character, one meaning, everywhere on every card — the shell reads it

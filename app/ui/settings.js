@@ -42,6 +42,19 @@ const S = {
    *  `components` is a non-empty list or `null` and `reason` is the finding or
    *  `null`. This file never fills either in. */
   probe: null,
+  /** Host pairing (#448), by scope: `"add"` for the Add Host form, a host id
+   *  for that host's edit form. Each is `{address, port, answer, trusted}` --
+   *  `answer` is Rust's `settings_probe_host_certificate` payload verbatim, and
+   *  `address`/`port` are what was typed when it was fetched, so an answer is
+   *  only ever shown beside the endpoint it was read from. `trusted` is the
+   *  Trust click and nothing else. Held here like `probe` is: a *view* state,
+   *  never persisted by this file -- the store hears about a fingerprint only
+   *  in the arguments of Add / Save, and only a trusted one. */
+  pair: {},
+  /** Host ids whose last Test said the certificate changed, so **Re-pair**
+   *  appears the moment that is known rather than at the next Settings
+   *  payload. Rust's `certificateChanged`, remembered per host. */
+  repair: new Set(),
   /** Per-account discovery answers, keyed by account id: `"pending"` while
    *  the walk runs, then Rust's `settings_discover_repos` payload verbatim
    *  (`reason` set when it failed). Held here like `probe` is — which
@@ -591,6 +604,104 @@ function hiddenRow(t, mount, hostId) {
   return row;
 }
 
+/**
+ * The pairing step (#448): fetch the certificate an address presents, show its
+ * fingerprint, and let the operator **Trust** it.
+ *
+ * This file decides nothing. Rust fetched the certificate without trusting it
+ * and worded what it found; the operator compares the fingerprint with what
+ * `solador-agent tls-fingerprint` printed on the host; and only the Trust click
+ * marks it. Nothing here is persisted -- `trusted()` is what the caller puts in
+ * the arguments of Add / Save, and an untrusted answer is never sent.
+ *
+ * An answer belongs to the address and port it was read from: editing either
+ * drops it, so a fingerprint fetched from one machine can never be trusted
+ * against another.
+ *
+ * `onChange` is not called while the block first paints, so a caller may
+ * construct this before the controls it updates exist.
+ */
+function pairing(t, scope, addressInput, portInput, { checkLabel, onChange = () => {} } = {}) {
+  const labels = t.pair;
+  const box = node("div", "pairing stack");
+  const check = button(checkLabel || labels.checkLabel, "pair-check");
+  const message = node("p", "help pair-message", "");
+  const found = node("div", "stack pair-found");
+
+  /** The stored answer, if it was read from what is typed now. */
+  const current = () => {
+    const entry = S.pair[scope];
+    const same = entry && entry.address === addressInput.value.trim() &&
+      entry.port === portInput.value.trim();
+    return same ? entry : null;
+  };
+
+  const paint = (notify) => {
+    found.replaceChildren();
+    const entry = current();
+    message.textContent = entry ? entry.answer.message : "";
+    if (entry && entry.answer.status === "tls") {
+      const fingerprint = node("code", "pair-fingerprint", entry.answer.fingerprint);
+      fingerprint.tabIndex = 0;
+      found.append(node("span", "lbl", labels.fingerprintLabel), fingerprint);
+      if (entry.trusted) {
+        found.appendChild(node("p", "help pair-trusted", labels.trustedLabel));
+      } else {
+        const trust = button(labels.trustLabel, "pair-trust primary");
+        trust.addEventListener("click", () => {
+          entry.trusted = true;
+          paint(true);
+        });
+        found.appendChild(actionRow(trust));
+      }
+    }
+    if (notify) onChange();
+  };
+
+  check.addEventListener("click", async () => {
+    check.disabled = true;
+    message.textContent = labels.checkingLabel;
+    const address = addressInput.value.trim();
+    const port = portInput.value.trim();
+    const answer = await callRust("settings_probe_host_certificate", { address, port });
+    check.disabled = false;
+    // Null is the offline path (no Tauri and no fixture for this command).
+    if (!answer) {
+      message.textContent = "";
+      return;
+    }
+    S.pair[scope] = { address, port, answer, trusted: false };
+    paint(true);
+  });
+  for (const input of [addressInput, portInput]) {
+    input.addEventListener("input", () => {
+      // Dropped in place rather than by re-rendering, which would rebuild the
+      // field under the caret and eat the rest of the word.
+      if (S.pair[scope] && !current()) {
+        delete S.pair[scope];
+        paint(true);
+      }
+    });
+  }
+  paint(false);
+  box.append(actionRow(check), help(labels.help), message, found);
+  return {
+    node: box,
+    /** The fingerprint the operator trusted for what is typed now, or null. */
+    trusted() {
+      const entry = current();
+      return entry && entry.trusted && entry.answer.status === "tls"
+        ? entry.answer.fingerprint
+        : null;
+    },
+    /** A certificate was found for what is typed and has not been trusted. */
+    pending() {
+      const entry = current();
+      return !!entry && entry.answer.status === "tls" && !entry.trusted;
+    },
+  };
+}
+
 function hostsTab(t, options = {}) {
   const list = group(options.edit ? null : t.heading);
   if (t.rows.length === 0) {
@@ -605,6 +716,12 @@ function hostsTab(t, options = {}) {
     const head = node("div", "row");
     const names = node("div", "stack");
     names.append(node("span", "host-name", host.name), node("span", "dim", host.endpoint));
+    // The pin, in full, where the operator can compare it with the host.
+    if (host.pinned) {
+      const pinned = node("span", "dim pinned-line", t.pair.pinnedLabel + ": ");
+      pinned.appendChild(node("code", "pair-fingerprint pinned-fingerprint", host.fingerprint));
+      names.appendChild(pinned);
+    }
     const result = node("span", "result", S.tests.get(host.id) || "");
     result.tabIndex = 0;
     names.appendChild(result);
@@ -621,6 +738,14 @@ function hostsTab(t, options = {}) {
       if (!answer) return;
       S.tests.set(answer.id, answer.result);
       result.textContent = answer.result;
+      // The certificate-changed finding is what offers Re-pair; repaint only
+      // when it flips, so an ordinary Test never rebuilds the form.
+      const flagged = !!answer.certificateChanged;
+      if (flagged !== S.repair.has(answer.id)) {
+        if (flagged) S.repair.add(answer.id);
+        else S.repair.delete(answer.id);
+        renderKeepingEdits();
+      }
     });
 
     const enabled = checkbox(host.enabled);
@@ -663,16 +788,23 @@ function hostsTab(t, options = {}) {
   const address = textInput("");
   const port = textInput(t.add.portDefault);
   const token = textInput("", "password");
+  // Built before `submit` exists on purpose: it does not call back while it
+  // first paints, and `syncAdd` below runs once everything does.
+  const pair = pairing(t, "add", address, port, { onChange: () => syncAdd() });
   add.append(
     field("host-name", t.add.nameLabel, name),
     field("host-address", t.add.addressLabel, address),
     field("host-port", t.add.portLabel, port),
-    field("host-token", t.add.tokenLabel, token)
+    field("host-token", t.add.tokenLabel, token),
+    pair.node
   );
 
   const submit = button(t.add.buttonLabel, "add");
+  // A certificate that was found and not trusted holds Add back: adding the
+  // host anyway would poll a TLS agent over plain HTTP and show it as
+  // unreachable, which is the failure the pairing step exists to prevent.
   const syncAdd = () => {
-    submit.disabled = name.value.trim() === "" || address.value.trim() === "";
+    submit.disabled = name.value.trim() === "" || address.value.trim() === "" || pair.pending();
   };
   name.addEventListener("input", syncAdd);
   address.addEventListener("input", syncAdd);
@@ -684,6 +816,10 @@ function hostsTab(t, options = {}) {
       port: port.value,
       token: token.value,
     };
+    // Only a fingerprint the operator trusted for THIS address and port is
+    // ever sent; an unpaired host sends no key at all and stays plain HTTP.
+    const trusted = pair.trusted();
+    if (trusted) args.tlsFingerprint = trusted;
     // Dropped before the round-trip, not after: the token has no reason to
     // outlive the call, and a rejected save must not leave it sitting in the
     // DOM. The other three reset so the form comes back empty rather than
@@ -692,6 +828,7 @@ function hostsTab(t, options = {}) {
     name.value = "";
     address.value = "";
     port.value = t.add.portDefault;
+    delete S.pair.add;
     mutate("settings_add_host", args);
   });
   add.append(actionRow(submit), help(t.add.help));
@@ -720,13 +857,35 @@ function hostDetails(t, host) {
     replace.hidden = true;
     token.focus();
   });
+  // Pairing (#448). An unpaired host can be paired; a paired host's pin is
+  // replaced only after the cockpit has said its certificate changed -- the
+  // operator does not re-pair a healthy host, and a healthy host cannot be
+  // talked out of its pin by a stray click.
+  const changed = host.certificateChanged || S.repair.has(host.id);
+  let pair = null;
+  if (!host.pinned || changed) {
+    pair = pairing(t, host.id, address, port, {
+      checkLabel: host.pinned ? t.pair.repairLabel : t.pair.checkLabel,
+    });
+  }
   const save = button(labels.saveLabel, "host-save primary");
   save.addEventListener("click", () => {
     const args = { id: host.id, name: name.value, address: address.value, port: port.value, token: token.value };
+    // Present only when the operator trusted a fingerprint here: absent leaves
+    // the pin exactly as it is, so a rename can never touch it.
+    const trusted = pair && pair.trusted();
+    if (trusted) args.tlsFingerprint = trusted;
     token.value = "";
+    delete S.pair[host.id];
+    S.repair.delete(host.id);
     mutate("settings_save_host", args);
   });
-  box.append(fields, actionRow(node("span", "lbl", t.add.tokenLabel), replace), credential, actionRow(save));
+  box.append(fields);
+  if (pair) {
+    if (changed) box.appendChild(help(t.pair.repairHelp));
+    box.appendChild(pair.node);
+  }
+  box.append(actionRow(node("span", "lbl", t.add.tokenLabel), replace), credential, actionRow(save));
   return box;
 }
 
@@ -1877,6 +2036,8 @@ async function openSettings(tab) {
     }
     S.status = "";
     S.probe = null;
+    S.pair = {};
+    S.repair = new Set();
     S.discover = {};
     render();
   };
@@ -1896,8 +2057,10 @@ async function openSettings(tab) {
   S.status = "";
   // A probe answer must not outlive the session that ran it: reopening
   // Settings would otherwise show a component picker for an address nobody
-  // just typed.
+  // just typed. The same goes for a certificate offered for trust.
   S.probe = null;
+  S.pair = {};
+  S.repair = new Set();
   settingsOpen = true;
   document.dispatchEvent(new CustomEvent("solador:settings", { detail: true }));
   $s("cockpitView").hidden = true;

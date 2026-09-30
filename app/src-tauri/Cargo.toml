@@ -14,6 +14,10 @@ solador-buildversion = { path = "../../crates/buildversion" }
 solador-wire = { path = "../../crates/wire" }
 viewmodel = { path = "../../crates/viewmodel" }
 agentclient = { path = "../../crates/agentclient" }
+# The fingerprint format (#448): Settings canonicalises the pin the operator
+# just confirmed before it is stored, with the same parser the agent's
+# `tls-fingerprint` output and the client's comparison use.
+solador-certpin = { path = "../../crates/certpin" }
 # Settings/hosts/credentials. The keyring dependency moved here with it: this
 # crate reaches the OS credential store through `store::KeyringStore`, so
 # there is one spelling of the service/account naming, not two.

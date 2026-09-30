@@ -1653,3 +1653,236 @@ test("update status, notes and buttons change inside a stable group", async ({ p
   await expect(group.locator('.update-status')).toHaveText(failed.status.text);
   expect(await group.boundingBox()).toEqual(before);
 });
+
+// MARK: pairing a host's agent certificate (#448)
+//
+// The Tauri IPC boundary is not automated (README's smoke checklist covers it),
+// so the probe is stubbed here: what these tests pin is the contract the
+// frontend keeps with Rust -- a fingerprint is only ever SENT after the Trust
+// click, only for the address it was read from, and never typed in.
+
+const FINGERPRINT_A = "45:39:AF:05:7E:7E:3C:EF:F7:0C:79:2B:1A:31:B4:04:B8:F8:98:CE:5D:2D:BE:60:83:A8:33:5C:C7:E1:F5:4F";
+const FINGERPRINT_B = "0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B:0B";
+
+/** Answers `settings_probe_host_certificate` with `answer`; the call itself is
+ *  recorded in `__CALLS__` like every other command. */
+async function stubHostProbe(page, answer) {
+  await page.evaluate((answer) => {
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command === "settings_probe_host_certificate") {
+        window.__CALLS__.push({ command, args });
+        return { address: args.address, port: Number(args.port), ...answer };
+      }
+      return original(command, args);
+    };
+  }, answer);
+}
+
+const TLS_FOUND = {
+  status: "tls",
+  fingerprint: FINGERPRINT_A,
+  message: "This agent presented the certificate below. Compare its fingerprint.",
+};
+
+test("Add Host shows the fingerprint the address presents and pins nothing until Trust", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "host");
+  await stubHostProbe(page, TLS_FOUND);
+  await page.locator("#host-name").fill("tls-box");
+  await page.locator("#host-address").fill("100.64.0.9");
+  const add = page.locator(".btn.add");
+  await expect(add).toBeEnabled();
+
+  await page.locator(".pair-check").click();
+
+  // What Rust found, verbatim, and the fingerprint to compare.
+  await expect(page.locator(".pair-found .pair-fingerprint")).toHaveText(FINGERPRINT_A);
+  await expect(page.locator(".pair-message")).toHaveText(TLS_FOUND.message);
+  expect(await calls(page, "settings_probe_host_certificate")).toEqual([
+    { command: "settings_probe_host_certificate", args: { address: "100.64.0.9", port: "7878" } },
+  ]);
+  // A found-but-untrusted certificate holds Add back: adding now would poll a
+  // TLS agent over plain HTTP. Nothing has been persisted or even sent.
+  await expect(add).toBeDisabled();
+  expect(await calls(page, "settings_add_host")).toEqual([]);
+
+  await page.locator(".pair-trust").click();
+  await expect(page.locator(".pair-trusted")).toBeVisible();
+  await expect(page.locator(".pair-trust")).toHaveCount(0);
+  await expect(add).toBeEnabled();
+  // Trust itself persists nothing either: the fingerprint travels with Add.
+  expect(await calls(page, "settings_add_host")).toEqual([]);
+
+  await add.click();
+  expect(await calls(page, "settings_add_host")).toEqual([
+    {
+      command: "settings_add_host",
+      args: { name: "tls-box", address: "100.64.0.9", port: "7878", token: "", tlsFingerprint: FINGERPRINT_A },
+    },
+  ]);
+});
+
+test("a fingerprint trusted for one address is not carried to another", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "host");
+  await stubHostProbe(page, TLS_FOUND);
+  await page.locator("#host-name").fill("tls-box");
+  await page.locator("#host-address").fill("100.64.0.9");
+  await page.locator(".pair-check").click();
+  await page.locator(".pair-trust").click();
+  await expect(page.locator(".pair-trusted")).toBeVisible();
+
+  // Editing the address drops the answer and the trust with it.
+  await page.locator("#host-address").fill("100.64.0.10");
+  await expect(page.locator(".pair-found .pair-fingerprint")).toHaveCount(0);
+  await expect(page.locator(".pair-trusted")).toHaveCount(0);
+  await page.locator(".btn.add").click();
+
+  const [add] = await calls(page, "settings_add_host");
+  expect(add.args).toEqual({ name: "tls-box", address: "100.64.0.10", port: "7878", token: "" });
+  expect(add.args).not.toHaveProperty("tlsFingerprint");
+});
+
+test("a fingerprint trusted for one port is not carried to another, on Add or on Save", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await addConnection(page, "host");
+  await stubHostProbe(page, TLS_FOUND);
+  await page.locator("#host-name").fill("tls-box");
+  await page.locator("#host-address").fill("100.64.0.9");
+  await page.locator(".pair-check").click();
+  await page.locator(".pair-trust").click();
+  await page.locator("#host-port").fill("7879");
+  await expect(page.locator(".pair-trusted")).toHaveCount(0);
+  await page.locator(".btn.add").click();
+  expect((await calls(page, "settings_add_host"))[0].args).not.toHaveProperty("tlsFingerprint");
+
+  // The same guard on an existing host's edit form.
+  const host = settings.hosts.rows.find((h) => !h.pinned);
+  await openConnection(page, `host:${host.id}`);
+  await page.locator(".pair-check").click();
+  await page.locator(".pair-trust").click();
+  await page.locator("#host-edit-port").fill("7880");
+  await expect(page.locator(".pair-trusted")).toHaveCount(0);
+  await page.locator(".host-save").click();
+  expect((await calls(page, "settings_save_host")).at(-1).args).not.toHaveProperty("tlsFingerprint");
+});
+
+test("an agent that answers plain HTTP can be added as it is, with no pin", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "host");
+  const none = { status: "no-tls", fingerprint: null, message: "This agent answers plain HTTP: there is no certificate to pair." };
+  await stubHostProbe(page, none);
+  await page.locator("#host-name").fill("plain-box");
+  await page.locator("#host-address").fill("100.64.0.11");
+
+  await page.locator(".pair-check").click();
+
+  await expect(page.locator(".pair-message")).toHaveText(none.message);
+  // "No TLS" has no fingerprint and no Trust button: there is nothing to trust.
+  await expect(page.locator(".pair-found .pair-fingerprint")).toHaveCount(0);
+  await expect(page.locator(".pair-trust")).toHaveCount(0);
+  await expect(page.locator(".btn.add")).toBeEnabled();
+  await page.locator(".btn.add").click();
+  const [add] = await calls(page, "settings_add_host");
+  expect(add.args).not.toHaveProperty("tlsFingerprint");
+});
+
+test("a probe that finds nothing says why and pins nothing", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await addConnection(page, "host");
+  const failed = { status: "failed", fingerprint: null, message: "couldn't reach that host — check the address" };
+  await stubHostProbe(page, failed);
+  await page.locator("#host-name").fill("down-box");
+  await page.locator("#host-address").fill("100.64.0.12");
+
+  await page.locator(".pair-check").click();
+
+  await expect(page.locator(".pair-message")).toHaveText(failed.message);
+  await expect(page.locator(".pair-trust")).toHaveCount(0);
+  expect(await calls(page, "settings_add_host")).toEqual([]);
+});
+
+test("an existing unpaired host is paired from its edit form, and only Trust sends the pin", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const host = settings.hosts.rows.find((h) => !h.pinned);
+  await openConnection(page, `host:${host.id}`);
+  await stubHostProbe(page, TLS_FOUND);
+
+  await page.locator(".pair-check").click();
+  await expect(page.locator(".pair-found .pair-fingerprint")).toHaveText(FINGERPRINT_A);
+  // Saved before Trust: no pin is sent, so the host keeps whatever it had.
+  await page.locator(".host-save").click();
+  expect((await calls(page, "settings_save_host")).at(-1).args).not.toHaveProperty("tlsFingerprint");
+
+  await page.locator(".pair-check").click();
+  await page.locator(".pair-trust").click();
+  await page.locator(".host-save").click();
+  expect((await calls(page, "settings_save_host")).at(-1).args).toMatchObject({
+    id: host.id,
+    tlsFingerprint: FINGERPRINT_A,
+  });
+});
+
+test("a pinned host whose certificate changed offers Re-pair, and Re-pair replaces the pin", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const host = settings.hosts.rows.find((h) => h.certificateChanged);
+  expect(host, "the fixture carries a pinned host whose certificate changed").toBeTruthy();
+  await openConnection(page, `host:${host.id}`);
+
+  // The current pin is on screen, in full, and so is what to do about it.
+  await expect(page.locator(".pinned-fingerprint")).toHaveText(host.fingerprint);
+  await expect(page.locator(".pair-check")).toHaveText(settings.hosts.pair.repairLabel);
+  await expect(page.locator(".host-details")).toContainText(settings.hosts.pair.repairHelp);
+
+  await stubHostProbe(page, { ...TLS_FOUND, fingerprint: FINGERPRINT_B });
+  await page.locator(".pair-check").click();
+  await expect(page.locator(".pair-found .pair-fingerprint")).toHaveText(FINGERPRINT_B);
+
+  // Untrusted: Save must not touch the pin.
+  await page.locator(".host-save").click();
+  expect((await calls(page, "settings_save_host")).at(-1).args).not.toHaveProperty("tlsFingerprint");
+
+  await page.locator(".pair-check").click();
+  await page.locator(".pair-trust").click();
+  await page.locator(".host-save").click();
+  expect((await calls(page, "settings_save_host")).at(-1).args).toMatchObject({
+    id: host.id,
+    tlsFingerprint: FINGERPRINT_B,
+  });
+});
+
+test("a pinned host that is fine offers no Re-pair until Test finds its certificate changed", async ({ page, baseURL }) => {
+  // The fixture's pinned host is flagged; clear the flag so this one is healthy.
+  const cockpit = await fixture(baseURL, "sample-cockpit.json");
+  const settings = await fixture(baseURL, "sample-settings.json");
+  const host = settings.hosts.rows.find((h) => h.pinned);
+  host.certificateChanged = false;
+  await stubIpc(page, cockpit, settings);
+  await page.goto("/index.html?view=details");
+  await page.locator("#settingsToggle").click();
+  await openConnection(page, `host:${host.id}`);
+
+  await expect(page.locator(".pinned-fingerprint")).toHaveText(host.fingerprint);
+  await expect(page.locator(".pair-check")).toHaveCount(0);
+
+  await page.evaluate((id) => {
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) =>
+      command === "settings_test_host"
+        ? { id, result: "✗ certificate changed — re-pair this host if that was expected", certificateChanged: true }
+        : original(command, args);
+  }, host.id);
+  await page.locator(".host-row .test").click();
+
+  await expect(page.locator(".pair-check")).toHaveText(settings.hosts.pair.repairLabel);
+});
+
+test("an unpinned host shows no pin line and no Re-pair", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const host = settings.hosts.rows.find((h) => !h.pinned);
+  await openConnection(page, `host:${host.id}`);
+  await expect(page.locator(".pinned-fingerprint")).toHaveCount(0);
+  await expect(page.locator(".pair-check")).toHaveText(settings.hosts.pair.checkLabel);
+  await expect(page.locator(".host-details")).not.toContainText(settings.hosts.pair.repairHelp);
+});

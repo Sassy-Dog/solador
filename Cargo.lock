@@ -21,12 +21,17 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agentclient"
 version = "0.1.0"
 dependencies = [
+ "rcgen",
  "reqwest 0.12.28",
+ "rustls",
  "serde_json",
+ "sha2 0.11.0",
+ "solador-certpin",
  "solador-fault",
  "solador-wire",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "wiremock",
 ]
 
@@ -4272,6 +4277,7 @@ dependencies = [
  "sha2 0.11.0",
  "solador-accelerator",
  "solador-buildversion",
+ "solador-certpin",
  "solador-wire",
  "sysinfo",
  "tempfile",
@@ -4296,6 +4302,7 @@ dependencies = [
  "serde_json",
  "solador-azurecost",
  "solador-buildversion",
+ "solador-certpin",
  "solador-crashreport",
  "solador-github",
  "solador-localhost",
@@ -4330,6 +4337,10 @@ dependencies = [
 
 [[package]]
 name = "solador-buildversion"
+version = "0.1.0"
+
+[[package]]
+name = "solador-certpin"
 version = "0.1.0"
 
 [[package]]

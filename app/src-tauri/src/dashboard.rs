@@ -5,6 +5,7 @@
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use store::{DashboardLayout, DashboardTile};
+use viewmodel::card;
 use viewmodel::color;
 
 pub const SOURCES: [(&str, &str); 9] = [
@@ -180,7 +181,15 @@ fn host_rows(p: &Value) -> Vec<Value> {
             let status = if pending {
                 "Connecting".to_owned()
             } else if down {
-                "Unreachable".to_owned()
+                // The pairing failures (#448) are their own states: the machine
+                // answered, and "Unreachable" sends the operator to the
+                // network for a problem that is the certificate.
+                match pairing_kind(h) {
+                    Some(card::ERROR_KIND_CERTIFICATE_CHANGED) => "Cert changed",
+                    Some(card::ERROR_KIND_NO_TLS) => "No TLS",
+                    _ => "Unreachable",
+                }
+                .to_owned()
             } else if problem {
                 "Stale / unavailable".into()
             } else if let Some(v) = volume_warning {
@@ -250,12 +259,32 @@ fn host_rows(p: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// A card's pairing failure (#448), if that is what its `error` is: the
+/// `error.kind` tag `main.rs` sets from the typed `AgentError` — never
+/// recovered from the sentence.
+fn pairing_kind(h: &Value) -> Option<&str> {
+    h["error"]["kind"].as_str().filter(|k| {
+        matches!(
+            *k,
+            card::ERROR_KIND_CERTIFICATE_CHANGED | card::ERROR_KIND_NO_TLS
+        )
+    })
+}
+
 /// True when every **remote** host card is down in the same frame: at least
 /// two remote cards (the local card, `"id": "local"`, never counts), each
 /// carrying the non-null `error` that `host_rows`' own `down` test reads
 /// (`down` above), and none still `connecting`. A single down remote is
 /// exactly what that card's own `Unreachable` status already says — this is
 /// a distinct, stronger claim, so it takes at least two before it fires.
+///
+/// **A host whose failure is its pairing does not count as down here** (#448):
+/// a certificate that is not the pinned one, or a pinned host answering plain
+/// HTTP, means the machine *answered*. The hint asks whether this machine's
+/// network or VPN is up, and for those hosts the honest answer is "yes" — so
+/// counting them would send the operator to check a VPN that is fine. Since
+/// the hint claims *every* remote is unreachable, one such host also silences
+/// it: the claim would be false. Each of those cards says its own state.
 ///
 /// Pure over the payload and recomputed every frame: nothing is carried
 /// forward, so this clears on the very next frame in which any remote host
@@ -266,9 +295,11 @@ fn all_remote_hosts_unreachable(p: &Value) -> bool {
         .filter(|h| h["id"] != "local")
         .collect();
     remotes.len() >= 2
-        && remotes
-            .iter()
-            .all(|h| !h["error"].is_null() && string(&h["connection"], "state") != "connecting")
+        && remotes.iter().all(|h| {
+            !h["error"].is_null()
+                && pairing_kind(h).is_none()
+                && string(&h["connection"], "state") != "connecting"
+        })
 }
 
 /// The Repos columns a summary row carries *on* the row, between the name and
@@ -1002,6 +1033,77 @@ mod tests {
             remote("r2", true, true),
         ]});
         assert!(!all_remote_hosts_unreachable(&p));
+    }
+
+    /// A remote whose `error` is a pairing failure (#448): down by
+    /// `host_rows`' own test (a non-null `error`), but not a network failure.
+    fn paired_badly(id: &str, kind: &str) -> Value {
+        json!({
+            "id": id,
+            "connection": {"state": "unreachable"},
+            "error": {"hostName": id, "message": "certificate changed", "kind": kind},
+        })
+    }
+
+    /// The hint asks "is this machine's network or VPN up?". A host whose
+    /// certificate changed or that stopped speaking TLS *answered*, so counting
+    /// it would send the operator to a VPN that is fine — and the hint says
+    /// EVERY remote is unreachable, which is false if one of them is not.
+    #[test]
+    fn a_pairing_failure_is_not_the_network_being_down() {
+        for kind in [
+            card::ERROR_KIND_CERTIFICATE_CHANGED,
+            card::ERROR_KIND_NO_TLS,
+        ] {
+            // Every remote failing on pairing: no network claim at all.
+            let all_pairing = json!({"hosts": [
+                local_card(false),
+                paired_badly("r1", kind),
+                paired_badly("r2", kind),
+            ]});
+            assert!(!all_remote_hosts_unreachable(&all_pairing), "{kind}");
+
+            // One genuinely unreachable beside one pairing failure: the claim
+            // "every remote is unreachable" is false, so it does not fire.
+            let mixed = json!({"hosts": [
+                local_card(false),
+                remote("r1", true, false),
+                paired_badly("r2", kind),
+            ]});
+            assert!(!all_remote_hosts_unreachable(&mixed), "{kind}");
+        }
+        // …and the unchanged case still fires: two ordinary network failures.
+        assert!(all_remote_hosts_unreachable(&json!({"hosts": [
+            remote("r1", true, false),
+            remote("r2", true, false),
+        ]})));
+        // A `kind` this build does not know is not a pairing failure: the hint
+        // does not silently stop counting a host for an unfamiliar tag.
+        let unknown = json!({"hosts": [
+            paired_badly("r1", "something-new"),
+            paired_badly("r2", "something-new"),
+        ]});
+        assert!(all_remote_hosts_unreachable(&unknown));
+    }
+
+    /// The Machines row names the state, not "Unreachable".
+    #[test]
+    fn a_pairing_failure_has_its_own_status_on_the_machines_row() {
+        let rows = host_rows(&json!({"hosts": [
+            paired_badly("changed", card::ERROR_KIND_CERTIFICATE_CHANGED),
+            paired_badly("plain", card::ERROR_KIND_NO_TLS),
+            remote("dead", true, false),
+        ]}));
+        assert_eq!(rows[0]["value"], "Cert changed");
+        assert_eq!(rows[1]["value"], "No TLS");
+        assert_eq!(rows[2]["value"], "Unreachable");
+        // Still a problem row (red, attention) — only the word differs — and
+        // still blanked: a host we cannot verify has no readings to show.
+        for row in &rows {
+            assert_eq!(row["attention"], true, "{row}");
+        }
+        assert_eq!(rows[0]["detail"], "certificate changed");
+        assert!(rows[0]["metrics"][0]["value"].is_null());
     }
 
     #[test]

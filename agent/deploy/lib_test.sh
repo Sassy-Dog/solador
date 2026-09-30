@@ -3439,7 +3439,9 @@ test_install_linux_flow() {
     # test_install_tls's "pre-#447 env file" case does. $ENV_FILE has never
     # existed under the new name, so without the LEGACY_ENV_FILE check this
     # host reads as fresh and gets SOLADOR_AGENT_TLS=1 — breaking the exact
-    # cockpit pairing the handover exists to keep, since #448 has not shipped.
+    # cockpit host the handover exists to keep working: the cockpit dials it over
+    # plain HTTP (it was never paired), so an agent that suddenly speaks TLS reads
+    # as unreachable there until the operator pairs it (#448).
     rm -rf "$home"
     mkdir -p "$home/.config/systemd/user"
     printf '[Service]\nExecStart=/opt/devcanopy-agent/devcanopy-agent\n' > "$home/.config/systemd/user/devcanopy-agent.service"

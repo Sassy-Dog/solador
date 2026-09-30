@@ -1045,8 +1045,8 @@ that holds the bearer token — and the TLS keypair
 (`solador-agent.tls.key`/`solador-agent.tls.crt`, #447, beside it) are both
 **kept** and named in the output unless
 `--purge` says otherwise, for the same reason: a re-install as this user
-reuses them, so an operator's existing cockpit pairing (and, once #448
-ships, an existing TLS pin) survives. `--purge` alone is refused (it modifies
+reuses them, so an operator's existing cockpit pairing (and an existing TLS pin, #448)
+survives. `--purge` alone is refused (it modifies
 `--uninstall`, it is never a mode of its own), and neither combines with
 `--migrate-from-opt` or `--enable-timer` (remove an install or
 create/repoint one, never both in one run). It never runs `loginctl

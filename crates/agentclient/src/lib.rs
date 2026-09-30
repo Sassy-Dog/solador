@@ -1,12 +1,26 @@
-//! Polls a Solador agent over HTTP. Replaces
-//! `RemoteHostMetricsService`.
+//! Polls a Solador agent over HTTP, or over HTTPS pinned to one certificate.
+//! Replaces `RemoteHostMetricsService`.
 //!
 //! The error variants mirror the original `failureTooltip` cases so the shell can
 //! keep giving cause-specific guidance instead of a generic failure.
+//!
+//! # Two ways to dial
+//!
+//! [`AgentClient::new`] is plain HTTP, for a host that was never paired — over
+//! Tailscale the transport is what carries the encryption. [`AgentClient::pinned`]
+//! is for a host the operator paired (#448): HTTPS to one certificate, no
+//! authority consulted, and **never** a fall back to `http://` (see `pin`).
+//! [`probe_certificate`] is the pairing step itself: it fetches the certificate
+//! an agent presents so the operator can compare its fingerprint, and trusts
+//! nothing.
+
+mod pin;
 
 use std::time::Duration;
 
 use fault::Fault;
+
+pub use pin::fingerprint;
 
 /// The operator-facing name of what failed, and the only thing
 /// [`Fault::message`] interpolates.
@@ -27,6 +41,15 @@ pub enum AgentError {
     HttpStatus(u16),
     #[error("could not decode the agent payload: {0}")]
     DecodeFailed(String),
+    /// A pinned host presented a certificate other than the pinned one — or
+    /// one it could not prove it holds the key for (#448). Refused inside the
+    /// handshake, so no request, and no token, was sent.
+    #[error("the agent's certificate is not the pinned one")]
+    CertificateChanged,
+    /// A pinned host answered plain HTTP where TLS was expected (#448). Never
+    /// retried over `http://`.
+    #[error("the agent does not speak TLS")]
+    NoTls,
 }
 
 impl AgentError {
@@ -63,7 +86,163 @@ impl AgentError {
                 "{} — likely agent/app version skew after a redeploy",
                 Fault::Undecodable.message(AGENT)
             ),
+            // Their own sentences (#448), never `Unreachable`'s: the machine
+            // answered. "Check the host is up" would send the operator to the
+            // network for a problem that is the pairing.
+            AgentError::CertificateChanged => Fault::CertificateChanged.message(AGENT),
+            AgentError::NoTls => Fault::NoTls.message(AGENT),
         }
+    }
+}
+
+/// What [`probe_certificate`] found at an address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertProbe {
+    /// The agent speaks TLS and holds the key for the certificate it
+    /// presented. `fingerprint` is that certificate's, in `crates/certpin`'s
+    /// form — what the operator compares with `solador-agent tls-fingerprint`.
+    /// **Not trusted by having been fetched.**
+    Tls { fingerprint: String },
+    /// Something answered plain HTTP on that port: an agent with TLS off (or
+    /// one that predates it). There is nothing to pin.
+    NoTls,
+}
+
+/// Why [`probe_certificate`] found no certificate and no plain-HTTP agent.
+#[derive(Debug, thiserror::Error)]
+pub enum ProbeError {
+    /// Nothing answered, or what answered spoke neither TLS nor HTTP.
+    #[error("unreachable: {0}")]
+    Unreachable(String),
+    /// A certificate was presented but the peer could not prove it holds the
+    /// matching key. Something is replaying a certificate it copied, or is
+    /// broken; either way there is nothing safe to show the operator to trust.
+    #[error("the peer presented a certificate it could not prove it holds")]
+    Unproven,
+}
+
+impl ProbeError {
+    /// One sentence for the pairing form. As with [`AgentError`], nothing the
+    /// transport produced is interpolated.
+    #[must_use]
+    pub fn user_message(&self) -> String {
+        match self {
+            ProbeError::Unreachable(_) => format!(
+                "{} — check the address and port, and that the agent is running",
+                Fault::Unreachable.message("that host")
+            ),
+            // No stock sentence names this; per the fault crate's convention a
+            // crate whose failure the vocabulary has no word for keeps its own.
+            ProbeError::Unproven => {
+                "that host presented a certificate it can't prove it holds — nothing to trust"
+                    .to_owned()
+            }
+        }
+    }
+}
+
+/// Fetches the certificate the agent at `address:port` presents, **without
+/// trusting it** — the first half of pairing (#448).
+///
+/// A handshake is made that accepts any certificate and reports the
+/// fingerprint of the one whose key the peer proved it holds. The only request
+/// sent is an unauthenticated `GET /v1/health`: no bearer token ever crosses a
+/// connection nobody has verified. Trusting what this returns is the
+/// operator's decision, made by comparing the fingerprint with what the host
+/// printed, and nothing is persisted here.
+///
+/// If TLS fails because the peer is not speaking it, one plain-HTTP
+/// unauthenticated request decides between "an agent with TLS off" and
+/// "nothing there". That fallback exists only because no pin exists yet: a
+/// host that has one is never dialled over `http://`.
+pub async fn probe_certificate(address: &str, port: u16) -> Result<CertProbe, ProbeError> {
+    let recorder = pin::Recorder::new();
+    let tls = reqwest::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
+        .use_preconfigured_tls(recorder.config())
+        .build()
+        .expect("reqwest client");
+    let outcome = tls
+        .get(format!("https://{address}:{port}/v1/health"))
+        .send()
+        .await;
+
+    // The handshake may have completed and the request still failed (a 401 is
+    // not a failure at all; a reset after it is). What matters is whether the
+    // peer proved it holds a certificate's key.
+    if let Some(fingerprint) = recorder.proven() {
+        return Ok(CertProbe::Tls { fingerprint });
+    }
+    let Err(error) = outcome else {
+        // A response with no proven certificate cannot happen over TLS.
+        return Err(ProbeError::Unreachable(
+            "no certificate presented".to_owned(),
+        ));
+    };
+    match tls_failure(&error) {
+        Some(rustls::Error::InvalidCertificate(_)) => Err(ProbeError::Unproven),
+        Some(rustls::Error::InvalidMessage(_)) => speaks_plain_http(address, port).await,
+        _ => Err(ProbeError::Unreachable(error.to_string())),
+    }
+}
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The "no TLS" half of the probe: does anything answer HTTP there at all?
+/// Unauthenticated, and any HTTP response — a 401 is the agent's normal answer
+/// to it — counts.
+async fn speaks_plain_http(address: &str, port: u16) -> Result<CertProbe, ProbeError> {
+    let http = reqwest::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest client");
+    match http
+        .get(format!("http://{address}:{port}/v1/health"))
+        .send()
+        .await
+    {
+        Ok(_) => Ok(CertProbe::NoTls),
+        Err(error) => Err(ProbeError::Unreachable(error.to_string())),
+    }
+}
+
+/// The `rustls` error at the bottom of a `reqwest` failure, if there is one.
+///
+/// Walks the `source()` chain, and looks *inside* each `io::Error` as well:
+/// `io::Error::source()` skips the error it wraps and reports that error's own
+/// source, so a `rustls::Error` boxed into an `io::Error` — which is how every
+/// tokio TLS stream reports a handshake failure — is invisible to a plain
+/// `source()` walk. They also nest — measured: an `io::Error` of kind `Other`
+/// around an `io::Error` of kind `InvalidData` around the `rustls::Error` —
+/// hence the recursion.
+fn tls_failure(error: &reqwest::Error) -> Option<&rustls::Error> {
+    fn inside<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a rustls::Error> {
+        if let Some(tls) = err.downcast_ref::<rustls::Error>() {
+            return Some(tls);
+        }
+        let wrapped = err.downcast_ref::<std::io::Error>()?.get_ref()?;
+        inside(wrapped)
+    }
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(err) = current {
+        if let Some(tls) = inside(err) {
+            return Some(tls);
+        }
+        current = err.source();
+    }
+    None
+}
+
+/// How a failed send is classified: a certificate the pin refused, a peer that
+/// is not speaking TLS, or — for everything else — unreachable.
+fn send_failed(error: &reqwest::Error) -> AgentError {
+    match tls_failure(error) {
+        Some(rustls::Error::InvalidCertificate(_)) => AgentError::CertificateChanged,
+        Some(rustls::Error::InvalidMessage(_)) => AgentError::NoTls,
+        _ => AgentError::Unreachable(error.to_string()),
     }
 }
 
@@ -74,6 +253,10 @@ pub struct AgentClient {
 }
 
 impl AgentClient {
+    /// A client for a host that was **never paired**: plain HTTP, no
+    /// certificate checks — over Tailscale the transport is what carries the
+    /// encryption. A paired host is [`AgentClient::pinned`].
+    ///
     /// # Invariant: no credentials in `base_url`
     ///
     /// `base_url` must be scheme/host/port only — never userinfo
@@ -93,6 +276,47 @@ impl AgentClient {
             token: token.into(),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
+                .build()
+                .expect("reqwest client"),
+        }
+    }
+
+    /// A client for a host the operator **paired** (#448): HTTPS to the one
+    /// certificate whose SHA-256 is `fingerprint`, and nothing else.
+    ///
+    /// * The certificate is checked inside the handshake, so a peer that
+    ///   presents a different one — or a copy of the right one without its
+    ///   key — is refused before a single byte of HTTP, `Authorization`
+    ///   included, is written ([`AgentError::CertificateChanged`]).
+    /// * **It never dials `http://`.** Whatever scheme `base_url` names is
+    ///   replaced with `https://`; the underlying client refuses any other
+    ///   scheme outright (`https_only`) and follows no redirects, because a
+    ///   `302` to an `http://` URL is a downgrade the client would otherwise
+    ///   take on its own. A peer that answers plain HTTP is reported as
+    ///   [`AgentError::NoTls`], not followed.
+    /// * A `fingerprint` that does not parse (a hand-edited store) matches no
+    ///   certificate: every handshake is refused. Failing closed, as a pin
+    ///   that could be blanked into "off" would not be one.
+    ///
+    /// The same no-credentials-in-`base_url` invariant as [`AgentClient::new`].
+    pub fn pinned(
+        base_url: impl Into<String>,
+        token: impl Into<String>,
+        fingerprint: &str,
+    ) -> Self {
+        let base_url = base_url.into();
+        let host = base_url
+            .split_once("://")
+            .map_or(base_url.as_str(), |(_, rest)| rest)
+            .trim_end_matches('/');
+        Self {
+            base_url: format!("https://{host}"),
+            token: token.into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::none())
+                .use_preconfigured_tls(pin::PinnedVerifier::config(fingerprint))
                 .build()
                 .expect("reqwest client"),
         }
@@ -138,7 +362,7 @@ impl AgentClient {
             .bearer_auth(&self.token)
             .send()
             .await
-            .map_err(|e| AgentError::Unreachable(e.to_string()))?;
+            .map_err(|e| send_failed(&e))?;
 
         match resp.status().as_u16() {
             200 => {}
@@ -157,6 +381,9 @@ impl AgentClient {
 fn decode_failed(e: serde_json::Error) -> AgentError {
     AgentError::DecodeFailed(e.to_string())
 }
+
+#[cfg(test)]
+mod pinning_tests;
 
 #[cfg(test)]
 mod tests {

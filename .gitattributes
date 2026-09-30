@@ -39,3 +39,8 @@ tests/fixtures/agent/** -text
 *.sig -text
 *.minisig -text
 *.pub -text
+
+# The certificate-pin fixtures (`crates/certpin`, #448): a DER certificate and
+# the fingerprint string it must format to. Both consumers read these bytes, and
+# the .sha256 has no final newline.
+tests/fixtures/tls/** -text

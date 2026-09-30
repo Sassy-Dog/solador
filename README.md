@@ -99,9 +99,11 @@ Add these in **Settings**, in any order, whenever you feel like it.
 | **Azure Cost** | a daily cost export in blob storage. There is no credential to paste: it signs each read itself with the `az` CLI you're already signed in to |
 | **Sentry Crons** | the same Sentry token as above — one credential, two panels |
 
-**On reaching other machines:** the cockpit speaks plain HTTP to a host and a
-port, so **any network path works** — a LAN, a VPN, WireGuard, ExpressRoute,
-Tailscale, an SSH tunnel. It does not care how the packets get there. The agent
+**On reaching other machines:** the cockpit speaks HTTP to a host and a port —
+or HTTPS, for an agent you have paired with, in which case it trusts exactly
+the certificate whose fingerprint you compared and approved — so **any network
+path works**: a LAN, a VPN, WireGuard, ExpressRoute, Tailscale, an SSH tunnel.
+It does not care how the packets get there. The agent
 itself binds a private address by default rather than `0.0.0.0`, so installing
 it doesn't quietly publish your metrics to the internet; set `SOLADOR_AGENT_BIND`
 if you want it somewhere else. See [`agent/README.md`](agent/README.md).

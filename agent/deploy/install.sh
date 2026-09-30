@@ -1803,22 +1803,23 @@ esac
 # agent/src/tls.rs) rather than reimplementing the SHA-256/DER read in shell.
 if [ "$TLS_VALUE" = "1" ]; then
     if TLS_FINGERPRINT="$("$DEST_BIN" tls-fingerprint 2>&1)"; then
-        echo "    TLS: on — certificate fingerprint (give this to Solador to pin):"
+        echo "    TLS: on — certificate fingerprint:"
         echo "      $TLS_FINGERPRINT"
+        echo "      To pair this host: in Solador, Settings > Connections, add (or edit) the host,"
+        echo "      press \"Check certificate\", compare the fingerprint it shows with the one above,"
+        echo "      and press \"Trust\" only if they match. Nothing is pinned until you do."
         echo "      Never delete $TLS_KEY_FILE / $TLS_CERT_FILE unless you mean to re-pair —"
-        echo "      a new certificate invalidates every cockpit's existing pin."
-        echo "      KNOWN LIMIT: no released Solador build can pin or dial this yet (#448 is"
-        echo "      not shipped) — this host reads as unreachable in the cockpit until it is."
-        echo "      To use this host with Solador today, edit $ENV_FILE, set"
-        echo "      SOLADOR_AGENT_TLS=0, and restart the service."
+        echo "      a new certificate makes every cockpit that paired this host report"
+        echo "      \"certificate changed\" until it is re-paired."
+        echo "      A Solador cockpit older than certificate pairing (#448) cannot dial an HTTPS"
+        echo "      agent and reads this host as unreachable: update the cockpit, or edit"
+        echo "      $ENV_FILE, set SOLADOR_AGENT_TLS=0, and restart the service."
     else
         echo "    TLS: on, but the fingerprint could not be read (this should not happen right" >&2
         echo "       after a verified HTTPS health check): $TLS_FINGERPRINT" >&2
         echo "       Inspect by hand:  $DEST_BIN tls-fingerprint" >&2
-        echo "       KNOWN LIMIT: no released Solador build can pin or dial this yet (#448 is" >&2
-        echo "       not shipped) — this host reads as unreachable in the cockpit until it is." >&2
-        echo "       To use this host with Solador today, edit $ENV_FILE, set" >&2
-        echo "       SOLADOR_AGENT_TLS=0, and restart the service." >&2
+        echo "       Pairing in Solador needs it: Settings > Connections > \"Check certificate\"" >&2
+        echo "       shows the fingerprint to compare with that command's output." >&2
     fi
 else
     echo "    TLS: off (a fresh install turns this on by default; re-run with --enable-tls to opt in)"
