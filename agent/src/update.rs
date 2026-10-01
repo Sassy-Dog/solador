@@ -1282,9 +1282,32 @@ pub enum Dial {
     /// The bind is a DNS name: it is resolved (see [`resolve_dial`]) and the
     /// results are what `localhost` connects to.
     Name { host: String, port: u16 },
-    /// An IPv6 literal with a zone id (`fe80::1%en0`). Refused under TLS
-    /// (see [`resolve_dial`]).
+    /// An IPv6 literal with a zone id (`fe80::1%en0`). Refused, TLS on or
+    /// off (see [`resolve_dial`]).
     ZoneId(String),
+}
+
+/// Does this bind carry an IPv6 zone id (`fe80::1%en0`)? Such a bind is
+/// refused everywhere, TLS on or off (#476): the agent, `install.sh` and
+/// `update`/`rollback` all use this one rule, and [`zone_id_refusal`] is the
+/// one sentence.
+#[must_use]
+pub fn has_zone_id(bind: &str) -> bool {
+    let bare = bind
+        .strip_prefix('[')
+        .and_then(|b| b.strip_suffix(']'))
+        .unwrap_or(bind);
+    bare.contains('%') && bare.parse::<IpAddr>().is_err()
+}
+
+/// The refusal for a zone-id bind. The same words are `main.rs`'s start-time
+/// FATAL and `resolve_dial`'s error; `install.sh` says the same thing in shell.
+#[must_use]
+pub fn zone_id_refusal(bind: &str) -> String {
+    format!(
+        "SOLADOR_AGENT_BIND '{bind}' carries an IPv6 zone id, which the health probe \
+         cannot dial; bind the address without the zone (or a name that resolves to it)"
+    )
 }
 
 /// The URL to probe and where its connection goes, for every bind form
@@ -1308,6 +1331,18 @@ pub fn probe_target(bind: &str, port: u16, tls: bool) -> (String, Dial) {
         b => b.to_string(),
     };
     let wildcard = matches!(bare, "" | "0.0.0.0" | "::");
+    if has_zone_id(bind) {
+        // Refused with TLS on or off (#476): `resolve_dial` turns this into
+        // the error. The URL is only a label for it — the WHATWG URL parser
+        // reqwest uses has no zone-id syntax, so the TLS-off form does not
+        // parse (pinned by `a_zone_id_url_does_not_parse`).
+        let url = if tls {
+            format!("https://localhost:{port}/v1/health")
+        } else {
+            format!("http://{plain_host}:{port}/v1/health")
+        };
+        return (url, Dial::ZoneId(bind.to_string()));
+    }
     if !tls || wildcard {
         // A wildcard is dialled at loopback as written — `lib.sh`'s
         // `probe_url` with no `connect_line` — and the loopback IPs are in
@@ -1320,7 +1355,6 @@ pub fn probe_target(bind: &str, port: u16, tls: bool) -> (String, Dial) {
     }
     let dial = match bare.parse::<IpAddr>() {
         Ok(ip) => Dial::Addr(SocketAddr::new(ip, port)),
-        Err(_) if bare.contains('%') => Dial::ZoneId(bind.to_string()),
         Err(_) => Dial::Name {
             host: bare.to_string(),
             port,
@@ -1340,19 +1374,18 @@ pub fn probe_target(bind: &str, port: u16, tls: bool) -> (String, Dial) {
 /// `run_rollback` before anything is fetched or swapped, never a failure found
 /// with the candidate live and misreported as a failed recovery.
 ///
-/// A zone-id bind (`fe80::1%en0`) is refused under TLS: the probe's
-/// `localhost` URL and pinned address have no portable place for an
-/// interface-local zone, and a link-local bind is not a reachable address for
-/// anything but its own link. (`lib.sh` hands it to curl unchanged.) Both
+/// A zone-id bind (`fe80::1%en0`) is refused whether or not TLS is on (#476):
+/// under TLS the probe's `localhost` URL and pinned address have no portable
+/// place for an interface-local zone, and with TLS off the WHATWG URL parser
+/// has no zone syntax at all, so the probe URL does not parse and `update`
+/// would fail its post-restart probe *after* the swap. A link-local bind is
+/// not a reachable address for anything but its own link either. Both
 /// refusals apply to `update` and `rollback` alike, before any change.
 pub async fn resolve_dial(dial: &Dial) -> Result<Vec<SocketAddr>, UpdateError> {
     match dial {
         Dial::Url => Ok(Vec::new()),
         Dial::Addr(a) => Ok(vec![*a]),
-        Dial::ZoneId(bind) => Err(UpdateError::Install(format!(
-            "SOLADOR_AGENT_BIND '{bind}' carries an IPv6 zone id, which the TLS health probe \
-             cannot dial; bind the address without the zone (or a name that resolves to it)"
-        ))),
+        Dial::ZoneId(bind) => Err(UpdateError::Install(zone_id_refusal(bind))),
         Dial::Name { host, port } => {
             let looked_up = tokio::time::timeout(
                 Duration::from_secs(5),
@@ -1469,7 +1502,7 @@ pub fn read_serving(env_file: &Path) -> Result<Serving, UpdateError> {
 /// `probe_target_matches_lib_sh_for_every_bind_form` and `lib_test.sh`'s
 /// `health_url` / `verify_health` tables pin the two sides to the same rows,
 /// TLS off and on. The one form they leave to Rust alone is an IPv6 zone id,
-/// which `update` refuses under TLS (see `lib.sh`'s `health_url` comment).
+/// which `update` refuses with TLS on or off (see `lib.sh`'s `health_url` comment).
 #[must_use]
 pub fn health_url(bind: &str, port: u16, tls: bool) -> String {
     probe_target(bind, port, tls).0
@@ -3057,6 +3090,11 @@ mod tests {
             probe_target("fe80::1%en0", 7878, true).1,
             Dial::ZoneId("fe80::1%en0".to_string())
         );
+        // ...and it is refused with TLS off too (#476).
+        assert_eq!(
+            probe_target("fe80::1%en0", 7878, false).1,
+            Dial::ZoneId("fe80::1%en0".to_string())
+        );
         // The operator-facing label names the address really dialled.
         let serving = Serving {
             token: "t".into(),
@@ -3078,9 +3116,11 @@ mod tests {
         assert!(err.to_string().contains("does-not-exist.invalid"), "{err}");
         assert!(err.to_string().contains("nothing was changed"), "{err}");
 
-        let (_, zone) = probe_target("fe80::1%en0", 7878, true);
-        let err = resolve_dial(&zone).await.unwrap_err();
-        assert!(err.to_string().contains("zone"), "{err}");
+        for tls in [true, false] {
+            let (_, zone) = probe_target("fe80::1%en0", 7878, tls);
+            let err = resolve_dial(&zone).await.unwrap_err();
+            assert!(err.to_string().contains("zone"), "tls={tls}: {err}");
+        }
 
         // A name that does resolve yields addresses carrying the port.
         let (_, ok) = probe_target("localhost", 7878, true);
@@ -3088,6 +3128,45 @@ mod tests {
         assert!(!addrs.is_empty() && addrs.iter().all(|a| a.port() == 7878));
         // TLS off resolves nothing: the URL is dialled as written.
         assert!(resolve_dial(&Dial::Url).await.unwrap().is_empty());
+    }
+
+    /// #476 (b), measured: the URL `probe_target` builds for a zone-id bind
+    /// with TLS off is not a URL reqwest can parse (the WHATWG standard has no
+    /// zone-id syntax, RFC 6874's `%25` form included). Without the refusal,
+    /// `update` would swap, fail this probe, restore `.prev` and exit 5 on a
+    /// healthy host.
+    #[test]
+    fn a_zone_id_url_does_not_parse() {
+        for url in [
+            "http://[fe80::1%en0]:7878/v1/health",
+            "http://[fe80::1%25en0]:7878/v1/health",
+        ] {
+            assert!(reqwest::Url::parse(url).is_err(), "{url} parsed");
+        }
+        // Control: the same URL without a zone parses.
+        assert!(reqwest::Url::parse("http://[fe80::1]:7878/v1/health").is_ok());
+    }
+
+    #[test]
+    fn has_zone_id_is_only_a_scoped_ipv6_literal() {
+        for yes in [
+            "fe80::1%en0",
+            "[fe80::1%en0]",
+            "fe80::55:4872:4fc2:b486%lo0",
+        ] {
+            assert!(has_zone_id(yes), "{yes}");
+        }
+        for no in [
+            "",
+            "::",
+            "0.0.0.0",
+            "fe80::1",
+            "[fd7a::1]",
+            "100.64.0.9",
+            "host",
+        ] {
+            assert!(!has_zone_id(no), "{no}");
+        }
     }
 
     #[test]

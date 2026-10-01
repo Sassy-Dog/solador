@@ -587,7 +587,8 @@ fn wildcard_warning(addr: &str, tls_on: bool) -> String {
 
 /// Decide the host portion of the bind address.
 ///
-/// - If `SOLADOR_AGENT_BIND` is set (non-empty), honor it verbatim, in every
+/// - If `SOLADOR_AGENT_BIND` is set (non-empty), honor it verbatim (an IPv6
+///   zone id is the one refusal, TLS on or off, #476), in every
 ///   case below. This is how to bind a specific non-tailnet interface, or
 ///   `0.0.0.0` / `::` for all-interfaces over plain HTTP.
 /// - Otherwise default to the detected Tailscale IP.
@@ -605,6 +606,12 @@ where
 {
     if let Some(v) = env_bind {
         let v = v.trim();
+        if update::has_zone_id(v) {
+            // Refused with TLS on or off (#476): `update`'s health probe
+            // cannot dial it, and a link-local bind is reachable only from
+            // its own link.
+            return Err(update::zone_id_refusal(v));
+        }
         if !v.is_empty() {
             return Ok(v.to_string());
         }
@@ -960,6 +967,23 @@ mod tests {
         for h in ["127.0.0.1", "100.5.6.7", "192.168.1.20", "::1", ""] {
             assert!(!is_wildcard_host(h), "{h}");
         }
+    }
+
+    #[test]
+    fn resolve_bind_host_refuses_a_zone_id_with_tls_on_or_off() {
+        for tls in [false, true] {
+            let err = resolve_bind_host(Some("fe80::1%en0".to_string()), tls, || None)
+                .expect_err("a zone-id bind must be refused");
+            assert!(
+                err.contains("zone id") && err.contains("fe80::1%en0"),
+                "{err}"
+            );
+        }
+        // Control: the same bind without a zone starts.
+        assert_eq!(
+            resolve_bind_host(Some("fe80::1".to_string()), false, || None).unwrap(),
+            "fe80::1"
+        );
     }
 
     #[test]

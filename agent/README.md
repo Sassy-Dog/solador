@@ -158,7 +158,7 @@ rootless, so it works as a normal user.
 | Env var                  | Required | Default | Meaning                          |
 |--------------------------|----------|---------|----------------------------------|
 | `SOLADOR_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
-| `SOLADOR_AGENT_BIND`   | no       | tailnet IP, else see below | Host/interface to bind. **An explicit value always wins**, with TLS on or off. Unset: the detected Tailscale IP (`100.x`) if there is one. With no Tailscale IP, it depends on TLS (#449): **`SOLADOR_AGENT_TLS=1` binds all interfaces (`0.0.0.0`)**; plain HTTP **refuses to start** rather than send the token in the clear on whatever network the host is on. Set to `0.0.0.0` (or `::`) explicitly to bind all interfaces over plain HTTP too — only behind a firewall. See **Network exposure**. |
+| `SOLADOR_AGENT_BIND`   | no       | tailnet IP, else see below | Host/interface to bind. **An explicit value always wins**, with TLS on or off — except an IPv6 zone id (`fe80::1%en0`), which is refused at start, by `install.sh` and by `update`/`rollback` (#476). Unset: the detected Tailscale IP (`100.x`) if there is one. With no Tailscale IP, it depends on TLS (#449): **`SOLADOR_AGENT_TLS=1` binds all interfaces (`0.0.0.0`)**; plain HTTP **refuses to start** rather than send the token in the clear on whatever network the host is on. Set to `0.0.0.0` (or `::`) explicitly to bind all interfaces over plain HTTP too — only behind a firewall. See **Network exposure**. |
 | `SOLADOR_AGENT_PORT`   | no       | `7878`  | TCP port. Bound on `SOLADOR_AGENT_BIND`. |
 | `SOLADOR_AGENT_TLS`    | no       | unset (HTTP) | `1` serves HTTPS on the same port, with a self-signed certificate kept for the host's lifetime. **Turn it on with `install.sh --enable-tls`, not by hand-editing this line**: an *older*, pre-#447 installed agent reacts differently per platform to a hand-set key. **On Linux**, `EnvironmentFile=` passes it straight through: `update` swaps in a new HTTPS-only binary but its own pre-#447 code still probes it with `http://` — the health check fails, `.prev` is restored, and `update` exits 5. **On macOS**, the launcher installed before #447 forwards only `TOKEN`, `BIND`, `PORT`, `SKIP_FSTYPES` and `RUST_LOG` to the agent — never this key, and `update` replaces only the binary, never the launcher — so the new binary never sees `SOLADOR_AGENT_TLS`, keeps serving plain HTTP, and `update` exits 0 with TLS silently off. See **TLS**, below. Any other value (or absent) is plain HTTP. |
 | `SOLADOR_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
@@ -336,16 +336,20 @@ bind that changes after the certificate exists therefore breaks neither,
 whether it is an IP or a name (the MagicDNS name of a host first installed on
 all interfaces, say).
 
-Two bind forms are **refused under TLS by both `solador-agent update` and
+Two bind forms are **refused by both `solador-agent update` and
 `solador-agent rollback`**, before anything is fetched, swapped or restarted:
-an IPv6 zone id (`fe80::1%en0`), which the probe has no portable place to carry
-(a zone is interface-local, and the probe's `localhost` URL and pinned address
-name none), and a DNS name this host cannot resolve (bounded at 5 s) — a
-refusal with nothing changed, never a failed recovery. Advice to "bind the
-address without the zone" does not work for a link-local address, which is
-reachable only through its zone: bind a non-link-local address, or turn TLS off
-for that host. Until then, an operator who needs to roll back does it by hand
-(see **Roll back**, "When `rollback` refuses the bind").
+a DNS name this host cannot resolve (TLS only; bounded at 5 s), and an IPv6
+zone id (`fe80::1%en0`) **with TLS on or off** — the TLS probe has no portable
+place to carry a zone (a zone is interface-local, and the probe's `localhost`
+URL and pinned address name none), and the plain-HTTP probe URL does not parse
+(the WHATWG URL standard `reqwest` follows has no zone-id syntax). Each is a
+refusal with nothing changed, never a failed recovery. A zone-id bind is refused
+everywhere, not just here: the agent exits with a FATAL at start, and
+`install.sh` stops before downloading anything. A link-local address is
+reachable only from its own link, so no cockpit on another network could use
+such a bind; bind a non-link-local address. Until a refused bind is fixed, an
+operator who needs to roll back does it by hand (see **Roll back**, "When
+`rollback` refuses the bind").
 
 **A wildcard bind (#449) adds nothing to the list, and needs nothing.**
 `0.0.0.0` and `::` are dropped from the SANs (nothing dials them), and the
@@ -1712,8 +1716,8 @@ binary is live but the displaced one could not be moved into `.prev`, so it
 sits at `solador-agent.rollback-displaced` and nothing was restarted; the
 message names all three files and the `mv` that finishes it.
 
-**When `rollback` refuses the bind** (a TLS host bound to an IPv6 zone id or to
-a name that does not resolve — see the certificate section above), the
+**When `rollback` refuses the bind** (a host bound to an IPv6 zone id, TLS on or off, or a TLS
+host bound to a name that does not resolve — see the certificate section above), the
 command changes nothing, and on macOS it is the only documented path. The
 escape is a manual swap that **bypasses the health verification entirely** —
 nothing checks that the restored binary came back — and, unlike `rollback`, is
