@@ -6832,6 +6832,34 @@ test_uninstall_linux() {
     else
         pass "an unreadable unit state makes no stop call"
     fi
+    # Clean host: nothing was removed and no request was made, so the
+    # summary must not say files were removed or that a stop was refused (#475).
+    assert_output_has "an unreadable state on a clean host says the manager could not report it" "$out" "could not report the state"
+    assert_output_has "an unreadable state on a clean host says no request was made" "$out" "No stop or disable request was made"
+    assert_output_has "an unreadable state on a clean host says no files were removed" "$out" "removed no files"
+    case "$out" in
+        *"files were removed"*) fail "an unreadable state on a clean host never claims files were removed" "$out" ;;
+        *) pass "an unreadable state on a clean host never claims files were removed" ;;
+    esac
+    case "$out" in
+        *"could not confirm a stop or disable request"*) fail "an unreadable state is not reported as a refused stop or disable" "$out" ;;
+        *) pass "an unreadable state is not reported as a refused stop or disable" ;;
+    esac
+    assert_output_has "an unreadable state names the unit's status command" "$out" "systemctl --user status solador-agent.service"
+
+    # Mixed: one unit's file really is removed, the other units' states are
+    # unreadable. The summary names both facts.
+    reset_argv_logs
+    INSTALL_STDIN="unread-state-mixed-tok-MUST-NOT-BE-PRINTED
+" run_install "$home"
+    assert_eq "install.sh succeeds, setting up the mixed unread-state fixture (Linux)" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_SYSTEMCTL_SHOW_EXIT=1 run_install "$home" --uninstall
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "removed files plus an unreadable state is exit 4 (Linux)" "4" "$INSTALL_STATUS"
+    assert_output_has "the mixed case says the files were removed" "$out" "files were removed"
+    assert_output_has "the mixed case says the state could not be read" "$out" "could not report the state"
+    assert_output_has "the mixed case says no request was made for the unreadable unit" "$out" "No stop or disable request was made"
 
     # ---- an unremovable binary: exit 6, no Done, no "removed:" line for it ----
     # (#439 fix 1) — chmod 555 on the binary's own parent directory (not the

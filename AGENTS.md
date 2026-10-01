@@ -994,7 +994,9 @@ tests build (#417); the crate still has zero dependencies.
   `inactive`, `stop` on it fails "not loaded" (exit 5), and counting it would
   be a false exit 4 forever — while a fileless oneshot left `failed` is
   held and stops fine. A state read that itself fails is exit 4, never a
-  silent "Nothing installed". A failed `stop`, OR a failed `disable` while
+  silent "Nothing installed" (#475: the summary says the state could not be
+  read, that no stop or disable request was made, and claims removed files
+  only when `UNINSTALL_REMOVED`). A failed `stop`, OR a failed `disable` while
   the file exists, both mean exit 4, reported as two DIFFERENT claims: a failed `stop` says the
   process may still be running; a failed `disable` with a successful
   `stop` says only that the unit's future auto-start is unconfirmed, and

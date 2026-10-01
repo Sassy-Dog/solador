@@ -137,11 +137,16 @@
 #      lock file this run created may remain after a perl reopen failure.
 #   2  usage: an unknown argument, --purge without --uninstall, or
 #      --uninstall combined with --migrate-from-opt or --enable-timer.
-#   4  every file was still removed (best-effort), but a reachable manager
-#      refused a specific stop or disable request, or a unit's state could
-#      not be read. Verify by hand. The
-#      message names which: a failed stop may mean the process is still
-#      running; a failed disable alone does not.
+#   4  the uninstall could not confirm the service is gone: a reachable
+#      manager refused a specific stop or disable request, or a unit's state
+#      could not be read. Every file this run found was still removed
+#      (best-effort); the message says so only when some file or a held unit
+#      was removed, and says none were on an otherwise clean host whose
+#      state read failed.
+#      Verify by hand. The message names which: a failed stop may mean the
+#      process is still running; a failed disable alone does not; an
+#      unreadable state means no stop or disable request was made for that
+#      unit at all.
 #   6  a file that should have been removable could not be deleted (a
 #      read-only parent directory, an immutable file, or similar). The
 #      service and other files may already be gone; fix it and re-run. 6 wins
@@ -351,9 +356,9 @@ UNINSTALL_REMOVED=false
 UNINSTALL_FAILED=false
 
 # LINUX_UNIT_HINTS: a space-separated list of "<unit>=<kind>" records, one
-# per systemd unit whose `stop` and/or `disable` call failed during THIS
+# per systemd unit whose `stop`, `disable` or state read failed during THIS
 # run's own pass (Linux only — see stop_and_disable_linux_unit, below,
-# which appends to it; <kind> is "stop", "disable" or "both"). Read only by
+# which appends to it; <kind> is "stop", "disable", "both" or "unread"). Read only by
 # run_uninstall's own Linux exit-4 hint, further down, to name exactly which
 # `systemctl --user status <unit>` calls are worth the operator's time — by
 # then this run has already removed the unit file and run `daemon-reload`,
@@ -546,8 +551,9 @@ EOF_PROPS
 #
 # A failed `stop` sets MANAGER_STOP_FAILED; a failed `disable` (it only ever
 # runs once the file is confirmed to exist) sets MANAGER_DISABLE_FAILED.
-# Either means exit 4, as does a state that could not be read (recorded as a
-# stop failure: the run cannot say the unit is not running). Sets
+# Either means exit 4, as does a state that could not be read, which sets
+# MANAGER_STATE_UNREAD and a `<unit>=unread` hint instead (#475): no request
+# was made, so it is not a refused stop. Sets
 # UNINSTALL_REMOVED whenever the unit's file exists or the manager held it.
 # UNINSTALL_REMOVED is a script-global, set after the argument-parsing loop
 # in the `---- uninstall (#439) ----` section above — it is not a `local`,
@@ -565,7 +571,7 @@ EOF_PROPS
 # process is still running, and never names anything but the metrics unit.
 stop_and_disable_linux_unit() {
     local unit="$1" file="$2" label="$3"
-    local this_stop_failed=false this_disable_failed=false
+    local this_stop_failed=false this_disable_failed=false this_state_unread=false
     local has_file=false held=false present_rc=1
     if [ -f "$file" ]; then
         has_file=true
@@ -576,8 +582,10 @@ stop_and_disable_linux_unit() {
             2)
                 echo "    (systemctl --user show $unit: could not read the state of $label;" >&2
                 echo "     cannot confirm it is stopped)" >&2
-                MANAGER_STOP_FAILED=true
-                this_stop_failed=true
+                # A DIFFERENT claim from a refused stop: no stop or disable
+                # request was made, so MANAGER_STOP_FAILED stays untouched.
+                MANAGER_STATE_UNREAD=true
+                this_state_unread=true
                 ;;
         esac
     fi
@@ -612,6 +620,8 @@ stop_and_disable_linux_unit() {
         LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=stop"
     elif [ "$this_disable_failed" = true ]; then
         LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=disable"
+    elif [ "$this_state_unread" = true ]; then
+        LINUX_UNIT_HINTS="$LINUX_UNIT_HINTS $unit=unread"
     fi
 }
 
@@ -918,6 +928,11 @@ run_uninstall() {
     # has earned.
     local MANAGER_STOP_FAILED=false
     local MANAGER_DISABLE_FAILED=false
+    # A unit's state could not be read (Linux `systemctl --user show` failed
+    # or printed no properties): no stop or disable was attempted. Kept apart
+    # from the two flags above because it is neither claim, and because on a
+    # clean host nothing was removed either.
+    local MANAGER_STATE_UNREAD=false
     # Read BEFORE the unit/plist is removed below — unowned_service_binary
     # needs the file that is about to be deleted.
     local foreign_bin
@@ -1076,7 +1091,7 @@ run_uninstall() {
         # above this name which path and why), so this is not "Done" and not
         # "refused, nothing changed" either, since the service was likely
         # already stopped and other files already removed above. Exit 6 is
-        # its own code rather than folding into 4's: 4 promises every file
+        # its own code rather than folding into 4's: 4 promises every file found
         # WAS removed and only a manager call is unconfirmed; that promise
         # is false here.
         echo "==> $BIN_NAME's uninstall for $(id -un 9>&-) did NOT finish: see the FAILED line(s)" >&2
@@ -1085,24 +1100,44 @@ run_uninstall() {
         echo "    immutable file, or similar) and re-run to finish." >&2
         return 6
     fi
-    if [ "$MANAGER_STOP_FAILED" = true ] || [ "$MANAGER_DISABLE_FAILED" = true ]; then
-        # Every file this run knows about is gone (or was already gone), but
-        # "Done: uninstalled" is a claim about the SERVICE, not the files —
-        # and a manager that answered `show-environment`/`print gui/<uid>`
-        # (the reachability check above) yet still refused a specific stop
-        # or disable request is a narrower, rarer thing than unreachable,
-        # not a reason to fabricate the stronger claim. Exit 4 is distinct
-        # from both 0 ("Done", earned) and 1 ("refused, nothing changed" —
-        # false here). The message below distinguishes the two flags rather
-        # than folding them into one sentence: a failed `stop` means the
-        # process itself may still be running; a failed `disable` with a
-        # successful `stop` means only its future auto-start (at next
-        # login/boot) is unconfirmed, and saying "may still be running"
-        # there would be false.
-        echo "==> $BIN_NAME's files were removed for $(id -un 9>&-), but at least one" >&2
-        echo "    service-manager call above could not confirm a stop or disable request" >&2
-        echo "    actually succeeded." >&2
-        if [ "$MANAGER_STOP_FAILED" = true ]; then
+    if [ "$MANAGER_STOP_FAILED" = true ] || [ "$MANAGER_DISABLE_FAILED" = true ] ||
+        [ "$MANAGER_STATE_UNREAD" = true ]; then
+        # "Done: uninstalled" is a claim about the SERVICE, not the files, and
+        # a manager that answered `show-environment`/`print gui/<uid>` (the
+        # reachability check above) yet refused a specific stop or disable
+        # request, or could not report a unit's state, is a narrower, rarer
+        # thing than unreachable. Exit 4 is distinct from both 0 ("Done",
+        # earned) and 1 ("refused, nothing changed" — false here when files
+        # went). The message states only what happened: "files were removed"
+        # only when UNINSTALL_REMOVED says some were (a state read failing on
+        # a clean host removed nothing), and three separate claims: a failed
+        # `stop` means the process itself may still be running; a failed
+        # `disable` with a successful `stop` means only its future auto-start
+        # is unconfirmed; an unread state means no request was made at all.
+        if [ "$MANAGER_STOP_FAILED" = true ] || [ "$MANAGER_DISABLE_FAILED" = true ]; then
+            if [ "$UNINSTALL_REMOVED" = true ]; then
+                echo "==> $BIN_NAME's files were removed for $(id -un 9>&-), but at least one" >&2
+            else
+                echo "==> $BIN_NAME's uninstall for $(id -un 9>&-) removed no files, and at least one" >&2
+            fi
+            echo "    service-manager call above could not confirm a stop or disable request" >&2
+            echo "    actually succeeded." >&2
+        fi
+        if [ "$MANAGER_STATE_UNREAD" = true ]; then
+            if [ "$MANAGER_STOP_FAILED" = true ] || [ "$MANAGER_DISABLE_FAILED" = true ]; then
+                echo "    Also, the service manager could not report the state of at least one" >&2
+                echo "    unit, so no stop or disable request was made for it." >&2
+            else
+                if [ "$UNINSTALL_REMOVED" = true ]; then
+                    echo "==> $BIN_NAME's files were removed for $(id -un 9>&-), but the service" >&2
+                else
+                    echo "==> $BIN_NAME's uninstall for $(id -un 9>&-) removed no files, and the service" >&2
+                fi
+                echo "    manager could not report the state of at least one unit, so it cannot" >&2
+                echo "    be confirmed stopped. No stop or disable request was made for it." >&2
+            fi
+        fi
+        if [ "$MANAGER_STOP_FAILED" = true ] || [ "$MANAGER_STATE_UNREAD" = true ]; then
             echo "    Verify by hand that nothing is still running:" >&2
         else
             echo "    The service itself was told to stop; only its future auto-start (at" >&2
