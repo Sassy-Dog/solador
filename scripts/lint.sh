@@ -97,6 +97,18 @@ else
     status=1
 fi
 
+# --- The Tauri CLI pin must share a minor train with Cargo.lock's `tauri`
+# (#485), and the negative control proving the guard fails when it should.
+# Text-only (no cargo), so unlike the check below it needs no toolchain.
+log_info "Tauri CLI pin vs Cargo.lock…"
+if pin_out="$("$SCRIPT_DIR/tauri-cli-pin-guard.sh" 2>&1 && "$SCRIPT_DIR/tauri-cli-pin-guard-test.sh" 2>&1)"; then
+    log_success "TAURI_CLI_VERSION matches Cargo.lock's tauri minor, and the guard's corpus behaves"
+else
+    echo "$pin_out"
+    log_error "the Tauri CLI pin guard, or its self-test, failed (see above)"
+    status=1
+fi
+
 # --- A deliberate absence, asserted: the agent must not depend on the release
 # tooling in crates/updatefeed (#391). The same script CI's `secrets-guard`
 # job runs; see its header for why it lists the tree rather than asking

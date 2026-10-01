@@ -441,7 +441,12 @@ jobs:
     # a daemon on strangers' hosts must not carry release tooling and that edge
     # is the obvious shortcut for the consumer (#393). `cargo tree` resolves
     # and downloads manifests but compiles nothing, so the Rust toolchain is
-    # needed and webkit2gtk is not. `./dev lint` runs all three scripts.
+    # needed and webkit2gtk is not. `./dev lint` runs the same scripts.
+    #
+    # The last two steps (#485) fail when `TAURI_CLI_VERSION` in
+    # scripts/config.sh and `Cargo.lock`'s `tauri` are on different minor
+    # trains, and prove that with a mutated copy. Text only: no cargo, no
+    # network, so they sit with the credential-free checks of this job.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -456,3 +461,9 @@ jobs:
 
       - name: agent/ must not resolve crates/updatefeed
         run: scripts/agent-deps-guard.sh
+
+      - name: TAURI_CLI_VERSION must share Cargo.lock's tauri minor
+        run: scripts/tauri-cli-pin-guard.sh
+
+      - name: The pin guard refuses what it claims to refuse
+        run: scripts/tauri-cli-pin-guard-test.sh

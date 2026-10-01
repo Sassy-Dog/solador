@@ -28,7 +28,10 @@ export TAURI_PACKAGE="solador-app"
 # itself, and `--ignore-version-mismatches` is deliberately never passed so
 # that check keeps its teeth.
 #
-# Bump this and `Cargo.lock`'s `tauri` together, never one alone.
+# Bump this and `Cargo.lock`'s `tauri` together, never one alone. That is
+# enforced (#485): `scripts/tauri-cli-pin-guard.sh` fails `./dev lint` and CI
+# unless the two share major.minor (a patch difference passes, per the above).
+# It reads the line below as text, so keep it a plain `export TAURI_CLI_VERSION="X.Y.Z"`.
 export TAURI_CLI_VERSION="2.12.1"
 
 # Every macOS bundle is universal (#335), and the triple lives here because it
