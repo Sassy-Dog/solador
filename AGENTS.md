@@ -118,9 +118,11 @@ coverage it does not have would be worse than the checklist.
   `shellcheck -S warning` over every shell source this repo ships
   (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`), the secrets guard and
   its mutation corpus (`scripts/secrets-guard.sh`, `scripts/secrets-guard-test.sh`),
-  and `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
-  does not resolve `crates/updatefeed` — the three scripts CI's
-  `secrets-guard` job runs; mirrors CI
+  `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
+  does not resolve `crates/updatefeed`, and `scripts/tauri-cli-pin-guard.sh`
+  (#485: `TAURI_CLI_VERSION` and `Cargo.lock`'s `tauri` must share major.minor,
+  text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh` —
+  the scripts CI's `secrets-guard` job runs; mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — Clean build artifacts
 - `./dev publish` — mint the CalVer tag, then build a signed, notarized,
