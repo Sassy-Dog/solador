@@ -394,8 +394,10 @@ build_release_binary() {
 # and a name. A bracket pair is stripped first (`bind_bare`) and only an IPv6
 # literal is bracketed again, so `[fd7a::1]` is never double-bracketed and
 # `[100.64.0.9]` dials as `100.64.0.9` — brackets are not legal around a non-IPv6
-# host. The one deliberate difference is an IPv6 zone id: `update` refuses it
-# under TLS, while curl is handed it unchanged.
+# host. An IPv6 zone id (`fe80::1%en0`) has no row: it is refused whether or not
+# TLS is on (#476) — by the agent at start, by `install.sh` before anything is
+# downloaded, and by `update`/`rollback` before anything changes — so none of
+# these functions is ever handed one by a supported path.
 bind_bare() {
     local bind="${1:-}"
     case "$bind" in

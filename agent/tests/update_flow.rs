@@ -1948,6 +1948,61 @@ async fn a_refused_tls_bind_changes_nothing_for_update_and_for_rollback() {
     }
 }
 
+/// #476: an IPv6 zone-id bind with TLS OFF is refused by `update` and
+/// `rollback` exactly as it is under TLS. The TLS-off probe URL
+/// (`http://[fe80::1%en0]:P/...`) does not parse, so without the refusal
+/// `update` would swap, fail the post-restart probe, restore `.prev` and exit
+/// 5 — a reported recovery on a healthy host. Same assertions as the TLS test
+/// above: exit 1, live and `.prev` byte-identical, no restart, no release
+/// request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zone_id_bind_with_tls_off_changes_nothing_for_update_and_for_rollback() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let bind = "fe80::1%en0";
+
+    // update: a release is on offer, and must never be asked about.
+    let h = Harness::new(&installed, "127.0.0.1").await;
+    h.rebind(bind);
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    let err = h
+        .update(&rig.base, trust(&[&key_a()]))
+        .await
+        .expect_err("a refused bind must not update");
+    assert!(matches!(err, UpdateError::Install(_)), "{err}");
+    assert_eq!(err.exit_code(), 1, "{err}");
+    assert!(err.to_string().contains("zone id"), "{err}");
+    assert!(err.to_string().contains(bind), "{err}");
+    h.assert_untouched(&installed, "update, zone-id bind, TLS off");
+    assert!(
+        rig.requests().is_empty(),
+        "the release server was asked: {:?}",
+        rig.requests()
+    );
+
+    // rollback: a `.prev` is there to be restored, and must stay where it is.
+    let h = Harness::new(&candidate, "127.0.0.1").await;
+    h.rebind(bind);
+    fs::write(h.install.sibling(".prev"), &installed).unwrap();
+    let err = h
+        .rollback()
+        .await
+        .expect_err("a refused bind must not roll back");
+    assert!(matches!(err, UpdateError::Install(_)), "{err}");
+    assert_eq!(err.exit_code(), 1, "{err}");
+    assert!(err.to_string().contains("zone id"), "{err}");
+    assert!(!h.new_exists(), "a .new was staged before the refusal");
+    assert_eq!(h.live(), candidate, "live changed");
+    assert_eq!(
+        h.prev().as_deref(),
+        Some(installed.as_slice()),
+        ".prev changed"
+    );
+    assert!(!h.install.sibling(".rollback-displaced").exists());
+    assert_eq!(h.service.restarts(), 0, "restarted");
+    assert!(!h.output().contains(TOKEN), "{}", h.output());
+}
+
 /// The name-bind success path through `run_update`: the bind is a DNS name, it
 /// resolves, TLS is on, and the post-restart probe passes. `localhost` is the
 /// hermetic name — the hosts file answers it with no network — and, unlike the

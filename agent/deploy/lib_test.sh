@@ -3974,6 +3974,45 @@ test_install_tls_no_tailnet_bind() {
         pass "the TLS-off refusal happens before a download"
     fi
 
+    # ---- an IPv6 zone-id bind is refused with TLS on or off, before a download (#476) ----
+    for tls_v in 0 1; do
+        rm -rf "$home"
+        mkdir -p "$home"
+        reset_argv_logs
+        SOLADOR_AGENT_BIND="fe80::1%en0" INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS="$tls_v" \
+            INSTALL_STDIN="" run_install "$home"
+        out="$(cat "$INSTALL_OUT")"
+        assert_eq "install.sh: a zone-id bind is refused (TLS=$tls_v)" "1" "$INSTALL_STATUS"
+        assert_output_has "the zone-id refusal names the bind and says why (TLS=$tls_v)" "$out" \
+            "'fe80::1%en0' carries an IPv6 zone id"
+        if [ -e "$home/.local/bin/solador-agent" ] || [ -e "$env_file" ]; then
+            fail "the zone-id refusal changes nothing (TLS=$tls_v)" "the binary or env file exists"
+        else
+            pass "the zone-id refusal changes nothing (TLS=$tls_v)"
+        fi
+        if [ -s "$STUB_CURL_ARGV" ]; then
+            fail "the zone-id refusal happens before a download (TLS=$tls_v)" "curl was invoked: $(head -n1 "$STUB_CURL_ARGV")"
+        else
+            pass "the zone-id refusal happens before a download (TLS=$tls_v)"
+        fi
+    done
+    # ...and one an earlier install left in the env file is refused the same way.
+    rm -rf "$home"
+    mkdir -p "$home/.config"
+    printf 'SOLADOR_AGENT_TOKEN=tok\nSOLADOR_AGENT_BIND=fe80::1%%en0\nSOLADOR_AGENT_PORT=7878\nSOLADOR_AGENT_TLS=0\n' > "$env_file"
+    env_before="$(cat "$env_file")"
+    reset_argv_logs
+    INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a zone-id bind kept in the env file is refused" "1" "$INSTALL_STATUS"
+    assert_output_has "the kept zone-id bind is named" "$out" "carries an IPv6 zone id"
+    assert_eq "the refused re-run leaves the env file unchanged" "$env_before" "$(cat "$env_file")"
+    if [ -s "$STUB_CURL_ARGV" ]; then
+        fail "the kept zone-id refusal downloads nothing" "curl was invoked: $(head -n1 "$STUB_CURL_ARGV")"
+    else
+        pass "the kept zone-id refusal downloads nothing"
+    fi
+
     # ---- a bind chosen for TLS is provisional: set aside on every re-run (#449) ----
     # The env file carries 0.0.0.0 only because this script picked it for a TLS
     # host with no tailnet, and it said so with SOLADOR_AGENT_BIND_AUTO=1. A

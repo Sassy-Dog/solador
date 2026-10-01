@@ -1044,22 +1044,32 @@ tests build (#417); the crate still has zero dependencies.
   Both verify the chain **and** the hostname — verification is never
   disabled, no `danger_accept_invalid_certs` or `danger_accept_invalid_hostnames`
   anywhere — and neither breaks when the bind changes after the certificate
-  exists, an IP or a name alike. Under TLS both `update` and `rollback` refuse
-  two bind forms, before changing anything (`resolve_dial`): an IPv6 zone id
-  (`fe80::1%en0`), which the probe has no portable place to carry (a zone is
-  interface-local, and the probe's `localhost` URL and pinned address name none),
-  and a DNS name this host cannot resolve (5s bound) — each proven through
-  `run_update` and `run_rollback` to change nothing (`update_flow.rs`: exit 1,
-  live and `.prev` byte-identical, no restart, no release request). `lib.sh`
-  and `probe_target` agree on every other bind form, TLS off and on, including
-  the bracketed ones (`[fd7a::1]`, `[100.64.0.9]`, `[host]`: a bracket pair is
-  stripped and only an IPv6 literal is bracketed again); both tables hold the
-  same rows. "Bind the address without
-  the zone" does not fix the first for a link-local address, which is reachable
-  only through its zone: bind a non-link-local address, or turn TLS off for that
-  host. An operator who must roll back meanwhile does it by hand — stop the
-  service, rename `<bin>.prev` over `<bin>`, start it — which bypasses the health
-  verification (`agent/README.md`, **Roll back**). Axum's TLS comes from
+  exists, an IP or a name alike. Both `update` and `rollback` refuse,
+  before changing anything (`resolve_dial`), an IPv6 zone id (`fe80::1%en0`)
+  **with TLS on or off (#476)** and, under TLS, a DNS name this host cannot
+  resolve (5s bound) — each proven through `run_update` and `run_rollback` to
+  change nothing (`update_flow.rs`: exit 1, live and `.prev` byte-identical, no
+  restart, no release request). The zone id is refused because the probe cannot
+  dial it: under TLS its `localhost` URL and pinned address have no place for an
+  interface-local zone, and with TLS off the WHATWG URL parser `reqwest` uses has
+  no zone-id syntax at all (RFC 6874's `%25` form included — pinned by a unit
+  test), so without the refusal `update` would swap, fail the probe and report a
+  recovery on a healthy host. That refusal is **the same everywhere**: the agent
+  exits with a FATAL at start (`resolve_bind_host`), `install.sh` refuses before
+  any download or token prompt, and `update`/`rollback` refuse before any change,
+  all with `update::zone_id_refusal`'s core sentence. It is a decision, not a platform
+  limit: measured on macOS, the agent *does* serve `fe80::1%lo0` /
+  `%en0`, and curl dials the `%25` form, but the unencoded form `health_url`
+  emits timed out against `%lo0` (answered on `%en0`), and no URL parser
+  accepts it. `lib.sh` and `probe_target` agree on every other bind form, TLS
+  off and on, including the bracketed ones (`[fd7a::1]`, `[100.64.0.9]`,
+  `[host]`: a bracket pair is stripped and only an IPv6 literal is bracketed
+  again); both tables hold the same rows. "Bind the address without the zone"
+  does not fix a zone-id bind for a link-local address, which is reachable only
+  through its zone: bind a non-link-local address. An operator who must roll back
+  meanwhile does it by hand — stop the service, rename `<bin>.prev` over `<bin>`,
+  start it — which bypasses the health verification (`agent/README.md`, **Roll
+  back**). Axum's TLS comes from
   `axum-server`'s `tls-rustls-no-provider` feature rather than its default
   `tls-rustls`, specifically to avoid pulling in `aws-lc-rs` (a second
   crypto backend, and a `cmake`/C build the musl cross-compile does not

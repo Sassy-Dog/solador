@@ -1396,6 +1396,23 @@ fi
 # Empty here means "no explicit bind, no existing bind, no tailnet": resolved
 # once TLS is decided (the block after the "TLS:" line, below).
 
+# An IPv6 zone id (fe80::1%en0) is refused whether or not TLS is on (#476), and
+# here, before a download or a token prompt, whichever of the three sources the
+# bind came from. `update`'s health probe cannot dial it (the TLS probe has no
+# place for the zone; the plain URL does not parse), so a host installed on one
+# would be refused at its first `update` or `rollback` — and the agent itself
+# refuses to start on it. Same words as the agent's FATAL
+# (agent/src/update.rs's `zone_id_refusal`, plus a link-local note).
+case "$BIND" in
+    *%*)
+        echo "ERROR: SOLADOR_AGENT_BIND '$BIND' carries an IPv6 zone id, which the health probe" >&2
+        echo "       cannot dial; bind the address without the zone (or a name that resolves to it)." >&2
+        echo "       A link-local address is reachable only from its own link, so no other network's" >&2
+        echo "       cockpit could use it anyway. Nothing has been changed." >&2
+        exit 1
+        ;;
+esac
+
 # The refusal for a host with no bind address and no TLS. One place, so the
 # early (pre-download) and late (post-staging) callers say the same thing.
 refuse_no_bind() {
