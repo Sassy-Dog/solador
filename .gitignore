@@ -126,3 +126,6 @@ tests/fixtures/**/*.key
 
 # Throwaway artifacts (screenshots, scratch scripts, review copies) — never committed.
 tmp/
+
+# Codex local hook config (per-machine tooling, not shared).
+.codex/

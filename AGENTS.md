@@ -745,11 +745,13 @@ the bundle's floor.
   never in `store.json`. On macOS they are consolidated into one item,
   `secrets_v1`, under service `app.solador.desktop`; see `app/README.md`'s
   "Consolidated credential item".
-- **`LEGACY_SERVICE` / `LEGACY_APP_DIR_NAME` must not be renamed.** They name
-  what is already sitting in users' keychains and config dirs from before the
-  rename, and are what the migration reads *from*. Changing them orphans every
-  stored credential at once — and orphaned is worse than deleted, because they
-  stay there being useless.
+- **`LEGACY_APP_DIR_NAME` must not be renamed.** It names the config dir from
+  before the rename, and is what the store migration reads *from*. The
+  keychain side of that rename (adopting credentials from the pre-rename
+  service) has been removed: nothing reads `com.sassydog.devcanopy` any more,
+  so `SERVICE` itself is now the one name that must never move — a move
+  orphans every stored credential at once, and orphaned is worse than
+  deleted, because they stay there being useless.
 - The Azure Cost panel stores no credential: it mints a short-lived,
   container-scoped SAS per poll by shelling out to the Azure CLI (`az`, signed
   in as the operator).
@@ -809,8 +811,10 @@ scripts — #405 — against temporary bare origins: `get-version-info.sh`'s
 derivation and §4 mint with the `action ∈ {create, reuse}` and
 reuse-pushes-nothing contract, `get-build-number.sh`, and the release
 workflows' tag assertion from #404; ~160 cases, run under bash 5, macOS
-`/bin/bash` 3.2 and Git Bash in CI), `scripts/run-test.sh` (the exact-identity
-certificate trust gate behind `./dev run`), `scripts/signing-identity-test.sh`
+`/bin/bash` 3.2 and Git Bash in CI), `scripts/run-test.sh` (`./dev run`'s
+signing-identity choice: the exact-identity Apple certificate trust gate, and
+the self-signed local identity used where no Apple certificate is installed),
+`scripts/signing-identity-test.sh`
 (#474: `log_error` and `log_warning` write to stderr, so a refusal inside a
 `$(fn)` caller such as `resolve_signing_identity` is seen, not captured),
 `tests/frontend/csp_server_test.py`,

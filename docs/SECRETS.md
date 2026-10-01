@@ -44,7 +44,7 @@ count them in prose here, because the count is what went stale last time.
 | Variable | Needed for | Without it |
 |---|---|---|
 | `SENTRY_DSN` | where opt-in crash reports go — see below | The crash reporter is a silent no-op: nothing is sent, nothing errors. This is the normal state of any build you compile yourself. |
-| `DEVELOPMENT_TEAM` | picking a specific Apple signing team | `codesign` falls back to an ad-hoc signature. `./dev build` works either way. |
+| `DEVELOPMENT_TEAM` | picking a specific Apple signing team | `./dev run` signs with any installed Apple Development identity, or with a self-signed local one when none is installed. `./dev build` works either way. |
 | `APPLE_ASC_KEY_ID`, `APPLE_ASC_ISSUER_ID`, `APPLE_ASC_KEY_BASE64` | notarizing a release (`./dev build --notarize`, `./dev publish`) | The build **fails before submitting** and names which of the three is unset. Everything short of notarization — including `--sign` — works without them. |
 | `APPLE_SIGNING_IDENTITY` | overriding which certificate signs | The identity is resolved from the keychain by the prefix `Developer ID Application`. Only needed where that is ambiguous or absent (CI). |
 | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | minisigning the updater payload (`./dev build --sign`, `--notarize`, `./dev publish`) — Doppler `solador/prd` (#305) | `./dev publish` **fails in pre-flight**, before any tag is minted, when the key is empty **or the password is unset** (#402); `./dev build --sign` fails in `make_updater_archive`, after the bundle is signed. The password must be *set*: empty is valid only for an unencrypted key (say so with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""`), and the `prd` key needs its password — `release.yml`'s preflight requires it non-empty. The raw signer would prompt on a tty for an unset password; `build.sh` substitutes empty, so the observable failure is a wrong-password error, late. Unset is what an `--only-secrets` list missing the name looks like. Plain `./dev build` never needs either. |
@@ -315,8 +315,8 @@ It is **not** confidential — a team id ships in the signature of every binary
 Apple distributes, and you can read it out of any signed app. It lives outside
 the repository because a copy of it in a build config goes stale silently.
 
-That is also why its handling is soft: unset produces a warning and an ad-hoc
-signature, never a failure. A hard requirement would make the repository
+That is also why its handling is soft: unset only stops `./dev run` narrowing
+its choice of Apple Development identity to one team, never a failure. A hard requirement would make the repository
 unbuildable for anyone who has not been handed a value — a real cost, to protect
 something that is not protected anyway.
 
