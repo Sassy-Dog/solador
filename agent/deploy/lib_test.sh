@@ -6226,7 +6226,8 @@ STUB
     # ---- fire it by hand: the launcher runs the real `solador-agent update` ----
     # A read-only run: the throwaway install holds this checkout's own build,
     # which the published feed is never newer than (exit 4), or the host has
-    # no route to github.com (exit 1). Neither swaps a binary or restarts the
+    # no route to github.com, or `agent-latest` is not published yet (#472's
+    # cut-over; a 404, exit 1). Neither swaps a binary or restarts the
     # metrics service, and that is asserted rather than assumed.
     #
     # The real guard applies to this firing too: within five minutes of the
@@ -6253,13 +6254,13 @@ STUB
         waited=$((waited + 1))
     done
     case "$exit_code" in
-        1 | 4) pass "a hand-fired updater ran 'solador-agent update' and exited $exit_code (not newer, or no network)" ;;
+        1 | 4) pass "a hand-fired updater ran 'solador-agent update' and exited $exit_code (not newer, no network, or no agent-latest yet)" ;;
         "" | "(never exited)") fail "a hand-fired updater ran and exited" "no exit after ${waited}s: $(tail -n 20 "$update_log" 2>/dev/null)" ;;
         *) fail "a hand-fired updater exited 1 or 4, never a swap" "exit $exit_code: $(tail -n 20 "$update_log" 2>/dev/null)" ;;
     esac
     assert_file_has "the launcher logged the update-mode run to the updater's own log" \
         "$update_log" "solador-agent-launchd: update: running $home/.local/bin/solador-agent update"
-    if grep -qE '^(==> Latest published release:|ERROR:)' "$update_log" 2>/dev/null; then
+    if grep -qE '^(==> Reading the agent feed:|ERROR:)' "$update_log" 2>/dev/null; then
         pass "the real updater resolved the throwaway install and reached its first report line"
     else
         fail "the real updater resolved the throwaway install and reached its first report line" "$(tail -n 20 "$update_log" 2>/dev/null)"

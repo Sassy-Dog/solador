@@ -172,21 +172,37 @@ fn target() -> &'static str {
     update::host_target().expect("tests run on a published target")
 }
 
-/// Everything a release carries for the updater: the tag `latest`
-/// redirects to, the feed and its signature, and the assets.
+/// Everything the loopback server serves, in the shape a release host has:
+/// assets live under a release tag. The updater reads exactly two kinds
+/// (#488): the permanent `agent-latest` release (the feed and its signature,
+/// nothing else) and `agent-v<version>` (the binaries).
 #[derive(Clone)]
 struct Release {
-    tag: String,
-    assets: BTreeMap<String, Vec<u8>>,
+    tags: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+}
+
+/// The release that holds the feed, at a fixed name.
+const FEED_TAG: &str = "agent-latest";
+
+/// The release a feed entry's `url` must name for `version`.
+fn binary_tag(version: &str) -> String {
+    format!("agent-v{version}")
+}
+
+/// The URL a feed entry names for `asset` on `tag`.
+fn asset_url_on(base: &str, tag: &str, asset: &str) -> String {
+    format!("{base}/releases/download/{tag}/{asset}")
 }
 
 /// Build a feed for `version` over one binary for this host, signed by
-/// `signer`, with the feed's entry hash/signature optionally overridden.
+/// `signer`. Its URLs name `url_tag` — the `agent-v<version>` release, unless
+/// a test is building a feed that points somewhere else.
 struct FeedSpec<'a> {
     version: &'a str,
     binary: &'a [u8],
     signer: &'a TestKey,
     base: &'a str,
+    url_tag: &'a str,
 }
 
 fn build_feed(spec: &FeedSpec<'_>) -> (String, String) {
@@ -196,7 +212,7 @@ fn build_feed(spec: &FeedSpec<'_>) -> (String, String) {
         "version": spec.version,
         "targets": {
             target(): {
-                "url": format!("{}/releases/download/v{}/{asset}", spec.base, spec.version),
+                "url": asset_url_on(spec.base, spec.url_tag, &asset),
                 "signature": sig,
                 "sha256": sha256_hex(spec.binary),
             }
@@ -219,14 +235,13 @@ struct ServerState {
     redirect_base: Arc<Mutex<Option<String>>>,
 }
 
-async fn latest(State(s): State<ServerState>) -> Response {
-    s.requests.lock().unwrap().push("/releases/latest".into());
-    let tag = s.release.lock().unwrap().tag.clone();
-    (
-        StatusCode::FOUND,
-        [(header::LOCATION, format!("{}/releases/tag/{tag}", s.base))],
-    )
-        .into_response()
+/// Anything the updater asks for that is not a release asset — to the point,
+/// `/releases/latest`, which names the desktop train and which the updater must
+/// never read (#488) — is logged and answered 404. Logging it is what lets a
+/// test assert the request list exactly.
+async fn unrouted(State(s): State<ServerState>, uri: axum::http::Uri) -> Response {
+    s.requests.lock().unwrap().push(uri.path().to_string());
+    StatusCode::NOT_FOUND.into_response()
 }
 
 /// `/releases/download/{tag}/{asset}` answers a 302 to `/blob/{tag}/{asset}`
@@ -265,10 +280,7 @@ async fn blob(
         .unwrap()
         .push(format!("/blob/{tag}/{asset}"));
     let release = s.release.lock().unwrap();
-    if release.tag != tag {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    match release.assets.get(&asset) {
+    match release.tags.get(&tag).and_then(|assets| assets.get(&asset)) {
         Some(bytes) => bytes.clone().into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
@@ -312,10 +324,10 @@ async fn serve_release(release: Release) -> Served2 {
         state.redirect_base.clone(),
     );
     let app = Router::new()
-        .route("/releases/latest", get(latest))
         .route("/releases/download/{tag}/{asset}", get(download))
         .route("/blob/{tag}/{asset}", get(blob))
         .route("/hop/{n}", get(hop))
+        .fallback(unrouted)
         .with_state(state);
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -325,25 +337,52 @@ async fn serve_release(release: Release) -> Served2 {
 
 /// A base URL is only known once the server is up, and the feed's URLs
 /// embed it — so the release is built in two steps: bind first, then fill.
+///
+/// The layout is the real one (#488): the feed and its signature on
+/// `agent-latest`, the binary on `agent-v<version>`, and the feed's URL naming
+/// the latter.
 async fn release_for(spec_version: &str, binary: &[u8], signer: &TestKey) -> Rig {
-    let placeholder = Release {
-        tag: format!("v{spec_version}"),
-        assets: BTreeMap::new(),
+    release_with_feed_urls(spec_version, binary, signer, &binary_tag(spec_version)).await
+}
+
+/// [`release_for`], but the feed's URLs name `url_tag`. The binary is served
+/// under BOTH `agent-v<version>` and `url_tag`, so a check that failed to
+/// refuse the feed would let the update go through: the refusal under test is
+/// the only thing standing in its way.
+async fn release_with_feed_urls(
+    spec_version: &str,
+    binary: &[u8],
+    signer: &TestKey,
+    url_tag: &str,
+) -> Rig {
+    let empty = Release {
+        tags: BTreeMap::new(),
     };
-    let (base, release, requests, redirect_base) = serve_release(placeholder).await;
+    let (base, release, requests, redirect_base) = serve_release(empty).await;
     let (feed, feed_sig) = build_feed(&FeedSpec {
         version: spec_version,
         binary,
         signer,
         base: &base,
+        url_tag,
     });
-    let mut assets = BTreeMap::new();
-    assets.insert(FEED_ASSET.to_string(), feed.into_bytes());
-    assets.insert(format!("{FEED_ASSET}.minisig"), feed_sig.into_bytes());
-    assets.insert(asset_name(spec_version, target()), binary.to_vec());
-    release.lock().unwrap().assets = assets;
+    let asset = asset_name(spec_version, target());
+    {
+        let mut served = release.lock().unwrap();
+        let feed_release = served.tags.entry(FEED_TAG.to_string()).or_default();
+        feed_release.insert(FEED_ASSET.to_string(), feed.into_bytes());
+        feed_release.insert(format!("{FEED_ASSET}.minisig"), feed_sig.into_bytes());
+        for tag in [binary_tag(spec_version), url_tag.to_string()] {
+            served
+                .tags
+                .entry(tag)
+                .or_default()
+                .insert(asset.clone(), binary.to_vec());
+        }
+    }
     Rig {
         base,
+        version: spec_version.to_string(),
         release,
         requests,
         redirect_base,
@@ -352,6 +391,9 @@ async fn release_for(spec_version: &str, binary: &[u8], signer: &TestKey) -> Rig
 
 struct Rig {
     base: String,
+    /// The version the release was built for: which `agent-v<version>`
+    /// release [`Rig::set_asset`] puts a binary on.
+    version: String,
     release: Arc<Mutex<Release>>,
     requests: Arc<Mutex<Vec<String>>>,
     redirect_base: Arc<Mutex<Option<String>>>,
@@ -369,18 +411,59 @@ impl Rig {
             .filter(|r| r.starts_with("/blob/") && r.contains("/solador-agent-"))
             .collect()
     }
+    /// Which release an asset lives on: the feed and its signature on
+    /// `agent-latest`, everything else on this rig's `agent-v<version>`.
+    fn tag_of(&self, name: &str) -> String {
+        if name == FEED_ASSET || name == format!("{FEED_ASSET}.minisig") {
+            FEED_TAG.to_string()
+        } else {
+            binary_tag(&self.version)
+        }
+    }
     fn set_asset(&self, name: &str, bytes: Vec<u8>) {
         self.release
             .lock()
             .unwrap()
-            .assets
+            .tags
+            .entry(self.tag_of(name))
+            .or_default()
             .insert(name.to_string(), bytes);
     }
     fn remove_asset(&self, name: &str) {
-        self.release.lock().unwrap().assets.remove(name);
+        let tag = self.tag_of(name);
+        if let Some(assets) = self.release.lock().unwrap().tags.get_mut(&tag) {
+            assets.remove(name);
+        }
     }
-    fn set_tag(&self, tag: &str) {
-        self.release.lock().unwrap().tag = tag.to_string();
+    /// The served bytes of an asset (see [`Rig::tag_of`]).
+    fn asset(&self, name: &str) -> Vec<u8> {
+        self.release.lock().unwrap().tags[&self.tag_of(name)][name].clone()
+    }
+    /// A release that does not exist at all: every asset of it answers 404.
+    fn remove_release(&self, tag: &str) {
+        self.release.lock().unwrap().tags.remove(tag);
+    }
+    /// Replace the feed with `text`, signed by `signer` the way the producer's
+    /// signer does: over the exact bytes, as `agent-latest.json`.
+    fn publish_feed(&self, text: String, signer: &TestKey) {
+        self.set_asset(
+            &format!("{FEED_ASSET}.minisig"),
+            signer.sign(text.as_bytes(), FEED_ASSET).into_bytes(),
+        );
+        self.set_asset(FEED_ASSET, text.into_bytes());
+    }
+    /// The requests a complete feed read makes: each of the two assets is a
+    /// `/releases/download/` 302 and then the `/blob/` it lands on.
+    fn feed_requests(&self) -> Vec<String> {
+        [FEED_ASSET.to_string(), format!("{FEED_ASSET}.minisig")]
+            .iter()
+            .flat_map(|a| {
+                [
+                    format!("/releases/download/{FEED_TAG}/{a}"),
+                    format!("/blob/{FEED_TAG}/{a}"),
+                ]
+            })
+            .collect()
     }
     fn redirect_downloads_to(&self, base: &str) {
         *self.redirect_base.lock().unwrap() = Some(base.to_string());
@@ -882,6 +965,14 @@ async fn a_valid_feed_and_binary_update_stage_swap_restart_and_verify() {
         h.install.sibling(".update.lock").exists(),
         "the lock file is left in place, never unlinked"
     );
+    // The layout is `agent-latest` for the feed and `agent-v<version>` for
+    // the binary, and nothing else was asked — in particular never
+    // `/releases/latest`, which names the desktop train (#488).
+    let mut expected = rig.feed_requests();
+    let asset = asset_name(NEW, target());
+    expected.push(format!("/releases/download/agent-v{NEW}/{asset}"));
+    expected.push(format!("/blob/agent-v{NEW}/{asset}"));
+    assert_eq!(rig.requests(), expected);
 }
 
 // ---------------------------------------------------------------------------
@@ -1063,7 +1154,7 @@ async fn a_tampered_feed_is_refused_before_decoding_and_before_any_binary_reques
     let candidate = fake_agent(Some(NEW), "new");
     let h = Harness::new(&installed, "127.0.0.1").await;
     let rig = release_for(NEW, &candidate, &key_a()).await;
-    let mut feed = rig.release.lock().unwrap().assets[FEED_ASSET].clone();
+    let mut feed = rig.asset(FEED_ASSET);
     // Point the hash at the installed bytes: a tampered feed that would read
     // as "already current" if its bytes were trusted before verification.
     let text = String::from_utf8(feed.clone()).unwrap();
@@ -1114,7 +1205,7 @@ async fn a_valid_signature_over_the_wrong_binary_is_refused_by_the_hash() {
     let doc = serde_json::json!({
         "version": NEW,
         "targets": { target(): {
-            "url": format!("{}/releases/download/v{NEW}/{asset}", rig.base),
+            "url": asset_url_on(&rig.base, &binary_tag(NEW), &asset),
             "signature": key_a().sign(&candidate, &asset),
             "sha256": sha256_hex(&other),
         }}
@@ -1132,34 +1223,173 @@ async fn a_valid_signature_over_the_wrong_binary_is_refused_by_the_hash() {
     h.assert_untouched(&installed, "hash mismatch");
 }
 
+/// A signed feed whose URLs name a release other than `agent-v<its version>`
+/// is refused before any binary is requested (#488).
+///
+/// The feed comes from the fixed `agent-latest` release now, so nothing about
+/// where it was fetched says which version it is for: its signed URL path is
+/// what binds the version to its artifacts. Each wrong release below also
+/// serves the binary, so the refusal is the only thing between that feed and
+/// an update — bypass the check and this test goes red, because the update
+/// succeeds. The control at the top is the same scaffolding with the right tag.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_feed_that_does_not_name_its_release_a_missing_target_and_a_malformed_feed_are_refused() {
+async fn a_feed_whose_urls_name_another_release_is_refused_before_any_download() {
     let installed = fake_agent(Some(OLD), "old");
     let candidate = fake_agent(Some(NEW), "new");
-    let t = trust(&[&key_a()]);
 
-    // Signed feed for NEW, replayed onto a release tagged something else.
+    let h = Harness::new(&installed, "127.0.0.1").await;
+    let rig = release_with_feed_urls(NEW, &candidate, &key_a(), &binary_tag(NEW)).await;
+    let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
+    assert!(matches!(outcome, UpdateOutcome::Updated { .. }), "control");
+
+    for wrong in [
+        // The legacy `v<version>` release: what the producer still writes.
+        format!("v{NEW}"),
+        // Another version's agent release.
+        binary_tag("2026.9.10"),
+        // The feed's own release, which holds no binaries.
+        FEED_TAG.to_string(),
+    ] {
+        let h = Harness::new(&installed, "127.0.0.1").await;
+        let rig = release_with_feed_urls(NEW, &candidate, &key_a(), &wrong).await;
+        let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+        assert!(matches!(err, UpdateError::FeedUrl { .. }), "{wrong}: {err}");
+        assert_eq!(err.exit_code(), 1, "{wrong}: a refusal, nothing changed");
+        assert!(
+            err.to_string().contains(&binary_tag(NEW)),
+            "the message names the release it wanted: {err}"
+        );
+        h.assert_untouched(&installed, &format!("feed urls on {wrong}"));
+        assert!(rig.binary_requests().is_empty(), "{:?}", rig.requests());
+        assert_eq!(
+            rig.requests(),
+            rig.feed_requests(),
+            "only the feed was read"
+        );
+    }
+}
+
+/// EVERY target's URL is held to the construction, not only this host's: a
+/// feed that is right about this host and names a foreign location for
+/// another triple does not mean what it says, and is refused with nothing
+/// downloaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wrong_url_on_any_target_refuses_the_feed_even_when_this_hosts_is_right() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let other = update::TARGETS
+        .iter()
+        .copied()
+        .find(|t| *t != target())
+        .expect("four targets, one of them is not this host's");
     let h = Harness::new(&installed, "127.0.0.1").await;
     let rig = release_for(NEW, &candidate, &key_a()).await;
-    rig.set_tag("v2026.9.10");
-    // Move the assets under the new tag too, so only the mismatch remains.
-    let err = h.update(&rig.base, t).await.unwrap_err();
-    assert!(matches!(err, UpdateError::FeedTag { .. }), "{err}");
-    h.assert_untouched(&installed, "feed/tag mismatch");
+    let host_asset = asset_name(NEW, target());
+    let doc = serde_json::json!({ "version": NEW, "targets": {
+        target(): {
+            "url": asset_url_on(&rig.base, &binary_tag(NEW), &host_asset),
+            "signature": key_a().sign(&candidate, &host_asset),
+            "sha256": sha256_hex(&candidate),
+        },
+        other: {
+            "url": asset_url_on(&rig.base, &format!("v{NEW}"), &asset_name(NEW, other)),
+            "signature": key_a().sign(b"x", "y"),
+            "sha256": "0".repeat(64),
+        },
+    }});
+    let mut text = serde_json::to_string_pretty(&doc).unwrap();
+    text.push('\n');
+    rig.publish_feed(text, &key_a());
+
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(
+        matches!(&err, UpdateError::FeedUrl { target, .. } if target == other),
+        "{err}"
+    );
+    h.assert_untouched(&installed, "a wrong url on another target");
+    assert!(rig.binary_requests().is_empty(), "{:?}", rig.requests());
+}
+
+/// The URL check comes BEFORE every exit that would otherwise answer quietly:
+/// already current (exit 0), a `+dev` source build (4) and not newer (4). A
+/// feed with a wrong URL on another target is exit 1 on a host in any of those
+/// states — a signed feed that does not mean what it says is never read as a
+/// quiet day. Moving `check_feed_urls` after those branches leaves every other
+/// test green; this is the one that notices.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wrong_url_is_refused_before_any_quiet_exit() {
+    let other = update::TARGETS
+        .iter()
+        .copied()
+        .find(|t| *t != target())
+        .expect("four targets, one of them is not this host's");
+    let candidate = fake_agent(Some(NEW), "new");
+    // (what is installed, the bytes the host entry hashes) per quiet exit.
+    let current = fake_agent(Some(NEW), "already-current");
+    let cases: [(&str, Vec<u8>, Vec<u8>); 3] = [
+        ("already current", current.clone(), current),
+        (
+            "a +dev source build",
+            fake_agent(Some("2026.9.5+dev.3.gabc1234"), "source-build"),
+            candidate.clone(),
+        ),
+        (
+            "not newer",
+            fake_agent(Some("2026.9.20"), "installed-newer"),
+            candidate,
+        ),
+    ];
+    for (what, installed, entry_bytes) in cases {
+        let h = Harness::new(&installed, "127.0.0.1").await;
+        let rig = release_for(NEW, &entry_bytes, &key_a()).await;
+        let host_asset = asset_name(NEW, target());
+        let doc = serde_json::json!({ "version": NEW, "targets": {
+            target(): {
+                "url": asset_url_on(&rig.base, &binary_tag(NEW), &host_asset),
+                "signature": key_a().sign(&entry_bytes, &host_asset),
+                "sha256": sha256_hex(&entry_bytes),
+            },
+            other: {
+                "url": asset_url_on(&rig.base, &format!("v{NEW}"), &asset_name(NEW, other)),
+                "signature": key_a().sign(b"x", "y"),
+                "sha256": "0".repeat(64),
+            },
+        }});
+        let mut text = serde_json::to_string_pretty(&doc).unwrap();
+        text.push('\n');
+        rig.publish_feed(text, &key_a());
+
+        let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+        assert!(
+            matches!(&err, UpdateError::FeedUrl { target, .. } if target == other),
+            "{what}: {err}"
+        );
+        assert_eq!(err.exit_code(), 1, "{what}: not a quiet exit");
+        h.assert_untouched(&installed, what);
+        assert!(rig.binary_requests().is_empty(), "{what}");
+    }
+}
+
+/// No entry for this host, and verified bytes that are not a feed, are
+/// refused with nothing changed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_target_and_a_malformed_feed_are_refused() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
 
     // No entry for this host.
     let h = Harness::new(&installed, "127.0.0.1").await;
     let rig = release_for(NEW, &candidate, &key_a()).await;
     let doc = serde_json::json!({ "version": NEW, "targets": { "riscv64gc-unknown-linux-musl": {
-        "url": format!("{}/releases/download/v{NEW}/solador-agent-{NEW}-riscv64gc-unknown-linux-musl", rig.base),
+        "url": asset_url_on(
+            &rig.base,
+            &binary_tag(NEW),
+            &format!("solador-agent-{NEW}-riscv64gc-unknown-linux-musl"),
+        ),
         "signature": key_a().sign(b"x", "y"), "sha256": "0".repeat(64) }}});
     let mut text = serde_json::to_string_pretty(&doc).unwrap();
     text.push('\n');
-    rig.set_asset(
-        &format!("{FEED_ASSET}.minisig"),
-        key_a().sign(text.as_bytes(), FEED_ASSET).into_bytes(),
-    );
-    rig.set_asset(FEED_ASSET, text.into_bytes());
+    rig.publish_feed(text, &key_a());
     let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
     assert!(matches!(err, UpdateError::TargetMissing(_)), "{err}");
     h.assert_untouched(&installed, "missing target");
@@ -1167,24 +1397,50 @@ async fn a_feed_that_does_not_name_its_release_a_missing_target_and_a_malformed_
     // Verified bytes that are not a feed.
     let h = Harness::new(&installed, "127.0.0.1").await;
     let rig = release_for(NEW, &candidate, &key_a()).await;
-    let text = "{\"version\": \"2026.9.9\", \"targets\": {}}\n".to_string();
-    rig.set_asset(
-        &format!("{FEED_ASSET}.minisig"),
-        key_a().sign(text.as_bytes(), FEED_ASSET).into_bytes(),
+    rig.publish_feed(
+        "{\"version\": \"2026.9.9\", \"targets\": {}}\n".to_string(),
+        &key_a(),
     );
-    rig.set_asset(FEED_ASSET, text.into_bytes());
     let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
     assert!(matches!(err, UpdateError::FeedMalformed(_)), "{err}");
     h.assert_untouched(&installed, "malformed feed");
+}
 
-    // A release with no feed at all (every release before #391).
-    let h = Harness::new(&installed, "127.0.0.1").await;
-    let rig = release_for(NEW, &candidate, &key_a()).await;
-    rig.remove_asset(FEED_ASSET);
-    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
-    assert!(matches!(err, UpdateError::Network { .. }), "{err}");
-    assert!(err.to_string().contains("404"), "{err}");
-    h.assert_untouched(&installed, "no feed");
+/// A missing feed is exit 1 and nothing changed — never "nothing to do",
+/// which would hide an accidentally deleted `agent-latest` forever (#488).
+/// Three ways to be missing, each its own 404: the feed, its signature, and
+/// the whole release. None of them is ever answered by asking
+/// `/releases/latest` instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_feed_is_exit_one_with_nothing_changed() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    type Remove = fn(&Rig);
+    let cases: [(&str, Remove); 3] = [
+        ("no feed", |rig| rig.remove_asset(FEED_ASSET)),
+        ("no signature", |rig| {
+            rig.remove_asset(&format!("{FEED_ASSET}.minisig"))
+        }),
+        ("no agent-latest release at all", |rig| {
+            rig.remove_release(FEED_TAG)
+        }),
+    ];
+    for (what, remove) in cases {
+        let h = Harness::new(&installed, "127.0.0.1").await;
+        let rig = release_for(NEW, &candidate, &key_a()).await;
+        remove(&rig);
+        let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+        assert!(matches!(err, UpdateError::Network { .. }), "{what}: {err}");
+        assert!(err.to_string().contains("404"), "{what}: {err}");
+        assert_eq!(err.exit_code(), 1, "{what}: loud, not a quiet day");
+        h.assert_untouched(&installed, what);
+        assert!(rig.binary_requests().is_empty(), "{what}");
+        assert!(
+            !rig.requests().iter().any(|r| r.contains("releases/latest")),
+            "{what}: {:?}",
+            rig.requests()
+        );
+    }
 }
 
 /// The redirect policy on the wire, not only its predicate: a 302 onto a
@@ -1247,23 +1503,6 @@ async fn a_feed_past_the_size_cap_is_refused_before_anything_is_verified() {
     h.assert_untouched(&installed, "oversized feed");
 }
 
-/// Discovery refuses a redirect that is not a release tag: a repository
-/// with no published release answers with its releases page, and a tag
-/// that is not `vCalVer` is not one this updater follows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn discovery_refuses_a_redirect_that_is_not_a_release_tag() {
-    let installed = fake_agent(Some(OLD), "old");
-    let candidate = fake_agent(Some(NEW), "new");
-    let h = Harness::new(&installed, "127.0.0.1").await;
-    let rig = release_for(NEW, &candidate, &key_a()).await;
-    rig.set_tag("main");
-    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
-    assert!(matches!(err, UpdateError::Discovery(_)), "{err}");
-    assert!(err.to_string().contains("not a release tag"), "{err}");
-    h.assert_untouched(&installed, "non-CalVer tag");
-    assert_eq!(rig.requests(), vec!["/releases/latest".to_string()]);
-}
-
 /// Equal bytes that cannot name their version cannot be verified serving,
 /// and "current" is not claimed for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1294,20 +1533,28 @@ async fn the_same_bytes_under_a_different_version_exit_zero_with_no_binary_reque
             sha256: sha256_hex(&installed),
         }
     );
+    // Already current is exit 0 with no download and no restart (the
+    // service was asked, not restarted), and the only requests made are the
+    // feed's two assets at their fixed location: no `/releases/latest`, no
+    // binary.
     h.assert_untouched(&installed, "already current");
     assert!(rig.binary_requests().is_empty(), "{:?}", rig.requests());
+    assert_eq!(rig.requests(), rig.feed_requests());
     assert_eq!(
         rig.requests(),
         vec![
-            "/releases/latest".to_string(),
-            format!("/releases/download/v{NEW}/{FEED_ASSET}"),
-            format!("/blob/v{NEW}/{FEED_ASSET}"),
-            format!("/releases/download/v{NEW}/{FEED_ASSET}.minisig"),
-            format!("/blob/v{NEW}/{FEED_ASSET}.minisig"),
+            format!("/releases/download/agent-latest/{FEED_ASSET}"),
+            format!("/blob/agent-latest/{FEED_ASSET}"),
+            format!("/releases/download/agent-latest/{FEED_ASSET}.minisig"),
+            format!("/blob/agent-latest/{FEED_ASSET}.minisig"),
         ]
     );
 }
 
+/// A replayed older feed (#488): every release's feed signature is valid on
+/// its own, and `agent-latest` is a fixed name that a stale pair can be copied
+/// onto, so the URL check alone cannot refuse it — its URLs are the right ones
+/// for ITS version. Only the forward-only rule does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_feed_that_is_not_newer_than_the_installed_version_is_refused() {
     // Different bytes, older version: a replayed feed, or the operator
@@ -1327,6 +1574,11 @@ async fn a_feed_that_is_not_newer_than_the_installed_version_is_refused() {
     assert!(
         rig.binary_requests().is_empty(),
         "no download for a refused version"
+    );
+    assert_eq!(
+        rig.requests(),
+        rig.feed_requests(),
+        "only the feed was read"
     );
 
     // Same version, different bytes: also not newer.
@@ -1350,6 +1602,83 @@ async fn an_installed_binary_that_carries_no_version_is_refused_rather_than_assu
     );
     assert!(err.to_string().contains("install.sh"), "{err}");
     h.assert_untouched(&installed, "versionless install");
+    assert!(rig.binary_requests().is_empty());
+}
+
+/// An installed source build (`+dev`) has no release to be compared with:
+/// "no applicable release", exit 4 — the one code the #394 timer counts as a
+/// quiet day — with the live binary and `.prev` byte-identical, no `.new`, no
+/// restart and no binary request (#488). Before this check it reached
+/// `InstalledVersionNotCalVer` and exited 1, which would fail the daily job on
+/// every source-built host.
+///
+/// A candidate that WOULD update a release build is served, so bypassing the
+/// check does not leave this test passing quietly: a `+dev` version is not a
+/// CalVer, so the bypass lands on the exit-1 refusal and the exit-code and
+/// variant assertions below go red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_installed_source_build_is_no_applicable_release_and_changes_nothing() {
+    let candidate = fake_agent(Some(NEW), "new");
+    for version in ["2026.9.5+dev.3.gabc1234", "0.5.0+dev.1.gdeadbee"] {
+        let installed = fake_agent(Some(version), "source-build");
+        let previous = fake_agent(Some("2026.9.1"), "an-earlier-anchor");
+        let h = Harness::new(&installed, "127.0.0.1").await;
+        // A `.prev` already on disk must come out exactly as it went in.
+        fs::write(h.install.sibling(".prev"), &previous).unwrap();
+        let rig = release_for(NEW, &candidate, &key_a()).await;
+
+        let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+        assert!(
+            matches!(&err, UpdateError::InstalledSourceBuild { version: v, .. } if v == version),
+            "{version}: {err}"
+        );
+        assert_eq!(err.exit_code(), 4, "{version}: no applicable release");
+        let text = err.to_string();
+        assert!(text.contains("source build"), "{text}");
+        assert!(text.contains("nothing to compare"), "{text}");
+        assert_eq!(h.live(), installed, "{version}: the live binary changed");
+        assert_eq!(
+            h.prev().as_deref(),
+            Some(previous.as_slice()),
+            "{version}: .prev changed"
+        );
+        assert!(!h.new_exists(), "{version}: a .new was left behind");
+        assert_eq!(h.service.restarts(), 0, "{version}: restarted");
+        assert!(!h.output().contains(TOKEN), "{}", h.output());
+        assert!(rig.binary_requests().is_empty(), "{:?}", rig.requests());
+        assert_eq!(
+            rig.requests(),
+            rig.feed_requests(),
+            "only the feed was read"
+        );
+    }
+
+    // The control: the same release, same scaffolding, a release build
+    // installed — it updates, so the refusal above is about `+dev` and not
+    // about anything the harness did.
+    let installed = fake_agent(Some(OLD), "release-build");
+    let h = Harness::new(&installed, "127.0.0.1").await;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
+    assert!(matches!(outcome, UpdateOutcome::Updated { .. }), "control");
+}
+
+/// The `+dev` check is for source builds, not for everything that is not a
+/// CalVer: a version that is neither (a `MARKETING_VERSION=dev` pin, say) is
+/// still the exit-1 refusal that names the installer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_installed_version_that_is_neither_calver_nor_dev_is_still_refused_with_exit_one() {
+    let installed = fake_agent(Some("dev"), "pinned-dev");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new(&installed, "127.0.0.1").await;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(
+        matches!(err, UpdateError::InstalledVersionNotCalVer { .. }),
+        "{err}"
+    );
+    assert_eq!(err.exit_code(), 1);
+    h.assert_untouched(&installed, "non-CalVer install");
     assert!(rig.binary_requests().is_empty());
 }
 
@@ -2613,9 +2942,14 @@ async fn launchd_smoke() {
     // outcomes are "not newer" (this checkout is at or past the published
     // CalVer) or a real update — and a real update would put a published
     // binary on a throwaway service, which is fine, but is not what this
-    // asserts. It asserts the read-only path: discovery, feed verification
-    // under the COMPILED-IN production key, target selection, hash, version
-    // rule, and no mutation.
+    // asserts. It asserts the read-only path: the feed read from its fixed
+    // `agent-latest` location, its verification under the COMPILED-IN
+    // production key, target selection, hash, version rule, and no mutation.
+    //
+    // Until the first `agent-v` release exists (#472's cut-over, #492 step 7)
+    // there is no `agent-latest` release, so this run gets a 404 and exits 1:
+    // the assertions below are expected to fail against the real feed until
+    // then, and are left as they are.
     let real_feed = if std::env::var("SOLADOR_AGENT_SMOKE_REAL_FEED").as_deref() == Ok("1") {
         let before = fs::read(&binary).unwrap();
         let out = Command::new(&real)

@@ -520,7 +520,8 @@ the bundle's floor.
 │   └── release-signing-key.pub  # the trust set's first key; a committed
 │                           #   release-signing-key-next.pub is its second
 ├── tests/fixtures/           # Wire-contract fixtures shared by agent/ + crates/,
-│                           #   plus the two feeds' signed fixtures (updater/, agent/)
+│                           #   plus the feeds' signed fixtures (updater/, agent/,
+│                           #   and agent-v/, the agent updater's own copy)
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
 ├── brand/                  # Brand assets
 └── docs/                   # Versioning, secrets, PRD
@@ -1155,10 +1156,16 @@ tests build (#417); the crate still has zero dependencies.
   non-blocking — a competing manual or scheduled run reports *busy*, exit
   75, and changes nothing) and require the service manager to **answer**
   before any download (a manager found unreachable at the restart is the
-  half-applied update); resolve the **concrete** release behind
-  `/releases/latest` and fetch that tag's `agent-latest.json` + `.minisig`;
+  half-applied update); fetch the feed from its **fixed location** — `agent-latest.json`
+  + `.minisig` from the permanent `agent-latest` release
+  (`<base>/releases/download/agent-latest/`, #488), never by asking which
+  release is latest, because `/releases/latest` names the desktop train;
   verify the **exact served bytes** under the compiled-in trust set *before*
-  decoding; require the feed's `version` to be the tag's; hash the installed
+  decoding; require **every** target's `url` to be exactly
+  `<base>/releases/download/agent-v<version>/solador-agent-<version>-<triple>`
+  (the fetch location is a fixed name now, so that signed URL path is what
+  binds the feed's `version` to its artifacts; a wrong URL on any target is
+  refused before any download); hash the installed
   executable — equal to the feed's entry means **no download, no restart,
   even when the version differs**, and exit 0 once `/v1/health` confirms the
   service is serving those bytes' own version (bytes on disk are not a
@@ -1166,7 +1173,14 @@ tests build (#417); the crate still has zero dependencies.
   restart is a distinct, non-zero "current but not serving"); otherwise the
   feed must be **newer** than the installed CalVer (a replayed older feed is
   refused; an installed binary that carries no version, or a non-CalVer one,
-  is refused rather than assumed older); download into memory and verify **signature and
+  is refused rather than assumed older; one whose version contains `+dev` is
+  a source build with nothing to compare, which is exit **4**, asked before
+  the CalVer parse that would refuse it with exit 1 — the marker is #472's
+  agent versioning (#490), so no build carries it yet and the check ships
+  first because the bridge release's updater (#472's cut-over, #492) must already
+  know it); a feed that is not
+  there — a 404 on `agent-latest` — is exit 1 with nothing changed, never a
+  quiet day, so a deleted `agent-latest` cannot hide; download into memory and verify **signature and
   SHA-256** before a byte reaches disk; stage `<bin>.new` (0755) and execute
   its `--version`, which must be the feed's; copy the live binary to
   `<bin>.prev` through a sibling+rename; `rename()` `.new` over the live
@@ -1180,9 +1194,9 @@ tests build (#417); the crate still has zero dependencies.
   require the previous version back. **Exit non-zero either way**: **5**
   when recovery worked, **3** when recovery also failed (naming what is at
   the live path now) — never a "rolled back" claim over a service that is
-  not back; **4** is "no applicable release" (not newer), which a from-source
-  host ahead of the last tag answers every day and the scheduled job (#394,
-  next bullet) does not alert on;
+  not back; **4** is "no applicable release" (not newer, or an installed
+  `+dev` source build), which a from-source host answers every day and the
+  scheduled job (#394, next bullet) does not alert on;
   1 is every refusal with nothing changed. `rollback` is the offline form:
   refuses with no `.prev` and touches nothing; otherwise swaps live and
   `.prev` so it is itself reversible, and verifies the restored version where
@@ -1191,12 +1205,19 @@ tests build (#417); the crate still has zero dependencies.
   (missing = build failure) plus `agent/release-signing-key-next.pub` when
   present; one key listed twice is refused, and the feed's unknown JSON keys
   are tolerated so a consumer can update past the release that adds one.
-  `tests/update_flow.rs` drives all of it against a loopback release, a
+  `tests/update_flow.rs` drives all of it against a loopback release in the
+  `agent-latest` layout (the feed on `agent-latest`, the binary on
+  `agent-v<version>`; a request to anything else, `/releases/latest` above
+  all, is logged and the request list asserted exactly), a
   temporary install tree and a fake manager that mimics a real restart, with
   keys minted in-test; `SOLADOR_DEPLOY_TEST_LAUNCHD=1` opts into the same on
   a throwaway real LaunchAgent (`SOLADOR_AGENT_SMOKE_NEWER_BINARY` adds the
   success path, `SOLADOR_AGENT_SMOKE_REAL_FEED=1` a read-only run against
-  github.com through the CLI). The negative control — bypass `Trust::verify`
+  github.com through the CLI — which is a 404, exit 1, and its assertions
+  fail, until the first `agent-v` release has published `agent-latest`).
+  `update.rs`'s own fixture tests read `tests/fixtures/agent-v/`, not the
+  `agent/` directory `crates/updatefeed` shares (bar one guard test that ties
+  the two together; `tests/fixtures/README.md` says why they differ). The negative control — bypass `Trust::verify`
   and watch nine tests go red — is recorded on the PR that shipped it, and
   the same proven-to-fail rule binds any change here. Every failure that
   leaves a service to look at ends with the manager's status command and the
@@ -1308,7 +1329,8 @@ tests build (#417); the crate still has zero dependencies.
   stubbed inputs (clock/wake/boot on macOS; the two manager reads, the
   clock and the kernel counter under an override root on Linux), and the
   opt-in launchd smoke fires a real throwaway updater by hand (read-only:
-  exit 4, or 1 with no network; metrics pid unchanged) and watches the
+  exit 4, or 1 with no network or — until the first `agent-v` release has
+  published `agent-latest` — on its 404; metrics pid unchanged) and watches the
   guard discard the second firing. **Not observed anywhere**: a day of
   sleep on a real Mac, or a real systemd timer taken through a
   `daemon-reload` and a suspend/resume — `docs/AGENT-DISTRIBUTION.md` §4

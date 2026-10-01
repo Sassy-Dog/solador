@@ -74,8 +74,8 @@ UnsetEnvironment=SOLADOR_AGENT_UPDATE_GUARD_ROOT BASH_ENV ENV
 ExecCondition=@SOLADOR_AGENT_GUARD@ %n
 ExecStart=@SOLADOR_AGENT_BIN@ update
 # Exit 4 is "no applicable release" — the feed is not newer than what is
-# installed, which a from-source host running ahead of the last tag answers
-# every single day. It is not a failure and must not paint the unit red or
+# installed, or what is installed is a `+dev` source build with nothing to
+# compare, which a from-source host answers every single day. It is not a failure and must not paint the unit red or
 # land in `systemctl --failed`; the updater's own line saying so is still in
 # the journal. Every other non-zero exit (1 refused, 3 not recovered, 5
 # recovered, 75 busy) stays a failed run, visible as one. This line binds

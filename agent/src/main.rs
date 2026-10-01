@@ -145,9 +145,10 @@ Commands (run from a shell, never as the service itself):
 Exit codes: 0 updated, or already current and serving; 1 failed with nothing
 changed (for rollback also: swapped but not back, or half done — both say so);
 3 failed AND the previous binary could not be restored — inspect the service;
-4 no applicable release (the feed is not newer than what is installed);
-5 failed, the previous binary is back and serving; 75 another update/rollback
-holds the lock; 2 usage. tls-fingerprint: 0 printed, 1 no certificate yet.
+4 no applicable release (the feed is not newer than what is installed, or what
+is installed is a source build, +dev, with nothing to compare); 5 failed, the
+previous binary is back and serving; 75 another update/rollback holds the lock;
+2 usage. tls-fingerprint: 0 printed, 1 no certificate yet.
 
 Options:
   -V, --version  print the version and nothing else, then exit

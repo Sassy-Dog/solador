@@ -213,8 +213,9 @@ or already current *and serving*;
 signature — and, for `rollback`, a swap that did not come back or was left
 half done, both named); `3` failed **and** the previous binary could not be
 restored — inspect the service; `4` no applicable release (the feed is not
-newer than what is installed — the normal answer on a from-source host
-running ahead of the last tag, and nothing to page anyone for); `5` failed,
+newer than what is installed, or what is installed is a `+dev` source build
+with nothing to compare — the normal answer on a from-source host, and
+nothing to page anyone for); `5` failed,
 and the previous binary is back and serving — nothing is broken, but a human
 should look at why; `75` another `update`/`rollback` holds the lock (the
 line names the holder's pid and start time); `2` usage. (On macOS the
@@ -490,7 +491,7 @@ binary for the host it runs on, verifies the signature with the stock
 `minisign` under the committed key, and only then installs and starts it
 ([#392](https://github.com/Sassy-Dog/solador/issues/392)). **The agent binary
 verifies too** ([#393](https://github.com/Sassy-Dog/solador/issues/393)):
-`solador-agent update` checks the release's `agent-latest.json` and the
+`solador-agent update` checks the `agent-latest.json` it reads from `agent-latest` and the
 binary it names under public keys compiled in at build time — this file and,
 once it is committed, `agent/release-signing-key-next.pub`, a **standby**
 whose private half is held in a Doppler config that syncs nowhere
@@ -754,7 +755,8 @@ still stubbed to serve the locally built `solador-agent` under the throwaway
 key — bootstrapping a throwaway label into the invoking user's session and
 booting it out again; since #394 it goes on to opt that install in, observe
 the `.update` sibling loaded with zero runs, fire it by hand (a read-only
-`update` against the real feed: exit 4, or 1 with no network — never a
+`update` against the real feed: exit 4, or 1 with no network or — until the
+first `agent-v` release has published `agent-latest` — on its 404; never a
 swap, no restart; the suite waits out the guard's five-minute wake window
 first), fire it again to watch
 the guard discard it, and remove it with the documented commands while the
@@ -790,8 +792,9 @@ failed update rolled back on it automatically, two explicit `rollback`s
 through the CLI; `SOLADOR_AGENT_SMOKE_NEWER_BINARY=<path>` (a second build
 with a newer pinned `MARKETING_VERSION`) adds the successful-update path, and
 `SOLADOR_AGENT_SMOKE_REAL_FEED=1` adds a read-only `solador-agent update`
-against the real github.com feed under the compiled-in production key. None
-of that runs in CI.
+against the real github.com feed under the compiled-in production key (a 404,
+exit 1, with failing assertions, until the first `agent-v` release has
+published `agent-latest`). None of that runs in CI.
 
 The other load-bearing case is `build_release_binary` **failing** when the
 workspace target dir holds no binary, rather than falling back to a search.
@@ -1277,10 +1280,20 @@ not come up.** In order, each step refusing before the next changes anything:
    `gui/<uid>` domain — before anything is downloaded, so a session with no
    manager (an `ssh` with nobody logged in, a `sudo -u` shell) is refused
    here rather than discovered at the restart.
-3. Resolves the latest **published** release from the `/releases/latest`
-   redirect, fetches *that tag's* `agent-latest.json` and `.minisig`, verifies
-   the feed's exact bytes under the compiled-in keys before decoding it, and
-   requires its `version` to be the tag's.
+3. Fetches the feed from its **fixed location**, `agent-latest.json` and its
+   `.minisig` on the permanent `agent-latest` release
+   (`https://github.com/Sassy-Dog/solador/releases/download/agent-latest/`),
+   verifies the feed's exact bytes under the compiled-in keys before decoding
+   it, and requires **every** target's `url` to be exactly
+   `…/releases/download/agent-v<version>/solador-agent-<version>-<triple>`
+   for the feed's own `version` — the feed is not found by asking which
+   release is latest (that names the desktop train), so that signed URL path
+   is what ties a version to its binaries, and a feed with a wrong URL on any
+   target is refused before anything is downloaded. A feed that is not there
+   (a 404 on `agent-latest`) is a failure, exit 1 with nothing changed — not
+   "nothing to do", which would hide a deleted `agent-latest` forever. It is
+   also what every host running this updater sees until the first `agent-v` release has published
+   `agent-latest` (the cut-over in #472).
 4. Hashes the installed binary. **Equal to the feed's entry means already
    current: nothing downloaded, nothing restarted** — even when the feed's
    version differs. It then asks `/v1/health` for the version those bytes
@@ -1293,7 +1306,14 @@ not come up.** In order, each step refusing before the next changes anything:
    downgrade — is refused; a downgrade you mean is
    `SOLADOR_AGENT_RELEASE=v<version> ./deploy/install.sh`. An installed binary
    that carries no version cannot be compared and is refused rather than
-   assumed older; re-run `install.sh` to move it onto a published release.
+   assumed older; re-run `install.sh` to move it onto a published release. One
+   whose version carries `+dev` is a source build: there is no release to
+   compare it with, so it is exit `4` (no applicable release), checked before
+   the CalVer parse that would otherwise refuse it with exit `1`. (No build
+   carries `+dev` yet: it is the marker of #472's agent versioning, #490. The
+   check ships first because the bridge release's updater (#472's cut-over, #492)
+   must already know
+   it.)
 6. Downloads the binary into memory and verifies its signature **and** its
    SHA-256 against the feed entry before anything touches disk.
 7. Stages it as `solador-agent.new` (mode 0755), runs the staged candidate's
@@ -1360,7 +1380,7 @@ verifies (and, on failure, restores) it, and a job running *inside* the
 service would be killed by its own restart — that runs the installed
 `~/.local/bin/solador-agent update` as your user, with no `sudo`, no
 checkout and no prompt. It is exactly the manual command of **Updating**
-above with its exit codes: `4` (nothing newer) is the normal daily answer
+above with its exit codes: `4` (nothing newer, or a `+dev` source build) is the normal daily answer
 and not a failure, `0` means an update happened or the bytes were already
 current, anything else is a failed run that stays visible as one — there is
 no retry loop, and a failed attempt is next tried the following day.
@@ -1507,7 +1527,7 @@ unsets the guard's test seam.
 
 ```bash
 systemctl --user list-timers solador-agent-update.timer      # next and last firing
-systemctl --user status solador-agent-update.service         # exit 4 = nothing newer; "Skipped due to 'exec-condition'" = the guard discarded it
+systemctl --user status solador-agent-update.service         # exit 4 = nothing newer (or a +dev source build); "Skipped due to 'exec-condition'" = the guard discarded it
                                                              # failed + a "solador-agent-update-guard: HELD" line = held, nothing changed; failed + an updater exit 3 = check solador-agent.service
 journalctl --user -u solador-agent-update -n 50 --no-pager   # the updater's own output, or the guard's one line
 journalctl --user -u solador-agent-update -g 'solador-agent-update-guard:'   # just the guard's lines: a month of discards and a month of exit-4 days look alike in status
@@ -1565,7 +1585,7 @@ binary over the service, unattended, must not resolve a command under a
 group-writable `/opt/homebrew/bin`.
 
 ```bash
-launchctl print gui/$(id -u)/app.solador.agent.update      # loaded? runs, last exit code (4 = nothing newer, 0 = updated/current/discarded, 6 = held)
+launchctl print gui/$(id -u)/app.solador.agent.update      # loaded? runs, last exit code (4 = nothing newer or a +dev source build, 0 = updated/current/discarded, 6 = held)
 tail -n 50 ~/Library/Logs/solador-agent-update.log         # the updater's lines, or the launcher's reason for not running it
 cat ~/.config/solador-agent-update.last-attempt            # epoch seconds of the last attempt
 launchctl kickstart gui/$(id -u)/app.solador.agent.update  # fire the job by hand (the guard still applies; `solador-agent update` does not)
@@ -1588,7 +1608,8 @@ that moved backwards — and, opted in with `SOLADOR_DEPLOY_TEST_LAUNCHD=1`,
 a real throwaway updater bootstrapped beside a real throwaway metrics
 agent, seen loaded and not run, fired by hand into the real `update`
 read-only (exit 4 against the published feed, or 1 with no route to
-github.com — never a swap) without restarting the metrics service, fired
+github.com or — until the first `agent-v` release has published `agent-latest`
+— on its 404; never a swap) without restarting the metrics service, fired
 again to watch the guard discard it, and removed with the commands above
 while the metrics service keeps its pid. Linux: the guard run directly with
 its two manager reads, the clock and the kernel's counter stubbed (the

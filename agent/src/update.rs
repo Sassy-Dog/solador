@@ -25,12 +25,22 @@
 //!    domain), and must not name this process as the service: a manager
 //!    discovered unreachable at the restart, after the swap, is the
 //!    half-applied update this whole design exists to prevent.
-//! 3. Resolves the **concrete release** behind `/releases/latest` and fetches
-//!    that tag's `agent-latest.json` and `.minisig`, so two independently
-//!    moving redirects can never pair one release's feed with another's
-//!    signature. The feed's **exact bytes** are verified under the compiled-in
-//!    trust set before they are decoded; a re-serialised object is never
-//!    what gets verified. The feed's `version` must be the tag's.
+//! 3. Fetches the feed from its **fixed location**: `agent-latest.json` and
+//!    its `.minisig` from the permanent `agent-latest` release
+//!    (`<base>/releases/download/agent-latest/`, #488). Nothing is discovered:
+//!    `/releases/latest` is never asked, because it names the desktop train, and
+//!    both files come from the one release. `agent-latest` is replaced on every
+//!    publish, so a publish landing between the two reads pairs a feed with
+//!    another's signature; that fails verification (exit 1, nothing changed)
+//!    and clears on the next run. A feed that is not there (HTTP 404) is a
+//!    refusal, exit 1, with nothing changed — never "nothing to do", which
+//!    would hide a deleted `agent-latest` forever. The feed's **exact bytes**
+//!    are verified under the compiled-in trust set before they are decoded; a
+//!    re-serialised object is never what gets verified. Then **every** target's
+//!    `url` must be exactly
+//!    `<base>/releases/download/agent-v<version>/solador-agent-<version>-<triple>`.
+//!    The release the feed came from is a fixed name now, so that signed URL
+//!    path is what binds the feed's `version` to its artifacts.
 //! 4. Hashes the **installed executable** and compares it with the entry for
 //!    this host's triple. Equal bytes mean *already current*: no binary
 //!    download, no `.new`, no `.prev`, no restart — even when the feed's
@@ -41,9 +51,12 @@
 //!    restart as the remedy, and a service serving them is exit 0.
 //! 5. Otherwise the feed must be **newer** than the installed CalVer. Every
 //!    release's feed signature is valid on its own, so an older, validly
-//!    signed pair replayed onto a newer release would otherwise read as "the
+//!    signed pair replayed as `agent-latest` would otherwise read as "the
 //!    newest release wants these bytes". An installed binary that carries no
-//!    version cannot be compared and is refused, not assumed older.
+//!    version cannot be compared and is refused, not assumed older. One that
+//!    carries a `+dev` version is a source build: it has no release to be
+//!    compared with, which is "no applicable release" (exit 4), checked
+//!    before the CalVer parse that would otherwise refuse it with exit 1.
 //! 6. Downloads the raw executable **into memory** and verifies its plain
 //!    minisign signature (under either trusted key) *and* its SHA-256 against
 //!    the authenticated entry — both, because they answer different
@@ -118,6 +131,15 @@ pub const RELEASE_BASE: &str = "https://github.com/Sassy-Dog/solador";
 /// The feed's asset name on a release, and its signature's trusted comment.
 pub const FEED_ASSET: &str = "agent-latest.json";
 
+/// The permanent release that carries the feed and its `.minisig` and nothing
+/// else (#488). Its tag never moves, so the feed is found at a fixed URL
+/// without asking GitHub which release is latest.
+pub const FEED_RELEASE: &str = "agent-latest";
+
+/// Every agent release's tag is this followed by its CalVer: the release a
+/// feed entry's `url` must name.
+pub const RELEASE_TAG_PREFIX: &str = "agent-v";
+
 /// Every agent binary's asset name starts with this.
 pub const BINARY_PREFIX: &str = "solador-agent";
 
@@ -181,10 +203,10 @@ pub enum UpdateError {
     /// unit / LaunchAgent; root would target root's manager and leave
     /// root-owned siblings beside the user's binary.
     Privileged { euid: u32 },
-    /// Discovery or a download failed at the transport.
+    /// A fetch failed at the transport or answered a non-success status. A
+    /// missing `agent-latest` feed (HTTP 404) lands here: exit 1, nothing
+    /// changed, never "nothing to do".
     Network { what: String, reason: String },
-    /// `/releases/latest` did not land on a CalVer tag.
-    Discovery(String),
     /// The compiled-in trust set is unusable (never expected past CI).
     Trust(String),
     /// A signature does not cover its bytes under any trusted key, or names
@@ -193,12 +215,17 @@ pub enum UpdateError {
     /// The feed's bytes verified but are not the document the contract
     /// describes.
     FeedMalformed(String),
-    /// The feed's `version` is not the release it was fetched from.
-    FeedTag { tag: String, version: String },
     /// This host's triple has no entry.
     TargetMissing(String),
-    /// A feed entry's URL is not the asset on the resolved release.
-    FeedUrl { target: String, url: String },
+    /// A feed entry's URL is not the asset on the `agent-v<version>` release
+    /// the feed's own `version` names. The URL path is what binds a feed's
+    /// version to its artifacts (the feed itself is fetched from the fixed
+    /// `agent-latest` release), so one that names anything else is refused.
+    FeedUrl {
+        target: String,
+        url: String,
+        expected: String,
+    },
     /// The installed executable carries no version, so "is the feed newer"
     /// cannot be answered.
     InstalledVersionUnknown { path: PathBuf, reason: String },
@@ -206,6 +233,14 @@ pub enum UpdateError {
     /// `MARKETING_VERSION=dev` pin, say); not comparable, and not the same
     /// state as "older".
     InstalledVersionNotCalVer { path: PathBuf, version: String },
+    /// The installed executable is a source build (its version carries
+    /// `+dev`, the marker #472's agent versioning gives one; no build carries
+    /// it before #490, so this ships first for the bridge release's updater (#472's
+    /// cut-over, #492) to know),
+    /// which no release can be compared with. "No applicable release", not a
+    /// refusal: a from-source host answers this every day and the scheduled
+    /// job must not be paged for it (exit 4).
+    InstalledSourceBuild { path: PathBuf, version: String },
     /// The installed bytes are the feed's, but the service is not serving
     /// them — an earlier run interrupted between the swap and the restart,
     /// or a restart that never happened. Nothing was changed; the remedy is
@@ -265,8 +300,9 @@ impl UpdateError {
     /// changed (a refusal, a network error, a rejected signature); `3`
     /// failed **and** the previous binary could not be put back — the
     /// service may be down; `4` no applicable release — the feed is not
-    /// newer than what is installed, which a from-source host running ahead
-    /// of the last tag reports every day and nobody should be paged for;
+    /// newer than what is installed, or what is installed is a source build
+    /// (`+dev`) with nothing to compare, which a from-source host reports
+    /// every day and nobody should be paged for;
     /// `5` failed and the previous binary is back and serving — a human
     /// should look at why, but nothing is broken; `75` busy, try later.
     #[must_use]
@@ -274,7 +310,7 @@ impl UpdateError {
         match self {
             UpdateError::Busy { .. } => 75,
             UpdateError::UpdateFailedRecoveryFailed { .. } => 3,
-            UpdateError::NotNewer { .. } => 4,
+            UpdateError::NotNewer { .. } | UpdateError::InstalledSourceBuild { .. } => 4,
             UpdateError::UpdateFailedRecovered { .. } => 5,
             _ => 1,
         }
@@ -314,7 +350,6 @@ impl fmt::Display for UpdateError {
                  shell or from the separate maintenance job, never as the service's ExecStart"
             ),
             UpdateError::Network { what, reason } => write!(f, "{what}: {reason}"),
-            UpdateError::Discovery(m) => write!(f, "{m}"),
             UpdateError::Trust(m) => write!(
                 f,
                 "the compiled-in trust set is unusable ({m}); this build cannot verify anything \
@@ -332,18 +367,19 @@ impl fmt::Display for UpdateError {
                     "agent-latest.json verified but is not an agent feed: {m}"
                 )
             }
-            UpdateError::FeedTag { tag, version } => write!(
-                f,
-                "agent-latest.json on release {tag} says version {version}; refusing a feed \
-                 that does not name the release it was fetched from"
-            ),
             UpdateError::TargetMissing(t) => {
                 write!(f, "the feed has no entry for this host's target {t}")
             }
-            UpdateError::FeedUrl { target, url } => write!(
+            UpdateError::FeedUrl {
+                target,
+                url,
+                expected,
+            } => write!(
                 f,
-                "the {target} entry's url '{url}' is not the asset on the resolved release; \
-                 refusing to download from anywhere the release base did not name"
+                "the {target} entry's url '{url}' is not '{expected}', the asset on the \
+                 release the feed's own version names; refusing a feed whose artifacts are \
+                 anywhere the release base and that version did not name. Nothing was \
+                 downloaded or changed"
             ),
             UpdateError::InstalledVersionUnknown { path, reason } => write!(
                 f,
@@ -357,6 +393,14 @@ impl fmt::Display for UpdateError {
                 "{} reports version '{version}', which is not the YYYY.M.N CalVer a release \
                  carries, so it cannot be compared with the feed. Re-run \
                  agent/deploy/install.sh to move this host onto a published release",
+                path.display()
+            ),
+            UpdateError::InstalledSourceBuild { path, version } => write!(
+                f,
+                "{} reports version '{version}', a source build (+dev) and not a release, so \
+                 there is nothing to compare with the feed and nothing to do. Nothing was \
+                 downloaded or changed. A source build is updated by rebuilding it; \
+                 agent/deploy/install.sh moves this host onto a published release instead",
                 path.display()
             ),
             UpdateError::AlreadyCurrentNotServing {
@@ -671,7 +715,8 @@ impl Feed {
     /// Decode bytes that have **already been verified** and hold them to the
     /// contract's shape: a CalVer version, a `targets` map whose entries each
     /// carry a signature that parses and a 64-hex hash. Extra JSON keys are
-    /// ignored; extra triples are ignored (this host reads its own).
+    /// ignored; extra triples are not read (this host reads its own), though
+    /// `check_feed_urls` still holds every one of them to the URL shape.
     pub fn parse(bytes: &[u8]) -> Result<Self, UpdateError> {
         let feed: Feed =
             serde_json::from_slice(bytes).map_err(|e| UpdateError::FeedMalformed(e.to_string()))?;
@@ -713,41 +758,54 @@ pub fn verify_feed(
     Ok((feed, key))
 }
 
-/// The entry for `target` on a feed fetched from release `tag` off `base`,
-/// with its URL held to exactly the asset this updater would construct
-/// itself. A feed cannot send the download anywhere else.
-pub fn select_target<'f>(
-    feed: &'f Feed,
-    target: &str,
-    base: &str,
-    tag: &str,
-) -> Result<&'f Target, UpdateError> {
-    let entry = feed
-        .targets
-        .get(target)
-        .ok_or_else(|| UpdateError::TargetMissing(target.to_string()))?;
-    let expected = format!(
-        "{base}/releases/download/{tag}/{}",
-        asset_name(&feed.version, target)
-    );
-    if entry.url != expected {
-        return Err(UpdateError::FeedUrl {
-            target: target.to_string(),
-            url: entry.url.clone(),
-        });
-    }
-    Ok(entry)
+/// Where the feed lives: `<base>/releases/download/agent-latest/agent-latest.json`.
+/// Its signature is the same URL plus `.minisig`. Constructed from the
+/// compiled-in base and nothing a feed says.
+#[must_use]
+pub fn feed_url(base: &str) -> String {
+    format!("{base}/releases/download/{FEED_RELEASE}/{FEED_ASSET}")
 }
 
-/// Is `tag` the release `feed` names? `v<version>` is the repo's scheme.
-pub fn check_feed_tag(feed: &Feed, tag: &str) -> Result<(), UpdateError> {
-    if tag != format!("v{}", feed.version) {
-        return Err(UpdateError::FeedTag {
-            tag: tag.to_string(),
-            version: feed.version.clone(),
-        });
+/// The only URL a feed entry for `target` may carry:
+/// `<base>/releases/download/agent-v<version>/solador-agent-<version>-<triple>`.
+#[must_use]
+pub fn asset_url(base: &str, version: &str, target: &str) -> String {
+    format!(
+        "{base}/releases/download/{RELEASE_TAG_PREFIX}{version}/{}",
+        asset_name(version, target)
+    )
+}
+
+/// Hold **every** target's `url` to exactly [`asset_url`] for the feed's own
+/// `version`.
+///
+/// The feed is fetched from the fixed `agent-latest` release, so nothing about
+/// where it came from says which version it is for. This signed URL path is
+/// what binds `version` to its artifacts; it replaced the old "the feed's
+/// `version` is the tag it was fetched from" rule. Every entry is held to it,
+/// not only this host's: a feed whose other targets point anywhere else does
+/// not mean what it says, and is refused before any download. A feed cannot
+/// send a download anywhere the release base and its own version did not name.
+pub fn check_feed_urls(feed: &Feed, base: &str) -> Result<(), UpdateError> {
+    for (target, entry) in &feed.targets {
+        let expected = asset_url(base, &feed.version, target);
+        if entry.url != expected {
+            return Err(UpdateError::FeedUrl {
+                target: target.clone(),
+                url: entry.url.clone(),
+                expected,
+            });
+        }
     }
     Ok(())
+}
+
+/// The entry for `target`. Its URL was already held to [`asset_url`] by
+/// [`check_feed_urls`], which `run_update` calls first.
+pub fn select_target<'f>(feed: &'f Feed, target: &str) -> Result<&'f Target, UpdateError> {
+    feed.targets
+        .get(target)
+        .ok_or_else(|| UpdateError::TargetMissing(target.to_string()))
 }
 
 /// Verify a downloaded binary against its feed entry: signature under a
@@ -771,13 +829,12 @@ pub fn verify_binary(
     Ok(key)
 }
 
-/// A release tag: `v` + CalVer, and nothing else (not a branch, not the
-/// `releases` landing page a redirect hands back when a repo has none).
+/// Is this version a source build? `+dev` is the suffix a build made outside a
+/// release carries; it never claims to be a release, so there is no release to
+/// compare it with.
 #[must_use]
-pub fn is_release_tag(tag: &str) -> bool {
-    tag.strip_prefix('v')
-        .map(|v| CalVer::parse(v).is_some())
-        .unwrap_or(false)
+pub fn is_source_build(version: &str) -> bool {
+    version.contains("+dev")
 }
 
 // ---------------------------------------------------------------------------
@@ -1890,47 +1947,6 @@ fn health_pin(serving: &Serving, install: &Install) -> Result<Option<Vec<u8>>, U
         .map_err(|e| UpdateError::Install(format!("SOLADOR_AGENT_TLS=1 but {e}")))
 }
 
-/// Resolve the concrete release behind `/releases/latest`: the redirect's
-/// `Location` must be `<base>/releases/tag/<vCalVer>`. Not followed — read.
-pub async fn resolve_latest_tag(
-    client: &reqwest::Client,
-    base: &str,
-) -> Result<String, UpdateError> {
-    let url = format!("{base}/releases/latest");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| UpdateError::Network {
-            what: format!("resolving {url}"),
-            reason: error_chain(&e),
-        })?;
-    let status = resp.status();
-    let location = resp
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let Some(location) = location.filter(|_| status.is_redirection()) else {
-        return Err(UpdateError::Discovery(format!(
-            "{url} answered {status} with no redirect; expected a redirect to the latest \
-             published release (a repository with no published release lands here)"
-        )));
-    };
-    let prefix = format!("{base}/releases/tag/");
-    let Some(tag) = location.strip_prefix(&prefix) else {
-        return Err(UpdateError::Discovery(format!(
-            "{url} redirected to '{location}', not to a release tag under {prefix}"
-        )));
-    };
-    if !is_release_tag(tag) {
-        return Err(UpdateError::Discovery(format!(
-            "'{tag}' is not a release tag (expected vYYYY.M.N)"
-        )));
-    }
-    Ok(tag.to_string())
-}
-
 /// GET one release asset into memory, refusing a body past `cap`.
 pub async fn fetch_asset(
     client: &reqwest::Client,
@@ -2193,34 +2209,25 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
     let dial = resolve_dial(&ctx.serving.dial()).await?;
     let health = health_client(ctx.running_version.as_deref(), pin.as_deref(), &dial)?;
 
-    // 3. The concrete release, and its feed — exact bytes verified first.
-    let discovery = reqwest::Client::builder()
-        .user_agent(user_agent(ctx.running_version.as_deref()))
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| UpdateError::Network {
-            what: "http client".to_string(),
-            reason: e.to_string(),
-        })?;
-    let tag = resolve_latest_tag(&discovery, &ctx.release_base).await?;
-    (ctx.report)(&format!("==> Latest published release: {tag}"));
-
-    let feed_url = format!("{}/releases/download/{tag}/{FEED_ASSET}", ctx.release_base);
-    let feed_bytes = fetch_asset(&client, &feed_url, FEED_CAP).await?;
-    let sig_bytes = fetch_asset(&client, &format!("{feed_url}.minisig"), FEED_CAP).await?;
+    // 3. The feed, at its fixed location — exact bytes verified first. There
+    //    is no discovery step: the release holding it is named `agent-latest`
+    //    and `/releases/latest` is never asked. A 404 here is the `Network`
+    //    failure it looks like (exit 1), never "nothing to do".
+    let feed_at = feed_url(&ctx.release_base);
+    (ctx.report)(&format!("==> Reading the agent feed: {feed_at}"));
+    let feed_bytes = fetch_asset(&client, &feed_at, FEED_CAP).await?;
+    let sig_bytes = fetch_asset(&client, &format!("{feed_at}.minisig"), FEED_CAP).await?;
     let sig_text = String::from_utf8(sig_bytes).map_err(|_| UpdateError::Rejected {
         object: FEED_ASSET.to_string(),
         reason: "the signature file is not UTF-8 text".to_string(),
     })?;
     let (feed, feed_key) = verify_feed(&ctx.trust, &feed_bytes, &sig_text)?;
-    check_feed_tag(&feed, &tag)?;
+    check_feed_urls(&feed, &ctx.release_base)?;
     (ctx.report)(&format!(
         "==> {FEED_ASSET} verified under key {feed_key}; feed version {}",
         feed.version
     ));
-    let entry = select_target(&feed, target, &ctx.release_base, &tag)?;
+    let entry = select_target(&feed, target)?;
     let asset = asset_name(&feed.version, target);
 
     // 4. Equal bytes: already current, exit 0, nothing else happens.
@@ -2294,6 +2301,17 @@ pub async fn run_update(ctx: &mut Context<'_>) -> Result<UpdateOutcome, UpdateEr
                 reason,
             }
         })?;
+    // A source build has no release to be compared with: "no applicable
+    // release" (exit 4, which the scheduled job treats as a quiet day). Asked
+    // BEFORE the CalVer parse, because `+dev` is not a CalVer and that parse
+    // would refuse it with exit 1 — failing the daily job on every source-built
+    // host.
+    if is_source_build(&installed_version) {
+        return Err(UpdateError::InstalledSourceBuild {
+            path: ctx.install.binary.clone(),
+            version: installed_version,
+        });
+    }
     let Some(have) = CalVer::parse(&installed_version) else {
         return Err(UpdateError::InstalledVersionNotCalVer {
             path: ctx.install.binary.clone(),
@@ -2737,15 +2755,19 @@ async fn restore_previous(
 mod tests {
     use super::*;
 
-    fn shared_fixture(name: &str) -> Vec<u8> {
+    /// A file of `tests/fixtures/agent-v/` (#488): the consumer's own signed
+    /// fixture, whose feed names the `agent-v<version>` release. Not
+    /// `tests/fixtures/agent/`, which `crates/updatefeed` reads and whose URLs
+    /// are still the producer's legacy `v<version>`.
+    fn fixture(name: &str) -> Vec<u8> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tests/fixtures/agent")
+            .join("../tests/fixtures/agent-v")
             .join(name);
         fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
     }
 
-    fn shared_text(name: &str) -> String {
-        String::from_utf8(shared_fixture(name)).expect("text fixture")
+    fn fixture_text(name: &str) -> String {
+        String::from_utf8(fixture(name)).expect("text fixture")
     }
 
     // --- The compiled-in trust set ----------------------------------------
@@ -2791,48 +2813,105 @@ mod tests {
 
     #[test]
     fn a_key_listed_twice_is_refused_as_a_trust_set() {
-        let k = shared_text("test-agent-key.pub");
+        let k = fixture_text("test-agent-key.pub");
         let err = Trust::from_texts(&[&k, &k]).expect_err("refused");
         assert!(matches!(err, UpdateError::Trust(_)), "{err}");
         assert!(err.to_string().contains("twice"), "{err}");
         assert!(Trust::from_texts(&[]).is_err());
     }
 
-    // --- The shared feed fixture: the contract's executable form ----------
+    // --- The agent-v feed fixture: the contract's executable form ---------
 
     fn fixture_trust() -> Trust {
-        Trust::from_texts(&[&shared_text("test-agent-key.pub")]).expect("fixture key")
+        Trust::from_texts(&[&fixture_text("test-agent-key.pub")]).expect("fixture key")
     }
 
     #[test]
     fn the_committed_feed_fixture_verifies_and_parses_under_its_key() {
-        let bytes = shared_fixture(FEED_ASSET);
-        let sig = shared_text("agent-latest.json.minisig");
+        let bytes = fixture(FEED_ASSET);
+        let sig = fixture_text("agent-latest.json.minisig");
         let (feed, key) = verify_feed(&fixture_trust(), &bytes, &sig).expect("verifies");
         // The id read out of the fixture key's own bytes, so regenerating
-        // the shared pair (tests/fixtures/README.md) moves this suite too.
-        assert_eq!(key, key_id(&shared_text("test-agent-key.pub")).unwrap());
+        // the pair (tests/fixtures/README.md) moves this suite too.
+        assert_eq!(key, key_id(&fixture_text("test-agent-key.pub")).unwrap());
         assert_eq!(feed.version, "2026.9.9");
         assert_eq!(feed.targets.len(), 4);
-        check_feed_tag(&feed, "v2026.9.9").expect("the tag names the version");
+        check_feed_urls(&feed, RELEASE_BASE).expect("every url names agent-v2026.9.9");
         for t in TARGETS {
-            let entry = select_target(&feed, t, RELEASE_BASE, "v2026.9.9").expect(t);
+            let entry = select_target(&feed, t).expect(t);
+            // The signed fixture pins the construction: the URL the feed
+            // carries is exactly the one `asset_url` builds.
+            assert_eq!(entry.url, asset_url(RELEASE_BASE, "2026.9.9", t), "{t}");
             let asset = asset_name("2026.9.9", t);
-            verify_binary(&fixture_trust(), &asset, entry, &shared_fixture(&asset)).expect(t);
+            verify_binary(&fixture_trust(), &asset, entry, &fixture(&asset)).expect(t);
         }
+    }
+
+    /// `tests/fixtures/agent-v/` is `tests/fixtures/agent/` with the release
+    /// segment of every URL rewritten (and a different key), and nothing else:
+    /// the stand-in binaries, the hashes and the version are the same. The
+    /// producer's fixture is the only one a producer test reproduces, so this
+    /// is what ties the consumer's copy to it until #490 regenerates both
+    /// from the producer and deletes this guard along with the rewrite.
+    #[test]
+    fn the_agent_v_fixture_is_the_producers_fixture_with_only_the_release_rewritten() {
+        let producer = |name: &str| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/agent")
+                .join(name);
+            fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+        };
+        let ours = Feed::parse(&fixture(FEED_ASSET)).unwrap();
+        let theirs = Feed::parse(&producer(FEED_ASSET)).unwrap();
+        assert_eq!(ours.version, theirs.version);
+        assert_eq!(
+            ours.targets.keys().collect::<Vec<_>>(),
+            theirs.targets.keys().collect::<Vec<_>>()
+        );
+        for (t, entry) in &ours.targets {
+            let legacy = &theirs.targets[t];
+            assert_eq!(entry.sha256, legacy.sha256, "{t}: same stand-in bytes");
+            assert_eq!(
+                legacy.url.replace(
+                    "/releases/download/v2026.9.9/",
+                    "/releases/download/agent-v2026.9.9/"
+                ),
+                entry.url,
+                "{t}: only the release segment differs"
+            );
+            let asset = asset_name("2026.9.9", t);
+            assert_eq!(fixture(&asset), producer(&asset), "{t}: stand-in bytes");
+        }
+    }
+
+    /// The feed lives at one fixed address on the permanent `agent-latest`
+    /// release, and nothing in the path comes from the feed or from GitHub's
+    /// notion of "latest".
+    #[test]
+    fn the_feed_is_found_at_the_fixed_agent_latest_address() {
+        assert_eq!(
+            feed_url(RELEASE_BASE),
+            "https://github.com/Sassy-Dog/solador/releases/download/agent-latest/agent-latest.json"
+        );
+        assert!(!feed_url(RELEASE_BASE).contains("/releases/latest"));
+        assert_eq!(
+            asset_url(RELEASE_BASE, "2026.9.9", "aarch64-apple-darwin"),
+            "https://github.com/Sassy-Dog/solador/releases/download/agent-v2026.9.9/\
+             solador-agent-2026.9.9-aarch64-apple-darwin"
+        );
     }
 
     #[test]
     fn a_feed_whose_bytes_moved_by_one_character_is_refused_before_decoding() {
-        let mut bytes = shared_fixture(FEED_ASSET);
-        let sig = shared_text("agent-latest.json.minisig");
+        let mut bytes = fixture(FEED_ASSET);
+        let sig = fixture_text("agent-latest.json.minisig");
         let i = bytes.len() / 2;
         bytes[i] = if bytes[i] == b'a' { b'b' } else { b'a' };
         let err = verify_feed(&fixture_trust(), &bytes, &sig).expect_err("refused");
         assert!(matches!(err, UpdateError::Rejected { .. }), "{err}");
 
         // The final newline is a byte the signature covers.
-        let mut bytes = shared_fixture(FEED_ASSET);
+        let mut bytes = fixture(FEED_ASSET);
         assert_eq!(bytes.pop(), Some(b'\n'));
         let err = verify_feed(&fixture_trust(), &bytes, &sig).expect_err("refused");
         assert!(matches!(err, UpdateError::Rejected { .. }), "{err}");
@@ -2840,8 +2919,8 @@ mod tests {
 
     #[test]
     fn a_feed_signed_by_a_key_this_build_does_not_trust_is_refused() {
-        let bytes = shared_fixture(FEED_ASSET);
-        let sig = shared_text("agent-latest.json.minisig");
+        let bytes = fixture(FEED_ASSET);
+        let sig = fixture_text("agent-latest.json.minisig");
         // The production key does not trust the fixture key.
         let err = verify_feed(&Trust::compiled_in().unwrap(), &bytes, &sig).expect_err("refused");
         match err {
@@ -2855,8 +2934,8 @@ mod tests {
     #[test]
     fn a_signature_made_for_another_file_is_refused_even_though_it_verifies() {
         // The feed's own signature, offered as the signature of a binary.
-        let bytes = shared_fixture(FEED_ASSET);
-        let sig = shared_text("agent-latest.json.minisig");
+        let bytes = fixture(FEED_ASSET);
+        let sig = fixture_text("agent-latest.json.minisig");
         let err = fixture_trust()
             .verify("solador-agent-2026.9.9-x86_64-apple-darwin", &sig, &bytes)
             .expect_err("refused");
@@ -2870,55 +2949,139 @@ mod tests {
 
     #[test]
     fn a_verified_binary_whose_hash_is_not_the_entrys_is_refused() {
-        let bytes = shared_fixture(FEED_ASSET);
-        let sig = shared_text("agent-latest.json.minisig");
+        let bytes = fixture(FEED_ASSET);
+        let sig = fixture_text("agent-latest.json.minisig");
         let (feed, _) = verify_feed(&fixture_trust(), &bytes, &sig).unwrap();
         let t = "x86_64-unknown-linux-musl";
         let asset = asset_name("2026.9.9", t);
         let mut entry = feed.targets[t].clone();
         entry.sha256 = "0".repeat(64);
-        let err = verify_binary(&fixture_trust(), &asset, &entry, &shared_fixture(&asset))
-            .expect_err("refused");
+        let err =
+            verify_binary(&fixture_trust(), &asset, &entry, &fixture(&asset)).expect_err("refused");
         assert!(matches!(err, UpdateError::HashMismatch { .. }), "{err}");
 
         // And a binary whose bytes moved fails the signature, never the hash.
-        let mut tampered = shared_fixture(&asset);
+        let mut tampered = fixture(&asset);
         tampered[0] ^= 0x01;
         let err = verify_binary(&fixture_trust(), &asset, &feed.targets[t], &tampered)
             .expect_err("refused");
         assert!(matches!(err, UpdateError::Rejected { .. }), "{err}");
     }
 
+    /// The release a URL names is what binds a feed's `version` to its
+    /// artifacts, so a feed carrying the legacy `v<version>` release, another
+    /// version's `agent-v` release or another host is refused.
     #[test]
-    fn the_feed_must_name_the_release_it_was_fetched_from() {
-        let bytes = shared_fixture(FEED_ASSET);
-        let feed = Feed::parse(&bytes).unwrap();
-        let err = check_feed_tag(&feed, "v2026.9.10").expect_err("refused");
-        assert!(matches!(err, UpdateError::FeedTag { .. }), "{err}");
+    fn a_feed_entry_must_name_the_agent_v_release_of_the_feeds_own_version() {
+        let good = Feed::parse(&fixture(FEED_ASSET)).unwrap();
+        check_feed_urls(&good, RELEASE_BASE).expect("the fixture is the control");
+        let t = "aarch64-apple-darwin";
+        let asset = asset_name("2026.9.9", t);
+        for wrong in [
+            // The legacy release: right file, wrong tag scheme.
+            format!("{RELEASE_BASE}/releases/download/v2026.9.9/{asset}"),
+            // Another agent release's tag for this feed's version.
+            format!("{RELEASE_BASE}/releases/download/agent-v2026.9.10/{asset}"),
+            // The fixed feed release, which holds no binaries.
+            format!("{RELEASE_BASE}/releases/download/agent-latest/{asset}"),
+            // Another host, and another repository.
+            format!("https://example.invalid/releases/download/agent-v2026.9.9/{asset}"),
+            format!("https://github.com/someone/else/releases/download/agent-v2026.9.9/{asset}"),
+            // Another asset on the right release.
+            format!(
+                "{RELEASE_BASE}/releases/download/agent-v2026.9.9/{}",
+                asset_name("2026.9.9", "x86_64-apple-darwin")
+            ),
+            // The right URL with something after it.
+            format!("{RELEASE_BASE}/releases/download/agent-v2026.9.9/{asset}?x=1"),
+            String::new(),
+        ] {
+            let mut feed = good.clone();
+            feed.targets.get_mut(t).unwrap().url = wrong.clone();
+            let err = check_feed_urls(&feed, RELEASE_BASE).expect_err(&wrong);
+            match &err {
+                UpdateError::FeedUrl {
+                    target,
+                    url,
+                    expected,
+                } => {
+                    assert_eq!(target, t);
+                    assert_eq!(url, &wrong);
+                    assert_eq!(expected, &asset_url(RELEASE_BASE, "2026.9.9", t));
+                }
+                other => panic!("{wrong}: {other}"),
+            }
+            assert_eq!(err.exit_code(), 1, "a refusal, with nothing changed");
+        }
+        // The base is the caller's, never the feed's.
+        let err = check_feed_urls(&good, "http://127.0.0.1:1").expect_err("another base");
+        assert!(matches!(err, UpdateError::FeedUrl { .. }), "{err}");
+    }
+
+    /// EVERY target is held to it, not only this host's: a feed that names a
+    /// foreign location for any triple does not mean what it says.
+    #[test]
+    fn every_target_is_held_to_the_url_not_only_this_hosts() {
+        let good = Feed::parse(&fixture(FEED_ASSET)).unwrap();
+        for bad_target in TARGETS {
+            let mut feed = good.clone();
+            feed.targets.get_mut(bad_target).unwrap().url =
+                format!("{RELEASE_BASE}/releases/download/v2026.9.9/not-the-asset");
+            let err = check_feed_urls(&feed, RELEASE_BASE).expect_err(bad_target);
+            assert!(
+                matches!(&err, UpdateError::FeedUrl { target, .. } if target == bad_target),
+                "{bad_target}: {err}"
+            );
+        }
+        // A triple this updater has no binary for is an entry too: held to
+        // the same construction.
+        let mut feed = good.clone();
+        feed.targets.insert(
+            "riscv64gc-unknown-linux-musl".to_string(),
+            Target {
+                url: "https://example.invalid/x".to_string(),
+                ..good.targets["aarch64-apple-darwin"].clone()
+            },
+        );
+        let err = check_feed_urls(&feed, RELEASE_BASE).expect_err("extra triple");
+        assert!(matches!(err, UpdateError::FeedUrl { .. }), "{err}");
     }
 
     #[test]
-    fn a_feed_entry_may_not_point_anywhere_but_the_asset_on_the_release() {
-        let bytes = shared_fixture(FEED_ASSET);
-        let mut feed = Feed::parse(&bytes).unwrap();
-        let t = "aarch64-apple-darwin";
-        feed.targets.get_mut(t).unwrap().url =
-            "https://example.invalid/solador-agent-2026.9.9-aarch64-apple-darwin".to_string();
-        let err = select_target(&feed, t, RELEASE_BASE, "v2026.9.9").expect_err("refused");
-        assert!(matches!(err, UpdateError::FeedUrl { .. }), "{err}");
-        let err = select_target(
-            &feed,
-            "riscv64gc-unknown-linux-musl",
-            RELEASE_BASE,
-            "v2026.9.9",
-        )
-        .expect_err("refused");
+    fn a_host_with_no_entry_is_a_missing_target() {
+        let feed = Feed::parse(&fixture(FEED_ASSET)).unwrap();
+        let err = select_target(&feed, "riscv64gc-unknown-linux-musl").expect_err("refused");
         assert!(matches!(err, UpdateError::TargetMissing(_)), "{err}");
+    }
+
+    /// `+dev` is the whole test: a build made outside a release is never
+    /// compared with one, and a CalVer is never one.
+    #[test]
+    fn only_a_version_carrying_plus_dev_is_a_source_build() {
+        for v in [
+            "2026.10.3+dev.4.gabc1234",
+            "2026.9.9+dev",
+            "0.5.0+dev.1.gdeadbee",
+        ] {
+            assert!(is_source_build(v), "{v}");
+        }
+        for v in ["2026.9.9", "2026.10.13", "dev", "2026.9.9-dev", ""] {
+            assert!(!is_source_build(v), "{v}");
+        }
+        let err = UpdateError::InstalledSourceBuild {
+            path: PathBuf::from("/h/.local/bin/solador-agent"),
+            version: "2026.10.3+dev.4.gabc1234".to_string(),
+        };
+        assert_eq!(err.exit_code(), 4, "no applicable release");
+        let text = err.to_string();
+        assert!(text.contains("source build"), "{text}");
+        assert!(text.contains("nothing to compare"), "{text}");
+        assert!(text.contains("2026.10.3+dev.4.gabc1234"), "{text}");
     }
 
     #[test]
     fn unknown_json_keys_are_tolerated_and_malformed_fields_are_not() {
-        let mut v: serde_json::Value = serde_json::from_slice(&shared_fixture(FEED_ASSET)).unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&fixture(FEED_ASSET)).unwrap();
         v["keyId"] = serde_json::json!("B2E5C62B763FD2C4");
         v["targets"]["x86_64-apple-darwin"]["note"] = serde_json::json!("added later");
         let feed = Feed::parse(&serde_json::to_vec(&v).unwrap()).expect("additions tolerated");
@@ -2967,9 +3130,6 @@ mod tests {
         }
         assert!(CalVer(2026, 10, 1) > CalVer(2026, 9, 30));
         assert!(CalVer(2027, 1, 1) > CalVer(2026, 12, 99));
-        assert!(is_release_tag("v2026.9.12"));
-        assert!(!is_release_tag("2026.9.12"));
-        assert!(!is_release_tag("vmain"));
     }
 
     #[test]
