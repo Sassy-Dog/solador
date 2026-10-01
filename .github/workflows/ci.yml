@@ -218,6 +218,11 @@ jobs:
       - name: Local run signing helpers under macOS bash 3.2
         run: /bin/bash scripts/run-test.sh
 
+      # log_error/log_warning write to stderr so a `$(fn)` caller cannot swallow
+      # a refusal (#474); the suite stubs `security` and pins the messages.
+      - name: Signing-identity refusals under macOS bash 3.2
+        run: /bin/bash scripts/signing-identity-test.sh
+
       # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
       # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does
       # for cargo above.

@@ -75,6 +75,17 @@ else
     exit 1
 fi
 
+# --- Signing-identity refusals (#474). `log_error` writes to stderr, so a
+# refusal inside `identity="$(resolve_signing_identity)" || exit 1` is seen
+# rather than captured; the suite stubs `security` and pins that.
+log_info "Running signing-identity refusal tests (scripts/signing-identity-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/signing-identity-test.sh; then
+    log_success "Signing-identity refusal tests passed"
+else
+    log_error "Signing-identity refusal tests failed"
+    exit 1
+fi
+
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
 # Needs BOTH npm and cargo: the suite's `pretest` shells out to
