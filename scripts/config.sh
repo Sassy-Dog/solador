@@ -20,16 +20,16 @@ export TAURI_PACKAGE="solador-app"
 # Contents/MacOS, no hdiutil. Bundling lives in the CLI, which is a separate
 # crate on a separate release train, so it has to be named and pinned here.
 #
-# 2.11.4, NOT 2.11.5. `Cargo.lock` resolves `tauri` to 2.11.5 and `tauri-build`
-# to 2.6.3, and matching the CLI to the runtime is the point of pinning — but
-# `tauri-cli` publishes its own patch numbers and **2.11.5 does not exist**
-# (`https://index.crates.io/ta/ur/tauri-cli` tops out at 2.11.4). Same 2.11
-# train is the tightest match available; the CLI errors on a real
-# runtime/CLI mismatch by itself, and `--ignore-version-mismatches` is
-# deliberately never passed so that check keeps its teeth.
+# 2.12.1, matching `Cargo.lock`'s `tauri` 2.12.1 (`tauri-build` 2.7.1), because
+# matching the CLI to the runtime is the point of pinning. `tauri-cli`
+# publishes its own patch numbers, so an exact match is not guaranteed: when
+# tauri 2.11.5 shipped, the CLI topped out at 2.11.4 and the same train was the
+# tightest match available. The CLI errors on a real runtime/CLI mismatch by
+# itself, and `--ignore-version-mismatches` is deliberately never passed so
+# that check keeps its teeth.
 #
 # Bump this and `Cargo.lock`'s `tauri` together, never one alone.
-export TAURI_CLI_VERSION="2.11.4"
+export TAURI_CLI_VERSION="2.12.1"
 
 # Every macOS bundle is universal (#335), and the triple lives here because it
 # is part of the OUTPUT PATH: `--target` moves cargo's output under the triple,
