@@ -3862,6 +3862,88 @@ mod tests {
         server.abort();
     }
 
+    /// Everything a failed self-connect can say about the host (#482). On
+    /// 2026-09-30 the test below timed out for a stretch on one Mac with nothing but
+    /// `Connect, TimedOut`, and the cause was never found: the firewall was
+    /// measured and ruled out. So the failure carries its own evidence:
+    ///
+    /// - the full error chain, not just the top-level `Debug`;
+    /// - a raw TCP connect to the same address, which separates "the path to my
+    ///   own address is dead" from "TLS or HTTP failed". A "connected" line
+    ///   proves the path only: the kernel's listen backlog completes the
+    ///   handshake whether or not the server task is accepting;
+    /// - the route and firewall state the address came from.
+    ///
+    /// Best-effort throughout: a diagnostic that can itself fail would hide the
+    /// failure it exists to describe. Only the failure path runs any of it.
+    fn self_connect_diagnostics(
+        addr: SocketAddr,
+        elapsed: std::time::Duration,
+        err: &reqwest::Error,
+    ) -> String {
+        use std::error::Error as _;
+        use std::fmt::Write as _;
+
+        let mut out =
+            format!("self-connect to {addr} failed after {elapsed:?} (#482)\n  error: {err}");
+        let mut source = err.source();
+        while let Some(cause) = source {
+            let _ = write!(out, "\n    caused by: {cause}");
+            source = cause.source();
+        }
+
+        let started = std::time::Instant::now();
+        let tcp = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2));
+        let taken = started.elapsed();
+        let _ = match tcp {
+            Ok(_) => write!(out, "\n  raw TCP connect to {addr}: connected in {taken:?}"),
+            Err(e) => write!(
+                out,
+                "\n  raw TCP connect to {addr}: failed after {taken:?}: {e}"
+            ),
+        };
+
+        for (label, program, args) in host_context_commands() {
+            let text = match std::process::Command::new(program).args(args).output() {
+                Ok(o) if !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).into_owned(),
+                Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
+                Err(e) => format!("unavailable: {e}"),
+            };
+            let _ = write!(out, "\n  {label} ({program} {}):", args.join(" "));
+            for line in text.trim().lines() {
+                let _ = write!(out, "\n    {line}");
+            }
+        }
+        out
+    }
+
+    /// The host commands behind [`self_connect_diagnostics`]. `192.0.2.1` is
+    /// the same TEST-NET-1 address the test routes through to find its own IP,
+    /// so the route shown is the one that picked it. Gated per OS: the
+    /// Windows workspace job compiles these tests too, and has no equivalent
+    /// worth the noise.
+    #[cfg(target_os = "macos")]
+    fn host_context_commands() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
+        vec![
+            ("route", "/sbin/route", &["-n", "get", "192.0.2.1"]),
+            (
+                "firewall",
+                "/usr/libexec/ApplicationFirewall/socketfilterfw",
+                &["--getglobalstate"],
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "linux")]
+    fn host_context_commands() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
+        vec![("route", "ip", &["route", "get", "192.0.2.1"])]
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn host_context_commands() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
+        Vec::new()
+    }
+
     /// #449: the bind can change after the certificate was generated, and a
     /// certificate's SAN list cannot. The probe dials `localhost` and
     /// connects to the bind through `resolve_to_addrs`, so a concrete non-loopback
@@ -3910,7 +3992,14 @@ mod tests {
         assert_eq!(serving.dial(), Dial::Addr(SocketAddr::new(ip, port)));
         let dial = resolve_dial(&serving.dial()).await.unwrap();
         let client = health_client(None, Some(&cert_der), &dial).unwrap();
-        let resp = client.get(serving.health_url()).send().await.unwrap();
+        let started = std::time::Instant::now();
+        let resp = match client.get(serving.health_url()).send().await {
+            Ok(resp) => resp,
+            Err(e) => panic!(
+                "{}",
+                self_connect_diagnostics(SocketAddr::new(ip, port), started.elapsed(), &e)
+            ),
+        };
         assert!(resp.status().is_success());
 
         // Negative control: verifying by the bind address itself fails, as the
