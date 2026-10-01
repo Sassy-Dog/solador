@@ -138,8 +138,9 @@ export BUILD_DIR="build"
 # workflow.
 #
 # It is not a secret either: a team id ships in the signature of every binary
-# Apple distributes. Unset is a warning, never a wall — a contributor must
-# still be able to build.
+# Apple distributes. Unset never blocks anything — it only stops `./dev run`
+# narrowing its choice of Apple Development identity to one team — so a
+# contributor can still build.
 export DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
 
 # Load local overrides if they exist

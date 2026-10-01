@@ -5936,24 +5936,13 @@ fn main() {
         return;
     }
 
-    // Tokens live in the OS credential store, never in the store file. The
-    // *service* string matches the original `KeychainHelper`
-    // (the pre-rename service, see `store::LEGACY_SERVICE`), but the *account* does not: the original stores
-    // each host's token under `host_token_<UUID>`
-    // (`KeychainHelper`), `store::SecretKey` stores
-    // it under `host-<UUID>`. Nothing is actually reused today -- a token
-    // saved by one app is invisible to the other; unifying the account scheme
-    // is separate work.
+    // Tokens live in the OS credential store, never in the store file.
     let credentials = KeyringStore::new();
 
     // Read before the store opens, because the store's v1 -> v2 migration
     // needs the answer and `crates/store` deliberately cannot get it itself.
-    // It has to happen before the two credential migrations below, which need
-    // `store.hosts()` and so cannot run first -- so on the one launch that
-    // still adopts the pre-rename service, this read finds nothing and the
-    // store leaves itself at v1 rather than stamping v2 over an unattributed
-    // portfolio. The next launch, with the credential where this build looks,
-    // migrates. Unreadable is not absent, and neither is "not adopted yet".
+    // It has to happen before the credential consolidation below, which needs
+    // `store.hosts()` and so cannot run first. Unreadable is not absent.
     let github_token_present = matches!(
         read_credential(&credentials, SecretKey::GitHubAccessToken),
         Credential::Present(_)
@@ -5990,40 +5979,15 @@ fn main() {
     if std::env::var_os("SOLADOR_STORE_DIR").is_none() {
         let mut migrate_keys = SecretKey::static_migration_keys();
         migrate_keys.extend(store.hosts().iter().map(|h| SecretKey::HostToken(h.id)));
-        // Before consolidation, not after: `migrate_legacy` folds per-item
-        // entries into the blob *within this service*, so anything still
-        // sitting under the pre-rename service has to arrive first or it is
-        // simply not there to fold.
-        let adopted = match credentials.migrate_service(&migrate_keys) {
-            Ok(0) => true,
+        match credentials.migrate_legacy(&migrate_keys) {
+            Ok(0) => {}
             Ok(n) => {
-                eprintln!("secrets: adopted {n} credential(s) from the pre-rename service");
-                true
+                eprintln!(
+                    "secrets: migrated {n} credential(s) into the consolidated keychain item"
+                );
             }
             Err(e) => {
-                eprintln!(
-                    "secrets: could not adopt pre-rename credentials, will retry next launch: {e}"
-                );
-                false
-            }
-        };
-        // Consolidation is skipped after a failed adoption -- not the launch.
-        // The app must still open: an unreadable keychain means panels ask for
-        // credentials, which is a working app, whereas refusing to start is
-        // not. What consolidation would add is a blob in the destination, and
-        // the fewer artefacts a failed pass leaves for the retry to reason
-        // about, the better.
-        if adopted {
-            match credentials.migrate_legacy(&migrate_keys) {
-                Ok(0) => {}
-                Ok(n) => {
-                    eprintln!(
-                        "secrets: migrated {n} credential(s) into the consolidated keychain item"
-                    );
-                }
-                Err(e) => {
-                    eprintln!("secrets: migration failed (legacy items still readable): {e}");
-                }
+                eprintln!("secrets: migration failed (legacy items still readable): {e}");
             }
         }
     }
@@ -8307,8 +8271,8 @@ mod tests {
     // MARK: one credential per account (#290)
 
     /// The migrated account keeps reading the pre-existing item rather than a
-    /// `vendor-<uuid>` one — no keychain item is ever renamed, which is the
-    /// `LEGACY_SERVICE` hazard in miniature.
+    /// `vendor-<uuid>` one — no keychain item is ever renamed, because a
+    /// renamed item orphans the credential in it.
     #[test]
     fn the_migrated_account_reads_the_item_the_v1_store_already_had() {
         let account = VendorAccount::new(

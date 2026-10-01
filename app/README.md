@@ -106,7 +106,7 @@ The dashboard tests cover these rules with real Rust panel fixtures and temporar
 stores. Browser tests cover editing, persistence through an IPC double, failed
 saves, delayed reads, navigation and responsive layout under the app's CSP. They
 do not exercise native Tauri IPC. Native checks can reuse saved credentials via
-`./dev run` with a trusted, stable signing identity. `SOLADOR_STORE_DIR` isolates
+`./dev run` with a stable signing identity. `SOLADOR_STORE_DIR` isolates
 settings only; it still uses the normal credential service. A separate credential
 service is needed only for a deliberately credential-free run. Ad-hoc builds do
 not preserve Keychain recognition across rebuilds. For a native smoke check, use
@@ -1985,11 +1985,23 @@ certificate, while a `REVOKED` or `EXPIRED` verdict is final on the first
 read, so an outage and a revocation read differently on the terminal. If
 development identities are installed but none passes verification, or signing
 fails, the launcher stops before opening the app — the app was not launched,
-so its saved credentials keep their existing access. Machines with no
-development identity installed, and non-macOS machines, retain the unsigned
-bare-cargo behaviour. `scripts/run-test.sh` drives every one of those paths
-against a stubbed `security`, and asserts the identity that gets signed is the
-one that verified.
+so its saved credentials keep their existing access.
+
+A Mac with **no** Apple Development certificate — one with only the Command
+Line Tools has none, and nothing here provisions one the way `xcodebuild`'s
+automatic signing does — gets a self-signed `Solador Local Development`
+identity instead, created in the login Keychain on the first `./dev run` and
+reused after that (`LOCAL_SIGNING_IDENTITY` in `scripts/lib.sh`). It is left
+untrusted on purpose: codesign signs with it anyway, and the designated
+requirement it produces (`identifier "solador-app" and certificate leaf =
+H"…"`) is the same on every rebuild, which is all a Keychain ACL matches
+against. The first signed run prompts once per stored item; answer **Always
+Allow** and later rebuilds are silent. Two identities under that name are
+refused, like any ambiguous identity; failing to create one falls back to an
+ad-hoc run with a warning. Non-macOS machines keep the unsigned bare-cargo
+behaviour. `scripts/run-test.sh` drives every one of those paths against a
+stubbed `security`, and asserts the identity that gets signed is the one that
+verified.
 
 The bare command still works and is what everything non-interactive uses:
 
@@ -2051,6 +2063,16 @@ never touches the legacy items again — they are left in place, intentionally
 stale, as the blob's rebuild source. New and edited secrets go only to the blob
 from then on, so a legacy item's value silently drifts from whatever the blob
 holds.
+
+**Credentials from before the rename are not adopted.** Builds before this one
+copied anything stored under the pre-rename service, `com.sassydog.devcanopy`,
+into `app.solador.desktop` on first launch. That step has been removed. An
+install that still holds credentials only under the old service sees its
+panels as unconfigured: re-enter those credentials in Settings. Saving the
+GitHub token is also what lets a pre-rename `store.json` finish its v1 → v2
+migration on the next launch. The old-service items are inert after that;
+delete them in Keychain Access (and rotate the tokens if you no longer trust
+where they have been).
 
 **If the blob is ever damaged** (unparseable JSON — the affected panel keeps its
 last-good figures and shows a "couldn't read the credential store" footer

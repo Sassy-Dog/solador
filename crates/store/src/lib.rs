@@ -379,10 +379,8 @@ impl Store {
                 // the file's version and this build's has actually run. A
                 // migration that could not complete leaves the stamp alone, so
                 // the next launch tries again rather than recording a schema
-                // the file never reached — the same "the marker is what stops
-                // the retry" discipline `secrets::SERVICE_MIGRATION_MARKER`
-                // uses, and for the same reason: a partial pass must be
-                // retryable, not permanent.
+                // the file never reached: a partial pass must be retryable,
+                // not permanent.
                 // Stepwise, not a single `>=` guard: each migration runs only
                 // on exactly the version it understands, and each stamp is
                 // earned separately — a v2 file whose v2→v3 pass cannot finish
@@ -768,8 +766,8 @@ impl Store {
 ///    because the panel looks configured.
 /// 2. **No keychain write, ever.** The minted account points at the
 ///    *pre-existing* `github_access_token` item. Renaming it to the
-///    `vendor-<uuid>` spelling a freshly created account would use is the
-///    `LEGACY_SERVICE` hazard in miniature — orphaned is worse than deleted.
+///    `vendor-<uuid>` spelling a freshly created account would orphan the
+///    credential — and orphaned is worse than deleted.
 /// 3. **Nothing to do when accounts already exist.** Belt and braces beside
 ///    the caller's version check: a store that has any account has been
 ///    through here (or through Settings), and a second pass would mint a
@@ -1372,8 +1370,9 @@ mod tests {
     }
 
     /// `false` is "the caller could not say a token is there" — which covers
-    /// an unreadable keychain, and a pre-rename install whose credential has
-    /// not been adopted yet. Recording that as a finished migration would
+    /// an unreadable keychain, and no GitHub token saved under the current
+    /// service (a pre-rename install's token is no longer adopted, so it
+    /// reaches v2 once the token is re-entered). Recording that as a finished migration would
     /// freeze an unattributed portfolio behind a v2 stamp forever, so the
     /// version is left alone and the next launch tries again.
     #[test]

@@ -34,15 +34,36 @@ VALID-CERTIFICATE
 CERTIFICATE
 }
 
+local_identity_line() {
+    echo "  1) $1 \"Solador Local Development\" (CSSMERR_TP_NOT_TRUSTED)"
+}
+
 case "${1:-}" in
     find-identity)
+        # Without -v: the local-identity lookup, which must see untrusted
+        # identities. With -v: the Apple Development lookup.
+        if [[ "${2:-}" != -v ]]; then
+            case "${RUN_SCENARIO:-}" in
+                local-existing) local_identity_line DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD ;;
+                local-duplicate)
+                    local_identity_line DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+                    local_identity_line EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+                    ;;
+                *)
+                    if [[ -n "${LOCAL_STATE:-}" && -f "$LOCAL_STATE" ]]; then
+                        local_identity_line DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+                    fi
+                    ;;
+            esac
+            exit 0
+        fi
         case "${RUN_SCENARIO:-}" in
             untrusted) echo '  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Apple Development: Fixture"' ;;
             revoked-first)
                 echo '  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Apple Development: Fixture" (CSSMERR_TP_CERT_REVOKED)'
                 echo '  2) BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB "Apple Development: Fixture"'
                 ;;
-            no-identity) : ;;
+            no-identity|local-*) : ;;
             *) echo '  1) BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB "Apple Development: Fixture"' ;;
         esac
         ;;
@@ -93,6 +114,19 @@ case "${1:-}" in
                 ;;
             *) exit 2 ;;
         esac
+        ;;
+    import)
+        # Record what would have been imported, and prove it is a real,
+        # passphrase-protected PKCS#12 holding a code-signing certificate
+        # by opening it with the passphrase it was given.
+        p12="$2"
+        [[ "$3" == -P && "$5" == -T && "$6" == /usr/bin/codesign ]] || exit 2
+        printf 'import\n' >> "$IMPORT_RECORD"
+        [[ "${RUN_SCENARIO:-}" != local-create-failed ]] || exit 1
+        /usr/bin/openssl pkcs12 -in "$p12" -passin "pass:$4" -nokeys 2>/dev/null |
+            /usr/bin/openssl x509 -noout -text 2>/dev/null |
+            grep -E 'Subject:|Code Signing' >> "$IMPORT_RECORD" || exit 1
+        touch "$LOCAL_STATE"
         ;;
     *)
         exit 2
@@ -179,17 +213,31 @@ cat > "$work/bin/sleep" <<'SHIM'
 [[ "$*" == 1 ]]
 SHIM
 chmod +x "$work/bin/"* "$work/project/target/debug/solador-app"
-for scenario in untrusted sign-failed trusted no-identity verification-unavailable verification-recovered revoked-first expired; do
+LOCAL_ID="DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+
+run_scenario() {
+    local scenario="$1" run_status=0
+    RUN_SCENARIO="$scenario" LAUNCH_RECORD="$work/launched-$scenario" \
+        VERIFY_RECORD="$work/verified-$scenario" SIGN_RECORD="$work/signed-$scenario" \
+        IMPORT_RECORD="$work/imported-$scenario" LOCAL_STATE="$work/local-identity-$scenario" \
+        DEVELOPMENT_TEAM="" PATH="$work/bin:$PATH" \
+        bash "$work/project/scripts/run.sh" > "$work/run-$scenario.log" 2>&1 || run_status=$?
+    return "$run_status"
+}
+
+for scenario in untrusted sign-failed trusted no-identity verification-unavailable \
+    verification-recovered revoked-first expired local-existing local-duplicate \
+    local-create-failed; do
     launch_record="$work/launched-$scenario"
     verify_record="$work/verified-$scenario"
     sign_record="$work/signed-$scenario"
-    touch "$verify_record" "$sign_record"
+    import_record="$work/imported-$scenario"
+    touch "$verify_record" "$sign_record" "$import_record"
     run_status=0
-    RUN_SCENARIO="$scenario" LAUNCH_RECORD="$launch_record" VERIFY_RECORD="$verify_record" \
-        SIGN_RECORD="$sign_record" DEVELOPMENT_TEAM="" PATH="$work/bin:$PATH" \
-        bash "$work/project/scripts/run.sh" > "$work/run-$scenario.log" 2>&1 || run_status=$?
+    run_scenario "$scenario" || run_status=$?
     if [[ "$scenario" == untrusted || "$scenario" == sign-failed ||
-          "$scenario" == verification-unavailable || "$scenario" == expired ]]; then
+          "$scenario" == verification-unavailable || "$scenario" == expired ||
+          "$scenario" == local-duplicate ]]; then
         if [[ "$run_status" -ne 0 && ! -f "$launch_record" ]]; then
             printf 'PASS: %s stops before launching\n' "$scenario"
             pass=$((pass + 1))
@@ -208,7 +256,7 @@ for scenario in untrusted sign-failed trusted no-identity verification-unavailab
     expected_attempts=1
     diagnostic=""
     case "$scenario" in
-        no-identity) expected_attempts=0 ;;
+        no-identity|local-*) expected_attempts=0 ;;
         verification-recovered|revoked-first) expected_attempts=2 ;;
         verification-unavailable)
             expected_attempts=2
@@ -236,6 +284,15 @@ for scenario in untrusted sign-failed trusted no-identity verification-unavailab
                 fail=$((fail + 1))
             fi
             ;;
+        no-identity|local-existing)
+            if grep -Fq -- "--force --identifier solador-app --sign $LOCAL_ID " "$sign_record"; then
+                printf 'PASS: %s signs the local identity with the stable identifier\n' "$scenario"
+                pass=$((pass + 1))
+            else
+                printf 'FAIL: %s did not sign the local identity\n' "$scenario" >&2
+                fail=$((fail + 1))
+            fi
+            ;;
         *)
             if [[ ! -s "$sign_record" ]]; then
                 printf 'PASS: %s does not sign without a verified identity\n' "$scenario"
@@ -247,6 +304,58 @@ for scenario in untrusted sign-failed trusted no-identity verification-unavailab
             ;;
     esac
 done
+
+# The local identity is created only where none exists, and what is imported is
+# a code-signing certificate under the expected name.
+expect_import() {
+    local scenario="$1" expected="$2"
+    if [[ "$(grep -c '^import$' "$work/imported-$scenario" || true)" -eq "$expected" ]]; then
+        printf 'PASS: %s imports %s local identit%s\n' "$scenario" "$expected" \
+            "$([[ "$expected" -eq 1 ]] && echo y || echo ies)"
+        pass=$((pass + 1))
+    else
+        printf 'FAIL: %s import count (expected %s)\n' "$scenario" "$expected" >&2
+        fail=$((fail + 1))
+    fi
+}
+expect_import no-identity 1
+expect_import local-existing 0
+expect_import local-duplicate 0
+
+# The duplicate refusal must stop for its own reason, not any non-zero exit.
+if grep -q 'Found 2 "Solador Local Development" identities' "$work/run-local-duplicate.log"; then
+    printf 'PASS: local-duplicate names the duplicate identities\n'
+    pass=$((pass + 1))
+else
+    printf 'FAIL: local-duplicate did not name the duplicate identities\n' >&2
+    fail=$((fail + 1))
+fi
+if grep -q 'Solador Local Development' "$work/imported-no-identity" &&
+    grep -q 'Code Signing' "$work/imported-no-identity"; then
+    printf 'PASS: the created identity is a code-signing certificate under the local name\n'
+    pass=$((pass + 1))
+else
+    printf 'FAIL: the created identity is not a code-signing certificate under the local name\n' >&2
+    fail=$((fail + 1))
+fi
+
+# Once per Mac: a second run finds the identity the first one created.
+: > "$work/signed-no-identity"
+if run_scenario no-identity &&
+    grep -Fq -- "--sign $LOCAL_ID " "$work/signed-no-identity"; then
+    expect_import no-identity 1
+else
+    printf 'FAIL: a second no-identity run did not reuse the local identity\n' >&2
+    fail=$((fail + 1))
+fi
+
+if grep -Fq 'running ad-hoc signed' "$work/run-local-create-failed.log"; then
+    printf 'PASS: a failed identity creation says it is running ad-hoc\n'
+    pass=$((pass + 1))
+else
+    printf 'FAIL: a failed identity creation was silent\n' >&2
+    fail=$((fail + 1))
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

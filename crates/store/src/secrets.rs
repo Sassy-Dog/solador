@@ -29,20 +29,6 @@ use uuid::Uuid;
 /// (`KeychainHelper.serviceName`).
 pub const SERVICE: &str = "app.solador.desktop";
 
-/// The Keychain service this app used before it was renamed.
-///
-/// Every credential lived under it: the GitHub PAT, the provider tokens, every
-/// per-host agent token, and the OpenClaw device identity. A rename without a
-/// migration orphans all of them at once — and orphaned is worse than deleted,
-/// because they stay in the Keychain being useless.
-pub const LEGACY_SERVICE: &str = "com.sassydog.devcanopy";
-
-/// Account recording that the pre-rename adoption completed cleanly.
-///
-/// Its presence is the *only* thing that stops adoption running again, which
-/// is what makes a failed or partial pass retryable rather than permanent.
-const SERVICE_MIGRATION_MARKER: &str = "migrated_from_legacy_service_v1";
-
 /// The one keychain item all consolidatable text secrets live in (a JSON map
 /// keyed by [`SecretKey::account`] strings). One item means one ACL, so one
 /// "Always Allow" covers every consolidatable secret. Two keys stay per-item
@@ -72,7 +58,7 @@ pub enum SecretKey {
     /// **stored, not derived**, so this variant names only what a *newly
     /// created* account gets: the account the v1 → v2 migration mints keeps
     /// pointing at the pre-existing `github_access_token` item, so no keychain
-    /// item is ever renamed — the `LEGACY_SERVICE` hazard in miniature.
+    /// item is ever renamed — a renamed item orphans the credential in it.
     VendorToken(Uuid),
     /// Fine-grained GitHub PAT behind the Repos / GitHub Runners panels.
     GitHubAccessToken,
@@ -184,13 +170,6 @@ impl SecretKey {
 /// value. `keyring`'s own `Display` is value-free for the same reason.
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
-    /// Some accounts could not be adopted from the pre-rename service.
-    ///
-    /// Carries the account *names* only — never values, and never the reason,
-    /// which belongs to the backend error already logged. Its existence is what
-    /// withholds the completion marker, so the next launch tries again.
-    #[error("could not adopt {} credential(s) from the previous service: {}", accounts.len(), accounts.join(", "))]
-    IncompleteMigration { accounts: Vec<String> },
     #[error("credential store failed for account {account}: {source}")]
     Backend {
         account: String,
@@ -282,14 +261,6 @@ pub trait CredentialStore {
     fn migrate_legacy(&self, _keys: &[SecretKey]) -> Result<usize, SecretError> {
         Ok(0)
     }
-
-    /// Adopts credentials written under the pre-rename service. Default: none.
-    ///
-    /// # Errors
-    /// Implementations may fail on a backend error.
-    fn migrate_service(&self, _keys: &[SecretKey]) -> Result<usize, SecretError> {
-        Ok(0)
-    }
 }
 
 /// Parse the blob's JSON map. Value-free on failure by construction.
@@ -314,21 +285,6 @@ trait ItemStore {
     fn get_item(&self, account: &str) -> Result<Option<String>, SecretError>;
     fn set_item(&self, account: &str, value: &str) -> Result<(), SecretError>;
     fn delete_item(&self, account: &str) -> Result<(), SecretError>;
-
-    /// The same item as [`ItemStore::get_item`], **without decoding it**.
-    ///
-    /// Service migration moves items it must not interpret:
-    /// [`SecretKey::OpenClawDeviceKey`] is raw key material, deliberately
-    /// unencoded so this app and the original share one device identity. Read
-    /// through the string API it is not "absent" and not "corrupt" — `keyring`
-    /// answers `Err(BadEncoding)`, which
-    /// [`route_migrate_service`] would otherwise record as a failed
-    /// credential. Text round-trips through bytes losslessly, so the byte pair
-    /// is what the migration uses for *every* account rather than special-casing
-    /// one.
-    fn get_item_bytes(&self, account: &str) -> Result<Option<Vec<u8>>, SecretError>;
-    /// See [`ItemStore::get_item_bytes`].
-    fn set_item_bytes(&self, account: &str, value: &[u8]) -> Result<(), SecretError>;
 }
 
 /// Reads and parses the consolidated blob item via any [`ItemStore`].
@@ -378,111 +334,6 @@ fn non_consolidatable_accounts() -> Vec<String> {
 /// dropping it from this list would leave a stale credential sitting in the
 /// consolidated item forever with nothing left to remove it.
 const RETIRED_AZURE_SAS_ACCOUNT: &str = "azure_cost_sas_url";
-
-/// Copies every credential from a pre-rename service into this one.
-///
-/// Generic over [`ItemStore`] on both sides so the whole thing is testable
-/// without an OS keychain — the same reason the routing below is.
-///
-/// **Copy, never move.** The old entries stay where they are: an operator who
-/// runs an older build afterwards still finds their credentials, and deleting
-/// somebody's secrets as a side effect of a rename is not a trade this code
-/// gets to make on their behalf.
-///
-/// **Once, and never over the top.** If the destination holds anything at all
-/// this returns 0 without reading further. A second pass must not resurrect a
-/// credential the operator has since cleared — that is the failure mode where
-/// a "helpful" migration hands back a revoked token forever.
-fn route_migrate_service<S: ItemStore>(
-    legacy: &S,
-    current: &S,
-    keys: &[SecretKey],
-) -> Result<usize, SecretError> {
-    // A positive marker, not "does the destination hold anything".
-    //
-    // The obvious guard -- treat any present account as proof this already
-    // ran -- is wrong in a way that costs the operator every credential they
-    // have. `route_migrate_legacy` writes the consolidated blob even when it
-    // copied nothing, so a *failed* adoption followed by consolidation leaves
-    // `secrets_v1` = `{}` sitting in the destination. That looks exactly like
-    // "already migrated", and the adoption never runs again. One denied
-    // Keychain prompt on first launch -- and a renamed binary prompts for
-    // every legacy item it touches -- would orphan the lot.
-    if current.get_item(SERVICE_MIGRATION_MARKER)?.is_some() {
-        return Ok(0);
-    }
-
-    let mut accounts: Vec<String> = vec![BLOB_ACCOUNT.to_owned()];
-    accounts.extend(keys.iter().map(SecretKey::account));
-    // The device key, explicitly. `static_migration_keys` leaves it out on
-    // purpose -- it never enters the blob -- so relying on the caller's list
-    // silently drops the one credential a human cannot re-type: losing it
-    // means re-pairing the OpenClaw device identity from scratch.
-    accounts.push(SecretKey::OpenClawDeviceKey.account());
-    accounts.sort();
-    accounts.dedup();
-
-    let mut copied = 0;
-    let mut failed = Vec::new();
-    for account in &accounts {
-        // The destination always wins, so a retry after a partial pass fills
-        // the gaps instead of clobbering what already arrived -- and a
-        // credential the operator set up by hand is never overwritten.
-        //
-        // BYTES, not `get_item`. This probe only asks "is it already here?",
-        // and asking it through the string API answered `Err(BadEncoding)` for
-        // the one account that is not text -- so `openclaw_device_key`, sitting
-        // safely in the destination, was recorded as a FAILED credential on
-        // every launch. That kept the marker down permanently, and with the
-        // marker down adoption re-runs forever: the warning was cosmetic, but
-        // re-running is not, because it re-adopts a credential the operator
-        // deliberately cleared in Settings (the resurrection the marker exists
-        // to prevent). See issue #281.
-        match current.get_item_bytes(account) {
-            Ok(Some(_)) => continue,
-            Ok(None) => {}
-            Err(_) => {
-                failed.push(account.clone());
-                continue;
-            }
-        }
-        // Keep going past a failure rather than aborting the pass.
-        //
-        // Aborting looks careful and is not: accounts are copied in sorted
-        // order, so one permanently-unreadable item holds every account behind
-        // it hostage *forever*. macOS remembers a denied Keychain prompt, so
-        // "permanently unreadable" is a state one misclick produces -- and the
-        // retry then fails identically every launch, silently, never reaching
-        // the rest. Retrying an operation that fails the same way every time is
-        // not recovery.
-        // Bytes on both halves, for the same reason as the probe above: the
-        // copy must move the device key without interpreting it, and text is
-        // carried by bytes losslessly so nothing here needs a special case.
-        match legacy.get_item_bytes(account) {
-            Ok(Some(value)) => match current.set_item_bytes(account, &value) {
-                Ok(()) => copied += 1,
-                Err(_) => failed.push(account.clone()),
-            },
-            Ok(None) => {}
-            Err(_) => failed.push(account.clone()),
-        }
-    }
-
-    if !failed.is_empty() {
-        // No marker: the pass was incomplete, so the next launch retries and
-        // picks up anything that has since become readable. Account names,
-        // never values -- the module's value-free rule applies to its own
-        // diagnostics.
-        return Err(SecretError::IncompleteMigration { accounts: failed });
-    }
-
-    // Written only after a clean pass. Any error above propagates *without*
-    // the marker, so the next launch retries rather than sealing the failure
-    // in permanently. This is also what stops a cleared credential being
-    // resurrected later: once the marker is down, adoption never runs again.
-    current.set_item(SERVICE_MIGRATION_MARKER, "1")?;
-    Ok(copied)
-}
 
 /// [`CredentialStore::secret`]'s routing, generic over [`ItemStore`] so it is
 /// testable without the OS. `consolidate` is a parameter rather than read
@@ -731,26 +582,6 @@ impl ItemStore for KeyringStore {
             }),
         }
     }
-
-    fn get_item_bytes(&self, account: &str) -> Result<Option<Vec<u8>>, SecretError> {
-        match self.entry(account)?.get_secret() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(source) => Err(SecretError::Backend {
-                account: account.to_owned(),
-                source,
-            }),
-        }
-    }
-
-    fn set_item_bytes(&self, account: &str, value: &[u8]) -> Result<(), SecretError> {
-        self.entry(account)?
-            .set_secret(value)
-            .map_err(|source| SecretError::Backend {
-                account: account.to_owned(),
-                source,
-            })
-    }
 }
 
 impl CredentialStore for KeyringStore {
@@ -786,25 +617,6 @@ impl CredentialStore for KeyringStore {
         self.entry(&account)?
             .set_secret(value)
             .map_err(|source| SecretError::Backend { account, source })
-    }
-
-    fn migrate_service(&self, keys: &[SecretKey]) -> Result<usize, SecretError> {
-        if self.service == LEGACY_SERVICE {
-            return Ok(0);
-        }
-        let legacy = KeyringStore::with_service(LEGACY_SERVICE);
-        let copied = route_migrate_service(&legacy, self, keys)?;
-        if copied > 0 {
-            // Count only, never account names or values — the module's
-            // value-free rule applies to its own progress reports.
-            let noun = if copied == 1 {
-                "credential"
-            } else {
-                "credentials"
-            };
-            eprintln!("adopted {copied} {noun} from the pre-rename keychain service");
-        }
-        Ok(copied)
     }
 
     fn migrate_legacy(&self, keys: &[SecretKey]) -> Result<usize, SecretError> {
@@ -902,316 +714,11 @@ mod tests {
     use super::*;
 
     /// The service name is not a detail: it is the address of every credential
-    /// this app has. Pinned in a test so moving it is always a deliberate act
-    /// with a migration attached — which is exactly how it moved last time.
-    ///
-    /// It used to have to match the original app's keychain helper, and no
-    /// longer does. That app is frozen, still reads the old service, and will
-    /// keep finding its own credentials there because this migration *copies*
-    /// rather than moves.
+    /// this app has. Pinned in a test so moving it is always a deliberate act —
+    /// a move orphans every stored credential, and nothing adopts them any more.
     #[test]
-    fn the_service_is_the_renamed_one_and_the_old_name_is_still_known() {
+    fn the_service_name_is_pinned() {
         assert_eq!(SERVICE, "app.solador.desktop");
-        assert_eq!(
-            LEGACY_SERVICE, "com.sassydog.devcanopy",
-            "the migration cannot find what it cannot name"
-        );
-        assert_ne!(SERVICE, LEGACY_SERVICE);
-    }
-
-    // MARK: - Adopting the pre-rename service
-
-    /// The whole point: a rename must not orphan every credential the operator
-    /// has. Orphaned is worse than deleted — the secrets stay in the Keychain,
-    /// being useless.
-    #[test]
-    fn a_rename_adopts_every_credential_from_the_old_service() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item("github_access_token", "ghp_x")
-            .expect("seed");
-        legacy.set_item("neon_api_key", "napi_x").expect("seed");
-        legacy
-            .set_item("openclaw_device_key", "seed-bytes")
-            .expect("seed");
-
-        let keys = SecretKey::static_migration_keys();
-        let copied = route_migrate_service(&legacy, &current, &keys).expect("migrate");
-
-        assert_eq!(copied, 3);
-        assert_eq!(
-            current.get_item("github_access_token").expect("read"),
-            Some("ghp_x".to_owned())
-        );
-        // The device identity above all: losing it means re-pairing with the
-        // OpenClaw gateway, which is the one credential a human cannot simply
-        // re-type.
-        assert_eq!(
-            current.get_item("openclaw_device_key").expect("read"),
-            Some("seed-bytes".to_owned())
-        );
-    }
-
-    /// Copy, never move. An operator who runs an older build afterwards still
-    /// finds their credentials; deleting somebody's secrets as a side effect of
-    /// a rename is not this code's call to make.
-    #[test]
-    fn adoption_leaves_the_old_service_intact() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item("github_access_token", "ghp_x")
-            .expect("seed");
-
-        route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("migrate");
-
-        assert_eq!(
-            legacy.get_item("github_access_token").expect("read"),
-            Some("ghp_x".to_owned())
-        );
-    }
-
-    /// The failure mode this guards is specific and nasty: a migration that
-    /// runs twice hands back a credential the operator has since *cleared*,
-    /// resurrecting a revoked token on every launch forever.
-    #[test]
-    fn adoption_never_writes_over_a_credential_that_is_already_there() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item("github_access_token", "ghp_old")
-            .expect("seed");
-        current
-            .set_item("github_access_token", "ghp_current")
-            .expect("seed");
-
-        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("migrate");
-
-        assert_eq!(copied, 0, "a populated service is never migrated into");
-        assert_eq!(
-            current.get_item("github_access_token").expect("read"),
-            Some("ghp_current".to_owned()),
-            "the live credential must win"
-        );
-    }
-
-    /// The inverse of what this used to assert, and the reason the guard moved
-    /// to a marker: a blob is *not* proof of adoption. `route_migrate_legacy`
-    /// writes one even having copied nothing, so treating its presence as
-    /// "done" is what sealed a failed pass in permanently.
-    #[test]
-    fn a_blob_alone_is_not_proof_that_adoption_ran() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy.set_item("neon_api_key", "napi_old").expect("seed");
-        current
-            .set_item(BLOB_ACCOUNT, "{}")
-            .expect("seed an empty blob");
-
-        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("migrate");
-
-        assert_eq!(copied, 1, "the credential must still be adopted");
-    }
-
-    /// A genuine first install has nothing to adopt, and must not be an error.
-    #[test]
-    fn a_fresh_install_adopts_nothing_quietly() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("migrate");
-        assert_eq!(copied, 0);
-    }
-
-    /// Deliberately *not* copied. On a healthy pre-rename install the SAS was
-    /// per-item by design (externally written, consolidation-exempt), so
-    /// copying it lands a live credential under an account that no `SecretKey`
-    /// spells — nothing can read it and nothing can delete it. The blob copy
-    /// already carries it wherever the scrub can actually reach it.
-    #[test]
-    fn the_retired_azure_account_is_not_copied_into_an_account_nothing_can_reach() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item(RETIRED_AZURE_SAS_ACCOUNT, "https://acct...?sig=x")
-            .expect("seed");
-
-        route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("migrate");
-
-        assert!(
-            current
-                .get_item(RETIRED_AZURE_SAS_ACCOUNT)
-                .expect("read")
-                .is_none(),
-            "an orphaned credential at rest is worse than a deleted one"
-        );
-    }
-
-    /// The defect this whole rework exists for. `route_migrate_legacy` writes
-    /// the consolidated blob even when it copied nothing, so a failed adoption
-    /// followed by consolidation used to leave `secrets_v1` = `{}` behind —
-    /// which the old guard read as "already migrated", permanently. One denied
-    /// Keychain prompt orphaned every credential the operator had.
-    #[test]
-    fn a_failed_pass_is_retried_and_is_not_sealed_by_an_empty_blob() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item("github_access_token", "ghp_x")
-            .expect("seed");
-        legacy.set_item("neon_api_key", "napi_x").expect("seed");
-        legacy.poison_reads("neon_api_key");
-
-        let keys = SecretKey::static_migration_keys();
-        assert!(
-            route_migrate_service(&legacy, &current, &keys).is_err(),
-            "a backend failure must surface, not be swallowed"
-        );
-        assert!(
-            current
-                .get_item(SERVICE_MIGRATION_MARKER)
-                .expect("read")
-                .is_none(),
-            "a failed pass must not mark itself done"
-        );
-
-        // Consolidation then runs and writes an empty blob, exactly as it does
-        // on a genuine first launch.
-        write_blob(&current, &std::collections::BTreeMap::new()).expect("seed blob");
-
-        legacy.unpoison("neon_api_key");
-        route_migrate_service(&legacy, &current, &keys).expect("retry");
-        // The end state, not the count: the first pass got as far as the
-        // alphabetically-earlier account before dying, so the retry copies
-        // only what is missing. What matters is that nothing is left behind.
-        for (account, value) in [("github_access_token", "ghp_x"), ("neon_api_key", "napi_x")] {
-            assert_eq!(
-                current.get_item(account).expect("read"),
-                Some(value.to_owned()),
-                "{account} was not adopted by the retry"
-            );
-        }
-        assert!(
-            current
-                .get_item(SERVICE_MIGRATION_MARKER)
-                .expect("read")
-                .is_some(),
-            "a clean pass marks itself done"
-        );
-    }
-
-    /// The defect this exists for, in the exact shape it shipped in.
-    ///
-    /// Accounts are copied in sorted order, and `secrets_v1` sorts *before*
-    /// `sentry_usage_token`. macOS remembers a denied Keychain prompt, so a
-    /// single misclick during the rename's one-time re-authorisation made that
-    /// blob permanently unreadable — and an abort-on-first-error copy then
-    /// failed at it on every launch, silently, never reaching the accounts
-    /// behind it. The Sentry token sat one position away for good.
-    ///
-    /// It is also the account least worth having: consolidation copies
-    /// credentials into the blob without deleting the per-item entries, so the
-    /// per-item ones already carry everything.
-    #[test]
-    fn one_unreadable_account_does_not_block_the_accounts_sorted_after_it() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item("github_access_token", "ghp_x")
-            .expect("seed");
-        legacy.set_item(BLOB_ACCOUNT, "{...}").expect("seed");
-        legacy
-            .set_item("sentry_usage_token", "sntryu_x")
-            .expect("seed");
-        // Not a transient failure: a remembered Deny fails the same way for
-        // ever, which is why retrying alone was never going to fix this.
-        legacy.poison_reads(BLOB_ACCOUNT);
-
-        let keys = SecretKey::static_migration_keys();
-        let result = route_migrate_service(&legacy, &current, &keys);
-
-        assert!(
-            result.is_err(),
-            "an incomplete pass must not report success"
-        );
-        assert!(
-            current
-                .get_item(SERVICE_MIGRATION_MARKER)
-                .expect("read")
-                .is_none(),
-            "and must not mark itself done, so the next launch retries"
-        );
-        // The point: everything readable came across, including the account
-        // that sorts after the poisoned one.
-        assert_eq!(
-            current.get_item("sentry_usage_token").expect("read"),
-            Some("sntryu_x".to_owned()),
-            "an account behind the failure must still be adopted"
-        );
-        assert_eq!(
-            current.get_item("github_access_token").expect("read"),
-            Some("ghp_x".to_owned())
-        );
-    }
-
-    /// A pass that died halfway leaves some accounts across and some behind.
-    /// The retry has to complete it without clobbering what already arrived.
-    #[test]
-    fn a_partial_pass_is_completed_rather_than_restarted() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item("github_access_token", "ghp_x")
-            .expect("seed");
-        legacy.set_item("neon_api_key", "napi_x").expect("seed");
-        // Already across from the pass that died.
-        current
-            .set_item("github_access_token", "ghp_x")
-            .expect("seed");
-
-        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("migrate");
-
-        assert_eq!(copied, 1, "only the missing one is copied");
-        assert_eq!(
-            current.get_item("neon_api_key").expect("read"),
-            Some("napi_x".to_owned())
-        );
-    }
-
-    /// Once the marker is down, adoption never runs again — which is what
-    /// stops a credential the operator has since *cleared* being handed back
-    /// on the next launch, forever.
-    #[test]
-    fn a_completed_migration_never_resurrects_a_cleared_credential() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        legacy
-            .set_item("github_access_token", "ghp_revoked")
-            .expect("seed");
-
-        route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("first pass");
-        current
-            .delete_item("github_access_token")
-            .expect("operator clears it");
-
-        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("second pass");
-
-        assert_eq!(copied, 0);
-        assert!(
-            current
-                .get_item("github_access_token")
-                .expect("read")
-                .is_none(),
-            "a revoked token must stay cleared"
-        );
     }
 
     #[test]
@@ -1350,11 +857,9 @@ mod tests {
 
     /// `VendorToken` is `HostToken`'s shape, and must stay out of the static
     /// list for `HostToken`'s reason: a uuid-parameterized account cannot be
-    /// enumerated at compile time. That list is also what the pre-rename
-    /// adoption walks, so this asserts `github_access_token` is still in it —
-    /// the account the v1 → v2 migration keeps pointing at. Since #281 writes
-    /// the completion marker on a clean pass, adoption does not run twice to
-    /// catch anything dropped from the list.
+    /// enumerated at compile time. That list is also what consolidation
+    /// walks, so this asserts `github_access_token` is still in it — the
+    /// account the v1 → v2 migration keeps pointing at.
     #[test]
     fn vendor_tokens_are_parameterized_consolidatable_and_not_static() {
         let id = Uuid::new_v4();
@@ -1616,7 +1121,11 @@ mod tests {
         }
 
         fn set_item(&self, account: &str, value: &str) -> Result<(), SecretError> {
-            self.set_item_bytes(account, value.as_bytes())
+            self.items
+                .lock()
+                .expect("fake item store poisoned")
+                .insert(account.to_owned(), value.as_bytes().to_vec());
+            Ok(())
         }
 
         fn delete_item(&self, account: &str) -> Result<(), SecretError> {
@@ -1626,112 +1135,6 @@ mod tests {
                 .remove(account);
             Ok(())
         }
-
-        fn get_item_bytes(&self, account: &str) -> Result<Option<Vec<u8>>, SecretError> {
-            if self
-                .poisoned
-                .lock()
-                .expect("poison set poisoned")
-                .contains(account)
-            {
-                return Err(SecretError::Backend {
-                    account: account.to_owned(),
-                    source: keyring::Error::NoStorageAccess(Box::new(std::io::Error::other(
-                        "simulated locked keychain",
-                    ))),
-                });
-            }
-            Ok(self
-                .items
-                .lock()
-                .expect("fake item store poisoned")
-                .get(account)
-                .cloned())
-        }
-
-        fn set_item_bytes(&self, account: &str, value: &[u8]) -> Result<(), SecretError> {
-            self.items
-                .lock()
-                .expect("fake item store poisoned")
-                .insert(account.to_owned(), value.to_vec());
-            Ok(())
-        }
-    }
-
-    /// 32 bytes that are deliberately not valid UTF-8 — the shape of the real
-    /// Ed25519 device key.
-    fn device_key_material() -> Vec<u8> {
-        let seed: Vec<u8> = (0u8..32)
-            .map(|i| i.wrapping_mul(7).wrapping_add(200))
-            .collect();
-        assert!(
-            String::from_utf8(seed.clone()).is_err(),
-            "the fixture must not accidentally be valid UTF-8"
-        );
-        seed
-    }
-
-    /// **The #281 regression.** A device key already sitting in the destination
-    /// is *migrated*, and must be reported as such.
-    ///
-    /// Before the fix the destination-wins probe went through the string API,
-    /// which answers `Err(BadEncoding)` for raw key material — so a credential
-    /// that was safely in place was recorded as a FAILED adoption, on every
-    /// launch, forever. This asserts the two consequences that actually hurt:
-    /// no error, and **the marker goes down**, because it is the marker that
-    /// stops adoption re-running and resurrecting credentials the operator
-    /// cleared in Settings.
-    #[test]
-    fn a_binary_device_key_already_in_the_destination_is_not_a_failed_adoption() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        let account = SecretKey::OpenClawDeviceKey.account();
-
-        // Both sides hold it, which is the real machine's state after a
-        // previous pass copied it.
-        legacy
-            .set_item_bytes(&account, &device_key_material())
-            .expect("seed legacy");
-        current
-            .set_item_bytes(&account, &device_key_material())
-            .expect("seed destination");
-
-        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("a device key already in place must not fail the pass");
-
-        assert_eq!(copied, 0, "it was already there, so nothing was copied");
-        assert!(
-            current
-                .get_item(SERVICE_MIGRATION_MARKER)
-                .expect("marker read")
-                .is_some(),
-            "a clean pass must write the marker — without it adoption re-runs \
-             every launch and re-adopts cleared credentials"
-        );
-    }
-
-    /// The other half: when the destination does **not** have it, the copy
-    /// itself must carry raw bytes through unchanged. Reading the legacy item
-    /// as a string would have failed here for the same reason.
-    #[test]
-    fn the_device_key_is_copied_byte_for_byte_when_the_destination_lacks_it() {
-        let legacy = FakeItemStore::default();
-        let current = FakeItemStore::default();
-        let account = SecretKey::OpenClawDeviceKey.account();
-        legacy
-            .set_item_bytes(&account, &device_key_material())
-            .expect("seed legacy");
-
-        let copied = route_migrate_service(&legacy, &current, &SecretKey::static_migration_keys())
-            .expect("the copy must carry key material");
-
-        assert_eq!(copied, 1);
-        assert_eq!(
-            current.get_item_bytes(&account).expect("read back"),
-            Some(device_key_material()),
-            "the device key must survive the move byte for byte — a lossy \
-             transcription re-pairs the OpenClaw identity from scratch"
-        );
     }
 
     #[test]

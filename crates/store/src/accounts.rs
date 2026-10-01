@@ -50,8 +50,8 @@ pub struct VendorAccount {
     /// the pre-existing `github_access_token` item, so that migration performs
     /// **no credential-store writes at all**; only accounts created afterwards
     /// get a `vendor-<uuid>` item of their own. Renaming a keychain item
-    /// during a store migration is the `LEGACY_SERVICE` hazard in miniature:
-    /// orphaned is worse than deleted.
+    /// during a store migration orphans the credential in it, and orphaned
+    /// is worse than deleted.
     pub secret_account: String,
     /// GitHub organizations whose self-hosted runners this account watches,
     /// each polled with this account's own token.
