@@ -815,7 +815,9 @@ reuse-pushes-nothing contract, `get-build-number.sh`, and the release
 workflows' tag assertion from #404; ~160 cases, run under bash 5, macOS
 `/bin/bash` 3.2 and Git Bash in CI), `scripts/run-test.sh` (`./dev run`'s
 signing-identity choice: the exact-identity Apple certificate trust gate, and
-the self-signed local identity used where no Apple certificate is installed),
+the warned ad-hoc run where no Apple Development certificate is installed —
+only an Apple-issued certificate stops the keychain prompts; see app/README.md,
+"Signing for ./dev run"),
 `scripts/signing-identity-test.sh`
 (#474: `log_error` and `log_warning` write to stderr, so a refusal inside a
 `$(fn)` caller such as `resolve_signing_identity` is seen, not captured),

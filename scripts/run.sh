@@ -99,8 +99,17 @@ fi
 # so every rebuild re-prompts for every item (4+ prompts per run). Re-sign with
 # the stable Apple Development identity (the team `config.sh` resolves, the
 # same one the original Debug build uses) so the ACLs keep matching across
-# rebuilds. Where no Apple Development certificate is installed, a self-signed
-# local identity stands in (below). macOS only.
+# rebuilds. macOS only.
+#
+# It has to be an APPLE-ISSUED certificate. A keychain item's access list
+# checks a partition list before its trusted apps, and the partition an app
+# matches is `teamid:<TEAM>` for a team-signed binary but `cdhash:<hash>` for
+# anything else — a self-signed identity included. A cdhash changes on every
+# relink, so without a team the partition check misses on every rebuild and
+# macOS asks for the keychain password again, whatever the trusted-apps entry
+# says. Measured 2026-10-01: a self-signed build (#481) re-prompted; a rebuilt
+# Apple Development build with a different CalVer read every credential with
+# no prompt, its partition list holding the team entry.
 if [[ "$(uname -s)" == "Darwin" ]]; then
     CODESIGN_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
     SIGN_LINES="$(printf '%s\n' "$CODESIGN_IDENTITIES" | grep -F "Apple Development" || true)"
@@ -134,26 +143,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     done <<< "$SIGN_LINES"
     # No Apple Development certificate at all (a Mac with only the Command
     # Line Tools has none, and nothing here creates one the way xcodebuild's
-    # automatic signing does): sign with a self-signed local identity
-    # instead, created once per Mac. See LOCAL_SIGNING_IDENTITY in lib.sh.
-    #
-    # Two of them is refused like any ambiguous identity. Failing to create
-    # one degrades to ad-hoc, loudly — that only costs prompts, and nothing
-    # about the Keychain's existing grants changes.
+    # automatic signing does): run ad-hoc, and say what that costs and how to
+    # end it. Nothing short of an Apple-issued certificate stops the prompts
+    # (see the partition note above), so nothing else is attempted.
     if [[ -z "$SIGN_LINES" ]]; then
-        if ! SIGN_ID="$(local_signing_identity)"; then
-            log_error "The app was not launched, so its saved credentials keep their existing access."
-            exit 1
-        fi
-        if [[ -z "$SIGN_ID" ]]; then
-            log_info "No Apple Development certificate; creating the self-signed \"$LOCAL_SIGNING_IDENTITY\" signing identity (once per Mac)..."
-            if create_local_signing_identity; then
-                SIGN_ID="$(local_signing_identity)" || exit 1
-            fi
-        fi
-        if [[ -z "$SIGN_ID" ]]; then
-            log_warning "No signing identity available; running ad-hoc signed, so macOS will prompt for each stored credential on every rebuild."
-        fi
+        log_warning "No Apple Development certificate in the keychain; running ad-hoc signed. macOS will ask for your keychain password for each stored credential on every rebuild. Install one to make it once-only: see \"Signing for ./dev run\" in app/README.md."
     fi
     if [[ -n "$SIGN_LINES" && -z "$SIGN_ID" ]]; then
         log_error "Could not verify an installed development signing identity. See the verification errors above; the app was not launched, so its saved credentials keep their existing access."

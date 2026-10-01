@@ -83,83 +83,6 @@ apple_certificate_is_usable() {
     return 1
 }
 
-# The self-signed identity `./dev run` signs with when no Apple Development
-# certificate is installed. What Keychain ACLs bind to is the designated
-# requirement, and for this identity that is `identifier "solador-app" and
-# certificate leaf = H"<sha1>"` — the same on every rebuild, so "Always Allow"
-# survives a relink the way it does under an Apple certificate. Ad-hoc signing
-# binds to the cdhash instead, which every relink changes.
-#
-# It is never trusted, and does not need to be: codesign signs with an
-# untrusted identity, and the ACL match is a requirement check, not a trust
-# evaluation. Leaving it untrusted means nothing on this machine will accept
-# it as anything but a stable name for a local build.
-LOCAL_SIGNING_IDENTITY="Solador Local Development"
-
-# Prints the SHA-1 of the one local signing identity, or nothing when there
-# is none. Two is refused rather than resolved by picking the first: whichever
-# one was not picked is what the existing ACLs may be bound to.
-#
-# Without -v: an untrusted identity appears only in the "Matching" section.
-# A trusted one appears in both, hence the sort -u.
-local_signing_identity() {
-    local ids count
-    ids="$(security find-identity -p codesigning 2>/dev/null |
-        awk -v name="\"$LOCAL_SIGNING_IDENTITY\"" 'index($0, name) { print $2 }' |
-        sort -u)"
-    count="$(printf '%s' "$ids" | grep -c . || true)"
-    if [[ "$count" -gt 1 ]]; then
-        printf 'Found %s "%s" identities in the Keychain; delete all but one in Keychain Access.\n' \
-            "$count" "$LOCAL_SIGNING_IDENTITY" >&2
-        return 1
-    fi
-    [[ -z "$ids" ]] || printf '%s\n' "$ids"
-}
-
-# Creates the local signing identity in the default (login) Keychain.
-#
-# /usr/bin/openssl, not whatever is first on PATH: macOS's LibreSSL writes a
-# PKCS#12 `security import` reads, and Homebrew's OpenSSL 3 defaults to a
-# cipher it cannot. The key exists on disk only inside a private temp dir for
-# the length of the import, removed by the subshell's EXIT trap even when the
-# run is interrupted.
-#
-# -T lets codesign use the key without a prompt. That also means any process
-# running as this user can sign with it, and so satisfy the dev build's
-# designated requirement and read what was granted "Always Allow". That is the
-# same exposure an Xcode-managed Apple Development key already has, and it
-# needs code execution as this user to exploit.
-#
-# Tool output is captured rather than discarded, and printed on failure, so a
-# creation that keeps failing says why instead of degrading to ad-hoc quietly.
-create_local_signing_identity() {
-    local dir passphrase output status=0
-    dir="$(mktemp -d)" || return 1
-    passphrase="$(/usr/bin/openssl rand -hex 16)" || { rm -rf "$dir"; return 1; }
-    output="$(
-        exec 2>&1
-        trap 'rm -rf "$dir"' EXIT
-        trap 'exit 130' INT TERM
-        umask 077
-        /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-            -subj "/CN=$LOCAL_SIGNING_IDENTITY" \
-            -addext "basicConstraints=critical,CA:false" \
-            -addext "keyUsage=critical,digitalSignature" \
-            -addext "extendedKeyUsage=critical,codeSigning" \
-            -keyout "$dir/key.pem" -out "$dir/cert.pem" &&
-            /usr/bin/openssl pkcs12 -export -name "$LOCAL_SIGNING_IDENTITY" \
-                -inkey "$dir/key.pem" -in "$dir/cert.pem" \
-                -passout "pass:$passphrase" -out "$dir/identity.p12" &&
-            security import "$dir/identity.p12" -P "$passphrase" -T /usr/bin/codesign
-    )" || status=$?
-    rm -rf "$dir"
-    if [[ "$status" -ne 0 ]]; then
-        printf 'Could not create the "%s" signing identity:\n%s\n' \
-            "$LOCAL_SIGNING_IDENTITY" "$output" >&2
-    fi
-    return "$status"
-}
-
 # Ensure we're in the project root
 ensure_project_root() {
     if [[ ! -f "Cargo.toml" || ! -d "app/src-tauri" ]]; then
@@ -202,5 +125,4 @@ ensure_main_branch() {
 export -f color_red color_green color_yellow color_blue color_cyan color_gray
 export -f log_info log_success log_warning log_error log_debug
 export -f apple_certificate_is_usable
-export -f local_signing_identity create_local_signing_identity
 export -f get_current_branch ensure_main_branch

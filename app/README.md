@@ -1987,21 +1987,62 @@ development identities are installed but none passes verification, or signing
 fails, the launcher stops before opening the app — the app was not launched,
 so its saved credentials keep their existing access.
 
-A Mac with **no** Apple Development certificate — one with only the Command
-Line Tools has none, and nothing here provisions one the way `xcodebuild`'s
-automatic signing does — gets a self-signed `Solador Local Development`
-identity instead, created in the login Keychain on the first `./dev run` and
-reused after that (`LOCAL_SIGNING_IDENTITY` in `scripts/lib.sh`). It is left
-untrusted on purpose: codesign signs with it anyway, and the designated
-requirement it produces (`identifier "solador-app" and certificate leaf =
-H"…"`) is the same on every rebuild, which is all a Keychain ACL matches
-against. The first signed run prompts once per stored item; answer **Always
-Allow** and later rebuilds are silent. Two identities under that name are
-refused, like any ambiguous identity; failing to create one falls back to an
-ad-hoc run with a warning. Non-macOS machines keep the unsigned bare-cargo
-behaviour. `scripts/run-test.sh` drives every one of those paths against a
-stubbed `security`, and asserts the identity that gets signed is the one that
-verified.
+A Mac with **no** Apple Development certificate runs ad-hoc signed, with a
+warning that says what that costs: macOS asks for the keychain password for
+each stored credential on every rebuild. Non-macOS machines keep the unsigned
+bare-cargo behaviour. `scripts/run-test.sh` drives every one of those paths
+against a stubbed `security`, and asserts the identity that gets signed is the
+one that verified.
+
+### Signing for ./dev run
+
+**It has to be an Apple-issued certificate; a self-signed one does not stop
+the prompts.** A keychain item's access list checks a *partition list* before
+its trusted apps, and the partition an app belongs to is `teamid:<TEAM>` when
+an Apple team signed it, but `cdhash:<hash>` for anything else — a
+self-signed identity included. A cdhash changes on every relink, so without a
+team the partition check misses on every rebuild and macOS asks for the
+keychain password again, whatever the trusted-apps entry says. #481 shipped a
+self-signed fallback on the opposite assumption; it was measured on
+2026-10-01 to re-prompt on every rebuild and has been removed. The same day,
+a rebuilt Apple Development build with a different CalVer read every
+credential with no prompt, its items' partition lists holding
+`teamid:<team>`.
+
+A Mac with only the Command Line Tools has no Apple Development certificate,
+and nothing here creates one the way `xcodebuild`'s automatic signing does.
+Get one either way:
+
+- **Xcode:** Settings → Accounts → add the team's Apple ID → Manage
+  Certificates → **+** → *Apple Development*.
+- **Command line, no Xcode:**
+  1. Generate an RSA key and a CSR locally with `/usr/bin/openssl`. The key
+     never leaves the Mac.
+  2. Have the App Store Connect API issue a certificate of type `DEVELOPMENT`
+     (`POST /v1/certificates`), using a team API key (Doppler `_stores/apple`:
+     `ASC_API_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY_BASE64`).
+  3. Install Apple's *WWDR G3* intermediate
+     (`https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer`) into the
+     login keychain. A Command-Line-Tools Mac lacks it, and without it the
+     identity does not list as valid.
+  4. Import the key and the issued certificate as one identity with
+     `security import … -T /usr/bin/codesign`. `-T` lets codesign use the key
+     without a prompt, which also means any process running as you can sign
+     a binary that satisfies the team partition, and so read the credentials
+     you granted **Always Allow**. That is the same exposure an
+     Xcode-managed key has, and it needs code execution as you. Leave `-T`
+     off to get one codesign prompt instead.
+
+  `security find-identity -v -p codesigning` should then list `Apple
+  Development: …`.
+
+The first `./dev run` after that asks once per stored credential, and the
+password prompt is expected: it is macOS adding the team to each item's
+partition list. Answer **Always Allow**; rebuilds are silent from then on.
+
+A Mac that ran a build of #481 may still hold an unused `Solador Local
+Development` identity in its login keychain. Nothing reads it any more, and it
+can be deleted in Keychain Access.
 
 The bare command still works and is what everything non-interactive uses:
 
