@@ -28,7 +28,7 @@ serde_json = { workspace = true }
 # taking the dependency: this crate must refuse to publish a feed entry the app
 # would then refuse to install, and a second implementation of the check could
 # disagree with the one that actually runs on an operator's machine.
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 # The Tauri toolchain wraps minisign in base64 twice over — the `.pub` file and
 # the `.sig` file are each base64 of the minisign text form — and the plugin
 # undoes exactly that before verifying. Same pin it resolves through, so one
