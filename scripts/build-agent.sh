@@ -179,7 +179,14 @@ ensure_zigbuild() {
 
     command_exists python3 || { log_error "python3 not found — needed to install the pinned cargo-zigbuild $CARGO_ZIGBUILD_VERSION"; exit 1; }
     log_info "Installing cargo-zigbuild $CARGO_ZIGBUILD_VERSION (+ ziglang) into $ZIG_VENV"
-    python3 -m venv "$ZIG_VENV"
+    # `--clear`: reaching here means the venv is absent OR unusable, and an
+    # unusable one must be rebuilt, not reused. CI's rust-cache restores
+    # `target/` — this venv included — and a restore that brought back
+    # `*.dist-info` with emptied metadata made pip skip every package
+    # ("invalid metadata entry 'name'") while `python3 -m venv` without
+    # `--clear` kept the broken tree, so the reinstall left
+    # `bin/cargo-zigbuild` missing on every run that restored that cache.
+    python3 -m venv --clear "$ZIG_VENV"
     "$ZIG_VENV/bin/pip" install --quiet --upgrade pip
     "$ZIG_VENV/bin/pip" install --quiet "cargo-zigbuild==$CARGO_ZIGBUILD_VERSION"
 
