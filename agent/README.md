@@ -1103,7 +1103,9 @@ disabled — `disable` fails without the file) and the run is not reported as
 the manager merely references — a dangling `*.wants` link, or the update
 oneshot's own `After=solador-agent.service` — reads `not-found` and
 `inactive`, is left alone, and does not cause an exit 4. A state read that
-itself fails is exit 4 too, never a silent "Nothing installed". Still use
+itself fails is exit 4 too, never a silent "Nothing installed"; the summary
+then says the state could not be read and that no stop or disable request was
+made, and claims removed files only if some were. Still use
 `systemctl --user status <unit>` (the exit-4 output names each unit) to check
 the result by hand. The macOS path always asked `launchctl print` directly.
 It then removes
@@ -1222,8 +1224,9 @@ re-uninstalling as the old one, is a no-op or a safe refresh in the
 ordinary case — step 3 exiting **0** ("Done" or "Nothing installed").
 
 Step 3 exiting **4** is different, and worth knowing about before you rely
-on a re-run to finish the move: every file was removed, but the manager
-refused a specific `stop` or `disable` request for one of the four units it
+on a re-run to finish the move: the uninstall could not confirm the service
+is gone. Any files found were removed, but the manager refused a specific
+`stop` or `disable` request, or could not report the state of, one of the four units it
 knows about (the metrics service, the update timer and oneshot, and the
 pre-rename `devcanopy-agent.service`). A re-run asks the user manager about
 each unit as well as looking for its file (see **Uninstall**, above), so it

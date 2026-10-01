@@ -1100,7 +1100,9 @@ test stub:
    `not-found` + `inactive`. Absent: no stop call, and "Nothing installed".
 
 A `show` that itself fails is not evidence of absence, so it is exit 4
-naming the unit rather than a quiet "Nothing installed". macOS asks
+naming the unit rather than a quiet "Nothing installed" (#475: it says the
+state could not be read and no stop or disable request was made, and says
+files were removed only when some were). macOS asks
 `launchctl print` directly, with no file-existence gate.
 
 **Before either unit/plist is removed**, the binary
