@@ -110,7 +110,8 @@ coverage it does not have would be worse than the checklist.
   suite (`scripts/versioning-test.sh`, #405 — the CalVer derivation, the
   mint and its output contract, the build number, and #404's release-tag
   assertion, against temporary bare origins), the local run/signing helper
-  suite (`scripts/run-test.sh`), the e2e server's bind test
+  suite (`scripts/run-test.sh`), the signing-identity refusal test
+  (`scripts/signing-identity-test.sh`, #474), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
   e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
@@ -809,7 +810,10 @@ derivation and §4 mint with the `action ∈ {create, reuse}` and
 reuse-pushes-nothing contract, `get-build-number.sh`, and the release
 workflows' tag assertion from #404; ~160 cases, run under bash 5, macOS
 `/bin/bash` 3.2 and Git Bash in CI), `scripts/run-test.sh` (the exact-identity
-certificate trust gate behind `./dev run`), `tests/frontend/csp_server_test.py`,
+certificate trust gate behind `./dev run`), `scripts/signing-identity-test.sh`
+(#474: `log_error` and `log_warning` write to stderr, so a refusal inside a
+`$(fn)` caller such as `resolve_signing_identity` is seen, not captured),
+`tests/frontend/csp_server_test.py`,
 and the `tests/frontend` Playwright suite. Agent tests run via `cargo test` in
 `agent/`.
 

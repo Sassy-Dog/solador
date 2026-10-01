@@ -12,8 +12,12 @@ color_gray() { printf "\033[90m%s\033[0m\n" "$1"; }
 # Logging functions with emoji
 log_info() { echo "$(color_blue "ℹ️  $1")"; }
 log_success() { echo "$(color_green "✅ $1")"; }
-log_warning() { echo "$(color_yellow "⚠️  $1")"; }
-log_error() { echo "$(color_red "❌ $1")"; }
+# log_warning and log_error go to STDERR, deliberately (#474). A function whose
+# stdout is captured (`x="$(fn)" || exit 1`) would otherwise swallow its own
+# refusal into the variable and exit with no message at all. Info, success and
+# debug stay on stdout: they are progress, and losing one costs nothing.
+log_warning() { echo "$(color_yellow "⚠️  $1")" >&2; }
+log_error() { echo "$(color_red "❌ $1")" >&2; }
 log_debug() { 
     if [[ "${DEBUG:-0}" == "1" ]]; then
         echo "$(color_gray "🔍 $1")"
