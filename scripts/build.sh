@@ -200,10 +200,10 @@ assert_plist_key() {
 # than reasoned about. `.cargo/config.toml`'s `[env] MACOSX_DEPLOYMENT_TARGET`
 # is *shadowed* under the CLI: tauri-cli exports MACOSX_DEPLOYMENT_TARGET from
 # `bundle.macOS.minimumSystemVersion` into the environment cargo inherits
-# (tauri-cli 2.11.4 src/build.rs:110), and cargo's `[env]` table yields to an
+# (tauri-cli 2.12.1 src/build.rs:118), and cargo's `[env]` table yields to an
 # inherited value unless it declares `force = true`. tauri-build then re-emits
 # the same value as `cargo:rustc-env` for the app crate itself (tauri-build
-# 2.6.3 src/lib.rs:592). Measured: with config.toml set to 15.0 and the config
+# 2.7.1 src/lib.rs:782). Measured: with config.toml set to 15.0 and the config
 # left at 14.0, every crate in a CLI build still came out 14.0, while a plain
 # `cargo build` of the same crate came out 15.0.
 #
