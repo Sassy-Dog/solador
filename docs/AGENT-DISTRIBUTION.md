@@ -8,12 +8,16 @@ shipped 2026-09-12.
 - **§1 Build and publish — SHIPPED** ([#390](https://github.com/Sassy-Dog/solador/issues/390)).
 - **§3 Versioning — SHIPPED** with it; `docs/VERSIONING.md` carries the
   reclassification.
-- **§2 The feed — SHIPPED, both sides** (producer
+- **§2 The feed — both sides shipped, meeting at #472's cut-over** (producer
   [#391](https://github.com/Sassy-Dog/solador/issues/391), consumer
   [#393](https://github.com/Sassy-Dog/solador/issues/393)):
   `agent-latest.json` and its signature are generated, verified and published
-  by `publish-feed.yml` when a release is published, and `solador-agent
-  update` consumes them. `install.sh` deliberately does not (§6).
+  by `publish-feed.yml` when a release is published. `solador-agent update`
+  reads them from the fixed `agent-latest` release since #488 (the consumer
+  half of #472's agent release train); no workflow publishes there until
+  #491, and the producer writes `v<version>` URLs until #490, so the two
+  halves meet only at the cut-over. `install.sh` deliberately does not read
+  the feed (§6).
 - **§6 Installing — SHIPPED** ([#392](https://github.com/Sassy-Dog/solador/issues/392)):
   `install.sh` downloads and verifies a published binary and has a macOS
   LaunchAgent path. The installer-side half of §5's verification shipped with
@@ -169,17 +173,27 @@ the binary. The hash is load-bearing — see versioning below.
 **Shipped in #391 — the producer.** The wire contract, which #393's consumer
 and this producer are both held to:
 
-- **Discovery.** `https://github.com/Sassy-Dog/solador/releases/latest/download/agent-latest.json`,
-  with the detached signature at the same URL plus `.minisig`. A consumer
-  resolves the *concrete* release behind `latest` first and downloads both
-  files from that tag's `releases/download/<tag>/` URL, so a redirect that
-  moves between two GETs cannot pair one release's feed with another's
-  signature. Tag-specific assets stay on the existing GitHub release; there is
-  no second release train and no hosting service.
+- **Discovery.** The consumer reads the feed from a **fixed location**,
+  `https://github.com/Sassy-Dog/solador/releases/download/agent-latest/agent-latest.json`,
+  with the detached signature at the same URL plus `.minisig` (#488, the
+  consumer half of #472). `agent-latest` is a permanent release that holds
+  those two files and nothing else, so both come from one release (a publish
+  landing between the two reads fails verification, exit 1, and clears on the
+  next run); the consumer never
+  asks which release is latest, because `/releases/latest` names the desktop
+  train. (Until #488 a consumer resolved the *concrete* release behind
+  `/releases/latest` and read both files from that tag. The producer still
+  writes for that scheme — `solador-agent-feed build --tag v<version>` — until
+  #490 teaches it `agent-v`, so no release carries a feed the consumer will
+  read until the first `agent-v` release exists. "The bridge" elsewhere in
+  these docs is the one `v*` release cut after #488 and before that: its
+  agent is the first with this consumer, and its own feed job is still the old
+  producer — the sequence is #492's runbook.) There is no hosting service.
 - **Document.** Top-level `version` (the release's `YYYY.M.P` CalVer, no `v`)
   and `targets`, an object keyed by the full Rust triple. Each target carries
-  `url` (absolute `https://`, naming `solador-agent-<version>-<triple>` on that
-  tag), `signature` (the binary's `.minisig` text verbatim, JSON-escaped) and
+  `url` (absolute `https://`, naming `solador-agent-<version>-<triple>` on a
+  release: the consumer requires `agent-v<version>`, the producer writes
+  `v<version>` until #490), `signature` (the binary's `.minisig` text verbatim, JSON-escaped) and
   `sha256` (64 lowercase hex over the raw executable bytes). Exactly the four
   §1 targets, no more and no fewer; no archives, no app-style `darwin-*`
   aliases, no Windows agent. Pretty-printed, two-space indent, one trailing
@@ -201,18 +215,28 @@ and this producer are both held to:
   the build embeds the CalVer — only that equal bytes mean no swap (§3 says
   what that leaves of the mitigation).
 - **The version is checked too, before the hash rule applies.** A consumer
-  must refuse a feed whose `version` is not the release it resolved
-  (`v<version>` must be the tag it downloaded from) and one that is not newer
-  than the CalVer it is running: every release's feed signature is valid on
-  its own, so an older, validly signed pair copied onto a newer release would
-  otherwise read as "the newest release wants these bytes". The producer's
-  `solador-agent-feed verify --version` is the first of those two checks;
-  the second needs the running agent's own version and is the consumer's.
+  must refuse a feed any of whose targets' `url` is not exactly
+  `<base>/releases/download/agent-v<version>/solador-agent-<version>-<triple>`
+  for the feed's own `version` — the feed is fetched from the fixed
+  `agent-latest` release, so that signed URL path is what binds a version to
+  its artifacts (#488); it replaced "the feed's `version` is the tag it was
+  fetched from" — and one that is not newer than the CalVer it is running:
+  every release's feed signature is valid on its own, so an older, validly
+  signed pair copied onto `agent-latest` would otherwise read as "the newest
+  release wants these bytes" (its URLs are the right ones for *its* version,
+  so only the newer-than check refuses it). The producer's
+  `solador-agent-feed verify --version` checks the feed's `version` against an
+  expected one; the URL shape is the consumer's own check until #490, and the
+  newer-than check needs the running agent's own version and is the
+  consumer's.
 - **The fixtures are the contract's executable form.**
   `tests/fixtures/agent/agent-latest.json`, its `.minisig` and
-  `test-agent-key.pub` are a complete, signed instance of everything above; a
-  consumer's parser must accept that pair under that key, and refuse it after
-  any single byte moves.
+  `test-agent-key.pub` are a complete, signed instance of everything above as
+  the producer writes it today (`v<version>` URLs); `tests/fixtures/agent-v/`
+  is the consumer's copy, the same stand-in binaries under a fresh key with
+  `agent-v<version>` URLs (#488; `tests/fixtures/README.md` says why there are
+  two). A consumer's parser must accept its pair under its key, and refuse it
+  after any single byte moves.
 - **Additions are the only change the producer will make.** A future producer
   may add keys (a rotation-window key id is the obvious one) and will never
   rename, remove or re-type the ones above. The producer's own `verify` is
@@ -221,8 +245,9 @@ and this producer are both held to:
   be. **The consumer tolerates them** (#393): `agent/src/update.rs`'s
   `Feed` carries no `deny_unknown_fields`, a test adds a key at each level and
   the document still parses, and a malformed *known* field is still refused.
-  Extra target triples are likewise ignored — a host reads its own entry —
-  provided every entry is well-formed; a malformed entry for *any* triple
+  Extra target triples are likewise not *read* — a host reads its own entry —
+  but every entry must be well-formed and, since #488, carry the
+  `agent-v<version>` URL; a malformed or mis-addressed entry for *any* triple
   refuses the whole document, because a feed the producer could not have
   written is not one to pick the good parts out of.
 
@@ -327,12 +352,21 @@ runs, and every step refuses before the next one changes anything:
    after the swap, is the half-applied update this design exists to prevent,
    and restarting the service must never kill the process that owes the
    health check and the rollback.
-3. **Resolve the concrete release** behind `/releases/latest` and fetch
-   *that tag's* `agent-latest.json` and `.minisig`, so two independently
-   moving redirects can never pair one release's feed with another's
-   signature. The feed's **exact served bytes** are verified under the
-   compiled-in trust set (§5) before they are decoded, and its `version`
-   must be the tag's.
+3. **Fetch the feed from its fixed location**,
+   `<base>/releases/download/agent-latest/agent-latest.json` and its
+   `.minisig` (#488). Nothing is discovered: `/releases/latest` names the
+   desktop train and is never asked, and both files come from the one
+   permanent `agent-latest` release. That release is replaced on every
+   publish, so a publish landing between the two reads pairs a feed with
+   another's signature: it fails verification (exit 1, nothing changed) and
+   clears on the next run. The feed's **exact served bytes** are verified under the
+   compiled-in trust set (§5) before they are decoded, and then **every**
+   target's `url` must be exactly
+   `<base>/releases/download/agent-v<version>/solador-agent-<version>-<triple>`:
+   the fetch location is a fixed name, so that signed URL path is what binds
+   the feed's `version` to its artifacts. A feed that is missing (a 404) is a
+   failure, exit 1 with nothing changed, never "nothing to do" — that would
+   hide an accidentally deleted `agent-latest` forever.
 4. **Hash the installed executable** and compare it with the feed's entry for
    this host's triple. Equal bytes mean *already current*: no binary
    download, no `.new`, no `.prev`, no restart — even when the feed's version
@@ -345,10 +379,14 @@ runs, and every step refuses before the next one changes anything:
 5. Otherwise **the feed must be newer** than the installed CalVer (read by
    executing the installed binary's `--version`). Every release's feed
    signature is valid on its own, so an older, validly signed pair replayed
-   onto a newer release would otherwise read as "the newest release wants
+   as `agent-latest` would otherwise read as "the newest release wants
    these bytes". An installed binary that carries no version cannot be
    compared and is **refused**, not assumed older — re-running `install.sh`
-   is the way onto a published release from there. A deliberate downgrade is
+   is the way onto a published release from there. One whose version carries
+   `+dev` is a source build with no release to compare against (no build
+   carries it yet: it is #472's agent versioning, #490): exit 4, asked
+   before the CalVer parse that would refuse it with exit 1, so the daily job
+   does not fail on a source-built host. A deliberate downgrade is
    `install.sh`'s pinned form, never this command's.
 6. **Download into memory** and verify the binary's plain minisign signature
    under either trusted key **and** its SHA-256 against the authenticated
@@ -393,16 +431,17 @@ Exit codes are a contract for the scheduled job: `0` updated, or
 already current and serving; `1` failed with nothing changed (and a
 `rollback` that did not come back or was left half done — both its own,
 named states); `3` failed *and* not restored; `4` no applicable release —
-the feed is not newer than what is installed, which a from-source host
-running ahead of the last tag answers every day and is not an alert; `5`
+the feed is not newer than what is installed, or what is installed is a
+`+dev` source build with nothing to compare, which a from-source host answers
+every day and is not an alert; `5`
 failed with the previous binary back and serving; `75` busy (naming the
 holder's pid and start time); `2` usage.
 
 **The release base is compiled in** (`RELEASE_BASE`, `agent/src/update.rs`)
-and every URL — discovery, feed, binary — is constructed from it and
+and every URL — feed, binary — is constructed from it and
 checked against it, so a feed cannot send a download elsewhere. The
 corollary is that **renaming the repository or the organisation strands
-every installed agent** at discovery until it is reinstalled from a
+every installed agent** at its first feed read until it is reinstalled from a
 checkout; that has happened once already (`devcanopy` → `solador`), and a
 second time is a fleet recall, not a rename.
 
@@ -436,7 +475,7 @@ with no `sudo`, no checkout, no prompt and no second copy of the token
 reads the env file itself), and is refused before anything is created as
 root, on an install directory this user cannot write to, and on an
 unmigrated `/opt` host (both flags together migrate and opt in). Its exit
-codes are `update`'s: `4` (nothing newer) is `SuccessExitStatus` on Linux
+codes are `update`'s: `4` (nothing newer, or a `+dev` source build) is `SuccessExitStatus` on Linux
 and documented as normal on macOS; every other non-zero exit is a visibly
 failed run, never retried before the next day. On macOS the launcher adds
 two of its own for the firings it does not hand to `update`: `0` for one it
@@ -556,7 +595,8 @@ unit, on both unit lines, preserved by a no-flag re-run, refused on
 systemd 242 and accepted on 243). The opt-in `SOLADOR_DEPLOY_TEST_LAUNCHD=1`
 run bootstraps a real throwaway updater beside a real throwaway agent,
 sees it loaded with zero runs, fires it by hand into a read-only `update`
-(exit 4 against the published feed, or 1 with no route to github.com —
+(exit 4 against the published feed, or 1 with no route to github.com or —
+until the first `agent-v` release has published `agent-latest` — on its 404;
 never a swap; metrics pid unchanged), fires it again to watch the guard
 discard it, and removes it while the metrics service keeps running. The
 Linux guard's manager readings and its three exit mappings were observed
@@ -763,8 +803,11 @@ compare against — the binary already serving — so on the unpinned path it
 refuses to install an older CalVer than the one installed, which closes the
 steer-to-old-release case for every host past its first install; the
 fresh-install window is recorded here beside §5's tag-ruleset acceptance
-rather than solved. The two mechanisms should agree that a pulled release is
-one marked *prerelease*, which both a feed and this redirect skip.
+rather than solved. This redirect skips a release marked *prerelease*; the
+updater no longer shares that property, because it reads `agent-latest`
+directly (#488), so pulling a bad agent release from updating hosts means
+replacing `agent-latest`'s feed, not marking the release (#472's workflows own
+that procedure).
 The public key, meanwhile, must reach the host from `main` — the protected
 ref — not from a tag or an archive of one. Until #434, the only path onto
 `main` was a full `git clone`; `agent/deploy/bootstrap.sh` is the second one,
@@ -1188,15 +1231,15 @@ Also required:
   those on a real throwaway LaunchAgent with the real built agent.
 - **Feed parsing** against a locally served fixture; no network in tests.
   The producer half of this is shipped: `crates/updatefeed::agent`'s tests run
-  over `tests/fixtures/agent/` — four stand-in binaries signed by the pinned
+  over `tests/fixtures/agent/` (the producer's directory) — four stand-in binaries signed by the pinned
   `rsign2`, and a feed/signature pair the producer emitted and `rsign` signed —
   and assert exact SHA-256 over known bytes, byte-for-byte reproduction of the
   committed document, plain-minisign acceptance, and refusal of a tampered
   binary, a foreign key, a lifted signature, a missing or fifth target, a feed
   whose served bytes changed by one character (or lost its final newline), and
   the app's base64-wrapped signature form in either direction. **The consumer
-  half is shipped too** (#393): the agent's own tests read the same committed
-  pair, accept it under its key, refuse it after one character moves or the
+  half is shipped too** (#393): the agent's own tests read the consumer's
+  copy of that pair, `tests/fixtures/agent-v/` (#488), accept it under its key, refuse it after one character moves or the
   final newline goes, and refuse it under the production key; and the
   end-to-end suite serves feeds it builds and signs in-test from a loopback
   axum server.

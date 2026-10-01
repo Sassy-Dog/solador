@@ -46,12 +46,13 @@ literal zeros pre-#183 agents send) stays the backward-compatibility case.
   nothing failed, because nothing was still checking. Folding the two onto one
   file remains the real fix (#192).
 
-## `updater/` and `agent/` — the signed fixtures
+## `updater/`, `agent/` and `agent-v/` — the signed fixtures
 
-Not wire-contract fixtures: these are the byte-exact inputs to the two update
-feeds' verifiers (`crates/updatefeed`), and `.gitattributes` pins both
-directories `-text` because a checkout that rewrites a line ending rewrites the
-bytes a signature covers.
+Not wire-contract fixtures: these are the byte-exact inputs to the update
+feeds' verifiers (`crates/updatefeed` for the first two and for `agent/`'s
+producer test; `agent/src/update.rs` for `agent-v/`), and `.gitattributes` pins
+all three directories `-text` because a checkout that rewrites a line ending
+rewrites the bytes a signature covers.
 
 - `updater/` — the desktop feed's Tauri-convention fixtures (base64-wrapped
   `.sig` and `.pub`), regenerated with `cargo tauri signer`; see the comment in
@@ -65,11 +66,12 @@ bytes a signature covers.
   `agent-latest.json.minisig` pair that `solador-agent-feed build` produced
   from them and `rsign` then signed. The tests assert `build()` reproduces the
   committed document byte for byte, so **regenerate the pair together, never
-  edit either half**. The pair is also the contract's executable form for the
-  **consumer** (#393): `agent/src/update.rs`'s tests accept it under
-  `test-agent-key.pub`, refuse it after one character moves or the final
-  newline goes, and refuse it under the production key — so regenerating it
-  moves both suites at once, which is the point of sharing it.
+  edit either half**. This directory is read by `crates/updatefeed`
+  (`src/agent.rs`, `tests/agent_feed_cli.rs`) and, for one guard test, by
+  `agent/src/update.rs` (see `agent-v/` below): its URLs are what the producer
+  writes today, on the legacy `v<version>` release. The **consumer** moved to
+  `agent-v/` below (#488), because its URLs name a release the producer cannot
+  yet write.
 
   ```sh
   cd tests/fixtures/agent   # everything below is relative to here
@@ -87,3 +89,41 @@ bytes a signature covers.
     -c "solador-agent release signature" agent-latest.json
   rm test-agent.key   # never committed (and `*.key` under tests/fixtures/ is ignored)
   ```
+
+- `agent-v/` — **the consumer's copy of `agent/`** (#488), read by
+  `agent/src/update.rs`'s tests: they accept its feed under
+  `test-agent-key.pub`, refuse it after one character moves or the final
+  newline goes, refuse it under the production key, and hold every target's
+  `url` to `.../releases/download/agent-v2026.9.9/solador-agent-2026.9.9-<triple>`.
+  The same four stand-in binaries (byte-identical to `agent/`'s, so the
+  `sha256` values match) under a **fresh** throwaway keypair — `agent/`'s
+  private half was never committed, so its `.minisig` files cannot be remade —
+  and a feed whose URLs are on the `agent-v2026.9.9` release rather than
+  `v2026.9.9`. The two directories do not share a key.
+
+  **The rewrite step is temporary.** The producer (`solador-agent-feed build`)
+  still requires `--tag v<version>` and writes `v<version>` URLs; it learns
+  `agent-v` in #490. Until then this directory is assembled by the procedure
+  above, run in `tests/fixtures/agent-v` with a new key, plus **one extra step
+  between building the feed and signing it**. The signature covers the JSON
+  bytes, so the rewrite goes first; the new `.minisig` goes last:
+
+  ```sh
+  cd tests/fixtures/agent-v   # the rest is the `agent/` procedure, up to the feed's `build`
+  sed 's#/releases/download/v2026.9.9/#/releases/download/agent-v2026.9.9/#g' agent-latest.json > agent-latest.json.rewritten
+  mv agent-latest.json.rewritten agent-latest.json
+  rsign sign -W -s test-agent.key -x agent-latest.json.minisig -t agent-latest.json \
+    -c "solador-agent release signature" agent-latest.json
+  rm test-agent.key   # never committed
+  ```
+
+  #490 regenerates this directory with the producer itself and deletes the
+  rewrite. Until then **no test asserts that the producer reproduces these
+  bytes** (`crates/updatefeed` reads only `agent/`), so the two directories are
+  tied by one guard instead:
+  `the_agent_v_fixture_is_the_producers_fixture_with_only_the_release_rewritten`
+  in `agent/src/update.rs` asserts the stand-ins, hashes and version are
+  `agent/`'s and that the only difference in the feed's URLs is the release
+  segment (signatures differ, being under another key). #490 deletes that
+  guard with the rewrite. Regenerate the feed and its `.minisig` together,
+  never one half.

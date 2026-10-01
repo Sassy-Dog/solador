@@ -33,6 +33,12 @@ tests/fixtures/updater/** -text
 # final newline included, which is precisely the byte a CRLF rewrite would move.
 tests/fixtures/agent/** -text
 
+# The consumer's copy of the same fixtures (`agent/src/update.rs`, #488): the
+# same stand-in binaries under a different throwaway key, with the feed's URLs
+# on the `agent-v<version>` release the updater now requires. Same hazard, same
+# `.minisig` over the feed's exact bytes.
+tests/fixtures/agent-v/** -text
+
 # The same hazard wherever it turns up next. `-text` rather than `binary`:
 # these are base64 documents and a diff of one is still worth reading, so it is
 # the conversion that has to stop, not the diff.
