@@ -16,7 +16,7 @@ path = "src/bin/solador-update-feed.rs"
 
 [[bin]]
 # The agent's counterpart (#391): builds and verifies `agent-latest.json`, run
-# by the agent feed workflow's protected `agent-feed` job. Since #490 it takes
+# by `publish-agent-feed.yml`'s protected `agent-feed` job. Since #490 it takes
 # `--tag agent-v<version>` and writes `agent-v<version>` URLs only.
 name = "solador-agent-feed"
 path = "src/bin/solador-agent-feed.rs"

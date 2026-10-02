@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The secrets guard (#307, widened by #391): which workflow jobs may read a
-# secret. Run by ci.yml's `secrets-guard` job on every PR, and by `./dev lint`.
+# The secrets guard (#307, widened by #391, re-scoped by #491): which workflow
+# jobs may read a secret. Run by ci.yml's `secrets-guard` job on every PR, and by
+# `./dev lint`.
 #
 #   scripts/secrets-guard.sh                  scan .github/workflows
 #   WORKFLOWS_DIR=some/dir scripts/secrets-guard.sh
@@ -11,10 +12,14 @@ set -euo pipefail
 #                                             prove the negative cases
 #
 # The rule: a secret may be read ONLY by a job that declares `environment: prd`
-# — every credential-holding job in release.yml (allowed wholesale, by file),
-# and exactly one job in publish-feed.yml, `agent-feed`, which signs
-# `agent-latest.json` when a release is published. Nothing else. The desktop
-# feed job beside it stays credential-free, and so does every other workflow.
+# — every credential-holding job in release.yml (the cockpit's release, allowed
+# wholesale, by file), and exactly two other jobs, allowed by `file:job` PAIR:
+# `release-agent.yml:publish`, which signs the agent's binaries, and
+# `publish-agent-feed.yml:agent-feed`, which signs `agent-latest.json` when an
+# agent release is published. Nothing else. The jobs beside them stay
+# credential-free, publish-feed.yml (the cockpit's feed) has no allowance at all
+# since #491 moved the agent's feed job out of it, and neither does any other
+# workflow.
 #
 # Why a gate and not a comment: Solador is public, so a fork's pull request
 # runs ci.yml, and a secret reference added there resolves to the EMPTY STRING
@@ -22,14 +27,20 @@ set -euo pipefail
 # unrelated-looking reason, or silently does the wrong thing. Catching it on
 # the PR that adds it is the only cheap moment.
 #
-# Why the publish-feed.yml allowance is by JOB, not by file: a secret reference
-# in its desktop job, in a new job, in `agent-feed` with its `environment: prd`
-# line removed, or above `jobs:` altogether, must each fail. The job-key
-# tracking below therefore has to see EVERY two-space key line under `jobs:`
-# — a key carrying a trailing comment (`  leak:  # …`), written quoted, or
-# holding a one-line flow mapping is a job too, and the first cut of this
-# guard, which recognised only bare keys, attributed such a job's secret to
-# whatever job came before it.
+# Why those two allowances are by JOB, not by file: a secret reference in a
+# sibling job (`build`, `verify`, `agent-eligibility`), in a new job, in the
+# scoped job with its `environment: prd` line removed, or above `jobs:`
+# altogether, must each fail. The job-key tracking below therefore has to see
+# EVERY two-space key line under `jobs:` — a key carrying a trailing comment
+# (`  leak:  # …`), written quoted, or holding a one-line flow mapping is a job
+# too, and the first cut of this guard, which recognised only bare keys,
+# attributed such a job's secret to whatever job came before it.
+#
+# And each pair is checked on its OWN. The fail-closed rule — a directory that
+# lacks what it is supposed to scan has not been scanned — is per pair, not "some
+# scoped file was seen": with one flag for the lot, deleting
+# publish-agent-feed.yml while release-agent.yml remained would pass silently,
+# and the guard would print its all-clear over a tree it had half read.
 #
 # Why it lives in scripts/ rather than inline in ci.yml: so the same bytes
 # CI runs can be pointed at a mutated copy of the workflows and shown to
@@ -40,8 +51,14 @@ ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 WORKFLOWS_DIR="${WORKFLOWS_DIR:-$ROOT_DIR/.github/workflows}"
 
 allow="release.yml"
-scoped="publish-feed.yml"
-scoped_job="agent-feed"
+# The `file:job` pairs allowed to read a secret, each only under a job-level
+# `environment: prd`. A job name is `[A-Za-z0-9_-]+` (the awk below recognises
+# no other), so ':' and ' ' split a pair unambiguously. Adding a pair is a
+# deliberate act with a reviewer attached.
+scoped_pairs=(
+    "release-agent.yml:publish"
+    "publish-agent-feed.yml:agent-feed"
+)
 
 # The `secrets` context, as a word, in any spelling GitHub accepts inside an
 # expression — `secrets.X`, `secrets['X']`, `toJSON(secrets)`,
@@ -68,7 +85,8 @@ skippable='^[[:space:]]*(#.*)?$'
 # report FILE — one line per finding, tab-separated:
 #   secret <line> <job>         a secret reference, and the job it sits in
 #                               (`<no job>` above/outside `jobs:`)
-#   environment <line> <job>    a job-level `environment: prd`
+#   environment <line> <job>    a job-level `environment: prd`, and the job that
+#                               declares it (the caller keeps the scoped job's)
 #
 # Every two-space key line under `jobs:` moves `cur` FIRST — to the job's
 # name for a plain `name:` line, otherwise to a sentinel — and only then is the
@@ -114,13 +132,13 @@ report() {
             else if (line !~ skippable) pending_inherit = 0
             if (hit) print "secret\t" NR "\t" (cur == "" ? "<no job>" : cur)
         }
-        in_jobs && cur == job && /^    environment:[[:space:]]*prd[[:space:]]*$/ { print "environment\t" NR "\t" cur }
-    ' job="$scoped_job" "$1"
+        in_jobs && /^    environment:[[:space:]]*prd[[:space:]]*$/ { print "environment\t" NR "\t" cur }
+    ' "$1"
 }
 
 fail=0
-seen_scoped=0
 seen_any=0
+seen_pairs=" "
 for wf in "$WORKFLOWS_DIR"/*.yml "$WORKFLOWS_DIR"/*.yaml; do
     [[ -e "$wf" ]] || continue
     seen_any=1
@@ -131,35 +149,59 @@ for wf in "$WORKFLOWS_DIR"/*.yml "$WORKFLOWS_DIR"/*.yaml; do
     findings="$(report "$wf")"
     secrets="$(awk -F '\t' '$1 == "secret"' <<< "$findings")"
 
-    if [[ "$name" == "$scoped" ]]; then
-        seen_scoped=1
-        # Every secret reference must sit inside the one allowed job, and that
-        # job must declare the protected environment at the job level.
-        stray="$(awk -F '\t' -v job="$scoped_job" '$1 == "secret" && $3 != job' <<< "$findings")"
+    # This file's scoped jobs, if any, as " job1 job2 " for an exact-word match.
+    scoped_jobs=" "
+    for pair in "${scoped_pairs[@]}"; do
+        if [[ "${pair%%:*}" == "$name" ]]; then
+            scoped_jobs="$scoped_jobs${pair#*:} "
+            seen_pairs="$seen_pairs$pair "
+        fi
+    done
+
+    if [[ "$scoped_jobs" != " " ]]; then
+        # Every secret reference must sit inside one of this file's allowed
+        # jobs, and each such job must declare the protected environment at the
+        # job level.
+        stray="$(awk -F '\t' -v jobs="$scoped_jobs" '$1 == "secret" && index(jobs, " " $3 " ") == 0' <<< "$findings")"
         if [[ -n "$stray" ]]; then
-            echo "::error file=$rel::$name references a secret outside its $scoped_job job; only that job may"
+            echo "::error file=$rel::$name references a secret outside its allowed job(s) ($scoped_jobs); only those may"
             echo "$stray"
             fail=1
         fi
-        if [[ -n "$secrets" ]] && ! grep -q $'^environment\t' <<< "$findings"; then
-            echo "::error file=$rel::$name's $scoped_job job references secrets but does not carry the job-level line 'environment: prd' (exactly that spelling)"
-            echo "The environment is what scopes the credential to a reviewed, v*-tag-only run." >&2
-            fail=1
-        fi
+        for job in $scoped_jobs; do
+            job_secrets="$(awk -F '\t' -v job="$job" '$1 == "secret" && $3 == job' <<< "$findings")"
+            if [[ -n "$job_secrets" ]] \
+                && ! awk -F '\t' -v job="$job" '$1 == "environment" && $3 == job { found = 1 } END { exit !found }' <<< "$findings"; then
+                echo "::error file=$rel::$name's $job job references secrets but does not carry the job-level line 'environment: prd' (exactly that spelling)"
+                echo "The environment is what scopes the credential to a reviewed, tag-only run." >&2
+                fail=1
+            fi
+        done
         continue
     fi
 
     if [[ -n "$secrets" ]]; then
-        echo "::error file=$rel::$name references secrets; only $allow (and $scoped's $scoped_job job) may"
+        echo "::error file=$rel::$name references secrets; only $allow (and the allowlisted jobs: ${scoped_pairs[*]}) may"
         echo "$secrets"
         fail=1
     fi
 done
 
 # A directory with nothing in it is not a clean bill of health: it is the
-# wrong directory. Fail closed rather than print the all-clear over nothing.
-if [[ $seen_any -eq 0 || $seen_scoped -eq 0 ]]; then
-    echo "::error::$WORKFLOWS_DIR holds no $scoped (or no workflows at all) — nothing was checked"
+# wrong directory. Fail closed rather than print the all-clear over nothing —
+# and per pair, so a tree missing ONE scoped file is as refused as an empty one.
+if [[ $seen_any -eq 0 ]]; then
+    echo "::error::$WORKFLOWS_DIR holds no workflows at all — nothing was checked"
+    exit 1
+fi
+unseen=0
+for pair in "${scoped_pairs[@]}"; do
+    if [[ "$seen_pairs" != *" $pair "* ]]; then
+        echo "::error::$WORKFLOWS_DIR holds no ${pair%%:*} (the allowance for its ${pair#*:} job) — that pair was not checked"
+        unseen=1
+    fi
+done
+if [[ $unseen -ne 0 ]]; then
     exit 1
 fi
 
@@ -169,4 +211,4 @@ if [[ $fail -ne 0 ]]; then
     echo "environment and add it to the allowlist in this script — on purpose." >&2
     exit 1
 fi
-echo "No workflow outside $allow references a secret, except $scoped's $scoped_job job under environment: prd."
+echo "No workflow outside $allow references a secret, except the allowed jobs (${scoped_pairs[*]}) under environment: prd."

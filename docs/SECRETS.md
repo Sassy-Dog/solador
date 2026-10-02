@@ -146,30 +146,37 @@ so a fork's pull request runs CI, and a secret reachable from a fork PR is a
 secret you have given away. `ci.yml` builds and tests — neither needs one.
 Signing and releasing belong in workflows that do not run on `pull_request`.
 
-Exactly two workflows hold a credential, and every job that does declares
-`environment: prd` — a required reviewer plus a `v*`-tag-only deployment
-policy, so nothing on `main` or on a fork can reach one:
+Exactly three workflows hold a credential, and every job that does declares
+`environment: prd` — a required reviewer plus a tag-only deployment policy
+(`v*` for the cockpit's train and, once #492 step 6 adds it — a repository
+setting, not a file — `agent-v*` for the agent's), so nothing on `main` or on a
+fork can reach one:
 
-- `release.yml`, on a `v*` tag push: the Apple and Tauri updater secrets for
-  the macOS leg, `SENTRY_DSN` for both cockpit legs, the `AZURE_CLIENT_ID` /
-  `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` identifiers the Windows leg's
-  federated Trusted Signing login is minted from, and
-  `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` for the agent binaries. Three of its
-  five jobs; the agent's build and verify jobs hold nothing.
-- `publish-feed.yml`, on `release: published`: its `agent-feed` job reads
-  `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` — the same key, no new scope — to sign
-  `agent-latest.json`, which cannot be signed at build time because it is
-  assembled from a public release's download URLs (#391). The desktop-feed job
-  beside it reads nothing. A manual replay of that leg has to run *from* the
-  tag with `leg: agent`, not from `main` with a tag typed in; a desktop-only
-  replay runs from `main` with `leg: desktop` and never reaches the protected
-  job.
+- `release.yml`, on a `v*` tag push (the cockpit's train): the Apple and Tauri
+  updater secrets for the macOS leg, `SENTRY_DSN` for both cockpit legs, and
+  the `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID`
+  identifiers the Windows leg's federated Trusted Signing login is minted from.
+  Both of its jobs. It has no agent leg since #491.
+- `release-agent.yml`, on an `agent-v*` tag push (the agent's train): its
+  `publish` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` to sign the agent's
+  four binaries. Its `build` and `verify` jobs hold nothing.
+- `publish-agent-feed.yml`, on `release: published` of an `agent-v*` release:
+  its `agent-feed` job reads `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` — the same
+  key, no new scope — to sign `agent-latest.json`, which cannot be signed at
+  build time because it is assembled from a public release's download URLs
+  (#391, moved here by #491). Its `agent-eligibility` job reads nothing. A
+  manual replay has to run *from* the tag, not from `main` with a tag typed in.
+
+`publish-feed.yml` (the cockpit's `latest.json`) holds no credential and has no
+allowance in the guard.
 
 `ci.yml`'s `secrets-guard` job (`scripts/secrets-guard.sh`) asserts this rather
-than trusting it: any secret reference outside `release.yml`, or in
-`publish-feed.yml` outside the `agent-feed` job, or in that job without its
-`environment: prd` line, fails CI — and `scripts/secrets-guard-test.sh` runs
-those mutations against the same script on every PR. The same job asserts the
+than trusting it: any secret reference outside `release.yml`, or outside the two
+allowed `file:job` pairs (`release-agent.yml:publish`,
+`publish-agent-feed.yml:agent-feed`), or in either of those jobs without its
+`environment: prd` line, fails CI; and a tree missing either scoped file is
+refused rather than read as clean, per pair. `scripts/secrets-guard-test.sh`
+runs those mutations against each pair on every PR. The same job asserts the
 other deliberate absence in this area, that `agent/` does not resolve the feed
 producer `crates/updatefeed` (`scripts/agent-deps-guard.sh`).
 
@@ -183,7 +190,7 @@ authority on where:
 
 | Key | Public half (committed) | Private half (Doppler, the source of truth) | Synced to GitHub | Read by |
 |---|---|---|---|---|
-| **Active** | `agent/release-signing-key.pub` (id `B2E5C62B763FD2C4`) | project `solador`, config **`prd`**, secret `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` | the repo's **`prd` environment** (environment-scoped sync, live since 2026-08-15) | `release.yml` → `release-agent-publish`; `publish-feed.yml` → `agent-feed` |
+| **Active** | `agent/release-signing-key.pub` (id `B2E5C62B763FD2C4`) | project `solador`, config **`prd`**, secret `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` | the repo's **`prd` environment** (environment-scoped sync, live since 2026-08-15) | `release-agent.yml` → `publish`; `publish-agent-feed.yml` → `agent-feed` |
 | **Standby** | `agent/release-signing-key-next.pub` (written by the custody script; committed by the operator — until then a build is a one-key trust set) | project `solador`, config **`custody`**, secret `SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY` | **nowhere** — the config has no integration, by design | nothing, until a rotation is separately authorised |
 
 **Why a config that syncs nowhere.** Every value in a synced config reaches a
@@ -192,10 +199,11 @@ right `environment:`. The standby exists precisely so that a compromise of the
 routine release path does not also yield the *next* key; a standby sitting
 beside the active key in `prd` would be one credential with two names. So the
 standby is never in a synced config, never in `vars.*`, never in a
-GitHub-only copy, and never a workflow input. A `release.yml` step that
-referenced `secrets.SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY` would resolve
-to the empty string (the `prd` environment does not carry it) and fail the
-key-shape preflight — the guard is the sync's absence, not a naming rule.
+GitHub-only copy, and never a workflow input. A step in `release-agent.yml` or
+`publish-agent-feed.yml` that referenced
+`secrets.SOLADOR_AGENT_SIGNING_STANDBY_PRIVATE_KEY` would resolve to the empty
+string (the `prd` environment does not carry it) and fail the key-shape
+preflight — the guard is the sync's absence, not a naming rule.
 
 **What was in place when the standby was designed (read on 2026-09-12; names
 only, never values).** Doppler project `solador` had four configs — `dev` and

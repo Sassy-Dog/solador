@@ -7,15 +7,15 @@ set -euo pipefail
 #   ./dev agent --targets "a b"      exactly these triples
 #   ./dev agent --sign               …and minisign each artifact
 #   ./dev agent --sign-only          sign what is already in --out-dir, build
-#                                    nothing (what release.yml runs, so the
-#                                    bytes signed are the bytes verified)
+#                                    nothing (what release-agent.yml runs, so
+#                                    the bytes signed are the bytes verified)
 #   ./dev agent --out-dir DIR        where the named artifacts land
 #                                    (default: target/agent-release/)
 #
 # Four targets ship, and `scripts/config.sh` names them because a triple is part
 # of the OUTPUT PATH — `--target` moves cargo's output under target/<triple>/,
-# so this script and `.github/workflows/release.yml` have to agree about where
-# each binary landed.
+# so this script and `.github/workflows/release-agent.yml` have to agree about
+# where each binary landed.
 #
 #   x86_64-unknown-linux-musl   static; runs on any distro
 #   aarch64-unknown-linux-musl  static; ARM servers, Pi-class hosts
@@ -286,7 +286,7 @@ assert_macos_floor() {
 # Can this host execute a binary built for `$1`?
 #
 # Used to decide whether the version can be read back HERE. It is not the
-# release gate: `release.yml` runs `--version` for every target on a runner
+# release gate: `release-agent.yml` runs `--version` for every target on a runner
 # matching it, because "the artifact starts" is a claim only a matching machine
 # can make and an artifact that does not start is worse than no artifact.
 host_can_run() {
@@ -370,7 +370,7 @@ build_targets() {
             fi
             log_success "$triple reports $got"
         else
-            log_info "$triple cannot be executed on this host — release.yml runs --version for it on a matching runner"
+            log_info "$triple cannot be executed on this host — release-agent.yml runs --version for it on a matching runner"
         fi
 
         artifact="$OUT_DIR/$AGENT_PACKAGE-$AGENT_MARKETING_VERSION-$triple"
@@ -412,10 +412,10 @@ if [[ "$WANT_SIGN" == true ]]; then
     # Key, committed public half and pinned signer, all checked BEFORE anything
     # is built — a four-target release build is tens of minutes. The signer is
     # installed here if missing: for a local `./dev agent --sign` the
-    # operator's machine already holds the key, and release.yml's `--sign-only`
-    # step also reaches this today (accepted; the feed workflow is the one that
-    # installs the signer in a separate, keyless step, and release.yml can
-    # adopt `agent-signing.sh ensure` the next time it moves).
+    # operator's machine already holds the key. Both release workflows install
+    # the signer in a separate, keyless step first (`agent-signing.sh ensure`),
+    # so their `--sign-only` finds the pinned version installed and compiles
+    # nothing with the key on disk.
     ensure_rsign
     agent_signing_preflight
 fi

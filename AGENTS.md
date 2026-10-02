@@ -110,7 +110,9 @@ coverage it does not have would be worse than the checklist.
   suite (`scripts/versioning-test.sh`, #405 — the CalVer derivation, the
   mint and its output contract, the build number, and #404's release-tag
   assertion, plus the agent's derivation, mint, `--agent` assertion and
-  `publish --agent` (#490), against temporary bare origins), the local run/signing helper
+  `publish --agent` (#490), against temporary bare origins), the agent feed's
+  publish-time guards (`scripts/agent-feed-guard-test.sh`, #491 — the freeze and
+  latest guards against a stub `gh`), the local run/signing helper
   suite (`scripts/run-test.sh`), the signing-identity refusal test
   (`scripts/signing-identity-test.sh`, #474), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
@@ -143,10 +145,22 @@ coverage it does not have would be worse than the checklist.
 
 ### Releasing
 
-There is a full release train: pushing a `v*` tag runs `release.yml` (#307),
-which builds the signed, notarized, stapled artifacts (#306) on the `prd`
-environment and attaches them to a **draft** GitHub release. #15 tracked the
-whole path and is closed.
+There are **two release trains, and neither triggers the other** (#472, #491).
+**The cockpit's:** pushing a `v*` tag runs `release.yml` (#307), which builds
+the signed, notarized, stapled artifacts (#306) on the `prd` environment and
+attaches them to a **draft** GitHub release; publishing it runs
+`publish-feed.yml`. #15 tracked the whole path and is closed. **The agent's:**
+pushing an `agent-v*` tag (minted by `./dev publish --agent`) runs
+`release-agent.yml`, which drafts an `agent-v*` release; publishing that runs
+`publish-agent-feed.yml`. See **The agent's release train** below. GitHub's tag
+filter keeps them apart (`v*` does not match `agent-v…`, nor the converse), so a
+`v*` tag produces no agent asset and an `agent-v*` tag no cockpit one: #390's
+"one tag, one release, both products" no longer holds. **Neither train can be
+exercised by a PR** — they trigger on a tag and on a publication — so what can
+be tested lives in scripts a PR does run (`secrets-guard.sh`,
+`agent-feed-guard.sh`), and a change to a release workflow reaches a release
+only through a new tag (a `push` or `release` event runs the workflow file at
+the tagged commit).
 
 `./dev build --release` produces
 `target/universal-apple-darwin/release/bundle/macos/Solador.app`
@@ -181,24 +195,31 @@ credential declares `environment: prd`** — that is the security design, not a
 detail. Solador is public, so the org's `APPLE_*` secrets (visibility `private`)
 resolve to the empty string here; environment secrets are repo-scoped, so that
 visibility never applies to them. `prd` also carries a required reviewer and a
-`v*`-tag-only deployment policy, which is what stops a push to `main` minting a
-signed build. Two workflows declare it: the three credential-holding jobs in
-`release.yml` (the agent's build and verify jobs deliberately do not), and
-exactly one job in `publish-feed.yml` — `agent-feed`, which signs
-`agent-latest.json` at publish time (#391, see **The agent feed** below) with the same
-agent key `release.yml` signs the binaries with. **Publishing a release
-therefore prompts `prd`'s reviewer once more**, after the prompts the tag push
-already made; a publish that looks stalled is waiting on it. `ci.yml` declares
-no environment and references zero secrets, and the `secrets-guard` job
-(`scripts/secrets-guard.sh`) asserts all of that rather than trusting it: it
-allows `publish-feed.yml`'s secret by **job name** and requires the
-`environment: prd` line to be present, so the desktop-feed job beside it, a new
-job, or that job with its environment removed all fail CI —
-`scripts/secrets-guard-test.sh` runs those mutations against the same script
-on every PR, because a guard that has only ever seen the valid tree is
-indistinguishable from one that passes everything. The release is attached as
-a **draft**, which is what makes publish-feed.yml's `release: published`
-trigger meaningful.
+tag-only deployment policy, which is what stops a push to `main` minting a
+signed build: `v*` for the cockpit's train, plus `agent-v*` for the agent's — a
+repository setting, not a file, added by hand (#492 step 6), so until it is
+there neither agent credential job can enter `prd`. Three workflows declare it:
+the two credential-holding jobs in `release.yml`; `release-agent.yml`'s
+`publish` (its `build` and `verify` deliberately do not); and
+`publish-agent-feed.yml`'s `agent-feed`, which signs `agent-latest.json` at
+publish time (#391, see **The agent feed** below) with the same agent key
+`release-agent.yml` signs the binaries with. **Publishing an agent release
+therefore prompts `prd`'s reviewer once more**, after the prompt the tag push
+already made for `publish`; a publish that looks stalled is waiting on it.
+`ci.yml` declares no environment and references zero secrets, and the
+`secrets-guard` job (`scripts/secrets-guard.sh`) asserts all of that rather
+than trusting it: it allows `release.yml` by file and exactly two other jobs by
+**`file:job` pair** — `release-agent.yml:publish` and
+`publish-agent-feed.yml:agent-feed` — requires each one's `environment: prd`
+line to be present, and fails closed **per pair** (a tree missing either file
+is refused, not read as clean). So a secret in a sibling job, a new job, a
+scoped job with its environment removed, a secret above `jobs:`, or either
+scoped file deleted all fail CI, and `publish-feed.yml` has no allowance at
+all — `scripts/secrets-guard-test.sh` runs those mutations against each pair on
+every PR, because a guard that has only ever seen the valid tree is
+indistinguishable from one that passes everything. A release is attached as a
+**draft**, which is what makes the `release: published` triggers of
+`publish-feed.yml` and `publish-agent-feed.yml` meaningful.
 
 **Windows (#341, #342).** `release-windows` is the second leg of `release.yml`, on the
 same `prd` environment behind the same `v*` gate, and it produces an
@@ -277,15 +298,21 @@ check failed"* — on every launch, forever, with nothing broken. The shell's
 reading them, because the app deliberately does not depend on the release tooling;
 when Windows gains an updater payload, those two lines change together.
 
-**The agent ships on the same tag and the same release (#390).**
-`release-agent-build`, `release-agent-verify` and `release-agent-publish` are
-`release.yml`'s third leg, producing four **raw binaries** —
+**The agent's release train (#472, #491; #390 first built it as `release.yml`'s
+third leg).** `release-agent.yml` runs on an `agent-v*` tag push, and its
+`build`, `verify` and `publish` jobs produce four **raw binaries** —
 `x86_64`/`aarch64-unknown-linux-musl`, `aarch64`/`x86_64-apple-darwin` — each
-with a detached minisign `.minisig`. One tag, one release, both products —
-**until #472's cut-over**: the agent moves onto an `agent-v*` release train of
-its own (see **Versioning**; its version and mint are #490, its workflows #491,
-and this leg leaves `release.yml` with those). `./dev agent` is the same command
-locally.
+with a detached minisign `.minisig`, attached to a **draft** `agent-v*` release
+created with `make_latest: false` (`--latest=false`). One tag per product, one
+release per tag: the agent no longer rides the cockpit's `v*` release (see
+**Versioning** for its number and mint). `build` first runs
+`scripts/assert-release-tag.sh --agent <tag>` (the agent mint re-run read-only;
+it must answer `action=reuse` for exactly that tag) and pins
+`AGENT_MARKETING_VERSION` from it, which `agent/build.rs` and `./dev agent` —
+the same command locally — both honour. `publish` uploads only to a **draft**:
+a re-run after the release was published is refused, because replacing
+binaries whose hashes hosts have already been told would strand a host on that
+version at exit 4.
 
 **The agent's macOS floor is its own, and it is 11.0** — not the workspace's
 14.0. `.cargo/config.toml` declares that floor for the cockpit's frontend
@@ -354,17 +381,31 @@ re-verified as a consumer would (bytes first, JSON second, every binary against
 its entry) and by the reference C `minisign` before either half is uploaded.
 Unlike the desktop feed this **needs a credential at publish time**, because the
 feed is assembled from a public release's URLs and no such document exists
-during the draft build; that is why `publish-feed.yml`'s `agent-feed` job is
-the one protected job outside `release.yml`, with a credential-free
-`agent-eligibility` job in front of it that refuses drafts, prereleases,
-releases without the eight agent assets, and a manual replay that is not
-running *at* its tag (the dispatch's `leg` input picks which feed to
-regenerate: `agent` from the tag, `desktop` from `main`). **A `release` event runs `publish-feed.yml` at the
-tagged commit, not from `main`** — measured against this repo's own runs — so
-a tag cut before #391 publishes with its own older copy of the file: a desktop
-feed and no agent leg at all, no red job, nothing to look for. The first
-release that can carry an agent feed is the first tag cut after #391 merged,
-and a fix to that workflow's agent leg reaches a release only through a new
+during the draft build; that is why `publish-agent-feed.yml`'s `agent-feed` job
+is the one protected job outside `release.yml` and `release-agent.yml`, with a
+credential-free `agent-eligibility` job in front of it that refuses drafts,
+prereleases, releases without the eight agent assets, a manual replay that is
+not running *at* its tag, and two more (#491, both in
+`scripts/agent-feed-guard.sh` so `./dev test` can run them against a stub `gh`):
+the **freeze guard** — the candidate must be the **newest published,
+non-prerelease `agent-v*` release** by CalVer, read from the *paginated*
+release list, unless the dispatch passes `force`, because a replay at an older
+tag would `--clobber` a newer feed with an older one and every host would answer
+exit 4, which the timer counts as success — and the **latest guard** —
+`releases/latest` must name a `v*` tag, failing with `gh release edit <tag>
+--latest=false` if an agent release took the slot from the cockpit's updater.
+The freeze guard reads the list, never the served feed (which is briefly wrong
+mid-`--clobber`), so re-running at the *current* tag after a failed upload
+passes and a pulled bad release lets the previous one be re-served with no
+`force`; it runs again inside `agent-feed` after `prd`'s approval, because that
+wait can be hours. The feed goes onto the permanent **`agent-latest`
+prerelease** — created once, its tag at a commit that never moves, only the two
+feed assets, a prerelease so it can never be `releases/latest` — and the job
+then **reads the served bytes back** from the URL hosts read and requires them
+to equal the upload and to name this tag's version. **A `release` event runs
+`publish-agent-feed.yml` at the tagged commit, not from `main`** — measured
+against this repo's own runs — so a fix to that workflow reaches a release only
+through a new agent tag, and the manual replay must be dispatched *from* the
 tag. `agent/` does not depend on `crates/updatefeed` — `scripts/agent-deps-guard.sh`
 asserts the absence with `cargo tree`, in CI's `secrets-guard` job and in
 `./dev lint`; the consumer (`agent/src/update.rs`, #393) compiles the public
@@ -386,12 +427,17 @@ instead and reads the version back out of the archive to prove the ordering —
 the identical argument that keeps `hdiutil` rather than `--bundles dmg`.
 
 The feed (`latest.json`) is generated by **`.github/workflows/publish-feed.yml`
-on `release: published`**, never at build time: `release.yml` attaches to a
-*draft*, and a draft's assets are not publicly downloadable, so a build-time
-manifest would point every client at a 404. The trigger is what makes "a draft
-can never serve updates" a property rather than a rule. `crates/updatefeed`
-builds and **verifies** that manifest — it refuses to write one whose signature
-does not cover the artifact under the public key in `tauri.conf.json`.
+on `release: published`** of a `v*` release, never at build time: `release.yml`
+attaches to a *draft*, and a draft's assets are not publicly downloadable, so a
+build-time manifest would point every client at a 404. The trigger is what makes
+"a draft can never serve updates" a property rather than a rule. The workflow is
+desktop-only since #491: its `feed` job does not run for an `agent-v*` release,
+whose feed is the agent's own — and the condition is not a bare `startsWith` on
+the tag, which is false on a `workflow_dispatch` (no release payload) and would
+have shut the replay door, so each event's clause carries its own event name.
+`crates/updatefeed` builds and **verifies** that manifest — it refuses to write
+one whose signature does not cover the artifact under the public key in
+`tauri.conf.json`.
 
 In the app: the check runs **once, in `setup`**, never on a cadence, and nothing
 auto-installs — a cockpit on a second monitor does not restart itself.
@@ -504,7 +550,8 @@ the bundle's floor.
 │   │                       #   `agent-latest.json` (module `agent`, #391).
 │   │                       #   RELEASE TOOLING — neither the app nor the agent
 │   │                       #   depends on it; publish-feed.yml runs its
-│   │                       #   `solador-update-feed` + `solador-agent-feed` bins
+│   │                       #   `solador-update-feed` bin, publish-agent-feed.yml
+│   │                       #   its `solador-agent-feed` bin
 │   └── crashreport/        # opt-in crash reporting: the consent gate, the
 │                           #   payload allow-list, the Sentry SDK. The ONLY
 │                           #   crate carrying the SDK, and only app/src-tauri
@@ -827,7 +874,11 @@ scripts — #405 — against temporary bare origins: `get-version-info.sh`'s
 derivation and §4 mint with the `action ∈ {create, reuse}` and
 reuse-pushes-nothing contract, `get-build-number.sh`, and the release
 workflows' tag assertion from #404, and since #490 the agent's derivation, mint, `--agent` assertion and `publish --agent` (`gh` stubbed through `PATH`); ~400 cases, run under bash 5, macOS
-`/bin/bash` 3.2 and Git Bash in CI), `scripts/run-test.sh` (`./dev run`'s
+`/bin/bash` 3.2 and Git Bash in CI), `scripts/agent-feed-guard-test.sh` (#491:
+the agent feed's freeze guard — only the newest published `agent-v*` release may
+publish a feed, read from the paginated release list — and latest guard, against
+a `gh` stub that serves one page unless asked to paginate; bash 5 and macOS
+`/bin/bash` 3.2 in CI), `scripts/run-test.sh` (`./dev run`'s
 signing-identity choice: the exact-identity Apple certificate trust gate, and
 the warned ad-hoc run where no Apple Development certificate is installed —
 only an Apple-issued certificate stops the keychain prompts; see app/README.md,
@@ -1441,12 +1492,12 @@ derivation and mint, and `publish --agent`, are tested in
   deliberately not run in CI.
 - **Those two shell gates now cover `scripts/*.sh` and `dev`/`prd` as well**
   (#390). `build-agent.sh`'s full run — all four targets, signed — happens only
-  in `release.yml` on a `v*` tag, so an ungated break there surfaces mid-release
+  in `release-agent.yml` on an `agent-v*` tag, so an ungated break there surfaces mid-release
   — the #269 shape again, on the path with no second chance. Its build half runs
   on every PR for one target (#457): `agent-tests` ("Rust agent") runs `./dev
   agent --targets x86_64-unknown-linux-musl`, which asserts the ELF is static
   and reads `--version` back out of it. The aarch64 and darwin builds (including
-  the macOS floor check), release.yml's per-target `--version` run and the
+  the macOS floor check), release-agent.yml's per-target `--version` run and the
   signing still run only at release. The whole directory is covered rather than
   that one file so the next
   release script is not equally unguarded. Two comments in `scripts/lint.sh`

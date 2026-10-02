@@ -70,8 +70,8 @@ jobs:
       # future image stops doing so this step goes red, which is the correct
       # outcome — a lint gate that silently skips itself is what got us here.
       # Widened past agent/deploy/ in #390. `scripts/build-agent.sh` builds and
-      # signs the four published agent binaries and signs/publishes ONLY on a
-      # `v*` tag (one target is built below on every PR, #457), so an ungated
+      # signs the four published agent binaries and signs/publishes ONLY on an
+      # `agent-v*` tag (one target is built below on every PR, #457), so an ungated
       # break there is discovered mid-release — the same shape as
       # #268, on the path with no second chance. The whole of scripts/ is
       # covered rather than that one file, so the next release script is not
@@ -111,7 +111,7 @@ jobs:
         run: bash agent/deploy/lib_test.sh
 
       # One static musl build on every PR (#457), so a link break shows up here
-      # rather than partway through a `v*` release (the #269 shape). It goes
+      # rather than partway through an `agent-v*` release (the #269 shape). It goes
       # through `./dev agent` -> scripts/build-agent.sh, which adds the rustup
       # target, installs the pinned cargo-zigbuild into its own venv, and
       # asserts the ELF is statically linked with no PT_INTERP segment. One
@@ -138,6 +138,21 @@ jobs:
       # mid-release.
       - name: Versioning suite (scripts/versioning-test.sh)
         run: bash scripts/versioning-test.sh
+
+      # The agent feed's publish-time guards (#491): publish-agent-feed.yml's
+      # freeze guard and latest guard are scripts/agent-feed-guard.sh, because
+      # a release workflow can only be exercised by a real release and a wrong
+      # guard there freezes the fleet. The suite runs the real script against a
+      # stub `gh` that serves one page unless asked to paginate. No network, no
+      # secrets, nothing published; `jq` is on the runner image.
+      #
+      # REQUIRE_JQ turns the suite's "jq not installed" skip into a failure, as
+      # REQUIRE_MINISIGN does for the deploy suite: a runner image that lost
+      # `jq` must not leave this gate green having run nothing.
+      - name: Agent feed guards (scripts/agent-feed-guard-test.sh)
+        env:
+          SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
+        run: bash scripts/agent-feed-guard-test.sh
 
   rust-workspace:
     name: Rust workspace + frontend e2e
@@ -211,6 +226,18 @@ jobs:
       # this is 3.2 all the way down, not just the harness.
       - name: Versioning suite under macOS bash 3.2
         run: /bin/bash scripts/versioning-test.sh
+
+      # The same guard suite (#491) under the bash a maintainer's `./dev test`
+      # runs it under on a Mac. The guard leans on `[[ =~ ]]` with a stored
+      # pattern and on `BASH_REMATCH`, the constructs most likely to differ
+      # between 3.2 and 5.
+      #
+      # REQUIRE_JQ, as in agent-tests: a runner without `jq` fails here rather
+      # than skipping.
+      - name: Agent feed guards under macOS bash 3.2
+        env:
+          SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
+        run: /bin/bash scripts/agent-feed-guard-test.sh
 
       # `security find-identity` may list a revoked Apple Development
       # certificate ahead of its renewal. The helper suite stubs `security` and
@@ -410,13 +437,16 @@ jobs:
   secrets-guard:
     name: Secrets guard
     # Asserts the security property the rest of the release design rests on
-    # (#307, widened by #391): a secret may be read ONLY by a job that declares
-    # `environment: prd` — the three credential-holding jobs in release.yml
-    # (allowed by file), and exactly one job in publish-feed.yml, `agent-feed`,
-    # which signs `agent-latest.json` when a release is published (allowed by
-    # name, and only with its environment line present). Nothing else. The
-    # desktop feed job beside it stays credential-free, and so does every
-    # other workflow in this repository — this one included.
+    # (#307, widened by #391, re-scoped by #491): a secret may be read ONLY by a
+    # job that declares `environment: prd` — the credential-holding jobs in
+    # release.yml (allowed by file), and exactly two others, allowed by
+    # `file:job` pair: release-agent.yml's `publish`, which signs the agent's
+    # binaries, and publish-agent-feed.yml's `agent-feed`, which signs
+    # `agent-latest.json` when an agent release is published (each only with its
+    # environment line present, and each pair checked on its own). Nothing else.
+    # Their sibling jobs stay credential-free, publish-feed.yml (the cockpit's
+    # feed) holds no secret at all, and neither does any other workflow in this
+    # repository — this one included.
     #
     # This is a gate rather than a comment because the property is invisible at
     # the point it breaks. Solador is public, so a fork's pull request runs this
@@ -427,10 +457,11 @@ jobs:
     #
     # The guard is `scripts/secrets-guard.sh` rather than an inline step so the
     # SAME bytes can be run over a mutated copy of the workflows: the second
-    # step below proves it refuses a secret in the desktop job, in a new job,
-    # in `agent-feed` with its environment removed, above `jobs:`, in a new
-    # workflow, and in this file. A guard that has only ever seen the valid
-    # tree is indistinguishable from one that passes everything.
+    # step below proves, for EACH pair, that it refuses a secret in a sibling
+    # job, in a new job, in the scoped job with its environment removed, above
+    # `jobs:`, and with the scoped file missing — and, beyond the pairs, in a new
+    # workflow and in this file. A guard that has only ever seen the valid tree
+    # is indistinguishable from one that passes everything.
     #
     # Fail-closed: a NEW workflow needing secrets does not silently pass. It
     # trips this gate, and adding it to the allowlist is a deliberate act with a
@@ -451,7 +482,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Only release.yml, and publish-feed.yml's protected agent-feed job, may reference secrets
+      - name: Only release.yml, and the two agent workflows' protected jobs, may reference secrets
         run: scripts/secrets-guard.sh
 
       - name: The guard refuses what it claims to refuse

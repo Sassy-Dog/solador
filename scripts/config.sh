@@ -52,8 +52,8 @@ export WINDOWS_TARGET="x86_64-pc-windows-msvc"
 
 # The per-host metrics agent's published targets (#390), named here for the same
 # output-path reason as the two triples above: `--target` moves cargo's output
-# under target/<triple>/, so build-agent.sh and release.yml must agree on where
-# each binary landed.
+# under target/<triple>/, so build-agent.sh and release-agent.yml must agree on
+# where each binary landed.
 #
 # musl, NOT gnu, for Linux. A dynamically linked gnu build resolves the
 # builder's glibc and dies on any older host with `GLIBC_2.xx not found` — a
@@ -67,7 +67,8 @@ export AGENT_MACOS_TARGETS="aarch64-apple-darwin x86_64-apple-darwin"
 # release carried the agent's binaries, from the days when every desktop tag was
 # also an agent release (#390). The bridge, `v2026.10.14`, published 2026-10-02,
 # is that release — the first one built by the consumer that finds releases
-# through `agent-latest`, and the last the old `release.yml` agent leg produces.
+# through `agent-latest`, and the last that `release.yml`'s old agent leg
+# produced (the leg moved to `release-agent.yml`, on `agent-v*` tags, in #491).
 #
 # It records HISTORY; it is never a version anyone chooses. The agent's own
 # versions are `agent-vYYYY.M.N` tags (docs/VERSIONING.md), and this is the only

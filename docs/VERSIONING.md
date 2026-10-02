@@ -119,7 +119,7 @@ Consumers — version is **never** computed anywhere else:
   back **out of each binary** on every runner that can execute it — the same
   derive-then-assert standard the plist keys are held to. A `./dev agent` or CI
   build with no pin is a `+dev` source build and passes that assertion; only a
-  release pins a version. `.github/workflows/release.yml` completes
+  release pins a version. `.github/workflows/release-agent.yml` completes
   that: `--version` is executed for all four targets on runners matching them
   (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`, `macos-15-intel`) and
   compared against the tag, before anything is signed or uploaded. An artifact
@@ -204,9 +204,11 @@ The cockpit's:
    is what makes the month's first real commit ladder-bump.
 7. **The workflows assert the tag by asking the mint, not by re-deriving**
    ([#404](https://github.com/Sassy-Dog/solador/issues/404)). Every leg of
-   `release.yml` and `publish-feed.yml`'s desktop `feed` job (on both
+   `release.yml` and `publish-feed.yml`'s `feed` job (on both
    `release: published` and its `workflow_dispatch` door) run
-   `scripts/assert-release-tag.sh <tag>` at the tag: it re-runs `--tag`
+   `scripts/assert-release-tag.sh <tag>` at the tag — and `release-agent.yml`'s
+   `build` job runs its `--agent` form (below; the agent's pin is
+   `AGENT_MARKETING_VERSION`, not the cockpit's) — it re-runs `--tag`
    **without `--push`** (read-only), pinned to the 1st of the tag's own month
    through `VERSION_DATE_OVERRIDE`, and requires the ladder to answer
    `action=reuse` for exactly that tag. A re-run after the month rolls
@@ -235,12 +237,14 @@ The cockpit's:
    two passing cases above that re-derivation would be the mislabelled
    artifact the assertion exists to prevent; and each leg's validate step
    then reads the version **back out of the artifact** (`Info.plist` in the
-   updater tarball, the NSIS `VERSIONINFO`, the agent's `--version`) and
-   compares it to the **tag**, never to a derivation, so a pin that failed
+   updater tarball, the NSIS `VERSIONINFO`, and — in `release-agent.yml`'s
+   `verify` jobs, on a runner matching each target — the agent's `--version`)
+   and compares it to the **tag**, never to a derivation, so a pin that failed
    to reach the build is a red run rather than a mislabelled release.
    `publish-feed.yml` builds nothing versioned (the manifest's `version` is
-   the tag's) and sets no pin; its `agent-feed` job asserts the approved
-   *commit* rather than the tag (#391), as before. What is still true of a
+   the tag's) and sets no pin; `publish-agent-feed.yml`'s `agent-feed` job
+   asserts the approved *commit* rather than the tag (#391, moved there by
+   #491), as before. What is still true of a
    **draft**: its assets are not public until it is published, and publishing
    is what triggers the feed — but the month no longer matters to either
    workflow. **Only tags cut after #404 merged get this assertion**: both
@@ -248,7 +252,7 @@ The cockpit's:
    (`publish-feed.yml`'s header records the measurement), so a re-run or a
    publish of a tag cut *before* still runs that tag's bare comparison, and
    the recipe in #404's comments is how such a tag is retired. The one
-   exception is `publish-feed.yml`'s desktop replay
+   exception is `publish-feed.yml`'s replay
    door: a `main`-ref dispatch reads the assertion script from the ref it was
    started from (a second checkout into `.tooling`, with the mint run against
    the tag checkout), so it still regenerates `latest.json` for a tag older
@@ -265,7 +269,7 @@ local `main` == `origin/main`, a completed successful `CI` run for HEAD,
 fail-closed — plus one of its own: HEAD must carry
 `.github/workflows/release-agent.yml`, because a tag push runs the workflow file
 as it is at the tagged commit, so a tag minted without it would build nothing
-and burn a number that can never be reused (#491 adds the file). Then it
+and burn a number that can never be reused (#491 added the file). Then it
 **stops**: it needs no `SENTRY_DSN` and no
 `TAURI_SIGNING_*` keys, runs no
 local tests and builds no `.dmg`, because the agent is built by its release
@@ -425,7 +429,8 @@ deliberately **pinned** to the tag's through `VERSION_DATE_OVERRIDE`. That is
 not the mint moving to CI and it is not a UTC-date violation to "fix": the
 pin is what lets a tag be asserted in the month it was minted rather than the
 month the run happens to land in, and it creates nothing. The agent's release
-workflow does the same through `assert-release-tag.sh --agent` (#472, #491).
+workflow (`release-agent.yml`'s `build` job) does the same through
+`assert-release-tag.sh --agent` (#472, #491).
 
 One more thing runs in CI that needs the *tags*, not only the history: a `+dev`
 agent version counts commits from the base tag, so `agent-tests`' musl build
@@ -445,9 +450,11 @@ publishes signed, notarized, stapled macOS artifacts
 ([#306](https://github.com/Sassy-Dog/solador/issues/306),
 [#307](https://github.com/Sassy-Dog/solador/issues/307)), an Authenticode-signed
 Windows installer ([#341](https://github.com/Sassy-Dog/solador/issues/341),
-[#342](https://github.com/Sassy-Dog/solador/issues/342)), and — since
-[#390](https://github.com/Sassy-Dog/solador/issues/390) — the agent's four
-minisigned binaries. `v2026.8.110` was the first release ever cut. Per the §9
+[#342](https://github.com/Sassy-Dog/solador/issues/342)); the agent's four
+minisigned binaries
+([#390](https://github.com/Sassy-Dog/solador/issues/390)) ship from
+`release-agent.yml`, on their own `agent-v*` train since #472. `v2026.8.110`
+was the first release ever cut. Per the §9
 adoption-timing rule the scheme was wired and active before then, so each
 distributed build simply uses whatever CalVer resolves at that moment. Adoption
 is one-way — no semver "1.0 moment" is coming back.
@@ -603,5 +610,6 @@ of a real binary and fails closed without one — and, since #490, that
 verifies it before `version` is read, and a tampered or non-CalVer feed is
 refused), `scripts/build-agent.sh`
 asserts each artifact's compiled-in version against the number it was named
-with, and `release.yml` asserts on every leg that the tag is the mint's own
-answer at that commit (#404, above).
+with, and `release.yml` (and, for the agent, `release-agent.yml`) asserts on
+every build leg that the tag is the mint's own answer at that commit (#404,
+above).
