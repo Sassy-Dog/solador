@@ -229,9 +229,19 @@ async fn main() {
     // (#449) the token no longer crosses the network in the clear, so a host
     // with no tailnet binds all interfaces instead. An explicit
     // SOLADOR_AGENT_BIND wins over both.
+    //
+    // SOLADOR_AGENT_REQUIRE_TAILNET=1 (#497) narrows that to the one answer the
+    // org's agent management spec allows: a Tailscale address literal, or a
+    // refusal. It overrides the TLS fallback and an explicit bind alike.
+    let require_tailnet = tls::flag_enabled(
+        std::env::var("SOLADOR_AGENT_REQUIRE_TAILNET")
+            .ok()
+            .as_deref(),
+    );
     let bind_host = match resolve_bind_host(
         std::env::var("SOLADOR_AGENT_BIND").ok(),
         tls_on,
+        require_tailnet,
         detect_tailscale_ip,
     ) {
         Ok(h) => h,
@@ -560,6 +570,31 @@ fn is_tailscale_ipv4(ip: std::net::Ipv4Addr) -> bool {
     o[0] == 100 && (64..=127).contains(&o[1])
 }
 
+/// Is this bind host a Tailscale address LITERAL (#497)? The ranges
+/// `SOLADOR_AGENT_REQUIRE_TAILNET=1` allows: IPv4 `100.64.0.0/10`, and IPv6
+/// `fd7a:115c:a1e0::/48` **minus** the 4via6 prefix `fd7a:115c:a1e0:b1a::/64`
+/// (an address there is a subnet router's far side, whose last hop can leave
+/// the tailnet in cleartext).
+///
+/// This mirrors `crates/agentclient`'s `plain` rule (`is_tailscale_v4` /
+/// `is_tailscale_v6`), which decides where the cockpit will send the token
+/// over plain HTTP. `agent/` must not depend on that crate (or on the release
+/// tooling), so the ranges are restated here; change the two together.
+///
+/// Only a bare literal qualifies: a name's addresses can change after the
+/// check, a bracketed form is not what `SOLADOR_AGENT_BIND` documents, and a
+/// zone id never parses as an address.
+fn is_tailnet_literal(host: &str) -> bool {
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => is_tailscale_ipv4(ip),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            let s = ip.segments();
+            s[..3] == [0xfd7a, 0x115c, 0xa1e0] && s[3] != 0x0b1a
+        }
+        Err(_) => false,
+    }
+}
+
 /// Is this bind host a wildcard (all interfaces)?
 fn is_wildcard_host(host: &str) -> bool {
     matches!(host, "0.0.0.0" | "::" | "[::]")
@@ -604,9 +639,22 @@ fn wildcard_warning(addr: &str, tls_on: bool) -> String {
 ///   on the token is encrypted and the certificate pinned, so bind all
 ///   interfaces (`0.0.0.0`) instead of forcing Tailscale on the host.
 ///
+/// With `require_tailnet` (`SOLADOR_AGENT_REQUIRE_TAILNET=1`, #497) every one
+/// of those answers must be a Tailscale address literal
+/// ([`is_tailnet_literal`]) or the result is [`update::tailnet_refusal`]: an
+/// explicit bind that is a wildcard, a LAN address or a name; and a host where
+/// nothing was detected (the all-interfaces fallback is never taken, TLS or
+/// not). An empty `SOLADOR_AGENT_BIND` is unset, as ever, so it falls to
+/// detection and is refused only if that finds nothing.
+///
 /// `detect` is injected so the decision is unit-testable without touching the
 /// real network.
-fn resolve_bind_host<F>(env_bind: Option<String>, tls_on: bool, detect: F) -> Result<String, String>
+fn resolve_bind_host<F>(
+    env_bind: Option<String>,
+    tls_on: bool,
+    require_tailnet: bool,
+    detect: F,
+) -> Result<String, String>
 where
     F: FnOnce() -> Option<String>,
 {
@@ -619,8 +667,19 @@ where
             return Err(update::zone_id_refusal(v));
         }
         if !v.is_empty() {
+            if require_tailnet && !is_tailnet_literal(v) {
+                return Err(update::tailnet_refusal(Some(v)));
+            }
             return Ok(v.to_string());
         }
+    }
+
+    if require_tailnet {
+        return match detect() {
+            Some(ip) if is_tailnet_literal(&ip) => Ok(ip),
+            Some(other) => Err(update::tailnet_refusal(Some(&other))),
+            None => Err(update::tailnet_refusal(None)),
+        };
     }
 
     match detect() {
@@ -846,7 +905,7 @@ mod tests {
     const TAILNET: &str = "100.5.6.7";
 
     fn bind(env: Option<&str>, tls_on: bool, tailnet: bool) -> Result<String, String> {
-        resolve_bind_host(env.map(str::to_string), tls_on, || {
+        resolve_bind_host(env.map(str::to_string), tls_on, false, || {
             tailnet.then(|| TAILNET.to_string())
         })
     }
@@ -924,11 +983,11 @@ mod tests {
         // Explicit env wins over TLS on/off and a detected tailnet; detection
         // is never consulted.
         for tls_on in [false, true] {
-            let got = resolve_bind_host(Some("192.168.1.20".to_string()), tls_on, || {
+            let got = resolve_bind_host(Some("192.168.1.20".to_string()), tls_on, false, || {
                 panic!("detect must not be called when env is set")
             });
             assert_eq!(got.unwrap(), "192.168.1.20");
-            let got = resolve_bind_host(Some("  100.1.2.3  ".to_string()), tls_on, || {
+            let got = resolve_bind_host(Some("  100.1.2.3  ".to_string()), tls_on, false, || {
                 panic!("detect must not be called when env is set")
             });
             assert_eq!(got.unwrap(), "100.1.2.3");
@@ -978,7 +1037,7 @@ mod tests {
     #[test]
     fn resolve_bind_host_refuses_a_zone_id_with_tls_on_or_off() {
         for tls in [false, true] {
-            let err = resolve_bind_host(Some("fe80::1%en0".to_string()), tls, || None)
+            let err = resolve_bind_host(Some("fe80::1%en0".to_string()), tls, false, || None)
                 .expect_err("a zone-id bind must be refused");
             assert!(
                 err.contains("zone id") && err.contains("fe80::1%en0"),
@@ -987,9 +1046,145 @@ mod tests {
         }
         // Control: the same bind without a zone starts.
         assert_eq!(
-            resolve_bind_host(Some("fe80::1".to_string()), false, || None).unwrap(),
+            resolve_bind_host(Some("fe80::1".to_string()), false, false, || None).unwrap(),
             "fe80::1"
         );
+    }
+
+    // ---- SOLADOR_AGENT_REQUIRE_TAILNET=1 (#497) ----
+
+    fn tailnet_bind(
+        env: Option<&str>,
+        tls_on: bool,
+        detected: Option<&str>,
+    ) -> Result<String, String> {
+        resolve_bind_host(env.map(str::to_string), tls_on, true, || {
+            detected.map(str::to_string)
+        })
+    }
+
+    #[test]
+    fn tailnet_literals_are_the_two_ranges_minus_the_4via6_prefix() {
+        for ok in [
+            "100.64.0.0",
+            "100.100.50.1",
+            "100.127.255.255",
+            "fd7a:115c:a1e0::",
+            "fd7a:115c:a1e0::1",
+            "fd7a:115c:a1e0:ab12:4843:cd96:6265:a1e0",
+            "fd7a:115c:a1e0:ffff:ffff:ffff:ffff:ffff",
+            "fd7a:115c:a1e0:b19:ffff:ffff:ffff:ffff",
+            "fd7a:115c:a1e0:b1b::",
+            "fd7a:115c:a1e0:b1a0::1",
+            "FD7A:115C:A1E0::9",
+        ] {
+            assert!(is_tailnet_literal(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "0.0.0.0",
+            "::",
+            "[::]",
+            "::1",
+            "127.0.0.1",
+            "10.0.0.1",
+            "192.168.1.20",
+            "100.63.255.255",
+            "100.128.0.0",
+            "fd7a:115c:a1e0:b1a::",
+            "fd7a:115c:a1e0:b1a:ffff:ffff:ffff:ffff",
+            "fd7a:115c:a1e0:0b1a::1",
+            "fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff",
+            "fd7a:115c:a1e1::",
+            "fd7a:115d:a1e0::1",
+            "fe80::1",
+            "fe80::1%en0",
+            "[fd7a:115c:a1e0::1]",
+            "::ffff:100.64.0.1",
+            "host.tailnet.ts.net",
+            "100.64.0.1.example.com",
+            "localhost",
+        ] {
+            assert!(!is_tailnet_literal(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn require_tailnet_starts_on_a_tailnet_literal_and_refuses_everything_else() {
+        for tls_on in [false, true] {
+            for ok in ["100.64.0.1", "100.127.0.9", "fd7a:115c:a1e0::5"] {
+                assert_eq!(tailnet_bind(Some(ok), tls_on, None).unwrap(), ok, "{ok}");
+                // Surrounding whitespace is trimmed, as without the flag.
+                assert_eq!(
+                    tailnet_bind(Some(&format!("  {ok} ")), tls_on, None).unwrap(),
+                    ok
+                );
+            }
+            for bad in [
+                "0.0.0.0",
+                "::",
+                "[::]",
+                "192.168.1.20",
+                "127.0.0.1",
+                "100.63.0.1",
+                "fd7a:115c:a1e0:b1a::1",
+                "fe80::1",
+                "my-host",
+                "my-host.example.ts.net",
+            ] {
+                let err = tailnet_bind(Some(bad), tls_on, Some(TAILNET))
+                    .expect_err(&format!("{bad} must be refused (tls={tls_on})"));
+                assert_eq!(err, update::tailnet_refusal(Some(bad)));
+            }
+            // A zone id keeps its own, more specific refusal.
+            let err = tailnet_bind(Some("fe80::1%en0"), tls_on, Some(TAILNET)).unwrap_err();
+            assert!(err.contains("zone id"), "{err}");
+        }
+    }
+
+    #[test]
+    fn require_tailnet_refuses_a_missing_tailnet_instead_of_binding_all_interfaces() {
+        for tls_on in [false, true] {
+            for env in [None, Some(""), Some("   ")] {
+                let err = tailnet_bind(env, tls_on, None).expect_err("must refuse");
+                assert_eq!(err, update::tailnet_refusal(None));
+                assert!(err.starts_with(update::TAILNET_REFUSAL_CORE), "{err}");
+            }
+            // Detection that finds a tailnet address binds it; an empty
+            // explicit bind is "unset", so it falls through to detection.
+            assert_eq!(
+                tailnet_bind(None, tls_on, Some("100.64.0.5")).unwrap(),
+                "100.64.0.5"
+            );
+            assert_eq!(
+                tailnet_bind(Some(""), tls_on, Some("100.64.0.5")).unwrap(),
+                "100.64.0.5"
+            );
+            // A detector that returns something else is refused too.
+            assert!(tailnet_bind(None, tls_on, Some("192.168.1.2")).is_err());
+        }
+    }
+
+    #[test]
+    fn require_tailnet_refusal_names_the_bind_and_the_ranges() {
+        let err = tailnet_bind(Some("0.0.0.0"), true, Some(TAILNET)).unwrap_err();
+        assert!(err.contains("'0.0.0.0'"), "{err}");
+        for needle in [
+            "100.64.0.0/10",
+            "fd7a:115c:a1e0::/48",
+            "fd7a:115c:a1e0:b1a::/64",
+        ] {
+            assert!(err.contains(needle), "{err}");
+        }
+    }
+
+    #[test]
+    fn without_the_flag_the_same_binds_behave_exactly_as_before() {
+        // Control for the tests above: the flag is what refuses.
+        for bad in ["0.0.0.0", "::", "192.168.1.20", "my-host"] {
+            assert_eq!(bind(Some(bad), true, true).unwrap(), bad);
+        }
+        assert_eq!(bind(None, true, false).unwrap(), "0.0.0.0");
     }
 
     #[test]

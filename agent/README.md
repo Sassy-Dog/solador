@@ -17,6 +17,9 @@ lifetime (#447 — see **TLS**, below), which the cockpit pins by fingerprint
   with no Tailscale binds **all interfaces** instead of refusing (#449). See
   **Network exposure**, below — that is a real change in who can reach the
   port.
+- **`SOLADOR_AGENT_REQUIRE_TAILNET=1` makes a wildcard impossible** (#497): the
+  agent and `install.sh` bind a Tailscale address literal or refuse. See
+  **Tailnet-only bind**, below.
 - **The cockpit never sends the token over plain HTTP off loopback and the
   tailnet (#449).** A paired host is dialled over pinned TLS; a host that was
   never paired is dialled over plain HTTP only when its address is loopback or
@@ -161,7 +164,8 @@ rootless, so it works as a normal user.
 | Env var                  | Required | Default | Meaning                          |
 |--------------------------|----------|---------|----------------------------------|
 | `SOLADOR_AGENT_TOKEN`  | yes      | —       | Bearer token. Server refuses to start if unset/empty. |
-| `SOLADOR_AGENT_BIND`   | no       | tailnet IP, else see below | Host/interface to bind. **An explicit value always wins**, with TLS on or off — except an IPv6 zone id (`fe80::1%en0`), which is refused at start, by `install.sh` and by `update`/`rollback` (#476). Unset: the detected Tailscale IP (`100.x`) if there is one. With no Tailscale IP, it depends on TLS (#449): **`SOLADOR_AGENT_TLS=1` binds all interfaces (`0.0.0.0`)**; plain HTTP **refuses to start** rather than send the token in the clear on whatever network the host is on. Set to `0.0.0.0` (or `::`) explicitly to bind all interfaces over plain HTTP too — only behind a firewall. See **Network exposure**. |
+| `SOLADOR_AGENT_BIND`   | no       | tailnet IP, else see below | Host/interface to bind. **An explicit value always wins**, with TLS on or off — except under `SOLADOR_AGENT_REQUIRE_TAILNET=1` (anything but a Tailscale literal is refused, #497) and an IPv6 zone id (`fe80::1%en0`), which is refused at start, by `install.sh` and by `update`/`rollback` (#476). Unset: the detected Tailscale IP (`100.x`) if there is one. With no Tailscale IP, it depends on TLS (#449): **`SOLADOR_AGENT_TLS=1` binds all interfaces (`0.0.0.0`)**; plain HTTP **refuses to start** rather than send the token in the clear on whatever network the host is on. Set to `0.0.0.0` (or `::`) explicitly to bind all interfaces over plain HTTP too — only behind a firewall. See **Network exposure**. |
+| `SOLADOR_AGENT_REQUIRE_TAILNET` | no | unset (off) | `1` makes the bind tailnet-only (#497): the resolved bind must be a Tailscale IP literal or the agent refuses to start. Any value other than exactly `1` (`0`, empty, `true`) is off, with behaviour exactly as described for `SOLADOR_AGENT_BIND`. **Turn it on through `install.sh`, not by hand-editing**: on macOS a launcher installed before #497 does not forward this key and `update` replaces only the binary, so the key is enforced only once `install.sh` has been re-run. See **Tailnet-only bind**. |
 | `SOLADOR_AGENT_PORT`   | no       | `7878`  | TCP port. Bound on `SOLADOR_AGENT_BIND`. |
 | `SOLADOR_AGENT_TLS`    | no       | unset (HTTP) | `1` serves HTTPS on the same port, with a self-signed certificate kept for the host's lifetime. **Turn it on with `install.sh --enable-tls`, not by hand-editing this line**: an *older*, pre-#447 installed agent reacts differently per platform to a hand-set key. **On Linux**, `EnvironmentFile=` passes it straight through: `update` swaps in a new HTTPS-only binary but its own pre-#447 code still probes it with `http://` — the health check fails, `.prev` is restored, and `update` exits 5. **On macOS**, the launcher installed before #447 forwards only `TOKEN`, `BIND`, `PORT`, `SKIP_FSTYPES` and `RUST_LOG` to the agent — never this key, and `update` replaces only the binary, never the launcher — so the new binary never sees `SOLADOR_AGENT_TLS`, keeps serving plain HTTP, and `update` exits 0 with TLS silently off. See **TLS**, below. Any other value (or absent) is plain HTTP. |
 | `SOLADOR_AGENT_SKIP_FSTYPES` | no | see below | Comma-separated fstypes excluded from `volumes`. Setting it **replaces** the default list; an empty value disables filtering. |
@@ -400,12 +404,41 @@ by mistake.) So:
   (so the agent finds the tailnet address itself) or set `SOLADOR_AGENT_BIND` to
   one address, because the agent honours the `0.0.0.0` already there.
 - A host with Tailscale keeps today's default: the tailnet IP only.
+- To make "never a wildcard" a refusal rather than a default, set
+  `SOLADOR_AGENT_REQUIRE_TAILNET=1` (next section).
 - Plain HTTP is tailnet-only **by default**, and no tailnet is a refusal — the
   case where the network is the only thing between the token and a listener. An
   explicit `SOLADOR_AGENT_BIND` (or a wildcard bind kept after a hand edit to
   `SOLADOR_AGENT_TLS=0`) can change that, which is why the cockpit only dials
   plain HTTP to loopback or Tailscale addresses (`agentclient`'s `plain`
   module), whatever the agent is listening on.
+
+**Tailnet-only bind (#497).** `SOLADOR_AGENT_REQUIRE_TAILNET=1` is the opt-in for
+a host whose listener may be reachable only over the tailnet (the org's agent
+management spec, section 3.3). Under it the resolved bind must be a **Tailscale
+IP literal**: IPv4 `100.64.0.0/10`, or IPv6 `fd7a:115c:a1e0::/48` **except** the
+4via6 prefix `fd7a:115c:a1e0:b1a::/64` (the same ranges the cockpit's plain-HTTP
+rule trusts). Everything else is refused, with the same sentence from the agent
+(a `FATAL:` at start, exit 1) and from `install.sh`:
+
+- any wildcard (`0.0.0.0`, `::`, `[::]`);
+- any other address, loopback and LAN included, and an IPv6 zone id;
+- any DNS name, because a name's addresses can change after the check;
+- a bracketed literal (write `fd7a:115c:a1e0::9`, not `[fd7a:115c:a1e0::9]`);
+- an explicit `SOLADOR_AGENT_BIND` that is any of the above, and a host where no
+  tailnet address can be detected — **with TLS on too**: the all-interfaces
+  fallback above is never taken. (An empty `SOLADOR_AGENT_BIND` is unset, as
+  ever, so it falls to detection.)
+
+`install.sh` refuses before any download or token prompt, writes
+`SOLADOR_AGENT_REQUIRE_TAILNET=1` into the env file, and says `Tailnet: only` in
+its Done block. Set in the installer's environment the variable wins (any value
+other than `1` turns it off and removes the key, so write `1` exactly); unset, the env file's value is kept, so a re-run
+holds a hand-edited bind to it. The `0`/unset default changes nothing. A
+release that predates this setting ignores the key and so does not enforce it
+when it starts, although `install.sh` still checks the bind it writes. The same
+holds on macOS for a launcher installed before this setting (it drops the key as
+unrecognised, and `update` never refreshes the launcher): re-run `install.sh`.
 
 **`install.sh` writes `SOLADOR_AGENT_TLS=1` on a fresh install** (no env file
 existed yet) and prints the fingerprint in its Done block — **but only when
@@ -923,9 +956,10 @@ The script:
 5. Writes `~/.config/solador-agent.env` with the token (prompted **without
    echo**; press Enter to auto-generate; reused on a re-run), the bind address
    (`SOLADOR_AGENT_BIND`, else the existing file's, else the detected
-   Tailscale IP, else all interfaces if TLS is on, else refuse), the port (`SOLADOR_AGENT_PORT`, else the
-   existing file's, else `7878`), and `SOLADOR_AGENT_TLS` (see **TLS**, below,
-   for how its value is decided), mode `600`, written beside the live file and
+   Tailscale IP, else all interfaces if TLS is on, else refuse; under `SOLADOR_AGENT_REQUIRE_TAILNET=1` only a Tailscale literal, else refuse), the port (`SOLADOR_AGENT_PORT`, else the
+   existing file's, else `7878`), `SOLADOR_AGENT_TLS` (see **TLS**, below,
+   for how its value is decided) and, when on, `SOLADOR_AGENT_REQUIRE_TAILNET=1`
+   (see **Tailnet-only bind**), mode `600`, written beside the live file and
    renamed into place. A re-run carries over only blank lines, `#` comments and
    the documented keys it does not itself write (`SOLADOR_AGENT_SKIP_FSTYPES=`,
    `RUST_LOG=`) — the same set of keys the macOS launcher exports. **Every other
@@ -1056,8 +1090,8 @@ stops before changing anything and prints the explicit step, which is:
 ./deploy/install.sh --migrate-from-opt
 ```
 
-That keeps `~/.config/solador-agent.env`'s token, bind, port and TLS choice,
-comments, and the documented `SOLADOR_AGENT_SKIP_FSTYPES` / `RUST_LOG` keys (any
+That keeps `~/.config/solador-agent.env`'s token, bind, port, TLS choice and
+tailnet-only setting, comments, and the documented `SOLADOR_AGENT_SKIP_FSTYPES` / `RUST_LOG` keys (any
 other key is dropped and named, as in step 5 above), installs the verified binary at
 `~/.local/bin/solador-agent`, **regenerates** the unit from the template with
 that path (the displaced unit is kept as `solador-agent.service.prev`; edits
