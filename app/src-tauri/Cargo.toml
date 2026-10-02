@@ -49,6 +49,11 @@ solador-openclaw = { path = "../../crates/openclaw" }
 # rather than in `crates/store` — `agent/`'s CI job is scoped `-p solador-agent`
 # and must not resolve any of this.
 solador-crashreport = { path = "../../crates/crashreport" }
+# The newest *verified* agent release (#489), for the per-host line in Settings:
+# fetches `agent-latest.json` and verifies it under the AGENT's compiled-in keys.
+# App-only, like crashreport — `agent/` must never resolve it
+# (`scripts/agent-deps-guard.sh`).
+solador-agentrelease = { path = "../../crates/agentrelease" }
 # The GitHub clocks are `DateTime<Utc>` (run start times, roster sightings), so
 # the panel layer speaks the same type rather than converting at every call.
 # Same pin as crates/github's, so one chrono resolves for the workspace.

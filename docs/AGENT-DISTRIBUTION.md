@@ -17,7 +17,9 @@ shipped 2026-09-12.
   reads them from the fixed `agent-latest` release since #488 (the consumer
   half of #472's agent release train), the producer writes the `agent-v<version>`
   URLs that consumer requires since #490, and `install.sh` reads the same feed
-  on its default path since #490 (§6). The workflows exist since #491, but a
+  on its default path since #490 (§6). The cockpit is a third reader (#489):
+  `crates/agentrelease` fetches and verifies the same pair hourly, under the same
+  compiled-in keys, to show each host whether it is behind. The workflows exist since #491, but a
   workflow only runs on a tag or a publication, so `agent-latest` does not exist
   until the first `agent-v*` release is cut and published (#492's runbook): the
   halves meet at that cut-over.

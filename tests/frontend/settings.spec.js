@@ -702,6 +702,37 @@ test("the Hosts tab lists every host with its endpoint and token badge", async (
   ]);
 });
 
+// `#rrggbb` -> the `rgb(r, g, b)` a browser reports for a computed colour.
+const rgb = (hex) =>
+  `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
+
+test("each host row says where its agent stands against the newest verified release, without Test (#489)", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const rows = settings.hosts.rows;
+
+  // The fixture carries all three readings the issue names: behind, up to date,
+  // and a host that has reported no version.
+  const byState = Object.fromEntries(rows.map((h) => [h.agentRelease.state, h]));
+  expect(Object.keys(byState).sort()).toEqual(["behind", "host-unknown", "up-to-date"]);
+
+  const AMBER = rgb(settings.hosts.rows.find((h) => h.agentRelease.state === "behind").agentRelease.color);
+  for (const host of rows) {
+    await openConnection(page, `host:${host.id}`);
+    const line = page.locator(`.host-row[data-host="${host.id}"] .agent-release`);
+    // Shown with no Test press, and the words are Rust's.
+    await expect(line).toHaveText(host.agentRelease.text);
+    await expect(line).toHaveAttribute("data-state", host.agentRelease.state);
+    // The colour is Rust's too, and only a host that is behind is amber.
+    await expect(line).toHaveCSS("color", rgb(host.agentRelease.color));
+    const color = await line.evaluate((el) => getComputedStyle(el).color);
+    expect(color === AMBER, host.name).toBe(host.agentRelease.state === "behind");
+  }
+  expect(await calls(page, "settings_test_host")).toEqual([]);
+
+  // Behind is informational: it names a newer release, it does not demand one.
+  expect(byState.behind.agentRelease.text).toContain("available");
+});
+
 test("the rules editor renders every persisted field, and the Collapse-only ones only for Collapse", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await openConnection(page, "local");

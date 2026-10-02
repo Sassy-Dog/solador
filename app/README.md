@@ -291,6 +291,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 |---|---|
 | [`wire`](../crates/wire) | the agent's JSON contract (package `solador-wire`, imported as `wire`) |
 | [`agentclient`](../crates/agentclient) | the HTTP client for `/v1/snapshot`, `/v1/containers`, `/v1/health` — plain HTTP (only to loopback or Tailscale addresses, #449), or HTTPS pinned to one certificate for a paired host — and the certificate probe pairing starts from |
+| [`agentrelease`](../crates/agentrelease) | the newest *verified* agent release (#489): fetches `agent-latest.json` + `.minisig` and verifies the exact bytes under the agent's compiled-in keys before decoding; app-only |
 | [`certpin`](../crates/certpin) | the certificate fingerprint format (package `solador-certpin`), shared with the agent's `tls-fingerprint`; no dependencies |
 | [`viewmodel`](../crates/viewmodel) | every string, colour and layout number the frontend paints |
 | [`store`](../crates/store) | settings / hosts / repos / rules / roster JSON + the OS credential store |
@@ -2193,7 +2194,9 @@ cargo run -p solador-app -- --dump-services sample-services.json   # the Service
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
 (one enabled host with a token and a hidden volume, one disabled host with
 neither and a **pinned certificate that has changed**, so the pin line and the
-Re-pair button render; two credentials stored, two not) with hard-coded uuids, so it is
+Re-pair button render, and a third that has reported no agent version — which,
+beside the first two (behind the newest verified release, and at it), gives every
+host row an `agentRelease` line in a different state; two credentials stored, two not) with hard-coded uuids, so it is
 byte-stable across regenerations and covers both sides of every badge. Its
 **container group rules** are the seeded three plus the two renderings seeding
 alone never reaches — an Expect rule (whose Collapse-only fields must therefore
@@ -2319,7 +2322,9 @@ half works on a machine whose screen you cannot see.
       the sentence `no container runtimes`. Allow 10s — that is the panel's cadence.
 - [ ] **Click Settings** → terminal prints
       `settings: first frontend request (N host(s), N repo(s))`, the Hosts tab lists
-      your seeded host **and the three seeded container group rules below it**, and
+      your seeded host **and the three seeded container group rules below it**
+      (its row also carries the agent-release line — `Agent version — · not
+      compared with releases` on a token-less run, #489), and
       **Done** returns to the cockpit.
 - [ ] **Settings → About** → terminal prints
       `update_status: first frontend request (<sentence>)`, and the **Updates**
@@ -2351,6 +2356,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_set_account_org` / Runners | under Settings → Connections → GitHub, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Connections → GitHub". Watching the same org from a second account is refused with the owner named |
 | **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
 | the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Connections → GitHub (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
+| `agentRelease` on each host row (`settings_payload` → `hosts_tab`, `agent_release_loop`, #489) | Settings → Connections → the seeded host. Then, against a real agent with `\|$TOKEN` on `SOLADOR_SEED_HOST` | the row carries a persistent line with **no Test press**. With no token (the default smoke run) it reads `Agent version — · not compared with releases`, because no health read can land. With a live agent it reads `Agent v<version> · …` and, while no `agent-v*` release has been published (the feed 404s), `no agent release published yet` in a muted colour — **never** `up to date`, and never amber or red. Amber appears only as `<release> available` beside a host whose CalVer is lower than a verified release. Terminal: one `agent release: …` line at startup, then hourly (`newest verified is …`, `none published yet`, or `the check failed: …`). A line that stays `checking for a newer release…` for more than a few seconds with a network means `agent_release_loop` never ran |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Connections → **Add connection** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
 | the rules editor | under Settings → Connections → This machine, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |

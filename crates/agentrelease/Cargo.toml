@@ -1,0 +1,32 @@
+[package]
+# Prefixed like every other member; the lib keeps the short import name.
+name = "solador-agentrelease"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "agentrelease"
+
+# APP-ONLY (#489). The cockpit asks "what is the newest verified agent
+# release?" through this crate; `agent/` must never resolve it, and
+# `scripts/agent-deps-guard.sh` asserts the absence with `cargo tree`.
+#
+# It does NOT depend on `crates/updatefeed` either: that crate is the feed
+# PRODUCER (release tooling). This is a consumer, and it verifies with
+# `minisign-verify` directly, as `agent/src/update.rs` does, so the two
+# consumers cannot disagree with the producer about what verifies.
+[dependencies]
+# The stock sentences; every `user_message()` arm writes its words out of it.
+solador-fault = { path = "../fault" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The same `0.3` the agent and the producer resolve: one verifier in the lock.
+minisign-verify = "0.3"
+# "ring" is reqwest's `rustls-tls` backend and the workspace's only one; never
+# `aws-lc-rs`, whose C/cmake build the cockpit builds should not gain.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+# A loopback HTTP server for the 404 / 5xx / network-failure classification.
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
