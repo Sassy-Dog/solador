@@ -51,14 +51,30 @@ source "$SCRIPT_DIR/config.sh"
 # reuse — within the same UTC month; the derivation is wall-clock, so after a
 # roll it mints a new train instead) — the same order a CI mint would use.
 
+# `./dev publish --agent` (#490, part of #472) mints the AGENT's release tag
+# instead: `agent-vYYYY.M.N`, through `get-version-info.sh --agent-tag --push`.
+# It shares this script's pre-flight (clean tree, on `main`, `main` current, CI
+# green on HEAD), adds one of its own (HEAD must carry the agent release
+# workflow, whose file a tag push runs as it is at the tagged commit), and then
+# stops: it builds nothing and signs nothing — the agent
+# release workflow does the build on tag push — so it needs NONE of the
+# cockpit's credentials (`SENTRY_DSN`, the updater signing key pair) and makes
+# no `.dmg`. **It pushes a real tag**, with no dry run beyond
+# `get-version-info.sh --agent-tag` run by hand.
+
 # Default values
 SKIP_TESTS=0
 SKIP_SENTRY=0
 SKIP_MINT=0
+AGENT=0
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --agent)
+            AGENT=1
+            shift
+            ;;
         --skip-tests)
             SKIP_TESTS=1
             shift
@@ -87,7 +103,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-log_info "Publishing $APP_NAME"
+# The cockpit's three options are about a build this mode does not make, and
+# accepting them silently would read as having done something.
+if [[ $AGENT -eq 1 && ( $SKIP_TESTS -eq 1 || $SKIP_SENTRY -eq 1 || $SKIP_MINT -eq 1 ) ]]; then
+    log_error "--agent mints and pushes the agent's tag and builds nothing, so --skip-tests, --skip-sentry and --skip-mint do not apply to it."
+    exit 1
+fi
+
+if [[ $AGENT -eq 1 ]]; then
+    log_info "Publishing the $APP_NAME agent (mints and pushes an agent-v* tag; builds nothing)"
+else
+    log_info "Publishing $APP_NAME"
+fi
 
 # --- Pre-flight guards: fail before mutating anything ---------------------
 
@@ -132,6 +159,83 @@ if [[ "${CI_GREEN_COUNT:-0}" -lt 1 ]]; then
     exit 1
 fi
 log_success "CI is green for HEAD"
+
+# --- The agent's release: mint, push, and stop (#490) ---------------------
+#
+# Everything below this block is the cockpit's — its credentials, its tests, its
+# signed .dmg — and none of it applies to a release whose build runs in the
+# agent release workflow, so this branch ends the script rather than threading
+# a mode through each of them. The pre-flight above is shared on purpose: what
+# makes a tag safe to push is the same for both.
+if [[ $AGENT -eq 1 ]]; then
+    # A tag push runs the workflow file AS IT IS AT THE TAGGED COMMIT (measured
+    # against this repo's own runs, and why publish-feed.yml's header says a tag
+    # cut before a fix never gets it). So a tag minted at a commit with no
+    # agent release workflow builds and publishes nothing — and an `agent-v*`
+    # number is never reusable (the mint's next number comes from the remote's
+    # tags; never delete one). Refuse before burning one. The workflow is #491's;
+    # until it is on `main` there is nothing for this command to start.
+    if ! git cat-file -e "HEAD:.github/workflows/release-agent.yml" 2>/dev/null; then
+        log_error "HEAD has no .github/workflows/release-agent.yml, and a tag push runs the workflow as it is at the tagged commit."
+        log_error "An agent-v* tag minted here would build and publish nothing, and its number could never be used again."
+        log_error "That workflow lands with #472's workflows PR (#491); mint once it is on main. Nothing was tagged."
+        exit 1
+    fi
+
+    log_info "Minting the agent release tag (get-version-info.sh --agent-tag)..."
+    MINT_OUTPUT="$("$SCRIPT_DIR/get-version-info.sh" --agent-tag --push)"
+    VERSION="$(printf '%s\n' "$MINT_OUTPUT" | sed -n 's/^version=//p')"
+    TAG="$(printf '%s\n' "$MINT_OUTPUT" | sed -n 's/^tag=//p')"
+    ACTION="$(printf '%s\n' "$MINT_OUTPUT" | sed -n 's/^action=//p')"
+    if [[ -z "$VERSION" || -z "$TAG" || -z "$ACTION" ]]; then
+        log_error "Mint output contract violated (got: $MINT_OUTPUT)"
+        exit 1
+    fi
+    log_success "Minted $TAG ($ACTION)"
+
+    # What this run did, and what it did not: it has not observed the workflow,
+    # which is triggered by the tag push, asynchronous, and waits on `prd`'s
+    # required reviewer. So this names what a push TRIGGERS and where to look,
+    # never a result; a `reuse` pushed nothing and says so; and an action this
+    # block does not recognise claims nothing rather than falling through to
+    # "pushed".
+    log_info ""
+    case "$ACTION" in
+        create)
+            log_info "Pushing $TAG is what triggers .github/workflows/release-agent.yml."
+            ;;
+        reuse)
+            log_info "$TAG already pointed at HEAD, so it was reused, not pushed again."
+            log_info "If release-agent.yml ran for this tag, its ORIGINAL push triggered it —"
+            log_info "this run pushed nothing and started nothing."
+            ;;
+        *)
+            log_warning "The mint reported action '$ACTION' for $TAG, which this block does not"
+            log_warning "know, so it is not claiming the tag was pushed this run."
+            log_info "An agent-v* tag push is what triggers .github/workflows/release-agent.yml."
+            ;;
+    esac
+    log_info "That workflow builds the agent's four binaries on CI, verifies them on"
+    log_info "runners matching each target, and — behind the 'prd' environment's"
+    log_info "required reviewer — signs them and attaches them to a DRAFT release"
+    log_info "named $TAG. It is asynchronous and this script has not observed it."
+    log_info ""
+    log_info "  1. Approve the 'prd' deployment for the sign-and-attach job:"
+    log_info "       gh run list --workflow=release-agent.yml --branch $TAG"
+    log_info "  2. Review the draft once the job has uploaded to it:"
+    log_info "       gh release view $TAG"
+    log_info "  3. Publish the draft as a normal release, not a pre-release, and"
+    log_info "     do NOT tick \"Set as the latest release\" — that slot belongs to the"
+    log_info "     cockpit's v* releases. Publishing is what triggers"
+    log_info "     .github/workflows/publish-agent-feed.yml which, behind ONE MORE"
+    log_info "     'prd' approval, signs agent-latest.json onto the rolling 'agent-latest'"
+    log_info "     release — the feed every installed agent and install.sh reads."
+    log_info ""
+    log_info "Never delete an agent-v* tag: the mint's next number is read from the"
+    log_info "remote's tags, and a deleted tag's number would otherwise be handed out"
+    log_info "again for different bytes (the mint refuses a name whose RELEASE exists)."
+    exit 0
+fi
 
 # Resolve the Sentry DSN (issue #75).
 #

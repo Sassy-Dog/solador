@@ -14,11 +14,11 @@ use updatefeed::agent::{self, TARGETS};
 
 const BIN: &str = env!("CARGO_BIN_EXE_solador-agent-feed");
 const VERSION: &str = "2026.9.9";
-const TAG: &str = "v2026.9.9";
+const TAG: &str = "agent-v2026.9.9";
 const BASE: &str = "https://github.com/Sassy-Dog/solador/releases/download";
 
 fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/agent")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/agent-v")
 }
 
 fn shipped_pubkey() -> PathBuf {
@@ -323,7 +323,7 @@ fn a_version_the_contract_refuses_is_refused_as_a_version() {
         &scratch,
         &fixtures().join("test-agent-key.pub"),
         "2026.09.9",
-        "v2026.09.9",
+        "agent-v2026.09.9",
         BASE,
     );
     refused(&scratch, r, "is not the CalVer");
@@ -331,10 +331,30 @@ fn a_version_the_contract_refuses_is_refused_as_a_version() {
         &scratch,
         &fixtures().join("test-agent-key.pub"),
         VERSION,
-        "v2026.9.8",
+        "agent-v2026.9.8",
         BASE,
     );
     refused(&scratch, r, "does not name version");
+}
+
+/// The producer writes `agent-v<version>` URLs and nothing else (#490): the
+/// legacy `v<version>` tag — what this CLI used to require — is a refusal that
+/// names the tag it WOULD take, and nothing is written.
+#[test]
+fn the_legacy_v_tag_is_refused_and_the_message_names_the_agent_v_one() {
+    let scratch = Scratch::with_assets("legacy-tag");
+    for legacy in ["v2026.9.9", "2026.9.9", "agent-latest"] {
+        let r = build(
+            &scratch,
+            &fixtures().join("test-agent-key.pub"),
+            VERSION,
+            legacy,
+            BASE,
+        );
+        assert!(!r.0, "{legacy}: expected a refusal, got:\n{}", r.1);
+        assert!(r.1.contains("agent-v2026.9.9"), "{legacy}: {}", r.1);
+        refused(&scratch, r, "does not name version");
+    }
 }
 
 #[test]

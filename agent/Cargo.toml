@@ -2,11 +2,12 @@
 name = "solador-agent"
 # NOT the version this agent ships under, and not the version it reports.
 #
-# Since #390 the agent is a PUBLISHED artifact on the same GitHub Release as
-# the cockpit, carrying the repo's CalVer — derived by
-# `scripts/get-version-info.sh`, compiled in by `build.rs`, printed by
-# `--version` and served at `/v1/health`. `docs/VERSIONING.md` reclassifies the
-# agent accordingly; this number stopped being a release version there.
+# Since #390 the agent is a PUBLISHED artifact, and since #472/#490 it carries a
+# version of its own (`agent-vYYYY.M.N`; a source build's is
+# `<base>+dev.<k>.g<sha>`) — derived by `scripts/get-version-info.sh
+# --agent-version`, compiled in by `build.rs`, printed by `--version` and served
+# at `/v1/health`. `docs/VERSIONING.md` reclassifies the agent accordingly; this
+# number stopped being a release version there.
 #
 # It survives as the **wire-contract marker** the log below has always been: a
 # minor here records a key this agent has never produced before, which is what

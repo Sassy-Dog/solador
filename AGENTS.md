@@ -109,7 +109,8 @@ coverage it does not have would be worse than the checklist.
   `crates/*`, `app/src-tauri`), `agent/deploy/lib_test.sh`, the versioning
   suite (`scripts/versioning-test.sh`, #405 — the CalVer derivation, the
   mint and its output contract, the build number, and #404's release-tag
-  assertion, against temporary bare origins), the local run/signing helper
+  assertion, plus the agent's derivation, mint, `--agent` assertion and
+  `publish --agent` (#490), against temporary bare origins), the local run/signing helper
   suite (`scripts/run-test.sh`), the signing-identity refusal test
   (`scripts/signing-identity-test.sh`, #474), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
@@ -127,7 +128,9 @@ coverage it does not have would be worse than the checklist.
 - `./dev clean` — Clean build artifacts
 - `./dev publish` — mint the CalVer tag, then build a signed, notarized,
   stapled `.dmg` (#306). **Pushes a real tag**; `--skip-mint` runs the same
-  build without one
+  build without one. `./dev publish --agent` mints and pushes the agent's own
+  `agent-vYYYY.M.N` tag instead (#490) and stops — no `.dmg`, none of the
+  cockpit's credentials, and a **real tag** too
 
 > `./dev lint` is the local mirror of CI's Rust lint gates, which live inside the
 > `rust-workspace` and `agent-tests` jobs. `./scripts/install-hooks.sh`
@@ -278,8 +281,10 @@ when Windows gains an updater payload, those two lines change together.
 `release-agent-build`, `release-agent-verify` and `release-agent-publish` are
 `release.yml`'s third leg, producing four **raw binaries** —
 `x86_64`/`aarch64-unknown-linux-musl`, `aarch64`/`x86_64-apple-darwin` — each
-with a detached minisign `.minisig`. One tag, one release, both products;
-deliberately not a second release train. `./dev agent` is the same command
+with a detached minisign `.minisig`. One tag, one release, both products —
+**until #472's cut-over**: the agent moves onto an `agent-v*` release train of
+its own (see **Versioning**; its version and mint are #490, its workflows #491,
+and this leg leaves `release.yml` with those). `./dev agent` is the same command
 locally.
 
 **The agent's macOS floor is its own, and it is 11.0** — not the workspace's
@@ -328,10 +333,14 @@ rotation a release rather than a recall. See **Working on the Agent** below.
 
 **The agent feed (#391).** `agent-latest.json` is the agent's counterpart to
 `latest.json` and deliberately **not** an extension of it: Tauri owns that
-schema. It carries `version` (the CalVer, no `v`) and `targets` keyed by the
-full triple — exactly the four — each with `url`, the binary's plain-minisign
+schema. It carries `version` (the agent release's CalVer, no `agent-v`) and
+`targets` keyed by the full triple — exactly the four — each with `url` (on the
+`agent-v<version>` release: the only shape the producer writes since #490, and
+the only one `update.rs` accepts), the binary's plain-minisign
 `signature` verbatim, and `sha256` over the raw bytes. **The hash is what lets
-an installed agent skip an app-only release without downloading**; it is
+an installed agent answer "is the binary I am running already this release's?"
+without downloading** (the version is compiled in, so a new version is always new
+bytes); it is
 computed by `crates/updatefeed::agent` from bytes whose signature *already
 verified* under `agent/release-signing-key.pub`, never taken from a caller, and
 a missing, duplicate or unknown target, a foreign signature or a moved byte
@@ -454,11 +463,12 @@ the bundle's floor.
 ├── crates/
 │   ├── wire/               # Wire-format types shared with the agent's JSON
 │   │                       #   contract (package `solador-wire`, imported as `wire`)
-│   ├── buildversion/       # the git-derived CalVer, published to a crate at
-│   │                       #   build time. A BUILD dependency of both
-│   │                       #   app/src-tauri and agent/, so the plumbing around
-│   │                       #   scripts/get-version-info.sh has one home. NO
-│   │                       #   dependencies, for the same reason fault has none
+│   ├── buildversion/       # the git-derived versions — the cockpit's CalVer and
+│   │                       #   the agent's own (#490) — published to a crate at
+│   │                       #   build time, two entry points. A BUILD dependency
+│   │                       #   of both app/src-tauri and agent/, so the plumbing
+│   │                       #   around scripts/get-version-info.sh has one home.
+│   │                       #   NO dependencies, for the same reason fault has none
 │   ├── certpin/            # the certificate fingerprint FORMAT (package
 │   │                       #   `solador-certpin`, imported as `certpin`):
 │   │                       #   uppercase colon-hex SHA-256, plus the parser an
@@ -520,8 +530,9 @@ the bundle's floor.
 │   └── release-signing-key.pub  # the trust set's first key; a committed
 │                           #   release-signing-key-next.pub is its second
 ├── tests/fixtures/           # Wire-contract fixtures shared by agent/ + crates/,
-│                           #   plus the feeds' signed fixtures (updater/, agent/,
-│                           #   and agent-v/, the agent updater's own copy)
+│                           #   plus the feeds' signed fixtures (updater/, and
+│                           #   agent-v/, the agent feed's: written by the
+│                           #   producer, read by it and by the updater)
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
 ├── brand/                  # Brand assets
 └── docs/                   # Versioning, secrets, PRD
@@ -628,13 +639,15 @@ the bundle's floor.
   There is no unpin: to go back to plain HTTP, delete the host and add it again.
 - Agent endpoints: `GET /v1/snapshot` (CPU/mem/disk/net/gpu/battery),
   `GET /v1/containers`, `GET /v1/health`. All require `Authorization: Bearer <token>`.
-- **`/v1/health`'s `version` is the repo CalVer, and it is optional (#390).**
-  The agent is a published artifact now, so it carries the same number the
-  release does; `agent/Cargo.toml`'s semver stopped naming a release and
-  survives only as the wire-contract marker its comment block describes. A build
-  made outside a full git checkout cannot count this month's commits, so it
-  **omits** the key — never `null`, never the crate semver as a stand-in — and
-  the Settings row reads `agent version —`.
+- **`/v1/health`'s `version` is the agent's own version, and it is optional
+  (#390, #490).** The agent is a published artifact with a release train of its
+  own, so a release's binary carries that release's `YYYY.M.N` (`agent-v…`), and
+  a source build carries `<base>+dev.<k>.g<sha>` — the Settings row prints
+  either verbatim as `v{version}`. `agent/Cargo.toml`'s semver stopped naming a
+  release and survives only as the wire-contract marker its comment block
+  describes. A build made outside a full git checkout cannot count the commits
+  since its base, so it **omits** the key — never `null`, never the crate semver
+  as a stand-in — and the Settings row reads `agent version —`.
 - **Unknown is representable.** Every metric a producer may not be able to
   measure (memory used/swap/pressure, thermal state, the GPU fields,
   disk/network rates, `processes[].cpuCores`) is an `Option` in `crates/wire`:
@@ -813,7 +826,7 @@ Runs `cargo test --locked --workspace` (`crates/*`, `app/src-tauri`),
 scripts — #405 — against temporary bare origins: `get-version-info.sh`'s
 derivation and §4 mint with the `action ∈ {create, reuse}` and
 reuse-pushes-nothing contract, `get-build-number.sh`, and the release
-workflows' tag assertion from #404; ~160 cases, run under bash 5, macOS
+workflows' tag assertion from #404, and since #490 the agent's derivation, mint, `--agent` assertion and `publish --agent` (`gh` stubbed through `PATH`); ~400 cases, run under bash 5, macOS
 `/bin/bash` 3.2 and Git Bash in CI), `scripts/run-test.sh` (`./dev run`'s
 signing-identity choice: the exact-identity Apple certificate trust gate, and
 the warned ad-hoc run where no Apple Development certificate is installed —
@@ -875,29 +888,62 @@ publishes the derived CalVer as `SOLADOR_MARKETING_VERSION`, and
 nothing itself** — it shells out to `get-version-info.sh`, honouring an explicit
 `MARKETING_VERSION` pin ahead of it, because the algorithm has exactly one home.
 
-**Two shipping tiers, one number (#390).** The agent takes the same CalVer by
-the same route: `agent/build.rs` calls `crates/buildversion`, the shared helper
-`app/src-tauri/build.rs` now also calls, so the *plumbing* around that one
-script (a worktree's `.git` file, the ref file a commit rewrites, the
-shallow-clone refusal) exists once rather than once per build script.
-`solador-agent --version` prints it and nothing else — a contract both
-`agent/deploy/lib.sh` and `release.yml` read directly — and `/v1/health` serves
-the same string, so one binary gives one answer. `agent/Cargo.toml`'s `0.5.0` is
-now unpublished metadata in exactly the sense `app/src-tauri`'s `0.1.0` is, kept
-as the wire-contract marker and read by nothing at runtime.
+**Two shipping tiers, two numbers (#472, #490).** The agent has a version of its
+own, which moves only when an agent release is cut: `agent-vYYYY.M.N`. It is
+derived in the same one home, `scripts/get-version-info.sh`, and nowhere else:
+- `--agent-version` is the version of the checkout. An `agent-v*` tag at HEAD is
+  that tag's version; otherwise a source build is `<base>+dev.<k>.g<sha>` — the
+  base is the highest reachable `agent-v*` tag (before one exists,
+  `LAST_COMBINED_AGENT_RELEASE` in `scripts/config.sh`, the last `v*` release
+  that carried agent binaries), `<k>` the commits since it. A shallow clone, or
+  one without the base tag, yields nothing. The `+dev` marker is how a source
+  build never claims to be a release: `solador-agent update` answers it "no
+  applicable release" (exit 4).
+- `--agent-tag` is the agent's mint (`./dev publish --agent` runs it, pre-flight
+  and push included, and needs none of the cockpit's credentials; it also
+  refuses while HEAD lacks `.github/workflows/release-agent.yml`, since a tag
+  push runs the workflow as it is at the tagged commit). It reuses an
+  `agent-v*` tag already on the remote at HEAD; otherwise it mints `agent-v` +
+  this UTC month with N = 1 + the highest patch among **this month's** shipped
+  versions (1 in a month with none) — the **remote's** `agent-v*`
+  tags (`git ls-remote`, never local tags) plus `LAST_COMBINED_AGENT_RELEASE`. It
+  **refuses** a result that does not sort strictly above everything shipped and a
+  name whose *release* already exists, because a deleted tag's number must not be
+  re-minted with different bytes: **never delete an `agent-v*` tag.**
+  `scripts/assert-release-tag.sh --agent <tag>` re-runs it read-only and requires
+  `action=reuse` for exactly that tag.
+
+`agent/build.rs` calls `crates/buildversion`'s agent entry point, beside the
+cockpit's, so the *plumbing* around the one script (a worktree's `.git` file,
+the ref file a commit rewrites, the shallow-clone refusal, and for the agent
+the tag refs a fetch moves) exists once. Its order is the pin
+`AGENT_MARKETING_VERSION`, then the shallow refusal, then the script —
+**`MARKETING_VERSION` never reaches the agent**; it is a desktop release's
+number. `scripts/build-agent.sh` takes the same pin, else `--agent-version`, for
+its `--version` assertion and the artifact names, so `./dev agent` (and CI's
+musl build on every PR) is a `+dev` build that passes. `solador-agent --version`
+prints it and nothing else — a contract both `agent/deploy/lib.sh` and the
+release workflow read directly — and `/v1/health` serves the same string.
+`agent/Cargo.toml`'s semver is unpublished metadata in exactly the sense
+`app/src-tauri`'s `0.1.0` is, kept as the wire-contract marker and read by
+nothing at runtime.
 
 **A shallow clone refuses rather than counts.** CalVer's patch is commits this
-month, and a `fetch-depth: 1` checkout answers that question with `1` instead of
+month (and the agent's `+dev` count is commits since its base), and a
+`fetch-depth: 1` checkout answers that question with `1` instead of
 failing — CI's bundle job already pins `fetch-depth: 0` for exactly this reason,
 and the other jobs are still shallow (`agent-tests` unshallows inside the one
-step that needs a CalVer, its musl build). So the build script checks
+step that needs a version, its musl build). So the build script checks
 `--is-shallow-repository` and emits *no* version there; About renders `Version —`
 and the Sentry release is omitted entirely. Sentry groups and regresses by
 release, so a placeholder is worse than nothing: every un-nameable build would
-share one release and a fixed crash would read as regressed. The refusal, and the rule that a
-`MARKETING_VERSION` pin is consulted before the checkout is looked at, are
+share one release and a fixed crash would read as regressed. The refusal, the
+rule that each track's pin is consulted before the checkout is looked at, and
+the agent entry point ignoring `MARKETING_VERSION` are
 tested in `crates/buildversion` against real `--depth 1` and full clones the
-tests build (#417); the crate still has zero dependencies.
+tests build (#417, #490); the crate still has zero dependencies. The agent's
+derivation and mint, and `publish --agent`, are tested in
+`scripts/versioning-test.sh` against temporary bare origins with a `gh` shim.
 
 ## Common Tasks
 
@@ -913,16 +959,28 @@ tests build (#417); the crate still has zero dependencies.
 - Deploy via `agent/deploy`; see `agent/README.md` for endpoints and rollout.
 - **`install.sh` downloads and verifies; `redeploy.sh` builds (#392).**
   `agent/deploy/install.sh` needs no Rust: it maps `uname` onto one of the
-  four published triples, resolves the latest *published* release off the
-  `/releases/latest` redirect (or `SOLADOR_AGENT_RELEASE`), downloads the raw
-  binary plus `.minisig` into private staging under `~/.cache`, verifies with
-  the stock `minisign` under the checkout's `agent/release-signing-key.pub`,
+  four published triples and finds the release through the **signed feed**
+  (#490): `agent-latest.json` + `.minisig` from the permanent `agent-latest`
+  release, verified with the stock `minisign` under the checkout's
+  `agent/release-signing-key.pub` **before** its `version` is read (a tampered
+  feed is rejected unread, and a `version` that is not a strict CalVer is
+  refused), then the binary from `agent-v<version>`. `/releases/latest` names the
+  cockpit's train and is never consulted. `SOLADOR_AGENT_RELEASE` pins a tag
+  instead — an `agent-v*` tag, or a legacy `v*` tag that carries agent assets
+  (the last combined release is `LAST_COMBINED_AGENT_RELEASE`) — and skips the
+  feed. Either way it downloads the raw binary plus `.minisig` into private
+  staging under `~/.cache`, verifies it under that same key,
   and only then makes it executable, reads `--version`, and installs
   **user-owned at `~/.local/bin/solador-agent`** (staged `.new`, renamed over
   the live path, `.prev` kept — no `sudo` anywhere). A rejected signature runs
-  nothing, installs nothing, stops nothing. A release without agent assets
-  (`v2026.9.3` and earlier) is a **failure naming the tag**, never a source
-  build. The Linux unit is a template rendered with the actual path; macOS is a
+  nothing, installs nothing, stops nothing. A signed feed is not a freshness
+  guarantee, so an unpinned re-run refuses to move an installed *release*
+  backwards (an installed `+dev` source build is deliberately exempt: it is not
+  a CalVer, and this script is how such a host gets onto a release). A release
+  without agent assets (`v2026.9.3` and earlier, or an
+  `agent-v` release that lacks this host's) is a **failure naming the tag**,
+  never a source build, and so is a missing feed (nothing published through
+  `agent-latest` yet: pin one). The Linux unit is a template rendered with the actual path; macOS is a
   **LaunchAgent** (`~/Library/LaunchAgents/app.solador.agent.plist`, label
   `app.solador.agent`, `gui/<uid>`) whose `ProgramArguments` is a launcher
   (`~/.local/bin/solador-agent-launchd`, from `deploy/run-agent.sh`) that reads
@@ -1175,10 +1233,10 @@ tests build (#417); the crate still has zero dependencies.
   refused; an installed binary that carries no version, or a non-CalVer one,
   is refused rather than assumed older; one whose version contains `+dev` is
   a source build with nothing to compare, which is exit **4**, asked before
-  the CalVer parse that would refuse it with exit 1 — the marker is #472's
-  agent versioning (#490), so no build carries it yet and the check ships
-  first because the bridge release's updater (#472's cut-over, #492) must already
-  know it); a feed that is not
+  the CalVer parse that would refuse it with exit 1 — the marker is the one
+  #490 gives every build that is not an `agent-v*` release, and the check
+  shipped first (#488) because the bridge release's updater (#472's cut-over,
+  #492) had to know it before any build carried it); a feed that is not
   there — a 404 on `agent-latest` — is exit 1 with nothing changed, never a
   quiet day, so a deleted `agent-latest` cannot hide; download into memory and verify **signature and
   SHA-256** before a byte reaches disk; stage `<bin>.new` (0755) and execute
@@ -1214,10 +1272,17 @@ tests build (#417); the crate still has zero dependencies.
   a throwaway real LaunchAgent (`SOLADOR_AGENT_SMOKE_NEWER_BINARY` adds the
   success path, `SOLADOR_AGENT_SMOKE_REAL_FEED=1` a read-only run against
   github.com through the CLI — which is a 404, exit 1, and its assertions
-  fail, until the first `agent-v` release has published `agent-latest`).
-  `update.rs`'s own fixture tests read `tests/fixtures/agent-v/`, not the
-  `agent/` directory `crates/updatefeed` shares (bar one guard test that ties
-  the two together; `tests/fixtures/README.md` says why they differ). The negative control — bypass `Trust::verify`
+  fail, until the first `agent-v` release has published `agent-latest`). A
+  build of this checkout is a `+dev` source build, which `update` does not
+  compare, so unpinned the smoke runs only that read-only real-feed part and
+  says it skipped the rest; the whole transaction needs a release-like version
+  baked in at build time (`AGENT_MARKETING_VERSION=2098.1.1`, above today's
+  CalVer and below the 2099.1.1 it offers).
+  `update.rs`'s fixture tests and `crates/updatefeed`'s read the SAME directory,
+  `tests/fixtures/agent-v/`, which the **producer** wrote
+  (`solador-agent-feed build --tag agent-v2026.9.9`; `tests/fixtures/README.md`
+  has the procedure), so the producer's URL shape and the consumer's
+  `check_feed_urls` are tied by one file rather than by two copies. The negative control — bypass `Trust::verify`
   and watch nine tests go red — is recorded on the PR that shipped it, and
   the same proven-to-fail rule binds any change here. Every failure that
   leaves a service to look at ends with the manager's status command and the

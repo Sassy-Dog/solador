@@ -17,10 +17,16 @@
 # still builds from source — and the helpers below are grouped accordingly.
 # The version-and-health half is shared by both.
 
-# ---- release artifacts (#392) ----------------------------------------------
-# The published agent binaries live on the same GitHub Release the cockpit
-# ships on, one tag for both products (#390). Every asset name below is
-# constructed to match what `scripts/build-agent.sh` produced and `release.yml`
+# ---- release artifacts (#392, #490) -------------------------------------------
+# The published agent binaries live on the agent's OWN releases, one tag per
+# release, `agent-vYYYY.M.N` (#472) — a release train of its own, apart from the
+# cockpit's `v*` tags. They are FOUND through the signed feed on the permanent
+# `agent-latest` release, never through GitHub's `/releases/latest` (which names
+# the cockpit's newest release and carries no agent assets). Releases cut before
+# the split, `vYYYY.M.N` tags with agent assets (the last combined release is
+# named by LAST_COMBINED_AGENT_RELEASE in scripts/config.sh), are still
+# installable by pinning one explicitly. Every asset name below is constructed
+# to match what `scripts/build-agent.sh` produced and the agent release workflow
 # attached; install.sh names the repository.
 
 # Map this host's `uname -s` / `uname -m` onto one of the four published
@@ -59,56 +65,137 @@ agent_asset_name() {
     printf 'solador-agent-%s-%s\n' "$version" "$triple"
 }
 
-# A release tag is `v` + the repo's CalVer (`vYYYY.M.N`, docs/VERSIONING.md),
-# and nothing else is accepted — not a branch name, not a commit, not the
-# `releases` landing page a redirect can hand back when a repo has no releases.
-# The download URL is built from this string, so it is validated before it is
-# ever interpolated.
+# Is $1 a CalVer as the mints emit it? A four-digit year, a NON-padded month 1-12
+# and a patch of at least 1: `2026.9.8`, never `2026.09.8`, `2026.9.0`, a `v`
+# prefix, or a `+dev` source-build suffix. A bash regex over the WHOLE string
+# (not grep's per-line match), so a newline cannot let a second line ride along.
+is_calver_version() {
+    local re='^[1-9][0-9]{3}\.([1-9]|1[0-2])\.[1-9][0-9]*$'
+    [[ "$1" =~ $re ]]
+}
+
+# A release tag is `agent-v` + a CalVer (`agent-vYYYY.M.N`, the agent's own
+# release train, #472) or, for a release cut before that split, `v` + a CalVer
+# (`vYYYY.M.N`, docs/VERSIONING.md) — and nothing else is accepted: not a branch
+# name, not a commit, not `agent-latest` (the rolling feed release, which holds
+# no binaries), not the `releases` landing page a redirect can hand back. The
+# download URL is built from this string, so it is validated before it is ever
+# interpolated.
 validate_release_tag() {
-    local tag="$1"
-    # grep matches per LINE, so a newline inside the value would let a second
-    # line ride along on the first one's match. Refuse control characters
-    # outright before the pattern is consulted.
+    local tag="$1" version
+    # Refuse control characters outright before the pattern is consulted: a
+    # newline inside the value must not be able to ride along into a URL.
     case "$tag" in
         *[[:cntrl:]]*)
             echo "ERROR: release tag contains a control character; refusing it." >&2
             return 1
             ;;
     esac
-    if printf '%s' "$tag" | grep -qE '^v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$'; then
+    case "$tag" in
+        agent-v*) version="${tag#agent-v}" ;;
+        v*) version="${tag#v}" ;;
+        *) version="" ;;
+    esac
+    if [ -n "$version" ] && is_calver_version "$version"; then
         return 0
     fi
-    echo "ERROR: '$tag' is not a release tag (expected vYYYY.M.N, e.g. v2026.9.8)." >&2
+    echo "ERROR: '$tag' is not a release tag (expected agent-vYYYY.M.N, e.g. agent-v2026.11.1, or a legacy vYYYY.M.N that carries agent assets, e.g. v2026.9.8)." >&2
     return 1
 }
 
-# Resolve the latest *published* release tag and print it.
+# The version a (validated) release tag names: the tag without its prefix. The
+# prefix is the only difference between the two tag kinds, so one function reads
+# both and the asset name is built the same way for either.
+release_version_of_tag() {
+    local tag="$1"
+    case "$tag" in
+        agent-v*) printf '%s\n' "${tag#agent-v}" ;;
+        *) printf '%s\n' "${tag#v}" ;;
+    esac
+}
+
+# ---- the signed feed: how the default path finds the latest agent release ------
+# The agent's releases are found through `agent-latest.json` on the permanent
+# `agent-latest` release (docs/AGENT-DISTRIBUTION.md §2): a document signed under
+# the committed key that names the version of the newest published agent
+# release. It replaces `/releases/latest`, which names the COCKPIT's newest
+# release and carries no agent assets.
+AGENT_FEED_RELEASE="agent-latest"
+AGENT_FEED_ASSET="agent-latest.json"
+
+# Read the `version` out of a feed whose signature has ALREADY VERIFIED, and
+# print it — or print nothing and fail. NEVER call this on bytes that have not
+# passed `verify_agent_signature`: the whole point of the order is that the
+# first thing read out of the download is read out of bytes the committed key
+# vouches for.
 #
-# GitHub answers `<repo>/releases/latest` with a redirect to
-# `<repo>/releases/tag/<tag>` for the newest non-draft, non-prerelease release.
-# That redirect is the whole discovery mechanism: no API token, no JSON to
-# parse, nothing but curl. A draft is invisible here by construction — its
-# assets are not downloadable either — so this can only ever name a release
-# whose files a stranger could fetch.
-#
-# What it cannot do is promise the release *has* agent binaries. The first
-# releases after #390 predate them, and the download step is where that is
-# discovered — as a hard failure naming the tag, never as a fallback.
-resolve_latest_release_tag() {
-    local repo="$1" effective tag
-    effective="$(curl -fsSL --proto '=https' -o /dev/null -w '%{url_effective}' "$repo/releases/latest")" || {
-        echo "ERROR: could not resolve the latest release from $repo/releases/latest." >&2
-        return 1
-    }
-    case "$effective" in
-        "$repo/releases/tag/"?*) tag="${effective#"$repo/releases/tag/"}" ;;
-        *)
-            echo "ERROR: $repo/releases/latest did not land on a release tag (got: ${effective:-<nothing>})." >&2
+# The feed is the producer's own pretty-printed document
+# (`crates/updatefeed::agent`'s `Feed::to_bytes`: two-space indent, `version`
+# first), so `version` is the one line shaped `  "version": "…",` at that
+# indent — no JSON parser, no jq. Anything else (no such line, two of them, a
+# version that is not a strict CalVer) is a refusal, not a guess: a feed this
+# parser cannot read is a feed this checkout predates, and "fails closed" is
+# the only safe answer there. `agent/src/update.rs` does the full decode.
+agent_feed_version() {
+    local file="$1" found version
+    [ -f "$file" ] || { echo "ERROR: feed $file not found; nothing to read." >&2; return 1; }
+    found="$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$file")"
+    case "$found" in
+        "")
+            echo "ERROR: the verified feed has no top-level \"version\" this installer can read." >&2
+            echo "       Refusing to guess; pin a release with SOLADOR_AGENT_RELEASE=agent-vYYYY.M.N." >&2
+            return 1
+            ;;
+        *$'\n'*)
+            echo "ERROR: the verified feed names more than one top-level version; refusing to pick one." >&2
             return 1
             ;;
     esac
-    validate_release_tag "$tag" || return 1
-    printf '%s\n' "$tag"
+    version="$found"
+    if ! is_calver_version "$version"; then
+        echo "ERROR: the verified feed's version '$version' is not a CalVer (YYYY.M.N); refusing it." >&2
+        echo "       It is signed, but nothing here would accept it as a release to download." >&2
+        return 1
+    fi
+    printf '%s\n' "$version"
+}
+
+# Resolve the latest *published* agent release and print its tag
+# (`agent-v<version>`), reading it from the signed feed:
+#
+#   1. fetch `agent-latest.json` and its `.minisig` from the `agent-latest`
+#      release into STAGE (a private directory the caller owns and removes);
+#   2. VERIFY them with the stock `minisign` under the checked-out public key —
+#      the same gate the binary passes, `verify_agent_signature`;
+#   3. ONLY THEN read `version` out of the verified bytes, strictly.
+#
+# That order is the point: a feed that fails verification is rejected before a
+# byte of it has been interpreted, so a tampered `version` — a host steered to
+# a release of the attacker's choosing — is never read at all. What this cannot
+# do is stop a REPLAYED older feed, which is validly signed; the caller's
+# refusal to move an installed agent backwards covers that (install.sh's
+# downgrade check). The binary is then downloaded from that tag and verified on
+# its own signature, as before.
+resolve_latest_agent_release() {
+    local repo="$1" stage="$2" pubkey="$3" feed sig url version
+    feed="$stage/$AGENT_FEED_ASSET"
+    sig="$feed.minisig"
+    url="$repo/releases/download/$AGENT_FEED_RELEASE/$AGENT_FEED_ASSET"
+    if ! download_release_asset "$url" "$feed"; then
+        echo "ERROR: could not download the agent feed $url" >&2
+        echo "       Agent releases are found through that signed feed. Either no agent release" >&2
+        echo "       has been published through it yet, or it is not reachable from here." >&2
+        echo "       This installer does not fall back to building from source." >&2
+        return 1
+    fi
+    if ! download_release_asset "$url.minisig" "$sig"; then
+        echo "ERROR: could not download $url.minisig" >&2
+        echo "       The feed is published without its signature; refusing to read an unverifiable one." >&2
+        return 1
+    fi
+    verify_agent_signature "$feed" "$sig" "$pubkey" || return 1
+    version="$(agent_feed_version "$feed")" || return 1
+    printf 'agent-v%s\n' "$version"
 }
 
 # Fetch one release asset to a path. `--proto '=https'` refuses to follow a
@@ -292,8 +379,12 @@ curl_exit_hint() {
 # Ask a built agent binary what version it is, and print it.
 #
 # Read out of the ARTIFACT, never out of a manifest. Since #390 the agent's
-# version is the repo's CalVer, derived once by scripts/get-version-info.sh and
-# compiled in by agent/build.rs — `agent/Cargo.toml`'s `[package] version` is a
+# version is derived once by scripts/get-version-info.sh and compiled in by
+# agent/build.rs — since #490 it is the agent's OWN version (a release's
+# `YYYY.M.N`, or a source build's `<base>+dev.<k>.g<sha>`, which is what a
+# from-source redeploy verifies), pinned by AGENT_MARKETING_VERSION in a release
+# build and never by the cockpit's MARKETING_VERSION. `agent/Cargo.toml`'s
+# `[package] version` is a
 # wire-contract marker that names no release and would now assert the wrong
 # number against /v1/health. Asking the binary is also the repo's standing rule
 # for version claims (the macOS bundle re-reads its own Info.plist): it is the
@@ -309,8 +400,9 @@ binary_version() {
     [ -x "$bin" ] || { echo "ERROR: $bin is not an executable binary." >&2; return 1; }
     out="$("$bin" --version 2>/dev/null)" || {
         echo "ERROR: $bin --version failed." >&2
-        echo "       A binary built outside a full git checkout (a shallow clone, or an" >&2
-        echo "       unpacked source archive) carries no version; see docs/VERSIONING.md." >&2
+        echo "       A binary built outside a full git checkout (a shallow clone, an" >&2
+        echo "       unpacked source archive, or a clone without the agent's base tag —" >&2
+        echo "       git fetch --tags) carries no version; see docs/VERSIONING.md." >&2
         return 1
     }
     # First line, then all whitespace (a stray CR from a checkout that rewrote

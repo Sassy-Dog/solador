@@ -51,7 +51,7 @@ source "$SCRIPT_DIR/lib.sh"
 unset CARGO_TARGET_DIR
 unset VERIFY_HEALTH_ATTEMPTS
 unset SOLADOR_AGENT_RELEASE SOLADOR_AGENT_BIND SOLADOR_AGENT_PORT SOLADOR_AGENT_LAUNCHD_LABEL
-unset STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS STUB_CURL_REDIRECT STUB_CURL_BODY
+unset STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS STUB_CURL_BODY
 unset STUB_LAUNCHCTL_DOMAIN_EXIT STUB_LAUNCHCTL_LOADED_EXIT STUB_LAUNCHCTL_BOOTSTRAP_EXIT
 unset STUB_LAUNCHCTL_DISABLED_LABEL STUB_LAUNCHCTL_DISABLED_WORD STUB_PLUTIL_EXIT
 unset STUB_SYSTEMCTL_USER_EXIT STUB_TAILSCALE_IP STUB_CURL_FIXTURES
@@ -291,14 +291,18 @@ case "${1:-}" in
 esac
 STUB
 
-# curl, three shapes, told apart by their flags:
-#   -w '%{url_effective}'  the latest-release redirect: prints STUB_CURL_REDIRECT
-#                          (fails like a 404 when it is empty)
+# curl, two shapes, told apart by their flags:
 #   -o <dest> <url>        an asset download: copies STUB_CURL_FIXTURES/<basename
-#                          of url> to <dest>, or fails like `curl -f` on a 404
+#                          of url> to <dest>, or fails like `curl -f` on a 404.
+#                          The feed (`agent-latest.json` and its `.minisig`) and
+#                          the binaries are served the same way, by basename;
+#                          WHICH URL was asked is what STUB_CURL_ARGV records.
 #   anything else          the health probe: prints STUB_CURL_BODY, or exits
 #                          non-zero like `curl -f` when there is no body
-# Every invocation is appended to STUB_CURL_ARGV when that is set.
+# Every invocation is appended to STUB_CURL_ARGV when that is set. (There is no
+# `-w '%{url_effective}'` shape any more: it served `/releases/latest`'s
+# redirect, which the installer no longer reads — #490. The tests assert the
+# argv never names `releases/latest`, which is how a regression there shows.)
 cat > "$STUBS/curl" <<'STUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_CURL_ARGV:-}" ]; then
@@ -306,11 +310,10 @@ if [ -n "${STUB_CURL_ARGV:-}" ]; then
 fi
 dest=""
 url=""
-want_effective=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o) dest="$2"; shift ;;
-        -w) case "$2" in *url_effective*) want_effective=true ;; esac; shift ;;
+        -w) shift ;;
         -K)
             # A config file. `-` is stdin, which is how verify_health passes
             # the Authorization header; record its lines beside the argv so
@@ -326,11 +329,6 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-if [ "$want_effective" = true ]; then
-    [ -n "${STUB_CURL_REDIRECT:-}" ] || exit 22
-    printf '%s' "$STUB_CURL_REDIRECT"
-    exit 0
-fi
 if [ -n "$dest" ] && [ "$dest" != "/dev/null" ]; then
     src="${STUB_CURL_FIXTURES:-/nonexistent}/$(basename "$url")"
     if [ -f "$src" ]; then
@@ -1486,6 +1484,13 @@ test_verify_health() {
         || pass "calver_newer treats an unparseable version as not newer"
     calver_newer 2026.9 2026.9.8 && fail "calver_newer needs three fields" "two fields compared as newer" \
         || pass "calver_newer needs three fields"
+    # A `+dev` source build (#490) is not a CalVer on EITHER side, so it never
+    # counts as newer — which is what exempts an installed source build from
+    # install.sh's downgrade refusal (it is how such a host moves onto a release).
+    calver_newer 2026.10.14+dev.3.gabc1234 2026.9.8 && fail "calver_newer treats an installed +dev version as not newer" "a +dev version compared as newer" \
+        || pass "calver_newer treats an installed +dev version as not newer"
+    calver_newer 2026.11.1 2026.10.14+dev.3.gabc1234 && fail "calver_newer treats a +dev target as not comparable" "a +dev target compared" \
+        || pass "calver_newer treats a +dev target as not comparable"
 
     # The damning case: the unit is up, healthy, and serving the wrong code.
     # Both numbers have to be named or the operator cannot tell this from a
@@ -1763,7 +1768,7 @@ test_release_contract_matches_config() {
     # release.yml reads it back — so bind agent_asset_name to both producers'
     # spelling. A rename upstream fails here rather than 404ing every install.
     assert_file_has "agent_asset_name matches how build-agent.sh names the artifact" \
-        "$SCRIPT_DIR/../../scripts/build-agent.sh" '$AGENT_PACKAGE-$MARKETING_VERSION-$triple'
+        "$SCRIPT_DIR/../../scripts/build-agent.sh" '$AGENT_PACKAGE-$AGENT_MARKETING_VERSION-$triple'
     assert_file_has "agent_asset_name matches how release.yml attaches the artifact" \
         "$SCRIPT_DIR/../../.github/workflows/release.yml" 'solador-agent-$VERSION-$t'
     assert_eq "agent_asset_name composes package-version-triple" \
@@ -1772,59 +1777,224 @@ test_release_contract_matches_config() {
 }
 
 test_validate_release_tag() {
+    # Both tag kinds: the agent's own train, and the legacy cockpit-numbered one
+    # (a release cut before the split, which carries agent assets).
     validate_release_tag v2026.9.8 >/dev/null 2>&1
-    assert_eq "validate_release_tag accepts a CalVer tag" "0" "$?"
+    assert_eq "validate_release_tag accepts a legacy CalVer tag" "0" "$?"
     validate_release_tag v2026.12.141 >/dev/null 2>&1
-    assert_eq "validate_release_tag accepts a two-digit month" "0" "$?"
+    assert_eq "validate_release_tag accepts a legacy tag with a two-digit month" "0" "$?"
+    validate_release_tag agent-v2026.11.1 >/dev/null 2>&1
+    assert_eq "validate_release_tag accepts an agent-v tag" "0" "$?"
+    validate_release_tag agent-v2026.12.141 >/dev/null 2>&1
+    assert_eq "validate_release_tag accepts an agent-v tag with a two-digit month" "0" "$?"
 
     # The tag is interpolated into a URL, so anything that is not exactly a
     # tag is refused before it gets there.
     local bad
-    for bad in 2026.9.8 v2026.9 v2026.9.8.1 main "v2026.9.8/../x" "" "v2026.9.8 " "V2026.9.8"; do
+    for bad in 2026.9.8 v2026.9 v2026.9.8.1 main "v2026.9.8/../x" "" "v2026.9.8 " "V2026.9.8" \
+        v v2026.09.8 v2026.9.0 v2026.13.1 v2026.9.8-rc1 \
+        agent-latest agent-v agent-v2026.9 agent-v2026.09.8 agent-v2026.9.0 agent-v2026.13.1 \
+        agent-v2026.9.8+dev.1.gabcdef0 agent-v2026.9.8-rc1 agent-vagent-v2026.9.8 \
+        "agent-v2026.9.8/../x" "agent-v2026.9.8 " "Agent-v2026.9.8" vagent-v2026.9.8 \
+        "agent-v2026.9.8.1" "agent-v 2026.9.8"; do
         validate_release_tag "$bad" >/dev/null 2>&1
         assert_eq "validate_release_tag refuses [$bad]" "1" "$?"
     done
-    # grep matches per line: a second line hiding behind a valid first one
-    # must not ride along into the URL.
+    # A second line hiding behind a valid first one must not ride along into
+    # the URL, and neither may a control character.
     validate_release_tag "$(printf 'v2026.9.8\nevil')" >/dev/null 2>&1
     assert_eq "validate_release_tag refuses a tag with an embedded newline" "1" "$?"
+    validate_release_tag "$(printf 'agent-v2026.9.8\nevil')" >/dev/null 2>&1
+    assert_eq "validate_release_tag refuses an agent-v tag with an embedded newline" "1" "$?"
     validate_release_tag "$(printf 'v2026.9.8\t')" >/dev/null 2>&1
     assert_eq "validate_release_tag refuses a tag with a control character" "1" "$?"
+    validate_release_tag "$(printf 'agent-v2026.9.8\t')" >/dev/null 2>&1
+    assert_eq "validate_release_tag refuses an agent-v tag with a control character" "1" "$?"
+    # The refusal says what IS accepted, in both kinds.
+    validate_release_tag main >"$STDERR" 2>&1
+    assert_output_has "the refusal names the agent-v shape" "$(cat "$STDERR")" "agent-vYYYY.M.N"
+    assert_output_has "...and the legacy one" "$(cat "$STDERR")" "legacy vYYYY.M.N"
 }
 
-test_resolve_latest_release_tag() {
-    local repo="https://github.com/Sassy-Dog/solador" got
+test_is_calver_version() {
+    local good bad rc
+    for good in 2026.9.8 2026.12.141 2026.1.1 2027.10.10 9999.12.1; do
+        is_calver_version "$good"
+        assert_eq "is_calver_version accepts [$good]" "0" "$?"
+    done
+    for bad in "" 2026.9 2026.9.8.1 2026.09.8 2026.9.08 2026.9.0 2026.13.1 2026.0.1 026.9.8 20260.9.8 \
+        v2026.9.8 agent-v2026.9.8 2026.9.8+dev.1.gabcdef0 2026.9.8-rc1 " 2026.9.8" "2026.9.8 " 2026.9.x \
+        "2026.9.8
+2026.9.9"; do
+        is_calver_version "$bad"
+        rc=$?
+        assert_eq "is_calver_version refuses [$(printf '%s' "$bad" | tr '\n' '|')]" "1" "$rc"
+    done
+}
 
+test_release_version_of_tag() {
+    assert_eq "release_version_of_tag strips agent-v" "2026.11.1" "$(release_version_of_tag agent-v2026.11.1)"
+    assert_eq "release_version_of_tag strips a legacy v" "2026.9.8" "$(release_version_of_tag v2026.9.8)"
+}
+
+# agent_feed_version reads the version out of a feed whose signature has already
+# verified. It is tied to the PRODUCER's real bytes here, so a change to the
+# document's layout (crates/updatefeed::agent's Feed::to_bytes) fails this suite
+# rather than every install.
+test_agent_feed_version() {
+    local producer="$SCRIPT_DIR/../../tests/fixtures/agent-v/agent-latest.json" f="$TMP/feed-parse.json"
+    assert_eq "agent_feed_version reads the version out of the producer's own feed" \
+        "2026.9.9" "$(agent_feed_version "$producer" 2>/dev/null)"
+
+    printf '{\n  "targets": {}\n}\n' > "$f"
+    agent_feed_version "$f" >"$STDERR" 2>&1
+    assert_eq "agent_feed_version refuses a feed with no version" "1" "$?"
+    assert_output_has "...saying so" "$(cat "$STDERR")" "no top-level \"version\""
+
+    printf '{\n  "version": "2026.9.9",\n  "version": "2026.9.10",\n  "targets": {}\n}\n' > "$f"
+    agent_feed_version "$f" >"$STDERR" 2>&1
+    assert_eq "agent_feed_version refuses a feed naming two versions" "1" "$?"
+    assert_output_has "...saying so" "$(cat "$STDERR")" "more than one"
+
+    # A `version` that is not at the top level is not THE version.
+    printf '{\n  "targets": {\n    "x": {\n      "version": "2026.9.9",\n      "url": "u"\n    }\n  }\n}\n' > "$f"
+    agent_feed_version "$f" >/dev/null 2>&1
+    assert_eq "agent_feed_version ignores a nested version key" "1" "$?"
+
+    # Compact JSON is a layout this reader does not know; fails closed.
+    printf '{"version":"2026.9.9","targets":{}}\n' > "$f"
+    agent_feed_version "$f" >/dev/null 2>&1
+    assert_eq "agent_feed_version fails closed on a layout it cannot read" "1" "$?"
+
+    local value
+    for value in "v2026.9.9" "2026.09.9" "2026.9.0" "2026.9.9+dev.1.gabcdef0" "agent-v2026.9.9" "not-a-version" "" "2026.9.9 "; do
+        printf '{\n  "version": "%s",\n  "targets": {}\n}\n' "$value" > "$f"
+        agent_feed_version "$f" >"$STDERR" 2>&1
+        assert_eq "agent_feed_version refuses version [$value] as not a CalVer" "1" "$?"
+    done
+    assert_output_has "...and names it" "$(cat "$STDERR")" "is not a CalVer"
+    assert_empty "agent_feed_version prints nothing for a refused version" \
+        "$(agent_feed_version "$f" 2>/dev/null)"
+
+    agent_feed_version "$TMP/no-such-feed.json" >/dev/null 2>&1
+    assert_eq "agent_feed_version fails on a missing file" "1" "$?"
+}
+
+# instrument_feed_version FILE — in the CALLING shell (always a subshell here),
+# wrap agent_feed_version so every call appends a line to FILE before doing the
+# real work. How "the version is never read" is observed rather than inferred.
+instrument_feed_version() {
+    eval "real_$(declare -f agent_feed_version)"
+    eval "agent_feed_version() { echo called >> '$1'; real_agent_feed_version \"\$@\"; }"
+}
+
+# resolve_latest_agent_release: fetch the feed, VERIFY it with the real
+# minisign, and only then read `version`. The ordering is the whole claim, so it
+# is observed two ways: a tampered feed is refused with the failure minisign's
+# and nothing printed, AND a recorder standing in for agent_feed_version is never
+# called on it (while it IS called on a good feed — the positive control that
+# the recorder can see).
+test_resolve_latest_agent_release() {
+    local repo="https://github.com/Sassy-Dog/solador" stage="$TMP/resolve-stage" got rc calls="$TMP/feed-version-calls"
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "resolve_latest_agent_release returns the tag a verified feed names"
+        skip_needs_minisign "resolve_latest_agent_release rejects a tampered feed before reading its version"
+        skip_needs_minisign "the tampered-feed rejection is minisign's (an accept-all verifier reads the forged version)"
+        skip_needs_minisign "resolve_latest_agent_release rejects a feed signed by another key"
+        skip_needs_minisign "resolve_latest_agent_release refuses a verified feed whose version is not a CalVer"
+        return
+    fi
+    rm -rf "$stage" "$calls"
+    mkdir -p "$stage"
+    reset_argv_logs
+
+    # A good feed: the tag comes back, from the two fixed addresses.
+    rm -rf "$FIXTURES"
+    make_feed_fixture 2026.9.9 "$TEST_KEY_DIR/a.key" >/dev/null
     got="$(
-        PATH="$STUBS:$PATH"
-        export STUB_CURL_REDIRECT="$repo/releases/tag/v2026.9.8"
-        resolve_latest_release_tag "$repo" 2>"$STDERR"
+        PATH="$STUBS:$TOOLBIN:$PATH"
+        export STUB_CURL_FIXTURES="$FIXTURES"
+        instrument_feed_version "$calls"
+        resolve_latest_agent_release "$repo" "$stage" "$TEST_KEY_DIR/a.pub" 2>"$STDERR"
     )"
-    assert_eq "resolve_latest_release_tag reads the tag off the /releases/latest redirect" \
-        "v2026.9.8" "$got"
+    assert_eq "resolve_latest_agent_release returns the tag a verified feed names" "agent-v2026.9.9" "$got"
+    assert_file_has "...from the feed's fixed address on the agent-latest release" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-latest/agent-latest.json"
+    assert_file_has "...with its signature beside it" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-latest/agent-latest.json.minisig"
+    if grep -q "releases/latest" "$STUB_CURL_ARGV"; then
+        fail "the feed is not found through /releases/latest" "it was requested"
+    else
+        pass "the feed is not found through /releases/latest"
+    fi
+    if [ -s "$calls" ]; then
+        pass "(positive control) the recorder sees agent_feed_version being called on a verified feed"
+    else
+        fail "(positive control) the recorder sees agent_feed_version being called on a verified feed" \
+            "the override was never reached, so the 'never read' assertions below prove nothing"
+    fi
 
-    # A repo with no releases lands on the listing page, not a tag. That is
-    # not a version and must not become one.
-    (
-        PATH="$STUBS:$PATH"
-        export STUB_CURL_REDIRECT="$repo/releases"
-        resolve_latest_release_tag "$repo"
-    ) >/dev/null 2>&1
-    assert_eq "resolve_latest_release_tag refuses a redirect that is not a tag" "1" "$?"
+    # Tampered: signed as 2026.9.9, then the version edited to one that would
+    # pass every later check. Rejected by minisign, before it is read.
+    rm -f "$calls"
+    sed 's/"version": "2026.9.9"/"version": "2099.1.1"/' "$FIXTURES/agent-latest.json" > "$FIXTURES/agent-latest.json.edited"
+    mv "$FIXTURES/agent-latest.json.edited" "$FIXTURES/agent-latest.json"
+    rc=0
+    got="$(
+        PATH="$STUBS:$TOOLBIN:$PATH"
+        export STUB_CURL_FIXTURES="$FIXTURES"
+        instrument_feed_version "$calls"
+        resolve_latest_agent_release "$repo" "$stage" "$TEST_KEY_DIR/a.pub" 2>"$STDERR"
+    )" || rc=$?
+    assert_eq "resolve_latest_agent_release rejects a tampered feed" "1" "$rc"
+    assert_output_has "...as a signature failure for the feed" "$(cat "$STDERR")" "SIGNATURE VERIFICATION FAILED for agent-latest.json"
+    assert_empty "...printing no tag" "$got"
+    if [ -e "$calls" ]; then
+        fail "a tampered feed's version is never read" "agent_feed_version ran on bytes that had failed verification"
+    else
+        pass "a tampered feed's version is never read"
+    fi
 
-    (
-        PATH="$STUBS:$PATH"
-        export STUB_CURL_REDIRECT="$repo/releases/tag/not-a-version"
-        resolve_latest_release_tag "$repo"
-    ) >/dev/null 2>&1
-    assert_eq "resolve_latest_release_tag refuses a tag that is not CalVer" "1" "$?"
+    # THE PROOF the rejection is minisign's: same bytes, accept-all verifier.
+    # The forged version is read — which also shows it WOULD have passed.
+    rm -f "$calls"
+    got="$(
+        PATH="$STUBS_BYPASS:$STUBS:$TOOLBIN"
+        export STUB_CURL_FIXTURES="$FIXTURES"
+        resolve_latest_agent_release "$repo" "$stage" "$TEST_KEY_DIR/a.pub" 2>"$STDERR"
+    )"
+    assert_eq "the tampered-feed rejection is minisign's (an accept-all verifier reads the forged version)" \
+        "agent-v2099.1.1" "$got"
 
-    (
-        PATH="$STUBS:$PATH"
-        export STUB_CURL_REDIRECT=""
-        resolve_latest_release_tag "$repo"
-    ) >/dev/null 2>&1
-    assert_eq "resolve_latest_release_tag fails when the request fails" "1" "$?"
+    # Signed by a key this checkout does not ship.
+    rm -rf "$FIXTURES"
+    make_feed_fixture 2026.9.9 "$TEST_KEY_DIR/b.key" >/dev/null
+    rc=0
+    got="$(
+        PATH="$STUBS:$TOOLBIN:$PATH"
+        export STUB_CURL_FIXTURES="$FIXTURES"
+        resolve_latest_agent_release "$repo" "$stage" "$TEST_KEY_DIR/a.pub" 2>"$STDERR"
+    )" || rc=$?
+    assert_eq "resolve_latest_agent_release rejects a feed signed by another key" "1" "$rc"
+    assert_empty "...printing no tag" "$got"
+
+    # A verified feed whose version is not a strict CalVer is refused AFTER
+    # verification: signed, and still nothing a download could be built from.
+    local value
+    for value in "2026.9.9+dev.1.gabcdef0" "v2026.9.9" "2026.09.9" "not-a-version" "2026.9.0"; do
+        rm -rf "$FIXTURES"
+        make_feed_fixture "$value" "$TEST_KEY_DIR/a.key" >/dev/null
+        rc=0
+        got="$(
+            PATH="$STUBS:$TOOLBIN:$PATH"
+            export STUB_CURL_FIXTURES="$FIXTURES"
+            resolve_latest_agent_release "$repo" "$stage" "$TEST_KEY_DIR/a.pub" 2>"$STDERR"
+        )" || rc=$?
+        assert_eq "resolve_latest_agent_release refuses a signed feed with version [$value]" "1" "$rc"
+        assert_empty "...printing no tag" "$got"
+    done
+    assert_output_has "...as not a CalVer" "$(cat "$STDERR")" "is not a CalVer"
+    rm -rf "$FIXTURES"
 }
 
 test_service_rendering() {
@@ -2107,6 +2277,38 @@ if [ "\$1" = "tls-fingerprint" ]; then
 fi
 exit 0
 STUB
+    rm -f "$f.minisig"
+    if [ "$seckey" != "-" ]; then
+        sign_fixture "$f" "$seckey"
+    fi
+    printf '%s\n' "$f"
+}
+
+# make_feed_fixture <version> <seckey|->
+# Writes FIXTURES/agent-latest.json the way the producer does
+# (crates/updatefeed::agent's Feed::to_bytes: pretty-printed, two-space indent,
+# `version` first, four targets, one trailing newline) and, unless the key is
+# "-", its .minisig (trusted comment = `agent-latest.json`, as the real signer
+# sets it). Only `version` is read by install.sh; the entries are placeholders.
+# test_agent_feed_version reads the PRODUCER's own committed feed with the same
+# reader, so this layout cannot drift from the real one unnoticed. Prints the path.
+make_feed_fixture() {
+    local version="$1" seckey="$2" f triple first=true zeros
+    zeros="$(printf '%064d' 0)"
+    mkdir -p "$FIXTURES"
+    f="$FIXTURES/agent-latest.json"
+    {
+        printf '{\n  "version": "%s",\n  "targets": {\n' "$version"
+        for triple in aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-unknown-linux-musl; do
+            [ "$first" = true ] || printf ',\n'
+            first=false
+            printf '    "%s": {\n' "$triple"
+            printf '      "url": "https://github.com/Sassy-Dog/solador/releases/download/agent-v%s/solador-agent-%s-%s",\n' "$version" "$version" "$triple"
+            printf '      "signature": "untrusted comment: placeholder\\nRWplaceholder\\ntrusted comment: placeholder\\nplaceholder\\n",\n'
+            printf '      "sha256": "%s"\n    }' "$zeros"
+        done
+        printf '\n  }\n}\n'
+    } > "$f"
     rm -f "$f.minisig"
     if [ "$seckey" != "-" ]; then
         sign_fixture "$f" "$seckey"
@@ -2420,29 +2622,51 @@ test_install_release_resolution() {
     make_checkout "$SCRIPT_DIR/../release-signing-key.pub"
     rm -rf "$FIXTURES"
 
-    # The latest published release predates #390 (as v2026.9.3 does): the
-    # redirect resolves, the asset is missing. That is a hard failure naming
-    # the tag — not a source build, not another version.
+    # The default path reads the signed feed on the agent-latest release. Until
+    # the first agent release has been cut there is none: a hard failure naming
+    # the feed's fixed address and the pin that works without it — not a source
+    # build, not /releases/latest, and no binary asked for.
     reset_argv_logs
-    STUB_CURL_REDIRECT="$repo/releases/tag/v2026.9.3" run_install "$home"
-    assert_eq "install.sh fails when the latest release has no agent asset" "1" "$?"
-    assert_output_has "the missing-asset failure names the tag" "$(cat "$INSTALL_OUT")" "v2026.9.3"
-    assert_output_has "the missing-asset failure names the asset" "$(cat "$INSTALL_OUT")" \
-        "solador-agent-2026.9.3-x86_64-unknown-linux-musl"
-    assert_output_has "the missing-asset failure says there is no source fallback" "$(cat "$INSTALL_OUT")" \
+    run_install "$home"
+    assert_eq "install.sh fails when no agent feed has been published" "1" "$?"
+    assert_output_has "the missing-feed failure names the feed's address" "$(cat "$INSTALL_OUT")" \
+        "$repo/releases/download/agent-latest/agent-latest.json"
+    assert_output_has "the missing-feed failure names the pin that works without it" "$(cat "$INSTALL_OUT")" \
+        "SOLADOR_AGENT_RELEASE=agent-v<version>"
+    assert_output_has "the missing-feed failure says there is no source fallback" "$(cat "$INSTALL_OUT")" \
         "does not fall back to building from source"
-    assert_untouched "a missing asset changes nothing" "$home"
+    assert_untouched "a missing feed changes nothing" "$home"
+    if grep -q "releases/latest\|solador-agent-[0-9]" "$STUB_CURL_ARGV"; then
+        fail "a missing feed asks for neither /releases/latest nor a binary" "$(cat "$STUB_CURL_ARGV")"
+    else
+        pass "a missing feed asks for neither /releases/latest nor a binary"
+    fi
+    assert_file_has "(the log did record the feed request)" "$STUB_CURL_ARGV" "agent-latest/agent-latest.json"
     if grep -q "cargo" "$INSTALL_OUT"; then
         fail "install.sh never mentions cargo" "it did"
     else
         pass "install.sh never mentions cargo"
     fi
 
-    # The redirect is not a tag (a repo with no releases).
+    # A release that predates agent binaries (v2026.9.3 and earlier), pinned: the
+    # asset is missing. That is a hard failure naming the tag — not a source
+    # build, not another version. An agent-v pin with no asset reads the same.
     reset_argv_logs
-    STUB_CURL_REDIRECT="$repo/releases" run_install "$home"
-    assert_eq "install.sh fails when no release can be resolved" "1" "$?"
-    assert_untouched "an unresolvable release changes nothing" "$home"
+    SOLADOR_AGENT_RELEASE="v2026.9.3" run_install "$home"
+    assert_eq "install.sh fails when the pinned legacy release has no agent asset" "1" "$?"
+    assert_output_has "the missing-asset failure names the tag" "$(cat "$INSTALL_OUT")" "v2026.9.3"
+    assert_output_has "the missing-asset failure names the asset" "$(cat "$INSTALL_OUT")" \
+        "solador-agent-2026.9.3-x86_64-unknown-linux-musl"
+    assert_output_has "the missing-asset failure says there is no source fallback" "$(cat "$INSTALL_OUT")" \
+        "does not fall back to building from source"
+    assert_output_has "the missing-asset failure says releases are found through the feed now" "$(cat "$INSTALL_OUT")" \
+        "found through the signed agent-latest feed"
+    assert_untouched "a missing asset changes nothing" "$home"
+    reset_argv_logs
+    SOLADOR_AGENT_RELEASE="agent-v2026.11.1" run_install "$home"
+    assert_eq "install.sh fails when the pinned agent release has no agent asset" "1" "$?"
+    assert_output_has "...naming the agent-v tag" "$(cat "$INSTALL_OUT")" "agent-v2026.11.1"
+    assert_untouched "a missing agent-v asset changes nothing" "$home"
 
     # A pin is honoured verbatim — and validated.
     reset_argv_logs
@@ -2461,10 +2685,22 @@ test_install_release_resolution() {
         "$repo/releases/download/v2026.9.8/solador-agent-2026.9.8-x86_64-unknown-linux-musl"
     # Asserted against a log that DID record a request, so it proves the pin
     # skipped discovery rather than that nothing ran.
-    if grep -q "releases/latest" "$STUB_CURL_ARGV"; then
-        fail "a pinned release does not consult /releases/latest" "it did"
+    if grep -q "releases/latest\|agent-latest" "$STUB_CURL_ARGV"; then
+        fail "a pinned release consults neither /releases/latest nor the feed" "$(cat "$STUB_CURL_ARGV")"
     else
-        pass "a pinned release does not consult /releases/latest"
+        pass "a pinned release consults neither /releases/latest nor the feed"
+    fi
+    # The other tag kind: an agent-v pin is requested from its own release, under
+    # the version it names, and skips discovery the same way.
+    reset_argv_logs
+    SOLADOR_AGENT_RELEASE="agent-v2026.9.9" run_install "$home"
+    assert_eq "install.sh fails when the pinned agent-v release has no asset" "1" "$?"
+    assert_file_has "an agent-v pin is requested from its own release, under its version" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-x86_64-unknown-linux-musl"
+    if grep -q "releases/latest\|agent-latest" "$STUB_CURL_ARGV"; then
+        fail "an agent-v pin consults neither /releases/latest nor the feed" "$(cat "$STUB_CURL_ARGV")"
+    else
+        pass "an agent-v pin consults neither /releases/latest nor the feed"
     fi
 
     # An explicit bind and port reach the env file and the health probe: the
@@ -2506,6 +2742,263 @@ test_install_release_resolution() {
         pass "the bind refusal downloads nothing"
     fi
     INSTALL_PATH=""
+}
+
+# The default path, end to end (#490): install.sh finds the release through the
+# signed feed on the agent-latest release, with every gate the BINARY already
+# passes applied to the feed FIRST — the real minisign verifies it before its
+# `version` is read, and what is read must be a strict CalVer. Each refusal is
+# asserted to change nothing, to execute nothing, and to ask for no binary; the
+# load-bearing one (a tampered feed) is followed by the accept-all-verifier
+# control that shows the rejection was minisign's and that the forged version
+# WOULD have been followed.
+test_install_through_the_feed() {
+    local home="$TMP/home-feed" repo="https://github.com/Sassy-Dog/solador" marker="$TMP/executed-marker-feed" out value
+    mkdir -p "$home"
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh installs through the signed agent feed"
+        skip_needs_minisign "install.sh rejects a tampered feed before reading its version"
+        skip_needs_minisign "the tampered-feed rejection is minisign's (an accept-all verifier follows the forged version)"
+        skip_needs_minisign "install.sh rejects a feed signed by another key"
+        skip_needs_minisign "install.sh rejects a feed with no signature asset"
+        skip_needs_minisign "install.sh refuses a signed feed whose version is not a CalVer"
+        skip_needs_minisign "install.sh fails, naming the tag, when the feed's release has no asset"
+        skip_needs_minisign "install.sh installs a pinned agent-v release without the feed"
+        skip_needs_minisign "install.sh installs a pinned legacy v release without the feed"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    unset SOLADOR_AGENT_RELEASE
+    export STUB_TAILSCALE_IP="100.64.0.9"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.9"}'
+
+    # ---- the happy path: found through the feed, installed ----
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    make_feed_fixture 2026.9.9 "$TEST_KEY_DIR/a.key" >/dev/null
+    reset_argv_logs
+    INSTALL_STDIN="
+" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh installs through the signed agent feed" "0" "$INSTALL_STATUS"
+    assert_output_has "...reporting the release it found there" "$out" \
+        "Release: agent-v2026.9.9 (latest published, from the signed feed)"
+    assert_eq "...and the binary at the live path is that release's" "2026.9.9" \
+        "$("$home/.local/bin/solador-agent" --version 2>/dev/null)"
+    assert_file_has "the feed was read from its fixed address on the agent-latest release" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-latest/agent-latest.json"
+    assert_file_has "...with its detached signature" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-latest/agent-latest.json.minisig"
+    assert_file_has "the binary came from the agent-v release the feed names" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-x86_64-unknown-linux-musl"
+    assert_file_has "...with its own signature" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-x86_64-unknown-linux-musl.minisig"
+    if grep -q "releases/latest" "$STUB_CURL_ARGV"; then
+        fail "the default path never consults /releases/latest" "it did"
+    else
+        pass "the default path never consults /releases/latest"
+    fi
+    case "$(sed -n 1p "$STUB_CURL_ARGV")" in
+        *"agent-latest/agent-latest.json") pass "the feed is the FIRST thing fetched" ;;
+        *) fail "the feed is the FIRST thing fetched" "$(sed -n 1p "$STUB_CURL_ARGV")" ;;
+    esac
+
+    # ---- a tampered feed: rejected by the real minisign, version unread ----
+    # Signed as 2026.9.9, then edited to a version that would pass every later
+    # check. The binary fixture is a canary: it touches $marker if EXECUTED.
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" "$marker" >/dev/null
+    make_feed_fixture 2026.9.9 "$TEST_KEY_DIR/a.key" >/dev/null
+    sed 's/"version": "2026.9.9"/"version": "2099.1.1"/' "$FIXTURES/agent-latest.json" > "$FIXTURES/edited.json"
+    mv "$FIXTURES/edited.json" "$FIXTURES/agent-latest.json"
+    rm -f "$marker"
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh rejects a tampered feed" "1" "$INSTALL_STATUS"
+    assert_output_has "...as a signature failure for the feed" "$out" "SIGNATURE VERIFICATION FAILED for agent-latest.json"
+    assert_output_has "...which it names as not executed and nothing installed" "$out" "nothing has been installed"
+    if grep -q "2099\|solador-agent-[0-9]" "$STUB_CURL_ARGV"; then
+        fail "a tampered feed's version is never read (no request is built from it, and no binary is asked for)" \
+            "$(cat "$STUB_CURL_ARGV")"
+    else
+        pass "a tampered feed's version is never read (no request is built from it, and no binary is asked for)"
+    fi
+    assert_file_has "(the log did record the feed request)" "$STUB_CURL_ARGV" "agent-latest/agent-latest.json"
+    if [ -e "$marker" ]; then
+        fail "a tampered feed leads to nothing being executed" "the canary ran"
+    else
+        pass "a tampered feed leads to nothing being executed"
+    fi
+    assert_untouched "a tampered feed changes nothing" "$home"
+
+    # THE PROOF the rejection above was minisign's: the same feed, an accept-all
+    # verifier. The forged version IS followed — a request for its binary is
+    # built (and 404s, there being no such release) — so the only thing that
+    # stopped the first run was the signature check, and the order is real.
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    INSTALL_PATH="$STUBS_BYPASS:$STUBS:$TOOLBIN" INSTALL_STDIN="" run_install "$home"
+    assert_file_has "the tamper rejection is minisign's (an accept-all verifier follows the forged version)" \
+        "$STUB_CURL_ARGV" "$repo/releases/download/agent-v2099.1.1/solador-agent-2099.1.1-x86_64-unknown-linux-musl"
+
+    # ---- a feed signed by a key this checkout does not ship ----
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" "$marker" >/dev/null
+    make_feed_fixture 2026.9.9 "$TEST_KEY_DIR/b.key" >/dev/null
+    rm -f "$marker"
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh rejects a feed signed by another key" "1" "$INSTALL_STATUS"
+    assert_output_has "...as a signature failure" "$(cat "$INSTALL_OUT")" "SIGNATURE VERIFICATION FAILED for agent-latest.json"
+    if grep -q "solador-agent-[0-9]" "$STUB_CURL_ARGV" || [ -e "$marker" ]; then
+        fail "a wrongly-signed feed asks for no binary and executes nothing" "$(cat "$STUB_CURL_ARGV")"
+    else
+        pass "a wrongly-signed feed asks for no binary and executes nothing"
+    fi
+    assert_untouched "a wrongly-signed feed changes nothing" "$home"
+
+    # ---- a feed with no signature asset ----
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" "$marker" >/dev/null
+    make_feed_fixture 2026.9.9 - >/dev/null
+    rm -f "$marker"
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh rejects a feed with no signature asset" "1" "$INSTALL_STATUS"
+    assert_output_has "...naming the missing signature" "$(cat "$INSTALL_OUT")" "agent-latest.json.minisig"
+    if grep -q "solador-agent-[0-9]" "$STUB_CURL_ARGV" || [ -e "$marker" ]; then
+        fail "an unsigned feed asks for no binary and executes nothing" "$(cat "$STUB_CURL_ARGV")"
+    else
+        pass "an unsigned feed asks for no binary and executes nothing"
+    fi
+    assert_untouched "an unsigned feed changes nothing" "$home"
+
+    # ---- a SIGNED feed whose version is not a CalVer: refused after verifying ----
+    for value in "2026.9.9+dev.1.gabc1234" "v2026.9.9" "2026.09.9" "2026.9.0" "not-a-version"; do
+        rm -rf "$FIXTURES" "$home"
+        mkdir -p "$home"
+        make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" "$marker" >/dev/null
+        make_feed_fixture "$value" "$TEST_KEY_DIR/a.key" >/dev/null
+        rm -f "$marker"
+        reset_argv_logs
+        INSTALL_STDIN="" run_install "$home"
+        assert_eq "install.sh refuses a signed feed whose version is [$value]" "1" "$INSTALL_STATUS"
+        assert_output_has "...as not a CalVer" "$(cat "$INSTALL_OUT")" "is not a CalVer"
+        if grep -q "solador-agent-[0-9]" "$STUB_CURL_ARGV" || [ -e "$marker" ]; then
+            fail "...asking for no binary and executing nothing [$value]" "$(cat "$STUB_CURL_ARGV")"
+        else
+            pass "...asking for no binary and executing nothing [$value]"
+        fi
+        assert_untouched "...and changing nothing [$value]" "$home"
+    done
+
+    # ---- a re-run over an installed `+dev` source build is NOT refused ----
+    # The unpinned downgrade guard protects an installed RELEASE (the
+    # control: the same replayed-older-feed run IS refused over a release
+    # CalVer). A `+dev` version is not a CalVer, so the guard does not apply —
+    # deliberately: install.sh is how a source-built host moves onto a release.
+    # The installed binary is a stub answering `--version` with the given string.
+    local installed_version
+    for installed_version in "2026.10.14" "2026.10.14+dev.3.gabc1234"; do
+        rm -rf "$FIXTURES" "$home"
+        mkdir -p "$home"
+        make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+        make_feed_fixture 2026.9.9 "$TEST_KEY_DIR/a.key" >/dev/null
+        reset_argv_logs
+        STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.9"}' INSTALL_STDIN="
+" run_install "$home"
+        assert_eq "setup: a first install through the feed ($installed_version case)" "0" "$INSTALL_STATUS"
+        printf '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "%%s\\n" "%s"; exit 0; fi\nexit 0\n' "$installed_version" > "$home/.local/bin/solador-agent"
+        chmod +x "$home/.local/bin/solador-agent"
+        # The feed now offers 2026.9.9 — older than what is installed, under
+        # either spelling of "installed".
+        reset_argv_logs
+        STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.9"}' INSTALL_STDIN="" run_install "$home"
+        case "$installed_version" in
+            *+dev*)
+                assert_eq "an unpinned re-run over an installed +dev source build is not refused as a downgrade" "0" "$INSTALL_STATUS"
+                assert_eq "...and the host moved onto the published release" "2026.9.9" "$("$home/.local/bin/solador-agent" --version 2>/dev/null)"
+                ;;
+            *)
+                assert_eq "(control) the same replayed-older feed over an installed RELEASE is refused" "1" "$INSTALL_STATUS"
+                assert_output_has "...as a downgrade" "$(cat "$INSTALL_OUT")" "installed agent is $installed_version and the latest published release is 2026.9.9"
+                ;;
+        esac
+    done
+
+    # ---- a verified feed whose release carries no asset for this host ----
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_feed_fixture 2026.9.3 "$TEST_KEY_DIR/a.key" >/dev/null
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh fails when the feed's release has no asset" "1" "$INSTALL_STATUS"
+    assert_output_has "...naming the tag" "$out" "agent-v2026.9.3"
+    assert_output_has "...and the asset" "$out" "solador-agent-2026.9.3-x86_64-unknown-linux-musl"
+    assert_output_has "...with no source fallback" "$out" "does not fall back to building from source"
+    assert_untouched "a missing asset behind a verified feed changes nothing" "$home"
+
+    # ---- pins, both kinds, installed end to end WITHOUT the feed ----
+    # The feed on offer names a different version, to show the pin wins and the
+    # feed is not read at all.
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    make_feed_fixture 2026.9.10 "$TEST_KEY_DIR/a.key" >/dev/null
+    reset_argv_logs
+    STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.9"}' \
+        SOLADOR_AGENT_RELEASE="agent-v2026.9.9" INSTALL_STDIN="
+" run_install "$home"
+    assert_eq "install.sh installs a pinned agent-v release without the feed" "0" "$INSTALL_STATUS"
+    assert_eq "...the one the pin names" "2026.9.9" "$("$home/.local/bin/solador-agent" --version 2>/dev/null)"
+    assert_file_has "...from the agent-v release" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-x86_64-unknown-linux-musl"
+    if grep -q "agent-latest\|releases/latest" "$STUB_CURL_ARGV"; then
+        fail "a pin to an agent-v tag never reads the feed" "$(cat "$STUB_CURL_ARGV")"
+    else
+        pass "a pin to an agent-v tag never reads the feed"
+    fi
+
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}' \
+        SOLADOR_AGENT_RELEASE="v2026.9.8" INSTALL_STDIN="
+" run_install "$home"
+    assert_eq "install.sh installs a pinned legacy v release without the feed" "0" "$INSTALL_STATUS"
+    assert_eq "...the one the pin names" "2026.9.8" "$("$home/.local/bin/solador-agent" --version 2>/dev/null)"
+    assert_file_has "...from the legacy release" "$STUB_CURL_ARGV" \
+        "$repo/releases/download/v2026.9.8/solador-agent-2026.9.8-x86_64-unknown-linux-musl"
+    if grep -q "agent-latest\|releases/latest" "$STUB_CURL_ARGV"; then
+        fail "a pin to a legacy v tag never reads the feed" "$(cat "$STUB_CURL_ARGV")"
+    else
+        pass "a pin to a legacy v tag never reads the feed"
+    fi
+
+    # ---- an agent-v release whose binary names another version ----
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home"
+    make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    mv "$FIXTURES/solador-agent-2026.9.9-x86_64-unknown-linux-musl" \
+       "$FIXTURES/solador-agent-2026.9.10-x86_64-unknown-linux-musl"
+    mv "$FIXTURES/solador-agent-2026.9.9-x86_64-unknown-linux-musl.minisig" \
+       "$FIXTURES/solador-agent-2026.9.10-x86_64-unknown-linux-musl.minisig"
+    reset_argv_logs
+    SOLADOR_AGENT_RELEASE="agent-v2026.9.10" INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh refuses an agent-v binary whose version is not its release's" "1" "$INSTALL_STATUS"
+    assert_output_has "...naming both" "$(cat "$INSTALL_OUT")" \
+        "reports version 2026.9.9 but was published under agent-v2026.9.10"
+
+    rm -rf "$FIXTURES"
+    unset STUB_CURL_BODY STUB_TAILSCALE_IP
 }
 
 test_install_signature_gate() {
@@ -3517,20 +4010,21 @@ test_install_linux_flow() {
         "$old_sum" "$(cat "$bin.prev")"
 
     # ---- a re-run must not move backwards on the unpinned path ----
-    # 2026.9.9 is installed. An unpinned run whose "latest" resolves to
-    # 2026.9.8 (an intercepting proxy steering the unsigned redirect, say) is
-    # refused; the same downgrade with SOLADOR_AGENT_RELEASE pinned is the
-    # operator's explicit choice and goes through.
+    # 2026.9.9 is installed. An unpinned run whose signed feed names 2026.9.8 (a
+    # REPLAYED older feed — validly signed, so the signature cannot refuse it;
+    # an intercepting proxy or a stale cache) is refused; the same downgrade with
+    # SOLADOR_AGENT_RELEASE pinned is the operator's explicit choice and goes
+    # through.
     rm -rf "$FIXTURES"
     make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
-    export STUB_CURL_REDIRECT="https://github.com/Sassy-Dog/solador/releases/tag/v2026.9.8"
+    make_feed_fixture 2026.9.8 "$TEST_KEY_DIR/a.key" >/dev/null
     unset SOLADOR_AGENT_RELEASE
     reset_argv_logs
     INSTALL_STDIN="" run_install "$home"
     out="$(cat "$INSTALL_OUT")"
     assert_eq "an unpinned re-run refuses to downgrade" "1" "$INSTALL_STATUS"
     assert_output_has "the downgrade refusal names both versions" "$out" "installed agent is 2026.9.9 and the latest published release is 2026.9.8"
-    assert_output_has "the downgrade refusal names the pin that allows it" "$out" "SOLADOR_AGENT_RELEASE=v2026.9.8"
+    assert_output_has "the downgrade refusal names the pin that allows it" "$out" "SOLADOR_AGENT_RELEASE=agent-v2026.9.8"
     assert_eq "a refused downgrade leaves the live binary alone" "2026.9.9" "$("$bin" --version)"
     if systemctl_mutated; then
         fail "a refused downgrade never reaches the service manager" "systemctl was called"
@@ -3539,10 +4033,9 @@ test_install_linux_flow() {
     fi
     reset_argv_logs
     export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
-    SOLADOR_AGENT_RELEASE="v2026.9.8" INSTALL_STDIN="" run_install "$home"
+    SOLADOR_AGENT_RELEASE="agent-v2026.9.8" INSTALL_STDIN="" run_install "$home"
     assert_eq "a pinned re-run may downgrade" "0" "$?"
     assert_eq "the pinned downgrade installed the older binary" "2026.9.8" "$("$bin" --version)"
-    unset STUB_CURL_REDIRECT
     # Restore the state the cases below expect.
     rm -rf "$FIXTURES"
     make_fixture 2026.9.9 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
@@ -5425,8 +5918,12 @@ STUB
     # launcher, or a key added to the agent reaches Linux (EnvironmentFile=
     # passes everything) and is silently dropped on macOS.
     #
-    # Two named exceptions, and it is a positive list so the next key still
-    # trips this. SOLADOR_AGENT_LAUNCHD_LABEL is read by `solador-agent
+    # Three named exceptions, and it is a positive list so the next key still
+    # trips this. SOLADOR_AGENT_MARKETING_VERSION (#490) is not a key at all:
+    # it is the name `agent/build.rs` publishes the agent's compiled-in version
+    # under (`cargo:rustc-env`), read back with `option_env!` at BUILD time. No
+    # environment of a running service can supply it, so the launcher has
+    # nothing to allow-list. SOLADOR_AGENT_LAUNCHD_LABEL is read by `solador-agent
     # update`/`rollback` (#393) from the MAINTENANCE command's own
     # environment — the same test seam install.sh honours, so a throwaway
     # LaunchAgent can be updated beside a real one — and never from the env
@@ -5453,7 +5950,7 @@ STUB
     # SOLADOR_AGENT_TEST_* are test-harness switches read only by #[cfg(test)]
     # code (SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK): not service configuration.
     agent_keys="$(grep -rhoE 'SOLADOR_AGENT_[A-Z_]+' "$SCRIPT_DIR/../src" | sort -u | grep -v '^SOLADOR_AGENT_TEST_' \
-        | grep -vx -e 'SOLADOR_AGENT_LAUNCHD_LABEL' -e 'SOLADOR_AGENT_CONFIG_DIR' -e 'SOLADOR_AGENT_BIND_AUTO' | tr '\n' ' ')"
+        | grep -vx -e 'SOLADOR_AGENT_LAUNCHD_LABEL' -e 'SOLADOR_AGENT_CONFIG_DIR' -e 'SOLADOR_AGENT_BIND_AUTO' -e 'SOLADOR_AGENT_MARKETING_VERSION' | tr '\n' ' ')"
     launcher_keys="$(grep -oE 'SOLADOR_AGENT_[A-Z_]+=\*' "$launcher" | sed 's/=\*$//' | sort -u \
         | grep -vx 'SOLADOR_AGENT_BIND_AUTO' | tr '\n' ' ')"
     # Any line naming the key that is not inside a string that is only a
@@ -8288,13 +8785,17 @@ test_verify_health
 test_agent_target_for
 test_release_contract_matches_config
 test_validate_release_tag
-test_resolve_latest_release_tag
+test_is_calver_version
+test_release_version_of_tag
+test_agent_feed_version
 test_service_rendering
 test_verify_agent_signature
+test_resolve_latest_agent_release
 test_install_arguments
 test_uninstall_arguments_and_refusals
 test_install_preflight
 test_install_release_resolution
+test_install_through_the_feed
 test_install_signature_gate
 test_bootstrap_extraction_and_passthrough
 test_bootstrap_help_when_piped

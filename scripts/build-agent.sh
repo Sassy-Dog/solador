@@ -30,9 +30,14 @@ set -euo pipefail
 # name to have implied it.
 #
 # What this deliberately does NOT do is upload anything. It builds, checks, and
-# optionally signs; `release.yml` attaches the results to the same draft release
-# the cockpit already publishes to — one tag, one release, both products, and no
-# second release train.
+# optionally signs; the release workflow attaches the results to a draft
+# release — since #472 the agent's own `agent-v*` one, on a release train of its
+# own rather than the cockpit's `v*` tag.
+#
+# The version it builds, names and asserts is the AGENT's (#490): the pin
+# AGENT_MARKETING_VERSION if set (the release workflow pins it from the tag),
+# else `scripts/get-version-info.sh --agent-version`. A local or CI build with no
+# pin is a source build, `<base>+dev.<k>.g<sha>`, and is accepted as such.
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$SCRIPT_DIR/lib.sh"
@@ -116,20 +121,39 @@ fi
 # Version
 # ---------------------------------------------------------------------------
 
-# ONE call to the one owner, and an explicit MARKETING_VERSION wins over it —
-# the same pin `publish.sh` sets so an artifact carries the version its *tag*
-# carries rather than a fresh re-derive.
+# The AGENT's version (#490), not the cockpit's: an explicit
+# AGENT_MARKETING_VERSION wins, else ONE call to the one owner,
+# `get-version-info.sh --agent-version`. The release workflow pins it from the
+# `agent-v*` tag (`agent-v2026.11.1` -> `2026.11.1`), so a release artifact
+# carries the version its *tag* carries rather than a fresh re-derive. Anything
+# else — `./dev agent`, CI's musl build on every PR — is a source build, and its
+# version is `<base>+dev.<k>.g<sha>`: that is expected, passes the `--version`
+# assertion below, and is exactly what stops a source build ever claiming to be
+# a release.
 #
-# The `export` is load-bearing, not tidiness: `crates/buildversion` honours this
-# variable ahead of deriving, so exporting it is what makes `agent/build.rs`
-# compile in the very number this script names the file after, instead of
-# resolving the CalVer a second time. The build then reads it back OUT of each
-# binary it can execute — the same derive-then-assert standard the macOS
-# bundle's plist keys are held to.
-MARKETING_VERSION="${MARKETING_VERSION:-$(bash "$SCRIPT_DIR/get-version-info.sh" --version)}"
-export MARKETING_VERSION
-if [[ -z "$MARKETING_VERSION" ]]; then
-    log_error "could not derive a version — is this a full git checkout? (a shallow clone cannot count this month's commits; see docs/VERSIONING.md)"
+# `MARKETING_VERSION` is the cockpit's pin and does not reach the agent any more
+# (`crates/buildversion`'s agent entry point never reads it). It is named in a
+# warning when set, because a workflow that still pins it and expects an agent
+# release is about to get a `+dev` build, and silence there would read as
+# success until the post-build check failed.
+#
+# The `export` is load-bearing, not tidiness: `crates/buildversion` honours the
+# pin ahead of deriving, so exporting it is what makes `agent/build.rs` compile
+# in the very number this script names the file after, instead of resolving it a
+# second time. The build then reads it back OUT of each binary it can execute —
+# the same derive-then-assert standard the macOS bundle's plist keys are held to.
+if [[ -n "${MARKETING_VERSION:-}" && -z "${AGENT_MARKETING_VERSION:-}" ]]; then
+    log_warning "MARKETING_VERSION=$MARKETING_VERSION is the cockpit's pin and no longer reaches the agent; pin AGENT_MARKETING_VERSION to name an agent release (docs/VERSIONING.md)"
+fi
+if [[ -z "${AGENT_MARKETING_VERSION:-}" ]]; then
+    AGENT_MARKETING_VERSION="$(bash "$SCRIPT_DIR/get-version-info.sh" --agent-version)" || {
+        log_error "could not derive the agent's version (the reason is above) — is this a full git checkout with its tags? (a shallow clone cannot count commits since the agent's base; see docs/VERSIONING.md)"
+        exit 1
+    }
+fi
+export AGENT_MARKETING_VERSION
+if [[ -z "$AGENT_MARKETING_VERSION" ]]; then
+    log_error "could not derive the agent's version — is this a full git checkout with its tags? (see docs/VERSIONING.md)"
     exit 1
 fi
 
@@ -296,7 +320,7 @@ build_targets() {
     done
     $need_zigbuild && ensure_zigbuild
 
-    log_info "Building $AGENT_PACKAGE $MARKETING_VERSION for: $TARGETS"
+    log_info "Building $AGENT_PACKAGE $AGENT_MARKETING_VERSION for: $TARGETS"
 
     for triple in $TARGETS; do
         ensure_rust_target "$triple"
@@ -339,9 +363,9 @@ build_targets() {
         # what this script derived, so assert it rather than assume it.
         if host_can_run "$triple"; then
             got="$("$bin" --version)"
-            if [[ "$got" != "$MARKETING_VERSION" ]]; then
-                log_error "$triple reports version '$got', expected '$MARKETING_VERSION'"
-                log_error "(agent/build.rs derives it from git; a stale target dir, or a MARKETING_VERSION pin seen by only one of the two, lands here)"
+            if [[ "$got" != "$AGENT_MARKETING_VERSION" ]]; then
+                log_error "$triple reports version '$got', expected '$AGENT_MARKETING_VERSION'"
+                log_error "(agent/build.rs derives it from git; a stale target dir, or an AGENT_MARKETING_VERSION pin seen by only one of the two, lands here)"
                 exit 1
             fi
             log_success "$triple reports $got"
@@ -349,7 +373,7 @@ build_targets() {
             log_info "$triple cannot be executed on this host — release.yml runs --version for it on a matching runner"
         fi
 
-        artifact="$OUT_DIR/$AGENT_PACKAGE-$MARKETING_VERSION-$triple"
+        artifact="$OUT_DIR/$AGENT_PACKAGE-$AGENT_MARKETING_VERSION-$triple"
         # Raw binaries, not tarballs, and that is load-bearing rather than lazy:
         # the update feed compares the published artifact's content hash against
         # the INSTALLED binary to decide whether a release actually changed the
@@ -367,13 +391,13 @@ build_targets() {
 collect_existing() {
     local artifact
     shopt -s nullglob
-    for artifact in "$OUT_DIR/$AGENT_PACKAGE-$MARKETING_VERSION-"*; do
+    for artifact in "$OUT_DIR/$AGENT_PACKAGE-$AGENT_MARKETING_VERSION-"*; do
         [[ "$artifact" == *.minisig ]] && continue
         built+=("$artifact")
     done
     shopt -u nullglob
     if [[ ${#built[@]} -eq 0 ]]; then
-        log_error "--sign-only found no $AGENT_PACKAGE-$MARKETING_VERSION-* artifacts in $OUT_DIR"
+        log_error "--sign-only found no $AGENT_PACKAGE-$AGENT_MARKETING_VERSION-* artifacts in $OUT_DIR"
         log_error "nothing to sign is a failure, not a no-op — it would publish a release whose binaries are unsigned"
         exit 1
     fi
@@ -416,7 +440,7 @@ if [[ "$WANT_SIGN" == true ]]; then
 fi
 
 echo
-log_success "$AGENT_PACKAGE $MARKETING_VERSION → $OUT_DIR"
+log_success "$AGENT_PACKAGE $AGENT_MARKETING_VERSION → $OUT_DIR"
 for artifact in "${built[@]}"; do
     echo "  $(basename "$artifact")  ($(du -h "$artifact" | cut -f1))"
 done

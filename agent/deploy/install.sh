@@ -12,7 +12,10 @@
 #   ./deploy/install.sh --help
 #
 # Environment:
-#   SOLADOR_AGENT_RELEASE=vYYYY.M.N   install this release instead of the latest
+#   SOLADOR_AGENT_RELEASE=agent-vYYYY.M.N   install this release instead of the
+#                                     latest; also accepts a legacy vYYYY.M.N tag
+#                                     (a release cut before the agent had its own
+#                                     train) that carries agent assets
 #   SOLADOR_AGENT_BIND / _PORT        as documented in agent/README.md
 #   SOLADOR_AGENT_TLS=0|1             pin the TLS opt-in (#447) outright, overriding both
 #                                     the fresh-install default and --enable-tls; as
@@ -21,12 +24,21 @@
 # What it does:
 #   1. Detects the platform and maps it onto one of the four published
 #      targets (x86_64 / aarch64, Linux musl / macOS). Anything else refuses.
-#   2. Resolves the latest published release (or SOLADOR_AGENT_RELEASE) and
-#      downloads that release's raw binary plus its detached .minisig into a
-#      private staging directory. No Rust toolchain is involved.
-#   3. Verifies the signature with the stock `minisign` under the public key
-#      shipped with this checkout, agent/release-signing-key.pub. Only a
-#      verified binary is ever made executable or asked its `--version`.
+#   2. Resolves the release — by default from the signed feed
+#      `agent-latest.json` on the permanent `agent-latest` release (#472;
+#      `/releases/latest` is the COCKPIT's newest release and carries no agent
+#      assets), or SOLADOR_AGENT_RELEASE — and downloads that release's raw
+#      binary (`agent-v<version>`) plus its detached .minisig into a private
+#      staging directory. No Rust toolchain is involved. The feed is verified
+#      under the same key and the same stock `minisign` BEFORE its `version` is
+#      read (#490): a tampered feed is rejected unread, and a `version` that is
+#      not a strict CalVer is refused. A re-run never moves an installed RELEASE
+#      backwards on this path (a replayed, older feed is validly signed); an
+#      installed `+dev` source build is not a CalVer and is deliberately exempt —
+#      this script is how such a host moves onto a published release.
+#   3. Verifies the binary's signature with the stock `minisign` under the
+#      public key shipped with this checkout, agent/release-signing-key.pub.
+#      Only a verified binary is ever made executable or asked its `--version`.
 #   4. Installs it, user-owned, at ~/.local/bin/solador-agent — staged beside
 #      the live path and renamed over it, so a running agent is never
 #      overwritten in place; the displaced binary is kept as .prev.
@@ -1525,26 +1537,21 @@ if [ -z "$BIND" ]; then
     fi
 fi
 
-# ---- resolve the release -----------------------------------------------------
+# A pin is validated before anything is created or fetched: a refused one must
+# leave nothing behind, and is never interpolated into a request.
 if [ -n "${SOLADOR_AGENT_RELEASE:-}" ]; then
     TAG="$SOLADOR_AGENT_RELEASE"
     validate_release_tag "$TAG" || exit 1
-    echo "==> Release: $TAG (pinned by SOLADOR_AGENT_RELEASE)"
-else
-    TAG="$(resolve_latest_release_tag "$RELEASE_REPO_URL")" || exit 1
-    echo "==> Release: $TAG (latest published)"
 fi
-RELEASE_VERSION="${TAG#v}"
-ASSET="$(agent_asset_name "$RELEASE_VERSION" "$TRIPLE")"
-ASSET_URL="$RELEASE_REPO_URL/releases/download/$TAG/$ASSET"
 
-# ---- stage: download and verify ----------------------------------------------
+# ---- stage: a private directory ----------------------------------------------
 # A private directory under $HOME rather than /tmp: it is 0700 from birth
 # (umask), and a /tmp mounted noexec — common on hardened hosts — would make
 # the verified binary's own `--version` fail in a way that reads as "carries
 # no version". (The atomic step is the later .new → live rename inside the
 # install directory; staging is copied there with `install`, so it need not
-# share a filesystem with anything.)
+# share a filesystem with anything.) It holds the feed too (#490), which is
+# why it exists before the release is resolved.
 STAGE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}"
 mkdir -p "$STAGE_ROOT"
 STAGE="$(umask 077 && mktemp -d "$STAGE_ROOT/${BIN_NAME}-install.XXXXXX")" || {
@@ -1556,16 +1563,46 @@ STAGE="$(umask 077 && mktemp -d "$STAGE_ROOT/${BIN_NAME}-install.XXXXXX")" || {
 cleanup_stage() { rm -rf "$STAGE"; }
 trap cleanup_stage EXIT
 
+# ---- resolve the release -----------------------------------------------------
+# Pinned: an `agent-v*` tag, or a legacy `v*` tag with agent assets — validated
+# above and used as written, with no feed involved. Otherwise the signed feed on
+# the `agent-latest` release names the version (verified, THEN read — see
+# lib.sh's resolve_latest_agent_release), and the binary comes from
+# `agent-v<version>`.
+if [ -n "${SOLADOR_AGENT_RELEASE:-}" ]; then
+    echo "==> Release: $TAG (pinned by SOLADOR_AGENT_RELEASE)"
+else
+    echo "==> Reading the signed agent feed (the $AGENT_FEED_RELEASE release)"
+    TAG="$(resolve_latest_agent_release "$RELEASE_REPO_URL" "$STAGE" "$SIGNING_PUBKEY")" || {
+        echo "       Nothing has been changed. To install a release without the feed, pin one:" >&2
+        echo "       SOLADOR_AGENT_RELEASE=agent-v<version> $RERUN_CMD" >&2
+        echo "       (or a legacy v<version> tag that carries agent assets, for a release cut" >&2
+        echo "       before the agent had its own train)." >&2
+        exit 1
+    }
+    # The resolver's own output is the tag, and the tag is built from a version it
+    # verified as a CalVer; validating it again is cheap and keeps the invariant
+    # "nothing reaches a URL that validate_release_tag has not seen" local.
+    validate_release_tag "$TAG" || exit 1
+    echo "==> Release: $TAG (latest published, from the signed feed)"
+fi
+RELEASE_VERSION="$(release_version_of_tag "$TAG")"
+ASSET="$(agent_asset_name "$RELEASE_VERSION" "$TRIPLE")"
+ASSET_URL="$RELEASE_REPO_URL/releases/download/$TAG/$ASSET"
+
+# ---- stage: download and verify ----------------------------------------------
 STAGED_BIN="$STAGE/$ASSET"
 STAGED_SIG="$STAGE/$ASSET.minisig"
 
 echo "==> Downloading $ASSET"
 if ! download_release_asset "$ASSET_URL" "$STAGED_BIN"; then
     echo "ERROR: could not download $ASSET_URL" >&2
-    echo "       Release $TAG has no $ASSET, or it is not reachable. A release cut" >&2
-    echo "       before #390 (v2026.9.3 and earlier) publishes no agent binaries at" >&2
-    echo "       all — this installer does not fall back to building from source." >&2
-    echo "       Pin a release that has them:  SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD" >&2
+    echo "       Release $TAG has no $ASSET, or it is not reachable." >&2
+    echo "       Releases are found through the signed agent-latest feed now, and an agent release" >&2
+    echo "       carries its binaries on an agent-v<version> tag; a release cut before the agent had" >&2
+    echo "       its own train (v2026.9.3 and earlier predate agent binaries altogether) publishes" >&2
+    echo "       none. This installer does not fall back to building from source." >&2
+    echo "       Pin a release that has them:  SOLADOR_AGENT_RELEASE=agent-v<version> $RERUN_CMD" >&2
     exit 1
 fi
 if ! download_release_asset "$ASSET_URL.minisig" "$STAGED_SIG"; then
@@ -1626,7 +1663,7 @@ elif [ "$ENABLE_TLS" = true ]; then
         echo "ERROR: --enable-tls was given, but $ASSET ($TARGET_VERSION) predates #447 and" >&2
         echo "       does not support TLS (solador-agent tls-fingerprint is not a recognized" >&2
         echo "       command on this binary). Pin a release that has it"                       >&2
-        echo "       (SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD --enable-tls), or drop" >&2
+        echo "       (SOLADOR_AGENT_RELEASE=agent-v<version> $RERUN_CMD --enable-tls), or drop" >&2
         echo "       --enable-tls. Nothing has been changed." >&2
         exit 1
     fi
@@ -1672,7 +1709,7 @@ if [ -z "$BIND" ]; then
         echo "       does not support TLS (solador-agent tls-fingerprint is not a recognized" >&2
         echo "       command on this binary), and no Tailscale IP was detected for" >&2
         echo "       SOLADOR_AGENT_BIND — so there is nothing safe to bind. Pin a release that has" >&2
-        echo "       TLS (SOLADOR_AGENT_RELEASE=v<version> $RERUN_CMD), bring up Tailscale, set" >&2
+        echo "       TLS (SOLADOR_AGENT_RELEASE=agent-v<version> $RERUN_CMD), bring up Tailscale, set" >&2
         echo "       SOLADOR_AGENT_BIND to the address the cockpit dials, or drop SOLADOR_AGENT_TLS=1" >&2
         echo "       (or set it to 0) and set SOLADOR_AGENT_BIND, which is then a plain-HTTP install." >&2
         echo "       Nothing has been changed." >&2
@@ -1705,12 +1742,14 @@ if [ "$BIND_ALL_INTERFACES" = true ]; then
     fi
 fi
 
-# A re-run is the update path, and `/releases/latest` is the one unsigned
-# link in the chain (docs/AGENT-DISTRIBUTION.md §6): an intercepting proxy
-# could steer it to an older, validly signed release. A FRESH install has
-# nothing to compare against; a re-run does — the binary already serving.
-# So a re-run refuses to move backwards unless the operator pinned the
-# release explicitly, which is the one legitimate reason to.
+# A re-run is the update path, and a feed is a signed document, not a freshness
+# guarantee (docs/AGENT-DISTRIBUTION.md §6): an intercepting proxy, or a stale
+# cache, can replay an OLDER feed that is still validly signed, steering the
+# install to an older, validly signed release. A FRESH install has nothing to
+# compare against; a re-run does — the binary already serving. So a re-run
+# refuses to move backwards unless the operator pinned the release explicitly,
+# which is the one legitimate reason to. (An installed `+dev` source build is
+# not a CalVer, so nothing is "newer" than it and this check does not apply.)
 if [ -x "$DEST_BIN" ] && [ -z "${SOLADOR_AGENT_RELEASE:-}" ]; then
     INSTALLED_VERSION="$(binary_version "$DEST_BIN" 2>/dev/null || true)"
     if [ -n "$INSTALLED_VERSION" ] && calver_newer "$INSTALLED_VERSION" "$TARGET_VERSION"; then

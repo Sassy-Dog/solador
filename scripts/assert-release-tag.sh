@@ -5,11 +5,38 @@ set -euo pipefail
 # HEAD — by asking the mint, not by re-deriving a number (#404).
 #
 #   scripts/assert-release-tag.sh vYYYY.M.P
+#   scripts/assert-release-tag.sh --agent agent-vYYYY.M.P
 #
 # Exit 0 when the tag is the mint's own answer for this commit; exit 1 with a
 # `::error` line and every cause named otherwise; exit 2 on bad usage. Run by
 # every leg of .github/workflows/release.yml and by publish-feed.yml's desktop
-# feed job, checked out at the tag, before anything is built or uploaded.
+# feed job, checked out at the tag, before anything is built or uploaded — and,
+# with `--agent`, by the agent's release workflow (#472; the workflow itself is
+# #491) before it builds.
+#
+# AGENT MODE (#490). `--agent` takes an `agent-vYYYY.M.P` tag and asks the
+# AGENT mint (`get-version-info.sh --agent-tag`, read-only) instead of the
+# cockpit's, requiring the same `action=reuse` for exactly that tag. The
+# agent's mint is not a ladder over a commit count: its first rule is "an
+# `agent-v*` tag already at HEAD on the remote is reused", so what this binds
+# is that the tag NAME is a well-formed agent version, its month is one the
+# mint's clock could have produced for this commit (the same two bounds as
+# below), the checkout is full, and the tag exists ON THE REMOTE at THIS commit
+# — a local-only tag is `action=create`, refused. UNLIKE the cockpit's ladder,
+# which only ever resolves to the next number, the agent mint's reuse rule
+# accepts ANY well-formed `agent-v*` tag on the remote at HEAD — including a
+# number below one already shipped (a hand-pushed `agent-v2026.10.9` at HEAD
+# passes while `agent-v2026.10.15` exists). That is deliberate: re-running an
+# older release's workflow legitimately asserts an older tag, so refusing it
+# here would break the re-run. What keeps a stale number from reaching hosts is
+# elsewhere: the publish side's newest-release guard (#491), `solador-agent
+# update`'s forward-only rule, and `install.sh` re-run over an installed release
+# (a fresh install, and an installed `+dev` source build, have nothing to
+# compare against and are not covered by that last one). The provenance of the
+# commit is `prd`'s required reviewer's, not this script's.
+# The agent mint's `create` path asks `gh release view`; a refused tag can reach
+# it, so a refusal here may also say that `gh` could not answer — which is still
+# a refusal, and the cause named is the mint's own.
 #
 # WHY THE MINT AND NOT `--version`. The tag names the artifact and the build
 # derives its version from history; nothing forces those to agree, so the
@@ -94,11 +121,28 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 MINT="$SCRIPT_DIR/get-version-info.sh"
 
+mode=desktop
+if [[ "${1:-}" == "--agent" ]]; then
+    mode=agent
+    shift
+fi
 if [[ $# -ne 1 || -z "${1:-}" ]]; then
-    echo "usage: $0 vYYYY.M.P" >&2
+    echo "usage: $0 vYYYY.M.P | $0 --agent agent-vYYYY.M.P" >&2
     exit 2
 fi
 tag="$1"
+
+# What differs between the two modes, and nothing else: the tag's name, the
+# mint's flag, and the words a refusal uses. Every check below is shared.
+if [[ "$mode" == "agent" ]]; then
+    tag_prefix="agent-v"
+    tag_shape="an agent-vYYYY.M.P"
+    mint_flag="--agent-tag"
+else
+    tag_prefix="v"
+    tag_shape="a vYYYY.M.P"
+    mint_flag="--tag"
+fi
 
 # refuse REASON [MINT_STDOUT] — the `::error` line, then every cause a refusal
 # here can have, so the operator reads which one this run hit rather than
@@ -110,12 +154,30 @@ refuse() {
         echo "The mint reported, pinned to the tag's month at $head:" >&2
         printf '%s\n' "$reported" | sed 's/^/    /' >&2
     fi
-    cat >&2 <<EOF
+    if [[ "$mode" == "agent" ]]; then
+        cat >&2 <<EOF
+Agent tags are minted by ./dev publish --agent (scripts/publish.sh, through
+get-version-info.sh --agent-tag --push), and this check re-runs that mint
+read-only, pinned to the tag's own month, and requires it to REUSE exactly this
+tag: an agent-v* tag already on the remote at this commit. Landing here means
+one of:
+  - a hand-made tag: not $tag_shape, or a month the mint's clock has
+    not reached or that ended before this commit;
+  - a tag on the wrong commit: the remote has no such tag at this commit (a
+    tag that exists only locally is not one), so the mint at this commit would
+    create a different number, or reuse a different tag that is here;
+  - the pinned-month derivation could not run: a shallow clone, no origin
+    remote, or the mint's remote tag probe failed (network/auth) — it never
+    mints blind, and this check never passes blind. Its own lines above say
+    which; a probe failure is re-run and nothing else.
+EOF
+    else
+        cat >&2 <<EOF
 Tags are minted by scripts/publish.sh (get-version-info.sh --tag --push), and
 this check re-runs that ladder read-only, pinned to the tag's own month, so a
 minted tag passes after the month rolls and after a ladder bump. Landing here
 means one of:
-  - a hand-made tag: not vYYYY.M.P, a month the mint's clock has not reached
+  - a hand-made tag: not $tag_shape, a month the mint's clock has not reached
     or that ended before this commit, or a number the ladder never resolves
     to at this commit;
   - a tag on the wrong commit: the mint at this commit resolves a different
@@ -125,6 +187,7 @@ means one of:
     mints blind, and this check never passes blind. Its own lines above say
     which; a probe failure is re-run and nothing else.
 EOF
+    fi
     exit 1
 }
 
@@ -135,8 +198,8 @@ fi
 
 # 1. Shape. Non-padded month and patch, both at least 1, exactly what the mint
 #    emits (`YYYY.M.P`, floored at 1 — never X.Y.0, never 08, never 0999).
-if [[ ! "$tag" =~ ^v([1-9][0-9]{3})\.([1-9]|1[0-2])\.([1-9][0-9]*)$ ]]; then
-    refuse "not a vYYYY.M.P CalVer tag (a hand-made tag)"
+if [[ "$tag" != "$tag_prefix"* || ! "${tag#"$tag_prefix"}" =~ ^([1-9][0-9]{3})\.([1-9]|1[0-2])\.([1-9][0-9]*)$ ]]; then
+    refuse "not $tag_shape CalVer tag (a hand-made tag)"
 fi
 year="${BASH_REMATCH[1]}"
 month="${BASH_REMATCH[2]}"
@@ -194,7 +257,7 @@ fi
 pin="$(printf '%04d-%02d-01' "$year" "$month")"
 echo "Re-running the mint read-only at $head, pinned to $pin (VERSION_DATE_OVERRIDE), for $tag"
 if ! reported="$(env -u MARKETING_VERSION -u VERSION_PATCH_OVERRIDE \
-        VERSION_DATE_OVERRIDE="$pin" "${BASH:-bash}" "$MINT" --tag)"; then
+        VERSION_DATE_OVERRIDE="$pin" "${BASH:-bash}" "$MINT" "$mint_flag")"; then
     refuse "the pinned-month derivation could not run (the mint exited non-zero; its reason is above)"
 fi
 reported_tag="$(printf '%s\n' "$reported" | sed -n 's/^tag=//p')"

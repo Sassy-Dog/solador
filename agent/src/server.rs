@@ -22,8 +22,9 @@ pub struct AppState {
     /// Required bearer token. Requests must present `Authorization: Bearer <token>`.
     pub token: Arc<String>,
     pub hostname: String,
-    /// The CalVer this build ships as, or `None` when it was compiled outside a
-    /// full git checkout and cannot name itself (`crate::VERSION`). `None`
+    /// The agent version this build ships as — a release's `YYYY.M.N`, or a
+    /// source build's `<base>+dev.<k>.g<sha>` — or `None` when it was compiled
+    /// outside a full git checkout and cannot name itself (`crate::VERSION`). `None`
     /// **omits** the `version` key rather than serving a placeholder — the same
     /// rule `/v1/snapshot` applies to every metric the host declined to
     /// measure.

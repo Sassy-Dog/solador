@@ -7,14 +7,25 @@ drift — fix one of them in the same PR.
 
 ## Classification (§7)
 
-**Desktop app row.** Two shipping tiers, on **one** number:
+**Desktop app row.** Two shipping tiers, on **two** numbers (#472, #490):
 
 - **Solador** (`app/`): the cockpit — a `.dmg` plus its `.app.tar.gz` updater
-  payload on macOS, an NSIS installer on Windows.
+  payload on macOS, an NSIS installer on Windows. Tag `vYYYY.M.P`, version =
+  the marketing CalVer.
 - **Rust agent** (`agent/`): four cross-compiled, minisigned target binaries
-  (`x86_64`/`aarch64-unknown-linux-musl`, `aarch64`/`x86_64-apple-darwin`), on
-  the **same tag and the same GitHub Release** as the cockpit. One tag, one
-  release, both products — deliberately not a second release train.
+  (`x86_64`/`aarch64-unknown-linux-musl`, `aarch64`/`x86_64-apple-darwin`) on a
+  **release train of its own**: tag `agent-vYYYY.M.N`, its own GitHub Release,
+  and a version that moves only when an agent release is cut. An app-only
+  release produces no agent binary, and an agent release no app.
+
+**The agent shared the cockpit's tag and number from #390 to #472, and no
+longer does.** "One tag, one release, both products" was the original design,
+and its cost showed up in measurement: the agent compiled the CalVer in, so two
+releases always differed in bytes, and the feed's per-target `sha256` skip could
+never fire across releases (every consecutive pair of releases also had real
+agent commits, so history could not have shown an app-only release anyway).
+With the train separated a cockpit-only tag no longer produces an agent binary
+at all, and either product ships without the other.
 
 **The agent was N/A until [#390](https://github.com/Sassy-Dog/solador/issues/390),
 and this is the revisit that clause asked for.** It read: *"an internal artifact
@@ -26,15 +37,17 @@ what ships, which its own opening rule forbids.
 
 What changed, concretely:
 
-- The agent's version **is** the marketing CalVer, from the one owner. It
-  reaches the binary the same way the cockpit's does — `agent/build.rs` calls
-  `crates/buildversion`, which shells out to `scripts/get-version-info.sh` and
-  honours a `MARKETING_VERSION` pin ahead of deriving. `crates/buildversion`
-  exists so that plumbing has ONE implementation rather than one per build
-  script.
+- The agent's version comes from the one owner, `scripts/get-version-info.sh`
+  (#390 had it share the marketing CalVer; since #490 it is the agent's own
+  number, below). It reaches the binary the same way the cockpit's does —
+  `agent/build.rs` calls `crates/buildversion`, which shells out to the script
+  and honours a pin ahead of deriving (the agent's pin is
+  `AGENT_MARKETING_VERSION`; **`MARKETING_VERSION` never reaches it**).
+  `crates/buildversion` exists so that plumbing has ONE implementation rather
+  than one per build script.
 - `solador-agent --version` prints it and nothing else, and `/v1/health`'s
   `version` serves the same string. One binary, one answer.
-- `agent/Cargo.toml`'s `0.5.0` **no longer names a release** and nothing reads
+- `agent/Cargo.toml`'s semver (`0.5.x`) **no longer names a release** and nothing reads
   it at runtime. It survives as the *wire-contract marker* its comment block has
   always been — a minor records a key the agent has never produced before, which
   is what `crates/wire`'s tolerance notes cite. It is now unpublished package
@@ -49,19 +62,30 @@ What changed, concretely:
 
 **A build that cannot name itself carries no version at all**, and that is the
 same `Option` the cockpit has. `agent/src/main.rs`'s `VERSION` is
-`option_env!("SOLADOR_MARKETING_VERSION")`; where it is `None`, `--version`
+`option_env!("SOLADOR_AGENT_MARKETING_VERSION")`; where it is `None`, `--version`
 exits non-zero with the reason, `/v1/health` **omits** the key (never `null`,
 never a stand-in), and the cockpit's Settings row reads `agent version —`.
 `binary_version` fails closed on it, so a deploy cannot fall through to "just
 come back online" and report success without ever proving which binary is
 serving.
 
-## The two numbers (§1–§3)
+## The numbers (§1–§3)
 
 | Number | Owner (single source) | Value |
 |---|---|---|
-| Marketing version | `scripts/get-version-info.sh --version` | CalVer `YYYY.M.<commits-this-month>` (UTC, non-padded month, floored at 1) |
-| Build number | `scripts/get-build-number.sh [--at <ref>]` | `git rev-list --count` — total commits, monotonic forever, never date-gated |
+| Marketing version (the cockpit) | `scripts/get-version-info.sh --version` | CalVer `YYYY.M.<commits-this-month>` (UTC, non-padded month, floored at 1) |
+| Build number (the cockpit) | `scripts/get-build-number.sh [--at <ref>]` | `git rev-list --count` — total commits, monotonic forever, never date-gated |
+| Agent version (#472, #490) | `scripts/get-version-info.sh --agent-version` (checkout) and `--agent-tag` (mint) | A release's `YYYY.M.N` = tag `agent-vYYYY.M.N`; N is a **release counter** (1 + the highest patch shipped that month), not a commit count. A source build is `<base>+dev.<k>.g<sha>` — base the highest reachable `agent-v*` tag, before one exists `LAST_COMBINED_AGENT_RELEASE` (`scripts/config.sh`); `<k>` the commits since it |
+
+The agent's number is deliberately **not** a third value the two scripts above
+derive: it moves when an agent release is cut and not when a commit lands, so a
+source build can never be mistaken for a release (the `+dev` suffix is what the
+agent's own `update` answers "no applicable release", exit 4, instead of
+comparing). `LAST_COMBINED_AGENT_RELEASE` is the one place the legacy numbering
+is known — the last `v*` release that carried agent binaries, from the days the
+agent shared the cockpit's tag (the bridge, `v2026.10.14`) — and it is history,
+never a version anyone chooses; the mint counts it among what has shipped and a
+source build counts commits from it until an `agent-v*` tag exists.
 
 Consumers — version is **never** computed anywhere else:
 
@@ -89,10 +113,13 @@ Consumers — version is **never** computed anywhere else:
   its `ProductVersion` caps the major field at 255, which CalVer's year
   cannot fit.
 - **`scripts/build-agent.sh`** (`./dev agent`) — the agent's build-time
-  consumer, as of **#390**. It calls `--version` once, names every artifact
-  `solador-agent-<version>-<triple>`, and then reads the version back **out of
-  each binary** on every runner that can execute it — the same derive-then-assert
-  standard the plist keys are held to. `.github/workflows/release.yml` completes
+  consumer, as of **#390**. Since **#490** it takes the agent's pin
+  `AGENT_MARKETING_VERSION`, else `get-version-info.sh --agent-version`, names
+  every artifact `solador-agent-<version>-<triple>`, and then reads the version
+  back **out of each binary** on every runner that can execute it — the same
+  derive-then-assert standard the plist keys are held to. A `./dev agent` or CI
+  build with no pin is a `+dev` source build and passes that assertion; only a
+  release pins a version. `.github/workflows/release.yml` completes
   that: `--version` is executed for all four targets on runners matching them
   (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`, `macos-15-intel`) and
   compared against the tag, before anything is signed or uploaded. An artifact
@@ -100,7 +127,9 @@ Consumers — version is **never** computed anywhere else:
   links perfectly well on a machine that cannot run one instruction of it.
 - `scripts/publish.sh` consumes the mint's output contract (below) and pins
   the build via `MARKETING_VERSION=<minted>` so the artifact is stamped with
-  exactly the tagged version.
+  exactly the tagged version. `./dev publish --agent` is the same script minting
+  the agent's tag (below) and stopping there: the agent is built by its release
+  workflow, on the tag.
 - In-app displays (Settings footer, OpenClaw client version) read
   `CFBundleShortVersionString` from the stamped bundle — downstream of the
   scripts, compliant.
@@ -111,10 +140,15 @@ Consumers — version is **never** computed anywhere else:
   explicit `MARKETING_VERSION` in the environment wins over deriving — the same
   pin `publish.sh` sets so the artifact carries the version the *tag* carries
   rather than a fresh re-derive. Since #390 that build script is two lines: the
-  work is `crates/buildversion::emit_marketing_version`, shared verbatim with
-  `agent/build.rs`, because the *plumbing* around the one script (a worktree's
-  `.git` file, the ref file a commit rewrites, the shallow-clone refusal) is
-  fiddly enough that two copies would diverge at the first fix.
+  work is `crates/buildversion::emit_marketing_version`, whose sibling
+  `emit_agent_marketing_version` is what `agent/build.rs` calls (#490) — the
+  pin `AGENT_MARKETING_VERSION`, then the shallow refusal, then
+  `get-version-info.sh --agent-version`, never reading `MARKETING_VERSION`, and
+  also watching `packed-refs` and `refs/tags` because a tag moves a source
+  build's base without moving `HEAD` — because the *plumbing* around the one
+  script (a worktree's `.git` file, the ref file a commit rewrites, the
+  shallow-clone refusal) is fiddly enough that two copies would diverge at the
+  first fix.
 - `settings::VERSION` is an `Option<&str>`, and the `None` arm is load-bearing.
   A **shallow clone cannot be asked** how many commits landed this month: it
   answers `1` rather than failing, which is why the bundle job pins
@@ -126,12 +160,20 @@ Consumers — version is **never** computed anywhere else:
 **Replay pins / test seams** (org-canonical, §3): `MARKETING_VERSION` and
 `BUILD_NUMBER` pin verbatim (a pin is never auto-bumped — a mint collision
 under a pin fails loudly); `VERSION_DATE_OVERRIDE` / `VERSION_PATCH_OVERRIDE`
-are test seams.
+are test seams. The agent's own pin is `AGENT_MARKETING_VERSION`, consumed by
+`crates/buildversion` and `scripts/build-agent.sh` and **not read by
+`get-version-info.sh`** (the agent mint honours no pin at all: its answer comes
+from the remote); `VERSION_DATE_OVERRIDE` pins its clock, and
+`LAST_COMBINED_AGENT_RELEASE` is read from `scripts/config.sh` unless the
+environment already carries it (which sourcing that file arranges, and the
+tests use to stage the bridge).
 
 ## Mint (§4, mode 2 — local)
 
-Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
-`scripts/get-version-info.sh --tag --push`:
+Exactly two mint sites, both in `scripts/publish.sh` (→ `./dev publish`):
+`scripts/get-version-info.sh --tag --push` for the cockpit, described first, and
+`--agent-tag --push` for the agent (`./dev publish --agent`, [below](#the-agents-mint---agent-tag-472-490)).
+The cockpit's:
 
 1. Pre-flight: clean tree, on `main`, local `main` == `origin/main`.
 2. **CI-green check** (mode-2 requirement): a completed, successful `CI`
@@ -214,22 +256,90 @@ Exactly one mint site: `scripts/publish.sh` (→ `./dev publish`) invoking
    proves the three outcomes against a temporary bare origin;
    `scripts/publish.sh`'s epilogue states the remedy.
 
+### The agent's mint (`--agent-tag`, #472, #490)
+
+`./dev publish --agent` (`scripts/publish.sh --agent`) mints and pushes the
+agent's tag through `get-version-info.sh --agent-tag --push`. Its pre-flight is
+the cockpit's up to and including the CI-green check — clean tree, on `main`,
+local `main` == `origin/main`, a completed successful `CI` run for HEAD,
+fail-closed — plus one of its own: HEAD must carry
+`.github/workflows/release-agent.yml`, because a tag push runs the workflow file
+as it is at the tagged commit, so a tag minted without it would build nothing
+and burn a number that can never be reused (#491 adds the file). Then it
+**stops**: it needs no `SENTRY_DSN` and no
+`TAURI_SIGNING_*` keys, runs no
+local tests and builds no `.dmg`, because the agent is built by its release
+workflow on the pushed tag. `--skip-tests`, `--skip-sentry` and `--skip-mint`
+are about a build this mode does not make and are refused with it. Like the
+cockpit's, **it pushes a real tag**; the dry run is
+`get-version-info.sh --agent-tag` by hand.
+
+The mint's rules, in order:
+
+1. **Reuse.** An `agent-v*` tag already at `HEAD^{commit}` on the **remote**
+   (annotated tags peeled) answers `action=reuse` and nothing is pushed — what
+   lets `scripts/assert-release-tag.sh --agent` re-run the mint read-only and
+   get its own tag back.
+2. **Create.** `agent-vYYYY.M.N` for the current UTC month, N = 1 + the highest
+   patch among that month's shipped agent versions (1 in a month with none).
+   "Shipped" is the `agent-v*` tags **`git ls-remote --tags origin` advertises —
+   never local tags** — plus `LAST_COMBINED_AGENT_RELEASE`. Names that merely
+   start with `agent-` (`agent-latest`) or are not strict CalVers are not
+   versions. A failed probe, and a missing `origin`, **fail closed**: unlike the
+   cockpit's mint there is no local-tag fallback, because the remote's list is
+   the premise.
+3. **Refuse** a result that does not sort strictly above **every** shipped
+   version (a future-month tag on the remote, a skewed clock), and a name whose
+   `agent-v…` **release** already exists (`gh release view`, fail-closed when gh
+   cannot say). A deleted tag drops out of rule 2's maximum, and re-minting its
+   number would publish different bytes under a version some host already runs,
+   which then sits at exit 4 forever — the hash differs and the version is not
+   newer. Never delete an `agent-v*` tag.
+
+Concurrent mints are serialised by the remote: a second push of one tag is
+rejected, and the mint then removes its local tag and exits 1. The output
+contract is the cockpit's (`version=` / `tag=agent-v…` / `action=create|reuse`),
+and a single month needs no special case — `2026.11.1 > 2026.10.14` under the
+numeric rule, so the first agent release may come in the bridge's month or any
+later one.
+
+**`scripts/assert-release-tag.sh --agent <tag>`** asks that mint, read-only,
+pinned to the 1st of the tag's own month, and requires `action=reuse` for
+exactly the tag. It shares every pre-mint refusal with the cockpit mode
+(a name that is not `agent-vYYYY.M.P`, a month after the current UTC month or
+one that ended before HEAD's committer date, a shallow clone, no `origin`) and
+says what it bound: that the NAME is a well-formed agent version for a month the
+mint's clock could have produced at this commit and that the tag is on the
+remote at this commit. It does not establish where the commit came from — that
+is `prd`'s required reviewer's, as for the cockpit.
+
 ## Tags (§5)
 
-Umbrella `v*` only, no tier tags, no tier-vs-tag change detection. The two
-shipping tiers deliberately share **one** number and one tag, so there is
-nothing to path-scope: a tag push builds the cockpit and the agent from the same
-commit into the same release.
+Two tag families, one per shipping tier, and nothing path-scoped within either:
+`v*` for the cockpit (umbrella, no tier tags) and `agent-v*` for the agent
+(#472). GitHub's `v*` tag filter does not match `agent-v…`, so a push of one
+never triggers the other's workflows. The agent's tags are minted only by
+`--agent-tag`, and **are never deleted**: the mint's next number is read from
+the remote's tags, so a deleted one would be handed out again for different
+bytes (the mint refuses a name whose *release* exists, which is the net under
+that rule, not a substitute for it).
 
-The **accepted cost** of that sharing, stated rather than discovered: the agent
-gets a new version on every cockpit-only release, including ones where not a
-byte of `agent/` changed. What the agent feed offers against that is a
-**content hash** per binary (`agent-latest.json`, #391) — a consumer compares
-bytes, not versions, and same bytes mean stop. How much that buys is bounded
-by this very section: the agent compiles its CalVer in, so a cockpit-only
-release *does* change the agent's bytes today, and the hash rule fires only on
-a rebuild with no change at all (`docs/AGENT-DISTRIBUTION.md` §3 states it
-plainly). Making the agent's bytes version-independent is a separate decision.
+A third name is not a version: **`agent-latest`** (the rolling release of
+#472 §2, kept by the agent feed workflow) is a permanent prerelease whose only
+assets are `agent-latest.json` and its `.minisig` — the signed feed every
+installed agent and `install.sh` read to find the newest agent release. Its tag
+never moves, the `agent-v*` patterns the derivation and the mint use
+(`git tag --list`, `git ls-remote`) and the mint's strict `agent-v<CalVer>` shape
+all exclude it, and it is a prerelease so it can never become `/releases/latest`
+(that slot is the cockpit's; an `agent-v*` release is published *not* latest).
+
+What this replaced, stated rather than lost: while the two tiers shared one tag
+(#390–#472) the agent got a new version on every cockpit-only release, including
+ones where not a byte of `agent/` changed, and the feed's content hash — a
+consumer compares bytes, not versions — could never fire across releases,
+because the compiled-in version made every release's bytes differ. Now an agent
+release exists only when someone cuts one, and the hash answers "is the binary I
+am running already this release's?" (`docs/AGENT-DISTRIBUTION.md` §3).
 
 Declared stance: **no channel tags yet.** This clause used to read "builds are
 unsigned/un-notarized and local-only until #15 lands"; that is no longer the
@@ -299,8 +409,10 @@ artifact-only.
 
 ## CI (§8) — before the mint ever moves to CI
 
-The mint's create/push half is local-only; `ci.yml` computes no versions, so
-it needs no special checkout. **If the mint (or any version computation) ever
+The mint's create/push half is local-only; `ci.yml` mints nothing and computes
+no *release* version (its one derivation, the musl build's `+dev` agent version,
+is covered at the end of this section), so it needs no special checkout.
+**If the mint (or any version computation) ever
 moves into a workflow**: that job MUST check out with `fetch-depth: 0` **and**
 fetch tags (two distinct requirements — tags present, and the §4 probe
 actually performed), keep UTC dates, and remain the single mint site (a CI
@@ -312,7 +424,16 @@ without `--push`, §4 step 7 / #404) under `fetch-depth: 0` with the month
 deliberately **pinned** to the tag's through `VERSION_DATE_OVERRIDE`. That is
 not the mint moving to CI and it is not a UTC-date violation to "fix": the
 pin is what lets a tag be asserted in the month it was minted rather than the
-month the run happens to land in, and it creates nothing.
+month the run happens to land in, and it creates nothing. The agent's release
+workflow does the same through `assert-release-tag.sh --agent` (#472, #491).
+
+One more thing runs in CI that needs the *tags*, not only the history: a `+dev`
+agent version counts commits from the base tag, so `agent-tests`' musl build
+needs `v2026.10.14` (or a later `agent-v*` tag) in the checkout. It gets it
+because that job unshallows with `git fetch --unshallow`, which auto-follows the
+tags that point into the history it downloads (checked against a local
+`--depth 1` replica of the checkout's fetch); a checkout that did not have the
+tag yields **no version** and the build fails loudly rather than guessing.
 
 ## Adoption status (§9)
 
@@ -334,7 +455,7 @@ is one-way — no semver "1.0 moment" is coming back.
 ## Tests (§3, mandatory)
 
 **These scripts are covered by `scripts/versioning-test.sh`** (#405) —
-roughly 160 cases, dependency-free bash in the shape of
+roughly 400 cases (about 160 before the agent's number, #490), dependency-free bash in the shape of
 `agent/deploy/lib_test.sh`, against temporary bare-origin git repositories
 with real `ls-remote` probes; nothing pushes anywhere but the scratch
 origin. It runs from `./dev test` and in three CI jobs, each under the
@@ -413,16 +534,74 @@ build-number script's fail-closed `exit 1` plus its message replaced by
 `echo 1` / `exit 0` → 5 red. A suite that has only ever seen the scripts
 pass is indistinguishable from one that passes everything.
 
+**The agent's number (#490)** is held by the same suite, in the same shape
+(a fresh scratch origin per scenario, never the cockpit fixture, so each
+answer is a function of exactly the tags the remote holds; a `gh` shim for
+`release view` and `run list`, with `publish.sh`'s children run under the
+suite's own bash):
+
+- **Version** (`--agent-version`): the `+dev` form against the staged legacy
+  base, and against the highest *reachable* `agent-v*` tag once one exists
+  (an unreachable tag, `agent-latest` and malformed names are not bases); a tag
+  at HEAD is that version, the highest numerically; the cockpit's pin, clock
+  and `VERSION_PATCH_OVERRIDE` do not move it; the base is read from
+  `scripts/config.sh` when the seam is empty (and that line is asserted to
+  have the shape the script reads); a shallow clone, a clone without the base
+  tag and a directory outside a checkout yield nothing (exit 1, empty stdout);
+  an unreachable origin does not matter, because nothing is fetched.
+- **Mint** (`--agent-tag`): the output contract; reuse at HEAD, annotated and
+  lightweight, with no `gh` call and no push; the first release in a month, in
+  the legacy base's month and in the next, and a numeric (not lexical)
+  maximum; a **local-only tag ignored**; malformed names and `agent-latest` not
+  counted; **a release that already exists refused**, with the negative control
+  that the same run without it creates; a result not above everything shipped
+  refused (a later month's tag, a month behind the legacy base, the configured
+  base); `gh` failing, an unreachable origin and no origin each refusing blind;
+  `--push` creating an annotated tag at HEAD with exactly one push, a re-run
+  pushing nothing, a remote that rejects the push leaving no local tag behind.
+- **`assert-release-tag.sh --agent`**: a minted tag passes (after the month
+  rolls too); the wrong commit, a local-only tag and a different tag reused are
+  refused with what the mint resolved instead; every malformed shape, the
+  cockpit's own shape in agent mode and an agent tag in cockpit mode, a future
+  month, a month that ended before the commit, an unreachable origin, no
+  origin, a shallow clone and no checkout are refused, the pre-mint ones before
+  the mint runs.
+- **`publish.sh --agent`**: against a scratch origin, it mints and pushes
+  exactly one tag with none of the cockpit's credentials in the environment,
+  names no credential or build, reuses at the same HEAD pushing nothing, and
+  each pre-flight (dirty tree, not on `main`, `main` behind, CI not green, CI
+  unknowable, CI green only at some other commit — the shim counts a green run
+  only for `--workflow CI` at the commit under test — and HEAD lacking
+  `release-agent.yml`), a mint that refuses, and each cockpit-only option refuse
+  with nothing tagged.
+
+**Proven to bite, the agent's half** — mutations run by hand and recorded on
+the PR that shipped it, each restored afterwards: the mint reading local tags
+(`git show-ref`) for `ls-remote` → 27 red (annotated reuse, the local-only tag,
+the unreachable origin among them); the release-exists refusal made to carry on
+→ 2 red; the strictly-above refusal removed → 10 red; `--agent-version`'s
+shallow refusal removed → 3 red; the numeric maximum made lexical → 6 red; and,
+in `agent/deploy/lib_test.sh`, `resolve_latest_agent_release` reading `version`
+*before* verifying → 1 red, the recorder that sees `agent_feed_version` run on a
+tampered feed (the install-level cases alone still refuse, which is why that
+recorder exists).
+
 **Not here, on purpose.** The shallow-clone refusal of the *build scripts*
 lives in `crates/buildversion` (the `Shallow` arm of its `resolve`, in Rust),
-not in the shell mint, which has no such check — it is tested there (#417).
-The assertion script's "output
+not in the cockpit's shell mint, which has no such check — it is tested there
+(#417), with the pins (the agent's ignores `MARKETING_VERSION`) and the agent's
+tag-watching (#490). The agent's `--agent-version` *does* refuse a shallow clone
+itself, since the script is what counts commits since a tag. The assertion
+script's "output
 contract was violated" branch is unreachable from a suite that runs the real
 mint, for the reason its own header gives.
 
 The consumers of the derived number are covered separately, as before:
 `agent/deploy/lib_test.sh` asserts `binary_version` reads a version back out
-of a real binary and fails closed without one, `scripts/build-agent.sh`
+of a real binary and fails closed without one — and, since #490, that
+`install.sh` finds the release through the signed feed (the real `minisign`
+verifies it before `version` is read, and a tampered or non-CalVer feed is
+refused), `scripts/build-agent.sh`
 asserts each artifact's compiled-in version against the number it was named
 with, and `release.yml` asserts on every leg that the tag is the mint's own
 answer at that commit (#404, above).

@@ -3,22 +3,22 @@
   "targets": {
     "aarch64-apple-darwin": {
       "url": "https://github.com/Sassy-Dog/solador/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-aarch64-apple-darwin",
-      "signature": "untrusted comment: solador-agent release signature\nRUT5pyxQC+epfYuUC15BmmuQDscwGryc5vTQJd9fFTP6gC8vyhOX3JbxJMYAkOqotKHysvJzuZtXT1emC0zHzG2ucitMIHoSJww=\ntrusted comment: solador-agent-2026.9.9-aarch64-apple-darwin\nxcdxOy7fRaasN/z3qr1tcL+Dnbb06CEzwLkA0M1d5cLrtUeZL9S83QFPmoCzDE1X6RLohYazIeyXTRiJfxFlBg==\n",
+      "signature": "untrusted comment: solador-agent release signature\nRUSZQtZ02qzRJax9khTOH0sSsK1iQP8m+u5LioIyxXoE+9985Xp2HPWg+jxkwXoB/YImHTC+P8E7HysWN+3Kb7ZTx/3Ryr4XiQk=\ntrusted comment: solador-agent-2026.9.9-aarch64-apple-darwin\n0rmbozJAAIYqYWesI1dHrZzyfo1Ggn3NmNE0B1/1sX99YQrFID8adn61aQkFPiStOoHgvL2LYD25cyfn/bH6Cw==\n",
       "sha256": "17db88422a1b2734d20c0e042dd534c47e20e912f25d00e4955292ef1d757f3e"
     },
     "aarch64-unknown-linux-musl": {
       "url": "https://github.com/Sassy-Dog/solador/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-aarch64-unknown-linux-musl",
-      "signature": "untrusted comment: solador-agent release signature\nRUT5pyxQC+epfa2ibEotZ+rWe++2TocxfsXfesl6HPCuzzmZNoBAK2s+ZYhFQC6wDlFJobKiv+7Dw7pejnyH3RdZvIg0dh/7/gE=\ntrusted comment: solador-agent-2026.9.9-aarch64-unknown-linux-musl\nZZ/RF0o0+y/x2/b8KQMNvNm7in9Co0Nj5vT7dEPmO2ZJLZWnrLulT66Hxy3OXCgZ3DJc4nTMuLKY3VE+2UEmCA==\n",
+      "signature": "untrusted comment: solador-agent release signature\nRUSZQtZ02qzRJUzMMH0qb5nI3JaLoFnYX5RSBBGXH9+dZ/qK3BJEgEa4S9uLe9PrE2R/nTRh0ICWR4Dkea19bmEYrB3LMK//1gk=\ntrusted comment: solador-agent-2026.9.9-aarch64-unknown-linux-musl\nXTMBSmmzTWQpjCQyrVQApqrh08EA8YB51gEhkFFpWshiJ9NrZtmSLqaHxABzgjT9Qqb3V/hiCl9mb4VQTiotBg==\n",
       "sha256": "9a0b0eae62b7037d94b00f1f9cd3f12a88c129873db1ce7091aa14e0fc6055e3"
     },
     "x86_64-apple-darwin": {
       "url": "https://github.com/Sassy-Dog/solador/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-x86_64-apple-darwin",
-      "signature": "untrusted comment: solador-agent release signature\nRUT5pyxQC+epfRSV/AdJL17jlwVX9zQN0RszNs8znQll+PtJysFcijj01DowkrdfSQ25d7mNgEozCMu5NBjcVDWc17xg4BzeUAs=\ntrusted comment: solador-agent-2026.9.9-x86_64-apple-darwin\nrTC0gVGCLV7hzYsDC5ItxXwHpUfqtYs0mp7h2FC4LRDtwBJ4QTthJ7B3i74J52m7sET2bsNhGC7N3FHB+73wDg==\n",
+      "signature": "untrusted comment: solador-agent release signature\nRUSZQtZ02qzRJbhf5dOKNNWa1H1rnR8Eao2EiIgPjAZRB+/k8c4aZYYq30VW1TkUC52TLbwTRNQ7IE6fizu9pLcaIXYwT17pbgs=\ntrusted comment: solador-agent-2026.9.9-x86_64-apple-darwin\nNpvMamMtTpsUs+qRM6WlliYHu5Hoq2gFPaEIZzpyepD5PiqfwDs2EtBPYLlkpD5by5WF3dAvKbPZez03JpLKDg==\n",
       "sha256": "65d35441dab36b9c9c0ea8ca34882e6ebeca6c27f783c360ca9c9bf16d2d5f03"
     },
     "x86_64-unknown-linux-musl": {
       "url": "https://github.com/Sassy-Dog/solador/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-x86_64-unknown-linux-musl",
-      "signature": "untrusted comment: solador-agent release signature\nRUT5pyxQC+epfXKDl6ZzJRZVoNs1tDL8cSjHprHnmiQit/x8RllkgyxA6tziWjsNssCVs27PKalqKQdy4wIs1TXFcvfhTR8wqgo=\ntrusted comment: solador-agent-2026.9.9-x86_64-unknown-linux-musl\nLzsyKsU3U8iB3SX9logQrBBEgMrxDIFtXganhgyfBujl92KwLUpQSnmLBzYxMssczBKgV81e1/DpYwZvbSwqCg==\n",
+      "signature": "untrusted comment: solador-agent release signature\nRUSZQtZ02qzRJYI0SMBWp6pDmn8O4ghDLYwiCLZjNYRNtQZcHbIerMDjgVMQSGA69KfAS+JE/0w9I40uusqlZ9XREv/dc99oyws=\ntrusted comment: solador-agent-2026.9.9-x86_64-unknown-linux-musl\nALTRbJ1uuL6bzdMEwEcdMjbM0vOuSpMRUbI+4ZyxeeuxPrBa7uX+TTFQmG25VsDZuKrKGlCCYOh37Ow+XTlJDw==\n",
       "sha256": "062a118edcfad5d43164ad887a68d5a0840ecc8019134140a91f9a9951e19b18"
     }
   }

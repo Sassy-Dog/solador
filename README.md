@@ -27,6 +27,15 @@ thing that isn't right.
 | **Windows 10/11** | `Solador_<version>_x64-setup.exe` | x64, Authenticode-signed. **No update channel yet** — the app says so plainly rather than reporting a failed check, and you install the next one over it. |
 | **Linux** | — | No cockpit build. Linux runs the [agent](agent/), which is how a Linux box appears in someone else's cockpit. |
 
+**The agent is not in that release.** It has a release train of its own
+(`agent-vYYYY.M.N`), found through a signed feed on a permanent `agent-latest`
+release rather than through "latest release" above, which is the cockpit's.
+[`agent/deploy/install.sh`](agent/README.md) does the finding, the signature
+check and the install for you; `agent/README.md` is the reference. (Until the
+first `agent-v` release is published there is no feed yet, and the unpinned
+installer says so: pin the last combined release, which carries the agent's
+binaries, with `SOLADOR_AGENT_RELEASE=v2026.10.14`.)
+
 Prefer to build it yourself? See [Build from source](#build-from-source).
 Windows 10 also needs the WebView2 runtime; Windows 11 already has it.
 
