@@ -28,5 +28,5 @@ minisign-verify = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
-# A loopback HTTP server for the 404 / 5xx / network-failure classification.
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
+# `#[tokio::test]` for the in-memory-transport classification tests.
+tokio = { version = "1", features = ["rt", "macros"] }

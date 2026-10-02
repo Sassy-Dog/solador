@@ -33,6 +33,7 @@
 
 use minisign_verify::{PublicKey, Signature};
 use serde::Deserialize;
+use std::future::Future;
 use std::time::Duration;
 
 include!(concat!(env!("OUT_DIR"), "/trusted_keys.rs"));
@@ -201,68 +202,110 @@ pub fn verify(trust: &Trust, feed_bytes: &[u8], signature: &str) -> Result<Lates
     })
 }
 
-/// `<base>/releases/download/agent-latest/<asset>`. Built from the compiled-in
-/// base and nothing a feed says.
-fn asset_url(base: &str, asset: &str) -> String {
-    format!("{base}/releases/download/{FEED_RELEASE}/{asset}")
+/// `<RELEASE_BASE>/releases/download/agent-latest/<asset>`. Built from the
+/// compiled-in base and nothing a feed says.
+fn asset_url(asset: &str) -> String {
+    format!("{RELEASE_BASE}/releases/download/{FEED_RELEASE}/{asset}")
 }
 
-/// Plain `http://` is for the loopback servers in tests and nothing a shipped
-/// build is configured with ([`RELEASE_BASE`] is a constant).
-fn is_loopback_base(base: &str) -> bool {
-    ["http://127.0.0.1", "http://localhost", "http://[::1]"]
-        .iter()
-        .any(|prefix| {
-            base.strip_prefix(prefix).is_some_and(|rest| {
-                rest.is_empty() || rest.starts_with(':') || rest.starts_with('/')
-            })
-        })
+/// What a transport hands back: the status and the whole body, already bounded
+/// by [`BODY_CAP`]. No URL, scheme or header rides on it, which is the point of
+/// the seam: everything this crate *decides* is a function of a [`Reply`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
-/// GET one asset into memory. A 404 is [`Error::NotPublished`] for the caller
-/// to reinterpret (the signature's 404 is [`Error::Unsigned`], not that).
-async fn get(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Error> {
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| Error::Unreachable)?;
-    let status = response.status();
-    if status.as_u16() == 404 {
-        return Err(Error::NotPublished);
-    }
-    if !status.is_success() {
-        return Err(Error::Status(status.as_u16()));
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| Error::Unreachable)? {
-        if body.len() + chunk.len() > BODY_CAP {
-            // Not a feed. Reported as the response being unreadable rather
-            // than quoting a size that would only invite parsing it.
-            return Err(Error::Malformed);
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
-}
-
-/// Fetch the feed and its signature from `base` and verify them under `trust`.
+/// The one thing this crate needs from a network: GET a URL.
 ///
-/// `base` is a parameter so tests can point it at a loopback server; the
-/// shell calls [`latest`].
-pub async fn fetch_latest(base: &str, trust: &Trust) -> Result<Latest, Error> {
-    let client = reqwest::Client::builder()
-        .user_agent("solador-cockpit/agent-release-check")
-        .https_only(!is_loopback_base(base))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|_| Error::Unreachable)?;
+/// The only production implementation is [`Https`], whose client is
+/// `https_only` unconditionally. There is deliberately **no plain-HTTP
+/// implementation and no knob that adds one**: tests exercise the
+/// classification through an in-memory implementation instead of a loopback
+/// socket, so the shipped client carries no scheme exception to defend.
+pub trait Transport {
+    /// A failure to complete the request at all is [`Error::Unreachable`]; an
+    /// over-long body is [`Error::Malformed`]. Anything the server *answered*
+    /// is a [`Reply`], whatever its status.
+    fn get(&self, url: &str) -> impl Future<Output = Result<Reply, Error>> + Send;
+}
 
+/// Append `chunk` to `body` unless that would pass [`BODY_CAP`]. Not a feed
+/// past the cap; reported as unreadable rather than quoting a size.
+fn push_capped(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), Error> {
+    if body.len() + chunk.len() > BODY_CAP {
+        return Err(Error::Malformed);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+/// A reply's body, or the state its status means. A 404 is
+/// [`Error::NotPublished`] for the caller to reinterpret (the signature's 404
+/// is [`Error::Unsigned`], not that); any other non-2xx keeps its status.
+fn classify(reply: Reply) -> Result<Vec<u8>, Error> {
+    match reply.status {
+        404 => Err(Error::NotPublished),
+        200..=299 => {
+            let mut body = Vec::new();
+            push_capped(&mut body, &reply.body)?;
+            Ok(body)
+        }
+        other => Err(Error::Status(other)),
+    }
+}
+
+/// The production transport: HTTPS only, no exceptions.
+pub struct Https(reqwest::Client);
+
+impl Https {
+    pub fn new() -> Result<Self, Error> {
+        reqwest::Client::builder()
+            .user_agent("solador-cockpit/agent-release-check")
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map(Https)
+            .map_err(|_| Error::Unreachable)
+    }
+}
+
+impl Transport for Https {
+    async fn get(&self, url: &str) -> Result<Reply, Error> {
+        let mut response = self
+            .0
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| Error::Unreachable)?;
+        let status = response.status().as_u16();
+        // Only a success body is read: an error page is not worth buffering.
+        let mut body = Vec::new();
+        if (200..=299).contains(&status) {
+            while let Some(chunk) = response.chunk().await.map_err(|_| Error::Unreachable)? {
+                push_capped(&mut body, &chunk)?;
+            }
+        }
+        Ok(Reply { status, body })
+    }
+}
+
+/// Fetch the feed and its signature through `transport` and verify them under
+/// `trust`. Generic so tests can supply an in-memory transport.
+pub async fn fetch_latest_with<T: Transport>(
+    transport: &T,
+    trust: &Trust,
+) -> Result<Latest, Error> {
     // The feed first: its 404 is the "nothing published yet" state.
-    let feed = get(&client, &asset_url(base, FEED_ASSET)).await?;
-    let signature = match get(&client, &asset_url(base, &format!("{FEED_ASSET}.minisig"))).await {
+    let feed = classify(transport.get(&asset_url(FEED_ASSET)).await?)?;
+    let signature = match classify(
+        transport
+            .get(&asset_url(&format!("{FEED_ASSET}.minisig")))
+            .await?,
+    ) {
         Ok(bytes) => bytes,
         // A feed with no signature beside it is a different finding from no
         // feed at all.
@@ -273,9 +316,10 @@ pub async fn fetch_latest(base: &str, trust: &Trust) -> Result<Latest, Error> {
     verify(trust, &feed, &signature)
 }
 
-/// The production read: the real release base, the compiled-in agent keys.
+/// The production read: the real release base over HTTPS, the compiled-in
+/// agent keys.
 pub async fn latest() -> Result<Latest, Error> {
-    fetch_latest(RELEASE_BASE, &Trust::compiled_in()?).await
+    fetch_latest_with(&Https::new()?, &Trust::compiled_in()?).await
 }
 
 #[cfg(test)]
@@ -445,20 +489,59 @@ mod tests {
     }
 
     #[test]
-    fn urls_are_built_from_the_base_alone() {
+    fn urls_are_built_from_the_release_base_alone() {
         assert_eq!(
-            asset_url(RELEASE_BASE, FEED_ASSET),
+            asset_url(FEED_ASSET),
             "https://github.com/Sassy-Dog/solador/releases/download/agent-latest/agent-latest.json"
         );
     }
 
     #[test]
-    fn only_loopback_may_be_plain_http() {
-        assert!(is_loopback_base("http://127.0.0.1:8080"));
-        assert!(is_loopback_base("http://localhost"));
-        assert!(is_loopback_base("http://[::1]:1"));
-        assert!(!is_loopback_base("http://127.0.0.1.evil.example"));
-        assert!(!is_loopback_base("http://example.com"));
-        assert!(!is_loopback_base(RELEASE_BASE));
+    fn a_reply_classifies_by_status_and_bounds_its_body() {
+        let reply = |status, body: &[u8]| Reply {
+            status,
+            body: body.to_vec(),
+        };
+        assert_eq!(classify(reply(200, b"ok")), Ok(b"ok".to_vec()));
+        assert_eq!(classify(reply(404, b"")), Err(Error::NotPublished));
+        assert_eq!(classify(reply(503, b"")), Err(Error::Status(503)));
+        assert_eq!(classify(reply(403, b"")), Err(Error::Status(403)));
+        let big = vec![b'x'; BODY_CAP + 1];
+        assert_eq!(classify(reply(200, &big)), Err(Error::Malformed));
+        assert_eq!(
+            classify(reply(200, &big[..BODY_CAP])).map(|b| b.len()),
+            Ok(BODY_CAP)
+        );
+        let mut body = vec![0u8; BODY_CAP];
+        assert_eq!(push_capped(&mut body, b"x"), Err(Error::Malformed));
+    }
+
+    #[test]
+    fn the_production_transport_builds() {
+        // `https_only(true)` is set unconditionally in `Https::new`; there is
+        // no other constructor and no scheme parameter to reach.
+        //
+        // **No permanent test fails if that call is removed**, and that is
+        // stated rather than hidden: the only input that tells `https_only`
+        // on from off is a URL with a plain `http` scheme, and keeping such a
+        // literal in the tree is exactly the plain-HTTP path this crate was
+        // changed to not have (CodeQL rust/non-https-url, #500). Neither
+        // reqwest's `Debug` output nor an `ftp://` URL distinguishes the two
+        // (the latter is refused either way). The guard was instead proven
+        // once by mutation, recorded on the PR: a throwaway test that dials a
+        // local listener over plain HTTP saw a connection with `https_only(false)`
+        // and none with `https_only(true)`.
+        assert!(Https::new().is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_real_client_maps_a_failed_connection_to_unreachable() {
+        // Through the real `Https::get` and the real send-error path. Port 1 on
+        // loopback is closed, so the TCP connect is refused.
+        let client = Https::new().expect("builds");
+        assert_eq!(
+            client.get("https://127.0.0.1:1/x").await,
+            Err(Error::Unreachable)
+        );
     }
 }
