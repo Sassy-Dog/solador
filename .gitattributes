@@ -27,16 +27,13 @@
 # should have to re-derive when a fixture is regenerated.
 tests/fixtures/updater/** -text
 
-# The agent feed fixtures (`crates/updatefeed::agent`, #391): four stand-in
-# binaries, their plain-minisign `.minisig` files, the `agent-latest.json` the
-# producer emits from them and the `.minisig` over THAT document's exact bytes —
-# final newline included, which is precisely the byte a CRLF rewrite would move.
-tests/fixtures/agent/** -text
-
-# The consumer's copy of the same fixtures (`agent/src/update.rs`, #488): the
-# same stand-in binaries under a different throwaway key, with the feed's URLs
-# on the `agent-v<version>` release the updater now requires. Same hazard, same
-# `.minisig` over the feed's exact bytes.
+# The agent feed fixtures, read by BOTH halves (`crates/updatefeed::agent`, #391,
+# and `agent/src/update.rs`, #488, #490): four stand-in binaries, their
+# plain-minisign `.minisig` files, the `agent-latest.json` the producer emits
+# from them — its URLs on the `agent-v<version>` release — and the `.minisig`
+# over THAT document's exact bytes, final newline included, which is precisely
+# the byte a CRLF rewrite would move. `updatefeed`'s own tests assert this line
+# is present.
 tests/fixtures/agent-v/** -text
 
 # The same hazard wherever it turns up next. `-text` rather than `binary`:

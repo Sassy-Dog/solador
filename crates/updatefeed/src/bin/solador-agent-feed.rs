@@ -1,13 +1,17 @@
 //! Build `agent-latest.json` for a published release, and verify a signed
 //! feed/signature pair the way a consumer will (#391).
 //!
-//! Run by `.github/workflows/publish-feed.yml`'s protected `agent-feed` job,
-//! in two steps with the signer between them:
+//! Run by the agent feed workflow's protected `agent-feed` job (#472; a
+//! `release: published` of an `agent-v*` release), in two steps with the signer
+//! between them. `--tag` is the AGENT's release tag, `agent-v<version>`, and
+//! only that (#490): the legacy `v<version>` — when every cockpit release was
+//! also an agent release — is refused, because the consumer refuses a feed whose
+//! URLs name any other release.
 //!
 //! ```text
 //! solador-agent-feed build \
 //!   --version 2026.9.9 \
-//!   --tag v2026.9.9 \
+//!   --tag agent-v2026.9.9 \
 //!   --asset-dir agent-dist \
 //!   --download-base https://github.com/Sassy-Dog/solador/releases/download \
 //!   --pubkey agent/release-signing-key.pub \
@@ -118,8 +122,7 @@ fn build(args: BuildArgs) -> Result<String, String> {
     if names.is_empty() {
         return Err(format!(
             "no {prefix}* binaries in {} — a release without agent assets has no agent feed \
-             (v2026.9.3 and earlier predate #390; a tag whose release.yml agent leg failed \
-             has none either)",
+             (a release whose agent build or signing failed has none)",
             args.asset_dir.display()
         ));
     }

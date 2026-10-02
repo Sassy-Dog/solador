@@ -40,12 +40,15 @@ All endpoints require `Authorization: Bearer <token>`. Missing or wrong token �
 | `GET /v1/containers`| Array of containers/VMs from podman, docker, and tart.            |
 | `GET /v1/health`    | `{ "status": "ok", "hostname": "...", "version": "..." }`         |
 
-`version` is the repo's CalVer (`2026.9.3`) — the number the release this binary
-came from carries, **not** `agent/Cargo.toml`'s semver, which since #390 is a
-wire-contract marker naming no release. A binary built outside a full git
-checkout cannot count the commits CalVer is made of, so it **omits the key
-entirely** rather than serving a stand-in; consumers decode that as unknown and
-render `—`.
+`version` is the agent's own version (#472, #490) — for a release binary, the
+`YYYY.M.N` of the `agent-vYYYY.M.N` release it came from (`2026.11.1`); for a
+**source build**, `<base>+dev.<k>.g<sha>` (`2026.10.14+dev.3.g1a2b3c4`), which is
+never a release's number. It is **not** `agent/Cargo.toml`'s semver, which since
+#390 is a wire-contract marker naming no release. A binary built outside a full
+git checkout — a shallow clone, an unpacked source archive, or a clone without
+the base tag (`git fetch --tags`) — cannot count the commits since its base, so
+it **omits the key entirely** rather than serving a stand-in; consumers decode
+that as unknown and render `—`.
 
 ### `/v1/snapshot` shape
 
@@ -504,9 +507,13 @@ a replayed older feed. An unattended daily check is opt-in at install
 **Unattended updates** below) and off by default.
 
 **The first release to carry these binaries is the first `v*` tag cut after
-#390 landed.** `v2026.9.3` and everything before it publish none, and
-`install.sh` says so — as a failure naming the tag and the asset — rather than
-building from source instead.
+#390 landed, and since #472 they ship on their own release train.**
+`v2026.9.3` and everything before it publish none, and `install.sh` says so — as
+a failure naming the tag and the asset — rather than building from source
+instead. The `v*` releases from the first one that carried agent binaries up to
+the bridge (`v2026.10.14`, the last combined release) are still installable by
+pinning one; from there on an agent release is an `agent-vYYYY.M.N` release,
+found through the signed `agent-latest` feed (**Install** below).
 
 To produce them locally, with the command the release itself runs:
 
@@ -514,6 +521,16 @@ To produce them locally, with the command the release itself runs:
 ./dev agent                                        # every target this host can build
 ./dev agent --targets "x86_64-unknown-linux-musl"  # just one
 ```
+
+A build with no pin is a **source build**: its version, asserted back out of
+each binary it can run, is `<base>+dev.<k>.g<sha>` (the highest reachable
+`agent-v*` tag — before one exists, the last combined release,
+`LAST_COMBINED_AGENT_RELEASE` in `scripts/config.sh` — plus the commits since it
+and HEAD's short commit; `docs/VERSIONING.md`), which is what stops it ever
+being taken for a release. A release pins `AGENT_MARKETING_VERSION` from its
+`agent-v*` tag. The cockpit's `MARKETING_VERSION` does not reach the agent. A
+shallow clone, or a clone without the base tag, has no version and the build
+says so; `./dev publish --agent` mints the tag that makes a release.
 
 ## Prerequisites
 
@@ -592,8 +609,8 @@ No Rust toolchain. A supported clean host needs:
     lives in one function called on its last line either way, so a
     transfer cut short downloads and runs nothing.
     `install.sh` itself is unchanged by which path fetched it: its own
-    release resolution (`/releases/latest`, unsigned by design) and the
-    fresh-install downgrade window docs/AGENT-DISTRIBUTION.md §6 already
+    release resolution (the signed `agent-latest` feed — authenticated but not
+    fresh) and the fresh-install downgrade window docs/AGENT-DISTRIBUTION.md §6 already
     records are neither closed nor widened by `bootstrap.sh` — that window
     was never about how `install.sh` arrived. One thing it does change:
     `install.sh`'s own "re-run this" hints (the `/opt` migration step, a
@@ -612,6 +629,10 @@ No Rust toolchain. A supported clean host needs:
 - **Rust** via [rustup](https://rustup.rs). The repo-root `rust-toolchain.toml`
   pins the version (currently 1.96.0, with `rustfmt` and `clippy`); rustup
   installs it on the first `cargo` invocation.
+- **A full clone with its tags** (`git fetch --tags`). The build derives the
+  agent's version from the commits since its base tag, so a shallow clone, or a
+  clone without the base tag, builds an agent that carries **no version**
+  (`--version` refuses, and `redeploy.sh` aborts on it) — the build log says why.
 - Linux or macOS. There is no Windows build of the agent.
 
 `agent/` is a member of the root Cargo workspace: one `Cargo.lock`, one
@@ -654,7 +675,7 @@ fail-closed cases — no version compiled in, nothing printed, no such binary),
 `health_url` (wildcard → loopback, IPv6 bracketing), `health_version`,
 `target_dir`, `verify_health` against a stubbed endpoint, the #392 helpers
 (platform → triple for all four targets and every refusal, release-tag
-validation, the `/releases/latest` redirect, `ExecStart` quoting, XML escaping,
+validation, the signed-feed reader, `ExecStart` quoting, XML escaping,
 template rendering), and — since #392 — **`install.sh` itself, run end to end
 against a temporary HOME**: fresh install, re-run (token reused, the running
 binary displaced by rename rather than overwritten, `.prev` kept), the
@@ -789,8 +810,14 @@ on the bytes at the live path and at `.prev`. `SOLADOR_DEPLOY_TEST_LAUNCHD=1
 cargo test -p solador-agent --test update_flow launchd_smoke` is the opt-in
 real thing on macOS: a throwaway LaunchAgent running the real built agent, a
 failed update rolled back on it automatically, two explicit `rollback`s
-through the CLI; `SOLADOR_AGENT_SMOKE_NEWER_BINARY=<path>` (a second build
-with a newer pinned `MARKETING_VERSION`) adds the successful-update path, and
+through the CLI — **needing a release-like version baked into the build**, since
+an unpinned build of this checkout is a `+dev` source build, which `update` does
+not compare (it answers "no applicable release", exit 4): run it as
+`AGENT_MARKETING_VERSION=2098.1.1 SOLADOR_DEPLOY_TEST_LAUNCHD=1 cargo test …`,
+and unpinned it skips those sections, says so, and runs only the read-only
+real-feed part below;
+`SOLADOR_AGENT_SMOKE_NEWER_BINARY=<path>` (a second build
+with a newer pinned `AGENT_MARKETING_VERSION`) adds the successful-update path, and
 `SOLADOR_AGENT_SMOKE_REAL_FEED=1` adds a read-only `solador-agent update`
 against the real github.com feed under the compiled-in production key (a 404,
 exit 1, with failing assertions, until the first `agent-v` release has
@@ -825,8 +852,8 @@ curl -s localhost:7878/v1/snapshot          # -> 401
 From the crate directory on the target host:
 
 ```bash
-./deploy/install.sh                      # latest published release
-SOLADOR_AGENT_RELEASE=v<version> ./deploy/install.sh   # a specific one
+./deploy/install.sh                      # latest published release, found through the signed agent-latest feed
+SOLADOR_AGENT_RELEASE=agent-v<version> ./deploy/install.sh   # a specific one (or a legacy v<version> that carries agent assets)
 ./deploy/install.sh --enable-timer       # ...and opt in to a daily unattended update check
 ./deploy/install.sh --uninstall          # remove THIS USER's install (env file kept)
 ./deploy/install.sh --uninstall --purge  # ...and delete the env file (it holds the token) too
@@ -837,15 +864,19 @@ A re-run is one update path — `solador-agent update` (**Updating**, below)
 is the in-binary one, and the one the opt-in scheduled job runs
 (**Unattended updates**, below) — and on the
 unpinned form it **refuses to move backwards**: if the binary already installed reports a newer CalVer than the
-release `/releases/latest` resolved to — the one unsigned link in the chain,
-see `docs/AGENT-DISTRIBUTION.md` §6 — the run stops naming both versions.
-Pinning `SOLADOR_AGENT_RELEASE` is how an operator says a downgrade is meant.
+release the signed feed named — a feed is signed, not fresh, so a replayed older one
+is the link in the chain that signature cannot refuse, see
+`docs/AGENT-DISTRIBUTION.md` §6 — the run stops naming both versions. (An
+installed `+dev` source build is not a CalVer, so nothing counts as newer than
+it.) Pinning `SOLADOR_AGENT_RELEASE` is how an operator says a downgrade is meant.
 
 Both forms need a **published** release that carries the agent binaries.
-`v2026.9.3` and everything before it carry none, and a draft is neither
-resolvable (`/releases/latest` skips drafts) nor downloadable, so until the
-first post-#390 release is published every install fails at the download step
-— naming the tag and the asset, which is the honest outcome.
+`v2026.9.3` and everything before it carry none, and a draft is not
+downloadable, so a pin to one fails at the download step — naming the tag and
+the asset, which is the honest outcome. The unpinned form needs the feed: until
+the first `agent-v` release has been published through `agent-latest` there is
+none, and the run fails naming the feed's address — in that window pin the last
+combined release (`SOLADOR_AGENT_RELEASE=v2026.10.14`).
 
 No arguments is the normal form, and it installs the metrics service and
 nothing else — **no** unattended update job. `--enable-timer` is the one
@@ -857,12 +888,19 @@ The script:
 1. Detects the platform (`uname -s` / `uname -m`) and maps it onto one of the
    four published targets; anything else — another OS, another architecture,
    macOS below 11 — refuses before anything is fetched.
-2. Resolves the latest **published** release from the `/releases/latest`
-   redirect (a draft is invisible there by construction) and validates that
-   the tag is a CalVer tag, or takes `SOLADOR_AGENT_RELEASE` verbatim after the
-   same validation. Then downloads `solador-agent-<version>-<triple>` and its
+2. Resolves the release. By default it fetches the signed feed,
+   `agent-latest.json` and its `.minisig`, from the permanent `agent-latest`
+   release (never `/releases/latest`, which is the cockpit's), **verifies them
+   with the stock `minisign` under `agent/release-signing-key.pub` first**, and
+   only then reads `version` out of the verified bytes — a `version` that is not
+   a strict CalVer (`YYYY.M.N`) is refused, and a tampered feed is rejected
+   unread. The release is `agent-v<version>`. Or it takes
+   `SOLADOR_AGENT_RELEASE` — an `agent-v*` tag, or a legacy `v*` tag that
+   carries agent assets — verbatim after validating it as one, with no feed.
+   Then downloads `solador-agent-<version>-<triple>` and its
    `.minisig` into a private staging directory under `~/.cache`. A release that
-   carries no agent binary — every one up to and including `v2026.9.3` — is a
+   carries no agent binary — every `v*` one up to and including `v2026.9.3`, or
+   an `agent-v` one lacking this host's triple — is a
    **failure** naming the tag and the asset; there is no source build and no
    other version behind it.
 3. **Verifies the signature** with the stock `minisign` under
@@ -1304,16 +1342,15 @@ not come up.** In order, each step refusing before the next changes anything:
 5. Otherwise the feed must be **newer** than the installed CalVer (read from
    the installed binary's own `--version`). An older feed — a replay, or a
    downgrade — is refused; a downgrade you mean is
-   `SOLADOR_AGENT_RELEASE=v<version> ./deploy/install.sh`. An installed binary
+   `SOLADOR_AGENT_RELEASE=agent-v<version> ./deploy/install.sh`. An installed binary
    that carries no version cannot be compared and is refused rather than
    assumed older; re-run `install.sh` to move it onto a published release. One
-   whose version carries `+dev` is a source build: there is no release to
-   compare it with, so it is exit `4` (no applicable release), checked before
-   the CalVer parse that would otherwise refuse it with exit `1`. (No build
-   carries `+dev` yet: it is the marker of #472's agent versioning, #490. The
-   check ships first because the bridge release's updater (#472's cut-over, #492)
-   must already know
-   it.)
+   whose version carries `+dev` is a source build (`./dev agent`, `redeploy.sh`,
+   a plain `cargo build` in a full checkout all make one, #490): there is no
+   release to compare it with, so it is exit `4` (no applicable release),
+   checked before the CalVer parse that would otherwise refuse it with exit
+   `1`. (The check shipped first, #488, because the bridge release's updater
+   (#472's cut-over, #492) had to know the marker before any build carried it.)
 6. Downloads the binary into memory and verifies its signature **and** its
    SHA-256 against the feed entry before anything touches disk.
 7. Stages it as `solador-agent.new` (mode 0755), runs the staged candidate's

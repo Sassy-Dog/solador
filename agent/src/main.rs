@@ -14,12 +14,16 @@ use std::sync::Arc;
 use server::{build_router, AppState};
 use solador_agent::{tls, update};
 
-/// The version this build ships as: the repo's CalVer, derived once by
-/// `scripts/get-version-info.sh` and compiled in by `build.rs` (#390).
+/// The version this build ships as: the AGENT's own version, derived once by
+/// `scripts/get-version-info.sh --agent-version` and compiled in by `build.rs`
+/// (#390, and #490 which gave the agent a number of its own). A published
+/// binary carries its release's `YYYY.M.N` (`agent-v2026.11.1` → `2026.11.1`);
+/// a source build carries `<base>+dev.<k>.g<sha>`, which `update` answers "no
+/// applicable release" rather than comparing.
 ///
 /// `None` is a real state, not an oversight. A build made outside a full git
 /// checkout — a shallow clone, a source tarball — cannot be asked how many
-/// commits landed this month, and this repo does not answer that with a
+/// commits lie since its base, and this repo does not answer that with a
 /// stand-in: `--version` refuses and `/v1/health` omits the key, exactly as the
 /// cockpit's About row renders `—`. Every *published* binary carries one, and
 /// the release workflow asserts that by executing `--version` on a runner
@@ -29,7 +33,7 @@ use solador_agent::{tls, update};
 /// wire-contract marker its comment block describes; it has never named a
 /// release, and falling back to it here would be a defaulted value filling a
 /// gap.
-const VERSION: Option<&str> = option_env!("SOLADOR_MARKETING_VERSION");
+const VERSION: Option<&str> = option_env!("SOLADOR_AGENT_MARKETING_VERSION");
 
 /// What argv asked this process to do.
 ///
@@ -102,9 +106,10 @@ fn print_version() -> i32 {
         None => {
             eprintln!(
                 "solador-agent: this build carries no version. It was compiled outside a full \
-                 git checkout (a shallow clone, or an unpacked source archive), so \
-                 scripts/get-version-info.sh could not count the commits CalVer is made of. \
-                 Published binaries always carry one — see docs/VERSIONING.md."
+                 git checkout (a shallow clone, an unpacked source archive, or a clone without \
+                 the base tag — `git fetch --tags`), so scripts/get-version-info.sh \
+                 --agent-version could not count the commits since the agent's base. Published \
+                 binaries always carry one — see docs/VERSIONING.md."
             );
             1
         }

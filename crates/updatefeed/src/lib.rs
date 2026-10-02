@@ -31,9 +31,10 @@
 //! Nothing under `app/` or `agent/` depends on it (`scripts/agent-deps-guard.sh`
 //! asserts the agent half with `cargo tree`, in CI and `./dev lint`). The running app verifies through
 //! `tauri-plugin-updater`, which carries its own copy of the same verifier;
-//! this crate is release tooling, used by
-//! `.github/workflows/publish-feed.yml` through the `solador-update-feed` and
-//! `solador-agent-feed` binaries. The two agreeing is not a coincidence — [`signature::verify`]
+//! this crate is release tooling, used by the feed workflows through the
+//! `solador-update-feed` binary (`publish-feed.yml`, the cockpit's) and the
+//! `solador-agent-feed` binary (the agent's feed workflow, on its own `agent-v*`
+//! releases since #472). The two agreeing is not a coincidence — [`signature::verify`]
 //! reproduces the plugin's `verify_signature` step for step, and the
 //! `minisign-verify` requirement in `Cargo.toml` is the plugin's, so cargo
 //! unifies them to one crate.

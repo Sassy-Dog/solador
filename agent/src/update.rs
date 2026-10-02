@@ -230,13 +230,14 @@ pub enum UpdateError {
     /// cannot be answered.
     InstalledVersionUnknown { path: PathBuf, reason: String },
     /// The installed executable names a version that is not a CalVer (a
-    /// `MARKETING_VERSION=dev` pin, say); not comparable, and not the same
+    /// `AGENT_MARKETING_VERSION=dev` pin, say); not comparable, and not the same
     /// state as "older".
     InstalledVersionNotCalVer { path: PathBuf, version: String },
     /// The installed executable is a source build (its version carries
-    /// `+dev`, the marker #472's agent versioning gives one; no build carries
-    /// it before #490, so this ships first for the bridge release's updater (#472's
-    /// cut-over, #492) to know),
+    /// `+dev` — `<base>+dev.<k>.g<sha>`, which `get-version-info.sh
+    /// --agent-version` gives every build that is not an `agent-v*` release,
+    /// #490; this check shipped first, in the bridge release's updater, so that
+    /// updater knew the marker before any build carried it),
     /// which no release can be compared with. "No applicable release", not a
     /// refusal: a from-source host answers this every day and the scheduled
     /// job must not be paged for it (exit 4).
@@ -2755,10 +2756,14 @@ async fn restore_previous(
 mod tests {
     use super::*;
 
-    /// A file of `tests/fixtures/agent-v/` (#488): the consumer's own signed
-    /// fixture, whose feed names the `agent-v<version>` release. Not
-    /// `tests/fixtures/agent/`, which `crates/updatefeed` reads and whose URLs
-    /// are still the producer's legacy `v<version>`.
+    /// A file of `tests/fixtures/agent-v/` (#488, #490): the signed fixture
+    /// whose feed names the `agent-v<version>` release — written by the
+    /// PRODUCER (`solador-agent-feed build --tag agent-v2026.9.9`, see
+    /// `tests/fixtures/README.md`) and read here by the consumer, and by
+    /// `crates/updatefeed`'s own tests. One fixture, both halves: what ties the
+    /// producer's URL shape to the one `check_feed_urls` requires. (`agent/`
+    /// does not depend on `crates/updatefeed`, so this is a shared file and not
+    /// a shared type.)
     fn fixture(name: &str) -> Vec<u8> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/agent-v")
@@ -2844,43 +2849,6 @@ mod tests {
             assert_eq!(entry.url, asset_url(RELEASE_BASE, "2026.9.9", t), "{t}");
             let asset = asset_name("2026.9.9", t);
             verify_binary(&fixture_trust(), &asset, entry, &fixture(&asset)).expect(t);
-        }
-    }
-
-    /// `tests/fixtures/agent-v/` is `tests/fixtures/agent/` with the release
-    /// segment of every URL rewritten (and a different key), and nothing else:
-    /// the stand-in binaries, the hashes and the version are the same. The
-    /// producer's fixture is the only one a producer test reproduces, so this
-    /// is what ties the consumer's copy to it until #490 regenerates both
-    /// from the producer and deletes this guard along with the rewrite.
-    #[test]
-    fn the_agent_v_fixture_is_the_producers_fixture_with_only_the_release_rewritten() {
-        let producer = |name: &str| {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../tests/fixtures/agent")
-                .join(name);
-            fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
-        };
-        let ours = Feed::parse(&fixture(FEED_ASSET)).unwrap();
-        let theirs = Feed::parse(&producer(FEED_ASSET)).unwrap();
-        assert_eq!(ours.version, theirs.version);
-        assert_eq!(
-            ours.targets.keys().collect::<Vec<_>>(),
-            theirs.targets.keys().collect::<Vec<_>>()
-        );
-        for (t, entry) in &ours.targets {
-            let legacy = &theirs.targets[t];
-            assert_eq!(entry.sha256, legacy.sha256, "{t}: same stand-in bytes");
-            assert_eq!(
-                legacy.url.replace(
-                    "/releases/download/v2026.9.9/",
-                    "/releases/download/agent-v2026.9.9/"
-                ),
-                entry.url,
-                "{t}: only the release segment differs"
-            );
-            let asset = asset_name("2026.9.9", t);
-            assert_eq!(fixture(&asset), producer(&asset), "{t}: stand-in bytes");
         }
     }
 

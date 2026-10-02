@@ -68,11 +68,47 @@ set -euo pipefail
 #      disagree with the tag here, so the pass cases pass because of the
 #      pinned-month ladder and not because the fixture never reproduced the
 #      failure.
+#   5. THE AGENT'S VERSION (--agent-version, #490): a source build is
+#      `<base>+dev.<k>.g<sha>` against the legacy base (the bridge, staged
+#      through the LAST_COMBINED_AGENT_RELEASE seam, and read from
+#      scripts/config.sh when the seam is empty) and against the highest
+#      REACHABLE `agent-v*` tag once one exists; an `agent-v*` tag at HEAD is
+#      that version (the highest, numerically); unreachable, malformed and
+#      `agent-latest` tags are not bases; the cockpit's pin, clock and seams do
+#      not move it; a shallow clone, a clone without the base tag and a
+#      directory outside a checkout yield NOTHING (exit 1, empty stdout).
+#   6. THE AGENT MINT (--agent-tag, #490): the output contract; reuse at HEAD
+#      (annotated and lightweight, with no `gh` call and no push); the first
+#      release in a month, a release in the same month as the legacy base, the
+#      next month, a numeric (not lexical) maximum; a LOCAL-only tag ignored;
+#      malformed and `agent-latest` tags not counted; a release that already
+#      exists refused (with the negative control that the same run without it
+#      creates); a version not above everything shipped refused; `gh` failing,
+#      the remote probe failing and no origin each refusing blind; `--push`
+#      creating an annotated tag at HEAD with exactly one push, a re-run
+#      pushing nothing, a remote that rejects the push leaving no local tag;
+#      a bad base and a stray argument.
+#   7. THE AGENT MODE OF THE RELEASE-TAG ASSERTION (assert-release-tag.sh
+#      --agent): a minted tag passes, after the month rolls too; the wrong
+#      commit, a local-only tag, a different tag reused, every malformed shape
+#      (the cockpit's own shape included, and the converse), a future month, a
+#      month that ended before the commit, an unreachable origin, no origin, a
+#      shallow clone and no checkout are refused with every cause named.
+#   8. `./dev publish --agent` (scripts/publish.sh, #490): the real script
+#      against a scratch origin, never pushing anywhere else — it mints and
+#      pushes exactly one agent tag, requires none of the cockpit's credentials,
+#      and each pre-flight (dirty tree, not on main, main behind origin, CI not
+#      green, CI unknowable, CI green only at another commit, HEAD without the
+#      agent release workflow), a refused mint and each cockpit-only option
+#      refuse with nothing tagged.
 #
 # Not here, on purpose: the shallow-clone REFUSAL of the build scripts lives
 # in crates/buildversion (the `Shallow` arm of its `resolve`, in Rust), not
-# in the shell mint, which has no such check — it is tested there (#417).
-# The comparison the §6 vector cites is
+# in the cockpit's shell mint, which has no such check — it is tested there
+# (#417), together with the pins (the agent's ignores MARKETING_VERSION) and
+# the agent's tag-watching. The agent's `--agent-version` DOES refuse a shallow
+# clone itself (section 5), since it is the script that counts commits since a
+# tag. The comparison the §6 vector cites is
 # Rust (`viewmodel::update::is_newer`). And the assertion script's "output
 # contract was violated" branch is unreachable from here for the reason its
 # own header gives: the mint is the sibling script and always prints its
@@ -105,6 +141,68 @@ printf '%s\n' "\$*" >> "$work/git.calls"
 exec "$REAL_GIT" "\$@"
 SHIM
 chmod +x "$work/shim/git"
+
+# A `gh` shim for the AGENT cases (#490), on their PATH only. The agent mint asks
+# `gh release view <tag>` whether a release already holds the name it is about to
+# mint, and `publish.sh` asks `gh run list` whether CI is green; neither may reach
+# GitHub from a unit test, and both answers have to be the test's to give:
+#   GH_SHIM_EXISTING="agent-v2026.8.4 ..."  releases that "exist"
+#   GH_SHIM_FAIL="HTTP 502"                 `release view` fails with that text
+#   GH_SHIM_CI_GREEN=0|1                    the count `run list --jq` would print —
+#                                           for `--workflow CI` and, when
+#                                           GH_SHIM_CI_COMMIT is set, only at
+#                                           that commit (anything else counts 0)
+#   GH_SHIM_CI_FAIL=1                       `run list` itself errors
+# Every call's argv is appended to $GH_SHIM_CALLS. The real `gh` says exactly
+# "release not found" on stderr, exit 1, for an absent release (checked by hand
+# against the real CLI when this was written). A `bash` link beside it makes the
+# scripts' `#!/usr/bin/env bash` children run under THIS harness's interpreter,
+# so the macOS 3.2 leg tests publish.sh's children under 3.2.
+mkdir -p "$work/ghshim"
+cat > "$work/ghshim/gh" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GH_SHIM_CALLS:-/dev/null}"
+case "$1 $2" in
+    "release view")
+        if [ -n "${GH_SHIM_FAIL:-}" ]; then echo "$GH_SHIM_FAIL" >&2; exit 1; fi
+        for t in ${GH_SHIM_EXISTING:-}; do
+            if [ "$t" = "$3" ]; then echo "title: $3"; exit 0; fi
+        done
+        echo "release not found" >&2
+        exit 1
+        ;;
+    "run list")
+        if [ -n "${GH_SHIM_CI_FAIL:-}" ]; then echo "gh: run list failed" >&2; exit 1; fi
+        # Green only for the question publish.sh MUST ask: the `CI` workflow, at
+        # the commit under test. Any other question gets "0 runs", so a
+        # publish.sh that asked about the wrong workflow or commit is refused.
+        shift 2
+        wf=""; commit=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --workflow) wf="${2:-}"; shift ;;
+                --commit) commit="${2:-}"; shift ;;
+            esac
+            shift
+        done
+        if [ "$wf" = "CI" ] && { [ -z "${GH_SHIM_CI_COMMIT:-}" ] || [ "$commit" = "$GH_SHIM_CI_COMMIT" ]; }; then
+            echo "${GH_SHIM_CI_GREEN:-1}"
+        else
+            echo 0
+        fi
+        ;;
+    *)
+        echo "gh shim: unexpected call: $*" >&2
+        exit 2
+        ;;
+esac
+SHIM
+chmod +x "$work/ghshim/gh"
+ln -s "$BASH" "$work/ghshim/bash"
+
+# Which mode the next `expect` runs the assertion in: empty is the cockpit's,
+# `--agent` is the agent's (#490).
+assert_flag=""
 
 pass=0
 fail=0
@@ -207,7 +305,7 @@ last_out=""
 expect() {
     local verdict="$1" label="$2" repo="$3" tag="$4"; shift 4
     local out rc=0 ok=false
-    out="$( cd "$repo" && env "$@" "$BASH" "$ASSERT" "$tag" 2>&1 )" || rc=$?
+    out="$( cd "$repo" && env "$@" "$BASH" "$ASSERT" ${assert_flag:+"$assert_flag"} "$tag" 2>&1 )" || rc=$?
     last_out="$out"
     case "$verdict" in
         pass)
@@ -750,6 +848,716 @@ control "2" "$rc" "no argument is a usage error (exit 2), not a refusal"
 rc=0
 ( cd "$repo" && "$BASH" "$ASSERT" "$tag_a" extra ) >/dev/null 2>&1 || rc=$?
 control "2" "$rc" "two arguments is a usage error (exit 2), not a refusal"
+
+# =============================================================================
+# The agent's own number (#490)
+# =============================================================================
+#
+# Fresh scratch repositories per scenario, never the cockpit fixture above: the
+# agent's answers depend on exactly which tags the REMOTE holds, and a shared
+# origin would make each case's expectation a function of the cases before it.
+
+# The legacy base every scenario stages: a `v*` tag one commit below HEAD, as the
+# bridge release is for a checkout after it.
+LEGACY_TAG="v2026.8.3"
+LEGACY_VERSION="2026.8.3"
+
+# new_agent_repo NAME — a scratch origin ($a_origin) and working repo ($a_repo):
+# four August commits, the legacy base tagged (annotated, pushed) on the third.
+a_origin=""
+a_repo=""
+new_agent_repo() {
+    local name="$1" i
+    a_origin="$work/$name.origin.git"
+    a_repo="$work/$name"
+    git init -q --bare -b main "$a_origin"
+    git init -q -b main "$a_repo"
+    ( cd "$a_repo" && git config user.email test@example.com && git config user.name test \
+        && git remote add origin "$a_origin" ) || fixture "agent fixture $name: could not configure the scratch repo"
+    for i in 1 2 3 4; do commit "$a_repo" "$AUG-0$i" "agent $name $i"; done
+    ( cd "$a_repo" && git tag -a "$LEGACY_TAG" -m "legacy base" HEAD~1 \
+        && git push -q origin main "refs/tags/$LEGACY_TAG" ) || fixture "agent fixture $name: could not tag the legacy base"
+}
+
+# agent_tag REPO TAG [REV] — an annotated tag, created and pushed.
+agent_tag() {
+    local repo="$1" tag="$2" rev="${3:-HEAD}"
+    ( cd "$repo" && git tag -a "$tag" -m "$tag" "$rev" && git push -q origin "refs/tags/$tag" ) \
+        || fixture "could not create and push $tag"
+}
+
+# agent_tag_light REPO TAG [REV] — a LIGHTWEIGHT tag, created and pushed (the
+# remote advertises no peeled line for it).
+agent_tag_light() {
+    local repo="$1" tag="$2" rev="${3:-HEAD}"
+    ( cd "$repo" && git tag "$tag" "$rev" && git push -q origin "refs/tags/$tag" ) \
+        || fixture "could not create and push $tag"
+}
+
+# run_agent REPO TODAY FLAG... [ENV=value ...] — get-version-info.sh's agent
+# modes as run on TODAY, with stdout in $work/agent.out, stderr in
+# $work/agent.err, the exit status in $agent_rc, every git call in
+# $work/git.calls and every gh call in $work/gh.calls. The cockpit's pin and
+# seam are SET to values that would wreck an answer that read them, so every
+# case also shows the agent ignores them; the legacy base is staged through its
+# seam unless a case passes its own.
+agent_rc=0
+run_agent() {
+    local repo="$1" today="$2"; shift 2
+    local flags=() envs=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            [A-Z_]*=*) envs+=("$1") ;;
+            *) flags+=("$1") ;;
+        esac
+        shift
+    done
+    agent_rc=0
+    : > "$work/git.calls"
+    : > "$work/gh.calls"
+    ( cd "$repo" && env MARKETING_VERSION=2030.1.9 VERSION_PATCH_OVERRIDE=77 \
+        LAST_COMBINED_AGENT_RELEASE="$LEGACY_TAG" VERSION_DATE_OVERRIDE="$today" \
+        GH_SHIM_CALLS="$work/gh.calls" PATH="$work/ghshim:$work/shim:$PATH" \
+        ${envs[@]+"${envs[@]}"} "$BASH" "$MINT" "${flags[@]}" >"$work/agent.out" 2>"$work/agent.err" ) || agent_rc=$?
+}
+
+# agent_field NAME — the value of `NAME=` in the last run_agent's stdout.
+agent_field() {
+    sed -n "s/^$1=//p" "$work/agent.out"
+}
+
+# agent_contract LABEL — the last run_agent's stdout is EXACTLY the output
+# contract: three lines, version= / tag= / action= in that order, the tag is
+# `agent-v` + the version, and the action is create or reuse.
+agent_contract() {
+    local label="$1" lines version tag action ok=true why=""
+    lines="$(wc -l < "$work/agent.out" | tr -d ' ')"
+    version="$(agent_field version)"; tag="$(agent_field tag)"; action="$(agent_field action)"
+    [[ "$lines" == "3" ]] || { ok=false; why="$lines lines on stdout, not 3"; }
+    [[ "$(sed -n '1p' "$work/agent.out")" == "version=$version" ]] || { ok=false; why="${why:+$why; }line 1 is not version="; }
+    [[ "$(sed -n '2p' "$work/agent.out")" == "tag=$tag" ]] || { ok=false; why="${why:+$why; }line 2 is not tag="; }
+    [[ "$(sed -n '3p' "$work/agent.out")" == "action=$action" ]] || { ok=false; why="${why:+$why; }line 3 is not action="; }
+    [[ "$tag" == "agent-v$version" ]] || { ok=false; why="${why:+$why; }tag '$tag' is not agent-v$version"; }
+    case "$action" in
+        create | reuse) ;;
+        *) ok=false; why="${why:+$why; }action '$action' is not create|reuse" ;;
+    esac
+    if $ok; then
+        echo "ok   $label (contract: version=$version tag=$tag action=$action)"
+        pass=$((pass + 1))
+    else
+        echo "FAIL $label: $why"
+        sed 's/^/     /' "$work/agent.out"
+        fail=$((fail + 1))
+    fi
+}
+
+# agent_refused LABEL — the last run_agent was a REFUSAL: exit 1, nothing on
+# stdout (no contract is printed for a mint that did not happen), and no push.
+agent_refused() {
+    control "1" "$agent_rc" "$1: exits 1"
+    control "" "$(cat "$work/agent.out")" "$1: ...printing no contract"
+    control "0" "$(git_pushes)" "$1: ...pushing nothing"
+}
+
+# agent_stderr_has REGEX LABEL
+agent_stderr_has() {
+    file_mentions "$1" "$work/agent.err" "$2"
+}
+
+# remote_agent_tag_names ORIGIN — the origin's agent-v* tags, sorted, one line.
+remote_agent_tag_names() {
+    "$REAL_GIT" --git-dir="$1" for-each-ref --format='%(refname:short)' 'refs/tags/agent-v*' | sort | tr '\n' ' ' | sed 's/ $//'
+}
+
+# =============================================================================
+# 5. THE AGENT'S VERSION (--agent-version)
+# =============================================================================
+echo "--- agent version (--agent-version) ---"
+
+new_agent_repo agent-version
+a_head_short="$( cd "$a_repo" && git rev-parse --short HEAD )"
+
+# A source build: the legacy base, the commits since it, HEAD's short sha. The
+# base tag is on the third of four commits, so one commit lies since it.
+run_agent "$a_repo" "$AUG-20" --agent-version
+control "0" "$agent_rc" "agent version: a source build derives (exit 0)"
+control "$LEGACY_VERSION+dev.1.g$a_head_short" "$(cat "$work/agent.out")" "agent version: <legacy base>+dev.<commits since>.g<sha> (2026.8.3+dev.1.g$a_head_short)"
+control "1" "$(wc -l < "$work/agent.out" | tr -d ' ')" "agent version: exactly one line on stdout"
+
+# Not the cockpit's number and not date-dependent: another day, another
+# MARKETING_VERSION / VERSION_PATCH_OVERRIDE, the same answer. (run_agent sets
+# both seams to wreckage already, so the first case above is also this proof.)
+run_agent "$a_repo" "2031-03-31" --agent-version
+control "$LEGACY_VERSION+dev.1.g$a_head_short" "$(cat "$work/agent.out")" "agent version: ignores the clock, MARKETING_VERSION and VERSION_PATCH_OVERRIDE"
+run_agent "$a_repo" "$AUG-20" --agent-version AGENT_MARKETING_VERSION=2040.1.1
+control "$LEGACY_VERSION+dev.1.g$a_head_short" "$(cat "$work/agent.out")" "agent version: the build pin AGENT_MARKETING_VERSION is the build plumbing's, not read by the script"
+
+# The legacy base is read from scripts/config.sh when the seam is empty — which
+# `./dev` and every script that sources config.sh arranges anyway. The fixture
+# has no such tag, so the answer is a refusal that names the CONFIGURED base:
+# proof the value came from the file and not from the seam.
+cfg_release="$(sed -n 's/^export LAST_COMBINED_AGENT_RELEASE="\(.*\)"$/\1/p' "$SCRIPT_DIR/config.sh")"
+if [[ "$cfg_release" =~ ^v[1-9][0-9]{3}\.([1-9]|1[0-2])\.[1-9][0-9]*$ ]]; then
+    echo "ok   agent version: scripts/config.sh carries LAST_COMBINED_AGENT_RELEASE=$cfg_release in the shape the script reads"; pass=$((pass + 1))
+else
+    echo "FAIL agent version: scripts/config.sh's LAST_COMBINED_AGENT_RELEASE line is '$cfg_release', not an \`export LAST_COMBINED_AGENT_RELEASE=\"vYYYY.M.N\"\` line"; fail=$((fail + 1))
+fi
+run_agent "$a_repo" "$AUG-20" --agent-version LAST_COMBINED_AGENT_RELEASE=
+control "1" "$agent_rc" "agent version: with the seam empty the base is config.sh's, absent here, so it refuses (exit 1)"
+control "" "$(cat "$work/agent.out")" "agent version: ...printing nothing"
+agent_stderr_has "base tag $cfg_release is not in this checkout" "agent version: ...naming the configured base"
+agent_stderr_has "git fetch --tags" "agent version: ...and the remedy"
+run_agent "$a_repo" "$AUG-20" --agent-version LAST_COMBINED_AGENT_RELEASE=2026.8.3
+control "1" "$agent_rc" "agent version: a base without its v prefix is refused (exit 1)"
+agent_stderr_has "expected vYYYY\.M\.N" "agent version: ...as malformed, not used"
+
+# An agent-v* tag at HEAD IS the version.
+agent_tag "$a_repo" agent-v2026.8.4
+run_agent "$a_repo" "$AUG-20" --agent-version
+control "2026.8.4" "$(cat "$work/agent.out")" "agent version: an agent-v* tag at HEAD is that tag's version (2026.8.4)"
+
+# ...and the highest of several, numerically (lexically 2026.8.9 > 2026.8.10).
+( cd "$a_repo" && git tag agent-v2026.8.9 && git tag agent-v2026.8.10 )
+run_agent "$a_repo" "$AUG-20" --agent-version
+control "2026.8.10" "$(cat "$work/agent.out")" "agent version: the highest tag at HEAD wins, numerically (2026.8.10 over 2026.8.9)"
+( cd "$a_repo" && git tag -d agent-v2026.8.9 agent-v2026.8.10 >/dev/null )
+
+# Past it, the base is the highest REACHABLE agent-v* tag, not the legacy one.
+commit "$a_repo" "$AUG-05" "agent version 5"
+a_head_short="$( cd "$a_repo" && git rev-parse --short HEAD )"
+run_agent "$a_repo" "$AUG-20" --agent-version
+control "2026.8.4+dev.1.g$a_head_short" "$(cat "$work/agent.out")" "agent version: past an agent tag the base is that tag (2026.8.4+dev.1.g$a_head_short)"
+
+# Not reachable from HEAD: a tag on another line of history is nobody's base.
+( cd "$a_repo" && git checkout -q -b elsewhere HEAD~3 ) || fixture "could not branch for the unreachable-tag case"
+commit "$a_repo" "$AUG-06" "elsewhere"
+( cd "$a_repo" && git tag agent-v2026.9.9 && git checkout -q main )
+run_agent "$a_repo" "$AUG-20" --agent-version
+control "2026.8.4+dev.1.g$a_head_short" "$(cat "$work/agent.out")" "agent version: an agent tag NOT reachable from HEAD is not a base (agent-v2026.9.9 ignored)"
+
+# Names that look like agent tags and are not versions.
+( cd "$a_repo" && git tag agent-latest && git tag agent-v2026.08.5 && git tag agent-vfoo && git tag agent-v2026.8.99-rc1 )
+run_agent "$a_repo" "$AUG-20" --agent-version
+control "2026.8.4+dev.1.g$a_head_short" "$(cat "$work/agent.out")" "agent version: agent-latest and malformed agent-v* names at HEAD are not versions"
+
+# Nothing at all: a shallow clone cannot count the commits since the base.
+git clone -q --no-local --depth 1 "$a_origin" "$work/agent-shallow"
+control "true" "$( cd "$work/agent-shallow" && git rev-parse --is-shallow-repository )" "fixture: the agent shallow clone is shallow"
+run_agent "$work/agent-shallow" "$AUG-20" --agent-version
+control "1" "$agent_rc" "agent version: a shallow clone yields no version (exit 1)"
+control "" "$(cat "$work/agent.out")" "agent version: ...and prints NOTHING on stdout"
+agent_stderr_has "this checkout is shallow" "agent version: ...naming the checkout"
+
+# A clone that never fetched the legacy base's tag: the commits since it cannot
+# be counted, so there is no version rather than a guess.
+git clone -q --no-tags "$a_origin" "$work/agent-notags"
+control "" "$( cd "$work/agent-notags" && git tag -l )" "fixture: the --no-tags clone has no tags"
+run_agent "$work/agent-notags" "$AUG-20" --agent-version
+control "1" "$agent_rc" "agent version: a clone without the base tag yields no version (exit 1)"
+control "" "$(cat "$work/agent.out")" "agent version: ...and prints NOTHING on stdout"
+agent_stderr_has "base tag v2026\.8\.3 is not in this checkout" "agent version: ...naming the missing base"
+
+# Asking never touches the network: an origin that cannot be reached changes
+# nothing about the answer.
+git clone -q "$a_origin" "$work/agent-offline"
+( cd "$work/agent-offline" && git remote set-url origin "$work/does-not-exist.git" )
+run_agent "$work/agent-offline" "$AUG-20" --agent-version
+control "0" "$agent_rc" "agent version: an unreachable origin does not matter (nothing is fetched)"
+control "2026.8.4" "$(cat "$work/agent.out")" "agent version: ...the derivation comes from the clone's own tags (the pushed HEAD carries agent-v2026.8.4)"
+
+# Outside any checkout.
+run_agent "$notrepo" "$AUG-20" --agent-version GIT_CEILING_DIRECTORIES="$work"
+control "1" "$agent_rc" "agent version: outside a checkout yields no version (exit 1)"
+control "" "$(cat "$work/agent.out")" "agent version: ...and prints NOTHING on stdout"
+agent_stderr_has "not inside a git checkout" "agent version: ...naming the missing checkout"
+
+# =============================================================================
+# 6. THE AGENT MINT (--agent-tag)
+# =============================================================================
+echo "--- agent mint (--agent-tag) ---"
+
+# --- reuse -------------------------------------------------------------------
+# An agent-v* tag already at HEAD on the remote answers for itself. Annotated and
+# lightweight, because the remote advertises a peeled line only for the first.
+new_agent_repo agent-reuse
+agent_tag "$a_repo" agent-v2026.8.4
+tags_before="$(remote_agent_tag_names "$a_origin")"
+run_agent "$a_repo" "$AUG-20" --agent-tag
+control "0" "$agent_rc" "agent mint: a tag at HEAD exits 0"
+agent_contract "agent mint: the reuse's stdout is the output contract"
+control "reuse" "$(agent_field action)" "agent mint: an annotated agent-v* tag at HEAD is reused"
+control "agent-v2026.8.4" "$(agent_field tag)" "agent mint: ...as that very tag"
+control "2026.8.4" "$(agent_field version)" "agent mint: ...and that very version"
+control "0" "$(git_pushes)" "agent mint: reuse performs no push"
+control "0" "$(wc -l < "$work/gh.calls" | tr -d ' ')" "agent mint: reuse asks gh nothing (an existing release is the expected state of a reused tag)"
+control "$tags_before" "$(remote_agent_tag_names "$a_origin")" "agent mint: ...and the origin's agent tags are untouched"
+agent_stderr_has "reusing \(idempotent re-run\)" "agent mint: the reuse says so on stderr"
+
+new_agent_repo agent-reuse-light
+agent_tag_light "$a_repo" agent-v2026.8.6
+run_agent "$a_repo" "$AUG-20" --agent-tag
+control "reuse" "$(agent_field action)" "agent mint: a LIGHTWEIGHT agent-v* tag at HEAD is reused too"
+control "agent-v2026.8.6" "$(agent_field tag)" "agent mint: ...as that very tag"
+agent_contract "agent mint: the lightweight reuse's stdout is the output contract"
+
+# Two at HEAD: the highest, numerically.
+agent_tag_light "$a_repo" agent-v2026.8.10
+run_agent "$a_repo" "$AUG-20" --agent-tag
+control "agent-v2026.8.10" "$(agent_field tag)" "agent mint: with two tags at HEAD the higher is reused, numerically (2026.8.10 over 2026.8.6)"
+
+# --- create: the first release in a month, and in the legacy base's month ------
+new_agent_repo agent-create
+run_agent "$a_repo" "$AUG-20" --agent-tag
+control "0" "$agent_rc" "agent mint: a dry run exits 0"
+agent_contract "agent mint: the create's stdout is the output contract"
+control "create" "$(agent_field action)" "agent mint: with nothing shipped but the legacy base, create"
+control "agent-v2026.8.4" "$(agent_field tag)" "agent mint: a release in the legacy base's own month is 1 + its patch (agent-v2026.8.4)"
+control "0" "$(git_pushes)" "agent mint: the dry run pushes nothing"
+file_lacks "^tag " "$work/git.calls" "agent mint: ...and runs no git tag"
+control "" "$(remote_agent_tag_names "$a_origin")" "agent mint: ...and the origin has no agent tag after it"
+control "" "$( cd "$a_repo" && git tag -l 'agent-v*' )" "agent mint: ...and neither does the checkout"
+file_mentions "Dry run: would create tag agent-v2026\.8\.4" "$work/agent.err" "agent mint: the dry run says so on stderr"
+file_mentions "^release view agent-v2026\.8\.4$" "$work/gh.calls" "agent mint: it asked gh whether a release holds that name"
+
+run_agent "$a_repo" "$SEP-10" --agent-tag
+control "agent-v2026.9.1" "$(agent_field tag)" "agent mint: the first release in a later month starts at 1 (agent-v2026.9.1), not at the legacy patch"
+control "create" "$(agent_field action)" "agent mint: ...as a create"
+run_agent "$a_repo" "2027-01-05" --agent-tag
+control "agent-v2027.1.1" "$(agent_field tag)" "agent mint: the first release of a new year is 2027.1.1"
+
+# --- create: counted from the REMOTE's tags --------------------------------------
+# 2026.8.4, 2026.8.9 and 2026.8.10 shipped (on older commits): the next is
+# 2026.8.11 — the numeric maximum, where a lexical one says 2026.8.9 + 1.
+new_agent_repo agent-numeric
+agent_tag "$a_repo" agent-v2026.8.4 HEAD~2
+agent_tag "$a_repo" agent-v2026.8.9 HEAD~2
+agent_tag "$a_repo" agent-v2026.8.10 HEAD~2
+run_agent "$a_repo" "$AUG-20" --agent-tag
+control "agent-v2026.8.11" "$(agent_field tag)" "agent mint: 1 + the NUMERIC maximum of the month's shipped patches (2026.8.11, not 2026.8.10)"
+control "create" "$(agent_field action)" "agent mint: ...as a create (no tag of the three is at HEAD)"
+run_agent "$a_repo" "$SEP-10" --agent-tag
+control "agent-v2026.9.1" "$(agent_field tag)" "agent mint: the next month after those releases starts at 1 again"
+
+# A tag that exists only HERE is not a release: ignored, as a local tag must be.
+( cd "$a_repo" && git tag agent-v2026.8.40 HEAD~2 )
+run_agent "$a_repo" "$AUG-20" --agent-tag
+control "agent-v2026.8.11" "$(agent_field tag)" "agent mint: a LOCAL-only tag is ignored (agent-v2026.8.40 is not shipped)"
+( cd "$a_repo" && git tag -d agent-v2026.8.40 >/dev/null )
+
+# Names that look like agent tags and are not versions are not shipped ones.
+# agent-latest AT HEAD is not a reuse either.
+( cd "$a_repo" && git tag agent-latest && git tag agent-v2026.08.5 && git tag agent-vfoo && git tag agent-v2026.8.99-rc1 \
+    && git push -q origin refs/tags/agent-latest refs/tags/agent-v2026.08.5 refs/tags/agent-vfoo refs/tags/agent-v2026.8.99-rc1 ) \
+    || fixture "could not push the non-version agent-* tags"
+run_agent "$a_repo" "$AUG-20" --agent-tag
+control "agent-v2026.8.11" "$(agent_field tag)" "agent mint: agent-latest and malformed agent-v* names on the remote are not counted"
+control "create" "$(agent_field action)" "agent mint: ...and agent-latest at HEAD is not a reuse"
+
+# --- refusals -----------------------------------------------------------------
+# A release already holds the name — a deleted tag's number must not be handed
+# out again. The negative control follows: without that release, the same run
+# creates, so the refusal is the release check's.
+new_agent_repo agent-release-exists
+run_agent "$a_repo" "$AUG-20" --agent-tag GH_SHIM_EXISTING="agent-v2026.8.4"
+agent_refused "agent mint: a name whose release exists"
+agent_stderr_has "a release named agent-v2026\.8\.4 already exists" "agent mint: ...naming the release"
+agent_stderr_has "never delete an agent-v\* tag" "agent mint: ...and the rule that keeps it from recurring"
+run_agent "$a_repo" "$AUG-20" --agent-tag GH_SHIM_EXISTING="some-other-tag"
+control "agent-v2026.8.4" "$(agent_field tag)" "agent mint: (negative control) the same run with no such release creates agent-v2026.8.4"
+
+# gh cannot say: fail closed rather than mint blind.
+run_agent "$a_repo" "$AUG-20" --agent-tag GH_SHIM_FAIL="HTTP 502: Bad Gateway"
+agent_refused "agent mint: gh failing for any reason but 'release not found'"
+agent_stderr_has "could not ask whether a release named agent-v2026\.8\.4 exists" "agent mint: ...saying what could not be asked"
+agent_stderr_has "HTTP 502" "agent mint: ...with gh's own words"
+agent_stderr_has "refusing to mint blind" "agent mint: ...and that it never mints blind"
+
+# Not strictly above everything shipped: a tag from a LATER month is on the
+# remote (a future-dated mint, or a skewed clock here).
+new_agent_repo agent-not-above
+agent_tag "$a_repo" agent-v2026.11.2 HEAD~2
+run_agent "$a_repo" "$AUG-20" --agent-tag
+agent_refused "agent mint: a result below an already shipped version"
+agent_stderr_has "agent-v2026\.8\.4 does not sort above 2026\.11\.2" "agent mint: ...naming both"
+control "" "$(cat "$work/gh.calls")" "agent mint: ...before it asked gh anything"
+run_agent "$a_repo" "2026-12-03" --agent-tag
+control "agent-v2026.12.1" "$(agent_field tag)" "agent mint: (negative control) a month past the shipped one mints normally (agent-v2026.12.1)"
+
+# The legacy base itself is shipped history: a clock behind it is refused too.
+new_agent_repo agent-behind-legacy
+run_agent "$a_repo" "2026-07-20" --agent-tag
+agent_refused "agent mint: a month before the legacy base's"
+agent_stderr_has "agent-v2026\.7\.1 does not sort above 2026\.8\.3" "agent mint: ...naming the legacy base"
+
+# The base from config.sh (seam empty): a clock behind the CONFIGURED base is
+# refused, naming it — the mint reads it from the file when nothing overrides.
+run_agent "$a_repo" "2026-09-10" --agent-tag LAST_COMBINED_AGENT_RELEASE=
+agent_refused "agent mint: with the seam empty the base is config.sh's"
+agent_stderr_has "does not sort above ${cfg_release#v}" "agent mint: ...and it is named ($cfg_release's version)"
+run_agent "$a_repo" "$AUG-20" --agent-tag LAST_COMBINED_AGENT_RELEASE=2026.8.3
+agent_refused "agent mint: a base without its v prefix"
+agent_stderr_has "expected vYYYY\.M\.N" "agent mint: ...as malformed"
+
+# The remote cannot be read: refuse blind, whatever the local tags say.
+broken_agent="$work/agent-broken"
+git clone -q "$a_origin" "$broken_agent"
+( cd "$broken_agent" && git tag agent-v2026.8.1 && git remote set-url origin "$work/does-not-exist.git" )
+run_agent "$broken_agent" "$AUG-20" --agent-tag
+agent_refused "agent mint: an unreachable origin"
+agent_stderr_has "remote tag probe failed" "agent mint: ...saying the probe failed"
+agent_stderr_has "refusing to mint blind" "agent mint: ...and that it never mints blind"
+( cd "$broken_agent" && git remote remove origin )
+run_agent "$broken_agent" "$AUG-20" --agent-tag
+agent_refused "agent mint: no origin at all (a local agent tag is right there, and is not read)"
+agent_stderr_has "no origin remote" "agent mint: ...naming the missing remote"
+
+# A stray argument is a usage error.
+run_agent "$a_repo" "$AUG-20" --agent-tag --extra
+control "2" "$agent_rc" "agent mint: --agent-tag with a stray argument is a usage error (exit 2)"
+control "" "$(cat "$work/agent.out")" "agent mint: ...printing no contract"
+
+# --- --push ----------------------------------------------------------------------
+new_agent_repo agent-push
+a_push_head="$( cd "$a_repo" && git rev-parse HEAD )"
+run_agent "$a_repo" "$AUG-20" --agent-tag --push
+control "0" "$agent_rc" "agent mint: --agent-tag --push exits 0"
+agent_contract "agent mint: the pushed create's stdout is the output contract"
+control "create" "$(agent_field action)" "agent mint: ...a create"
+control "agent-v2026.8.4" "$(agent_field tag)" "agent mint: ...of agent-v2026.8.4"
+control "tag" "$( cd "$a_repo" && git cat-file -t agent-v2026.8.4 )" "agent mint: the tag is annotated (a tag object, not a lightweight ref)"
+control "$a_push_head" "$( cd "$a_repo" && git ls-remote --tags origin 'refs/tags/agent-v2026.8.4^{}' | cut -f1 )" "agent mint: the origin's peeled agent-v2026.8.4 is HEAD"
+control "1" "$(git_pushes)" "agent mint: the create made exactly one git push (positive control: the shim sees pushes)"
+file_mentions "^push origin refs/tags/agent-v2026\.8\.4$" "$work/git.calls" "agent mint: ...of that tag's ref, to origin"
+file_mentions "Created and pushed tag: agent-v2026\.8\.4" "$work/agent.err" "agent mint: it says what it did"
+tags_after_push="$(remote_agent_tag_names "$a_origin")"
+control "agent-v2026.8.4" "$tags_after_push" "agent mint: the origin's snapshot names exactly the new tag (the snapshot is a real observation)"
+
+# The same commit again: reuse, no push, no gh, origin untouched.
+run_agent "$a_repo" "$AUG-20" --agent-tag --push
+control "reuse" "$(agent_field action)" "agent mint: a re-run at the same commit answers reuse"
+control "agent-v2026.8.4" "$(agent_field tag)" "agent mint: ...for the same tag"
+control "0" "$(git_pushes)" "agent mint: ...performing no push at all"
+control "0" "$(wc -l < "$work/gh.calls" | tr -d ' ')" "agent mint: ...and asking gh nothing"
+file_lacks "Created and pushed" "$work/agent.err" "agent mint: ...and never claims a push"
+control "$tags_after_push" "$(remote_agent_tag_names "$a_origin")" "agent mint: ...and the origin's agent tags are byte-identical"
+
+# A later commit: the next number.
+commit "$a_repo" "$AUG-05" "agent push 5"
+( cd "$a_repo" && git push -q origin main )
+run_agent "$a_repo" "$AUG-21" --agent-tag --push
+control "agent-v2026.8.5" "$(agent_field tag)" "agent mint: a later commit mints the next number (agent-v2026.8.5)"
+control "create" "$(agent_field action)" "agent mint: ...as a create"
+
+# The remote refuses the push (another mint won the race, or a hook): nothing is
+# minted, and the checkout is not left holding a tag the remote never took.
+new_agent_repo agent-rejected
+printf '#!/bin/sh\necho "remote: rejected by the test hook" >&2\nexit 1\n' > "$a_origin/hooks/pre-receive"
+chmod +x "$a_origin/hooks/pre-receive"
+run_agent "$a_repo" "$AUG-20" --agent-tag --push
+
+control "1" "$agent_rc" "agent mint: a remote that rejects the push exits 1"
+control "" "$(cat "$work/agent.out")" "agent mint: ...printing no contract"
+agent_stderr_has "the remote refused agent-v2026\.8\.4" "agent mint: ...saying the remote refused"
+control "" "$( cd "$a_repo" && git tag -l 'agent-v*' )" "agent mint: ...and leaving no local tag behind"
+control "" "$(remote_agent_tag_names "$a_origin")" "agent mint: ...and none on the origin"
+
+# =============================================================================
+# 7. THE AGENT MODE OF THE RELEASE-TAG ASSERTION (assert-release-tag.sh --agent)
+# =============================================================================
+echo "--- release-tag assertion, agent mode (assert-release-tag.sh --agent) ---"
+
+assert_flag="--agent"
+# What the agent mint's `create` path needs when an assertion refuses a tag: the
+# gh shim, and the staged legacy base (the assertion pins only the clock).
+AENV=(PATH="$work/ghshim:$PATH" GH_SHIM_CALLS="$work/gh.calls" LAST_COMBINED_AGENT_RELEASE="$LEGACY_TAG")
+
+new_agent_repo agent-assert
+run_agent "$a_repo" "$AUG-20" --agent-tag --push || true
+control "agent-v2026.8.4" "$(agent_field tag)" "fixture: the agent mint tagged agent-v2026.8.4 at HEAD"
+
+# (a) A minted tag passes — and still passes long after its month, which is the
+# real clock's September-and-after to this fixture's August commit.
+expect pass "(agent) a minted tag, asserted after its month rolled" "$a_repo" agent-v2026.8.4 "${AENV[@]}"
+# Under the cockpit's pin inherited from a job: scrubbed, the check does not
+# compare the tag to itself.
+expect pass "(agent) the minted tag still passes under an inherited MARKETING_VERSION" "$a_repo" agent-v2026.8.4 "${AENV[@]}" MARKETING_VERSION=2030.1.9
+
+# (b) The wrong commit: the same tag asserted at the commit BELOW it. The remote
+# has no such tag there, so the mint would create the next number.
+( cd "$a_repo" && git checkout -q HEAD~1 )
+expect refuse "(agent) a tag asserted at a commit it is not on" "$a_repo" agent-v2026.8.4 "${AENV[@]}"
+expect_mentions 'resolves agent-v2026\.8\.5 \(create\) at this commit, not agent-v2026\.8\.4' "     ...naming what the mint resolved instead"
+expect_mentions 'version=2026\.8\.5' "     ...and printing the mint's own report"
+( cd "$a_repo" && git checkout -q main )
+
+# (c) A local-only tag is not a release: create, not reuse. (At the commit below
+# the minted one, where the remote carries nothing.)
+( cd "$a_repo" && git checkout -q HEAD~1 && git tag agent-v2026.8.7 )
+expect refuse "(agent) a local-only tag the remote has never seen (action=create)" "$a_repo" agent-v2026.8.7 "${AENV[@]}"
+expect_mentions 'resolves agent-v2026\.8\.5 \(create\)' "     ...naming create, not reuse"
+( cd "$a_repo" && git tag -d agent-v2026.8.7 >/dev/null && git checkout -q main )
+
+# (d) A different tag is what the mint reuses at this commit: the hand-made one
+# under test is not it.
+expect refuse "(agent) a hand-made tag at a commit that carries another (agent-v2026.8.2)" "$a_repo" agent-v2026.8.2 "${AENV[@]}"
+expect_mentions 'resolves agent-v2026\.8\.4 \(reuse\) at this commit, not agent-v2026\.8\.2' "     ...naming the tag the mint reuses"
+
+# (e) The shapes, each refused BEFORE the mint runs. The cockpit's own shape is
+# refused in agent mode, and the converse below.
+agent_shape() {
+    expect refuse "$1" "$a_repo" "$2" "${AENV[@]}"
+    expect_mentions 'not an agent-vYYYY\.M\.P CalVer tag' "     ...by the shape check"
+    expect_absent "Re-running the mint" "     ...before the mint ran"
+}
+agent_shape "(agent) the cockpit's own tag shape" "v2026.8.4"
+agent_shape "(agent) no prefix" "2026.8.4"
+agent_shape "(agent) the rolling feed release's name" "agent-latest"
+agent_shape "(agent) a semver tag" "agent-v1.2.3"
+agent_shape "(agent) a padded month" "agent-v2026.08.4"
+agent_shape "(agent) a padded patch" "agent-v2026.8.04"
+agent_shape "(agent) a .0 patch" "agent-v2026.8.0"
+agent_shape "(agent) a thirteenth month" "agent-v2026.13.1"
+agent_shape "(agent) a suffix" "agent-v2026.8.4-rc1"
+agent_shape "(agent) a +dev version" "agent-v2026.8.4+dev.1.gabcdef0"
+agent_shape "(agent) a double prefix" "agent-vagent-v2026.8.4"
+assert_flag=""
+# The converse: an agent tag is not a cockpit tag.
+expect refuse "an agent tag asserted in the cockpit's mode" "$a_repo" agent-v2026.8.4
+expect_mentions 'not a vYYYY\.M\.P CalVer tag' "     ...by the cockpit's shape check"
+expect_absent "Re-running the mint" "     ...before the mint ran"
+assert_flag="--agent"
+
+# (f) The clock, both sides.
+now_year=$(( 10#$(date -u +%Y) ))
+now_month=$(( 10#$(date -u +%m) ))
+if (( now_month == 12 )); then
+    next_agent_tag="agent-v$((now_year + 1)).1.1"
+else
+    next_agent_tag="agent-v$now_year.$((now_month + 1)).1"
+fi
+( cd "$a_repo" && git tag "$next_agent_tag" && git push -q origin "refs/tags/$next_agent_tag" )
+expect refuse "(agent) next month's tag ($next_agent_tag, pushed at HEAD)" "$a_repo" "$next_agent_tag" "${AENV[@]}"
+expect_mentions "after the current UTC month" "     ...naming the clock"
+expect_absent "Re-running the mint" "     ...before the mint ran"
+# A month that ENDED before this commit: July's tag hand-pushed at the August
+# commit — the mint tags HEAD with the month it runs in, never an earlier one.
+( cd "$a_repo" && git tag agent-v2026.7.1 && git push -q origin refs/tags/agent-v2026.7.1 )
+expect refuse "(agent) a prior-month tag hand-pushed at a later month's commit" "$a_repo" agent-v2026.7.1 "${AENV[@]}"
+expect_mentions "ended \(at 2026-08-01T00:00:00Z\) before this commit was made" "     ...naming the boundary the commit is past"
+expect_absent "Re-running the mint" "     ...before the mint ran"
+# (The one that ENDS after the commit is the passing case above: an August tag
+# at an August commit, asserted in whatever month the real clock is in.)
+
+# (g) The derivation cannot run.
+git clone -q "$a_origin" "$work/agent-assert-broken"
+( cd "$work/agent-assert-broken" && git checkout -q agent-v2026.8.4 && git remote set-url origin "$work/does-not-exist.git" )
+expect refuse "(agent) the mint's remote probe fails (origin unreachable)" "$work/agent-assert-broken" agent-v2026.8.4 "${AENV[@]}"
+expect_mentions "could not run \(the mint exited non-zero" "     ...naming the derivation, not the tag"
+( cd "$work/agent-assert-broken" && git remote remove origin )
+expect refuse "(agent) no origin remote (the mint would not read local tags)" "$work/agent-assert-broken" agent-v2026.8.4 "${AENV[@]}"
+expect_mentions "no origin remote" "     ...naming the missing remote"
+expect_absent "Re-running the mint" "     ...before the mint ran"
+git clone -q --no-local --depth 1 "$a_origin" "$work/agent-assert-shallow"
+( cd "$work/agent-assert-shallow" && git fetch -q --depth 1 origin "refs/tags/agent-v2026.8.4:refs/tags/agent-v2026.8.4" && git checkout -q agent-v2026.8.4 ) \
+    || fixture "could not fetch agent-v2026.8.4 into the shallow clone"
+control "true" "$( cd "$work/agent-assert-shallow" && git rev-parse --is-shallow-repository )" "fixture: the agent assertion's shallow clone is shallow"
+expect refuse "(agent) a shallow clone (fetch-depth: 1)" "$work/agent-assert-shallow" agent-v2026.8.4 "${AENV[@]}"
+expect_mentions "this checkout is shallow" "     ...naming the checkout"
+expect_absent "Re-running the mint" "     ...before the mint ran"
+expect refuse "(agent) outside any git checkout" "$notrepo" agent-v2026.8.4 GIT_CEILING_DIRECTORIES="$work"
+expect_mentions "not inside a git checkout" "     ...naming the missing checkout"
+
+# (h) Usage. `--agent` alone, an empty tag, and two tags are not refusals.
+for argv in "--agent" "--agent ''" "--agent agent-v2026.8.4 extra"; do
+    rc=0
+    ( cd "$a_repo" && eval "\"\$BASH\" \"\$ASSERT\" $argv" ) >/dev/null 2>&1 || rc=$?
+    control "2" "$rc" "(agent) usage [$argv] is exit 2, not a refusal"
+done
+assert_flag=""
+
+# =============================================================================
+# 8. ./dev publish --agent (scripts/publish.sh)
+# =============================================================================
+echo "--- publish --agent (scripts/publish.sh) ---"
+
+PUBLISH="$SCRIPT_DIR/publish.sh"
+
+# publish.sh sources scripts/config.sh, whose unconditional `export` of
+# LAST_COMBINED_AGENT_RELEASE replaces any seam passed in — so this section runs
+# against the REAL configured base, and its expectations are computed from it
+# rather than copied, so a later bump of that line moves them too.
+cfg_version="${cfg_release#v}"
+cfg_prefix="${cfg_version%.*}"
+cfg_patch="${cfg_version##*.}"
+pub_expect_tag="agent-v$cfg_prefix.$((cfg_patch + 1))"
+pub_today="$(printf '%04d-%02d-20' "${cfg_prefix%%.*}" "${cfg_prefix##*.}")"
+
+# new_publish_repo NAME — a scratch repo on `main`, current with its origin, clean.
+new_publish_repo() {
+    local name="$1"
+    a_origin="$work/$name.origin.git"
+    a_repo="$work/$name"
+    git init -q --bare -b main "$a_origin"
+    git init -q -b main "$a_repo"
+    # `core.autocrlf false`: publish.sh's `git diff --quiet` clean-tree check must
+    # see the file as written, on a Windows runner whose default is `true` too.
+    # The stub workflow file is what `publish --agent` requires HEAD to carry.
+    ( cd "$a_repo" && git config user.email test@example.com && git config user.name test \
+        && git config core.autocrlf false \
+        && git remote add origin "$a_origin" && echo one > f.txt \
+        && mkdir -p .github/workflows && echo "name: stub" > .github/workflows/release-agent.yml \
+        && git add f.txt .github/workflows/release-agent.yml ) || fixture "publish fixture $name: could not set up"
+    ( cd "$a_repo" && GIT_AUTHOR_DATE="${AUG}-01T12:00:00Z" GIT_COMMITTER_DATE="${AUG}-01T12:00:00Z" git commit -q -m one \
+        && git push -q origin main ) || fixture "publish fixture $name: could not commit and push"
+}
+
+# run_publish REPO FLAG... [ENV=value ...] — scripts/publish.sh as run in REPO.
+# The cockpit's three credentials are scrubbed: the point of the agent mode is
+# that it needs none of them.
+pub_rc=0
+run_publish() {
+    local repo="$1"; shift
+    local flags=() envs=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            [A-Z_]*=*) envs+=("$1") ;;
+            *) flags+=("$1") ;;
+        esac
+        shift
+    done
+    pub_rc=0
+    : > "$work/git.calls"
+    : > "$work/gh.calls"
+    local ci_head
+    ci_head="$( cd "$repo" && git rev-parse HEAD )"
+    ( cd "$repo" && env -u SENTRY_DSN -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+        -u MARKETING_VERSION -u LAST_COMBINED_AGENT_RELEASE \
+        VERSION_DATE_OVERRIDE="$pub_today" GH_SHIM_CALLS="$work/gh.calls" GH_SHIM_CI_COMMIT="$ci_head" \
+        PATH="$work/ghshim:$work/shim:$PATH" \
+        ${envs[@]+"${envs[@]}"} "$BASH" "$PUBLISH" ${flags[@]+"${flags[@]}"} >"$work/pub.out" 2>"$work/pub.err" ) || pub_rc=$?
+}
+pub_output_has() {
+    if grep -qE -- "$1" "$work/pub.out" "$work/pub.err"; then
+        echo "ok   $2"; pass=$((pass + 1))
+    else
+        echo "FAIL $2: neither stream matches /$1/"
+        sed 's/^/     /' "$work/pub.out" "$work/pub.err"
+        fail=$((fail + 1))
+    fi
+}
+pub_refused() {
+    control "1" "$pub_rc" "$1: exits 1"
+    control "" "$(remote_agent_tag_names "$a_origin")" "$1: ...and no agent tag reached the origin"
+    control "0" "$(git_pushes)" "$1: ...nor was anything pushed"
+}
+
+new_publish_repo publish-agent
+pub_head="$( cd "$a_repo" && git rev-parse HEAD )"
+run_publish "$a_repo" --agent
+control "0" "$pub_rc" "publish --agent: mints with no SENTRY_DSN or TAURI_SIGNING_* in the environment (exit 0)"
+control "tag" "$( cd "$a_repo" && git cat-file -t "$pub_expect_tag" )" "publish --agent: it created $pub_expect_tag, an annotated tag (1 + the configured base's patch)"
+control "$pub_head" "$( cd "$a_repo" && git ls-remote --tags origin "refs/tags/$pub_expect_tag^{}" | cut -f1 )" "publish --agent: ...and pushed it at HEAD"
+control "$pub_expect_tag" "$(remote_agent_tag_names "$a_origin")" "publish --agent: ...and it is the only agent tag the origin holds"
+control "1" "$(git_pushes)" "publish --agent: exactly one git push"
+file_mentions "^push origin refs/tags/$pub_expect_tag$" "$work/git.calls" "publish --agent: ...of that tag"
+pub_output_has "Minted $pub_expect_tag \(create\)" "publish --agent: it reports what it minted"
+pub_output_has "release-agent\.yml" "publish --agent: ...and what the push triggers"
+if grep -qiE "SENTRY|TAURI_SIGNING|\.dmg|Building release version" "$work/pub.out" "$work/pub.err"; then
+    echo "FAIL publish --agent: its output mentions a cockpit credential or build"
+    sed 's/^/     /' "$work/pub.out" "$work/pub.err"
+    fail=$((fail + 1))
+else
+    echo "ok   publish --agent: it names no cockpit credential and starts no build"; pass=$((pass + 1))
+fi
+file_mentions "^run list " "$work/gh.calls" "publish --agent: it asked CI about HEAD"
+
+# Re-run at the same HEAD: reuse, nothing pushed.
+tags_published="$(remote_agent_tag_names "$a_origin")"
+run_publish "$a_repo" --agent
+control "0" "$pub_rc" "publish --agent: a re-run at the same HEAD exits 0"
+pub_output_has "Minted $pub_expect_tag \(reuse\)" "publish --agent: ...reusing the tag"
+control "0" "$(git_pushes)" "publish --agent: ...pushing nothing"
+control "$tags_published" "$(remote_agent_tag_names "$a_origin")" "publish --agent: ...and the origin is untouched"
+pub_output_has "pushed nothing" "publish --agent: ...and it says so"
+
+# Each pre-flight refuses before anything is tagged.
+new_publish_repo publish-agent-ci
+run_publish "$a_repo" --agent GH_SHIM_CI_GREEN=0
+pub_refused "publish --agent: CI not green on HEAD"
+pub_output_has "No green 'CI' workflow run found" "publish --agent: ...naming the cause"
+run_publish "$a_repo" --agent GH_SHIM_CI_FAIL=1
+pub_refused "publish --agent: CI unknowable (gh errors)"
+pub_output_has "Refusing to mint blind" "publish --agent: ...refusing blind"
+
+( cd "$a_repo" && echo two >> f.txt )
+run_publish "$a_repo" --agent
+pub_refused "publish --agent: a dirty working tree"
+pub_output_has "Working tree is not clean" "publish --agent: ...naming it"
+( cd "$a_repo" && git checkout -q -- f.txt )
+
+( cd "$a_repo" && git checkout -q -b not-main )
+run_publish "$a_repo" --agent
+pub_refused "publish --agent: not on main"
+pub_output_has "Not on main branch" "publish --agent: ...naming it"
+( cd "$a_repo" && git checkout -q main )
+
+new_publish_repo publish-agent-behind
+git clone -q "$a_origin" "$work/publish-agent-behind-other"
+( cd "$work/publish-agent-behind-other" && git config user.email test@example.com && git config user.name test \
+    && echo two >> f.txt && git add f.txt && git commit -q -m two && git push -q origin main ) || fixture "could not advance the origin's main"
+run_publish "$a_repo" --agent
+pub_refused "publish --agent: local main behind origin/main"
+pub_output_has "not up to date with origin/main" "publish --agent: ...naming it"
+
+# The CI gate asks the RIGHT question: the `CI` workflow, at THIS commit. The
+# shim counts a green run only for that, so a CI answer about another commit is
+# a refusal (the positive case above is its control: the same repo is accepted
+# when the question matches).
+new_publish_repo publish-agent-ci-question
+run_publish "$a_repo" --agent GH_SHIM_CI_COMMIT=0000000000000000000000000000000000000000
+pub_refused "publish --agent: CI green at some OTHER commit"
+pub_output_has "No green 'CI' workflow run found" "publish --agent: ...naming the cause"
+file_mentions "^run list .*--workflow CI .*--commit" "$work/gh.calls" "publish --agent: ...having asked about the CI workflow at a commit"
+
+# A refusal by the mint propagates: exit 1, no "Minted" claim, nothing pushed.
+new_publish_repo publish-agent-mint-refuses
+run_publish "$a_repo" --agent GH_SHIM_EXISTING="$pub_expect_tag"
+pub_refused "publish --agent: a mint that refuses (a release already holds $pub_expect_tag)"
+pub_output_has "a release named $pub_expect_tag already exists" "publish --agent: ...saying why"
+if grep -q "Minted" "$work/pub.out" "$work/pub.err"; then
+    echo "FAIL publish --agent: a refused mint still claims it minted"; fail=$((fail + 1))
+else
+    echo "ok   publish --agent: ...and claims no mint"; pass=$((pass + 1))
+fi
+
+# HEAD must carry the agent release workflow: a tag push runs the workflow file
+# as it is at the tagged commit, so a tag minted without it builds nothing and
+# burns a number that can never be reused. Refused before anything is minted.
+new_publish_repo publish-agent-no-workflow
+( cd "$a_repo" && git rm -q .github/workflows/release-agent.yml && git commit -q -m "no workflow" && git push -q origin main ) \
+    || fixture "could not remove the stub workflow from publish-agent-no-workflow"
+run_publish "$a_repo" --agent
+pub_refused "publish --agent: HEAD lacks .github/workflows/release-agent.yml"
+pub_output_has "release-agent\.yml" "publish --agent: ...naming the missing workflow"
+pub_output_has "Nothing was tagged" "publish --agent: ...and that nothing was tagged"
+file_lacks "^release view" "$work/gh.calls" "publish --agent: ...before the mint asked gh about any release"
+
+# The cockpit's options are about a build this mode does not make.
+for opt in --skip-tests --skip-sentry --skip-mint; do
+    run_publish "$a_repo" --agent "$opt"
+    control "1" "$pub_rc" "publish --agent $opt: refused (exit 1)"
+    pub_output_has "do not apply" "publish --agent $opt: ...saying the cockpit's options do not apply"
+    control "" "$(remote_agent_tag_names "$a_origin")" "publish --agent $opt: ...and nothing was tagged"
+done
+
+# And ./dev routes there: its help names the option.
+dev_help="$( cd "$SCRIPT_DIR/.." && "$BASH" ./dev help 2>&1 )" || true
+if grep -q -- "publish --agent" <<< "$dev_help"; then
+    echo "ok   ./dev help documents publish --agent"; pass=$((pass + 1))
+else
+    echo "FAIL ./dev help does not mention publish --agent"; fail=$((fail + 1))
+fi
 
 echo
 echo "versioning: $pass passed, $fail failed"

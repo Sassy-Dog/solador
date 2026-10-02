@@ -63,6 +63,30 @@ export AGENT_PACKAGE="solador-agent"
 export AGENT_LINUX_TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
 export AGENT_MACOS_TARGETS="aarch64-apple-darwin x86_64-apple-darwin"
 
+# The last combined release (#490, part of #472): the newest `v*` tag whose
+# release carried the agent's binaries, from the days when every desktop tag was
+# also an agent release (#390). The bridge, `v2026.10.14`, published 2026-10-02,
+# is that release — the first one built by the consumer that finds releases
+# through `agent-latest`, and the last the old `release.yml` agent leg produces.
+#
+# It records HISTORY; it is never a version anyone chooses. The agent's own
+# versions are `agent-vYYYY.M.N` tags (docs/VERSIONING.md), and this is the only
+# place the legacy numbering is known. Two readers, both in
+# `scripts/get-version-info.sh`:
+#   * `--agent-tag` counts it among the versions already SHIPPED, so the first
+#     agent release in the bridge's own month numbers above it and no later
+#     release can sort at or below a release that went out;
+#   * `--agent-version` builds a source build's `<base>+dev.<k>.g<sha>` from it
+#     until an `agent-v*` tag is reachable.
+#
+# Read as TEXT by get-version-info.sh (which must not source this whole file),
+# so keep it a plain `export LAST_COMBINED_AGENT_RELEASE="vYYYY.M.N"` line.
+# Moving it is a decision about history, not a bump: only if a later `v*` release
+# with agent assets was cut before the agent leg left `release.yml` (the lookup
+# is `gh release view <tag> --json assets`, newest `v*` tag whose assets include
+# `solador-agent-*`).
+export LAST_COMBINED_AGENT_RELEASE="v2026.10.14"
+
 # The agent's own macOS floor, and it is DELIBERATELY not the cockpit's.
 #
 # `.cargo/config.toml` declares `MACOSX_DEPLOYMENT_TARGET = "14.0"` for the

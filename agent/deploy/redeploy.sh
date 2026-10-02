@@ -138,8 +138,9 @@ do_deploy() {
     built_bin="$(build_release_binary "$CRATE_DIR" "$BIN_NAME")" || exit 1
 
     # Asked of the binary that was just built, not of a manifest: since #390 the
-    # agent's version is the git-derived CalVer compiled in by build.rs, and the
-    # artifact is the only thing that can say which one it got.
+    # agent's version is derived from git and compiled in by build.rs — since #490
+    # its own, and for a from-source build the `<base>+dev.<k>.g<sha>` source-build
+    # form — and the artifact is the only thing that can say which one it got.
     target_version="$(binary_version "$built_bin")" || exit 1
     echo "==> Built version $target_version"
 

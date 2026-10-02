@@ -1243,7 +1243,8 @@ async fn a_feed_whose_urls_name_another_release_is_refused_before_any_download()
     assert!(matches!(outcome, UpdateOutcome::Updated { .. }), "control");
 
     for wrong in [
-        // The legacy `v<version>` release: what the producer still writes.
+        // The legacy `v<version>` release: what the producer used to write
+        // (#490 replaced that rule with `agent-v<version>`).
         format!("v{NEW}"),
         // Another version's agent release.
         binary_tag("2026.9.10"),
@@ -1664,7 +1665,7 @@ async fn an_installed_source_build_is_no_applicable_release_and_changes_nothing(
 }
 
 /// The `+dev` check is for source builds, not for everything that is not a
-/// CalVer: a version that is neither (a `MARKETING_VERSION=dev` pin, say) is
+/// CalVer: a version that is neither (an `AGENT_MARKETING_VERSION=dev` pin, say) is
 /// still the exit-1 refusal that names the installer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_installed_version_that_is_neither_calver_nor_dev_is_still_refused_with_exit_one() {
@@ -2801,6 +2802,113 @@ async fn launchd_smoke() {
 
     let lines = Arc::new(Mutex::new(Vec::<String>::new()));
 
+    // The REAL feed, read-only, through the REAL CLI. Opt-in on top of opt-in:
+    // it reaches github.com. The installed agent is this build, whose bytes are
+    // not a published release's, so the honest outcomes are "not newer" (this
+    // checkout is at or past the published CalVer), "Already current", or — for
+    // a SOURCE build (`+dev`, which is what an unpinned build of this checkout
+    // is since #490) — #488's answer that there is nothing to compare, exit 4.
+    // A real update would put a published binary on a throwaway service, which
+    // is fine, but is not what this asserts. It asserts the read-only path: the
+    // feed read from its fixed `agent-latest` location, its verification under
+    // the COMPILED-IN production key, and no mutation.
+    //
+    // Until the first `agent-v` release exists (#472's cut-over, #492 step 7)
+    // there is no `agent-latest` release, so this run gets a 404 and exits 1:
+    // the assertions are expected to fail against the real feed until then, and
+    // are left as they are.
+    let read_only_real_feed = || -> Option<(std::process::Output, bool)> {
+        if std::env::var("SOLADOR_AGENT_SMOKE_REAL_FEED").as_deref() != Ok("1") {
+            return None;
+        }
+        let before = fs::read(&binary).unwrap();
+        let out = Command::new(&real)
+            .arg("update")
+            .env("HOME", home.path())
+            .env("SOLADOR_AGENT_LAUNCHD_LABEL", &label)
+            .env_remove("SOLADOR_AGENT_TOKEN")
+            .output()
+            .unwrap();
+        let after = fs::read(&binary).unwrap();
+        Some((out, before == after))
+    };
+    let assert_real_feed = |real_feed: Option<(std::process::Output, bool)>| {
+        let Some((out, unchanged)) = real_feed else {
+            return;
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        println!("--- real feed ---\n{stdout}{stderr}");
+        assert!(
+            unchanged,
+            "the read-only real-feed smoke must not change the live binary"
+        );
+        assert!(
+            stdout.contains("agent-latest.json verified under key B2E5C62B763FD2C4"),
+            "the real feed verified under the compiled-in production key:\n{stdout}{stderr}"
+        );
+        assert!(
+            stderr.contains("not newer")
+                || stdout.contains("Already current")
+                || stderr.contains("a source build (+dev) and not a release"),
+            "{stdout}{stderr}"
+        );
+        assert!(!stdout.contains(TOKEN) && !stderr.contains(TOKEN));
+    };
+
+    // Whatever happened, take the throwaway service down. `bootout` returns
+    // before the service is fully torn down on some releases (install.sh
+    // records the same race), so the "unloaded" check polls rather than
+    // reading once. Returns (was loaded, still loaded).
+    let is_loaded = || {
+        Command::new("launchctl")
+            .args(["print", &service_id])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    let teardown = || -> (bool, bool) {
+        let loaded = is_loaded();
+        bootout();
+        let mut still_loaded = is_loaded();
+        for _ in 0..20 {
+            if !still_loaded {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            still_loaded = is_loaded();
+        }
+        (loaded, still_loaded)
+    };
+
+    // A SOURCE build installed (`+dev`, an unpinned build of this checkout,
+    // #490) has no release to be compared with, so `update` answers "no
+    // applicable release" before it swaps anything: sections 1 and 2 and the
+    // rollbacks below, which are all about that transaction, cannot happen. Say
+    // so, run what can (the read-only real-feed section, if it was asked for)
+    // and stop. The full path needs a release-like version baked in at build
+    // time: `AGENT_MARKETING_VERSION=2098.1.1 SOLADOR_DEPLOY_TEST_LAUNCHD=1
+    // cargo test -p solador-agent --test update_flow launchd_smoke` (above
+    // today's published CalVer and below the 2099.1.1 section 1 offers).
+    if real_version.contains("+dev") {
+        println!(
+            "SKIP launchd_smoke sections 1-2 and the rollbacks: the real agent is a source build \
+             ({real_version}), which `update` does not compare. Pin a release-like version at build \
+             time for the full path: AGENT_MARKETING_VERSION=2098.1.1 (see agent/README.md)"
+        );
+        let real_feed = read_only_real_feed();
+        let (loaded, still_loaded) = teardown();
+        assert!(
+            loaded,
+            "the throwaway LaunchAgent was loaded during the smoke"
+        );
+        assert!(!still_loaded, "the throwaway service was unloaded again");
+        assert_real_feed(real_feed);
+        return;
+    }
+
     // --- 1. A failed update, rolled back automatically on the real service ---
     // The candidate names a newer version to `--version`, verifies and
     // hashes, and once launchd starts it, it execs the real agent — which
@@ -2850,7 +2958,7 @@ async fn launchd_smoke() {
 
     // --- 2. A successful update on the real service ---------------------------
     // Needs a second real agent binary with a newer CalVer — built with
-    // `MARKETING_VERSION=<newer> cargo build -p solador-agent --target-dir …`
+    // `AGENT_MARKETING_VERSION=<newer> cargo build -p solador-agent --target-dir …`
     // and named by SOLADOR_AGENT_SMOKE_NEWER_BINARY. Optional, because a
     // second build inside a test is not something CI or a casual run should
     // pay for; without it this section is skipped and says so.
@@ -2937,57 +3045,10 @@ async fn launchd_smoke() {
     .await;
 
     // --- 3. The REAL feed, read-only, through the REAL CLI -------------------
-    // Opt-in on top of opt-in: it reaches github.com. The installed agent is
-    // this build, whose bytes are not a published release's, so the honest
-    // outcomes are "not newer" (this checkout is at or past the published
-    // CalVer) or a real update — and a real update would put a published
-    // binary on a throwaway service, which is fine, but is not what this
-    // asserts. It asserts the read-only path: the feed read from its fixed
-    // `agent-latest` location, its verification under the COMPILED-IN
-    // production key, target selection, hash, version rule, and no mutation.
-    //
-    // Until the first `agent-v` release exists (#472's cut-over, #492 step 7)
-    // there is no `agent-latest` release, so this run gets a 404 and exits 1:
-    // the assertions below are expected to fail against the real feed until
-    // then, and are left as they are.
-    let real_feed = if std::env::var("SOLADOR_AGENT_SMOKE_REAL_FEED").as_deref() == Ok("1") {
-        let before = fs::read(&binary).unwrap();
-        let out = Command::new(&real)
-            .arg("update")
-            .env("HOME", home.path())
-            .env("SOLADOR_AGENT_LAUNCHD_LABEL", &label)
-            .env_remove("SOLADOR_AGENT_TOKEN")
-            .output()
-            .unwrap();
-        let after = fs::read(&binary).unwrap();
-        Some((out, before == after))
-    } else {
-        None
-    };
+    let real_feed = read_only_real_feed();
 
-    // Whatever happened, take the throwaway service down. `bootout` returns
-    // before the service is fully torn down on some releases (install.sh
-    // records the same race), so the "unloaded" check polls rather than
-    // reading once.
-    let is_loaded = || {
-        Command::new("launchctl")
-            .args(["print", &service_id])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-    let loaded = is_loaded();
-    bootout();
-    let mut still_loaded = is_loaded();
-    for _ in 0..20 {
-        if !still_loaded {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-        still_loaded = is_loaded();
-    }
+    // Whatever happened, take the throwaway service down.
+    let (loaded, still_loaded) = teardown();
 
     // --- assertions, after cleanup ------------------------------------------
     let output = lines.lock().unwrap().join("\n");
@@ -3058,22 +3119,5 @@ async fn launchd_smoke() {
     assert!(!fwd_stdout.contains(TOKEN) && !fwd_stderr.contains(TOKEN));
     assert!(served_after_forward.is_ok(), "{served_after_forward:?}");
 
-    if let Some((out, unchanged)) = real_feed {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        println!("--- real feed ---\n{stdout}{stderr}");
-        assert!(
-            unchanged,
-            "the read-only real-feed smoke must not change the live binary"
-        );
-        assert!(
-            stdout.contains("agent-latest.json verified under key B2E5C62B763FD2C4"),
-            "the real feed verified under the compiled-in production key:\n{stdout}{stderr}"
-        );
-        assert!(
-            stderr.contains("not newer") || stdout.contains("Already current"),
-            "{stdout}{stderr}"
-        );
-        assert!(!stdout.contains(TOKEN) && !stderr.contains(TOKEN));
-    }
+    assert_real_feed(real_feed);
 }

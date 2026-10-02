@@ -20,7 +20,7 @@
 //!   "version": "2026.9.9",
 //!   "targets": {
 //!     "aarch64-apple-darwin": {
-//!       "url": "https://github.com/Sassy-Dog/solador/releases/download/v2026.9.9/solador-agent-2026.9.9-aarch64-apple-darwin",
+//!       "url": "https://github.com/Sassy-Dog/solador/releases/download/agent-v2026.9.9/solador-agent-2026.9.9-aarch64-apple-darwin",
 //!       "signature": "untrusted comment: …\nRW…\ntrusted comment: …\n…\n",
 //!       "sha256": "<64 lowercase hex over the raw executable bytes>"
 //!     },
@@ -29,14 +29,19 @@
 //! }
 //! ```
 //!
-//! - `version` is the release's CalVer with no `v` prefix — the same number
-//!   the release, the app and every binary carry.
+//! - `version` is the agent release's CalVer with no `agent-v` prefix — the
+//!   number the release's tag (`agent-v<version>`) and every binary carry. It
+//!   is the AGENT's own version (#472), not the cockpit's.
 //! - `targets` is keyed by the full Rust triple and carries **exactly** the
 //!   four [`TARGETS`]. No archives, no app-style `darwin-*` aliases, no
 //!   Windows agent.
 //! - `signature` is the `.minisig` text verbatim, `sha256` is over the raw
 //!   executable bytes, and the `url` names `solador-agent-<version>-<triple>`
-//!   on the release's tag.
+//!   on the release's tag, `agent-v<version>` — and only that tag. The legacy
+//!   `v<version>` shape, from the days when every cockpit release was also an
+//!   agent release, is not written and not accepted: the consumer
+//!   (`agent/src/update.rs`'s `check_feed_urls`) refuses every other shape, so
+//!   a producer that still wrote it would publish feeds no agent accepts.
 //! - Every signature's **trusted comment is the asset's own file name**
 //!   (`scripts/agent-signing.sh` signs with `-t <basename>`), and the producer
 //!   refuses one that names anything else — a signature that verifies over
@@ -50,9 +55,9 @@
 //!
 //! # Why the content hash is in the feed at all
 //!
-//! Agent and app share one version, so an app-only release still moves the
-//! agent's number. The hash is what lets an installed agent answer "did the
-//! binary change?" without downloading it: equal hash means stop. It is
+//! The agent compiles its version in, so a new version is always new bytes. The
+//! hash answers the other question — "is the binary I am running already this
+//! release's?" — without downloading anything: equal hash means stop. It is
 //! computed here **from the verified bytes**, never taken from a caller, so a
 //! feed cannot carry a hash of something its signature does not cover.
 //!
@@ -72,13 +77,24 @@ use sha2::{Digest, Sha256};
 use crate::manifest::is_calver;
 
 /// The name every agent binary is published under, before its version and
-/// triple. `scripts/build-agent.sh` names the files, `release.yml` attaches
-/// them, and this is what the feed's URLs have to point at.
+/// triple. `scripts/build-agent.sh` names the files, the agent release
+/// workflow attaches them, and this is what the feed's URLs have to point at.
 pub const BINARY_PREFIX: &str = "solador-agent";
 
-/// The feed's own asset name on the release, and the name the consumer
-/// fetches through `releases/latest/download/`.
+/// The feed's own asset name, on the permanent `agent-latest` release — the
+/// fixed address the consumer fetches it from
+/// (`releases/download/agent-latest/agent-latest.json`).
 pub const FEED_ASSET: &str = "agent-latest.json";
+
+/// What an agent release's tag is made of: `agent-v` + the version. The only
+/// tag a feed's URLs may name (the `v<version>` rule this replaced is gone).
+pub const TAG_PREFIX: &str = "agent-v";
+
+/// `agent-v<version>`: the release tag a feed for `version` points into.
+#[must_use]
+pub fn release_tag(version: &str) -> String {
+    format!("{TAG_PREFIX}{version}")
+}
 
 /// The four published targets — exactly these, in `scripts/config.sh`'s
 /// order. A feed with a fifth key or a missing one is refused, because a
@@ -169,8 +185,9 @@ pub struct Feed {
 pub enum FeedError {
     /// Not the `YYYY.M.P` CalVer the release carries.
     Version(String),
-    /// The tag does not name the version (`v<version>` is the repo's scheme,
-    /// and a feed whose assets sit under some other tag advertises 404s).
+    /// The tag does not name the version (`agent-v<version>` is the agent's
+    /// scheme, and a feed whose assets sit under some other tag advertises
+    /// 404s — or, for the legacy `v<version>`, a release no agent accepts).
     Tag { tag: String, version: String },
     /// The committed public key file is not a minisign public key.
     PubKeyMalformed(String),
@@ -219,12 +236,15 @@ impl FeedError {
     pub fn user_message(&self) -> String {
         match self {
             FeedError::Version(v) => format!(
-                "'{v}' is not the CalVer scripts/get-version-info.sh emits \
-                 (YYYY.M.<commits-this-month>, no leading zeroes, no 'v')"
+                "'{v}' is not the CalVer an agent release carries (YYYY.M.N as \
+                 scripts/get-version-info.sh --agent-tag mints it: no leading zeroes, and no \
+                 'v' or 'agent-v' prefix)"
             ),
             FeedError::Tag { tag, version } => format!(
-                "tag '{tag}' does not name version '{version}' — the feed's URLs would point at \
-                 assets under a different release"
+                "tag '{tag}' does not name version '{version}' — an agent feed's URLs point into \
+                 exactly one release, '{}', and any other tag would advertise assets no agent \
+                 accepts",
+                release_tag(version)
             ),
             FeedError::PubKeyMalformed(e) => format!(
                 "the agent public key is not a minisign public key ({e}) — \
@@ -290,7 +310,8 @@ impl Feed {
     /// each under `pubkey` (the text of `agent/release-signing-key.pub`) and
     /// hashing the verified bytes.
     ///
-    /// `tag` is the release the URLs point into, and it must be `v<version>`.
+    /// `tag` is the release the URLs point into, and it must be
+    /// `agent-v<version>` ([`release_tag`]) — the legacy `v<version>` is refused.
     /// Every refusal happens here: nothing else constructs a `Feed` from
     /// inputs, so a `Feed` in hand is one whose every entry verified.
     pub fn build(
@@ -300,7 +321,7 @@ impl Feed {
         inputs: Vec<Input>,
     ) -> Result<Self, FeedError> {
         check_version(version)?;
-        if tag != format!("v{version}") {
+        if tag != release_tag(version) {
             return Err(FeedError::Tag {
                 tag: tag.to_string(),
                 version: version.to_string(),
@@ -378,7 +399,7 @@ impl Feed {
         if !is_calver(&feed.version) {
             return Err(FeedError::Version(feed.version));
         }
-        let tag = format!("v{}", feed.version);
+        let tag = release_tag(&feed.version);
 
         for target in feed.targets.keys() {
             if !TARGETS.contains(&target.as_str()) {
@@ -594,10 +615,13 @@ mod tests {
     /// `agent-latest.json` + `.minisig` are what `solador-agent-feed build`
     /// produced from them and `rsign` signed, so the committed pair is one
     /// this code and the release signer agree on. `tests/fixtures/README.md`
-    /// says how to regenerate the set.
+    /// says how to regenerate the set. The directory is the one `agent/src/
+    /// update.rs`'s own tests read too (#490): one fixture, written by this
+    /// producer, checked by the consumer — which is what ties the two halves of
+    /// the `agent-v` URL shape together.
     fn fixture(name: &str) -> Vec<u8> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/agent")
+            .join("../../tests/fixtures/agent-v")
             .join(name);
         std::fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
     }
@@ -607,7 +631,7 @@ mod tests {
     }
 
     const VERSION: &str = "2026.9.9";
-    const TAG: &str = "v2026.9.9";
+    const TAG: &str = "agent-v2026.9.9";
     const BASE: &str = "https://github.com/Sassy-Dog/solador/releases/download";
 
     fn test_pubkey() -> String {
@@ -643,7 +667,7 @@ mod tests {
     /// Same regression guard as the desktop fixtures carry: a Windows checkout
     /// under `core.autocrlf=true` rewrites LF to CRLF, and the only symptom is
     /// every positive test below failing on a sentence about cryptography.
-    /// `.gitattributes` pins `tests/fixtures/agent/**`; this names what
+    /// `.gitattributes` pins `tests/fixtures/agent-v/**`; this names what
     /// happened if it stops.
     #[test]
     fn the_fixtures_arrive_as_the_bytes_that_were_signed() {
@@ -660,9 +684,40 @@ mod tests {
             assert!(
                 !fixture(&name).contains(&b'\r'),
                 "{name} contains a carriage return, so this checkout rewrote it. \
-                 Check that `.gitattributes` still declares tests/fixtures/agent/** -text."
+                 Check that `.gitattributes` still declares tests/fixtures/agent-v/** -text."
             );
         }
+    }
+
+    /// The pin itself, asserted rather than only described: the line that
+    /// stops a Windows checkout rewriting the signed bytes names THIS fixture
+    /// directory (#490 moved it from `tests/fixtures/agent/`, which no longer
+    /// exists), and nothing still pins the old one.
+    #[test]
+    fn gitattributes_pins_the_agent_v_fixtures_and_only_those() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.gitattributes");
+        let attrs = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let rules: Vec<&str> = attrs
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        assert!(
+            rules.contains(&"tests/fixtures/agent-v/** -text"),
+            "`.gitattributes` must declare tests/fixtures/agent-v/** -text, or a checkout with \
+             core.autocrlf=true rewrites the bytes the signatures cover"
+        );
+        assert!(
+            !rules.iter().any(|l| l.starts_with("tests/fixtures/agent/")),
+            "a pin for the deleted tests/fixtures/agent/ directory is left in .gitattributes"
+        );
+        assert!(
+            !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/agent")
+                .exists(),
+            "tests/fixtures/agent/ (the v<version>-shaped fixture) is gone; nothing reads it"
+        );
     }
 
     // --- Building -----------------------------------------------------------
@@ -889,12 +944,75 @@ mod tests {
         // The tag has to name the version, or the URLs point into some other
         // release.
         assert_eq!(
-            Feed::build(VERSION, "v2026.9.8", &test_pubkey(), inputs()).expect_err("wrong tag"),
+            Feed::build(VERSION, "agent-v2026.9.8", &test_pubkey(), inputs())
+                .expect_err("wrong tag"),
             FeedError::Tag {
-                tag: "v2026.9.8".to_string(),
+                tag: "agent-v2026.9.8".to_string(),
                 version: VERSION.to_string()
             }
         );
+    }
+
+    /// **The producer's `v<version>` rule is REPLACED, not kept beside
+    /// `agent-v`** (#490). The legacy tag, the bare version, the feed asset's
+    /// own release name and a doubled prefix are all refused as the tag a feed
+    /// points into — and the message names the one tag that is accepted.
+    #[test]
+    fn only_the_agent_v_tag_is_accepted_and_the_legacy_v_tag_is_not() {
+        assert_eq!(release_tag(VERSION), TAG);
+        assert_eq!(TAG, format!("{TAG_PREFIX}{VERSION}"));
+        for legacy in [
+            "v2026.9.9",
+            "2026.9.9",
+            "agent-latest",
+            "agent-vagent-v2026.9.9",
+            "agent-v2026.9.9 ",
+            "",
+        ] {
+            let err = Feed::build(VERSION, legacy, &test_pubkey(), inputs())
+                .expect_err(&format!("{legacy:?} must not be a tag"));
+            assert_eq!(
+                err,
+                FeedError::Tag {
+                    tag: legacy.to_string(),
+                    version: VERSION.to_string()
+                },
+                "{legacy:?}"
+            );
+            assert!(err.user_message().contains(TAG), "{}", err.user_message());
+        }
+        // The same inputs under the accepted tag build — so the refusals above
+        // are the tag's, not the fixture's.
+        Feed::build(VERSION, TAG, &test_pubkey(), inputs()).expect("agent-v builds");
+    }
+
+    /// The URL shape, end to end through the shared fixture: every entry the
+    /// producer wrote names `releases/download/agent-v<version>/<asset>`, and
+    /// the legacy shape — the same document with `v<version>` as the release
+    /// segment — is refused by `parse` when a consumer-side check meets it.
+    #[test]
+    fn the_fixture_urls_are_agent_v_and_the_legacy_shape_is_refused_on_parse() {
+        let feed = feed();
+        for (target, entry) in &feed.targets {
+            assert_eq!(
+                entry.url,
+                format!("{BASE}/agent-v{VERSION}/solador-agent-{VERSION}-{target}"),
+                "{target}"
+            );
+        }
+        let json = String::from_utf8(fixture(FEED_ASSET)).expect("utf-8");
+        assert!(json.contains("/releases/download/agent-v2026.9.9/"));
+        let legacy = json.replace(
+            "/releases/download/agent-v2026.9.9/",
+            "/releases/download/v2026.9.9/",
+        );
+        assert_ne!(legacy, json, "the rewrite changed something");
+        assert!(
+            matches!(Feed::parse(legacy.as_bytes()), Err(FeedError::Url { .. })),
+            "a feed on the legacy v<version> release must not parse"
+        );
+        // The committed document itself does.
+        assert_eq!(Feed::parse(json.as_bytes()).expect("parses"), feed);
     }
 
     #[test]
@@ -906,7 +1024,12 @@ mod tests {
             format!("http://github.com/x/{TAG}/{asset}"),
             format!("https:///{TAG}/{asset}"),
             format!("{BASE}/{TAG}/{asset}.tar.gz"),
-            format!("{BASE}/v2026.9.8/{asset}"),
+            format!("{BASE}/agent-v2026.9.8/{asset}"),
+            // The legacy release the producer used to write: the right asset
+            // on the wrong tag.
+            format!("{BASE}/v{VERSION}/{asset}"),
+            // The rolling feed release holds the feed and nothing else.
+            format!("{BASE}/agent-latest/{asset}"),
             format!("{BASE}/{TAG}/solador-agent-2026.9.9-x86_64-apple-darwin"),
             format!("{BASE}/{TAG}/{asset} "),
             // A --download-base that already carried the tag: the right
@@ -1166,7 +1289,7 @@ mod tests {
         assert!(matches!(
             refused(&|d| {
                 d["targets"]["aarch64-apple-darwin"]["url"] = serde_json::json!(
-                "https://github.com/Sassy-Dog/solador/releases/download/v2026.9.8/solador-agent-2026.9.8-aarch64-apple-darwin"
+                "https://github.com/Sassy-Dog/solador/releases/download/agent-v2026.9.8/solador-agent-2026.9.8-aarch64-apple-darwin"
             )
             }),
             FeedError::Url { .. }

@@ -300,7 +300,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
 | [`crashreport`](../crates/crashreport) | the opt-in crash reporter: the consent gate, the payload allow-list, the Sentry SDK |
-| [`buildversion`](../crates/buildversion) | a **build** dependency: publishes the git-derived CalVer as `SOLADOR_MARKETING_VERSION`. Shared with `agent/build.rs` (#390) so the plumbing around `scripts/get-version-info.sh` has one home |
+| [`buildversion`](../crates/buildversion) | a **build** dependency: publishes the git-derived CalVer as `SOLADOR_MARKETING_VERSION` — and, through a second entry point, the agent's own version for `agent/build.rs` (#390, #490) — so the plumbing around `scripts/get-version-info.sh` has one home |
 
 `crashreport` is the **only** crate carrying the Sentry SDK, and only this shell
 depends on it — `agent/`'s CI job is scoped `-p solador-agent` and must not
@@ -1751,7 +1751,9 @@ Two things worth knowing about this surface:
   `app/src-tauri/build.rs` — two lines calling `crates/buildversion`, which
   shells out to `scripts/get-version-info.sh`, the CalVer algorithm's single
   owner, per `docs/VERSIONING.md`. (That helper is shared with `agent/build.rs`
-  since #390; the agent takes the same number by the same route.) It publishes
+  since #390; since #490 the agent has an **own** number — `agent-vYYYY.M.N` —
+  through the helper's second entry point, which never reads `MARKETING_VERSION`.)
+  It publishes
   **nothing** where it cannot derive one honestly (a shallow clone, a tree with
   no git), and About renders `Version —` there rather than a plausible-looking
   number. It used to be `env!("CARGO_PKG_VERSION")`, i.e. `Cargo.toml`'s

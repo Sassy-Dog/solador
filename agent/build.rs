@@ -1,12 +1,17 @@
 use std::path::Path;
 
 fn main() {
-    // The agent ships as four published binaries (#390), so it needs the same
-    // git-derived CalVer the cockpit carries — and from the same place, since
-    // `docs/VERSIONING.md` allows the algorithm exactly one home. `--version`
-    // and `/v1/health` read it back through `option_env!`, and its absence is
-    // a state both of them render rather than paper over.
-    buildversion::emit_marketing_version();
+    // The agent ships as four published binaries (#390), and since #490 it has
+    // a version of its own — `agent-vYYYY.M.N`, which moves only when an agent
+    // release is cut — rather than the cockpit's CalVer. It is derived by the
+    // one algorithm home, `scripts/get-version-info.sh --agent-version`, behind
+    // `crates/buildversion`'s agent entry point: the pin
+    // `AGENT_MARKETING_VERSION`, then the shallow-clone refusal, then the
+    // script, and `MARKETING_VERSION` (a desktop release's number) is never
+    // read. A source build carries `<base>+dev.<k>.g<sha>`. `--version` and
+    // `/v1/health` read it back through `option_env!`, and its absence is a
+    // state both of them render rather than paper over.
+    buildversion::emit_agent_marketing_version();
 
     emit_trusted_public_keys();
 }

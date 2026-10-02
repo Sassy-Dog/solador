@@ -317,12 +317,21 @@ pub struct Health {
     /// therefore serving frozen numbers.
     pub status: String,
     pub hostname: String,
-    /// The agent's CalVer, **omitted** by an agent that cannot name itself
-    /// (#390): one built outside a full git checkout, where
-    /// `scripts/get-version-info.sh` cannot count the commits CalVer is made
-    /// of. Every published binary carries one; a `cargo build` from a shallow
-    /// clone does not, and the agent omits the key rather than serving
-    /// `agent/Cargo.toml`'s wire-contract number as a stand-in.
+    /// The agent's own version — a release's CalVer (`YYYY.M.N`, the
+    /// `agent-v<version>` tag it was built from, #472), or, for a **source
+    /// build**, `<base>+dev.<k>.g<sha>`: the highest reachable `agent-v*` tag
+    /// (before one exists, the last combined release) plus the commits since it
+    /// and HEAD's short commit (#490). The `+dev` suffix is how a source build
+    /// never claims to be a release, so a consumer that compares this against a
+    /// release must treat it as "not comparable", never parse it as a CalVer;
+    /// the cockpit's Settings row prints it verbatim as `v{version}`.
+    ///
+    /// **Omitted** by an agent that cannot name itself (#390): one built
+    /// outside a full git checkout, where `scripts/get-version-info.sh` cannot
+    /// count the commits since its base. Every published binary carries one; a
+    /// `cargo build` from a shallow clone does not, and the agent omits the key
+    /// rather than serving `agent/Cargo.toml`'s wire-contract number as a
+    /// stand-in.
     ///
     /// Optional in both directions, like every other unmeasured field here: an
     /// absent key decodes to `None`, and `None` re-encodes as an omitted key —
