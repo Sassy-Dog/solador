@@ -926,8 +926,19 @@ The script:
    Tailscale IP, else all interfaces if TLS is on, else refuse), the port (`SOLADOR_AGENT_PORT`, else the
    existing file's, else `7878`), and `SOLADOR_AGENT_TLS` (see **TLS**, below,
    for how its value is decided), mode `600`, written beside the live file and
-   renamed into place. Any other line already in the file
-   (`SOLADOR_AGENT_SKIP_FSTYPES=`, `RUST_LOG=`) is carried through. The full
+   renamed into place. A re-run carries over only blank lines, `#` comments and
+   the documented keys it does not itself write (`SOLADOR_AGENT_SKIP_FSTYPES=`,
+   `RUST_LOG=`) — the same set of keys the macOS launcher exports. **Every other
+   line is dropped on re-run**, and one warning per key on stderr names it (the
+   key only, never its value) as not a documented agent setting; the install
+   proceeds. On Linux the unit loads the file wholesale, so a stray key such as
+   `LD_PRELOAD=` would otherwise survive every upgrade into the agent's process.
+   A whitespace-led `  KEY=value` and any line with a carriage return inside it are
+   dropped too (systemd would read each as a setting). Blank lines and `#` or
+   `;` comments are kept. A variable the agent's own tools need (for example
+   `DOCKER_HOST`) belongs, on Linux, in a unit drop-in (`systemctl --user edit
+   solador-agent`, an `Environment=` line), not in this file; macOS has no
+   equivalent route, because the launcher exports only the documented keys. The full
    token is never printed — the script reports only the env-file path and the
    token's last 4 characters.
 6. Installs and starts the service for the platform (next two sections),
@@ -1045,8 +1056,9 @@ stops before changing anything and prints the explicit step, which is:
 ./deploy/install.sh --migrate-from-opt
 ```
 
-That keeps `~/.config/solador-agent.env` (token, bind, port, and any other
-key) exactly as it is, installs the verified binary at
+That keeps `~/.config/solador-agent.env`'s token, bind, port and TLS choice,
+comments, and the documented `SOLADOR_AGENT_SKIP_FSTYPES` / `RUST_LOG` keys (any
+other key is dropped and named, as in step 5 above), installs the verified binary at
 `~/.local/bin/solador-agent`, **regenerates** the unit from the template with
 that path (the displaced unit is kept as `solador-agent.service.prev`; edits
 you made to the file itself do not survive, drop-ins via `systemctl --user

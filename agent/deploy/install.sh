@@ -1820,10 +1820,90 @@ fi
 # silently mints a fresh one — the very divergence the handover above exists
 # to prevent.
 #
-# Every line that is not one of the four keys this script owns is carried
-# through verbatim. SOLADOR_AGENT_SKIP_FSTYPES and RUST_LOG are documented
-# keys an operator adds by hand, and a re-run that dropped them would be an
-# upgrade that quietly changed the agent's configuration.
+# What is carried over from the previous file is an ALLOW-LIST (#496), not
+# "everything this script does not own". On Linux the unit loads the file
+# wholesale (EnvironmentFile=), so a line carried through verbatim, such as an
+# LD_PRELOAD= planted by anything that could reach the file, would survive
+# every re-run and land in the agent's process. Kept: blank lines and comments
+# (operators annotate the file), and the documented keys this script does not
+# itself rewrite. Every other line is dropped and its KEY (never its value)
+# is named on stderr, once. The install proceeds: a refusal would strand a
+# host whose file carries a harmless stray key, and the point is only that the
+# key stops reaching the agent.
+#
+# The two lists below are, together, exactly run-agent.sh's allow-list (the
+# macOS launcher). That script is installed standalone and cannot source this
+# one, so lib_test.sh asserts the parity.
+ENV_CARRIED_KEYS="SOLADOR_AGENT_SKIP_FSTYPES RUST_LOG"
+ENV_OWNED_KEYS="SOLADOR_AGENT_TOKEN SOLADOR_AGENT_BIND SOLADOR_AGENT_PORT SOLADOR_AGENT_TLS SOLADOR_AGENT_BIND_AUTO"
+
+# carry_env_lines <file>: the lines of <file> that survive a re-run, on stdout;
+# one warning per dropped key on stderr.
+carry_env_lines() {
+    local file="$1" line trimmed key k keep why dropped=" " lineno=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        # One trailing CR is a CRLF line ending (the launcher strips it too).
+        # Any other CR is a line break to systemd, whose EnvironmentFile=
+        # parser ends a line on "\n" and on "\r": `RUST_LOG=x<CR>LD_PRELOAD=y`
+        # is one line here and two settings there, so it is dropped whole, as
+        # is a comment hiding one.
+        line="${line%$'\r'}"
+        case "$line" in
+            *$'\r'*)
+                echo "WARNING: dropped line $lineno from $file: it contains a carriage return" >&2
+                continue
+                ;;
+        esac
+        # systemd trims leading whitespace before it reads a line, so a
+        # whitespace-led `  KEY=value` is a setting there: judge the trimmed
+        # form, and keep a setting only when it is in the form the launcher
+        # accepts (a key at column 0).
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        case "$trimmed" in
+            '' | '#'* | ';'*)
+                printf '%s\n' "$line"
+                continue
+                ;;
+        esac
+        key="${line%%=*}"
+        keep=false
+        if [ "$key" != "$line" ]; then
+            for k in $ENV_CARRIED_KEYS; do
+                [ "$key" = "$k" ] && keep=true
+            done
+        fi
+        if [ "$keep" = true ]; then
+            printf '%s\n' "$line"
+            continue
+        fi
+        # Name the key only, and only when it looks like one: anything else
+        # (no `=`, empty, odd characters) could be a value, so it is named by
+        # line.
+        key="${trimmed%%=*}"
+        case "$key" in
+            "$trimmed" | '' | *[!A-Za-z0-9_]* | [0-9]*) key="(line $lineno, not a KEY=value setting)" ;;
+        esac
+        why="it is not a documented agent setting (on Linux, set it in a unit drop-in: systemctl --user edit solador-agent)"
+        # The installer rewrites its own keys at column 0: an indented copy
+        # is not "dropped", it is superseded.
+        for k in $ENV_OWNED_KEYS; do
+            [ "$key" = "$k" ] && continue 2
+        done
+        for k in $ENV_CARRIED_KEYS; do
+            [ "$key" = "$k" ] && why="it is indented, and the agent reads settings only at column 0 (re-add it there)"
+        done
+        case "$dropped" in
+            *" $key "*) ;;
+            *)
+                dropped="$dropped$key "
+                echo "WARNING: dropped $key from $file: $why" >&2
+                ;;
+        esac
+    done < "$file"
+    return 0
+}
+
 ENV_NEW="$ENV_FILE.new"
 (
     umask 077
@@ -1836,13 +1916,13 @@ ENV_NEW="$ENV_FILE.new"
             printf 'SOLADOR_AGENT_BIND_AUTO=1\n'
         fi
         if [ -f "$ENV_FILE" ]; then
-            grep -vE '^SOLADOR_AGENT_(TOKEN|BIND|PORT|TLS|BIND_AUTO)=' "$ENV_FILE" || true
+            carry_env_lines "$ENV_FILE"
         fi
     } > "$ENV_NEW"
 )
 chmod 600 "$ENV_NEW"
 mv -f "$ENV_NEW" "$ENV_FILE"
-echo "==> Wrote $ENV_FILE (token + bind + port + tls, mode 600; other keys kept)"
+echo "==> Wrote $ENV_FILE (token + bind + port + tls, mode 600; documented keys and comments kept)"
 
 # ---- install the binary ------------------------------------------------------
 # Staged BESIDE the live path and renamed over it, never copied onto it: Linux

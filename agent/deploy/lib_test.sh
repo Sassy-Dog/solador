@@ -8773,6 +8773,136 @@ test_deploy_script_invariants() {
         '$SUDO mv -f "$NEW_BIN" "$INSTALL_PATH"'
 }
 
+# ---- the env-file carry-over is an allow-list (#496) ----------------------
+# keys_of_launcher: the keys run-agent.sh's `KEY=*` case arms recognise, one
+# per line, sorted. Read from the file, not restated here, so a key added to
+# the launcher turns the parity case red.
+launcher_keys() {
+    awk '/^lineno=0/{on=1} on&&/^done < /{on=0} on' "${1:-$SCRIPT_DIR/run-agent.sh}" \
+        | grep -oE '[A-Z][A-Z0-9_]*=\*' | sed 's/=\*$//' | sort -u
+}
+# installer_keys <install.sh>: owned + carried, as install.sh declares them.
+installer_keys() {
+    grep -E '^ENV_(CARRIED|OWNED)_KEYS="' "$1" | sed 's/^[^"]*"//; s/"$//' | tr ' ' '\n' | grep -v '^$' | sort -u
+}
+
+test_install_env_allowlist() {
+    local home="$TMP/home-envallow" env_file out old_sh
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh: env-file allow-list"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home"
+    mkdir -p "$home/.config"
+    make_fixture 2026.9.8 x86_64-unknown-linux-musl "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"h","version":"2026.9.8"}'
+    export STUB_TAILSCALE_IP="100.64.0.9"
+    env_file="$home/.config/solador-agent.env"
+
+    write_dirty_env() {
+        printf '%s\n' \
+            'SOLADOR_AGENT_TOKEN=tok-allowlist' \
+            'SOLADOR_AGENT_BIND=100.64.0.9' \
+            'SOLADOR_AGENT_PORT=7878' \
+            '# operator note' \
+            '' \
+            'RUST_LOG=debug' \
+            'SOLADOR_AGENT_SKIP_FSTYPES=tmpfs,overlay' \
+            'LD_PRELOAD=/tmp/x.so-SECRETVALUE' \
+            "RUST_LOG=info"$'\r'"LD_LIBRARY_PATH=/tmp/cr1-SECRETVALUE" \
+            "# note"$'\r'"LD_AUDIT=/tmp/cr2-SECRETVALUE" \
+            "SOLADOR_AGENT_SKIP_FSTYPES=tmpfs"$'\r'"CRVAR=cr3-SECRETVALUE" \
+            '  RUST_LOG=indented-SECRETVALUE' \
+            'FOO=bar-SECRETVALUE' \
+            'FOO=again-SECRETVALUE' \
+            '  LD_LIBRARY_PATH=/tmp/ws-SECRETVALUE' > "$env_file"
+        chmod 600 "$env_file"
+    }
+
+    write_dirty_env
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: re-run over an env file with undocumented keys" "0" "$INSTALL_STATUS"
+    assert_file_has "a documented key is carried (RUST_LOG)" "$env_file" "RUST_LOG=debug"
+    assert_file_has "a documented key is carried (SKIP_FSTYPES)" "$env_file" "SOLADOR_AGENT_SKIP_FSTYPES=tmpfs,overlay"
+    assert_file_has "a comment is carried" "$env_file" "# operator note"
+    if grep -qx '' "$env_file"; then pass "a blank line is carried"; else fail "a blank line is carried" "no blank line in the rewritten file"; fi
+    if grep -qE 'LD_PRELOAD|FOO|LD_LIBRARY_PATH|LD_AUDIT|CRVAR|indented' "$env_file"; then
+        fail "undocumented keys are dropped" "$(cat "$env_file")"
+    else
+        pass "undocumented keys are dropped"
+    fi
+    assert_output_has "stderr names LD_PRELOAD" "$out" "dropped LD_PRELOAD from"
+    assert_output_has "stderr names FOO" "$out" "dropped FOO from"
+    assert_output_has "a whitespace-led key is dropped and named (systemd would load it)" "$out" "dropped LD_LIBRARY_PATH from"
+    assert_output_has "an indented documented key is named, with the real reason" "$out" "dropped RUST_LOG from"
+    assert_output_has "a line hiding a second setting behind a carriage return is dropped whole" "$out" "contains a carriage return"
+    if grep -q $'\r' "$env_file"; then fail "no carriage return survives into the env file" "found one"; else pass "no carriage return survives into the env file"; fi
+    assert_eq "a repeated dropped key is named once" "1" "$(grep -c 'dropped FOO from' "$INSTALL_OUT")"
+    case "$out" in
+        *SECRETVALUE* | */tmp/x.so* | *bar-*) fail "no dropped value is ever printed" "a value reached the output" ;;
+        *) pass "no dropped value is ever printed" ;;
+    esac
+    assert_file_has "the token is still the stored one" "$env_file" "SOLADOR_AGENT_TOKEN=tok-allowlist"
+    assert_eq "the env file is mode 0600" "600" "$(file_mode "$env_file")"
+
+    # A clean file warns about nothing.
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home"
+    case "$(cat "$INSTALL_OUT")" in
+        *"dropped "*) fail "a re-run over a clean env file drops nothing" "$(cat "$INSTALL_OUT")" ;;
+        *) pass "a re-run over a clean env file drops nothing" ;;
+    esac
+
+    # Negative control: the old carry-everything grep makes the same case red.
+    old_sh="$CHECKOUT/agent/deploy/install-old.sh"
+    sed 's|^            carry_env_lines "\$ENV_FILE"$|            grep -vE '"'"'^SOLADOR_AGENT_(TOKEN\|BIND\|PORT\|TLS\|BIND_AUTO)='"'"' "$ENV_FILE" \|\| true|' \
+        "$CHECKOUT/agent/deploy/install.sh" > "$old_sh"
+    if ! grep -q 'grep -vE' "$old_sh"; then
+        fail "negative control: the old grep was substituted" "the sed did not match install.sh's call site"
+    else
+        write_dirty_env
+        reset_argv_logs
+        INSTALL_SCRIPT="$old_sh" INSTALL_STDIN="" run_install "$home"
+        INSTALL_SCRIPT=""
+        if grep -q 'LD_PRELOAD' "$env_file"; then
+            pass "negative control: the old grep carries LD_PRELOAD through (the case above would be red)"
+        else
+            fail "negative control: the old grep carries LD_PRELOAD through" "$(cat "$env_file")"
+        fi
+    fi
+    rm -f "$old_sh"
+
+    # ---- parity with the launcher's allow-list ----
+    local want got
+    want="$(launcher_keys)"
+    got="$(installer_keys "$SCRIPT_DIR/install.sh")"
+    assert_eq "install.sh's owned + carried keys equal run-agent.sh's allow-list" "$want" "$got"
+    [ -n "$want" ] && pass "the launcher's allow-list was actually read" || fail "the launcher's allow-list was actually read" "empty"
+    # Mutation controls: a key added to either side only must be seen.
+    cp "$SCRIPT_DIR/install.sh" "$TMP/install-mut.sh"
+    sed -i.bak 's/^ENV_CARRIED_KEYS="/ENV_CARRIED_KEYS="NEW_KEY /' "$TMP/install-mut.sh"
+    if [ "$(launcher_keys)" != "$(installer_keys "$TMP/install-mut.sh")" ]; then
+        pass "parity control: a key added only to install.sh is detected"
+    else
+        fail "parity control: a key added only to install.sh is detected" "no difference seen"
+    fi
+    cp "$SCRIPT_DIR/run-agent.sh" "$TMP/run-agent-mut.sh"
+    sed -i.bak 's/^\( *\)SOLADOR_AGENT_TLS=\* | SOLADOR_AGENT_SKIP_FSTYPES=\* | RUST_LOG=\*)/\1SOLADOR_AGENT_TLS=* | DOCKER_HOST=* | SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)/' "$TMP/run-agent-mut.sh"
+    if ! grep -q 'DOCKER_HOST=\*' "$TMP/run-agent-mut.sh"; then
+        fail "parity control: a key added only to run-agent.sh is detected" "the mutation did not apply"
+    elif [ "$(launcher_keys "$TMP/run-agent-mut.sh")" != "$(installer_keys "$SCRIPT_DIR/install.sh")" ]; then
+        pass "parity control: a key added only to run-agent.sh is detected"
+    else
+        fail "parity control: a key added only to run-agent.sh is detected" "no difference seen"
+    fi
+    rm -f "$TMP/run-agent-mut.sh" "$TMP/run-agent-mut.sh.bak"
+    rm -f "$TMP/install-mut.sh" "$TMP/install-mut.sh.bak"
+}
+
 # ---- run --------------------------------------------------------------------
 
 printf 'agent/deploy/lib.sh + install.sh\n\n'
@@ -8813,6 +8943,7 @@ test_bootstrap_signature_gate
 test_bootstrap_rerun_hint_names_bootstrap
 test_bootstrap_uninstall_rerun_hint
 test_install_linux_flow
+test_install_env_allowlist
 test_install_tls
 test_install_tls_capability_gate
 test_install_tls_no_tailnet_bind
