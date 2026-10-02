@@ -18,6 +18,29 @@ drift — fix one of them in the same PR.
   and a version that moves only when an agent release is cut. An app-only
   release produces no agent binary, and an agent release no app.
 
+**Declared deviation from §7.** The spec's multi-tier row gives
+independent-cadence artifacts per-artifact namespaces (`agent-v*`) "with
+path-scoped counting": N would count the commits that touched the artifact's
+paths. The agent takes the namespace and **not the counting** (#472, #490): its
+mint sets N = 1 + the highest patch among this month's *shipped* agent versions
+(a release counter, [below](#the-agents-mint---agent-tag-472-490)). That is a
+decision, not an omission, for four reasons:
+
+- **The number moves only when a release is cut.** Path-scoped counting moves
+  it on every merge that touches the agent's paths, released or not.
+- **A path list is a judgement call, and it can miss inputs that change the
+  bytes** — `Cargo.lock`, the toolchain pin, a shared crate. A version that did
+  not move while the binary did is the worse failure.
+- **The version is compiled in, so a new version is always new bytes.** The
+  per-target `sha256` in `agent-latest.json` therefore answers "is this binary
+  already the release's" (`crates/updatefeed`'s `agent` module), and nothing
+  needs a version that holds still across unreleased agent-path commits.
+- **Month and N are read at mint time**, wall-clock like the cockpit's own mint
+  (§4). The result is then fixed by its tag, and every *release* build reads it
+  from the tag (`AGENT_MARKETING_VERSION`, or `--agent-version` at an `agent-v*`
+  tag; any other build is a `+dev` source build), so a released artifact's
+  version is still a function of its tagged commit.
+
 **The agent shared the cockpit's tag and number from #390 to #472, and no
 longer does.** "One tag, one release, both products" was the original design,
 and its cost showed up in measurement: the agent compiled the CalVer in, so two
