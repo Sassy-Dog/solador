@@ -256,18 +256,44 @@ fn classify(reply: Reply) -> Result<Vec<u8>, Error> {
     }
 }
 
+/// The production client's settings, as data so a test can read them.
+///
+/// reqwest exposes no getter for `https_only` once a client is built, so the
+/// guard that the shipped client stays HTTPS-only is this constant plus
+/// [`build_client`], whose only input is a policy and which is the only place a
+/// `reqwest::Client` is built here: [`Https::new`] passes [`CLIENT_POLICY`] and
+/// has no other source of these values.
+struct ClientPolicy {
+    https_only: bool,
+    max_redirects: usize,
+    connect_timeout: Duration,
+    timeout: Duration,
+}
+
+const CLIENT_POLICY: ClientPolicy = ClientPolicy {
+    https_only: true,
+    max_redirects: 5,
+    connect_timeout: Duration::from_secs(10),
+    timeout: Duration::from_secs(30),
+};
+
+/// Build a client from `policy` and nothing else.
+fn build_client(policy: &ClientPolicy) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .user_agent("solador-cockpit/agent-release-check")
+        .https_only(policy.https_only)
+        .redirect(reqwest::redirect::Policy::limited(policy.max_redirects))
+        .connect_timeout(policy.connect_timeout)
+        .timeout(policy.timeout)
+        .build()
+}
+
 /// The production transport: HTTPS only, no exceptions.
 pub struct Https(reqwest::Client);
 
 impl Https {
     pub fn new() -> Result<Self, Error> {
-        reqwest::Client::builder()
-            .user_agent("solador-cockpit/agent-release-check")
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .build()
+        build_client(&CLIENT_POLICY)
             .map(Https)
             .map_err(|_| Error::Unreachable)
     }
@@ -518,20 +544,20 @@ mod tests {
 
     #[test]
     fn the_production_transport_builds() {
-        // `https_only(true)` is set unconditionally in `Https::new`; there is
-        // no other constructor and no scheme parameter to reach.
-        //
-        // **No permanent test fails if that call is removed**, and that is
-        // stated rather than hidden: the only input that tells `https_only`
-        // on from off is a URL with a plain `http` scheme, and keeping such a
-        // literal in the tree is exactly the plain-HTTP path this crate was
-        // changed to not have (CodeQL rust/non-https-url, #500). Neither
-        // reqwest's `Debug` output nor an `ftp://` URL distinguishes the two
-        // (the latter is refused either way). The guard was instead proven
-        // once by mutation, recorded on the PR: a throwaway test that dials a
-        // local listener over plain HTTP saw a connection with `https_only(false)`
-        // and none with `https_only(true)`.
+        // The guard that the shipped client stays HTTPS-only is
+        // `client_policy_is_https_only` (#502): `Https::new` builds through
+        // `build_client(&CLIENT_POLICY)` and reads nothing else. A behavioural
+        // test would need a URL with a plain `http` scheme, which CodeQL's
+        // rust/non-https-url rejects (#500), and reqwest exposes no getter to
+        // read `https_only` back off a built client, so the policy data plus
+        // the single builder is the whole guard; a builder that stops reading
+        // `policy.https_only` fails `./dev lint` through `dead_code`.
         assert!(Https::new().is_ok());
+    }
+
+    #[test]
+    fn client_policy_is_https_only() {
+        const { assert!(CLIENT_POLICY.https_only) };
     }
 
     #[tokio::test]
