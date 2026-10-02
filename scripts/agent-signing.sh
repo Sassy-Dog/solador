@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Two callers, one signer:
 #   scripts/build-agent.sh   sources this and signs the four published binaries
-#   publish-feed.yml         runs it to sign `agent-latest.json` at publish time
+#   publish-agent-feed.yml   runs it to sign `agent-latest.json` at publish time
 #
 #   scripts/agent-signing.sh ensure              install the pinned rsign2 if
 #                                                 it is not already the one on

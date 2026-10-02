@@ -12,12 +12,15 @@ shipped 2026-09-12.
   [#391](https://github.com/Sassy-Dog/solador/issues/391), consumer
   [#393](https://github.com/Sassy-Dog/solador/issues/393)):
   `agent-latest.json` and its signature are generated, verified and published
-  by `publish-feed.yml` when a release is published. `solador-agent update`
+  by `publish-agent-feed.yml` (#491; it was a job of `publish-feed.yml` until
+  then) when an `agent-v*` release is published. `solador-agent update`
   reads them from the fixed `agent-latest` release since #488 (the consumer
   half of #472's agent release train), the producer writes the `agent-v<version>`
   URLs that consumer requires since #490, and `install.sh` reads the same feed
-  on its default path since #490 (§6); no workflow publishes to `agent-latest`
-  until #491, so the halves meet only at the cut-over.
+  on its default path since #490 (§6). The workflows exist since #491, but a
+  workflow only runs on a tag or a publication, so `agent-latest` does not exist
+  until the first `agent-v*` release is cut and published (#492's runbook): the
+  halves meet at that cut-over.
 - **§6 Installing — SHIPPED** ([#392](https://github.com/Sassy-Dog/solador/issues/392)):
   `install.sh` downloads and verifies a published binary and has a macOS
   LaunchAgent path. The installer-side half of §5's verification shipped with
@@ -52,8 +55,9 @@ ships `.dmg`, `_x64-setup.exe` and `.app.tar.gz`, each with a minisign `.sig`,
 plus a `latest.json` update feed that Tauri's updater consumes.
 
 The agent shipped **nothing** — zero binary assets on any release — until #390.
-It now ships four minisigned binaries beside the app's, and since #392
-`install.sh` installs from them. The three consequences below were the
+It now ships four minisigned binaries — on its own `agent-v*` release train
+since #472, not beside the app's — and since #392 `install.sh` installs from
+them. The three consequences below were the
 *reason*; all three are addressed, the third by #393 (the command) and #394
 (the opt-in schedule that runs it).
 
@@ -127,7 +131,8 @@ Artifacts attach to a draft **release of the agent's own tag**, `agent-v<version
 app-only release produces no agent binary and an agent release no app. (This
 section first said "the same GitHub Release the app already publishes to — one
 tag, one release, both products"; the cost of that is §3's. The workflow that
-builds and attaches them is the agent's release workflow, #491.)
+builds and attaches them is `release-agent.yml` (#491), triggered by an
+`agent-v*` tag push; `release.yml` has no agent leg.)
 
 **Raw binaries, not archives**, named `solador-agent-<version>-<triple>` with a
 detached `<artifact>.minisig` beside each. That is a consequence of §2's content
@@ -152,7 +157,7 @@ zig it links with.
 publish.** An artifact that does not start is worse than no artifact — and a
 cross-compiled binary links perfectly well on a machine that cannot execute one
 instruction of it, so this is a claim only a matching machine can make.
-`release.yml` therefore runs it on four: `ubuntu-latest`, `ubuntu-24.04-arm`,
+`release-agent.yml` therefore runs it on four: `ubuntu-latest`, `ubuntu-24.04-arm`,
 `macos-latest` and `macos-15-intel`, against the files the build uploaded rather
 than a rebuild. `solador-agent --version` prints the version and nothing else,
 so that comparison needs no parsing.
@@ -264,19 +269,55 @@ Producer-side, `crates/updatefeed::agent` builds the document **only from
 verified inputs**: every binary's signature is checked under the committed key
 before its hash is computed, and a missing, duplicate or unknown target, a
 foreign or lifted signature, a byte that moved after signing, or a URL naming
-the wrong asset is a refusal — nothing is written. `publish-feed.yml`'s
-`agent-feed` job runs the `solador-agent-feed` binary from the tagged commit,
-signs the result with `scripts/agent-signing.sh` (the same signer and key as
-the binaries), re-verifies the pair as a consumer would — exact bytes, then
-shape, then every binary against its entry — has the reference C `minisign`
-read it too, and only then uploads both halves. The job runs when the release
-is **published**, never at build time: a draft's assets are not public, and
-the feed is assembled from the public URLs. A `release` event runs the
-workflow file **at the tagged commit**, so a tag cut before #391 publishes
-with its own older file and gets no agent leg at all; the first feed comes
-from the first tag cut after #391 merged. See
-`.github/workflows/publish-feed.yml` for why that job, and only that job,
-holds a credential outside `release.yml`.
+the wrong asset is a refusal — nothing is written. `publish-agent-feed.yml`'s
+`agent-feed` job (#491) runs the `solador-agent-feed` binary from the tagged
+commit, signs the result with `scripts/agent-signing.sh` (the same signer and
+key as the binaries), re-verifies the pair as a consumer would — exact bytes,
+then shape, then every binary against its entry — has the reference C
+`minisign` read it too, and only then uploads both halves with `--clobber` onto
+the `agent-latest` release (created once, as a **prerelease** so it can never be
+`/releases/latest`, with its tag at a commit that never moves; an existing one
+that is not a published prerelease is refused). It then **reads the served bytes
+back** from the fixed URL a host reads, requires them to equal the upload and to
+name this tag's version, and verifies that pair with both implementations. The
+workflow runs when the release is **published**, never at build time: a draft's
+assets are not public, and the feed is assembled from the public URLs. It runs
+for `agent-v*` releases only; the app's `v*` releases are `publish-feed.yml`'s,
+which is desktop-only and holds no credential. A `release` event runs the
+workflow file **at the tagged commit**, so a fix to it reaches a release only
+through a new agent tag, and the manual replay must be dispatched *from* the tag
+for the same reason.
+
+Two guards sit in the credential-free `agent-eligibility` job, ahead of `prd`'s
+reviewer, and their logic is `scripts/agent-feed-guard.sh` so `./dev test` runs
+it against a stub `gh` (a release workflow cannot be exercised by a PR):
+
+- **Freeze guard.** The candidate must be the **newest published,
+  non-prerelease `agent-v*` release**, by CalVer, read from the *paginated*
+  release list (the app's `v*` releases outnumber the agent's, so the newest
+  agent release can sit beyond page one). Otherwise it refuses unless the
+  dispatch passes `force`. A replay at an older tag would otherwise `--clobber`
+  a newer, validly signed feed with an older one: every host would answer "no
+  applicable release" (exit 4), the unattended timer counts that as a quiet day,
+  and nobody would be paged — forward-only versions protect an installed host
+  from a downgrade, not from a freeze. It reads the list, never the served
+  feed, which can be missing or mismatched mid-`--clobber`, so re-running the
+  publish at the *current* tag after a failed upload passes, and a bad release
+  can be pulled (turned back into a draft, or its release deleted with its tag
+  kept) and the previous one re-served with no `force`. It is run again inside
+  `agent-feed` once `prd`'s approval has been given, because that wait can be
+  hours and another release may have been fed in the meantime.
+- **Latest guard.** `releases/latest` must name a `v*` tag. The draft is
+  created with `--latest=false`, but a release published from the UI with "Set as
+  the latest release" ticked would take the slot from the cockpit's updater; the
+  guard fails naming `gh release edit <tag> --latest=false`. `force` does not
+  waive it.
+
+The accepted windows of `--clobber` (delete, then upload) are unchanged by the
+move: for a few seconds a client can see a JSON and a signature that do not
+match, which fails as a signature refusal (exit 1, nothing changed); and a
+failed upload after the delete leaves `agent-latest` empty — every host at
+exit 1 — until the manual dispatch at the current tag replays it.
 
 ### 3. Versioning: the agent's own CalVer
 
@@ -690,23 +731,31 @@ Three properties of the release path, each chosen so a failure is loud:
   different implementation from the one that signed, so "it verifies" is not
   merely the signer agreeing with itself.
 
-Signing is its own release job and the **only** agent job in `release.yml`
-holding a credential, so the key reaches one runner rather than six, and
-build/verify start without waiting on `prd`'s reviewer.
+Signing is its own release job — `publish` in `release-agent.yml` — and the
+**only** job of that workflow holding a credential, so the key reaches one
+runner rather than six, and build/verify start without waiting on `prd`'s
+reviewer.
 
 **The feed is signed at publish time, by the same key (#391).** The binaries
 can be signed during the build because they exist then; `agent-latest.json`
 cannot, because it is assembled from the public download URLs of a release that
-is still a draft. So `publish-feed.yml` gained one protected job, `agent-feed`,
-declaring `environment: prd` and reading exactly that one secret, behind the
-same reviewer and the same `v*`-tag-only deployment policy. A credential-free
-`agent-eligibility` job in front of it refuses a draft, a prerelease, a release
-without the eight agent assets, and — for a manual replay — a run that is not
-*at* the tag it was asked about, so a tag typed into an input can never hand a
-`main`-ref job the key. `ci.yml`'s `secrets-guard` allows that job by name and
-requires its environment line; the desktop feed job beside it stays
-credential-free. `scripts/agent-signing.sh` is the one signer for binaries and
-feed alike, so the two cannot be signed differently.
+is still a draft. So `publish-agent-feed.yml` (#391 put this job in
+`publish-feed.yml`; #491 moved it out with the rest of the agent's train) has
+one protected job, `agent-feed`, declaring `environment: prd` and reading exactly
+that one secret, behind the same reviewer and the same tag-only deployment
+policy — which must name `agent-v*` beside `v*`, a repository setting rather than
+a file (#492 step 6), so until it does neither agent job can enter `prd`. A
+credential-free `agent-eligibility` job in front of it refuses a draft, a
+prerelease, a release without the eight agent assets, a candidate that is not
+the newest published agent release, a release holding `releases/latest` (§2) and
+— for a manual replay — a run that is not *at* the tag it was asked about, so a
+tag typed into an input can never hand a `main`-ref job the key. `ci.yml`'s
+`secrets-guard` allows exactly two jobs besides `release.yml`, as `file:job`
+pairs — `release-agent.yml:publish` and `publish-agent-feed.yml:agent-feed` —
+requires each one's environment line and fails closed per pair; every sibling
+job stays credential-free, and `publish-feed.yml` has no allowance at all.
+`scripts/agent-signing.sh` is the one signer for binaries and feed alike, so the
+two cannot be signed differently.
 
 **Shipped in #392 — the installer's verifying half.** `install.sh` verifies
 every download with the stock `minisign` under `agent/release-signing-key.pub`
@@ -1304,9 +1353,27 @@ Also required:
   an unsigned one, a signed one whose version is not a CalVer, and pins to both
   tag kinds.
 - **Platform matrix — SHIPPED.** Each published binary executes `--version` on a
-  matching runner before the release is published: `release-agent-verify` is a
-  four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
+  matching runner before the release is published: `release-agent.yml`'s `verify`
+  job is a four-way matrix over `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
   `macos-15-intel`, and it runs the *uploaded* file rather than a rebuild.
+- **The release workflows' guards — SHIPPED (#491).** `release-agent.yml` and
+  `publish-agent-feed.yml` trigger on a tag push and on a publication, so no PR
+  can run them; the first real run is #492's. What a PR can check, it does.
+  `scripts/agent-feed-guard-test.sh` runs the real `agent-feed-guard.sh` against
+  a stub `gh` that answers only the exact endpoints the guard must ask about and
+  serves one page of the release list unless asked to paginate: the candidate is
+  the newest (pass); an older one (refused, naming the newest); an older one with
+  `--force` (pass); a newer release on the *second* page (found — and a control
+  shows the stub really hides page two without `--paginate`); a draft, a
+  prerelease, `agent-latest` and a newer cockpit `v*` release (ignored);
+  numeric, not lexical, ordering; an unreadable or non-JSON list (refused, forced
+  or not); `releases/latest` naming an `agent-v*` tag (refused, with the
+  `gh release edit <tag> --latest=false` remedy). It runs from `./dev test` and
+  in CI under Linux bash and macOS `/bin/bash` 3.2. `scripts/secrets-guard-test.sh`
+  runs each of a secret in a sibling job, `environment: prd` removed or moved, a
+  secret above `jobs:`, a renamed job, a new job and the scoped file deleted
+  against **each** of the two `file:job` pairs, so the fail-closed seen-check is
+  proven per pair. Each guard was shown to fail with its check removed.
 - **Off by default, and no catch-up — SHIPPED (#394).** `lib_test.sh` asserts
   the default install's *actions* on both platforms: no timer, oneshot or
   updater plist written, nothing said to the service manager about one, no

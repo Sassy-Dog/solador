@@ -9,10 +9,10 @@ set -euo pipefail
 #
 # Exit 0 when the tag is the mint's own answer for this commit; exit 1 with a
 # `::error` line and every cause named otherwise; exit 2 on bad usage. Run by
-# every leg of .github/workflows/release.yml and by publish-feed.yml's desktop
-# feed job, checked out at the tag, before anything is built or uploaded — and,
-# with `--agent`, by the agent's release workflow (#472; the workflow itself is
-# #491) before it builds.
+# every leg of .github/workflows/release.yml and by publish-feed.yml's feed job,
+# checked out at the tag, before anything is built or uploaded — and, with
+# `--agent`, by the build job of .github/workflows/release-agent.yml (#472, #491)
+# before it builds.
 #
 # AGENT MODE (#490). `--agent` takes an `agent-vYYYY.M.P` tag and asks the
 # AGENT mint (`get-version-info.sh --agent-tag`, read-only) instead of the

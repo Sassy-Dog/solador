@@ -1765,12 +1765,13 @@ test_release_contract_matches_config() {
     assert_empty "the installer's release contract matches scripts/config.sh" "$report"
 
     # The asset NAME has no home in config.sh — build-agent.sh composes it and
-    # release.yml reads it back — so bind agent_asset_name to both producers'
-    # spelling. A rename upstream fails here rather than 404ing every install.
+    # release-agent.yml reads it back — so bind agent_asset_name to both
+    # producers' spelling. A rename upstream fails here rather than 404ing every
+    # install.
     assert_file_has "agent_asset_name matches how build-agent.sh names the artifact" \
         "$SCRIPT_DIR/../../scripts/build-agent.sh" '$AGENT_PACKAGE-$AGENT_MARKETING_VERSION-$triple'
-    assert_file_has "agent_asset_name matches how release.yml attaches the artifact" \
-        "$SCRIPT_DIR/../../.github/workflows/release.yml" 'solador-agent-$VERSION-$t'
+    assert_file_has "agent_asset_name matches how release-agent.yml attaches the artifact" \
+        "$SCRIPT_DIR/../../.github/workflows/release-agent.yml" 'solador-agent-$VERSION-$t'
     assert_eq "agent_asset_name composes package-version-triple" \
         "solador-agent-2026.9.8-x86_64-unknown-linux-musl" \
         "$(agent_asset_name 2026.9.8 x86_64-unknown-linux-musl)"

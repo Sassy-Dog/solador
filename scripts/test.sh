@@ -35,6 +35,9 @@ fi
 if ! command_exists minisign; then
     log_warning "minisign not found — the install.sh signature cases will report SKIP (brew install minisign)"
 fi
+if ! command_exists jq; then
+    log_warning "jq not found — the agent feed guard suite will SKIP (brew install jq); CI requires it"
+fi
 #
 # On a Mac the suite runs under stock /bin/bash 3.2 — the interpreter the
 # installer and its launcher actually execute under there — rather than
@@ -61,6 +64,19 @@ if "$DEPLOY_TEST_SHELL" scripts/versioning-test.sh; then
     log_success "Versioning suite passed"
 else
     log_error "Versioning suite failed"
+    exit 1
+fi
+
+# --- The agent feed's publish-time guards (#491): the freeze guard (only the
+# newest published agent release may publish a feed) and the latest guard (an
+# agent release may not hold `releases/latest`), run against a stub `gh`. The
+# release workflows cannot be exercised by a PR, so their logic is a script
+# with a test. Mirrors the step both CI legs run, under the same shell as above.
+log_info "Running agent feed guard tests (scripts/agent-feed-guard-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/agent-feed-guard-test.sh; then
+    log_success "Agent feed guard tests passed"
+else
+    log_error "Agent feed guard tests failed"
     exit 1
 fi
 

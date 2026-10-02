@@ -1,0 +1,535 @@
+name: Publish agent feed
+
+# `agent-latest.json` — the signed document every installed agent and
+# `install.sh` reads to find the newest agent release (#391, moved here from
+# publish-feed.yml by #472/#491 when the agent got its own release train).
+#
+# WHERE THE FEED LIVES. Not on the newest release: on a permanent, rolling
+# release named `agent-latest`, marked PRERELEASE so it can never become
+# `releases/latest` (the cockpit's updater reads that), whose only assets are
+# `agent-latest.json` and `agent-latest.json.minisig`. Its tag is created once, at
+# a commit that never moves, and `--match 'agent-v*'` excludes it by prefix. Every
+# URL INSIDE the feed points at the concrete `agent-v<version>` release, so the
+# signed URL path is what binds a version to its artifacts.
+#
+# **The trigger is the design.** release-agent.yml attaches the binaries to a
+# DRAFT, and a draft is not servable: it is not attached to its tag and its
+# assets are not publicly downloadable, so a feed built at build time would point
+# every client into a 404. Generating on `release: published` instead gives a
+# property, not a convention — **a draft can never serve updates**, because the
+# feed does not exist until a human publishes the release. The tag filter is
+# `startsWith(tag, 'agent-v')`: the cockpit's `v*` releases are
+# publish-feed.yml's, and this workflow does nothing for them (nor for
+# `agent-latest`'s own creation, which is a prerelease under another prefix).
+#
+# This is the one protected job outside release.yml and release-agent.yml:
+# `agent-latest.json` is a document this workflow ASSEMBLES — URL, plain-minisign
+# signature and SHA-256 per target — so nothing signed it at build time, and it
+# has to be signed here, when the release becomes public. `agent-feed` therefore
+# declares `environment: prd` and reads exactly one secret,
+# `SOLADOR_AGENT_SIGNING_PRIVATE_KEY` (the key release-agent.yml signs the
+# binaries with). `ci.yml`'s `secrets-guard` asserts that by job name AND by the
+# presence of the environment, rather than allow-listing this file wholesale.
+# `agent-eligibility` (credential-free) decides whether the protected job may even
+# start, so `prd`'s reviewer is never asked to approve a run that cannot succeed.
+#
+# TWO GUARDS in `agent-eligibility`, both in scripts/agent-feed-guard.sh (so
+# `./dev test` exercises them; a PR cannot run this workflow):
+#
+# - FREEZE: the candidate must be the NEWEST published, non-prerelease
+#   `agent-v*` release, by CalVer, read from the paginated release list. A replay
+#   at an older tag would otherwise `--clobber` a newer, validly signed feed with
+#   an older one: every host answers exit 4, the unattended timer counts that as
+#   a quiet day, and nobody is paged. `force` (a dispatch input) waives it for a
+#   deliberate replay. It is re-run inside `agent-feed` after `prd`'s approval,
+#   because the approval can take hours and a newer release may have been
+#   published and fed in the meantime.
+# - LATEST: `releases/latest` must name a `v*` tag. release-agent.yml creates the
+#   draft with `--latest=false`, but a release published from the UI with "Set as
+#   the latest release" ticked would take the slot from the cockpit's updater.
+#
+# The upload is `--clobber`, which DELETES then re-uploads, so two windows exist
+# and are accepted: a few seconds per publish in which a client can see a JSON
+# and signature that do not match (it fails as a signature refusal, exit 1,
+# nothing changed), and — if the upload fails after the delete — an EMPTY
+# `agent-latest`, every host at exit 1 until someone replays. The replay is this
+# workflow's manual dispatch at the current tag. After the upload the job READS
+# THE SERVED BYTES BACK and requires them to equal what was uploaded and to name
+# this tag's version: "we uploaded an asset" and "the endpoint hosts poll serves
+# this feed" are two claims.
+#
+# RUNBOOK NOTE: publishing a release prompts `prd`'s reviewer once, after the
+# prompt release-agent.yml already made for signing the binaries. That is the
+# price of signing the feed with the release key rather than a weaker one.
+#
+# WHICH COPY OF THIS FILE RUNS. A `release` event runs the workflow file AT THE
+# TAGGED COMMIT — `GITHUB_SHA` is the last commit in the tagged release and
+# `GITHUB_REF` is the tag — not the copy on `main`. (Measured, not assumed:
+# every `release` run in this repo reports `head_sha` = the tag's commit.) So a
+# fix to this file reaches a release only through a NEW agent tag, and the guard
+# script and the producer this run uses are the ones that shipped beside it, by
+# construction. The manual door follows the same rule on purpose: a dispatch must
+# be run FROM the tag (see below), so the tag's own copy of this file runs, with
+# its own producer beside it.
+
+on:
+  release:
+    types: [published]
+  # The manual door, for a release whose feed run failed for a reason outside
+  # this file (a GitHub outage, an asset uploaded late) and for the empty-
+  # `agent-latest` recovery above. Run the workflow FROM the tag (the "Use
+  # workflow from" selector, or
+  # `gh workflow run publish-agent-feed.yml --ref <tag> -f tag=<tag>`), not from
+  # `main` with the tag typed into the input: `agent-eligibility` refuses a run
+  # whose ref is not the tag it was asked about, and `prd`'s own deployment policy
+  # refuses the environment to a `main`-ref job regardless — a tag supplied
+  # merely as an input must never be what hands a job the signing key.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Agent release tag to publish the feed for (e.g. agent-v2026.10.15); run this workflow FROM that tag'
+        required: true
+        type: string
+      force:
+        description: 'Publish although this is not the newest published agent release (a deliberate replay of an older one)'
+        required: false
+        default: false
+        type: boolean
+
+# Read by default. The two upload jobs' needs are stated per job.
+permissions:
+  contents: read
+
+jobs:
+  agent-eligibility:
+    name: Agent feed eligibility
+    # Credential-free, deliberately. Everything that can make the protected job
+    # below pointless — a prerelease, a draft, a run started from the wrong
+    # ref, a release with no agent binaries, a candidate that is not the newest,
+    # a release that took `releases/latest` — is decided HERE, before `prd`'s
+    # reviewer is asked to approve anything. A refusal is a red job with a
+    # sentence, never a fabricated feed and never a reclassified asset.
+    #
+    # Each event's clause is guarded by its OWN event name. Actions compares
+    # loosely — `null == false` is TRUE — so a bare
+    # `github.event.release.prerelease == false` is satisfied on a dispatch,
+    # where there is no release payload at all. On a `release` event the
+    # `agent-v` prefix gate keeps the cockpit's releases (and `agent-latest`'s
+    # own creation) out; a dispatch is checked against the API in the steps.
+    if: >-
+      (github.event_name == 'release'
+        && startsWith(github.event.release.tag_name, 'agent-v')
+        && !github.event.release.prerelease)
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      eligible: ${{ steps.verdict.outputs.eligible }}
+
+    steps:
+      - name: Resolve the tag, and require the run to be AT that tag
+        id: tag
+        env:
+          # Through the environment, never interpolated into the script.
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_REF: ${{ github.ref }}
+        run: |
+          tag="${EVENT_TAG:-$INPUT_TAG}"
+          if [[ ! "$tag" =~ ^agent-v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+            echo "::error::'$tag' is not an agent-vYYYY.M.N release tag"
+            exit 1
+          fi
+          # The lock on the manual door. On a `release` event GitHub sets the
+          # ref to the tag already; on `workflow_dispatch` it is whatever ref
+          # the run was started from, and only the tag itself is acceptable.
+          # This is what keeps "type a tag into an input" from turning a
+          # `main`-ref job into one that may enter `prd` — and `prd`'s tag-only
+          # deployment policy is the second lock behind it.
+          if [[ "$RUN_REF" != "refs/tags/$tag" ]]; then
+            echo "::error::this run is at $RUN_REF, not refs/tags/$tag"
+            echo "The agent feed is signed inside the prd environment, so the workflow" >&2
+            echo "has to run FROM the release tag: pick the tag under 'Use workflow" >&2
+            echo "from', or 'gh workflow run publish-agent-feed.yml --ref $tag -f tag=$tag'." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#agent-v}" >> "$GITHUB_OUTPUT"
+          echo "Run is at refs/tags/$tag."
+
+      # The guards are the tagged commit's own scripts: `github.sha` is the
+      # commit this workflow file was read from (see the header), and the
+      # step above has proved the run is at the tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Require a public, stable release carrying the agent binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          # `releases/tags/<tag>` rather than the event payload, for both
+          # paths: it answers the same question for a manual replay, and it
+          # answers it about the release as it is NOW rather than as it was
+          # when the event fired.
+          if ! release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")"; then
+            echo "::error::no release exists for $TAG"
+            exit 1
+          fi
+          draft="$(jq -r '.draft' <<< "$release")"
+          prerelease="$(jq -r '.prerelease' <<< "$release")"
+          if [[ "$draft" != "false" ]]; then
+            echo "::error::$TAG is still a draft — a draft's assets are not public, so its feed would point every agent at a 404"
+            exit 1
+          fi
+          if [[ "$prerelease" != "false" ]]; then
+            echo "::error::$TAG is a prerelease — an agent release is published as a normal release; the feed is served from the agent-latest prerelease, never from a release that is itself one"
+            exit 1
+          fi
+
+          # The eight agent assets: four raw binaries and four .minisig files.
+          # A release without them has no agent feed, full stop. Not "a feed
+          # with the targets it has": a consumer whose triple is missing reads
+          # that as "no update", which is a claim about a release that may well
+          # have one. A tag whose release-agent.yml run failed before `publish`
+          # is in exactly this state.
+          missing=()
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+                   aarch64-apple-darwin x86_64-apple-darwin; do
+            for name in "solador-agent-$VERSION-$t" "solador-agent-$VERSION-$t.minisig"; do
+              if ! jq -e --arg n "$name" '.assets[] | select(.name == $n)' <<< "$release" >/dev/null; then
+                missing+=("$name")
+              fi
+            done
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::$TAG carries no complete set of agent binaries (${#missing[@]} missing: ${missing[*]})"
+            echo "There is no agent feed to publish for this release. Re-run release-agent.yml" >&2
+            echo "for the tag if it failed, and publish the draft once it has uploaded." >&2
+            exit 1
+          fi
+          echo "$TAG is a published, stable release carrying all eight agent assets."
+
+      # The freeze guard (see the header). `force` is the dispatch input; on a
+      # `release` event it is empty, which is never `true`.
+      - name: Freeze guard — the candidate must be the newest published agent release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          args=()
+          if [[ "$FORCE" == "true" ]]; then
+            args=(--force)
+          fi
+          scripts/agent-feed-guard.sh newest "$TAG" "${args[@]}"
+
+      # The latest guard. Not waived by `force`: a release holding
+      # `releases/latest` breaks the cockpit's updater whatever this feed does.
+      - name: Latest guard — releases/latest must still be a cockpit v* release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/agent-feed-guard.sh latest
+
+      - name: Verdict
+        id: verdict
+        run: echo "eligible=true" >> "$GITHUB_OUTPUT"
+
+  agent-feed:
+    name: Generate, sign and upload agent-latest.json
+    needs: agent-eligibility
+    # Belt and braces with `needs`: a failed or skipped eligibility job already
+    # skips this one, and this reads the verdict explicitly so a future edit
+    # that makes eligibility "succeed" without deciding does not open the door.
+    if: needs.agent-eligibility.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    # One `agent-latest.json` writer at a time: two runs racing on it for
+    # different tags would resolve by upload order rather than by version.
+    concurrency:
+      group: publish-agent-feed
+      cancel-in-progress: false
+    # Job-level permissions REPLACE the workflow's block: `contents: write` is
+    # what creating and clobbering the `agent-latest` release takes.
+    permissions:
+      contents: write
+    # The protected job, and the only one in this file. `prd` carries a
+    # required reviewer and a tag-only deployment policy, so this job starts only
+    # when a person approves it AND the run is at a release tag — and that policy
+    # must name `agent-v*` beside `v*` (a repository setting, #492 step 6; until
+    # then this job is refused the environment). `ci.yml`'s `secrets-guard`
+    # requires this line to be here: a secret reference in a job without it
+    # fails CI.
+    environment: prd
+
+    steps:
+      # FIRST, before the key is written anywhere — the same preflight
+      # release-agent.yml's `publish` job runs, for the same reason: an
+      # unreachable secret resolves to the EMPTY STRING and never raises, and
+      # the failure would otherwise surface inside the signer with a message
+      # that never mentions a secret. Shape, not just presence: a minisign
+      # secret key is exactly two lines, the first `untrusted comment:`.
+      # Nothing here echoes the key. The secret is scoped to the two steps
+      # that consume it, never to the job.
+      - name: Preflight — the signing key must be non-empty and well-shaped
+        env:
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${SOLADOR_AGENT_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY resolved EMPTY"
+            echo "Most likely cause: this job lost 'environment: prd', or the key was" >&2
+            echo "never provisioned. It is the private half of the keypair whose public" >&2
+            echo "half is committed at agent/release-signing-key.pub; see" >&2
+            echo "docs/AGENT-DISTRIBUTION.md §5." >&2
+            exit 1
+          fi
+          lines="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | grep -c '' || true)"
+          first="$(printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" | head -n1)"
+          if [[ "$lines" -lt 2 || "$first" != untrusted\ comment:* ]]; then
+            echo "::error::SOLADOR_AGENT_SIGNING_PRIVATE_KEY is not a minisign secret key"
+            echo "Expected two lines beginning 'untrusted comment:'; got $lines line(s)." >&2
+            exit 1
+          fi
+          echo "The agent signing key resolved, and has a minisign secret key's shape."
+
+      # `github.sha`, not the tag name. Eligibility has already proved this
+      # run is AT `refs/tags/<tag>`, and the reviewer approved a run displayed
+      # at that commit; checking out the tag by NAME would re-resolve it at
+      # fetch time, so a tag moved in between (no ruleset covers tag refs)
+      # would put a different `agent-signing.sh` and a different producer
+      # beside the key. The SHA is what was approved, and the step after
+      # asserts the tag still names it. This is also the commit this workflow
+      # file was read from (see the header), so the producer it builds is the
+      # one that shipped beside this file — by construction, not by check.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          # MANDATORY, for the `git rev-parse refs/tags/<tag>` in the next
+          # step: tags arrive only with a full fetch (depth 0), and a shallow
+          # checkout would fail that assertion with git's `unknown revision`
+          # rather than with a sentence about the tag.
+          fetch-depth: 0
+
+      # Deliberately NOT re-asserted against the mint here. release-agent.yml
+      # proved the tag is the agent mint's own at this commit
+      # (`assert-release-tag.sh --agent`), and its verify jobs proved every
+      # binary reports the tag's version; what this job has to prove is about
+      # the commit, and it is asserted rather than assumed.
+      - name: Assert the checkout is the approved commit and the tag still names it
+        env:
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+        run: |
+          head="$(git rev-parse HEAD)"
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "::error::checked out $head, but this run was approved at $GITHUB_SHA"
+            exit 1
+          fi
+          tagged="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          if [[ "$tagged" != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG now names $tagged, not the approved $GITHUB_SHA — the tag moved after this run started"
+            exit 1
+          fi
+          echo "HEAD is $GITHUB_SHA and $TAG names it."
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # No rust-cache here, deliberately: it keys on this job's id and the
+      # lockfile, and this job runs only at release tags, so a cache written
+      # here is never restored (measured on the identically shaped release
+      # job: "No cache found"). The producer is a small crate; a cold build is
+      # cheaper than a cache nobody reads.
+
+      # The signer is installed HERE, in a step that holds no secret and
+      # before the key has been written anywhere. `cargo install` runs
+      # crates.io build scripts with a cold registry; the step that signs must
+      # not be the step that compiles third-party code with the key on disk
+      # beside it. (The producer's own `cargo run` below compiles the locked
+      # dependency tree too — `--locked` plus the lockfile's checksums are the
+      # boundary there, the same one release-agent.yml's sign step relies on.)
+      - name: Install the pinned signer (no key present)
+        run: scripts/agent-signing.sh ensure
+
+      - name: Download the release's agent binaries and signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+          VERSION: ${{ needs.agent-eligibility.outputs.version }}
+        run: |
+          mkdir -p agent-dist feed
+          gh release download "$TAG" --dir agent-dist --pattern "solador-agent-$VERSION-*"
+          shopt -s nullglob
+          assets=(agent-dist/solador-agent-"$VERSION"-*)
+          if [[ ${#assets[@]} -ne 8 ]]; then
+            echo "::error::expected 8 agent assets (4 binaries + 4 .minisig) on $TAG, downloaded ${#assets[@]}"
+            printf '%s\n' "${assets[@]}"
+            exit 1
+          fi
+          ls -la agent-dist
+
+      # Verify, then write. `build` refuses on a missing, duplicate or unknown
+      # target, a signature from any key but the committed one, a byte that
+      # moved after signing, and a URL that does not name the asset on this
+      # `agent-v` tag; the SHA-256 in each entry is computed from the bytes that
+      # verified. An output file that exists is a document whose every entry
+      # passed.
+      - name: Build and verify agent-latest.json
+        env:
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+          VERSION: ${{ needs.agent-eligibility.outputs.version }}
+          DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
+        run: |
+          cargo run --locked -p solador-updatefeed --bin solador-agent-feed -- build \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --asset-dir agent-dist \
+            --download-base "$DOWNLOAD_BASE" \
+            --pubkey agent/release-signing-key.pub \
+            --out feed/agent-latest.json
+          echo "--- agent-latest.json ---"
+          cat feed/agent-latest.json
+
+      # The same signer, the same key and the same re-verification against the
+      # committed public key that the binaries got in release-agent.yml — one
+      # implementation, `scripts/agent-signing.sh`. The key is a 0600 file in
+      # a private temp dir because the signer takes a path, and it is removed
+      # on every exit path; the trap is armed BEFORE the key is written.
+      - name: Sign agent-latest.json with the agent release key
+        env:
+          SOLADOR_AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.SOLADOR_AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          keydir="$(mktemp -d)"
+          chmod 700 "$keydir"
+          trap 'rm -rf "$keydir"' EXIT
+          key="$keydir/agent-release.key"
+          ( umask 077; printf '%s\n' "$SOLADOR_AGENT_SIGNING_PRIVATE_KEY" > "$key" )
+          SOLADOR_AGENT_SIGNING_KEY="$key" scripts/agent-signing.sh sign feed/agent-latest.json
+
+      # The consumer's check, run by the producer before anything is uploaded:
+      # the EXACT bytes of the file against its detached signature under the
+      # committed key, then the document's shape, then every binary against
+      # its entry (signature AND hash). Then the reference C `minisign` reads
+      # the same pair — a different implementation from the `rsign2` that
+      # signed, so "it verifies" is not the signer agreeing with itself, and
+      # it is the exact command a user can run on the download.
+      - name: Verify the signed pair — producer check, then reference minisign
+        env:
+          VERSION: ${{ needs.agent-eligibility.outputs.version }}
+        run: |
+          cargo run --locked -p solador-updatefeed --bin solador-agent-feed -- verify \
+            --feed feed/agent-latest.json \
+            --signature feed/agent-latest.json.minisig \
+            --pubkey agent/release-signing-key.pub \
+            --version "$VERSION" \
+            --asset-dir agent-dist
+
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends minisign
+          minisign -V -p agent/release-signing-key.pub \
+            -x feed/agent-latest.json.minisig -m feed/agent-latest.json
+          echo "agent-latest.json verifies under agent/release-signing-key.pub with both implementations."
+
+      # The freeze guard, once more, NOW. Eligibility ran it before `prd`'s
+      # reviewer was asked, and that approval can take hours: another agent
+      # release may have been published and fed in the meantime, and this run
+      # would then replace its newer feed with an older one. It needs no
+      # credential (the workflow token reads the release list) and runs the
+      # tagged commit's own copy of the script, like the first time.
+      - name: Freeze guard, again now that the approval has been given
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          args=()
+          if [[ "$FORCE" == "true" ]]; then
+            args=(--force)
+          fi
+          scripts/agent-feed-guard.sh newest "$TAG" "${args[@]}"
+
+      # Only a pair that passed both checks above reaches this step, and both
+      # halves go up together: a feed without its signature is unverifiable,
+      # and a signature without its feed is noise.
+      #
+      # `agent-latest` is created ONCE, as a PRERELEASE, with its tag at the
+      # commit of the run that creates it — `--target` applies only while the tag
+      # does not exist, `gh release upload` never moves a tag, and nothing in
+      # this workflow edits the release or its tag afterwards, so the tag is at a
+      # fixed commit that never moves. A prerelease can never be
+      # `releases/latest`, which is the cockpit updater's. An existing
+      # `agent-latest` that is NOT a prerelease is refused rather than fed: it
+      # would be one UI click from taking that slot. (And a draft's assets are
+      # not public.)
+      - name: Upload agent-latest.json and its signature to the agent-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.agent-eligibility.outputs.tag }}
+        run: |
+          assets=(feed/agent-latest.json feed/agent-latest.json.minisig)
+          if gh release view agent-latest >/dev/null 2>&1; then
+            state="$(gh release view agent-latest --json isPrerelease,isDraft --jq '"\(.isPrerelease) \(.isDraft)"')"
+            if [[ "$state" != "true false" ]]; then
+              echo "::error::the agent-latest release exists but is not a published prerelease (isPrerelease isDraft = '$state')"
+              echo "It must be a prerelease so it can never become releases/latest, and published" >&2
+              echo "so its assets are public. Fix it by hand; this workflow will not edit it." >&2
+              exit 1
+            fi
+            gh release upload agent-latest "${assets[@]}" --clobber
+            echo "Uploaded $TAG's feed to the existing agent-latest release."
+          elif gh release create agent-latest --prerelease --latest=false \
+              --target "$GITHUB_SHA" --title "agent-latest (rolling agent feed)" \
+              --notes "The signed agent feed (agent-latest.json and its .minisig). Written by publish-agent-feed.yml and nothing else; never publish binaries here, and do not edit or delete this release. Agent releases are the agent-v* ones." \
+              "${assets[@]}"; then
+            echo "Created the agent-latest prerelease at $GITHUB_SHA with $TAG's feed."
+          else
+            # Lost a create race. The group above serialises this workflow's
+            # runs, so this is someone creating it by hand in the window.
+            gh release upload agent-latest "${assets[@]}" --clobber
+            echo "Lost the create race — uploaded $TAG's feed to the release that won."
+          fi
+
+      # What a host actually does: fetch both files from the FIXED
+      # `agent-latest` URL. Two claims, kept apart from the upload itself:
+      # the served bytes equal the ones uploaded (a `--clobber` leaves a window
+      # in which they do not, so this retries before it fails), and the
+      # document names THIS tag's version — not merely "a version". Then the
+      # served pair is verified the way a consumer would, by both
+      # implementations, under this tree's committed public key (the pair was
+      # just signed under it).
+      - name: Read the served feed back and require it to be this run's
+        env:
+          VERSION: ${{ needs.agent-eligibility.outputs.version }}
+          DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
+        run: |
+          base="$DOWNLOAD_BASE/agent-latest"
+          ok=0
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL -o served.json "$base/agent-latest.json" \
+               && curl -fsSL -o served.json.minisig "$base/agent-latest.json.minisig" \
+               && cmp -s feed/agent-latest.json served.json \
+               && cmp -s feed/agent-latest.json.minisig served.json.minisig; then
+              ok=1
+              break
+            fi
+            echo "attempt $attempt: $base does not serve this run's pair yet, waiting…"
+            sleep 5
+          done
+          if [[ $ok -ne 1 ]]; then
+            echo "::error::$base does not serve the feed this run uploaded"
+            echo "Hosts read exactly that URL. Replay this publish FROM the tag (a manual" >&2
+            echo "dispatch of publish-agent-feed.yml) once GitHub serves it; until then" >&2
+            echo "'agent-latest' may be empty or stale." >&2
+            exit 1
+          fi
+          served="$(jq -r '.version' served.json)"
+          if [[ "$served" != "$VERSION" ]]; then
+            echo "::error::the served feed's version is '$served', but this run published $VERSION"
+            exit 1
+          fi
+          minisign -V -p agent/release-signing-key.pub -x served.json.minisig -m served.json
+          cargo run --locked -p solador-updatefeed --bin solador-agent-feed -- verify \
+            --feed served.json --signature served.json.minisig \
+            --pubkey agent/release-signing-key.pub --version "$VERSION" \
+            --asset-dir agent-dist
+          echo "$base serves agent-latest.json for $VERSION, byte-for-byte this run's, and its pair verifies."

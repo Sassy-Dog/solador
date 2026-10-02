@@ -430,8 +430,12 @@ removes them too, because purging the host's credentials means a re-pair.
 
 ## Releases
 
-Since [#390](https://github.com/Sassy-Dog/solador/issues/390) a `v*` tag
-publishes four agent binaries on the **same GitHub Release as the desktop app**:
+An `agent-v*` tag (`./dev publish --agent`) publishes four agent binaries on a
+**GitHub Release of its own**, built by `release-agent.yml`
+([#472](https://github.com/Sassy-Dog/solador/issues/472),
+[#491](https://github.com/Sassy-Dog/solador/issues/491)); a desktop `v*` tag
+publishes none. ([#390](https://github.com/Sassy-Dog/solador/issues/390) first
+attached them to the desktop app's `v*` release.)
 
 | Asset | Host |
 |---|---|
@@ -453,8 +457,8 @@ fresh download is **not** executable and running it before `chmod` fails with
 `permission denied`:
 
 ```bash
-curl -fLO --proto '=https' https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>
-curl -fLO --proto '=https' https://github.com/Sassy-Dog/solador/releases/download/v<version>/solador-agent-<version>-<triple>.minisig
+curl -fLO --proto '=https' https://github.com/Sassy-Dog/solador/releases/download/agent-v<version>/solador-agent-<version>-<triple>
+curl -fLO --proto '=https' https://github.com/Sassy-Dog/solador/releases/download/agent-v<version>/solador-agent-<version>-<triple>.minisig
 
 minisign -Vm solador-agent-<version>-<triple> \
          -x solador-agent-<version>-<triple>.minisig \
@@ -660,7 +664,7 @@ with a warning if it isn't installed). All three run unconditionally in CI.
 
 Since #390 both shell gates cover `scripts/*.sh` and `dev`/`prd` too, not just
 `agent/deploy/`: `scripts/build-agent.sh`'s full four-target, signed run happens
-only in `release.yml` on a `v*` tag, and an ungated break there would be found
+only in `release-agent.yml` on an `agent-v*` tag, and an ungated break there would be found
 mid-release. PR CI does build one target
 through it, `x86_64-unknown-linux-musl` (#457), so a static-link break shows
 up before a tag; the other three targets and the signing still run only at
