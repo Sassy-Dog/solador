@@ -122,7 +122,7 @@ coverage it does not have would be worse than the checklist.
   (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`), the secrets guard and
   its mutation corpus (`scripts/secrets-guard.sh`, `scripts/secrets-guard-test.sh`),
   `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
-  does not resolve `crates/updatefeed`, and `scripts/tauri-cli-pin-guard.sh`
+  does not resolve `crates/updatefeed` or `crates/agentrelease`, and `scripts/tauri-cli-pin-guard.sh`
   (#485: `TAURI_CLI_VERSION` and `Cargo.lock`'s `tauri` must share major.minor,
   text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh` —
   the scripts CI's `secrets-guard` job runs; mirrors CI
@@ -406,8 +406,9 @@ to equal the upload and to name this tag's version. **A `release` event runs
 `publish-agent-feed.yml` at the tagged commit, not from `main`** — measured
 against this repo's own runs — so a fix to that workflow reaches a release only
 through a new agent tag, and the manual replay must be dispatched *from* the
-tag. `agent/` does not depend on `crates/updatefeed` — `scripts/agent-deps-guard.sh`
-asserts the absence with `cargo tree`, in CI's `secrets-guard` job and in
+tag. `agent/` does not depend on `crates/updatefeed` (nor on the cockpit's
+reader of this feed, `crates/agentrelease`, #489) — `scripts/agent-deps-guard.sh`
+asserts both absences with `cargo tree`, in CI's `secrets-guard` job and in
 `./dev lint`; the consumer (`agent/src/update.rs`, #393) compiles the public
 keys in and verifies with `minisign-verify` on its own.
 
@@ -552,6 +553,13 @@ the bundle's floor.
 │   │                       #   depends on it; publish-feed.yml runs its
 │   │                       #   `solador-update-feed` bin, publish-agent-feed.yml
 │   │                       #   its `solador-agent-feed` bin
+│   ├── agentrelease/       # the cockpit's reader of the AGENT feed (#489): fetches
+│   │                       #   `agent-latest.json` + `.minisig` from `agent-latest`
+│   │                       #   and verifies the exact bytes under the agent's keys
+│   │                       #   (`build.rs` compiles `agent/release-signing-key*.pub`
+│   │                       #   in, as `agent/build.rs` does) before decoding.
+│   │                       #   APP-ONLY — agent/ must never resolve it, and it does
+│   │                       #   not use `crates/updatefeed`
 │   └── crashreport/        # opt-in crash reporting: the consent gate, the
 │                           #   payload allow-list, the Sentry SDK. The ONLY
 │                           #   crate carrying the SDK, and only app/src-tauri
@@ -695,6 +703,27 @@ the bundle's floor.
   describes. A build made outside a full git checkout cannot count the commits
   since its base, so it **omits** the key — never `null`, never the crate semver
   as a stand-in — and the Settings row reads `agent version —`.
+- **Each host's Settings row says whether its agent is behind the newest
+  *verified* release (#489), without pressing Test.** `HostState.version` keeps
+  the `version` of each successful `/v1/health` read on `sampler_stale`'s
+  lifecycle (a failed read changes nothing; a successful one overwrites it,
+  `None` included). `crates/agentrelease` fetches `agent-latest.json` and its
+  `.minisig` from the `agent-latest` release **once at startup, then hourly**
+  (`AGENT_RELEASE_CHECK_INTERVAL`, a fixed constant, not an operator setting)
+  and verifies the exact bytes under the compiled-in **agent** keys before
+  reading `version`; `viewmodel::agent_release` owns the eight states, their
+  words and their colour. They are never alike: not checked, host version
+  unknown (`—`), source build (`+dev`), version that is not a CalVer, check
+  failed (with the classified sentence), no agent release published yet (a 404
+  on `agent-latest`, true until the first `agent-v*` release — neutral, never a
+  failure), up to date, behind. **Only *behind* is amber and nothing is ever
+  red**: a host that is behind is healthy, and on an org host run at a pinned
+  version it is the expected state between re-pins, so the sentence says a
+  newer release *exists* (`2026.11.2 available`) and never that the host should
+  have moved. CalVer compares numerically `(year, month, n)`, never through
+  `update::is_newer`'s semver. The line reaches the row through
+  `settings_payload` → `StoreSections` → `hosts_tab`, as `agentRelease`
+  (`state`, `text`, `color`), and `app/ui/settings.js` paints it and nothing more.
 - **Unknown is representable.** Every metric a producer may not be able to
   measure (memory used/swap/pressure, thermal state, the GPU fields,
   disk/network rates, `processes[].cpuCores`) is an `Option` in `crates/wire`:

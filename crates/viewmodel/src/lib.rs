@@ -1,3 +1,4 @@
+pub mod agent_release;
 pub mod card;
 pub mod cockpit;
 pub mod color;

@@ -145,6 +145,19 @@ struct HostState {
     /// successful *request* is a second old however long the sampler has been
     /// dead.
     sample_age_seconds: Option<u64>,
+    /// The agent's own version, from the same `/v1/health` payload (#489): what
+    /// Settings compares against the newest verified release without anyone
+    /// pressing Test.
+    ///
+    /// The same lifecycle as [`HostState::sampler_stale`], deliberately. `None`
+    /// is "nobody has told us" — no health read has landed, or an agent that
+    /// cannot name itself omitted the key — never an empty string and never
+    /// the cockpit's own version. A failed health poll leaves it alone (a
+    /// request we could not make is not evidence the host changed); a
+    /// successful one overwrites it, `None` included, because an agent rolled
+    /// back to a build that cannot name itself no longer has the version we
+    /// last heard.
+    version: Option<String>,
     /// Whether the last poll was the plain-HTTP guard's refusal (#461). What
     /// makes the log line fire on the *transition* into that state rather
     /// than on every 1 Hz poll; cleared by anything else, so a host that
@@ -302,6 +315,16 @@ struct App {
     /// that quietly reaches a release server all day; once at launch is what
     /// the Settings surface promises, so it is what happens.
     update: Mutex<UpdateState>,
+    /// The newest *verified* agent release, as the last check left it (#489):
+    /// what each host's Settings row compares its own version against.
+    ///
+    /// Written only by [`agent_release_loop`] — once at startup, then on
+    /// [`AGENT_RELEASE_CHECK_INTERVAL`] — and read by `settings_payload`. It
+    /// starts as `NotChecked`, which is a state of its own and not a verdict:
+    /// a feed nothing has read must never look like "up to date". Its own
+    /// lock, never held with another: the loop awaits the network first and
+    /// takes this one only to store the answer.
+    agent_release: Mutex<viewmodel::agent_release::Latest>,
     /// The Tauri handle, once the app has started — the notifier's way out to
     /// the OS.
     ///
@@ -805,6 +828,8 @@ fn record_health(s: &mut HostState, result: Result<wire::Health, AgentError>) {
         // previous answer would date a badge from a build that is gone.
         s.sampler_stale = info.sampler_stale;
         s.sample_age_seconds = info.sample_age_seconds;
+        // Same payload, same rule, `None` included (#489).
+        s.version = info.version;
     }
 }
 
@@ -856,6 +881,67 @@ async fn health_loop(app: Arc<App>) {
     loop {
         tick.tick().await;
         poll_health(&app).await;
+    }
+}
+
+/// How often the newest verified agent release is looked up (#489), after the
+/// check made at startup.
+///
+/// A fixed constant and not an operator setting, by decision: the feed changes
+/// when someone cuts an agent release, which is hours apart at the fastest, and
+/// one small request an hour to a public release page is the cost of the Settings
+/// row never being more than an hour stale. It is **not** one of
+/// `store.json`'s `panel_intervals`, and adding it there would be a control for
+/// a number nobody has a reason to turn.
+const AGENT_RELEASE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// What a finished agent-release lookup becomes in the view layer.
+///
+/// A pure map so each arm is a test: the one verdict is a verified feed, a 404
+/// on `agent-latest` is the neutral "nothing published yet" (the truth until the
+/// first `agent-v*` release exists, never a failure), and **every other error
+/// is `Failed` carrying `Error::user_message()`** — the classified sentence and
+/// nothing a transport or a decoder said.
+fn agent_release_outcome(
+    result: Result<agentrelease::Latest, agentrelease::Error>,
+) -> viewmodel::agent_release::Latest {
+    use viewmodel::agent_release::Latest;
+    match result {
+        Ok(found) => Latest::Published(found.version),
+        Err(agentrelease::Error::NotPublished) => Latest::NonePublished,
+        Err(other) => Latest::Failed(other.user_message()),
+    }
+}
+
+/// The agent-release check's loop: once immediately, then every
+/// [`AGENT_RELEASE_CHECK_INTERVAL`].
+///
+/// **A failed check replaces the previous answer rather than keeping it.** An
+/// hour-old "2026.11.2 available" that outlived a feed that stopped verifying
+/// would be a claim the cockpit can no longer back, and the Settings line is a
+/// verified claim or it is a stated failure. The network is awaited before the
+/// lock is taken.
+async fn agent_release_loop(app: Arc<App>) {
+    let mut tick = tokio::time::interval(AGENT_RELEASE_CHECK_INTERVAL);
+    // Same reason as every other loop here: `Burst` would fire every missed
+    // tick back-to-back after a suspend.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        // The first tick completes at once, which is the startup check.
+        tick.tick().await;
+        let result = agentrelease::latest().await;
+        // One line per check, hourly, so a run with no screen can still tell a
+        // loop that ran from one that never did (the smoke checklist reads it).
+        // Never the transport's own text (a URL, a socket address): the
+        // classified sentence is what an operator reads, here as in the row.
+        match &result {
+            Ok(found) => eprintln!("agent release: newest verified is {}", found.version),
+            Err(agentrelease::Error::NotPublished) => {
+                eprintln!("agent release: none published yet");
+            }
+            Err(e) => eprintln!("agent release: the check failed: {e}"),
+        }
+        *app.agent_release.lock().expect("agent release poisoned") = agent_release_outcome(result);
     }
 }
 
@@ -1079,6 +1165,8 @@ fn spawn_host(app: &App, key: HostKey, name: String) -> PolledHost {
         // not spoken to yet.
         sampler_stale: None,
         sample_age_seconds: None,
+        // Unknown until the first health poll lands, for the same reason.
+        version: None,
         plain_refused: false,
     }));
 
@@ -2544,6 +2632,20 @@ fn plain_refused_hosts(app: &App) -> Vec<Uuid> {
         .collect()
 }
 
+/// What each polled host last reported as its agent version (#489), for the
+/// hosts that have reported one. A host missing from this list has told us
+/// nothing — its row says so — and is never given a default.
+fn agent_versions(app: &App) -> Vec<(Uuid, String)> {
+    let hosts = app.hosts.lock().expect("poll set poisoned");
+    hosts
+        .iter()
+        .filter_map(|polled| {
+            let state = polled.state.lock().expect("host state poisoned");
+            state.version.clone().map(|v| (polled.key.id, v))
+        })
+        .collect()
+}
+
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
     // Read before the store's lock is taken, and never while it is held: the
@@ -2560,10 +2662,18 @@ fn settings_payload(app: &App) -> Value {
     // one-at-a-time order every other reader of both uses.
     let certificate_changed = certificate_changed_hosts(app);
     let plain_refused = plain_refused_hosts(app);
+    let versions = agent_versions(app);
+    let agent_release = app
+        .agent_release
+        .lock()
+        .expect("agent release poisoned")
+        .clone();
     let store = app.store.lock().expect("store poisoned");
     let stored = stored_secrets(app.credentials.as_ref(), store.hosts(), store.accounts());
     settings::view(
         settings::StoreSections {
+            agent_versions: &versions,
+            agent_release: &agent_release,
             settings: store.settings(),
             hosts: store.hosts(),
             repos: store.repos(),
@@ -5300,6 +5410,17 @@ fn dump_settings() -> Value {
     // and its exact `settings_save_host` arguments — keep their coverage.
     spare.tls_fingerprint = Some(certpin::format(&[0xAB; certpin::DIGEST_LEN]));
     let certificate_changed = [spare.id];
+    // A third host that has reported no agent version (#489): the one rendering
+    // a fixture with only versioned hosts would never reach. Paired with the two
+    // above it, the Settings fixture carries a host that is behind the newest
+    // verified release (`live`), one at it (`spare`) and one that cannot say.
+    let mut silent = Host::new("lab-edge", "100.64.0.9");
+    silent.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0003);
+    let agent_versions = [
+        (live.id, "2026.10.13".to_owned()),
+        (spare.id, "2026.11.1".to_owned()),
+    ];
+    let agent_release = viewmodel::agent_release::Latest::Published("2026.11.1".to_owned());
 
     // Two accounts and, between them, every rendering the row has: one with a
     // token and two repos depending on it (so the removal prompt exists), one
@@ -5371,7 +5492,9 @@ fn dump_settings() -> Value {
     settings::view(
         settings::StoreSections {
             settings: &settings,
-            hosts: &[live, spare],
+            hosts: &[live, spare, silent],
+            agent_versions: &agent_versions,
+            agent_release: &agent_release,
             // Explicit, not `seeded_repos()`: nothing is seeded any more, and
             // this fixture is what the Playwright suite renders the Portfolio
             // tab from — an empty list would silently stop covering it.
@@ -6029,6 +6152,7 @@ fn main() {
         services: Mutex::new(services::ServiceStatuses::new()),
         host_reachability: Mutex::new(services::HostWatch::new()),
         update: Mutex::new(UpdateState::new()),
+        agent_release: Mutex::new(viewmodel::agent_release::Latest::NotChecked),
         handle: std::sync::OnceLock::new(),
         runtime: rt.handle().clone(),
         crash_reporting: reporting,
@@ -6046,6 +6170,9 @@ fn main() {
     // numbers. It reads the poll set rather than owning one, so a host added in
     // Settings joins it on the next tick.
     rt.spawn(health_loop(Arc::clone(&app)));
+    // The newest verified agent release (#489): once now, then hourly. Settings
+    // compares each host's health-reported version against it.
+    rt.spawn(agent_release_loop(Arc::clone(&app)));
     rt.spawn(hosts_watch_loop(Arc::clone(&app)));
     rt.spawn(resume_loop(Arc::clone(&app)));
     // The GitHub panels run on the store's refresh interval and read the
@@ -6331,6 +6458,7 @@ mod tests {
             error_kind: None,
             sampler_stale: None,
             sample_age_seconds: None,
+            version: None,
             plain_refused: false,
         }
     }
@@ -6809,6 +6937,76 @@ mod tests {
         // says so.
         let s = with_health(s, Some(false), Some(1));
         assert_eq!(view_for(&s)["connection"]["state"], "live");
+    }
+
+    /// (#489) The version rides the same lifecycle as `sampler_stale`: unknown
+    /// until a health read lands, kept through a failed one, and overwritten —
+    /// `None` included — by the next that succeeds.
+    #[test]
+    fn the_hosts_version_follows_the_health_poll_and_survives_a_failed_one() {
+        let mut s = live_state();
+        assert_eq!(s.version, None, "nobody has told us yet");
+
+        let health = |version: Option<&str>| wire::Health {
+            status: "ok".into(),
+            hostname: "ubu-01".into(),
+            version: version.map(str::to_owned),
+            sample_age_seconds: None,
+            sampler_stale: None,
+        };
+        record_health(&mut s, Ok(health(Some("2026.10.13"))));
+        assert_eq!(s.version.as_deref(), Some("2026.10.13"));
+
+        record_health(&mut s, Err(AgentError::Unreachable("blip".into())));
+        assert_eq!(
+            s.version.as_deref(),
+            Some("2026.10.13"),
+            "a request we could not make is not evidence the host changed"
+        );
+
+        // An agent rolled back to a build that cannot name itself no longer has
+        // the version we last heard.
+        record_health(&mut s, Ok(health(None)));
+        assert_eq!(s.version, None);
+    }
+
+    /// (#489) Each outcome of the lookup becomes its own view state; only a
+    /// verified feed is a verdict, nothing published is neutral, and every other
+    /// error carries `user_message()` and nothing the transport said.
+    #[test]
+    fn an_agent_release_lookup_maps_to_one_state_per_outcome() {
+        use viewmodel::agent_release::Latest;
+        assert_eq!(
+            agent_release_outcome(Ok(agentrelease::Latest {
+                version: "2026.11.2".into()
+            })),
+            Latest::Published("2026.11.2".into())
+        );
+        assert_eq!(
+            agent_release_outcome(Err(agentrelease::Error::NotPublished)),
+            Latest::NonePublished
+        );
+        for err in [
+            agentrelease::Error::Unreachable,
+            agentrelease::Error::Status(503),
+            agentrelease::Error::Unsigned,
+            agentrelease::Error::SignatureRejected,
+            agentrelease::Error::Malformed,
+            agentrelease::Error::TrustSet,
+        ] {
+            assert_eq!(
+                agent_release_outcome(Err(err.clone())),
+                Latest::Failed(err.user_message()),
+                "{err:?}"
+            );
+        }
+    }
+
+    /// (#489) The cadence is a fixed hour — not an operator setting — and sits
+    /// well above the 10s health poll it is not a part of.
+    #[test]
+    fn the_agent_release_check_is_hourly() {
+        assert_eq!(AGENT_RELEASE_CHECK_INTERVAL.as_secs(), 3600);
     }
 
     /// When the link itself is down, the transport failure is the more
@@ -9015,7 +9213,14 @@ mod tests {
         assert_eq!(vm, dump_settings(), "the fixture must not vary per run");
 
         let rows = vm["hosts"]["rows"].as_array().expect("host rows");
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
+        // (#489) The Playwright suite paints these three: behind (amber), at
+        // the newest verified release, and a host that has reported nothing.
+        let states: Vec<&str> = rows
+            .iter()
+            .map(|row| row["agentRelease"]["state"].as_str().expect("state"))
+            .collect();
+        assert_eq!(states, ["behind", "up-to-date", "host-unknown"]);
         assert_eq!(rows[0]["tokenStored"], true);
         assert_eq!(rows[0]["enabled"], true);
         assert!(!rows[0]["hiddenVolumes"]

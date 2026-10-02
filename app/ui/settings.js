@@ -721,6 +721,14 @@ function hostsTab(t, options = {}) {
     const head = node("div", "row");
     const names = node("div", "stack");
     names.append(node("span", "host-name", host.name), node("span", "dim", host.endpoint));
+    // Where this host's agent stands against the newest verified release (#489),
+    // persistent, without pressing Test. The state's name, the sentence and the
+    // colour are all Rust's (`viewmodel::agent_release`); the colour goes on
+    // through the CSSOM because a `style=""` attribute is blocked by the CSP.
+    const release = node("span", "agent-release", host.agentRelease.text);
+    release.dataset.state = host.agentRelease.state;
+    release.style.color = host.agentRelease.color;
+    names.appendChild(release);
     // The pin, in full, where the operator can compare it with the host.
     if (host.pinned) {
       const pinned = node("span", "dim pinned-line", t.pair.pinnedLabel + ": ");

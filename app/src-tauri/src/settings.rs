@@ -771,6 +771,15 @@ pub struct StoreSections<'a> {
     /// and it is what makes an unpaired host's edit form say why it is not
     /// being polled and point at the pairing step beside it.
     pub plain_refused: &'a [Uuid],
+    /// The agent version each polled host last reported on `/v1/health` (#489),
+    /// for the hosts that have reported one. Live, like the two lists above. A
+    /// host **absent** from it has told the cockpit nothing, and its row says
+    /// so; it is never given a default.
+    pub agent_versions: &'a [(Uuid, String)],
+    /// The newest verified agent release as the last hourly check left it
+    /// (#489). `NotChecked` until the first check settles — a state of its own,
+    /// never a verdict.
+    pub agent_release: &'a viewmodel::agent_release::Latest,
 }
 
 /// What the crash-reporting section needs to say beyond the stored toggle.
@@ -815,6 +824,8 @@ pub fn view(
         accounts,
         certificate_changed,
         plain_refused,
+        agent_versions,
+        agent_release,
     } = store;
     json!({
         "title": OPEN_LABEL,
@@ -830,7 +841,18 @@ pub fn view(
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
-        "hosts": hosts_tab(settings, hosts, rules, stored, certificate_changed, plain_refused),
+        "hosts": hosts_tab(
+            settings,
+            hosts,
+            rules,
+            stored,
+            certificate_changed,
+            plain_refused,
+            AgentRelease {
+                versions: agent_versions,
+                latest: agent_release,
+            },
+        ),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
         "services": services_tab(vendors),
@@ -2164,6 +2186,36 @@ fn rules_section(rules: &[ContainerGroupRule], hosts: &[Host]) -> Value {
     })
 }
 
+/// The two inputs of each host row's agent-release line (#489), bundled so
+/// [`hosts_tab`] stays under the argument count the lint allows and the pair
+/// travels together: a version means nothing without the release it is compared
+/// against.
+#[derive(Clone, Copy)]
+struct AgentRelease<'a> {
+    versions: &'a [(Uuid, String)],
+    latest: &'a viewmodel::agent_release::Latest,
+}
+
+impl AgentRelease<'_> {
+    /// One host's line, as the frontend paints it: the state's stable name (a
+    /// data attribute), the sentence and the colour. **All three come from
+    /// `viewmodel::agent_release`** — the frontend adds no wording and no
+    /// opinion about which state is which colour.
+    fn line(&self, host: &Host) -> Value {
+        let version = self
+            .versions
+            .iter()
+            .find(|(id, _)| *id == host.id)
+            .map(|(_, v)| v.as_str());
+        let line = viewmodel::agent_release::line(version, self.latest);
+        json!({
+            "state": line.state.as_str(),
+            "text": line.text,
+            "color": color::hex(line.color),
+        })
+    }
+}
+
 fn hosts_tab(
     settings: &Settings,
     hosts: &[Host],
@@ -2171,6 +2223,7 @@ fn hosts_tab(
     stored: &StoredSecrets,
     certificate_changed: &[Uuid],
     plain_refused: &[Uuid],
+    agent: AgentRelease<'_>,
 ) -> Value {
     json!({
         "heading": "Remote Hosts",
@@ -2205,6 +2258,11 @@ fn hosts_tab(
                 // touch. The row explains itself and points at Check.
                 "plainRefused": host.tls_fingerprint.is_none()
                     && plain_refused.contains(&host.id),
+                // Live (#489): where this host's agent stands against the
+                // newest verified release. Present on every row — "unknown" is
+                // a line too, not an absence — so the frontend never decides
+                // what a missing key means.
+                "agentRelease": agent.line(host),
             }))
             .collect::<Vec<_>>(),
         // Rendered only when it has entries. This shell has no local-machine
@@ -2752,6 +2810,78 @@ mod tests {
         }
     }
 
+    /// An agent-release input that knows nothing: no version heard, no check run.
+    fn no_agent() -> AgentRelease<'static> {
+        AgentRelease {
+            versions: &[],
+            latest: &viewmodel::agent_release::Latest::NotChecked,
+        }
+    }
+
+    /// (#489) Every host row carries an `agentRelease` line, and the three
+    /// states the Settings fixture exists to show are three different lines:
+    /// behind (amber), up to date, and a host that has reported nothing. All of
+    /// the words and the colour are Rust's.
+    #[test]
+    fn each_host_row_carries_its_agent_release_line() {
+        use viewmodel::agent_release::Latest;
+        let (settings, _, _, stored) = sample();
+        let behind = Host::new("behind", "100.64.0.1");
+        let current = Host::new("current", "100.64.0.2");
+        let silent = Host::new("silent", "100.64.0.3");
+        let hosts = [behind.clone(), current.clone(), silent.clone()];
+        let versions = [
+            (behind.id, "2026.10.13".to_owned()),
+            (current.id, "2026.11.1".to_owned()),
+        ];
+        let latest = Latest::Published("2026.11.1".to_owned());
+        let tab = hosts_tab(
+            &settings,
+            &hosts,
+            &[],
+            &stored,
+            &[],
+            &[],
+            AgentRelease {
+                versions: &versions,
+                latest: &latest,
+            },
+        );
+        let line = |i: usize| tab["rows"][i]["agentRelease"].clone();
+        assert_eq!(line(0)["state"], "behind");
+        assert_eq!(line(0)["text"], "Agent v2026.10.13 · 2026.11.1 available");
+        assert_eq!(line(0)["color"], color::hex(color::AMBER));
+        assert_eq!(line(1)["state"], "up-to-date");
+        assert_eq!(line(1)["color"], color::hex(color::GREEN_DIM));
+        // A host that has said nothing is its own line, matched by id and not
+        // by position, and never given a version.
+        assert_eq!(line(2)["state"], "host-unknown");
+        assert!(line(2)["text"].as_str().unwrap().contains('—'));
+        assert_ne!(line(2)["color"], color::hex(color::AMBER));
+    }
+
+    /// (#489) Before the first check settles, a host that *has* a version says
+    /// the check is pending; it is not "up to date", and not amber.
+    #[test]
+    fn a_host_row_before_the_first_check_is_not_checked() {
+        let (settings, _, _, stored) = sample();
+        let host = Host::new("h", "100.64.0.1");
+        let versions = [(host.id, "2026.10.13".to_owned())];
+        let tab = hosts_tab(
+            &settings,
+            std::slice::from_ref(&host),
+            &[],
+            &stored,
+            &[],
+            &[],
+            AgentRelease {
+                versions: &versions,
+                latest: &viewmodel::agent_release::Latest::NotChecked,
+            },
+        );
+        assert_eq!(tab["rows"][0]["agentRelease"]["state"], "not-checked");
+    }
+
     /// (#449) An unpaired host at an address the cockpit will not put the token
     /// on plain HTTP for has its own Test line: nothing was sent, it is not
     /// "unreachable", and it says how to fix it.
@@ -2776,10 +2906,10 @@ mod tests {
         let (settings, mut hosts, _repos, stored) = sample();
         hosts[0].tls_fingerprint = Some("45:39:AF".into());
         let refused = [hosts[0].id, hosts[1].id];
-        let tab = hosts_tab(&settings, &hosts, &[], &stored, &[], &refused);
+        let tab = hosts_tab(&settings, &hosts, &[], &stored, &[], &refused, no_agent());
         assert_eq!(tab["rows"][0]["plainRefused"], false);
         assert_eq!(tab["rows"][1]["plainRefused"], true);
-        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[]);
+        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[], no_agent());
         assert_eq!(calm["rows"][1]["plainRefused"], false);
         assert!(tab["pair"]["unpairedHelp"].is_string());
     }
@@ -2861,14 +2991,14 @@ mod tests {
         let (settings, mut hosts, _repos, stored) = sample();
         hosts[0].tls_fingerprint = Some("45:39:AF".into());
         let changed = [hosts[0].id, hosts[1].id];
-        let tab = hosts_tab(&settings, &hosts, &[], &stored, &changed, &[]);
+        let tab = hosts_tab(&settings, &hosts, &[], &stored, &changed, &[], no_agent());
         assert_eq!(tab["rows"][0]["pinned"], true);
         // Only a *pinned* host can have a changed certificate: the second is
         // in the live set but unpinned, so it must not offer to replace a pin
         // it does not have.
         assert_eq!(tab["rows"][0]["certificateChanged"], true);
         assert_eq!(tab["rows"][1]["certificateChanged"], false);
-        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[]);
+        let calm = hosts_tab(&settings, &hosts, &[], &stored, &[], &[], no_agent());
         assert_eq!(calm["rows"][0]["certificateChanged"], false);
         assert_eq!(tab["rows"][0]["fingerprint"], "45:39:AF");
         assert_eq!(tab["rows"][1]["pinned"], false);
@@ -3209,6 +3339,8 @@ mod tests {
             accounts: &[],
             certificate_changed: &[],
             plain_refused: &[],
+            agent_versions: &[],
+            agent_release: &viewmodel::agent_release::Latest::NotChecked,
         }
     }
 

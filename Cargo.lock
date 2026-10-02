@@ -4307,6 +4307,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "solador-agentrelease"
+version = "0.1.0"
+dependencies = [
+ "minisign-verify 0.3.0",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "solador-fault",
+ "tokio",
+]
+
+[[package]]
 name = "solador-app"
 version = "0.1.0"
 dependencies = [
@@ -4318,6 +4330,7 @@ dependencies = [
  "mac-notification-sys",
  "serde",
  "serde_json",
+ "solador-agentrelease",
  "solador-azurecost",
  "solador-buildversion",
  "solador-certpin",

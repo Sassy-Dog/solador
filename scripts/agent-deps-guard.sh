@@ -33,6 +33,15 @@ if grep -q '^solador-updatefeed ' <<< "$agent_tree"; then
     echo "::error::agent/ resolves solador-updatefeed — the agent must not depend on release tooling (crates/updatefeed is the feed PRODUCER; the consumer compiles its own key in and verifies with minisign-verify directly)"
     exit 1
 fi
+# The cockpit-side reader of the agent's own release feed (#489) is app-only:
+# crates/agentrelease verifies agent-latest.json for the Settings row, and the
+# agent has its own consumer in src/update.rs. An edge here would put the
+# cockpit's HTTP client and its key-set build script into a daemon that runs
+# unattended on strangers' hosts.
+if grep -q '^solador-agentrelease ' <<< "$agent_tree"; then
+    echo "::error::agent/ resolves solador-agentrelease — that crate is the COCKPIT's reader of the agent feed (#489); the agent verifies its own feed in src/update.rs"
+    exit 1
+fi
 # The other absence CLAUDE.md names, asserted the same way now that the
 # agent has an HTTP stack and a failure enum that make "report a failed
 # update to Sentry" the obvious next shortcut (#393): crates/crashreport is
@@ -54,4 +63,4 @@ if grep -qE '^(aws-lc-rs|aws-lc-sys) ' <<< "$agent_tree"; then
     echo "::error::agent/ resolves aws-lc-rs or aws-lc-sys — agent/Cargo.toml pins rcgen/rustls/axum-server onto the ring crypto provider specifically to avoid this second backend and its C/cmake build; check that pin rather than adding a workaround here"
     exit 1
 fi
-echo "agent/ does not resolve solador-updatefeed, solador-crashreport, sentry, or aws-lc-rs/aws-lc-sys."
+echo "agent/ does not resolve solador-updatefeed, solador-agentrelease, solador-crashreport, sentry, or aws-lc-rs/aws-lc-sys."
