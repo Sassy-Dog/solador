@@ -444,6 +444,24 @@ pub fn host_card(
     // Built outside the macro above: nesting one more field inside it pushes
     // `json!`'s expansion past the default recursion limit.
     card["connection"] = connection_badge(connection);
+    card["cpuFraction"] = json!(if s.cpu.total_usage.is_finite() {
+        Some(s.cpu.total_usage.clamp(0.0, 100.0) / 100.0)
+    } else {
+        None
+    });
+    let memory_fraction =
+        if s.memory.total_gb > 0.0 && s.memory.used_gb.is_finite() && s.memory.total_gb.is_finite()
+        {
+            Some((s.memory.used_gb / s.memory.total_gb).clamp(0.0, 1.0))
+        } else {
+            None
+        };
+    card["memFraction"] = json!(memory_fraction);
+    card["memValueColor"] = json!(color::hex(
+        memory_fraction.map_or(color::MUTED, |fraction| color::usage_color(
+            fraction * 100.0
+        ))
+    ));
     card
 }
 
@@ -455,6 +473,21 @@ mod tests {
     /// fabricated. What the fleet still sends today.
     fn fixture() -> wire::Snapshot {
         serde_json::from_str(include_str!("../../wire/tests/fixtures/snapshot.json")).unwrap()
+    }
+
+    #[test]
+    fn meter_fractions_use_current_measurements_and_unknown_memory_is_not_zero() {
+        let mut snapshot = fixture();
+        snapshot.cpu.total_usage = 24.5;
+        snapshot.memory.used_gb = 12.0;
+        snapshot.memory.total_gb = 16.0;
+        let h = HostHistories::new();
+        let vm = host_card("test", &snapshot, &h, &Connection::Live);
+        assert_eq!(vm["cpuFraction"], 0.245);
+        assert_eq!(vm["memFraction"], 0.75);
+        snapshot.memory.total_gb = 0.0;
+        let vm = host_card("test", &snapshot, &h, &Connection::Live);
+        assert!(vm["memFraction"].is_null());
     }
 
     /// A #183-era agent's payload: everything it cannot measure is omitted, so

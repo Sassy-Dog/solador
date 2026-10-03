@@ -1521,6 +1521,7 @@ mod tests {
         assert_eq!(
             store.runner_roster(),
             [RunnerRosterRecord {
+                architecture: None,
                 name: "mac-s1".into(),
                 os: "macOS".into(),
                 last_seen: 100,
@@ -2088,12 +2089,14 @@ mod tests {
 
         let roster = vec![
             RunnerRosterRecord {
+                architecture: None,
                 name: "mac-s1".into(),
                 os: "macOS".into(),
                 last_seen: 1_700_000_000,
                 org: "acme".into(),
             },
             RunnerRosterRecord {
+                architecture: None,
                 name: "ubu-1".into(),
                 os: "linux".into(),
                 last_seen: 1_700_000_060,
@@ -2114,6 +2117,7 @@ mod tests {
 
     fn roster_record(name: &str, org: &str, last_seen: u64) -> RunnerRosterRecord {
         RunnerRosterRecord {
+            architecture: None,
             name: name.into(),
             os: "linux".into(),
             last_seen,

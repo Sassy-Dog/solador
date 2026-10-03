@@ -2,6 +2,7 @@ pub mod agent_release;
 pub mod card;
 pub mod cockpit;
 pub mod color;
+pub mod dashboard;
 pub mod fault;
 pub mod format;
 pub mod freshness;

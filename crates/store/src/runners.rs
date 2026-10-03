@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 /// "when we last saw this".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerRosterRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
     /// The runner's registered name — the identity, since an ephemeral runner
     /// gets a fresh numeric id on every re-registration.
     pub name: String,
@@ -51,6 +53,7 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let record = RunnerRosterRecord {
+            architecture: None,
             name: "mac-s2".into(),
             os: "macOS".into(),
             last_seen: 1_700_000_000,
@@ -68,6 +71,7 @@ mod tests {
     #[test]
     fn the_stored_keys_are_the_documented_ones() {
         let json = serde_json::to_string(&RunnerRosterRecord {
+            architecture: None,
             name: "ubu-1".into(),
             os: "linux".into(),
             last_seen: 42,

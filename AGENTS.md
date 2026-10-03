@@ -890,6 +890,12 @@ the bundle's floor.
 - Dark mode optimized; glanceable grid of cockpit panels.
 - Status indicated by color: green (good), orange (warning), red (error).
 - Designed for persistent full-screen display on a second monitor.
+- Overview Machines has numeric CPU/RAM meters. GitHub tiles persist row limits
+  (including All); Repos also persists selected repository identities and column
+  sorting, and Runners supports OS + architecture groups. `viewmodel::dashboard`
+  owns sorting/aggregation. Architecture is carried from GitHub's standard labels
+  through the runner roster so absences retain their type; unknown stays unknown.
+  See `app/README.md` for controls, count meanings and responsive behavior.
 
 ## Testing
 

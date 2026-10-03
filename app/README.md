@@ -13,9 +13,33 @@ in **Settings**, backed by the OS credential store.
 A tile is a saved view of a source. Duplicates can have independent names, scopes,
 widths and Summary/Detailed presentations. Hiding a tile leaves its source
 monitored, and **Needs Attention** covers every source, including ones with no
-visible tile. The source order remains stable as readings change. Summary rows
-are capped, with a count and a Details link for the remaining resources; omitted
-problems are named in that count. A resource scope that disappears stays empty.
+visible tile. The default source order remains stable as readings change.
+Summary rows use automatic caps, with a count and a Details link for remaining
+resources; omitted problems are named in that count. A resource scope that
+disappears stays empty.
+
+**Machines** displays colored CPU and RAM utilization bars alongside the exact
+readings, with the existing green/amber/red utilization thresholds. Fractions
+come from the current numeric measurements, never from parsing display text.
+Unavailable measurements leave an empty track and `—` instead of a zero reading.
+
+**GitHub Repos** and **Runners** offer **Rows to show** in Configure: Automatic,
+5, 10, 20, 50 or All, independent of Summary/Detailed presentation. All grows
+the tile in the page scroll. Repos also has a checklist of repositories within
+the tile's scope; leaving every checkbox clear includes all repos, including
+new ones. Click Repo, Issues, Ready, PRs or Status to sort; click again to reverse.
+Counts use raw numeric values, unknowns stay last in either direction, and ties
+use repository identity. Status sorts Unreadable, Failed, Needs approval,
+Running, Healthy. The column and direction are saved per tile; numeric columns
+start descending, Repo and Status ascending.
+
+Runners can switch from **Individual runners** to **By OS + architecture**.
+Each type shows online / total, busy, idle and offline counts, plus recycling,
+missing or unknown counts when present. Grouping follows the tile's scope and
+precedes its row limit; selecting a group opens its individual members.
+Architecture comes from GitHub's ARM64, X64 or ARM labels and survives in the
+absence roster. Missing or conflicting labels render Unknown architecture.
+The existing source warnings accompany grouped counts too.
 A **GitHub Repos** row carries its backlog on the row itself, in both
 presentations — `7 issues · 3 ready · 2 PRs`, where *ready* is the repo's open
 issues whose project-board Status is `Ready` — verbatim from the detailed
@@ -26,8 +50,9 @@ the status word beside it occupies a reserved column, so the
 numbers line up down the tile whether a row reads `1 PR` or `10 PRs` (a count
 past three digits widens its own row, and only that row). The status column
 is exactly as wide as the widest Repos status (`Needs approval`), and a long
-repo name ellipsizes before the strip gives up a character — the strip only
-clips on a tile too narrow for a few letters of name beside it. Keeping counts on
+repo name ellipsizes before the strip gives up a character. Below 470px of tile
+content width the strip uses numeric-only cells, with column headers carrying
+the units and full count labels in the accessible row name. Keeping counts on
 the same line makes the overview compact at laptop widths; longer content
 extends the page instead of creating a scrollbar inside the tile.
 
@@ -50,7 +75,8 @@ or failed polls do not collapse them. Minimum reservations are 196px for Machine
 144px for other summary tiles, 360px for detailed tiles/inspectors, 200px for
 list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards.
 These are floors, never clipping limits. New resources or a first larger reading
-can expand the page; resizing or changing a tile’s source, scope or presentation
+can expand the page; resizing or changing a tile’s source, scope, presentation,
+row limit, repo selection or runner view
 resets its measured reservation.
 Disconnected host cards hide old readings while retaining their occupied space.
 Settings reserves space for probe results, update notes/actions and status
@@ -75,7 +101,11 @@ preview and placement controls; nothing saves until **Add tile** is pressed.
 Presets use existing connections and retain unknown, waiting and failed readings.
 
 `dashboard_view` composes the existing cached panel readings; it starts no new
-pollers. Rust owns attention, scope filtering, truncation and the rendered text.
+pollers. Rust owns attention, scope filtering, truncation and the rendered text;
+`viewmodel::dashboard` owns repository ordering and runner aggregation. The
+frontend suite's `sample-dashboard-expanded.json` is dumped through the same
+Rust projection (`--dump-dashboard <path> --expanded`) to exercise All, sorted
+repos and grouped runners without recreating those rules in JavaScript.
 `dashboard_save` validates and saves the whole layout, rolls memory back if the
 atomic disk write fails, and returns the persisted overview. The frontend keeps
 configuration drafts intact during refreshes and rejects older revisions.
@@ -718,7 +748,10 @@ successful fetch never marks another org's runners absent. Each watched org is
 polled with its owning account's token; a failing org keeps its last-good rows
 with the reason in the `footer` field (`staleAfter: 150s`), which the frontend
 paints **beside the panel title, not under its body** — see "Where a warning
-goes" below. Rows name their org only when more than one is watched.
+goes" below. Rows name their org only when more than one is watched. Roster
+records also retain optional `architecture` for the overview's type counts;
+older records without it remain readable and show Unknown architecture until
+a successful sighting supplies a standard architecture label.
 
 **Applied without a restart.** The token and the portfolio are re-read on every
 pass, and `github_wake` cuts the sleep short after a Save, a Clear, a portfolio

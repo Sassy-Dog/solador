@@ -5747,7 +5747,24 @@ fn write_json(path: &str, value: &Value) {
 /// process should exit without starting a window.
 fn run_dump(args: &[String]) -> bool {
     if let Some(path) = dump_flag_path(args, "--dump-dashboard", "sample-dashboard.json") {
-        write_json(&path, &dump_dashboard());
+        let mut snapshot = dump_dashboard();
+        if args.iter().any(|arg| arg == "--expanded") {
+            let mut layout = dashboard::default_layout();
+            let repos = &mut layout.tiles[1];
+            repos.row_limit = "all".into();
+            repos.sort_by = "issues".into();
+            repos.sort_descending = true;
+            let runners = &mut layout.tiles[2];
+            runners.row_limit = "all".into();
+            runners.runner_view = "grouped".into();
+            snapshot["tiles"] = json!(layout
+                .tiles
+                .iter()
+                .map(|t| dashboard::preview(t, &snapshot).unwrap())
+                .collect::<Vec<_>>());
+            snapshot["layout"] = json!(layout);
+        }
+        write_json(&path, &snapshot);
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump", "sample.json") {

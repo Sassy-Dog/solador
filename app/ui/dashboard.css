@@ -394,6 +394,66 @@
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
+#dashboardOverview .db-metric { min-width: 0; }
+#dashboardOverview .db-meter {
+  height: 5px;
+  margin-top: 5px;
+  border-radius: 3px;
+  background: var(--db-line);
+  overflow: hidden;
+}
+#dashboardOverview .db-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background-image: linear-gradient(90deg, transparent, #ffffff30);
+  transition: width 350ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  #dashboardOverview .db-meter-fill { transition: none; }
+}
+#dashboardOverview .db-repo-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 5px;
+  border-bottom: 1px solid var(--db-line);
+  font-size: 11px;
+}
+#dashboardOverview .db-repo-head > .db-row-label { flex: 1; min-width: 6ch; }
+#dashboardOverview .db-repo-head > .db-value { width: 14ch; flex: none; max-width: none; text-align: right; }
+#dashboardOverview .db-sort {
+  display: inline-block;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--db-muted);
+  font: inherit;
+  white-space: nowrap;
+}
+#dashboardOverview .db-sort[aria-pressed="true"] { color: var(--db-blue); }
+#dashboardOverview .db-sort strong { font-weight: 400; }
+#dashboardOverview .db-sort:hover { color: var(--db-text); background: var(--db-raised); }
+#dashboardOverview .db-repo-selection { grid-column: 1 / -1; min-width: 0; border: 1px solid var(--db-line); border-radius: 5px; padding: 10px; }
+#dashboardOverview .db-repo-selection legend { font-size: 12px; }
+#dashboardOverview .db-repo-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 8px; margin-top: 10px; }
+#dashboardOverview .db-repo-choices label { flex-direction: row; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+#dashboardOverview .db-repo-choices input { flex: none; }
+#dashboardOverview .db-tile-content { container: tile / inline-size; }
+/* At narrow tile widths the headers carry the units. Every numeric column
+   stays visible; full count labels remain on the accessible row name. */
+@container tile (max-width: 470px) {
+  #dashboardOverview .db-row-counts { font-size: 0; flex: none; overflow: visible; }
+  #dashboardOverview .db-row-counts .db-count { width: 7ch; font-size: 11px; text-align: right; }
+  #dashboardOverview .db-row-counts .db-count[data-header="PRS"] { width: 5ch; }
+  #dashboardOverview .db-item .db-count > span { display: none; }
+  #dashboardOverview .db-item .db-count > strong { width: 100%; min-width: 0; }
+  #dashboardOverview .db-repo-head .db-count > strong { width: auto; min-width: 0; }
+  #dashboardOverview .db-repo-head .db-count > span { width: auto; }
+}
+#dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation] .db-runner-group .db-row-description { height: auto; min-height: 33px; white-space: normal; overflow: visible; }
 #dashboardOverview .db-tools {
   display: flex;
   align-items: center;

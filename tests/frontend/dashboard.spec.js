@@ -2,9 +2,9 @@ import { test, expect } from "@playwright/test";
 
 // Real UI and Rust-dumped readings under Tauri's CSP. The IPC double projects
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
-async function openDashboard(page, baseURL) {
+async function openDashboard(page, baseURL, expanded = false) {
   const names = {
-    dashboard_view: "dashboard",
+    dashboard_view: expanded ? "dashboard-expanded" : "dashboard",
     cockpit: "cockpit",
     settings_view: "settings",
     repos: "repos",
@@ -30,6 +30,7 @@ async function openDashboard(page, baseURL) {
         original.layout;
       window.__CALLS__ = [];
       window.__SET_LAYOUT__ = (next) => { layout = structuredClone(next); };
+      window.__SET_SOURCE_ROWS__ = (id, rows) => { original.sources.find(s => s.id === id).rows = structuredClone(rows); };
       function project(previewTile) {
         const view = structuredClone(original);
         view.layout = structuredClone(layout);
@@ -37,15 +38,17 @@ async function openDashboard(page, baseURL) {
             const source = view.sources.find((s) => s.id === t.source);
             const base =
               original.tiles.find((old) => old.source === t.source) || {};
-            const rows = source.rows.filter(
+            const scopedRows = source.rows.filter(r => !t.selectedRepos?.length || t.selectedRepos.includes(r.id)).filter(
               (r) =>
                 t.scope === "all" ||
                 (t.scope === "attention" && r.attention) ||
                 t.scope === `item:${r.id}` ||
                 r.scopes.includes(t.scope),
             );
-            const limit =
-              t.presentation === "detailed" ? 12 : t.source === "hosts" ? 4 : 5;
+            // Expanded group rows are produced by Rust; no test-side aggregator.
+            const rows = t.runnerView === "grouped" && base.runnerView === "grouped" ? base.rows : scopedRows;
+            const limit = t.rowLimit === "all" ? rows.length :
+              Number(t.rowLimit) || (t.presentation === "detailed" ? 12 : t.source === "hosts" ? 4 : 5);
             return {
               ...base,
               ...t,
@@ -121,6 +124,112 @@ const action = (page, name) =>
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
+
+test("GitHub tile row limits and runner grouping are saved independently", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await action(page, "edit").click();
+  await tile(page, "ghWorkflows").locator('[data-action="configure"]').click();
+  await page.getByLabel("Rows to show", { exact: true }).selectOption("all");
+  await action(page, "apply").click();
+  expect((await savedLayout(page)).tiles.find(t => t.source === "ghWorkflows").rowLimit).toBe("all");
+  await expect(tile(page,"ghWorkflows").locator('.db-item')).toHaveCount(6);
+  await tile(page, "ghRunners").locator('[data-action="configure"]').click();
+  await page.getByLabel("Runner view", { exact: true }).selectOption("grouped");
+  await page.getByLabel("Rows to show", { exact: true }).selectOption("all");
+  await action(page, "apply").click();
+  expect((await savedLayout(page)).tiles.find(t => t.source === "ghRunners").runnerView).toBe("grouped");
+  await page.reload();
+  await action(page, "edit").click();
+  await tile(page, "ghRunners").locator('[data-action="configure"]').click();
+  await expect(page.getByLabel("Runner view", { exact: true })).toHaveValue("grouped");
+  await expect(page.getByLabel("Rows to show", { exact: true })).toHaveValue("all");
+});
+
+test("repo column sorts save direction, survive refresh, and support the keyboard", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const repos = tile(page, "ghWorkflows");
+  for (const column of ["issues", "ready", "prs", "status", "name"]) {
+    const header = repos.locator(`[data-action="sort"][data-column="${column}"]`);
+    await header.click();
+    const saved = (await savedLayout(page)).tiles.find(t => t.source === "ghWorkflows");
+    expect(saved.sortBy).toBe(column);
+    expect(saved.sortDescending).toBe(!["name", "status"].includes(column));
+    await expect(header).toHaveAttribute("aria-pressed", "true");
+    await header.press("Enter");
+    expect((await savedLayout(page)).tiles.find(t => t.source === "ghWorkflows").sortDescending).toBe(!saved.sortDescending);
+    await expect(header).toBeFocused();
+  }
+  await page.reload();
+  await expect(repos.locator('[data-column="name"]')).toHaveAccessibleName("Repo · Descending");
+});
+
+test("repo selections persist and filter the tile and its Details", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await action(page,"edit").click();
+  await tile(page,"ghWorkflows").locator('[data-action="configure"]').click();
+  await page.getByLabel("acme/pipe-fitting", {exact:true}).check();
+  await page.getByLabel("acme/widget", {exact:true}).check();
+  await page.getByLabel("Rows to show", {exact:true}).selectOption("all");
+  await action(page,"apply").click();
+  expect((await savedLayout(page)).tiles.find(t => t.source === "ghWorkflows").selectedRepos).toEqual(["acme/pipe-fitting","acme/widget"]);
+  await expect(tile(page,"ghWorkflows").locator('.db-item-name')).toHaveText(["pipe-fitting","widget"]);
+  await tile(page,"ghWorkflows").locator('[data-action="details"]').click();
+  await expect(page.locator('.db-detail-resource')).toHaveCount(2);
+  await page.reload();
+  await action(page,"edit").click();
+  await tile(page,"ghWorkflows").locator('[data-action="configure"]').click();
+  await expect(page.getByLabel("acme/widget", {exact:true})).toBeChecked();
+});
+
+test("Rust expanded view renders sorted repos, grouped runners and live meters at narrow and wide sizes", async ({ page, baseURL }) => {
+  const expanded = await (await fetch(`${baseURL}/sample-dashboard-expanded.json`)).json();
+  await page.route("**/sample-dashboard.json", route => route.fulfill({json:expanded}));
+  await page.goto("/index.html");
+  await expect(tile(page,"ghWorkflows").locator('.db-item-name')).toHaveText(["gadget","pipe-fitting","widget","flywheel","cogwheel","toolkit"]);
+  await expect(tile(page,"ghRunners").locator('.db-item-name')).toHaveText(["LINUX · ARM64","MACOS · ARM64"]);
+  await expect(tile(page,"ghRunners").locator('.db-row-description')).toHaveText(["0 busy · 1 idle · 1 offline · 1 missing","1 busy · 1 idle · 0 offline · 1 recycling"]);
+  await expect(tile(page,"hosts").getByRole("meter")).toHaveCount(4);
+  for (const width of [375, 1024, 1440]) {
+    await page.setViewportSize({width,height:900});
+    const rects = await tile(page,"ghWorkflows").locator('.db-repo-head button').evaluateAll(els=>els.map(e=>({x:e.getBoundingClientRect().x,right:e.getBoundingClientRect().right})));
+    for(let i=1;i<rects.length;i++) expect(rects[i].x).toBeGreaterThanOrEqual(rects[i-1].right);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  await tile(page,"ghRunners").getByRole("button",{name:/LINUX · ARM64/}).click();
+  await expect(page.locator('.db-detail-resource')).toHaveCount(3);
+});
+
+test("open runner group Details tracks members joining and changing type", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL, true);
+  await tile(page,"ghRunners").getByRole("button",{name:/LINUX · ARM64/}).click();
+  await expect(page.locator('.db-detail-resource')).toHaveCount(3);
+  const rows = model.sources.find(s=>s.id==="ghRunners").rows;
+  const added = {...rows.find(r=>r.os==="LINUX"), id:"acme/new-runner",label:"new-runner"};
+  await page.evaluate(rows=>window.__SET_SOURCE_ROWS__("ghRunners",rows),[...rows,added]);
+  await expect(page.locator('.db-detail-resource')).toHaveCount(4);
+  await page.evaluate(rows=>window.__SET_SOURCE_ROWS__("ghRunners",rows),[...rows,{...added,groupId:"group:MACOS:ARM64",os:"MACOS",scopes:["MACOS"]}]);
+  await expect(page.locator('.db-detail-resource')).toHaveCount(3);
+});
+
+test("repo checklist reconciles new readings without discarding the Configure draft", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await action(page,"edit").click();
+  await tile(page,"ghWorkflows").locator('[data-action="configure"]').click();
+  await page.getByLabel("acme/widget",{exact:true}).check();
+  await page.getByLabel("Tile name",{exact:true}).fill("Chosen repos");
+  await page.evaluate(() => { window.__SETTINGS_ROUTE__ = {editor:null,kinds:["account"]}; });
+  await action(page,"manage").click();
+  await expect(page.locator("#settings")).toBeVisible();
+  const rows = model.sources.find(s=>s.id==="ghWorkflows").rows;
+  await page.evaluate(rows=>window.__SET_SOURCE_ROWS__("ghWorkflows",rows),[...rows,{...rows[0],id:"acme/new-repo",label:"new-repo"}]);
+  await page.locator("#settingsClose").click();
+  await expect(page.getByLabel("acme/new-repo",{exact:true})).toBeVisible();
+  await expect(page.getByLabel("acme/widget",{exact:true})).toBeChecked();
+  await expect(page.getByLabel("Tile name",{exact:true})).toHaveValue("Chosen repos");
+  await page.getByLabel("acme/new-repo",{exact:true}).check();
+  await action(page,"apply").click();
+  expect((await savedLayout(page)).tiles.find(t=>t.source==="ghWorkflows").selectedRepos).toEqual(["acme/widget","acme/new-repo"]);
+});
 
 test("hidden library previews the saved scope and restores the original slot", async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 375, height: 812 });
@@ -748,7 +857,7 @@ test("repo rows carry issues, ready and PRs on the row, in summary and in detail
   // The numbers are columns: every row's three numbers end at the same x as
   // every other row's, whether the row reads `1 PR`, `18 issues` or `—`.
   const rightEdges = await repos
-    .locator(".db-row-counts")
+    .locator(".db-item .db-row-counts")
     .evaluateAll((strips) =>
       strips.map((strip) =>
         [...strip.querySelectorAll("strong")].map((n) => Math.round(n.getBoundingClientRect().right)),

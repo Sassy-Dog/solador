@@ -126,7 +126,7 @@ test('a long repo name ellipsizes before the count strip does, and the numbers s
   await changeDashboard(page, model);
   const tile = page.locator('.db-tile[data-tile="overview-ghWorkflows"]');
   await expect(tile.locator('.db-item-name').first()).toHaveText(repos.rows[0].label);
-  const strips = await tile.locator('.db-row-counts').evaluateAll(els => els.map(el => ({
+  const strips = await tile.locator('.db-item .db-row-counts').evaluateAll(els => els.map(el => ({
     clipped: el.scrollWidth > el.clientWidth,
     edges: [...el.querySelectorAll('strong')].map(n => Math.round(n.getBoundingClientRect().right)),
   })));

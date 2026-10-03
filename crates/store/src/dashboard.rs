@@ -15,6 +15,27 @@ pub struct DashboardTile {
     pub width: String,
     #[serde(default)]
     pub hidden: bool,
+    #[serde(default = "automatic_rows")]
+    pub row_limit: String,
+    /// Empty means all repositories within the scope, including future ones.
+    #[serde(default)]
+    pub selected_repos: Vec<String>,
+    #[serde(default = "name_sort")]
+    pub sort_by: String,
+    #[serde(default)]
+    pub sort_descending: bool,
+    #[serde(default = "runner_list")]
+    pub runner_view: String,
+}
+
+fn automatic_rows() -> String {
+    "auto".into()
+}
+fn name_sort() -> String {
+    "name".into()
+}
+fn runner_list() -> String {
+    "list".into()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

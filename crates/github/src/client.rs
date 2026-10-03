@@ -1573,6 +1573,7 @@ mod tests {
         let client = GitHubClient::with_base_url(server.uri(), "t");
 
         let seeded = vec![RunnerRosterEntry {
+            architecture: None,
             name: "mac-s2".into(),
             os: RunnerOs::MacOs,
             last_seen: now(),
@@ -1605,6 +1606,7 @@ mod tests {
 
         // A runner remembered from an earlier poll that GitHub no longer lists.
         let seeded = vec![RunnerRosterEntry {
+            architecture: None,
             name: "mac-gone".into(),
             os: RunnerOs::MacOs,
             last_seen: now() - chrono::TimeDelta::seconds(600),

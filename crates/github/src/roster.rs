@@ -28,6 +28,8 @@ pub const AGE_OUT_SECS: i64 = 24 * 3_600;
 /// One remembered self-hosted runner name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerRosterEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
     pub name: String,
     pub os: RunnerOs,
     pub last_seen: DateTime<Utc>,
@@ -37,6 +39,7 @@ pub struct RunnerRosterEntry {
 /// while recycling (normal ephemeral churn), red once missing beyond grace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhRunnerAbsence {
+    pub architecture: Option<String>,
     pub name: String,
     pub os: RunnerOs,
     pub state: PresenceState,
@@ -120,6 +123,7 @@ pub fn updated(
         by_name.insert(
             runner.name.clone(),
             RunnerRosterEntry {
+                architecture: runner.architecture.clone(),
                 name: runner.name.clone(),
                 os: runner.os,
                 last_seen: now,
@@ -146,6 +150,7 @@ pub fn absences(
         .iter()
         .filter(|entry| !registered_names.contains(entry.name.as_str()))
         .map(|entry| GhRunnerAbsence {
+            architecture: entry.architecture.clone(),
             name: entry.name.clone(),
             os: entry.os,
             state: presence::state(false, entry.last_seen, now, grace_secs),
@@ -266,6 +271,7 @@ mod tests {
 
     fn runner(name: &str, os: RunnerOs) -> GhRunner {
         GhRunner {
+            architecture: None,
             id: 1,
             name: name.to_string(),
             os,
@@ -275,6 +281,7 @@ mod tests {
 
     fn entry(name: &str, os: RunnerOs, absent_for: i64) -> RunnerRosterEntry {
         RunnerRosterEntry {
+            architecture: None,
             name: name.to_string(),
             os,
             last_seen: now() - TimeDelta::seconds(absent_for),
@@ -297,6 +304,15 @@ mod tests {
         );
         // Every registered name is a sighting.
         assert!(roster.iter().all(|e| e.last_seen == now()));
+    }
+
+    #[test]
+    fn absence_keeps_the_architecture_learned_from_the_last_sighting() {
+        let mut registered = runner("worker", RunnerOs::Linux);
+        registered.architecture = Some("ARM64".into());
+        let learned = updated(&[], &[registered], now());
+        let absent = absences(&learned, &[], now(), DEFAULT_GRACE_SECS);
+        assert_eq!(absent[0].architecture.as_deref(), Some("ARM64"));
     }
 
     /// A de-registered ephemeral runner stays remembered — that memory is the
@@ -370,11 +386,13 @@ mod tests {
             ],
             &[
                 GhRunnerAbsence {
+                    architecture: None,
                     name: "mac-s2".into(),
                     os: RunnerOs::MacOs,
                     state: PresenceState::Recycling { absence_secs: 60 },
                 },
                 GhRunnerAbsence {
+                    architecture: None,
                     name: "ubu-1".into(),
                     os: RunnerOs::Linux,
                     state: PresenceState::Missing { absence_secs: 400 },
