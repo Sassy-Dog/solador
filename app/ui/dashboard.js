@@ -397,6 +397,7 @@
       b.append(dot, node("span", "db-attention-label", item.label));
       attention.append(b);
     }
+    syncAttention();
     if (!model.attention.length)
       attention.append(node("span", "db-muted db-attention-quiet",
         model.sources.some(s => s.loading) ? L("loading") : L("quiet")));
@@ -424,7 +425,7 @@
     }
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
-    if (focused && !focused.isConnected && focusData) {
+    if (focused && !focused.isConnected && focusData && document.activeElement === document.body) {
       const scope = focusTile
         ? root.querySelector(`[data-tile="${CSS.escape(focusTile)}"]`)
         : root;
@@ -522,6 +523,7 @@
   }
   function openInspector(next) {
     active = next;
+    syncAttention();
     const box = q(".db-inspector");
     box.hidden = false;
     box.dataset.kind = next.kind;
@@ -823,7 +825,7 @@
     if (active.row) return s.rows.filter((r) => r.id === active.row);
     const t = active.tile && tile(active.tile);
     if (!t) return s.rows;
-    return s.rows.filter(r => !active.group || r.groupId === active.group).filter(r => !t.selectedRepos?.length || t.selectedRepos.includes(r.id)).filter(
+    return s.rows.filter(r => !t.selectedRepos?.length || t.selectedRepos.includes(r.id)).filter(
       (r) =>
         t.scope === "all" ||
         (t.scope === "attention" && r.attention) ||
@@ -846,67 +848,82 @@
     );
     text(box.querySelector(".db-inspector-head .db-sub"), s.trailing || "");
     const body = box.querySelector(".db-inspector-body");
+    const focused = body.contains(document.activeElement) ? document.activeElement : null;
+    const focusRow = focused?.closest('[data-resource]')?.dataset.resource;
+    const focusAction = focused?.dataset.action;
     body.tabIndex = 0;
     body.setAttribute("role", "region");
     body.setAttribute("aria-label", s.title);
     body.replaceChildren(warnings(s.warnings));
     if (s.message && rows.length) body.append(node("p", "db-detail-copy", s.message));
     const list = node("div", "db-detail-grid");
+    active.expanded ||= new Set(active.row ? [active.row] : []);
     for (const row of rows) {
-      const item = node("div", "db-detail-resource"),
-        head = node("div", "db-row");
+      const item = node("details", "db-detail-resource"),
+        summary = node("summary"), head = node("div", "db-row db-detail-title");
+      item.dataset.resource = row.id;
+      item.open = active.expanded.has(row.id);
       head.append(
-        node("span", "", row.label),
+        node("strong", "", row.label),
         colored("span", "", row.value, row.valueColor),
       );
-      item.append(head);
+      summary.append(head);
       if (row.explanation || row.detail)
-        item.append(node("p", "db-detail-copy", row.explanation || row.detail));
-      for (const m of [
-        ...(row.metrics || []),
-        ...(row.counts || []),
-        ...(row.details || []),
-      ]) {
-        const field = node("div", "db-row");
-        // A count carries the table header it sits under, so the eight
-        // numbers list in one vocabulary here rather than three words and
-        // five headers.
-        field.append(
-          node("span", "db-muted", m.header ?? m.label),
-          node("span", "", m.value ?? "—"),
-        );
-        item.append(field);
-      }
-      for (const v of row.volumes || []) {
-        const field = node("div", "db-row");
-        field.append(
-          node("span", "", v.mount),
-          colored("span", "", v.detail, v.tint),
-        );
-        item.append(field);
-      }
+        summary.append(node("p", "db-detail-copy", row.explanation || row.detail));
+      const primary = node("dl", "db-detail-primary");
+      const field = m => {
+        const pair = node("div", "db-detail-field");
+        pair.append(node("dt", "db-muted", m.header ?? m.label), colored("dd", "", m.value ?? "—", m.color));
+        return pair;
+      };
+      for (const m of [...(row.metrics || []), ...(row.counts || [])]) primary.append(field(m));
+      if (primary.childElementCount) summary.append(primary);
+      summary.append(node("span", "db-detail-disclosure", L("expandDetails")));
+      const extra = node("div", "db-detail-extra"), metrics = node("dl", "db-detail-fields");
+      for (const m of row.details || []) metrics.append(field(m));
+      for (const v of row.volumes || []) metrics.append(field({label:v.mount, value:v.detail, color:v.tint}));
+      if (metrics.childElementCount) extra.append(metrics);
+      const actions = node("div", "db-detail-actions");
+      item.addEventListener("toggle", () => {
+        if (!item.isConnected || active?.kind !== "details") return;
+        if (item.open) active.expanded.add(row.id);
+        else active.expanded.delete(row.id);
+        body.dataset.detailState = JSON.stringify([...active.expanded]);
+      });
       if (row.url) {
         const open = button(L("openRepo"), "openRepo", row.id);
         open.dataset.source = s.id;
-        item.append(open);
+        actions.append(open);
       }
-      if (!active.row) {
-        const manage = button(L("manage"), "manage-resource", s.id);
-        manage.dataset.scope = `item:${row.id}`;
-        item.append(manage);
-      }
+      const manage = button(L("manage"), "manage-resource", s.id);
+      manage.dataset.scope = `item:${row.id}`;
+      actions.append(manage);
+      extra.append(actions);
+      item.append(summary, extra);
       list.append(item);
     }
     if (!rows.length)
       list.append(node("p", "db-muted", selected?.empty || s.message || L("missingReading")));
     body.append(list);
+    if (focusRow) {
+      const row = list.querySelector(`[data-resource="${CSS.escape(focusRow)}"]`);
+      const target = row?.querySelector(focusAction ? `[data-action="${CSS.escape(focusAction)}"]` : 'summary');
+      (target || box.querySelector('[data-action="close"]')).focus({preventScroll:true});
+    }
   }
   function closeInspector() {
     clearTimeout(previewTimer);
     previewVersion++;
     active = null;
+    syncAttention();
     q(".db-inspector").hidden = true;
     q(".db-inspector").replaceChildren();
+  }
+  function syncAttention() {
+    for (const chip of root.querySelectorAll('[data-action="attention"]')) {
+      chip.setAttribute("aria-controls", "dashboardInspector");
+      chip.setAttribute("aria-expanded", String(active?.attention === chip.dataset.id));
+    }
   }
   async function save(next, message, undo = false) {
     if (busy) return false;
@@ -989,6 +1006,7 @@
   }
   async function showOverview() {
     mode = "overview";
+    window.soladorGitHub.setRunnerGroup(null);
     legacy.removeAttribute("data-detail-source");
     overviewOpen = true;
     root.hidden = false;
@@ -996,8 +1014,9 @@
     await refresh(true);
     render(true);
   }
-  async function fullPanel(sourceId) {
+  async function fullPanel(sourceId, runnerGroup = null) {
     mode = "details";
+    window.soladorGitHub.setRunnerGroup(runnerGroup);
     overviewOpen = false;
     if (sourceId) legacy.dataset.detailSource = sourceId;
     else legacy.removeAttribute("data-detail-source");
@@ -1026,7 +1045,8 @@
       return;
     }
     if (action === "attention") {
-      openInspector({ kind: "details", source: id });
+      if (active?.attention === id) closeInspector();
+      else openInspector({ kind: "details", source: id, attention: id });
       return;
     }
     if (action === "row") {
@@ -1035,7 +1055,7 @@
     }
     if (action === "runner-group") {
       const group = model.tiles.find(t => t.id === b.dataset.tileId)?.rows.find(r => r.id === id);
-      if (group) openInspector({kind:"details", source:b.dataset.source, tile:b.dataset.tileId, group:id});
+      if (group) await fullPanel(b.dataset.source, {id, label:group.label});
       return;
     }
     if (action === "details") {

@@ -5,18 +5,28 @@ compact overview of **Machines**, **GitHub Repos**, **Runners**, **Service Healt
 and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings and the existing full panel; **All
-detailed panels** opens the original cockpit. Connections and credentials remain
+full panels** opens the original cockpit. Connections and credentials remain
 in **Settings**, backed by the OS credential store.
 
 ### Dashboard tiles
 
 A tile is a saved view of a source. Duplicates can have independent names, scopes,
-widths and Summary/Detailed presentations. Hiding a tile leaves its source
+widths and Summary/Detail presentations. Hiding a tile leaves its source
 monitored, and **Needs Attention** covers every source, including ones with no
 visible tile. The default source order remains stable as readings change.
 Summary rows use automatic caps, with a count and a Details link for remaining
 resources; omitted problems are named in that count. A resource scope that
 disappears stays empty.
+
+**Summary** keeps the tile compact with status and its key readings. **Detail**
+adds context in the tile and opens a single vertical list of resources: name,
+status, explanation and primary CPU/RAM or repository counts stay visible.
+Expand a row for secondary fields, volumes and resource actions; opening one
+specific resource starts it expanded. Expansion and keyboard focus survive
+live reading updates, and collapsing a row releases the extra height. **Full**
+opens the complete source panel with its specialized readings and controls.
+Clicking an active **Needs Attention** chip again closes its Detail list;
+clicking a different chip switches sources. The active chip is highlighted.
 
 **Machines** displays colored CPU and RAM utilization bars alongside the exact
 readings, with configurable green/amber/red utilization thresholds. Fractions
@@ -40,7 +50,7 @@ memory-pressure measurement. Invalid edits save nothing, and a disk write failur
 restores the effective preferences while preserving the form's draft.
 
 **GitHub Repos** and **Runners** offer **Rows to show** in Configure: Automatic,
-5, 10, 20, 50 or All, independent of Summary/Detailed presentation. All grows
+5, 10, 20, 50 or All, independent of Summary/Detail presentation. All grows
 the tile in the page scroll. Repos also has a checklist of repositories within
 the tile's scope; leaving every checkbox clear includes all repos, including
 new ones. Click Repo, Issues, Ready, PRs or Status to sort; click again to reverse.
@@ -52,7 +62,12 @@ start descending, Repo and Status ascending.
 Runners can switch from **Individual runners** to **By OS + architecture**.
 Each type shows online / total, busy, idle and offline counts, plus recycling,
 missing or unknown counts when present. Grouping follows the tile's scope and
-precedes its row limit; selecting a group opens its individual members.
+precedes its row limit. Selecting a group opens **Full** directly, filtered to
+that OS + architecture across the source, with its own counts and individual
+members in one vertical list. **All runners** clears the temporary filter;
+returning to Overview clears it too. Membership follows live readings, and a
+type with no remaining members says so instead of showing other types. Full
+runner rows include architecture and retain the absent runner's Forget action.
 Architecture comes from GitHub's ARM64, X64 or ARM labels and survives in the
 absence roster. Missing or conflicting labels render Unknown architecture.
 The existing source warnings accompany grouped counts too.
@@ -87,7 +102,7 @@ warning row. Status values use fixed columns, and machine metric slots show `—
 while disconnected. Tile headings
 capitalize each word, preserving brand/acronym casing, including saved names.
 
-Tile bodies, hidden previews, the Details inspector, detailed panels and host
+Tile bodies, hidden previews, the Detail inspector, full panels and host
 cards grow to fit their content in the **page's** scroll. `layout-stability.js`
 retains their largest measured height at the current width, so temporary empty
 or failed polls do not collapse them. Minimum reservations are 196px for Machines,
@@ -95,7 +110,7 @@ or failed polls do not collapse them. Minimum reservations are 196px for Machine
 list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards.
 These are floors, never clipping limits. New resources or a first larger reading
 can expand the page; resizing or changing a tile’s source, scope, presentation,
-row limit, repo selection or runner view
+row limit, repo selection, runner view, or a deliberate Detail expansion/filter
 resets its measured reservation.
 Disconnected host cards hide old readings while retaining their occupied space.
 Settings reserves space for probe results, update notes/actions and status
@@ -128,7 +143,7 @@ repos and grouped runners without recreating those rules in JavaScript.
 `dashboard_save` validates and saves the whole layout, rolls memory back if the
 atomic disk write fails, and returns the persisted overview. The frontend keeps
 configuration drafts intact during refreshes and rejects older revisions.
-**Settings → Detailed layout** applies to **All detailed panels**; overview
+**Settings → Detailed layout** applies to **All full panels**; overview
 placement lives in **Edit dashboard**.
 
 **Add tile** and **Duplicate tile** open an unsaved draft. Choose a name,
@@ -162,7 +177,7 @@ not preserve Keychain recognition across rebuilds. For a native smoke check, use
 the scratch-store procedure below, then hide/restore a tile, duplicate Machines
 with a Remote machines scope, relaunch, and verify the saved view. Open Details
 and connection settings, and confirm Overview returns correctly. The existing full-panel
-smoke checklist starts from **All detailed panels**. The macOS dashboard smoke
+smoke checklist starts from **All full panels**. The macOS dashboard smoke
 passed on 2026-09-18 with real IPC, a scratch store and an empty, isolated
 credential service in the test build. It covered hide/restore, duplication and
 independent scope, rename, width, presentation, arrow ordering, Undo, pointer

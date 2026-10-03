@@ -308,7 +308,7 @@ function runnerRowNode(row, forgetLabel, showOrgTags) {
   // The org tag paints only when Rust says it adds anything — with one org
   // watched it would restate the whole panel on every row.
   if (showOrgTags) el.appendChild(node("span", "dim", row.org));
-  el.append(node("span", "grow"), node("span", "gh-runner-os", row.os));
+  el.append(node("span", "grow"), node("span", "gh-runner-os", row.platform || row.os));
 
   // The status is the widest thing in the row that changes — "idle" one poll,
   // "recycling 40s" the next — so it is the one column that must be reserved
@@ -333,17 +333,42 @@ function runnerRowNode(row, forgetLabel, showOrgTags) {
   return el;
 }
 
+let lastRunners = null, runnerGroup = null;
+
+function setRunnerGroup(group) {
+  runnerGroup = group;
+  $g("runnersBody").dataset.detailState = group?.id || "all";
+  if (lastRunners) renderRunners(lastRunners);
+}
+
 function renderRunners(payload) {
+  const restoreFilterFocus = document.activeElement?.matches('#runnersBody .gh-runner-filter button');
+  lastRunners = payload;
+  const group = runnerGroup && payload.groups?.find(group => group.id === runnerGroup.id);
   $g("runnersTitle").textContent = payload.title;
   renderAvailability("runnersAvailability", payload.availability);
-  $g("runnersTrailing").textContent = payload.trailing || "";
+  $g("runnersTrailing").textContent = runnerGroup ? group?.value || "" : payload.trailing || "";
 
   const children = [];
+  if (runnerGroup) {
+    const filter = node("div", "gh-runner-filter");
+    const clear = node("button", "btn", payload.allRunnersLabel);
+    clear.type = "button";
+    clear.addEventListener("click", () => {
+      setRunnerGroup(null);
+      $g("runnersTitle").tabIndex = -1;
+      $g("runnersTitle").focus({preventScroll:true});
+    });
+    filter.append(node("strong", "", group?.label || runnerGroup.label), clear);
+    children.push(filter);
+    if (group) children.push(node("p", "gh-group-summary", group.detail));
+    else if (!payload.message) children.push(messageNode({text:payload.emptyGroupMessage}));
+  }
   if (payload.message) children.push(messageNode(payload.message));
   // Stats and chips share one row, so they share one wrapper — the line they
   // sit on is `.gh-header`'s, not two siblings' worth of block flow.
-  const stats = payload.stats || [];
-  const chips = payload.chips || [];
+  const stats = runnerGroup ? [] : payload.stats || [];
+  const chips = runnerGroup ? [] : payload.chips || [];
   if (stats.length || chips.length) {
     const header = node("div", "gh-header");
     if (stats.length) {
@@ -361,10 +386,12 @@ function renderRunners(payload) {
   // The rows go in their own wrapper so the header above them stays
   // full-width: `--panel-cols` splits the LIST, not the whole panel body.
   const list = node("div", "gh-list");
-  for (const row of payload.rows || [])
+  for (const row of (payload.rows || []).filter(row => !runnerGroup || row.groupId === runnerGroup.id))
     list.appendChild(runnerRowNode(row, payload.forgetLabel, payload.showOrgTags));
   children.push(list);
   $g("runnersBody").replaceChildren(...children);
+  if (restoreFilterFocus && runnerGroup)
+    $g("runnersBody").querySelector('.gh-runner-filter button').focus({preventScroll:true});
 
   // A healthy, fresh panel renders no warning at all — the cockpit stays
   // glanceable, and a warning means something when it appears. It sits in the
@@ -433,5 +460,6 @@ registerPanelRefresh(async () => scheduleRefresh(await refresh()));
 // Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
 window.__SOLADOR_GITHUB_TEST__ = { renderRepos, renderRunners, refresh };
+window.soladorGitHub = { setRunnerGroup };
 
 })();

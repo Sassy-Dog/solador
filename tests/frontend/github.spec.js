@@ -393,7 +393,7 @@ test("registered and absent runner rows carry Rust's state words and colours", a
   for (const [index, expected] of runners.rows.entries()) {
     const row = runnerRows(page).nth(index);
     await expect(row).toHaveAttribute("data-kind", expected.kind);
-    await expect(row.locator(".gh-runner-os")).toHaveText(expected.os);
+    await expect(row.locator(".gh-runner-os")).toHaveText(expected.platform);
     await expect(row.locator(".gh-runner-status")).toHaveText(expected.status);
     await expect(row.locator(".dot")).toHaveCSS("background-color", rgb(expected.dotColor));
     await expect(row.locator(".gh-runner-status")).toHaveCSS("color", rgb(expected.statusColor));

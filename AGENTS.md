@@ -901,6 +901,10 @@ the bundle's floor.
   `store::machine_alerts` owns persistence/validation; the shell applies the
   resolved limits to cached numeric fractions on every render, so meter colors
   and dashboard attention agree without restarting host pollers.
+- Attention chips toggle their Detail inspector. Detail uses vertical resource
+  disclosures; Summary stays compact and Full keeps source-specific controls.
+  Grouped runners open Full filtered by the Rust-authored OS/architecture group
+  identity; membership and counts refresh together, and All runners clears it.
 
 ## Testing
 
