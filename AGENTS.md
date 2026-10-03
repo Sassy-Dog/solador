@@ -1072,6 +1072,29 @@ derivation and mint, and `publish --agent`, are tested in
   `redeploy.sh` is untouched, Linux-only, and now `build_release_binary`'s
   only caller. Service identities here are the restart contract
   `solador-agent update` consumes.
+- **`install.sh --system-daemon` is the split install for a non-login service
+  user, macOS only (#506, part of #505).** The service user stages everything
+  it owns exactly as a fresh per-user install does, renders
+  `agent/deploy/app.solador.agent.daemon.plist` (the LaunchAgent template plus
+  `UserName`/`GroupName` and `HOME`/`SOLADOR_AGENT_CONFIG_DIR`, no
+  `SessionCreate`, same label, same `ProgramArguments` shape `update.rs`
+  parses) into its own home, bootstraps **nothing**, and **prints** the one root
+  step (`sudo install -o root -g wheel -m 644 <rendered>
+  /Library/LaunchDaemons/app.solador.agent.plist && sudo launchctl bootstrap
+  system ...`) — the script and its tests never run `sudo` or anything
+  privileged, and `--system-daemon` refuses root (as `--uninstall` and
+  `--enable-timer` do). Nothing is running until
+  root loads it, so the `/v1/health` check and the TLS fingerprint belong to the
+  follow-up `--system-daemon --verify` run. Refused: root, a non-macOS platform,
+  `--enable-timer` (no update job in daemon mode), and an existing per-user
+  LaunchAgent install for the same user. `solador-agent update`/`rollback` do
+  NOT support this mode yet (they read only a per-user LaunchAgent plist); a
+  host re-pins. Exit 0 means *staged* on install, not serving.
+  `--uninstall --system-daemon` removes the user files and prints the root
+  `bootout`/remove step. `agent/README.md`'s "Running as a system daemon under a
+  service user" is the procedure; `lib_test.sh` records `launchctl` and `sudo`
+  argv so "bootstraps nothing" is asserted, each refusal with a negative
+  control.
 - **`agent/deploy/bootstrap.sh` is the checkout-free path onto `install.sh`
   (#434).** No `git clone` needed: it downloads the repository archive at a
   `main` commit (or a `--ref` confirmed, via GitHub's compare API, reachable

@@ -1023,7 +1023,9 @@ installed it, **not** a LaunchDaemon and not root. It starts at that user's
 login and runs inside that session; a Mac nobody logs in to does not run it,
 and the installer refuses (before changing anything) when there is no login
 session to bootstrap into — an SSH session with nobody at the console is the
-usual way to hit that.
+usual way to hit that. A host that must come back after an unattended reboot,
+under a dedicated non-login service user, opts into the LaunchDaemon instead:
+**Running as a system daemon under a service user**, below.
 
 launchd has no `EnvironmentFile=`, and its `EnvironmentVariables` key would put
 the token into the plist. So `ProgramArguments` is a small launcher installed
@@ -1242,6 +1244,82 @@ never deleted it.
 **Exit status**: `install.sh`'s header is the one table of `--uninstall`'s
 exit codes (0, 1, 2, 4 and 6, and what each claims); `./deploy/install.sh
 --help` prints it.
+
+## Running as a system daemon under a service user
+
+([#506](https://github.com/Sassy-Dog/solador/issues/506), part of
+[#505](https://github.com/Sassy-Dog/solador/issues/505); macOS only.) A
+LaunchAgent stays down after an unattended reboot until someone logs in at the
+console, which is wrong for a dedicated, non-login service user (the org's agent
+management spec, §1.3 and §5.3, requires one). `install.sh --system-daemon` is a
+**two-step install**: the service user stages everything it owns, and **root
+only loads one plist**. The script never runs `sudo`, never calls `launchctl
+bootstrap system`, and refuses to run as root — the privileged step is printed
+for an operator or provisioner to run.
+
+```bash
+# 1. As the service user (not root; no login session needed):
+./deploy/install.sh --system-daemon
+# 2. As root, exactly the line step 1 printed (the path is the rendered plist):
+sudo install -o root -g wheel -m 644 ~svc/.config/app.solador.agent.daemon.plist /Library/LaunchDaemons/app.solador.agent.plist && sudo launchctl bootstrap system /Library/LaunchDaemons/app.solador.agent.plist
+# 3. As the service user again, once root has loaded it:
+./deploy/install.sh --system-daemon --verify
+```
+
+Step 1 does everything a fresh per-user install does — the signed download or
+`SOLADOR_AGENT_RELEASE` pin, `~/.local/bin/solador-agent` and the launcher, the
+mode-0600 env file (token prompt or generation), the TLS opt-in — all under the
+service user's home, exactly as the per-user layout but rooted there. Then it
+renders `deploy/app.solador.agent.daemon.plist` to
+`~/.config/app.solador.agent.daemon.plist` (never into `/Library`). That
+template is the LaunchAgent's with `UserName` and `GroupName` (the service user
+and its primary group) added, and `HOME` and `SOLADOR_AGENT_CONFIG_DIR` added
+to `EnvironmentVariables`; `ProgramArguments` keeps the same
+`[launcher, binary, env file, log file]` shape (`solador-agent update` parses
+it), `RunAtLoad`, `KeepAlive` and `ThrottleInterval` are unchanged, the label
+stays `app.solador.agent` (one host runs one agent), and there is no
+`SessionCreate` because the agent uses no keychain. It makes **no `gui/<uid>`
+call at all**, so it works for a user with no login session.
+
+The agent is **not running** after step 1, so step 1 runs no health check and
+prints no TLS fingerprint (the certificate is generated on the agent's first
+start). `--system-daemon --verify`, run as the same user after root's step,
+does the existing authenticated `/v1/health` check against the version the
+installed binary reports, and with TLS on prints the fingerprint to pair. If a
+daemon with this label is already loaded when step 1 is re-run, `bootstrap`
+would fail; the output also prints `sudo launchctl kickstart -k
+system/app.solador.agent`, which restarts it onto the freshly installed binary.
+
+Review the rendered plist before root installs it: root will run whatever it
+says, and the service user can edit that file, so check `UserName` and that
+`ProgramArguments` name only paths under the service user's home. Refused,
+before anything changes: **root**; a platform that is **not macOS**
+(Linux already has user units with linger); an existing **per-user LaunchAgent
+install** for the same user (its plist, or the updater's — remove it first with
+`./deploy/install.sh --uninstall` from a login session, so two agents never
+fight over the port); and **`--enable-timer`**, which has no meaning here. There
+is no update job in daemon mode, and `solador-agent update` and `rollback`
+are **not supported** in it yet: they find the service only through a per-user
+LaunchAgent plist and the `gui/<uid>` domain, so they exit 1 on a daemon host
+until the update-side follow-up (#505's other child) lands. A host moves by
+re-pinning: re-run step 1 with `SOLADOR_AGENT_RELEASE=agent-v<version>`, have
+root `kickstart -k` the daemon, then `--verify`; to roll back, swap
+`solador-agent.prev` over the binary by hand, then the same `kickstart`.
+**Exit status here is not "serving"**: step 1 exits 0 meaning *staged, not
+running*; `--verify` exits 0 only when `/v1/health` reports the installed
+version; `--uninstall --system-daemon` exits 0 when the user files are gone,
+with the root unload printed and not confirmed. `--verify` needs
+`--system-daemon` and does not combine with `--uninstall`, `--enable-tls` or
+`--migrate-from-opt`.
+
+To remove it, run `./deploy/install.sh --uninstall --system-daemon` as the
+service user (add `--purge` to delete the token and TLS keypair too). It removes
+the user-owned files exactly as `--uninstall` does, needs no `gui/<uid>` domain,
+runs no `launchctl` and no `sudo`, and prints the matching root step:
+
+```bash
+sudo launchctl bootout system/app.solador.agent && sudo rm /Library/LaunchDaemons/app.solador.agent.plist
+```
 
 ## Moving the agent to another user
 

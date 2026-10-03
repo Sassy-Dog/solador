@@ -2233,7 +2233,8 @@ FIXTURES="$TMP/fixtures"
 # bootstrap.sh) can never drift into copying two different sets.
 DEPLOY_SOURCE_FILES="install.sh lib.sh run-agent.sh solador-agent.service \
     app.solador.agent.plist solador-agent-update.service \
-    solador-agent-update.timer app.solador.agent.update.plist update-guard.sh"
+    solador-agent-update.timer app.solador.agent.update.plist update-guard.sh \
+    app.solador.agent.daemon.plist"
 
 # Lay out a copy of agent/deploy plus the given public key as
 # agent/release-signing-key.pub.
@@ -8152,6 +8153,337 @@ STUB
     INSTALL_PATH=""
 }
 
+# ---- install.sh --system-daemon (#506, part of #505) --------------------------
+#
+# The split install: the SERVICE USER stages everything it owns and renders the
+# LaunchDaemon plist into its own home; root only loads it, and that step is
+# printed, never run. Every case below runs with `print gui/<uid>` FAILING
+# (STUB_LAUNCHCTL_DOMAIN_EXIT=1), the way it does for a non-login service user,
+# and a `sudo` stub that records any call — so "bootstraps nothing" is asserted
+# on launchctl's and sudo's recorded argv, not on the script's text. Each
+# refusal has a negative control: the same invocation, minus the one thing that
+# is refused, succeeds.
+
+# daemon_plist_check <plist> <user> <group> <home> <config-dir>: prints "ok" or
+# "mismatch: ..." — the daemon template's contract, parsed as a plist.
+daemon_plist_check() {
+    python3 - "$@" <<'PY' 2>&1
+import plistlib, sys
+plist, user, group, home, cfg = sys.argv[1:6]
+with open(plist, "rb") as f:
+    d = plistlib.load(f)
+env = d.get("EnvironmentVariables", {})
+pa = d.get("ProgramArguments", [])
+ok = (
+    d.get("Label") == "app.solador.agent"
+    and d.get("UserName") == user
+    and d.get("GroupName") == group
+    and env.get("HOME") == home
+    and env.get("SOLADOR_AGENT_CONFIG_DIR") == cfg
+    and "PATH" in env
+    and d.get("RunAtLoad") is True
+    and d.get("KeepAlive") is True
+    and d.get("ThrottleInterval") == 3
+    and "SessionCreate" not in d
+    and "ProcessType" not in d
+    and len(pa) == 4
+    and pa[1].endswith("/.local/bin/solador-agent")
+    and pa[0].endswith("/.local/bin/solador-agent-launchd")
+    and pa[2].endswith("/.config/solador-agent.env")
+    and pa[3] == d.get("StandardOutPath") == d.get("StandardErrorPath")
+)
+print("ok" if ok else "mismatch: " + repr(d))
+PY
+}
+
+# The restart-only line the re-run prints, for the assertion above.
+print_expect_bootout() {
+    printf '%s' "sudo launchctl bootout system/app.solador.agent"
+}
+
+test_install_system_daemon() {
+    local home="$TMP/home sysd & co" ctl_home="$TMP/home-sysd-control"
+    local env_file bin launcher dplist agent_plist out expect_load expect_unload user group
+    if [ "$HAVE_MINISIGN" != true ]; then
+        skip_needs_minisign "install.sh --system-daemon"
+        return
+    fi
+    make_checkout "$TEST_KEY_DIR/a.pub"
+    rm -rf "$FIXTURES" "$home" "$ctl_home"
+    mkdir -p "$home" "$ctl_home"
+    make_fixture 2026.9.8 aarch64-apple-darwin "$TEST_KEY_DIR/a.key" >/dev/null
+    export SOLADOR_AGENT_RELEASE="v2026.9.8"
+    export STUB_CURL_BODY='{"status":"ok","hostname":"mac","version":"2026.9.8"}'
+    export STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 STUB_SW_VERS=15.6
+    export STUB_LAUNCHCTL_DOMAIN_EXIT=1
+
+    # A sudo that records and fails: nothing in this mode may call it.
+    local sudo_log="$TMP/sudo-argv"
+    : > "$sudo_log"
+    cat > "$STUBS/sudo" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$sudo_log"
+exit 1
+STUB
+    chmod +x "$STUBS/sudo"
+
+    user="$(id -un)"
+    group="$(id -gn)"
+    env_file="$home/.config/solador-agent.env"
+    bin="$home/.local/bin/solador-agent"
+    launcher="$home/.local/bin/solador-agent-launchd"
+    dplist="$home/.config/app.solador.agent.daemon.plist"
+    agent_plist="$home/Library/LaunchAgents/app.solador.agent.plist"
+    expect_load="sudo install -o root -g wheel -m 644 $(printf '%q' "$dplist") /Library/LaunchDaemons/app.solador.agent.plist && sudo launchctl bootstrap system /Library/LaunchDaemons/app.solador.agent.plist"
+    expect_unload="sudo launchctl bootout system/app.solador.agent && sudo rm /Library/LaunchDaemons/app.solador.agent.plist"
+
+    # ---- the install ----
+    reset_argv_logs
+    INSTALL_UMASK=002 INSTALL_STDIN="sysd-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --system-daemon
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh --system-daemon succeeds with no gui domain (a non-login service user)" "0" "$INSTALL_STATUS"
+    [ -x "$bin" ] && pass "--system-daemon: the binary lands at ~/.local/bin/solador-agent" \
+        || fail "--system-daemon: the binary lands at ~/.local/bin/solador-agent" "$out"
+    [ -x "$launcher" ] && pass "--system-daemon: the launcher is installed beside it" \
+        || fail "--system-daemon: the launcher is installed beside it" "$out"
+    assert_eq "--system-daemon: the env file is mode 0600 even under umask 002" "600" "$(file_mode "$env_file")"
+    [ -f "$dplist" ] && pass "--system-daemon: the daemon plist is rendered into the service user's home" \
+        || fail "--system-daemon: the daemon plist is rendered into the service user's home" "$out"
+    assert_eq "--system-daemon: the rendered plist is mode 0644 even under umask 002" "644" "$(file_mode "$dplist")"
+    [ -e "$agent_plist" ] && fail "--system-daemon renders no per-user LaunchAgent plist" "$agent_plist exists" \
+        || pass "--system-daemon renders no per-user LaunchAgent plist"
+    if [ -s "$STUB_LAUNCHCTL_ARGV" ]; then
+        fail "--system-daemon bootstraps nothing: launchctl is never called" "$(cat "$STUB_LAUNCHCTL_ARGV")"
+    else
+        pass "--system-daemon bootstraps nothing: launchctl is never called"
+    fi
+    if [ -s "$sudo_log" ]; then
+        fail "--system-daemon never runs sudo" "$(cat "$sudo_log")"
+    else
+        pass "--system-daemon never runs sudo"
+    fi
+    if grep -q 'v1/health' "$STUB_CURL_ARGV"; then
+        fail "--system-daemon makes no /v1/health check (nothing is running yet)" "curl asked for it"
+    else
+        pass "--system-daemon makes no /v1/health check (nothing is running yet)"
+    fi
+    assert_output_has "--system-daemon prints the exact two-command root step" "$out" "$expect_load"
+    assert_output_has "--system-daemon says the agent is not running yet" "$out" "NOT RUNNING YET"
+    assert_output_has "--system-daemon names the --verify follow-up" "$out" "--system-daemon --verify"
+    case "$out" in
+        *"sysd-tok-MUST-NOT-BE-PRINTED"*) fail "--system-daemon never prints the token" "it did" ;;
+        *) pass "--system-daemon never prints the token" ;;
+    esac
+    if grep -q "sysd-tok-MUST-NOT-BE-PRINTED" "$dplist"; then
+        fail "the token is not in the daemon plist" "it is"
+    else
+        pass "the token is not in the daemon plist"
+    fi
+    if grep -q '@[A-Z_]*@' "$dplist"; then
+        fail "every daemon plist placeholder was rendered" "$(grep -o '@[A-Z_]*@' "$dplist" | head -n3 | tr '\n' ' ')"
+    else
+        pass "every daemon plist placeholder was rendered"
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        assert_eq "the rendered daemon plist carries UserName/GroupName/HOME/CONFIG_DIR, KeepAlive, no SessionCreate" \
+            "ok" "$(daemon_plist_check "$dplist" "$user" "$group" "$home" "$home/.config")"
+        # Negative control: the per-user LaunchAgent plist, rendered by a plain
+        # install, must FAIL the same check — otherwise the check proves nothing.
+        STUB_LAUNCHCTL_DOMAIN_EXIT=0 INSTALL_STDIN="ctl-tok
+" run_install "$ctl_home"
+        case "$(daemon_plist_check "$ctl_home/Library/LaunchAgents/app.solador.agent.plist" "$user" "$group" "$ctl_home" "$ctl_home/.config")" in
+            mismatch*) pass "negative control: a per-user LaunchAgent plist fails the daemon plist check" ;;
+            *) fail "negative control: a per-user LaunchAgent plist fails the daemon plist check" "it passed" ;;
+        esac
+    else
+        skip "the rendered daemon plist carries the expected keys" "python3 not on PATH"
+    fi
+
+    # ---- --enable-timer, refused in this mode (either order) ----
+    rm -rf "$ctl_home"
+    mkdir -p "$ctl_home"
+    reset_argv_logs
+    run_install "$ctl_home" --system-daemon --enable-timer
+    assert_eq "--system-daemon --enable-timer is refused (usage error)" "2" "$INSTALL_STATUS"
+    assert_output_has "the --enable-timer refusal says there is no update job in daemon mode" "$(cat "$INSTALL_OUT")" "no update job in daemon"
+    run_install "$ctl_home" --enable-timer --system-daemon
+    assert_eq "--enable-timer --system-daemon is refused in the other order too" "2" "$INSTALL_STATUS"
+    assert_untouched "a refused --system-daemon --enable-timer changes nothing" "$ctl_home"
+    # control: --enable-timer alone is not refused on this platform (per-user path)
+    STUB_LAUNCHCTL_DOMAIN_EXIT=0 INSTALL_STDIN="ctl-tok
+" run_install "$ctl_home" --enable-timer
+    assert_eq "negative control: --enable-timer without --system-daemon is accepted" "0" "$INSTALL_STATUS"
+    rm -rf "$ctl_home"
+    mkdir -p "$ctl_home"
+
+    # ---- --verify and --system-daemon argument rules ----
+    reset_argv_logs
+    run_install "$ctl_home" --verify
+    assert_eq "--verify without --system-daemon is a usage error" "2" "$INSTALL_STATUS"
+    run_install "$ctl_home" --system-daemon --verify --uninstall
+    assert_eq "--verify with --uninstall is a usage error" "2" "$INSTALL_STATUS"
+    run_install "$ctl_home" --system-daemon --verify --enable-tls
+    assert_eq "--verify with --enable-tls is a usage error" "2" "$INSTALL_STATUS"
+
+    # ---- refusal: root ----
+    local root_stubs="$TMP/stubs-sysd-root"
+    mkdir -p "$root_stubs"
+    cat > "$root_stubs/id" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+    -u) echo 0 ;;
+    *) exec "$(command -v id)" "\$@" ;;
+esac
+STUB
+    chmod +x "$root_stubs/id"
+    local mode
+    for mode in "" "--verify" "--uninstall"; do
+        reset_argv_logs
+        # shellcheck disable=SC2086
+        INSTALL_PATH="$root_stubs:$STUBS:$TOOLBIN" INSTALL_STDIN="x
+" run_install "$ctl_home" --system-daemon $mode
+        assert_eq "--system-daemon ${mode:-install} as root is refused" "1" "$INSTALL_STATUS"
+        assert_output_has "the root refusal (${mode:-install}) says why" "$(cat "$INSTALL_OUT")" "refuses to run as root"
+        assert_untouched "a root-refused --system-daemon ${mode:-install} changes nothing" "$ctl_home"
+    done
+
+    # ---- refusal: not macOS ----
+    for mode in "" "--verify" "--uninstall"; do
+        reset_argv_logs
+        # shellcheck disable=SC2086
+        STUB_UNAME_S=Linux STUB_UNAME_M=x86_64 INSTALL_STDIN="x
+" run_install "$ctl_home" --system-daemon $mode
+        assert_eq "--system-daemon ${mode:-install} on Linux is refused" "1" "$INSTALL_STATUS"
+        assert_output_has "the platform refusal (${mode:-install}) says macOS only" "$(cat "$INSTALL_OUT")" "macOS only"
+        assert_untouched "a platform-refused --system-daemon ${mode:-install} changes nothing" "$ctl_home"
+    done
+
+    # ---- refusal: an existing per-user LaunchAgent install ----
+    mkdir -p "$ctl_home/Library/LaunchAgents"
+    printf 'stale\n' > "$ctl_home/Library/LaunchAgents/app.solador.agent.plist"
+    reset_argv_logs
+    INSTALL_STDIN="x
+" run_install "$ctl_home" --system-daemon
+    assert_eq "--system-daemon is refused while a per-user LaunchAgent install exists" "1" "$INSTALL_STATUS"
+    assert_output_has "the LaunchAgent refusal names the remedy" "$(cat "$INSTALL_OUT")" "--uninstall"
+    if [ -e "$ctl_home/.config/solador-agent.env" ] || [ -e "$ctl_home/.local/bin/solador-agent" ] \
+        || [ -e "$ctl_home/.config/app.solador.agent.daemon.plist" ]; then
+        fail "a LaunchAgent-refused --system-daemon changes nothing" "env file, binary or daemon plist exists"
+    else
+        pass "a LaunchAgent-refused --system-daemon changes nothing"
+    fi
+    # an updater LaunchAgent alone refuses too
+    rm -f "$ctl_home/Library/LaunchAgents/app.solador.agent.plist"
+    printf 'stale\n' > "$ctl_home/Library/LaunchAgents/app.solador.agent.update.plist"
+    reset_argv_logs
+    INSTALL_STDIN="x
+" run_install "$ctl_home" --system-daemon
+    assert_eq "--system-daemon is refused while a per-user update LaunchAgent exists" "1" "$INSTALL_STATUS"
+    # negative control: with both removed, the same invocation succeeds
+    rm -f "$ctl_home/Library/LaunchAgents/app.solador.agent.update.plist"
+    reset_argv_logs
+    INSTALL_STDIN="ctl-tok
+" run_install "$ctl_home" --system-daemon
+    assert_eq "negative control: with no LaunchAgent install present, --system-daemon succeeds" "0" "$INSTALL_STATUS"
+    rm -rf "$ctl_home"
+    mkdir -p "$ctl_home"
+
+    # ---- --verify ----
+    reset_argv_logs
+    run_install "$ctl_home" --system-daemon --verify
+    assert_eq "--system-daemon --verify before any install fails" "1" "$INSTALL_STATUS"
+    assert_output_has "--verify before an install says to run the install" "$(cat "$INSTALL_OUT")" "Run the install first"
+    reset_argv_logs
+    run_install "$home" --system-daemon --verify
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "--system-daemon --verify succeeds once the agent answers with the installed version" "0" "$INSTALL_STATUS"
+    assert_output_has "--verify reports the agent serving" "$out" "/v1/health reports"
+    assert_curl_authenticated_via_stdin "--verify checks /v1/health the way the per-user install does" "sysd-tok-MUST-NOT-BE-PRINTED"
+    if [ -s "$STUB_LAUNCHCTL_ARGV" ] || [ -s "$sudo_log" ]; then
+        fail "--verify calls neither launchctl nor sudo" "$(cat "$STUB_LAUNCHCTL_ARGV" "$sudo_log")"
+    else
+        pass "--verify calls neither launchctl nor sudo"
+    fi
+    case "$out" in
+        *"sysd-tok-MUST-NOT-BE-PRINTED"*) fail "--verify never prints the token" "it did" ;;
+        *) pass "--verify never prints the token" ;;
+    esac
+    # negative control: an agent serving a different version fails --verify,
+    # names the system domain, and re-prints the root step.
+    reset_argv_logs
+    STUB_CURL_BODY='{"status":"ok","hostname":"mac","version":"2026.1.1"}' run_install "$home" --system-daemon --verify
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "negative control: --verify fails when the agent serves another version" "1" "$INSTALL_STATUS"
+    assert_output_has "the failed --verify names the system domain" "$out" "launchctl print system/app.solador.agent"
+    assert_output_has "the failed --verify re-prints the root step" "$out" "$expect_load"
+    assert_output_has "the failed --verify names the kickstart for an older version answering" "$out" \
+        "sudo launchctl kickstart -k system/app.solador.agent"
+
+    # ---- a plain install is refused while a daemon install is staged ----
+    reset_argv_logs
+    STUB_LAUNCHCTL_DOMAIN_EXIT=0 INSTALL_STDIN="" run_install "$home"
+    assert_eq "a plain per-user install is refused while a --system-daemon install is staged" "1" "$INSTALL_STATUS"
+    assert_output_has "the refusal names --uninstall --system-daemon" "$(cat "$INSTALL_OUT")" "--uninstall --system-daemon"
+    if grep -q '^bootstrap' "$STUB_LAUNCHCTL_ARGV"; then
+        fail "the refused plain install bootstraps nothing" "$(cat "$STUB_LAUNCHCTL_ARGV")"
+    else
+        pass "the refused plain install bootstraps nothing"
+    fi
+
+    # ---- a second --system-daemon run over the existing install ----
+    reset_argv_logs
+    INSTALL_STDIN="" run_install "$home" --system-daemon
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "a --system-daemon re-run over an existing install succeeds" "0" "$INSTALL_STATUS"
+    assert_output_has "the re-run says the binary is already these bytes" "$out" "already these bytes"
+    assert_output_has "the re-run prints the restart-only and bootout steps" "$out" "$(print_expect_bootout)"
+
+    # ---- --uninstall --system-daemon ----
+    cp "$bin" "$bin.prev"
+    reset_argv_logs
+    run_install "$home" --uninstall --system-daemon
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "--uninstall --system-daemon succeeds with no gui domain" "0" "$INSTALL_STATUS"
+    assert_output_has "--uninstall --system-daemon does not claim the daemon is unloaded" "$out" "NOT"
+    if [ -e "$bin" ] || [ -e "$bin.prev" ] || [ -e "$launcher" ] || [ -e "$dplist" ] || [ -e "$bin.update.lock" ]; then
+        fail "--uninstall --system-daemon removes the user-owned files" "some are still present"
+    else
+        pass "--uninstall --system-daemon removes the user-owned files"
+    fi
+    [ -e "$env_file" ] && pass "--uninstall --system-daemon keeps the env file without --purge" \
+        || fail "--uninstall --system-daemon keeps the env file without --purge" "$env_file is gone"
+    assert_output_has "--uninstall --system-daemon prints the root bootout and remove step" "$out" "$expect_unload"
+    if [ -s "$STUB_LAUNCHCTL_ARGV" ] || [ -s "$sudo_log" ]; then
+        fail "--uninstall --system-daemon runs no launchctl and no sudo" "$(cat "$STUB_LAUNCHCTL_ARGV" "$sudo_log")"
+    else
+        pass "--uninstall --system-daemon runs no launchctl and no sudo"
+    fi
+    # --purge also removes the token
+    reset_argv_logs
+    run_install "$home" --uninstall --system-daemon --purge
+    assert_eq "--uninstall --system-daemon --purge succeeds" "0" "$INSTALL_STATUS"
+    [ -e "$env_file" ] && fail "--uninstall --system-daemon --purge removes the env file" "$env_file remains" \
+        || pass "--uninstall --system-daemon --purge removes the env file"
+    INSTALL_STDIN="sysd-tok-MUST-NOT-BE-PRINTED
+" run_install "$home" --system-daemon
+    # negative controls: a plain --uninstall needs the gui domain (and refuses
+    # without one), and with one it prints no root step.
+    reset_argv_logs
+    run_install "$home" --uninstall
+    assert_eq "negative control: plain --uninstall refuses without a gui domain" "1" "$INSTALL_STATUS"
+    reset_argv_logs
+    STUB_LAUNCHCTL_DOMAIN_EXIT=0 run_install "$home" --uninstall
+    case "$(cat "$INSTALL_OUT")" in
+        *"launchctl bootout system/"*) fail "negative control: a plain --uninstall prints no root step" "it did" ;;
+        *) pass "negative control: a plain --uninstall prints no root step" ;;
+    esac
+
+    rm -f "$STUBS/sudo"
+    unset SOLADOR_AGENT_RELEASE STUB_CURL_BODY STUB_UNAME_S STUB_UNAME_M STUB_SW_VERS STUB_LAUNCHCTL_DOMAIN_EXIT
+    INSTALL_PATH=""
+}
+
 # ---- scripts/agent-standby-key.sh (#393 §A) -----------------------------------
 #
 # The custody script, run for real against a copy of the checkout with
@@ -9125,6 +9457,7 @@ test_unowned_service_binary_survives_set_e
 test_uninstall_macos
 test_uninstall_hardening_linux
 test_uninstall_hardening_macos
+test_install_system_daemon
 test_standby_key_script
 test_deploy_script_invariants
 
