@@ -1046,6 +1046,9 @@ fn repo_row(
             RepoStatus::Healthy => "Healthy",
         },
         "attention": !matches!(status, RepoStatus::Healthy | RepoStatus::Running),
+        "sortValues": {"issues":health.open_issues,"ready":health.ready_issues,"prs":health.open_prs,"status":match status {
+            RepoStatus::Unreachable => 0, RepoStatus::Failed => 1, RepoStatus::NeedsApproval => 2, RepoStatus::Running => 3, RepoStatus::Healthy => 4,
+        }},
         // The row's click target. Present on every row, including an
         // unreachable one: not being able to read a repo's runs is precisely
         // when you want to go and look at them.
@@ -1417,6 +1420,18 @@ fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
     };
     json!({
         "kind": kind,
+        "architecture": match row {
+            GhRunnerDisplayRow::Registered(r) => &r.architecture,
+            GhRunnerDisplayRow::Absent(r) => &r.architecture,
+        },
+        "runnerState": match row {
+            GhRunnerDisplayRow::Registered(r) => r.state.label(),
+            GhRunnerDisplayRow::Absent(r) => match r.state {
+                PresenceState::Recycling { .. } => "recycling",
+                PresenceState::Missing { .. } => "missing",
+                PresenceState::Present => "unknown",
+            },
+        },
         "org": org,
         "attention": attention,
         "name": row.name(),
@@ -1464,6 +1479,7 @@ pub fn roster_from_records(records: &[RunnerRosterRecord]) -> Vec<RunnerRosterEn
                 .ok()
                 .and_then(|secs| DateTime::from_timestamp(secs, 0))?;
             Some(RunnerRosterEntry {
+                architecture: record.architecture.clone(),
                 name: record.name.clone(),
                 os: github::RunnerOs::from_raw(&record.os),
                 last_seen,
@@ -1495,6 +1511,7 @@ pub fn roster_to_records(entries: &[RunnerRosterEntry], org: &str) -> Vec<Runner
     entries
         .iter()
         .map(|entry| RunnerRosterRecord {
+            architecture: entry.architecture.clone(),
             name: entry.name.clone(),
             os: entry.os.as_raw().to_owned(),
             // Pre-epoch is not a time a runner was seen; 0 is the honest floor.
@@ -1638,6 +1655,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     ]));
 
     let runner = |id: i64, name: &str, os: RunnerOs, state: RunnerState| GhRunner {
+        architecture: Some("ARM64".into()),
         id,
         name: name.to_owned(),
         os,
@@ -1653,11 +1671,13 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     // 300s grace (amber "recycling"), one past it (red "missing").
     let roster = [
         RunnerRosterEntry {
+            architecture: Some("ARM64".into()),
             name: "mac-s3".to_owned(),
             os: RunnerOs::MacOs,
             last_seen: now - chrono::TimeDelta::seconds(40),
         },
         RunnerRosterEntry {
+            architecture: Some("ARM64".into()),
             name: "ubu-1".to_owned(),
             os: RunnerOs::Linux,
             last_seen: now - chrono::TimeDelta::seconds(720),
@@ -2773,6 +2793,7 @@ mod tests {
 
     fn runner(name: &str, os: RunnerOs, state: RunnerState) -> GhRunner {
         GhRunner {
+            architecture: None,
             id: 1,
             name: name.to_owned(),
             os,
@@ -2797,6 +2818,7 @@ mod tests {
     #[test]
     fn forgetting_an_absent_runner_drops_its_row_and_the_missing_count() {
         let roster = [RunnerRosterEntry {
+            architecture: None,
             name: "ubu-9ec2".to_owned(),
             os: RunnerOs::Linux,
             // Well past grace, well short of the 24h age-out: a red
@@ -3016,11 +3038,13 @@ mod tests {
             ],
             &[
                 RunnerRosterEntry {
+                    architecture: None,
                     name: "mac-s2".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(40),
                 },
                 RunnerRosterEntry {
+                    architecture: None,
                     name: "mac-s3".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(720),
@@ -3085,11 +3109,13 @@ mod tests {
             &[runner("mac-s1", RunnerOs::MacOs, RunnerState::Idle)],
             &[
                 RunnerRosterEntry {
+                    architecture: None,
                     name: "mac-s2".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(40),
                 },
                 RunnerRosterEntry {
+                    architecture: None,
                     name: "mac-s3".to_owned(),
                     os: RunnerOs::MacOs,
                     last_seen: now() - TimeDelta::seconds(720),
@@ -3128,6 +3154,7 @@ mod tests {
         let mut state = with_runners(
             &[runner("mac-s1", RunnerOs::MacOs, RunnerState::Busy)],
             &[RunnerRosterEntry {
+                architecture: None,
                 name: "mac-s2".to_owned(),
                 os: RunnerOs::MacOs,
                 last_seen: now() - TimeDelta::seconds(40),
@@ -3253,16 +3280,19 @@ mod tests {
     fn the_roster_round_trips_through_the_stored_records() {
         let entries = vec![
             RunnerRosterEntry {
+                architecture: Some("ARM64".into()),
                 name: "mac-s1".to_owned(),
                 os: RunnerOs::MacOs,
                 last_seen: now(),
             },
             RunnerRosterEntry {
+                architecture: None,
                 name: "ubu-1".to_owned(),
                 os: RunnerOs::Linux,
                 last_seen: now() - TimeDelta::seconds(60),
             },
             RunnerRosterEntry {
+                architecture: None,
                 name: "win-1".to_owned(),
                 os: RunnerOs::Other,
                 last_seen: now(),
@@ -3290,12 +3320,14 @@ mod tests {
     fn an_undatable_record_is_dropped_without_taking_the_roster_with_it() {
         let records = vec![
             RunnerRosterRecord {
+                architecture: None,
                 name: "mac-s1".to_owned(),
                 os: "macOS".to_owned(),
                 last_seen: u64::MAX,
                 org: "acme".to_owned(),
             },
             RunnerRosterRecord {
+                architecture: None,
                 name: "ubu-1".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
@@ -3312,6 +3344,7 @@ mod tests {
     #[test]
     fn an_unrecognised_stored_os_reads_as_other() {
         let roster = roster_from_records(&[RunnerRosterRecord {
+            architecture: None,
             name: "bsd-1".to_owned(),
             os: "freebsd".to_owned(),
             last_seen: now_unix(),
@@ -3326,12 +3359,14 @@ mod tests {
     fn forgetting_a_runner_record_drops_that_name_only() {
         let records = vec![
             RunnerRosterRecord {
+                architecture: None,
                 name: "ubu-9ec2".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
                 org: "acme".to_owned(),
             },
             RunnerRosterRecord {
+                architecture: None,
                 name: "ubu-29ca".to_owned(),
                 os: "linux".to_owned(),
                 last_seen: now_unix(),
@@ -3351,6 +3386,7 @@ mod tests {
     #[test]
     fn forgetting_a_runner_forgets_it_in_one_org_only() {
         let shared = |org: &str| RunnerRosterRecord {
+            architecture: None,
             name: "runner-x".to_owned(),
             os: "linux".to_owned(),
             last_seen: now_unix(),

@@ -155,8 +155,10 @@
       "div",
       row.metrics?.length ? "db-host" : "db-compact-row",
     );
-    const b = interactive ? button("", "row", row.id, "db-item") : node("div", "db-item");
+    const b = interactive ? button("", row.grouped ? "runner-group" : "row", row.id, "db-item") : node("div", "db-item");
+    if (row.grouped) wrap.classList.add("db-runner-group");
     b.dataset.source = t.source;
+    b.dataset.tileId = t.id;
     const name = node("span", "db-row-label"),
       dot = node("span", "db-dot");
     dot.setAttribute("aria-hidden", "true");
@@ -185,21 +187,37 @@
     }
     b.append(colored("span", "db-value", row.value, row.valueColor));
     b.title = [row.label, row.value, row.detail].filter(Boolean).join(" · ");
+    if (row.counts?.length) b.setAttribute("aria-label", [row.label, ...row.counts.map(c => `${c.value} ${c.label}`), row.value].join(" · "));
     wrap.append(b);
     if (row.metrics?.length) {
       const stats = node("div", "db-host-stats");
       for (const m of row.metrics) {
+        const metric = node("div", "db-metric");
         const label = node("div", "db-stat-label");
         label.append(
           node("span", "", m.label),
           node("strong", "", m.value ?? "—"),
         );
-        stats.append(label);
+        const track = node("div", "db-meter");
+        track.setAttribute("aria-label", `${row.label} ${m.label}`);
+        if (Number.isFinite(m.fraction)) {
+          track.setAttribute("role", "meter");
+          track.setAttribute("aria-valuemin", "0");
+          track.setAttribute("aria-valuemax", "100");
+          track.setAttribute("aria-valuenow", String(m.fraction * 100));
+          track.setAttribute("aria-valuetext", m.value);
+          const fill = node("span", "db-meter-fill");
+          fill.style.width = `${m.fraction * 100}%`;
+          fill.style.backgroundColor = m.color;
+          track.append(fill);
+        } else track.setAttribute("aria-hidden", "true");
+        metric.append(label, track);
+        stats.append(metric);
       }
       wrap.append(stats);
     }
     const description = detail ? row.detail : row.compactDetail;
-    if (detail || t.source === "sentryCrons") {
+    if (detail || row.grouped || t.source === "sentryCrons") {
       const copy = node("p", "db-sub db-row-description", description || "");
       copy.title = description || "";
       wrap.append(copy);
@@ -217,6 +235,38 @@
       wrap.append(metrics);
     }
     return wrap;
+  }
+  function repoHeader(t, interactive = true) {
+    const header = node("div", "db-repo-head db-item-tabular");
+    const counts = node("span", "db-row-counts");
+    for (const [index, column] of (t.sortColumns || []).entries()) {
+      const selected = column.key === t.sortBy;
+      const control = interactive ? button("", "sort", t.id, "db-sort") : node("span", "db-sort");
+      control.dataset.column = column.key;
+      control.setAttribute("aria-label", `${column.label}${selected ? ` · ${L(t.sortDescending ? "descending" : "ascending")}` : ""}`);
+      if (interactive) {
+        control.setAttribute("aria-pressed", String(selected));
+        control.disabled = busy || active?.kind === "configure";
+      }
+      const indicator = node("strong", "", selected ? (t.sortDescending ? "↓" : "↑") : "");
+      indicator.setAttribute("aria-hidden", "true");
+      control.append(indicator, node("span", "", column.label));
+      if (index === 0) {
+        const name = node("span", "db-row-label");
+        name.append(control);
+        header.append(name, counts);
+      } else if (column.key === "status") {
+        const status = node("span", "db-value");
+        status.append(control);
+        header.append(status);
+      } else {
+        if (counts.children.length) counts.append(" · ");
+        control.classList.add("db-count");
+        control.dataset.header = column.key.toUpperCase();
+        counts.append(control);
+      }
+    }
+    return header;
   }
   function updateTiles(force = false) {
     const grid = q(".db-grid"),
@@ -248,6 +298,7 @@
       el.dataset.width = t.width;
       el.dataset.source = t.source;
       el.dataset.presentation = t.presentation;
+      el.dataset.options = JSON.stringify([t.rowLimit, t.runnerView, t.selectedRepos]);
       el.dataset.scope = t.scopeLabel;
       el.setAttribute("aria-label", t.title);
       el.classList.toggle("db-editable", editing);
@@ -292,6 +343,7 @@
           content.append(warning, rows);
         } else warnings(t.warnings, warning);
         rows.replaceChildren();
+        if (t.sortColumns?.length && t.rows.length) rows.append(repoHeader(t));
         if (!t.rows.length) {
           rows.append(node("p", "db-sub", t.empty));
           if (t.emptyAction) {
@@ -359,6 +411,10 @@
     if (force && active?.kind === "configure") {
       updatePlacementChoices();
       paintPlacement();
+    }
+    if (active?.kind === "configure") {
+      const draft = formTile(), choices = q(".db-repo-choices");
+      if (choices && draft) fillRepoChoices(choices, source(draft.source), draft.selectedRepos);
     }
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
@@ -438,6 +494,26 @@
     wrap.append(lab, input);
     return wrap;
   }
+  function fillRepoChoices(choices, s, selected = []) {
+    const ids = new Set(s.rows.map(r => r.id));
+    const options = [...s.rows.map(r => ({id:r.id, label:r.id})), ...selected.filter(id => !ids.has(id)).map(id => ({id, label:`${id} · ${L("missingScope")}`}))];
+    const signature = JSON.stringify(options);
+    if (choices.signature === signature) return;
+    const focused = choices.contains(document.activeElement) ? document.activeElement.value : null;
+    choices.signature = signature;
+    choices.replaceChildren();
+    for (const repo of options) {
+      const label = node("label"), input = node("input");
+      input.type = "checkbox";
+      input.name = "selectedRepos";
+      input.value = repo.id;
+      input.checked = selected.includes(repo.id);
+      input.disabled = busy;
+      label.append(input, node("span", "", repo.label));
+      choices.append(label);
+      if (repo.id === focused) input.focus({preventScroll:true});
+    }
+  }
   function openInspector(next) {
     active = next;
     const box = q(".db-inspector");
@@ -491,6 +567,20 @@
       const placement = selectField("position", L("position"), [], "");
       placement.classList.add("db-position-field");
       fields.append(placement);
+      if (["ghWorkflows", "ghRunners"].includes(t.source)) {
+        fields.append(selectField("rowLimit", L("rowLimit"), ["auto", "5", "10", "20", "50", "all"].map(value => ({value, label:L(value) || value})), t.rowLimit || "auto"));
+      }
+      if (t.source === "ghRunners") {
+        fields.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView || "list"));
+      }
+      if (t.source === "ghWorkflows") {
+        const repos = node("fieldset", "db-repo-selection");
+        repos.append(node("legend", "", L("selectedRepos")), node("p", "db-sub", L("reposHint")));
+        const choices = node("div", "db-repo-choices");
+        fillRepoChoices(choices, s, t.selectedRepos);
+        repos.append(choices);
+        fields.append(repos);
+      }
       const actions = node("div", "db-form-actions");
       actions.append(
         button(L(next.draft ? "add" : "apply"), "apply", null, "db-primary"),
@@ -610,6 +700,7 @@
     card.dataset.source = t.source;
     card.dataset.presentation = t.presentation;
     card.dataset.scope = t.scopeLabel;
+    card.dataset.options = JSON.stringify([t.rowLimit, t.runnerView, t.selectedRepos]);
     const head = node("header", "db-tile-head"), heading = node("div");
     heading.append(node("h3", "db-tile-title", t.title), node("p", "db-tile-note", `${t.scopeLabel} · ${L(t.presentation)}`));
     head.append(heading);
@@ -619,6 +710,7 @@
     content.setAttribute("aria-label", t.title);
     content.append(warnings(t.warnings));
     const rows = node("div", "db-tile-rows");
+    if (t.sortColumns?.length && t.rows.length) rows.append(repoHeader(t, false));
     if (!t.rows.length) rows.append(node("p", "db-sub", t.empty));
     for (const row of t.rows) rows.append(makeRow(row, t, t.presentation === "detailed", false));
     if (t.moreCount) rows.append(node("p", "db-sub", t.moreLabel));
@@ -633,7 +725,11 @@
     const original = active.draft || tile(active.id);
     if (!original) return null;
     const fields = new FormData(form);
-    return { ...original, title: String(fields.get("title")).trim(), scope: fields.get("scope"), presentation: fields.get("presentation"), width: fields.get("width") };
+    return { ...original, title: String(fields.get("title")).trim(), scope: fields.get("scope"), presentation: fields.get("presentation"), width: fields.get("width"),
+      rowLimit: fields.get("rowLimit") || original.rowLimit || "auto",
+      runnerView: fields.get("runnerView") || original.runnerView || "list",
+      selectedRepos: original.source === "ghWorkflows" ? fields.getAll("selectedRepos") : (original.selectedRepos || []),
+    };
   }
   function updatePlacementChoices(selected = q("#dashboard-position")?.value) {
     const select = q("#dashboard-position");
@@ -723,7 +819,7 @@
     if (active.row) return s.rows.filter((r) => r.id === active.row);
     const t = active.tile && tile(active.tile);
     if (!t) return s.rows;
-    return s.rows.filter(
+    return s.rows.filter(r => !active.group || r.groupId === active.group).filter(r => !t.selectedRepos?.length || t.selectedRepos.includes(r.id)).filter(
       (r) =>
         t.scope === "all" ||
         (t.scope === "attention" && r.attention) ||
@@ -933,6 +1029,11 @@
       openInspector({ kind: "details", source: b.dataset.source, row: id });
       return;
     }
+    if (action === "runner-group") {
+      const group = model.tiles.find(t => t.id === b.dataset.tileId)?.rows.find(r => r.id === id);
+      if (group) openInspector({kind:"details", source:b.dataset.source, tile:b.dataset.tileId, group:id});
+      return;
+    }
     if (action === "details") {
       const t = tile(id);
       openInspector({ kind: "details", source: t.source, tile: id });
@@ -965,6 +1066,16 @@
       return;
     }
     if (busy) return;
+    if (action === "sort") {
+      if (active?.kind === "configure") return;
+      const next = copyLayout(), selected = next.tiles.find(t => t.id === id);
+      const column = b.dataset.column;
+      selected.sortDescending = selected.sortBy === column ? !selected.sortDescending : column !== "name" && column !== "status";
+      selected.sortBy = column;
+      await save(next);
+      q(`[data-tile="${CSS.escape(id)}"] [data-action="sort"][data-column="${CSS.escape(column)}"]`)?.focus({preventScroll:true});
+      return;
+    }
     if (action === "edit") {
       editing = !editing;
       closeInspector();

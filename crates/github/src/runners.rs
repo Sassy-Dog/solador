@@ -117,6 +117,7 @@ impl RunnerState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhRunner {
+    pub architecture: Option<String>,
     pub id: i64,
     pub name: String,
     pub os: RunnerOs,
@@ -148,6 +149,7 @@ pub struct RunnerSummary {
 pub fn map(dtos: &[RunnerDto]) -> Vec<GhRunner> {
     dtos.iter()
         .map(|dto| GhRunner {
+            architecture: architecture_of(dto),
             id: dto.id,
             name: dto.name.clone(),
             os: os_of(dto),
@@ -167,6 +169,19 @@ fn state_of(dto: &RunnerDto) -> RunnerState {
     } else {
         RunnerState::Idle
     }
+}
+
+// GitHub's standard architecture labels. Conflicting or absent labels are
+// unknown; runner names and arbitrary pool labels are not architecture evidence.
+fn architecture_of(dto: &RunnerDto) -> Option<String> {
+    let labels = dto.labels.as_deref().unwrap_or_default();
+    let mut found = ["ARM64", "X64", "ARM"].into_iter().filter(|arch| {
+        labels
+            .iter()
+            .any(|label| label.name.eq_ignore_ascii_case(arch))
+    });
+    let first = found.next()?;
+    found.next().is_none().then(|| first.to_owned())
 }
 
 fn os_of(dto: &RunnerDto) -> RunnerOs {
@@ -206,6 +221,26 @@ mod tests {
     use super::*;
 
     const RUNNERS_FIXTURE: &str = include_str!("../tests/fixtures/runners.json");
+
+    #[test]
+    fn architecture_comes_from_labels_never_the_runner_name() {
+        for (labels, expected) in [
+            (vec!["self-hosted", "ARM64"], Some("ARM64")),
+            (vec!["x64"], Some("X64")),
+            (vec!["ARM"], Some("ARM")),
+            (vec!["linux"], None),
+            (vec!["ARM64", "X64"], None),
+        ] {
+            let mut input = dto("arm64-name-is-not-evidence", "Linux", "online", false);
+            input.labels = Some(
+                labels
+                    .into_iter()
+                    .map(|name| RunnerLabel { name: name.into() })
+                    .collect(),
+            );
+            assert_eq!(map(&[input])[0].architecture.as_deref(), expected);
+        }
+    }
 
     fn dto(name: &str, os: &str, status: &str, busy: bool) -> RunnerDto {
         serde_json::from_value(serde_json::json!({

@@ -6,7 +6,7 @@
   let frame = 0;
   const configuration = element => {
     const tile = element.closest('.db-tile, .db-preview-tile') || element.querySelector('.db-preview-tile');
-    return tile ? [tile.dataset.source, tile.dataset.presentation, tile.dataset.scope].join('|') : '';
+    return tile ? [tile.dataset.source, tile.dataset.presentation, tile.dataset.scope, tile.dataset.options].join('|') : '';
   };
   const schedule = () => {
     if (frame) return;

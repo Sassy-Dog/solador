@@ -57,6 +57,11 @@ pub fn default_layout() -> DashboardLayout {
                 presentation: "summary".into(),
                 width: if i < 2 { "medium" } else { "small" }.into(),
                 hidden: false,
+                row_limit: "auto".into(),
+                selected_repos: vec![],
+                sort_by: "name".into(),
+                sort_descending: false,
+                runner_view: "list".into(),
             })
             .collect(),
     }
@@ -98,6 +103,19 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
         let fixed = fixed_scopes(&tile.source)
             .iter()
             .any(|(v, _)| *v == tile.scope);
+        if !["auto", "5", "10", "20", "50", "all"].contains(&tile.row_limit.as_str())
+            || !["name", "issues", "ready", "prs", "status"].contains(&tile.sort_by.as_str())
+            || !["list", "grouped"].contains(&tile.runner_view.as_str())
+            || (tile.runner_view == "grouped" && tile.source != "ghRunners")
+            || (!tile.selected_repos.is_empty() && tile.source != "ghWorkflows")
+            || tile.selected_repos.len() > 1000
+            || tile
+                .selected_repos
+                .iter()
+                .any(|id| id.is_empty() || id.len() > 512 || id.chars().any(char::is_control))
+        {
+            return Err("Choose supported row, repository and runner display options.".into());
+        }
         let resource = tile.scope.strip_prefix("item:").is_some_and(|id| {
             !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
         });
@@ -244,6 +262,15 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 field("CPU", reading("cpuValue")),
                 field("RAM", reading("memValue"))
             ]);
+            if !down {
+                for (index, fraction, color) in [
+                    (0, "cpuFraction", "cpuValueColor"),
+                    (1, "memFraction", "memValueColor"),
+                ] {
+                    r["metrics"][index]["fraction"] = h[fraction].clone();
+                    r["metrics"][index]["color"] = h[color].clone();
+                }
+            }
             r["details"] = json!([
                 field("Disk read", reading("diskRead")),
                 field("Disk write", reading("diskWrite")),
@@ -366,6 +393,7 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     v["attention"].as_bool().unwrap_or(false),
                 );
                 r["url"] = v["url"].clone();
+                r["sortValues"] = v["sortValues"].clone();
                 if v["status"] == "healthy" {
                     add_scope(&mut r, "healthy");
                 }
@@ -419,6 +447,10 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     v["attention"].as_bool().unwrap_or(false),
                 );
                 r["detail"] = json!(format!("{} · {}", string(v, "org"), string(v, "os")));
+                for key in ["os", "architecture", "runnerState"] {
+                    r[key] = v[key].clone();
+                }
+                r["groupId"] = json!(viewmodel::dashboard::runner_group_id(&r));
                 add_scope(&mut r, string(v, "os"));
                 r
             })
@@ -694,11 +726,32 @@ fn in_scope(row: &Value, scope: &str) -> bool {
 }
 
 fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
-    let matching: Vec<_> = list(source, "rows")
+    let mut matching: Vec<_> = list(source, "rows")
         .iter()
         .filter(|r| in_scope(r, &tile.scope))
+        .filter(|r| {
+            tile.selected_repos.is_empty() || tile.selected_repos.iter().any(|id| r["id"] == *id)
+        })
         .collect();
-    let limit = if tile.presentation == "summary" {
+    if tile.source == "ghWorkflows" {
+        viewmodel::dashboard::sort_repos(&mut matching, &tile.sort_by, tile.sort_descending);
+    }
+    let resource_count = matching.len();
+    let problems = matching.iter().filter(|r| r["attention"] == true).count();
+    let grouped = tile.source == "ghRunners" && tile.runner_view == "grouped";
+    let groups = if grouped {
+        viewmodel::dashboard::group_runners(&matching)
+    } else {
+        vec![]
+    };
+    if grouped {
+        matching = groups.iter().collect();
+    }
+    let limit = if tile.row_limit == "all" {
+        usize::MAX
+    } else if let Ok(limit) = tile.row_limit.parse::<usize>() {
+        limit
+    } else if tile.presentation == "summary" {
         if tile.source == "hosts" {
             4
         } else {
@@ -707,17 +760,28 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     } else {
         12
     };
-    // Resource ordering is stable across refreshes, including status changes.
-    // Urgency lives in the fixed attention strip, never in moving tile targets.
+    // Default ordering is stable. Explicit column sorts follow current values.
     let shown: Vec<_> = matching.iter().take(limit).copied().cloned().collect();
     let hidden = matching.len().saturating_sub(limit);
-    let hidden_attention = matching
+    let hidden_attention: u64 = matching
         .iter()
         .skip(limit)
-        .filter(|r| r["attention"] == true)
-        .count();
-    let problems = matching.iter().filter(|r| r["attention"] == true).count();
-    let more = if hidden_attention > 0 {
+        .map(|r| {
+            if grouped {
+                r["attentionCount"].as_u64().unwrap_or(0)
+            } else {
+                u64::from(r["attention"] == true)
+            }
+        })
+        .sum();
+    let more = if grouped {
+        let noun = if hidden == 1 { "type" } else { "types" };
+        if hidden_attention > 0 {
+            format!("{hidden} more {noun} · {hidden_attention} runners need attention →")
+        } else {
+            format!("{hidden} more {noun} →")
+        }
+    } else if hidden_attention > 0 {
         format!("{hidden} more · {hidden_attention} need attention →")
     } else {
         format!("{hidden} more →")
@@ -732,6 +796,11 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     } else if tile.scope.starts_with("item:") && matching.is_empty() {
         (
             "This resource has no current reading. Review its connection or choose another scope.",
+            Some("configure"),
+        )
+    } else if !tile.selected_repos.is_empty() && matching.is_empty() {
+        (
+            "None of the selected repositories has a reading in this scope. Review the repository selection or scope.",
             Some("configure"),
         )
     } else if tile.scope != "all" && !list(source, "rows").is_empty() {
@@ -750,7 +819,19 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
     } else {
         (string(source, "message"), Some("manage"))
     };
-    json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":format!("{} shown · {problems} need attention",matching.len().min(limit))})
+    let footer = if grouped {
+        format!(
+            "{} types shown · {resource_count} runners · {problems} need attention",
+            shown.len()
+        )
+    } else {
+        format!("{} shown · {problems} need attention", shown.len())
+    };
+    json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
+        "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
+        "sortColumns":if tile.source == "ghWorkflows" { json!([
+            {"key":"name","label":"Repo"},{"key":"issues","label":"Issues"},{"key":"ready","label":"Ready"},{"key":"prs","label":"PRs"},{"key":"status","label":"Status"}
+        ]) } else {json!([])}})
 }
 
 /// Same scope and truncation rules as a saved tile, using cached readings only.
@@ -804,17 +885,17 @@ fn presets() -> Value {
         {
             "id":"remote-machines",
             "hint":"Keep remote hosts together, with CPU and memory at a glance.",
-            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote Machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
+            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote Machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into() }
         },
         {
             "id":"repos-attention",
             "hint":"Focus on repositories with issues in their available readings.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos Needing Attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false }
+            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos Needing Attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into() }
         },
         {
             "id":"linux-runners",
             "hint":"See Linux runner availability in one compact tile.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false }
+            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into() }
         }
     ])
 }
@@ -850,6 +931,16 @@ fn labels() -> Value {
         ("scope", "Show"),
         ("presentation", "Presentation"),
         ("width", "Width"),
+        ("rowLimit", "Rows to show"),
+        ("auto", "Automatic"),
+        ("all", "All"),
+        ("runnerView", "Runner view"),
+        ("list", "Individual runners"),
+        ("grouped", "By OS + architecture"),
+        ("selectedRepos", "Repositories in this tile"),
+        ("reposHint", "Leave all unchecked to include every repo in this scope, including new repos."),
+        ("ascending", "Ascending"),
+        ("descending", "Descending"),
         ("position", "Position"),
         ("positionCurrent", "Keep current position"),
         ("positionStart", "At the beginning"),
@@ -943,6 +1034,145 @@ fn labels() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configured_tile(source: &str, options: Value) -> DashboardTile {
+        let tile = default_layout()
+            .tiles
+            .into_iter()
+            .find(|t| t.source == source)
+            .unwrap();
+        let mut value = serde_json::to_value(tile).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(options.as_object().unwrap().clone());
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn repo_selection_and_numeric_sort_happen_before_the_row_limit() {
+        let rows = json!([
+            {"id":"a","label":"Alpha","sortValues":{"issues":2}},
+            {"id":"b","label":"Beta","sortValues":{"issues":10}},
+            {"id":"c","label":"Charlie","sortValues":{"issues":null}},
+            {"id":"d","label":"Delta","sortValues":{"issues":100}}
+        ]);
+        let source = json!({"rows":rows,"scopes":[]});
+        for (descending, expected) in [(false, vec!["a", "b", "c"]), (true, vec!["b", "a", "c"])] {
+            let tile = configured_tile(
+                "ghWorkflows",
+                json!({"rowLimit":"all", "selectedRepos":["a","b","c"], "sortBy":"issues", "sortDescending":descending}),
+            );
+            let view = tile_view(&tile, &source);
+            let ids: Vec<_> = list(&view, "rows")
+                .iter()
+                .map(|r| string(r, "id"))
+                .collect();
+            assert_eq!(ids, expected);
+        }
+    }
+
+    #[test]
+    fn all_rows_can_exceed_both_summary_and_detailed_caps() {
+        let source = json!({"rows":(0..30).map(|i| json!({"id":i.to_string(),"label":i.to_string()})).collect::<Vec<_>>()});
+        for source_id in ["ghWorkflows", "ghRunners"] {
+            for presentation in ["summary", "detailed"] {
+                let tile = configured_tile(
+                    source_id,
+                    json!({"rowLimit":"all","presentation":presentation}),
+                );
+                let view = tile_view(&tile, &source);
+                assert_eq!(list(&view, "rows").len(), 30);
+                assert_eq!(view["moreCount"], 0);
+            }
+        }
+    }
+
+    #[test]
+    fn old_tile_settings_keep_defaults_and_invalid_new_options_are_refused() {
+        let old = json!({"id":"old","source":"ghWorkflows","title":"Repos","scope":"all","presentation":"summary","width":"medium"});
+        let tile: DashboardTile = serde_json::from_value(old).unwrap();
+        let source = json!({"rows":(0..8).map(|i| json!({"id":i.to_string(),"label":i.to_string()})).collect::<Vec<_>>()});
+        assert_eq!(list(&tile_view(&tile, &source), "rows").len(), 5);
+        assert_eq!(tile.sort_by, "name");
+        assert_eq!(tile.runner_view, "list");
+        for options in [
+            json!({"rowLimit":"0"}),
+            json!({"sortBy":"unknown"}),
+            json!({"runnerView":"grouped"}),
+            json!({"selectedRepos":["\n"]}),
+        ] {
+            assert!(validate(&DashboardLayout {
+                revision: 0,
+                tiles: vec![configured_tile("ghWorkflows", options)]
+            })
+            .is_err());
+        }
+        let missing = configured_tile("ghWorkflows", json!({"selectedRepos":["removed/repo"]}));
+        let view = tile_view(&missing, &source);
+        assert!(list(&view, "rows").is_empty());
+        assert_eq!(view["emptyAction"], "configure");
+    }
+
+    #[test]
+    fn machine_bars_use_numeric_readings_and_hide_disconnected_values() {
+        let rows = host_rows(&json!({"hosts":[{
+            "id":"local", "connection":{"state":"live"},
+            "cpuValue":"24%", "cpuFraction":0.24, "cpuValueColor":"#00ff00",
+            "memValue":"12 / 16 GB", "memFraction":0.75, "memValueColor":"#ffaa00"
+        }]}));
+        assert_eq!(rows[0]["metrics"][0]["fraction"], 0.24);
+        assert_eq!(rows[0]["metrics"][1]["fraction"], 0.75);
+        assert_eq!(rows[0]["metrics"][1]["color"], "#ffaa00");
+    }
+
+    #[test]
+    fn grouped_runners_count_states_after_scope_filtering() {
+        let source = json!({"rows":[
+            {"id":"a","os":"LINUX","architecture":"ARM64","runnerState":"busy","scopes":["LINUX"]},
+            {"id":"b","os":"LINUX","architecture":"ARM64","runnerState":"idle","scopes":["LINUX"]},
+            {"id":"c","os":"LINUX","architecture":"ARM64","runnerState":"offline","scopes":["LINUX"]},
+            {"id":"d","os":"LINUX","architecture":"ARM64","runnerState":"missing","attention":true,"scopes":["LINUX"]},
+            {"id":"e","os":"LINUX","architecture":"X64","runnerState":"recycling","scopes":["LINUX"]},
+            {"id":"f","os":"MACOS","architecture":null,"runnerState":"busy","scopes":["MACOS"]}
+        ]});
+        let tile = configured_tile(
+            "ghRunners",
+            json!({"runnerView":"grouped","scope":"LINUX","rowLimit":"all"}),
+        );
+        let view = tile_view(&tile, &source);
+        assert_eq!(list(&view, "rows").len(), 2);
+        let arm = &view["rows"][0];
+        assert_eq!(arm["label"], "LINUX · ARM64");
+        assert_eq!(
+            arm["summary"],
+            json!({"total":4,"busy":1,"idle":1,"offline":1,"missing":1,"recycling":0,"unknown":0})
+        );
+        assert_eq!(view["rows"][1]["summary"]["recycling"], 1);
+        assert!(string(&view, "footer").contains("5 runners"));
+    }
+
+    #[test]
+    fn truncated_groups_count_hidden_runners_needing_attention() {
+        let mut rows: Vec<_> = ["LINUX", "MACOS", "WINDOWS"]
+            .into_iter()
+            .flat_map(|os| {
+                ["ARM64", "X64"]
+                    .into_iter()
+                    .map(move |arch| json!({"os":os,"architecture":arch,"runnerState":"idle"}))
+            })
+            .collect();
+        rows[5]["attention"] = json!(true);
+        rows[5]["runnerState"] = json!("missing");
+        rows.push(rows[5].clone());
+        let tile = configured_tile("ghRunners", json!({"runnerView":"grouped","rowLimit":"5"}));
+        let view = tile_view(&tile, &json!({"rows":rows}));
+        assert_eq!(view["moreCount"], 1);
+        assert_eq!(
+            view["moreLabel"],
+            "1 more type · 2 runners need attention →"
+        );
+    }
 
     #[test]
     fn tile_titles_capitalize_words_without_lowercasing_brands() {
@@ -1576,6 +1806,11 @@ mod tests {
         )]);
         let before = store.data().clone();
         let mut layout = default_layout();
+        layout.tiles[1].row_limit = "all".into();
+        layout.tiles[1].selected_repos = vec!["acme/toolkit".into(), "acme/widget".into()];
+        layout.tiles[1].sort_by = "ready".into();
+        layout.tiles[1].sort_descending = true;
+        layout.tiles[2].runner_view = "grouped".into();
         layout.tiles.reverse();
         layout.tiles[0].hidden = true;
         let saved = crate::persist_dashboard(&mut store, layout, 0).unwrap();
