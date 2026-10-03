@@ -1005,7 +1005,8 @@ beside it (#447) is what lets `SOLADOR_AGENT_TLS=1` find or create
 never off this process's own inherited `HOME`. On macOS the service is a
 **LaunchAgent** —
 `~/Library/LaunchAgents/app.solador.agent.plist`, label `app.solador.agent`,
-domain `gui/<uid>`, running as the invoking user, never a LaunchDaemon —
+domain `gui/<uid>`, running as the invoking user, never a LaunchDaemon by
+default (the opt-in `--system-daemon` mode below is the one exception) —
 whose `ProgramArguments` is a launcher (`~/.local/bin/solador-agent-launchd`,
 a copy of `deploy/run-agent.sh`) plus the binary and env-file paths. The
 launcher exists because launchd has no `EnvironmentFile=` and its
@@ -1308,6 +1309,45 @@ to another user" has the ordered procedure — install as the new user first
 as the old user — for exactly the reason a plain `--uninstall` does not
 purge by default: the env file is worth keeping until whatever replaced it
 is confirmed working.
+
+**`--system-daemon`: the split install for a non-login service user (#506,
+part of #505; macOS only).** A LaunchAgent starts at a user's login, so a host
+whose agent runs as a dedicated, non-login service user (the org's agent
+management spec §1.3 and §5.3) stays down after an unattended reboot. The
+installer's answer — `--system-daemon` refuses root (as `--uninstall` and
+`--enable-timer` do) and no mode uses `sudo` — splits the install at the only privileged boundary: the service
+user stages everything it owns (the verified binary, the launcher, the env
+file, TLS), **renders** `app.solador.agent.daemon.plist` into its own home
+(`~/.config/app.solador.agent.daemon.plist`, never into `/Library`), calls
+`launchctl` not at all (a non-login user has no `gui/<uid>` domain, so the
+install's login-session check does not apply to it), and **prints** the one root
+step: `sudo install -o root -g wheel -m 644 <rendered>
+/Library/LaunchDaemons/app.solador.agent.plist && sudo launchctl bootstrap
+system /Library/LaunchDaemons/app.solador.agent.plist`. The daemon template is
+the LaunchAgent's plus `UserName`/`GroupName` and `HOME` and
+`SOLADOR_AGENT_CONFIG_DIR` in `EnvironmentVariables`, with `ProgramArguments`
+still `[launcher, binary, env file, log file]` (the shape `update.rs` parses),
+the same label, `KeepAlive`, `RunAtLoad` and `ThrottleInterval`, and no
+`SessionCreate` (no keychain). What it deliberately omits: the post-install
+`/v1/health` check and the TLS fingerprint, which need a running agent and so
+belong to the follow-up `--system-daemon --verify` (same user, after root's
+step); and any update job (`--enable-timer` is refused — a pinned host moves by
+re-pinning). `solador-agent update` and `rollback` are **not supported** in this
+mode until #505's update-side follow-up: `resolve_launchd` reads only a
+per-user LaunchAgent plist and the restart goes through `gui/<uid>`, so they
+exit 1 on a daemon host; the real upgrade path is a pinned re-run, root's
+`kickstart -k`, then `--verify`. Exit 0 is not "serving" here: install means
+*staged*, `--verify` means `/v1/health` reports the installed version, and
+`--uninstall --system-daemon` means the user files are gone with root's unload
+printed and unconfirmed. Also refused: a
+platform that is not macOS, and an existing per-user LaunchAgent install for the
+same user, so two agents never fight over the port. `--uninstall
+--system-daemon` removes the user-owned files and prints the matching root
+`bootout` and plist removal. `agent/deploy/lib_test.sh` covers all of it with
+`launchctl` and `sudo` stubs that record every call, so "bootstraps nothing" is
+asserted on their argv, and each refusal has a negative control. What is **not**
+observed anywhere: a real LaunchDaemon loaded under a real non-login user after
+a reboot, which is a host observation owed on the first deployment.
 
 ## Testing
 

@@ -340,9 +340,12 @@ xml_escape() {
 # a hint naming a service that does not exist is worse than none.
 service_inspect_hint() {
     local label="${1:-app.solador.agent}"
+    # The launchd domain the service lives in: the invoking user's gui domain
+    # for a LaunchAgent, "system" for the --system-daemon LaunchDaemon (#506).
+    local domain="${2:-gui/$(id -u)}"
     case "$(uname -s)" in
         Darwin)
-            echo "         launchctl print gui/$(id -u)/$label"
+            echo "         launchctl print $domain/$label"
             echo "         tail -n 50 ~/Library/Logs/solador-agent.log"
             ;;
         *)
@@ -586,7 +589,10 @@ env_value() {
 #   verify_health <env-file> ""                                   # only answer
 #
 # The optional third argument is the launchd label install.sh derived, so the
-# macOS diagnostic names the service that exists rather than the default.
+# macOS diagnostic names the service that exists rather than the default. The
+# optional fourth is the launchd domain that diagnostic names ("system" for the
+# --system-daemon LaunchDaemon, #506); it defaults to the invoking user's gui
+# domain.
 #
 # The empty form is for rollback, which asserts only that the agent came back.
 # It predates `--version` (#390) and is no longer forced: `.prev` could now be
@@ -599,6 +605,8 @@ env_value() {
 # (it exists so the failure paths can be exercised without a 15s wait).
 verify_health() {
     local env_file="$1" expected_version="${2:-}" launchd_label="${3:-app.solador.agent}"
+    # Only the failure hint reads this (#506): where the service lives.
+    local launchd_domain="${4:-gui/$(id -u)}"
     [ -f "$env_file" ] || { echo "ERROR: env file $env_file not found; cannot verify." >&2; return 1; }
 
     local token bind port tls url
@@ -746,7 +754,7 @@ verify_health() {
         echo "         installed (per <binary> --version): $expected_version" >&2
         echo "       A stale binary is still serving. Check that the service starts" >&2
         echo "       the path the binary was installed to:" >&2
-        service_inspect_hint "$launchd_label" >&2
+        service_inspect_hint "$launchd_label" "$launchd_domain" >&2
     else
         echo "ERROR: /v1/health did not report version $expected_version within timeout." >&2
         echo "       Last response: ${body:-<no response>}" >&2

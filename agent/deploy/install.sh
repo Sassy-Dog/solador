@@ -9,6 +9,9 @@
 #   ./deploy/install.sh --migrate-from-opt  # re-point an existing /opt install (Linux)
 #   ./deploy/install.sh --uninstall         # remove THIS USER's install (env file, TLS key/cert kept)
 #   ./deploy/install.sh --uninstall --purge # ...and delete the env file + TLS key/cert too
+#   ./deploy/install.sh --system-daemon     # macOS: stage everything as the SERVICE USER, render a LaunchDaemon plist, print the root step (#506)
+#   ./deploy/install.sh --system-daemon --verify      # ...then, once root has loaded it: the /v1/health check
+#   ./deploy/install.sh --uninstall --system-daemon   # remove that user's files, print the root bootout step
 #   ./deploy/install.sh --help
 #
 # Environment:
@@ -61,6 +64,35 @@
 #      earlier opt-in exactly as it is; it is revoked by the disable/remove
 #      commands in agent/README.md, or removed along with everything else
 #      by --uninstall (below).
+#
+# --system-daemon (#506, part of #505; macOS only) is the split install a
+# dedicated, non-login service user needs, because a LaunchAgent stays down
+# after an unattended reboot until someone logs in at the console. It runs AS
+# THE SERVICE USER and never as root (this script never uses sudo in any mode):
+# it does everything a fresh per-user install does — verified download or pin,
+# ~/.local/bin, the env file, the launcher — then renders
+# app.solador.agent.daemon.plist into the service user's own home instead of
+# ~/Library/LaunchAgents. It bootstraps NOTHING (no gui/<uid>, no launchctl
+# call at all) and PRINTS the one privileged step for an operator to run: copy
+# the rendered file to /Library/LaunchDaemons as root:wheel 0644, then
+# `launchctl bootstrap system` it. The post-install /v1/health check cannot run
+# yet, so `--system-daemon --verify` (same user, after root loaded it) runs it.
+# `--uninstall --system-daemon` removes the user-owned files and PRINTS the
+# matching root bootout/remove step. Refused: root, a platform that is not
+# macOS, an existing per-user LaunchAgent install for this user (remove it
+# first — two must never fight over the port), and --enable-timer, which has no
+# meaning here. `solador-agent update` and `rollback` find the service only
+# through a per-user LaunchAgent plist and the gui/<uid> domain, so they do NOT
+# support this mode until #505's update-side follow-up lands: a host moves by
+# re-pinning (re-run with SOLADOR_AGENT_RELEASE, then root's kickstart, then
+# --verify). See agent/README.md, "Running as a system daemon under a service
+# user".
+#
+# Exit status in --system-daemon mode, where 0 does NOT mean "serving": install
+# exit 0 = STAGED, not running (root's step, then --verify, are still owed);
+# --verify exit 0 = /v1/health reports the installed version, 1 = it does not;
+# --uninstall exit 0 = the user-owned files are gone, and the root unload is
+# printed, not confirmed. The rows below this one describe the per-user modes.
 #
 # Exit status: 0 installed and serving (and, with the flag, scheduled); 1 the
 # install failed or was refused, nothing is serving that this run put there;
@@ -150,7 +182,10 @@
 #      SOLADOR_AGENT_LAUNCHD_LABEL. Nothing is changed, except that an empty
 #      lock file this run created may remain after a perl reopen failure.
 #   2  usage: an unknown argument, --purge without --uninstall, or
-#      --uninstall combined with --migrate-from-opt or --enable-timer.
+#      --uninstall combined with --migrate-from-opt or --enable-timer; and,
+#      for --system-daemon (#506), --verify without it, --verify beside
+#      --uninstall, --enable-tls or --migrate-from-opt, or --enable-timer
+#      beside it.
 #   4  the uninstall could not confirm the service is gone: a reachable
 #      manager refused a specific stop or disable request, or a unit's state
 #      could not be read. Every file this run found was still removed
@@ -213,6 +248,12 @@ UNIT_DST="$HOME/.config/systemd/user/${BIN_NAME}.service"
 LAUNCHD_LABEL="${SOLADOR_AGENT_LAUNCHD_LABEL:-app.solador.agent}"
 PLIST_SRC="$SCRIPT_DIR/app.solador.agent.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+# --system-daemon (#506): the LaunchDaemon template, where this run renders it
+# (the service user's own home — never /Library) and where root is told to put
+# it. Same label as the LaunchAgent: one host runs one agent.
+DAEMON_PLIST_SRC="$SCRIPT_DIR/app.solador.agent.daemon.plist"
+DAEMON_PLIST_DST="$HOME/.config/${LAUNCHD_LABEL}.daemon.plist"
+SYSTEM_PLIST="/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist"
 LAUNCHER_SRC="$SCRIPT_DIR/run-agent.sh"
 LAUNCHER_DST="$INSTALL_DIR/${BIN_NAME}-launchd"
 LOG_FILE="$HOME/Library/Logs/${BIN_NAME}.log"
@@ -279,6 +320,10 @@ PURGE=false
 # SOLADOR_AGENT_TLS=1 regardless of this flag — see the env-file section
 # below — so this only ever matters on a re-run.
 ENABLE_TLS=false
+# --system-daemon (#506): macOS only. Stage as the service user, render a
+# LaunchDaemon plist, print the root step; --verify is its follow-up run.
+SYSTEM_DAEMON=false
+VERIFY=false
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --migrate-from-opt) MIGRATE_FROM_OPT=true ;;
@@ -286,12 +331,14 @@ while [ "$#" -gt 0 ]; do
         --uninstall) UNINSTALL=true ;;
         --purge) PURGE=true ;;
         --enable-tls) ENABLE_TLS=true ;;
+        --system-daemon) SYSTEM_DAEMON=true ;;
+        --verify) VERIFY=true ;;
         -h | --help | help)
             usage
             exit 0
             ;;
         *)
-            echo "ERROR: unknown argument '$1'. Use: [--enable-timer] [--enable-tls] [--migrate-from-opt] [--uninstall [--purge]] [--help]" >&2
+            echo "ERROR: unknown argument '$1'. Use: [--enable-timer] [--enable-tls] [--migrate-from-opt] [--system-daemon [--verify]] [--uninstall [--purge] [--system-daemon]] [--help]" >&2
             exit 2
             ;;
     esac
@@ -325,6 +372,46 @@ if [ "$UNINSTALL" = true ] && { [ "$MIGRATE_FROM_OPT" = true ] || [ "$ENABLE_TIM
     echo "       it removes an install; it does not create or repoint one." >&2
     exit 2
 fi
+
+# --system-daemon's own argument rules (#506), usage errors like the rest and
+# for the same reason: before OS detection, before anything is touched.
+if [ "$VERIFY" = true ] && [ "$SYSTEM_DAEMON" != true ]; then
+    echo "ERROR: --verify only applies together with --system-daemon (it is the follow-up run" >&2
+    echo "       that checks /v1/health once root has loaded the LaunchDaemon)." >&2
+    exit 2
+fi
+if [ "$VERIFY" = true ] && { [ "$UNINSTALL" = true ] || [ "$ENABLE_TLS" = true ] || [ "$MIGRATE_FROM_OPT" = true ]; }; then
+    echo "ERROR: --verify only checks /v1/health; it does not combine with --uninstall," >&2
+    echo "       --enable-tls or --migrate-from-opt." >&2
+    exit 2
+fi
+if [ "$SYSTEM_DAEMON" = true ] && [ "$ENABLE_TIMER" = true ]; then
+    echo "ERROR: --enable-timer is refused with --system-daemon: there is no update job in daemon" >&2
+    echo "       mode (\`solador-agent update\` does not support it yet). A host moves by re-pinning:" >&2
+    echo "       re-run with SOLADOR_AGENT_RELEASE, then root's kickstart. Nothing has been changed." >&2
+    exit 2
+fi
+
+# print_daemon_load_step / print_daemon_unload_step (#506): the privileged
+# half, PRINTED and never run — this script never invokes sudo. The commands
+# are built in variables and printed as one line so each is exactly the text an
+# operator can paste, with paths shell-quoted only where they need it.
+print_daemon_load_step() {
+    local copy_cmd boot_cmd
+    copy_cmd="sudo install -o root -g wheel -m 644 $(printf '%q' "$DAEMON_PLIST_DST") $(printf '%q' "$SYSTEM_PLIST")"
+    boot_cmd="sudo launchctl bootstrap system $(printf '%q' "$SYSTEM_PLIST")"
+    echo "    $copy_cmd && $boot_cmd"
+}
+print_daemon_unload_step() {
+    local boot_cmd rm_cmd
+    boot_cmd="sudo launchctl bootout system/$LAUNCHD_LABEL"
+    rm_cmd="sudo rm $(printf '%q' "$SYSTEM_PLIST")"
+    if [ "${1:-}" = "bootout-only" ]; then
+        echo "    $boot_cmd"
+        return
+    fi
+    echo "    $boot_cmd && $rm_cmd"
+}
 
 # The label becomes a filename under ~/Library/LaunchAgents and a rendered
 # plist value; it is a test seam, not a place for a path or a placeholder.
@@ -699,6 +786,13 @@ run_uninstall() {
             return 1
             ;;
     esac
+    # --system-daemon (#506) is macOS only, refused here for the same reason
+    # as the unsupported platform above: before anything is touched.
+    if [ "$SYSTEM_DAEMON" = true ] && [ "$OS" != "Darwin" ]; then
+        echo "ERROR: --system-daemon is macOS only (a LaunchDaemon); this is $OS. On Linux the" >&2
+        echo "       user unit with linger already starts at boot. Nothing has been changed." >&2
+        return 1
+    fi
 
     # The same service-manager reachability the install path refuses on
     # (preflight, below) before touching anything — a `sudo -u`/`su` session,
@@ -718,7 +812,10 @@ run_uninstall() {
             fi
             ;;
         Darwin)
-            if ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+            # A service user has no login session and so no gui domain, and
+            # nothing here talks to a manager in --system-daemon mode (the
+            # daemon is root's to unload), so there is nothing to reach.
+            if [ "$SYSTEM_DAEMON" != true ] && ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
                 echo "ERROR: no launchd gui domain for uid $(id -u) — this user has no login session." >&2
                 echo "       --uninstall needs the same login session the agent runs in; log in at" >&2
                 echo "       the console (or via Screen Sharing) as this user and re-run. Nothing" >&2
@@ -999,31 +1096,38 @@ run_uninstall() {
             fi
             ;;
         Darwin)
-            local metrics_svc update_svc
-            metrics_svc="gui/$(id -u 9>&-)/$LAUNCHD_LABEL"
-            update_svc="gui/$(id -u 9>&-)/$UPDATE_LABEL"
-            if launchctl print "$metrics_svc" 9>&- >/dev/null 2>&1; then
-                if launchctl bootout "$metrics_svc" 9>&- 2>/dev/null; then
-                    echo "    stopped $metrics_svc"
-                else
-                    echo "    (launchctl bootout $metrics_svc reported an error;" >&2
-                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
-                    MANAGER_STOP_FAILED=true
+            if [ "$SYSTEM_DAEMON" = true ]; then
+                # No launchctl call: the daemon lives in the system domain and
+                # only root can boot it out (printed below). This removes what
+                # the service user owns, and nothing else.
+                uninstall_remove "$DAEMON_PLIST_DST" "rendered LaunchDaemon plist"
+            else
+                local metrics_svc update_svc
+                metrics_svc="gui/$(id -u 9>&-)/$LAUNCHD_LABEL"
+                update_svc="gui/$(id -u 9>&-)/$UPDATE_LABEL"
+                if launchctl print "$metrics_svc" 9>&- >/dev/null 2>&1; then
+                    if launchctl bootout "$metrics_svc" 9>&- 2>/dev/null; then
+                        echo "    stopped $metrics_svc"
+                    else
+                        echo "    (launchctl bootout $metrics_svc reported an error;" >&2
+                        echo "     could not confirm it is stopped — removing its files anyway)" >&2
+                        MANAGER_STOP_FAILED=true
+                    fi
+                    UNINSTALL_REMOVED=true
                 fi
-                UNINSTALL_REMOVED=true
-            fi
-            if launchctl print "$update_svc" 9>&- >/dev/null 2>&1; then
-                if launchctl bootout "$update_svc" 9>&- 2>/dev/null; then
-                    echo "    stopped $update_svc"
-                else
-                    echo "    (launchctl bootout $update_svc reported an error;" >&2
-                    echo "     could not confirm it is stopped — removing its files anyway)" >&2
-                    MANAGER_STOP_FAILED=true
+                if launchctl print "$update_svc" 9>&- >/dev/null 2>&1; then
+                    if launchctl bootout "$update_svc" 9>&- 2>/dev/null; then
+                        echo "    stopped $update_svc"
+                    else
+                        echo "    (launchctl bootout $update_svc reported an error;" >&2
+                        echo "     could not confirm it is stopped — removing its files anyway)" >&2
+                        MANAGER_STOP_FAILED=true
+                    fi
+                    UNINSTALL_REMOVED=true
                 fi
-                UNINSTALL_REMOVED=true
+                uninstall_remove "$PLIST_DST" "LaunchAgent plist"
+                uninstall_remove "$UPDATE_PLIST_DST" "update LaunchAgent plist"
             fi
-            uninstall_remove "$PLIST_DST" "LaunchAgent plist"
-            uninstall_remove "$UPDATE_PLIST_DST" "update LaunchAgent plist"
             uninstall_remove "$LAUNCHER_DST" "launcher"
             if [ -n "$foreign_bin" ]; then
                 left_behind_hint "$foreign_bin"
@@ -1096,6 +1200,13 @@ run_uninstall() {
         fi
     fi
 
+    if [ "$SYSTEM_DAEMON" = true ]; then
+        echo "==> The LaunchDaemon is loaded by root, so unloading it is a root step this script"
+        echo "    does not run. If it is still loaded, run this now: the agent keeps running from"
+        echo "    the binary it started with until root boots it out:"
+        print_daemon_unload_step
+    fi
+
     echo
     if [ "$UNINSTALL_FAILED" = true ]; then
         # A more severe, and different, claim than MANAGER_STOP_FAILED/
@@ -1165,7 +1276,12 @@ run_uninstall() {
         return 4
     fi
     if [ "$UNINSTALL_REMOVED" = true ]; then
-        echo "==> Done: $BIN_NAME uninstalled for $(id -un 9>&-)."
+        if [ "$SYSTEM_DAEMON" = true ]; then
+            echo "==> Done: the user-owned files of $BIN_NAME are removed for $(id -un 9>&-). The LaunchDaemon is NOT"
+            echo "    confirmed unloaded: that is the root step above, which this script does not run."
+        else
+            echo "==> Done: $BIN_NAME uninstalled for $(id -un 9>&-)."
+        fi
     else
         echo "==> Nothing installed for $(id -un 9>&-); nothing to do."
     fi
@@ -1192,6 +1308,62 @@ if [ "$UNINSTALL" = true ]; then
     exit "$uninstall_status"
 fi
 
+# ---- --system-daemon (#506): refusals, and the --verify follow-up --------------
+# Everything that can refuse refuses HERE, before a download and before any
+# installed state changes, in the order the issue names: root, then a platform
+# that is not macOS, then (install only) a per-user LaunchAgent install for
+# this user. This script never uses sudo in any mode; root is refused for the
+# same reason --uninstall and --enable-timer refuse it — the install is the
+# service user's own.
+if [ "$SYSTEM_DAEMON" = true ]; then
+    if [ "$(id -u)" = "0" ]; then
+        echo "ERROR: --system-daemon refuses to run as root. It runs AS THE SERVICE USER, who" >&2
+        echo "       owns everything it installs; only the final load step is root's, and that" >&2
+        echo "       one is printed for you to run, never run here. Nothing has been changed." >&2
+        exit 1
+    fi
+    if [ "$OS" != "Darwin" ]; then
+        echo "ERROR: --system-daemon is macOS only (a LaunchDaemon); this is $OS. On Linux the" >&2
+        echo "       user unit with linger already starts at boot. Nothing has been changed." >&2
+        exit 1
+    fi
+fi
+
+# --verify: the existing /v1/health check, run as the same user once root has
+# loaded the daemon. No download, no minisign, no state change.
+if [ "$VERIFY" = true ]; then
+    for verify_need in "$DEST_BIN:binary" "$ENV_FILE:env file" "$DAEMON_PLIST_DST:rendered LaunchDaemon plist"; do
+        if [ ! -f "${verify_need%%:*}" ]; then
+            echo "ERROR: --verify found no ${verify_need#*:} at ${verify_need%%:*}." >&2
+            echo "       Run the install first, as this user:  $RERUN_CMD --system-daemon" >&2
+            exit 1
+        fi
+    done
+    VERIFY_VERSION="$(binary_version "$DEST_BIN")" || exit 1
+    if ! verify_health "$ENV_FILE" "$VERIFY_VERSION" "$LAUNCHD_LABEL" system; then
+        echo >&2
+        echo "ERROR: --verify FAILED — the LaunchDaemon is not serving $VERIFY_VERSION." >&2
+        echo "       Has root loaded it? If nothing answered, that step, as printed by the install:" >&2
+        print_daemon_load_step >&2
+        echo "       If an OLDER version answered, the daemon is loaded: restart it onto this binary:" >&2
+        echo "           sudo launchctl kickstart -k system/$LAUNCHD_LABEL" >&2
+        echo "       Log: $LOG_FILE" >&2
+        exit 1
+    fi
+    echo "==> Done: /v1/health reports $BIN_NAME $VERIFY_VERSION (this checks the answer, not who started it;"
+    echo "    launchctl print system/$LAUNCHD_LABEL names the job)."
+    if [ "$(env_value "$ENV_FILE" SOLADOR_AGENT_TLS)" = "1" ]; then
+        if VERIFY_FINGERPRINT="$("$DEST_BIN" tls-fingerprint 2>&1)"; then
+            echo "    TLS: on — certificate fingerprint (compare it in Solador, Settings > Connections,"
+            echo "      \"Check certificate\", and press \"Trust\" only if they match):"
+            echo "      $VERIFY_FINGERPRINT"
+        else
+            echo "    TLS: on, but the fingerprint could not be read: $VERIFY_FINGERPRINT" >&2
+        fi
+    fi
+    exit 0
+fi
+
 TRIPLE="$(agent_target_for "$OS" "$ARCH")" || exit 1
 echo "==> Platform: $OS $ARCH -> $TRIPLE"
 
@@ -1212,20 +1384,51 @@ case "$OS" in
             echo "ERROR: macOS $MACOS_VERSION is below the agent's floor of 11.0 (Big Sur)." >&2
             exit 1
         fi
-        command -v launchctl >/dev/null 2>&1 || { echo "ERROR: launchctl not found." >&2; exit 1; }
+        if [ "$SYSTEM_DAEMON" != true ]; then
+            command -v launchctl >/dev/null 2>&1 || { echo "ERROR: launchctl not found." >&2; exit 1; }
+        fi
         command -v plutil >/dev/null 2>&1 || { echo "ERROR: plutil not found (needed to validate the rendered plist)." >&2; exit 1; }
         # A LaunchAgent lives in the user's gui/<uid> domain, which exists only
         # while that user has a login session. Over SSH with nobody logged in
         # at the console there is nothing to bootstrap into, and launchctl's
         # own message for that ("Input/output error") names nothing.
-        if ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+        # --system-daemon has no use for it: a service user is non-login, so
+        # it has no gui domain, and nothing is bootstrapped into one (#506).
+        if [ "$SYSTEM_DAEMON" != true ] && ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
             echo "ERROR: no launchd gui domain for uid $(id -u) — this user has no login session." >&2
             echo "       A LaunchAgent starts at login and runs inside that session; it is" >&2
             echo "       not boot-without-login coverage. Log in at the console (or via" >&2
             echo "       Screen Sharing) as this user and re-run. Nothing has been changed." >&2
             exit 1
         fi
-        [ -f "$PLIST_SRC" ] || { echo "ERROR: $PLIST_SRC not found — this checkout is incomplete." >&2; exit 1; }
+        if [ "$SYSTEM_DAEMON" = true ]; then
+            [ -f "$DAEMON_PLIST_SRC" ] || { echo "ERROR: $DAEMON_PLIST_SRC not found — this checkout is incomplete." >&2; exit 1; }
+            # Two agents would fight over the port, and the per-user one would
+            # also fight the daemon's update path. A file check, not a
+            # launchctl one: this user has no gui domain to ask.
+            for stale_agent in "$PLIST_DST" "$UPDATE_PLIST_DST"; do
+                if [ -e "$stale_agent" ]; then
+                    echo "ERROR: --system-daemon refused: a per-user LaunchAgent install exists for $(id -un)" >&2
+                    echo "         ($stale_agent)." >&2
+                    echo "       Remove it first, from a login session for this user:  $RERUN_CMD --uninstall" >&2
+                    echo "       (the env file and TLS keypair are kept, so the token and pairing survive)." >&2
+                    echo "       Nothing has been changed." >&2
+                    exit 1
+                fi
+            done
+        else
+            [ -f "$PLIST_SRC" ] || { echo "ERROR: $PLIST_SRC not found — this checkout is incomplete." >&2; exit 1; }
+            # The other half of "two agents never fight over the port": a
+            # --system-daemon install staged here means root may have loaded
+            # a daemon, and a LaunchAgent beside it would collide.
+            if [ -e "$DAEMON_PLIST_DST" ]; then
+                echo "ERROR: a --system-daemon install is staged for $(id -un) ($DAEMON_PLIST_DST)." >&2
+                echo "       A per-user LaunchAgent beside a LaunchDaemon would fight it over the port." >&2
+                echo "       Re-run with --system-daemon, or remove it first: $RERUN_CMD --uninstall --system-daemon" >&2
+                echo "       Nothing has been changed." >&2
+                exit 1
+            fi
+        fi
         [ -f "$LAUNCHER_SRC" ] || { echo "ERROR: $LAUNCHER_SRC not found — this checkout is incomplete." >&2; exit 1; }
         if [ "$ENABLE_TIMER" = true ]; then
             [ -f "$UPDATE_PLIST_SRC" ] || { echo "ERROR: $UPDATE_PLIST_SRC not found — this checkout is incomplete." >&2; exit 1; }
@@ -2124,6 +2327,9 @@ stage_launch_agent_plist() {
         "@ENV_FILE@" "$(xml_escape "$ENV_FILE")" \
         "@LOG_FILE@" "$(xml_escape "$log_file")" \
         "@HOME@" "$(xml_escape "$HOME")" \
+        "@USER@" "$(xml_escape "$(id -un)")" \
+        "@GROUP@" "$(xml_escape "$(id -gn)")" \
+        "@CONFIG_DIR@" "$(xml_escape "$(dirname "$ENV_FILE")")" \
         > "$staged"
     if ! plutil -lint -s "$staged"; then
         echo "ERROR: the rendered plist is not valid; $dest was not touched." >&2
@@ -2187,6 +2393,49 @@ bootstrap_launch_agent() {
     fi
     echo "==> Bootstrapped $service"
 }
+
+# ---- --system-daemon: stage the plist, bootstrap nothing, print the root step ---
+# Everything this user owns is in place by now (binary, env file, launcher is
+# installed here). The health check and the TLS fingerprint need a RUNNING
+# agent, and nothing is running until root loads the plist — so both belong to
+# the --verify follow-up, and this run ends here.
+if [ "$SYSTEM_DAEMON" = true ]; then
+    mkdir -p "$(dirname "$DAEMON_PLIST_DST")" "$(dirname "$LOG_FILE")"
+    install -m 0755 "$LAUNCHER_SRC" "$LAUNCHER_DST"
+    if ! stage_launch_agent_plist "$DAEMON_PLIST_SRC" "$DAEMON_PLIST_DST" "$LAUNCHD_LABEL" "$LOG_FILE"; then
+        echo "       Installed binary: $DEST_BIN; nothing was loaded and nothing is running." >&2
+        exit 1
+    fi
+    echo
+    echo "==> Staged: $BIN_NAME $TARGET_VERSION installed for $(id -un). NOT RUNNING YET: this script loaded and"
+    echo "    restarted nothing (exit 0 means staged, not serving)."
+    echo "    Binary:  $DEST_BIN"
+    echo "    Env:     $ENV_FILE (token + bind + port + tls, mode 600)"
+    echo "    Plist:   $DAEMON_PLIST_DST (rendered; UserName $(id -un), GroupName $(id -gn))"
+    echo "    Log:     $LOG_FILE"
+    if [ "$BIND_ALL_INTERFACES" = true ]; then
+        echo "    Bind:    $BIND:$PORT — ALL interfaces ($BIND_SOURCE)"
+    else
+        echo "    Bind:    $BIND:$PORT — that interface only ($BIND_SOURCE)"
+    fi
+    echo
+    echo "Review the rendered plist first: root will run whatever it says. UserName must be $(id -un) and"
+    echo "ProgramArguments must name only paths under $HOME."
+    echo
+    echo "Next, as root (an operator or provisioner runs this; this script never does):"
+    print_daemon_load_step
+    echo "If a daemon with this label is already loaded, bootstrap would fail. To pick up only a new"
+    echo "binary, restart it:  sudo launchctl kickstart -k system/$LAUNCHD_LABEL"
+    echo "If the rendered plist changed too, boot it out first, then run the step above:"
+    print_daemon_unload_step bootout-only
+
+    echo
+    echo "Then, as $(id -un), once root has run it:"
+    echo "    $RERUN_CMD --system-daemon --verify"
+    echo "(it checks /v1/health and, with TLS on, prints the certificate fingerprint to pair.)"
+    echo "There is no unattended update job in daemon mode; re-pin to move this host."
+    exit 0
+fi
 
 case "$OS" in
     Linux)
