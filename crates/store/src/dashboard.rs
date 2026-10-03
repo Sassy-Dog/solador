@@ -44,4 +44,7 @@ pub struct DashboardLayout {
     #[serde(default)]
     pub revision: u64,
     pub tiles: Vec<DashboardTile>,
+    /// Unset sources use Table; this preference is independent of tiles.
+    #[serde(default, rename = "detailViews")]
+    pub detail_views: std::collections::BTreeMap<String, String>,
 }

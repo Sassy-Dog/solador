@@ -41,6 +41,7 @@ fn title_case(title: &str) -> String {
 pub fn default_layout() -> DashboardLayout {
     DashboardLayout {
         revision: 0,
+        detail_views: Default::default(),
         tiles: SOURCES[..5]
             .iter()
             .enumerate()
@@ -71,6 +72,11 @@ pub fn default_layout() -> DashboardLayout {
 /// dropping a tile. Unknown resource IDs remain valid, so a disconnected or
 /// removed resource does not turn its tile into an unfiltered one.
 pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
+    if layout.detail_views.iter().any(|(source, mode)| {
+        !SOURCES.iter().any(|(id, _)| id == source) || !["table", "list"].contains(&mode.as_str())
+    }) {
+        return Err("Choose Table or List for a supported detail source.".into());
+    }
     if layout.tiles.len() > 48 {
         return Err("A dashboard can contain up to 48 tiles.".into());
     }
@@ -447,6 +453,11 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     v["attention"].as_bool().unwrap_or(false),
                 );
                 r["detail"] = json!(format!("{} · {}", string(v, "org"), string(v, "os")));
+                r["details"] = json!([
+                    field("Organization", &v["org"]),
+                    field("OS", &v["os"]),
+                    field("Architecture", &v["architecture"])
+                ]);
                 for key in ["os", "architecture", "runnerState"] {
                     r[key] = v[key].clone();
                 }
@@ -712,8 +723,42 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "openclawAgents" => "Activity from your OpenClaw gateway",
         _ => "",
     };
-    json!({"id":id,"title":title,"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
+    json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
         "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false}})
+}
+
+fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
+    let name = match id {
+        "hosts" => "Machine",
+        "ghWorkflows" => "Repo",
+        "ghRunners" => "Runner",
+        "services" => "Service",
+        "sentryCrons" => "Monitor",
+        "containers" => "Container / VM",
+        _ => "Resource",
+    };
+    let mut columns = vec![json!({"key":"name", "label":name})];
+    for section in ["metrics", "counts", "details"] {
+        let mut seen = BTreeSet::new();
+        for row in rows {
+            for field in list(row, section) {
+                let label = field["header"]
+                    .as_str()
+                    .unwrap_or_else(|| string(field, "label"));
+                if seen.insert(label) {
+                    columns.push(json!({"key":"field", "section":section, "label":label, "numeric":id != "ghRunners"}));
+                }
+            }
+        }
+    }
+    let has_fields = columns.len() > 1;
+    columns.push(json!({"key":"value", "label":match id {
+        "sentryCrons" => "Broken for", "claudeUsage" | "azureCost" => "Value", _ => "Status"
+    }}));
+    if !has_fields {
+        columns.push(json!({"key":"context", "label":"Details"}));
+    }
+    columns
 }
 
 fn in_scope(row: &Value, scope: &str) -> bool {
@@ -723,6 +768,46 @@ fn in_scope(row: &Value, scope: &str) -> bool {
             .strip_prefix("item:")
             .is_some_and(|id| row["id"] == id)
         || list(row, "scopes").iter().any(|s| s == scope)
+}
+
+#[cfg(test)]
+mod detail_table_tests {
+    use super::*;
+
+    #[test]
+    fn detail_preferences_default_to_table_and_validate_without_tiles() {
+        let mut layout: DashboardLayout = serde_json::from_value(json!({"tiles":[]})).unwrap();
+        assert!(layout.detail_views.is_empty());
+        layout
+            .detail_views
+            .insert("ghWorkflows".into(), "list".into());
+        assert!(validate(&layout).is_ok());
+        layout.detail_views.insert("hosts".into(), "table".into());
+        assert!(validate(&layout).is_ok());
+        layout.detail_views.insert("hosts".into(), "cards".into());
+        assert!(validate(&layout).is_err());
+        layout.detail_views.clear();
+        layout.detail_views.insert("missing".into(), "list".into());
+        assert!(validate(&layout).is_err());
+    }
+
+    #[test]
+    fn detail_columns_align_sparse_readings_without_repeating_headers() {
+        let rows = vec![
+            json!({"counts":[{"header":"ISSUES","value":"—"}]}),
+            json!({"counts":[{"header":"ISSUES","value":"4"},{"header":"READY","value":"2"}],"details":[{"label":"JOBS","value":"1"}]}),
+        ];
+        let columns = detail_columns("ghWorkflows", &rows);
+        let labels: Vec<_> = columns
+            .iter()
+            .map(|c| c["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["Repo", "ISSUES", "READY", "JOBS", "Status"]);
+        assert_eq!(columns[1]["section"], "counts");
+        assert_eq!(columns[3]["section"], "details");
+        assert_eq!(detail_columns("sentryCrons", &[])[1]["label"], "Broken for");
+        assert_eq!(detail_columns("azureCost", &[])[1]["label"], "Value");
+    }
 }
 
 fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
@@ -838,6 +923,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
 pub fn preview(tile: &DashboardTile, snapshot: &Value) -> Result<Value, String> {
     validate(&DashboardLayout {
         revision: 0,
+        detail_views: Default::default(),
         tiles: vec![tile.clone()],
     })?;
     let source = list(snapshot, "sources")
@@ -905,7 +991,7 @@ fn labels() -> Value {
         ("title", "Solador"),
         ("subtitle", "Overview"),
         ("settings", "Settings"),
-        ("allPanels", "All detailed panels →"),
+        ("allPanels", "All full panels →"),
         ("edit", "Edit dashboard"),
         ("done", "Done"),
         ("add", "Add tile"),
@@ -918,7 +1004,11 @@ fn labels() -> Value {
             "Drag tiles or use the arrows. Hiding a tile keeps its source monitored.",
         ),
         ("empty", "No tiles in this view. Add a tile or restore a hidden one."),
-        ("details", "Details →"),
+        ("details", "Detail →"),
+        ("table", "Table"),
+        ("detailList", "List"),
+        ("detailView", "Detail view"),
+        ("expandDetails", "Expand or collapse resource details"),
         ("configure", "Configure"),
         ("hide", "Hide"),
         ("earlier", "Move earlier"),
@@ -957,7 +1047,7 @@ fn labels() -> Value {
             "That tile is no longer visible. Choose another position.",
         ),
         ("summary", "Summary"),
-        ("detailed", "Detailed"),
+        ("detailed", "Detail"),
         ("small", "Small"),
         ("medium", "Medium"),
         ("wide", "Wide"),
@@ -1104,6 +1194,7 @@ mod tests {
         ] {
             assert!(validate(&DashboardLayout {
                 revision: 0,
+                detail_views: Default::default(),
                 tiles: vec![configured_tile("ghWorkflows", options)]
             })
             .is_err());
@@ -1811,6 +1902,9 @@ mod tests {
         layout.tiles[1].sort_by = "ready".into();
         layout.tiles[1].sort_descending = true;
         layout.tiles[2].runner_view = "grouped".into();
+        layout
+            .detail_views
+            .insert("ghWorkflows".into(), "list".into());
         layout.tiles.reverse();
         layout.tiles[0].hidden = true;
         let saved = crate::persist_dashboard(&mut store, layout, 0).unwrap();
@@ -1825,6 +1919,7 @@ mod tests {
         assert_eq!(store.dashboard(), Some(&saved));
         let empty = DashboardLayout {
             revision: 0,
+            detail_views: Default::default(),
             tiles: vec![],
         };
         crate::persist_dashboard(&mut store, empty, 1).unwrap();

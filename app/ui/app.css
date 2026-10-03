@@ -445,6 +445,9 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    opens with a dot and a bold name. At 24 the two read as one crowded run. */
 .gh-list { column-count: var(--panel-cols, 1); column-gap:40px; }
 .gh-list > .gh-row { break-inside:avoid; }
+.gh-runner-filter { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+.gh-runner-filter strong { font-size:12px; font-weight:500; }
+.gh-group-summary { color:var(--muted); font-size:11px; margin:0 0 12px; }
 /* …and the row gap as a child MARGIN, because this list cannot express one any
    other way: `gap` on a multi-column container is `column-gap` alone, and
    `row-gap` is ignored outright. That is why this list rendered flush at 0

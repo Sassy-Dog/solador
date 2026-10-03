@@ -31,6 +31,7 @@ async function openDashboard(page, baseURL, expanded = false) {
       window.__CALLS__ = [];
       window.__SET_LAYOUT__ = (next) => { layout = structuredClone(next); };
       window.__SET_SOURCE_ROWS__ = (id, rows) => { original.sources.find(s => s.id === id).rows = structuredClone(rows); };
+      window.__SET_RUNNER_PAYLOAD__ = (payload) => { fixtures.runners = payload; };
       function project(previewTile) {
         const view = structuredClone(original);
         view.layout = structuredClone(layout);
@@ -91,6 +92,10 @@ async function openDashboard(page, baseURL, expanded = false) {
               return snapshot;
             }
             if (command === "dashboard_save") {
+              if (window.__HOLD_SAVE__) {
+                window.__HOLD_SAVE__ = false;
+                await new Promise(resolve => { window.__RELEASE_SAVE__ = resolve; });
+              }
               if (window.__FAIL_SAVE__)
                 throw new Error(
                   "Could not save the dashboard: disk unavailable.",
@@ -124,6 +129,136 @@ const action = (page, name) =>
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
+
+test("attention chips toggle their inspector and keep expanded state through refresh", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const chips = action(page, "attention");
+  const first = chips.first(), second = chips.nth(1);
+  await expect(first).toHaveAttribute("aria-expanded", "false");
+  await first.click();
+  await expect(first).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#dashboardInspector")).toBeVisible();
+  await page.evaluate(() => refreshPanels());
+  await expect(first).toHaveAttribute("aria-expanded", "true");
+  await first.click();
+  await expect(page.locator("#dashboardInspector")).toBeHidden();
+  await expect(first).toHaveAttribute("aria-expanded", "false");
+  await first.focus();
+  await page.keyboard.press("Enter");
+  await second.click();
+  await expect(first).toHaveAttribute("aria-expanded", "false");
+  await expect(second).toHaveAttribute("aria-expanded", "true");
+  await action(page, "close").click();
+  await expect(second).toHaveAttribute("aria-expanded", "false");
+});
+
+test("Detail uses compact aligned table rows and preserves focus through live readings", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
+  const rows = page.locator('.db-detail-resource');
+  await expect(rows).toHaveCount(6);
+  await expect(page.locator('.db-detail-table')).toBeVisible();
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
+  for (const width of [375, 1440]) {
+    await page.setViewportSize({width, height:950});
+    const boxes = await rows.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return {x:r.x,y:r.y,bottom:r.bottom,height:r.height}; }));
+    expect(new Set(boxes.map(r => r.x)).size).toBe(1);
+    for (let i=1; i<boxes.length; i++) expect(boxes[i].y).toBeGreaterThanOrEqual(boxes[i-1].bottom);
+    expect(Math.max(...boxes.map(r=>r.height))).toBeLessThanOrEqual(36);
+    const columns = await rows.evaluateAll(els=>els.map(el=>[...el.cells].map(c=>c.getBoundingClientRect().x)));
+    for (const positions of columns) expect(positions).toEqual(columns[0]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  await rows.first().locator('[data-action="detail-toggle"]').click();
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toBeFocused();
+  await expect(page.locator('.db-detail-extra [data-action="openRepo"]').first()).toBeVisible();
+  await page.setViewportSize({width:375, height:950});
+  await page.locator('.db-table-scroll').evaluate(el => { el.scrollLeft = 200; });
+  const scrollLeft = await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft);
+  expect(scrollLeft).toBeGreaterThan(0);
+  const changed = structuredClone(model.sources.find(s => s.id === 'ghWorkflows').rows);
+  changed[0].value = 'Running';
+  await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
+  await expect(rows.first()).toContainText('Running');
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toBeFocused();
+  expect(await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
+  await page.locator('.db-table-scroll').focus();
+  changed[0].value = 'Healthy';
+  await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
+  await expect(rows.first()).toContainText('Healthy');
+  await expect(page.locator('.db-table-scroll')).toBeFocused();
+  expect(await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
+  const expandedHeight = (await page.locator('.db-inspector-body').boundingBox()).height;
+  await rows.first().locator('[data-action="detail-toggle"]').click();
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
+  await expect.poll(async () => (await page.locator('.db-inspector-body').boundingBox()).height).toBeLessThan(expandedHeight);
+});
+
+test("Detail Table/List choice persists per source and failed saves keep the selected view", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  const table = page.getByRole('button', {name:'Table', exact:true});
+  const list = page.getByRole('button', {name:'List', exact:true});
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  await page.evaluate(() => { window.__FAIL_SAVE__ = true; });
+  await list.click();
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.db-detail-table')).toBeVisible();
+  await page.evaluate(() => { window.__FAIL_SAVE__ = false; });
+  await list.click();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.db-detail-grid details')).toHaveCount(6);
+  expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('list');
+  await page.reload();
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await tile(page, 'hosts').locator('.db-tile-footer [data-action="details"]').click();
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await table.click();
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('table');
+});
+
+test("delayed Detail view saves preserve keyboard focus without stealing it after navigation", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  const table = page.getByRole('button', {name:'Table', exact:true});
+  const list = page.getByRole('button', {name:'List', exact:true});
+  const hold = async fail => {
+    await page.evaluate(fail => { window.__HOLD_SAVE__ = true; window.__FAIL_SAVE__ = fail; }, fail);
+  };
+  const release = async () => {
+    await page.evaluate(async () => {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      window.__RELEASE_SAVE__();
+    });
+  };
+  await hold(false);
+  await list.focus();
+  await list.press('Enter');
+  await expect(list).toBeDisabled();
+  await release();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await expect(list).toBeFocused();
+  await hold(true);
+  await table.press('Enter');
+  await expect(table).toBeDisabled();
+  await release();
+  await expect(table).toBeEnabled();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await expect(table).toBeFocused();
+  await hold(false);
+  await table.press('Enter');
+  await expect(table).toBeDisabled();
+  await action(page, 'attention').first().click();
+  await expect(action(page, 'close')).toBeFocused();
+  await release();
+  await expect(action(page, 'close')).toBeFocused();
+  await expect(action(page, 'attention').first()).toHaveAttribute('aria-expanded', 'true');
+});
 
 test("GitHub tile row limits and runner grouping are saved independently", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
@@ -196,19 +331,47 @@ test("Rust expanded view renders sorted repos, grouped runners and live meters a
     expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   }
   await tile(page,"ghRunners").getByRole("button",{name:/LINUX · ARM64/}).click();
-  await expect(page.locator('.db-detail-resource')).toHaveCount(3);
+  await expect(page.locator('#runnersPanel')).toBeVisible();
+  await expect(page.locator('#runnersBody .gh-runner-name')).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare']);
 });
 
-test("open runner group Details tracks members joining and changing type", async ({ page, baseURL }) => {
-  const model = await openDashboard(page, baseURL, true);
+test("runner groups open Full, track current membership, and clear the filter", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL, true);
+  const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
   await tile(page,"ghRunners").getByRole("button",{name:/LINUX · ARM64/}).click();
-  await expect(page.locator('.db-detail-resource')).toHaveCount(3);
-  const rows = model.sources.find(s=>s.id==="ghRunners").rows;
-  const added = {...rows.find(r=>r.os==="LINUX"), id:"acme/new-runner",label:"new-runner"};
-  await page.evaluate(rows=>window.__SET_SOURCE_ROWS__("ghRunners",rows),[...rows,added]);
-  await expect(page.locator('.db-detail-resource')).toHaveCount(4);
-  await page.evaluate(rows=>window.__SET_SOURCE_ROWS__("ghRunners",rows),[...rows,{...added,groupId:"group:MACOS:ARM64",os:"MACOS",scopes:["MACOS"]}]);
-  await expect(page.locator('.db-detail-resource')).toHaveCount(3);
+  await expect(page.locator('#dashboardOverview')).toBeHidden();
+  await expect(page.locator('#runnersPanel')).toBeVisible();
+  await expect(page.locator('#reposPanel')).toBeHidden();
+  const runners = page.locator('#runnersBody .gh-runner-name');
+  await expect(runners).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare']);
+  const all = page.getByRole('button', {name:'All runners', exact:true});
+  await all.focus();
+  await page.evaluate(() => refreshPanels());
+  await expect(all).toBeFocused();
+  const added = {...payload.rows.find(r=>r.os==='LINUX'), name:'new-runner'};
+  const changed = structuredClone(payload);
+  changed.rows.push(added);
+  await page.evaluate(async payload => { window.__SET_RUNNER_PAYLOAD__(payload); await refreshPanels(); }, changed);
+  await expect(runners).toHaveCount(4);
+  added.groupId = 'group:MACOS:ARM64';
+  await page.evaluate(async payload => { window.__SET_RUNNER_PAYLOAD__(payload); await refreshPanels(); }, changed);
+  await expect(runners).toHaveCount(3);
+  for (const width of [375, 1440]) {
+    await page.setViewportSize({width, height:950});
+    expect(new Set(await runners.evaluateAll(els=>els.map(el=>el.getBoundingClientRect().x))).size).toBe(1);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  changed.rows = [];
+  changed.groups = [];
+  await page.evaluate(async payload => { window.__SET_RUNNER_PAYLOAD__(payload); await refreshPanels(); }, changed);
+  await expect(runners).toHaveCount(0);
+  await expect(page.locator('#runnersBody')).toContainText('No runners currently match this type.');
+  await page.evaluate(async payload => { window.__SET_RUNNER_PAYLOAD__(payload); await refreshPanels(); }, payload);
+  await page.getByRole('button', {name:'All runners', exact:true}).click();
+  await expect(runners).toHaveCount(6);
+  await expect(page.locator('#runnersTitle')).toBeFocused();
+  await page.locator('#dashboardBack').click();
+  await expect(page.locator('#dashboardOverview')).toBeVisible();
 });
 
 test("repo checklist reconciles new readings without discarding the Configure draft", async ({ page, baseURL }) => {

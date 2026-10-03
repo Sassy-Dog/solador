@@ -1173,6 +1173,9 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
         "rows": [],
         // Nothing configured means nothing fetched, so nothing to be stale.
         "footer": Value::Null,
+        "groups": [],
+        "allRunnersLabel": "All runners",
+        "emptyGroupMessage": "No runners currently match this type.",
     })
 }
 
@@ -1231,6 +1234,17 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
     // command needs it), and this flag is what says whether painting the name
     // adds anything — with one org it restates the whole panel.
     let show_org_tags = state.org_runners.len() > 1;
+    let rows: Vec<_> = state
+        .org_runners
+        .iter()
+        .flat_map(|(org, entry)| {
+            roster::display_rows(&entry.runners, &entry.absent)
+                .iter()
+                .map(|row| runner_row(org, row))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let groups = viewmodel::dashboard::group_runners(&rows.iter().collect::<Vec<_>>());
     json!({
         "id": PanelKind::GhRunners.id(),
         "title": PanelKind::GhRunners.title(),
@@ -1246,12 +1260,10 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         // remembered-absent rows merged into one display order so an absent
         // runner holds the exact slot it occupied while registered instead of
         // jumping to the bottom of the list.
-        "rows": state.org_runners.iter().flat_map(|(org, entry)| {
-            roster::display_rows(&entry.runners, &entry.absent)
-                .iter()
-                .map(|row| runner_row(org, row))
-                .collect::<Vec<_>>()
-        }).collect::<Vec<_>>(),
+        "rows": rows,
+        "groups": groups,
+        "allRunnersLabel": "All runners",
+        "emptyGroupMessage": "No runners currently match this type.",
         "showOrgTags": show_org_tags,
         // The absent rows' context-menu label. From here rather than authored
         // in github.js, which owns layout and wiring but no words.
@@ -1418,7 +1430,7 @@ fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
             presence_color(absence.state),
         ),
     };
-    json!({
+    let mut value = json!({
         "kind": kind,
         "architecture": match row {
             GhRunnerDisplayRow::Registered(r) => &r.architecture,
@@ -1442,7 +1454,16 @@ fn runner_row(org: &str, row: &GhRunnerDisplayRow) -> Value {
         // Every row, registered or absent, reserves the same slot — that is
         // what keeps the OS chips in one column while one runner recycles.
         "statusWidth": RUNNER_STATUS_W,
-    })
+    });
+    value["groupId"] = json!(viewmodel::dashboard::runner_group_id(&value));
+    value["platform"] = json!(format!(
+        "{} · {}",
+        value["os"].as_str().unwrap_or("Unknown OS"),
+        value["architecture"]
+            .as_str()
+            .unwrap_or("Unknown architecture")
+    ));
+    value
 }
 
 fn runner_color(state: RunnerState) -> u32 {
@@ -2850,6 +2871,39 @@ mod tests {
         assert!(rows(&view).is_empty());
         assert_eq!(view["title"], "GitHub Runners");
         assert_eq!(view["id"], "ghRunners");
+    }
+
+    #[test]
+    fn full_runner_types_keep_architectures_and_absences_separate() {
+        let mut arm = runner("arm", RunnerOs::Linux, RunnerState::Idle);
+        arm.architecture = Some("ARM64".into());
+        let mut x64 = runner("x64", RunnerOs::Linux, RunnerState::Busy);
+        x64.architecture = Some("X64".into());
+        let missing = RunnerRosterEntry {
+            name: "gone".into(),
+            os: RunnerOs::Linux,
+            architecture: Some("ARM64".into()),
+            last_seen: now() - TimeDelta::seconds(720),
+        };
+        let state = with_runners(&[arm, x64], &[missing]);
+        let view = runners_view(&state, now_unix());
+        let groups = view["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["id"], "group:LINUX:ARM64");
+        assert_eq!(groups[0]["summary"]["total"], 2);
+        assert_eq!(groups[0]["summary"]["idle"], 1);
+        assert_eq!(groups[0]["summary"]["missing"], 1);
+        assert_eq!(groups[1]["summary"]["busy"], 1);
+        let rows = view["rows"].as_array().unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r["groupId"] == "group:LINUX:ARM64")
+                .count(),
+            2
+        );
+        assert!(rows
+            .iter()
+            .all(|r| r["platform"].as_str().unwrap().contains("LINUX · ")));
     }
 
     #[test]
