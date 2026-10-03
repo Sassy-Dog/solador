@@ -24,10 +24,11 @@
 
   ProgramArguments is the launcher, then the binary, the env file and the log
   file, in exactly that order, the shape the LaunchAgent template has and
-  that the in-binary updater reads from that template. The updater finds the
-  service only through a per-user LaunchAgent plist, so it does not support
-  this daemon yet. The
-  bearer token is NOT here: the launcher reads the env file (mode 0600) at
+  that the in-binary updater reads from that template. The updater (#507)
+  reads this shape from /Library/LaunchDaemons, run as UserName, and restarts
+  the daemon by SIGTERM to its own process, which KeepAlive relaunches: keep
+  UserName, a binary under that user's home, KeepAlive and ThrottleInterval as
+  they are. The bearer token is NOT here: the launcher reads the env file (mode 0600) at
   every start, so rotating it stays "edit that file, restart the service".
 
   PATH is set and load-bearing, for the reason the LaunchAgent template gives:
@@ -36,8 +37,8 @@
   /v1/health.
 
   KeepAlive + RunAtLoad is systemd's Restart=always; the throttle is launchd's
-  RestartSec, and a restart by root relies on KeepAlive to relaunch the agent
-  after a SIGTERM. No ProcessType, for the timer-coalescing reason the
+  RestartSec, and the updater's restart (a SIGTERM to the agent's own process, as
+  UserName, never root) relies on KeepAlive to relaunch the agent. No ProcessType, for the timer-coalescing reason the
   LaunchAgent template records.
 -->
 <plist version="1.0">

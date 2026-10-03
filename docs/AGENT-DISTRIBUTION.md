@@ -385,8 +385,8 @@ runs, and every step refuses before the next one changes anything:
 
 1. **Resolve the installed service through #392's contract** — reading
    only: the executable from the systemd user unit's `ExecStart=` (Linux)
-   or the LaunchAgent plist's `ProgramArguments` (macOS, read back through
-   `plutil`; its fourth argument, the log file, is kept for the failure
+   or the LaunchAgent plist's `ProgramArguments` (macOS, or, for a system LaunchDaemon run as this user (#507), `/Library/LaunchDaemons/<label>.plist`, adopted only when its `UserName` is this user and its binary is under `$HOME` (ambiguous or foreign: refused); read back
+   through `plutil`; its fourth argument, the log file, is kept for the failure
    messages), the env file beside it, and the token/bind/port from that
    file — read with `EnvironmentFile=` semantics, never `source`d. Running
    as root is refused outright. An install directory this user cannot write
@@ -409,7 +409,10 @@ runs, and every step refuses before the next one changes anything:
    write the same `.new`/`.prev` without taking it, so they are not to be
    run during an update. Then the **service manager must answer**
    (`systemctl --user
-   show-environment` / `launchctl print gui/<uid>`) and must not name this
+   show-environment` / `launchctl print gui/<uid>`, or for a system
+   LaunchDaemon run as this user `launchctl print system/<label>` with a
+   running process this user owns and that runs the installed binary, #507)
+   and must not name this
    process as the service: a manager discovered unreachable at the restart,
    after the swap, is the half-applied update this design exists to prevent,
    and restarting the service must never kill the process that owes the
@@ -469,7 +472,9 @@ runs, and every step refuses before the next one changes anything:
    absent for even an instant, so a `KeepAlive`/`Restart=always` respawn in
    that window cannot fail to exec.
 9. **Restart the metrics service** — `systemctl --user restart solador-agent`
-   or `launchctl kickstart -k gui/<uid>/app.solador.agent` — and **poll the
+   or `launchctl kickstart -k gui/<uid>/app.solador.agent`, or for a system
+   LaunchDaemon a `SIGTERM` to its own process, relaunched by `KeepAlive`
+   (#507) — and **poll the
    authenticated `/v1/health`** (the same wildcard→loopback and bracketed-IPv6
    rules as `lib.sh`, fifteen one-second polls) until it reports the
    installed CalVer. A service-manager success, or an HTTP 200 carrying a
@@ -1331,12 +1336,18 @@ the same label, `KeepAlive`, `RunAtLoad` and `ThrottleInterval`, and no
 `SessionCreate` (no keychain). What it deliberately omits: the post-install
 `/v1/health` check and the TLS fingerprint, which need a running agent and so
 belong to the follow-up `--system-daemon --verify` (same user, after root's
-step); and any update job (`--enable-timer` is refused — a pinned host moves by
-re-pinning). `solador-agent update` and `rollback` are **not supported** in this
-mode until #505's update-side follow-up: `resolve_launchd` reads only a
-per-user LaunchAgent plist and the restart goes through `gui/<uid>`, so they
-exit 1 on a daemon host; the real upgrade path is a pinned re-run, root's
-`kickstart -k`, then `--verify`. Exit 0 is not "serving" here: install means
+step); and any update job (`--enable-timer` is refused). `solador-agent update`
+and `rollback` work in this mode (#507, the org's agent management spec §5.3),
+run on demand as the service user and never as root: `resolve_launchd_with`
+adopts `/Library/LaunchDaemons/<label>.plist` only when its `UserName` is the
+invoking user (from the password database) and its binary is under that
+user's `$HOME` (a per-user LaunchAgent
+beside it is ambiguous, a foreign `UserName` is refused), the manager check is
+`launchctl print system/<label>` (readable without root), and the restart is a
+`SIGTERM` to the daemon's own process after checking it is this user's and runs
+the installed binary, relaunched by the plist's `KeepAlive`, then the usual
+`/v1/health` verification and restore. No sudoers rule and no helper. Exit 0 is
+not "serving" here: install means
 *staged*, `--verify` means `/v1/health` reports the installed version, and
 `--uninstall --system-daemon` means the user files are gone with root's unload
 printed and unconfirmed. Also refused: a

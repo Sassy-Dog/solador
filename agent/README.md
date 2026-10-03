@@ -1298,13 +1298,30 @@ before anything changes: **root**; a platform that is **not macOS**
 install** for the same user (its plist, or the updater's — remove it first with
 `./deploy/install.sh --uninstall` from a login session, so two agents never
 fight over the port); and **`--enable-timer`**, which has no meaning here. There
-is no update job in daemon mode, and `solador-agent update` and `rollback`
-are **not supported** in it yet: they find the service only through a per-user
-LaunchAgent plist and the `gui/<uid>` domain, so they exit 1 on a daemon host
-until the update-side follow-up (#505's other child) lands. A host moves by
-re-pinning: re-run step 1 with `SOLADOR_AGENT_RELEASE=agent-v<version>`, have
-root `kickstart -k` the daemon, then `--verify`; to roll back, swap
-`solador-agent.prev` over the binary by hand, then the same `kickstart`.
+is no unattended update job in daemon mode, but `solador-agent update` and
+`rollback` work (#507, the org's agent management spec §5.3), **run as the
+service user, never as root**:
+
+```bash
+sudo -u <service-user> -H ~<service-user>/.local/bin/solador-agent update
+sudo -u <service-user> -H ~<service-user>/.local/bin/solador-agent rollback
+```
+
+`-H` matters: the command resolves the install under `$HOME`, so a shell that
+kept the caller's `HOME` would look in the wrong place. `sudo` here only becomes
+the service user; the command itself still refuses to run with an effective uid
+of 0. It recognises the system plist (`/Library/LaunchDaemons/<label>.plist`)
+only when its `UserName` is the invoking user (from the password database)
+and the binary in its `ProgramArguments` is under that user's `$HOME`; a per-user LaunchAgent and a
+system plist together, or a system plist for another user, are refused with
+nothing changed. The manager check is `launchctl print system/<label>`, which
+needs no root. The restart is a `SIGTERM` to the daemon's own process (checked
+first: owned by this user, running the installed binary), which `KeepAlive`
+relaunches within the plist's 3-second `ThrottleInterval`; the update then waits
+for a *different* pid and verifies `/v1/health` as for any install. A daemon
+that does not come back, or comes back on the wrong version, is restored from
+`.prev` and exits 5 (3 if the recovery also failed), exactly as elsewhere, and
+`rollback` restarts the same way. No sudoers rule and no helper are involved.
 **Exit status here is not "serving"**: step 1 exits 0 meaning *staged, not
 running*; `--verify` exits 0 only when `/v1/health` reports the installed
 version; `--uninstall --system-daemon` exits 0 when the user files are gone,
@@ -1423,7 +1440,7 @@ thing the installer does not do: **it undoes itself when the new binary does
 not come up.** In order, each step refusing before the next changes anything:
 
 1. Reads where the service is (nothing changes yet): the binary from the
-   systemd unit's `ExecStart=` or the plist's `ProgramArguments`, the env
+   systemd unit's `ExecStart=` or the plist's `ProgramArguments` (or, for a system LaunchDaemon run as this user (#507), `/Library/LaunchDaemons/<label>.plist`, adopted only when its `UserName` is this user and its binary is under `$HOME` (ambiguous or foreign: refused)), the env
    file beside it, and the token/bind/port from that file with the same
    rules the service starts under (never `source`d). `SOLADOR_AGENT_BIND`
    must be in that file (the installer always writes it): with no bind the
@@ -1442,10 +1459,13 @@ not come up.** In order, each step refusing before the next changes anything:
    lock for its own run (released before its last removals). A normal, no-flag `install.sh` and
    `redeploy.sh` still do not take it, so do not run those during an
    update.)
-   Then the service manager must answer — `systemctl --user` or the
-   `gui/<uid>` domain — before anything is downloaded, so a session with no
-   manager (an `ssh` with nobody logged in, a `sudo -u` shell) is refused
-   here rather than discovered at the restart.
+   Then the service manager must answer — `systemctl --user`, the
+   `gui/<uid>` domain, or, for a system daemon (#507), `launchctl print
+   system/<label>` with its running process owned by this user and running the
+   installed binary — before anything is downloaded, so a session with no
+   per-user manager (an `ssh` with nobody logged in, a `sudo -u` shell) is
+   refused here rather than discovered at the restart. The system-daemon form
+   needs no login session, so `sudo -u <service user> -H` is how it is run.
 3. Fetches the feed from its **fixed location**, `agent-latest.json` and its
    `.minisig` on the permanent `agent-latest` release
    (`https://github.com/Sassy-Dog/solador/releases/download/agent-latest/`),
@@ -1488,7 +1508,8 @@ not come up.** In order, each step refusing before the next changes anything:
    the live path — never an in-place overwrite, and the live path is never
    absent for an instant.
 9. Restarts the service (`systemctl --user restart solador-agent` /
-   `launchctl kickstart -k gui/<uid>/app.solador.agent`) and polls the
+   `launchctl kickstart -k gui/<uid>/app.solador.agent`; for a system daemon,
+   a `SIGTERM` to its own process, which `KeepAlive` relaunches) and polls the
    authenticated `/v1/health` — at the bind and port the env file says,
    loopback for a wildcard bind — until it reports the new version. A running
    service reporting the old version, or none, is **not** a success.
@@ -1892,6 +1913,11 @@ the host. With no `.prev` both refuse without touching the live binary.
 ~/.local/bin/solador-agent rollback
 ```
 
+On a macOS system daemon (#507) run it as the service user, never as root:
+`sudo -u <service user> -H ~<service user>/.local/bin/solador-agent rollback`.
+It restarts the daemon the way `update` does (a `SIGTERM` to its own process,
+relaunched by `KeepAlive`).
+
 It verifies the restored **version** on `/v1/health` when the previous binary
 can name one (`--version`), and **liveness only** when it cannot — a
 source-built `.prev` from a shallow checkout — and its output says which.
@@ -1907,7 +1933,10 @@ message names all three files and the `mv` that finishes it.
 
 **When `rollback` refuses the bind** (a host bound to an IPv6 zone id, TLS on or off, or a TLS
 host bound to a name that does not resolve — see the certificate section above), the
-command changes nothing, and on macOS it is the only documented path. The
+command changes nothing, and on macOS it is the only documented path (for a
+per-user LaunchAgent; a system daemon's equivalent is the same `mv` of
+`.prev` over the binary as the service user followed by root's
+`sudo launchctl kickstart -k system/app.solador.agent`). The
 escape is a manual swap that **bypasses the health verification entirely** —
 nothing checks that the restored binary came back — and, unlike `rollback`, is
 not reversible (the displaced binary is overwritten, not kept as `.prev`):
