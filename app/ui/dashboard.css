@@ -214,7 +214,11 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+}
+#dashboardOverview .db-tile-heading {
+  flex: 1;
+  min-width: 0;
 }
 #dashboardOverview .db-tile-title {
   font-size: 13px;
@@ -223,7 +227,27 @@
 #dashboardOverview .db-tile-note {
   color: var(--db-muted);
   font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Scope and warnings share one subtitle line, so poll failures do not move rows. */
+#dashboardOverview .db-tile-subtitle {
+  display: grid;
   margin-top: 2px;
+}
+#dashboardOverview .db-tile-subtitle > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+#dashboardOverview .db-tile-subtitle:has(.db-warning) .db-tile-note {
+  visibility: hidden;
+}
+#dashboardOverview .db-tile-subtitle .db-warnings {
+  height: 16.5px;
+}
+#dashboardOverview .db-tile-subtitle .db-warning {
+  margin: 0;
 }
 #dashboardOverview .db-tile-head button {
   padding: 2px 4px;
@@ -703,7 +727,7 @@
 .dashboard-load-error {
   color: var(--red);
 }
-/* Warnings occupy the same line before, during and after a failed poll.
+/* Details keep a warning line; tiles share their subtitle line above.
    Full diagnostics remain in accessible text and the hover title. */
 #dashboardOverview .db-warnings {
   height: 23px;
