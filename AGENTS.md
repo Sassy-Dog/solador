@@ -906,6 +906,11 @@ the bundle's floor.
   Summary stays compact and Full keeps source-specific controls.
   Grouped runners open Full filtered by the Rust-authored OS/architecture group
   identity; membership and counts refresh together, and All runners clears it.
+  Full Runners shares the same Table/List preference and table styling. Detail
+  columns have fixed widths so live readings cannot shift their neighbors.
+  Machine Detail volumes sort by mount and align used/total/percentage; Full
+  host cards retain their fullest-first order. Overview and Settings headers
+  share a 12px vertical/16px horizontal inset.
 
 ## Testing
 

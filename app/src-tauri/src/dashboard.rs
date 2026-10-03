@@ -286,7 +286,9 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 field("Thermal", reading("thermalText")),
             ]);
             if !down {
-                r["volumes"] = h["volumes"].clone();
+                let mut volumes = list(h, "volumes").to_vec();
+                volumes.sort_by(|a, b| string(a, "mount").cmp(string(b, "mount")));
+                r["volumes"] = json!(volumes);
             }
             r
         })
@@ -758,6 +760,24 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
     if !has_fields {
         columns.push(json!({"key":"context", "label":"Details"}));
     }
+    for column in &mut columns {
+        column["width"] = json!(match string(column, "key") {
+            "name" if id == "hosts" => 150,
+            "name" => 200,
+            "value" if id == "hosts" => 140,
+            "value" => 210,
+            "context" => 400,
+            _ => match string(column, "label") {
+                "CPU" | "GPU" => 55,
+                "RAM" => 130,
+                "Disk read" | "Disk write" | "Network down" | "Network up" => 95,
+                "Thermal" => 90,
+                "Organization" => 180,
+                "OS" | "Architecture" | "LONGEST" => 120,
+                _ => 80,
+            },
+        });
+    }
     columns
 }
 
@@ -773,6 +793,23 @@ fn in_scope(row: &Value, scope: &str) -> bool {
 #[cfg(test)]
 mod detail_table_tests {
     use super::*;
+
+    #[test]
+    fn volume_detail_order_is_by_mount_without_changing_the_warning() {
+        let rows = host_rows(&json!({"hosts":[{
+            "id":"test", "hostName":"Test", "connection":{"state":"live"},
+            "volumes":[
+                {"mount":"/boot", "fraction":0.95, "tint":color::hex(color::RED)},
+                {"mount":"/data/models"}, {"mount":"/"}, {"mount":"/boot/efi"}
+            ]
+        }]}));
+        let mounts: Vec<_> = list(&rows[0], "volumes")
+            .iter()
+            .map(|v| string(v, "mount"))
+            .collect();
+        assert_eq!(mounts, ["/", "/boot", "/boot/efi", "/data/models"]);
+        assert_eq!(rows[0]["value"], "/boot at 95%");
+    }
 
     #[test]
     fn detail_preferences_default_to_table_and_validate_without_tiles() {
@@ -1008,6 +1045,10 @@ fn labels() -> Value {
         ("table", "Table"),
         ("detailList", "List"),
         ("detailView", "Detail view"),
+        ("volume", "Volume"),
+        ("used", "Used"),
+        ("total", "Total"),
+        ("use", "Use"),
         ("expandDetails", "Expand or collapse resource details"),
         ("configure", "Configure"),
         ("hide", "Hide"),

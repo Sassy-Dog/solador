@@ -425,6 +425,7 @@
     }
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
+    if (mode !== "overview") window.soladorGitHub?.updateView();
     if (focused && !focused.isConnected && focusData && document.activeElement === document.body) {
       const scope = focusTile
         ? root.querySelector(`[data-tile="${CSS.escape(focusTile)}"]`)
@@ -899,8 +900,8 @@
       summary.append(node("span", "db-detail-disclosure", L("expandDetails")));
       const extra = node("div", "db-detail-extra"), metrics = node("dl", "db-detail-fields");
       for (const m of row.details || []) metrics.append(field(m));
-      for (const v of row.volumes || []) metrics.append(field({label:v.mount, value:v.detail, color:v.tint}));
       if (metrics.childElementCount) extra.append(metrics);
+      if (row.volumes?.length) extra.append(volumeTable(row.volumes));
       const actions = node("div", "db-detail-actions");
       item.addEventListener("toggle", () => {
         if (!item.isConnected || active?.kind !== "details") return;
@@ -937,6 +938,7 @@
     wrap.setAttribute("role", "region");
     wrap.setAttribute("aria-label", `${s.title} · ${L("table")}`);
     const columns = s.detailColumns || [], head = node("thead"), headings = node("tr"), body = node("tbody");
+    fixedColumns(table, columns.map(column => column.width));
     for (const column of columns) {
       const cell = node("th", column.numeric ? "db-numeric" : "", column.label);
       cell.scope = "col";
@@ -970,6 +972,7 @@
           const field = row[column.section]?.find(m => (m.header ?? m.label) === column.label);
           cell.append(colored("span", "", field?.value ?? "—", field?.color));
         }
+        cell.title = cell.textContent;
         tr.append(cell);
       }
       const more = node("tr", "db-table-extra");
@@ -979,11 +982,7 @@
       const cell = node("td"), content = node("div", "db-detail-extra");
       cell.colSpan = columns.length;
       if (row.explanation || row.detail) content.append(node("p", "db-detail-copy", row.explanation || row.detail));
-      for (const volume of row.volumes || []) {
-        const line = node("div", "db-detail-field");
-        line.append(node("span", "db-muted", volume.mount), colored("span", "", volume.detail, volume.tint));
-        content.append(line);
-      }
+      if (row.volumes?.length) content.append(volumeTable(row.volumes));
       const actions = node("div", "db-detail-actions");
       if (row.url) {
         const open = button(L("openRepo"), "openRepo", row.id);
@@ -998,6 +997,28 @@
       more.append(cell);
       body.append(tr, more);
     });
+    table.append(head, body);
+    wrap.append(table);
+    return wrap;
+  }
+  function volumeTable(volumes) {
+    const wrap = node("div", "db-table-scroll"), table = node("table", "db-detail-table db-volume-table");
+    const head = node("thead"), headings = node("tr"), body = node("tbody");
+    fixedColumns(table, [260, 115, 115, 75]);
+    for (const key of ["volume", "used", "total", "use"]) {
+      const cell = node("th", key === "volume" ? "" : "db-numeric", L(key));
+      cell.scope = "col";
+      headings.append(cell);
+    }
+    head.append(headings);
+    for (const volume of volumes) {
+      const row = node("tr"), name = node("th", "", volume.mount);
+      name.scope = "row";
+      row.append(name);
+      for (const key of ["used", "total", "percent"])
+        row.append(colored("td", "db-numeric", volume[key] ?? "—", volume.tint));
+      body.append(row);
+    }
     table.append(head, body);
     wrap.append(table);
     return wrap;
@@ -1410,6 +1431,18 @@
       });
     }
   });
+  window.soladorDashboard = {
+    detailView: sourceId => model?.layout.detailViews?.[sourceId] || "table",
+    async setDetailView(sourceId, view) {
+      if (!model || busy || !["table", "list"].includes(view)) return false;
+      const next = copyLayout();
+      next.detailViews ||= {};
+      next.detailViews[sourceId] = view;
+      if (window.__TAURI__) return save(next, null, false, true);
+      model.layout = next;
+      return true;
+    },
+  };
   registerPanelRefresh(() => refresh(true));
   refresh(true);
   if (window.__TAURI__)

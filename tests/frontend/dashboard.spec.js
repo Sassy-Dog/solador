@@ -130,6 +130,85 @@ const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
 
+test('Full runners share Detail tables and the saved view choice', async ({page, baseURL}) => {
+  await openDashboard(page, baseURL, true);
+  await tile(page, 'ghRunners').getByRole('button', {name:/MACOS · ARM64/}).click();
+  const panel = page.locator('#runnersPanel');
+  await expect(panel.locator('.db-detail-table')).toBeVisible();
+  await expect(panel.locator('thead th')).toHaveText(['Runner', 'Organization', 'OS', 'Architecture', 'Status']);
+  const list = panel.getByRole('button', {name:'List', exact:true});
+  await list.click();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  expect((await savedLayout(page)).detailViews.ghRunners).toBe('list');
+  await page.locator('#dashboardBack').click();
+  await tile(page,'ghRunners').locator('.db-tile-footer [data-action="details"]').click();
+  await expect(page.getByRole('button',{name:'List',exact:true})).toHaveAttribute('aria-pressed','true');
+  await page.getByRole('button',{name:'Table',exact:true}).click();
+  await tile(page,'ghRunners').getByRole('button',{name:/MACOS · ARM64/}).click();
+  await expect(panel.locator('.db-detail-table')).toBeVisible();
+  for (const width of [375,1200]) {
+    await page.setViewportSize({width,height:900});
+    expect(await panel.locator('tbody tr').first().evaluate(el=>el.getBoundingClientRect().height)).toBeLessThanOrEqual(36);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+  const absent = panel.locator('tr[data-kind="absent"]').first();
+  await absent.focus();
+  await page.evaluate(()=>refreshPanels());
+  await expect(absent).toBeFocused();
+  await absent.press('Shift+F10');
+  await expect(page.locator('.ctx-menu')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await panel.getByRole('button',{name:'List',exact:true}).click();
+  for (const status of await panel.locator('.gh-runner-status').all())
+    expect(await status.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+});
+
+test('machine volumes use sorted aligned columns in both Detail views', async ({page,baseURL}) => {
+  const model = await openDashboard(page,baseURL);
+  const host = model.sources.find(s=>s.id==='hosts').rows.find(r=>r.volumes?.length>1);
+  await page.locator(`[data-action="row"][data-source="hosts"][data-id="${host.id}"]`).first().click();
+  const volumes = page.locator('.db-volume-table');
+  const mounts = host.volumes.map(v=>v.mount).sort();
+  for (const view of ['Table','List']) {
+    await page.getByRole('button',{name:view,exact:true}).click();
+    await expect(volumes.locator('tbody th')).toHaveText(mounts);
+    await expect(volumes.locator('thead th')).toHaveText(['Volume','Used','Total','Use']);
+    const columns = await volumes.locator('tbody tr').evaluateAll(rows=>rows.map(row=>[...row.cells].map(c=>c.getBoundingClientRect().right)));
+    for (const positions of columns) expect(positions).toEqual(columns[0]);
+  }
+});
+
+test('Settings header has the same inset as the overview header', async ({page,baseURL}) => {
+  await openDashboard(page,baseURL);
+  for (const width of [375,1200]) {
+    await page.setViewportSize({width,height:900});
+    const overview = await page.locator('.db-chrome').evaluate(el=>({padding:getComputedStyle(el).padding}));
+    await action(page,'settings').click();
+    const settings = await page.locator('#settings > .topbar').evaluate(el=>({padding:getComputedStyle(el).padding,left:el.querySelector('img').getBoundingClientRect().left-el.getBoundingClientRect().left,top:el.querySelector('button').getBoundingClientRect().top-el.getBoundingClientRect().top,right:el.getBoundingClientRect().right-el.querySelector('button').getBoundingClientRect().right}));
+    expect(settings.padding).toBe(overview.padding);
+    expect(Math.min(settings.left,settings.top,settings.right)).toBeGreaterThanOrEqual(12);
+    await page.locator('#settingsClose').click();
+  }
+});
+
+test('Detail column positions stay fixed as readings and expanded content change', async ({page,baseURL}) => {
+  const model = await openDashboard(page,baseURL);
+  await tile(page,'hosts').locator('.db-tile-footer [data-action="details"]').click();
+  const table = page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll > table');
+  const positions = () => table.locator(':scope > thead th').evaluateAll(cells=>cells.map(c=>({x:c.getBoundingClientRect().x,width:c.getBoundingClientRect().width})));
+  const before = await positions();
+  const rows = structuredClone(model.sources.find(s=>s.id==='hosts').rows);
+  rows[0].metrics[0].value = '100%';
+  rows[0].metrics[1].value = '999.9 / 1024 GB';
+  rows[0].value = 'Disconnected: waiting for a fresh reading';
+  rows[0].label = 'a-machine-with-a-much-longer-name';
+  await page.evaluate(rows=>window.__SET_SOURCE_ROWS__('hosts',rows),rows);
+  await expect(table.locator(':scope > tbody')).toContainText('999.9 / 1024 GB');
+  expect(await positions()).toEqual(before);
+  await table.locator('[data-action="detail-toggle"]').first().click();
+  expect(await positions()).toEqual(before);
+});
+
 test("attention chips toggle their inspector and keep expanded state through refresh", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   const chips = action(page, "attention");
@@ -157,7 +236,7 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
   const rows = page.locator('.db-detail-resource');
   await expect(rows).toHaveCount(6);
-  await expect(page.locator('.db-detail-table')).toBeVisible();
+  await expect(page.locator('#dashboardOverview .db-detail-table')).toBeVisible();
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
   for (const width of [375, 1440]) {
     await page.setViewportSize({width, height:950});
@@ -174,8 +253,8 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toBeFocused();
   await expect(page.locator('.db-detail-extra [data-action="openRepo"]').first()).toBeVisible();
   await page.setViewportSize({width:375, height:950});
-  await page.locator('.db-table-scroll').evaluate(el => { el.scrollLeft = 200; });
-  const scrollLeft = await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft);
+  await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').evaluate(el => { el.scrollLeft = 200; });
+  const scrollLeft = await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').evaluate(el => el.scrollLeft);
   expect(scrollLeft).toBeGreaterThan(0);
   const changed = structuredClone(model.sources.find(s => s.id === 'ghWorkflows').rows);
   changed[0].value = 'Running';
@@ -183,13 +262,13 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   await expect(rows.first()).toContainText('Running');
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'true');
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toBeFocused();
-  expect(await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
-  await page.locator('.db-table-scroll').focus();
+  expect(await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
+  await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').focus();
   changed[0].value = 'Healthy';
   await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
   await expect(rows.first()).toContainText('Healthy');
-  await expect(page.locator('.db-table-scroll')).toBeFocused();
-  expect(await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
+  await expect(page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll')).toBeFocused();
+  expect(await page.locator('#dashboardInspector > .db-inspector-body > .db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
   const expandedHeight = (await page.locator('.db-inspector-body').boundingBox()).height;
   await rows.first().locator('[data-action="detail-toggle"]').click();
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
@@ -199,13 +278,13 @@ test("Detail uses compact aligned table rows and preserves focus through live re
 test("Detail Table/List choice persists per source and failed saves keep the selected view", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
-  const table = page.getByRole('button', {name:'Table', exact:true});
-  const list = page.getByRole('button', {name:'List', exact:true});
+  const table = page.locator('#dashboardOverview').getByRole('button', {name:'Table', exact:true});
+  const list = page.locator('#dashboardOverview').getByRole('button', {name:'List', exact:true});
   await expect(table).toHaveAttribute('aria-pressed', 'true');
   await page.evaluate(() => { window.__FAIL_SAVE__ = true; });
   await list.click();
   await expect(table).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.db-detail-table')).toBeVisible();
+  await expect(page.locator('#dashboardOverview .db-detail-table')).toBeVisible();
   await page.evaluate(() => { window.__FAIL_SAVE__ = false; });
   await list.click();
   await expect(list).toHaveAttribute('aria-pressed', 'true');
@@ -225,8 +304,8 @@ test("Detail Table/List choice persists per source and failed saves keep the sel
 test("delayed Detail view saves preserve keyboard focus without stealing it after navigation", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
-  const table = page.getByRole('button', {name:'Table', exact:true});
-  const list = page.getByRole('button', {name:'List', exact:true});
+  const table = page.locator('#dashboardOverview').getByRole('button', {name:'Table', exact:true});
+  const list = page.locator('#dashboardOverview').getByRole('button', {name:'List', exact:true});
   const hold = async fail => {
     await page.evaluate(fail => { window.__HOLD_SAVE__ = true; window.__FAIL_SAVE__ = fail; }, fail);
   };

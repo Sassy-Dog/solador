@@ -333,7 +333,91 @@ function runnerRowNode(row, forgetLabel, showOrgTags) {
   return el;
 }
 
-let lastRunners = null, runnerGroup = null;
+let lastRunners = null, runnerGroup = null, runnerViewSaving = false;
+
+function runnerViewControls(payload) {
+  let controls = $g("runnersPanel").querySelector('.db-view-switch');
+  if (!controls) {
+    controls = node("div", "db-view-switch");
+    controls.setAttribute("role", "group");
+    controls.setAttribute("aria-label", payload.detailLabels.view);
+    for (const view of ["table", "list"]) {
+      const button = node("button", "btn", payload.detailLabels[view]);
+      button.type = "button";
+      button.dataset.view = view;
+      button.addEventListener("click", async () => {
+        if (runnerViewSaving || button.getAttribute('aria-pressed') === 'true') return;
+        const focused = document.activeElement === button;
+        runnerViewSaving = true;
+        runnerViewControls(lastRunners);
+        const saved = await window.soladorDashboard?.setDetailView('ghRunners', view);
+        runnerViewSaving = false;
+        renderRunners(lastRunners);
+        $g('runnersViewStatus').textContent = saved ? '' : payload.detailLabels.failed;
+        if (focused && !settingsOpen && !overviewOpen && document.activeElement === document.body)
+          button.focus({preventScroll:true});
+      });
+      controls.append(button);
+    }
+    $g("runnersPanel").querySelector('.panel-hdr').append(controls);
+    const status = node('p', 'db-view-status');
+    status.id = 'runnersViewStatus';
+    status.setAttribute('role','status');
+    $g('runnersPanel').append(status);
+  }
+  const view = window.soladorDashboard?.detailView('ghRunners') || 'table';
+  for (const button of controls.children) {
+    button.setAttribute('aria-pressed', String(button.dataset.view === view));
+    button.disabled = runnerViewSaving;
+  }
+  return view;
+}
+
+function runnerTable(rows, payload) {
+  const wrap = node('div','db-table-scroll'), table = node('table','db-detail-table');
+  wrap.tabIndex = 0;
+  wrap.setAttribute('role','region');
+  wrap.setAttribute('aria-label',`${payload.title} · ${payload.detailLabels.table}`);
+  const head = node('thead'), headings = node('tr'), body = node('tbody');
+  fixedColumns(table, payload.detailLabels.widths);
+  for (const label of payload.detailLabels.columns) {
+    const th = node('th','',label);
+    th.scope = 'col';
+    headings.append(th);
+  }
+  head.append(headings);
+  for (const row of rows) {
+    const tr = node('tr','gh-row');
+    tr.dataset.kind = row.kind;
+    tr.dataset.runner = JSON.stringify([row.org, row.name]);
+    const name = node('th'), identity = node('div','gh-runner-identity'), dot = node('span','dot');
+    name.scope = 'row';
+    dot.style.background = row.dotColor;
+    identity.append(dot, node('span','gh-runner-name',row.name));
+    name.append(identity);
+    tr.append(name, node('td','',row.org), node('td','gh-runner-os',row.os), node('td','',row.architecture));
+    const status = node('td'), value = node('span','gh-runner-status',row.status);
+    value.style.color = row.statusColor;
+    value.title = row.status;
+    status.append(value);
+    tr.append(status);
+    for (const cell of tr.children) cell.title = cell.textContent;
+    if (row.kind === 'absent' && payload.forgetLabel) {
+      tr.tabIndex = 0;
+      const open = (x,y) => openForgetMenu(x,y,row.org,row.name,payload.forgetLabel);
+      tr.addEventListener('contextmenu', e=>{ e.preventDefault(); e.stopPropagation(); open(e.clientX,e.clientY); });
+      tr.addEventListener('keydown', e=>{
+        if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+          e.preventDefault(); const rect=tr.getBoundingClientRect(); open(rect.left,rect.bottom);
+        }
+      });
+    }
+    body.append(tr);
+  }
+  table.append(head,body);
+  wrap.append(table);
+  return wrap;
+}
 
 function setRunnerGroup(group) {
   runnerGroup = group;
@@ -342,8 +426,14 @@ function setRunnerGroup(group) {
 }
 
 function renderRunners(payload) {
+  const focusedRunner = document.activeElement?.closest('#runnersBody [data-runner]')?.dataset.runner;
+  const previousScroll = $g('runnersBody').querySelector('.db-table-scroll');
+  const scrollLeft = previousScroll?.scrollLeft || 0;
+  const focusScroll = previousScroll && document.activeElement === previousScroll;
   const restoreFilterFocus = document.activeElement?.matches('#runnersBody .gh-runner-filter button');
   lastRunners = payload;
+  const view = runnerViewControls(payload);
+  $g('runnersBody').dataset.detailState = JSON.stringify([runnerGroup?.id || 'all', view]);
   const group = runnerGroup && payload.groups?.find(group => group.id === runnerGroup.id);
   $g("runnersTitle").textContent = payload.title;
   renderAvailability("runnersAvailability", payload.availability);
@@ -383,13 +473,24 @@ function renderRunners(payload) {
     }
     children.push(header);
   }
-  // The rows go in their own wrapper so the header above them stays
-  // full-width: `--panel-cols` splits the LIST, not the whole panel body.
-  const list = node("div", "gh-list");
-  for (const row of (payload.rows || []).filter(row => !runnerGroup || row.groupId === runnerGroup.id))
+  const rows = (payload.rows || []).filter(row => !runnerGroup || row.groupId === runnerGroup.id);
+  const list = view === 'table' ? runnerTable(rows, payload) : node("div", "gh-list");
+  for (const row of view === 'list' ? rows : [])
     list.appendChild(runnerRowNode(row, payload.forgetLabel, payload.showOrgTags));
   children.push(list);
   $g("runnersBody").replaceChildren(...children);
+  if (view === 'table') {
+    list.scrollLeft = scrollLeft;
+    if (focusScroll) list.focus({preventScroll:true});
+    if (focusedRunner) {
+      const replacement = [...list.querySelectorAll('[data-runner]')].find(row=>row.dataset.runner === focusedRunner);
+      if (replacement) {
+        if (!replacement.hasAttribute('tabindex')) replacement.tabIndex = -1;
+        replacement.focus({preventScroll:true});
+      }
+      else list.focus({preventScroll:true});
+    }
+  }
   if (restoreFilterFocus && runnerGroup)
     $g("runnersBody").querySelector('.gh-runner-filter button').focus({preventScroll:true});
 
@@ -460,6 +561,6 @@ registerPanelRefresh(async () => scheduleRefresh(await refresh()));
 // Test-only introspection, matching app.js's `window.__SOLADOR_TEST__`:
 // read-only, and no production behaviour depends on it.
 window.__SOLADOR_GITHUB_TEST__ = { renderRepos, renderRunners, refresh };
-window.soladorGitHub = { setRunnerGroup };
+window.soladorGitHub = { setRunnerGroup, updateView: () => { if (lastRunners) renderRunners(lastRunners); } };
 
 })();
