@@ -19,9 +19,25 @@ resources; omitted problems are named in that count. A resource scope that
 disappears stays empty.
 
 **Machines** displays colored CPU and RAM utilization bars alongside the exact
-readings, with the existing green/amber/red utilization thresholds. Fractions
+readings, with configurable green/amber/red utilization thresholds. Fractions
 come from the current numeric measurements, never from parsing display text.
 Unavailable measurements leave an empty track and `—` instead of a zero reading.
+
+Set shared CPU and RAM warning/critical percentages under **Settings → Preferences
+→ Machine alerts**. Defaults are 70% warning and 90% critical for both. Each
+percentage must be a whole number from 1 to 100, with warning below critical;
+the thresholds are inclusive. To give a machine different limits, open it under
+**Settings → Connections**, clear **Use shared defaults**, and **Apply thresholds**.
+This includes **This machine**. Restoring shared defaults removes the override,
+so subsequent shared changes apply to that machine too. Overrides follow stable
+machine IDs and are removed when a remote host is deleted.
+
+The preferences apply on the next render without restarting or resetting history.
+Overall CPU/RAM colors, “Check metrics” and the attention count use the same limits;
+per-core colors, memory-pressure, thermal, disk-space and connection checks retain
+their own meanings. RAM here is used memory divided by total memory, not the OS's
+memory-pressure measurement. Invalid edits save nothing, and a disk write failure
+restores the effective preferences while preserving the form's draft.
 
 **GitHub Repos** and **Runners** offer **Rows to show** in Configure: Automatic,
 5, 10, 20, 50 or All, independent of Summary/Detailed presentation. All grows
@@ -1558,7 +1574,8 @@ capability](#the-one-granted-capability) for the single entry that does.
 | Command | What it does |
 |---|---|
 | `settings_view` | the whole surface, including a `stored: bool` per credential |
-| `settings_save_general` | refresh interval, core-row span |
+| `settings_save_general` | refresh interval, core-row span, row spacing |
+| `settings_save_machine_alerts` | shared CPU/RAM warning and critical limits (`hostId: null`), or one machine's override (`local` or a configured host UUID). Null `thresholds` resets shared defaults or removes that machine's override. Validation and save failures preserve the previous effective values; the response also carries `saved` so the form clears only successfully submitted drafts |
 | `settings_save_panel_interval` | one panel's poll cadence, by its `panel_intervals` key. **Refused, not clamped**: a value under the panel's floor writes nothing and comes back as `IntervalRejection::user_message` — which names the panel, the floor, why that floor exists and what was asked for. Storing the floor instead would leave an operator looking at a number they did not choose |
 | `settings_clear_panel_interval` | forget one panel's override, restoring *never configured* — which is not the same as setting it to today's default: the first follows the constant if it moves, the second pins the panel to today's number |
 | `settings_set_crash_reporting` | the crash-reporting opt-in, off by default. Saves on the spot rather than under Apply — consent is not a draft. **Off applies before the save and regardless of whether it succeeded**; on is recorded only if it persisted, and still needs a relaunch to do anything ([`crashreport`](../crates/crashreport)) |
@@ -1636,9 +1653,10 @@ deliberately *not* reset — a vendor that changed state overnight is a transiti
 worth hearing about, and one that broke and recovered while we slept compares
 equal and stays quiet on its own.
 
-Every mutation answers in one shape — `{status, settings}` — and the frontend
-re-renders from the `settings` it gets back rather than patching its own copy,
-so it can never show an edit that failed to save.
+Every mutation returns `{status, settings}`, and the frontend re-renders saved
+state from the returned `settings`. Machine-threshold saves also return `saved`
+so the form can clear successfully submitted drafts while preserving rejected
+values and any newer edits made while the save was pending.
 
 ### The Layout tab
 
@@ -2402,6 +2420,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Detailed layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
+| `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, Check metrics and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 

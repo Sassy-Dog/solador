@@ -183,7 +183,11 @@ const int = (raw) => Math.max(0, Math.round(Number(raw) || 0));
 function unappliedEdits() {
   const edits = [];
   for (const el of document.querySelectorAll("#settings input[id], #settings select[id]")) {
-    if (el.type === "password" || el.type === "checkbox") continue;
+    if (el.type === "password") continue;
+    if (el.type === "checkbox") {
+      if (el.dataset.applyGated === "true" && el.checked !== el.defaultChecked) edits.push([el.id, el.checked]);
+      continue;
+    }
     // Immediate saves must render Rust's answer, including a refused change.
     if (el.dataset.saveOnChange === "true") continue;
     const initial = el.tagName === "SELECT" ? el.dataset.initialValue : el.defaultValue;
@@ -200,7 +204,8 @@ function restoreEdits(edits) {
   for (const [id, value] of edits) {
     const el = document.getElementById(id);
     if (!el || el.type === "password") continue;
-    el.value = value;
+    if (el.type === "checkbox") el.checked = value;
+    else el.value = value;
     el.dispatchEvent(new Event("input"));
   }
 }
@@ -228,7 +233,9 @@ async function apply(result) {
   document.querySelectorAll("#settingsBody .connection-advanced").forEach((el, index) => { el.open = expanded[index] || false; });
 }
 
-async function mutate(command, args) {
+async function mutate(command, args, submitted = []) {
+  const submittedValues = submitted.map(input => [input,
+    input.type === "checkbox" ? input.checked : input.value]);
   const previous = new Set(S.view.connections.rows.map(row => row.id));
   const editor = S.editor;
   let result;
@@ -242,6 +249,12 @@ async function mutate(command, args) {
     const created = result.settings.connections.rows.find(row =>
       row.kind === editor.kind && !previous.has(row.id));
     if (created) S.editor = { ...created };
+  }
+  if (result?.saved) {
+    for (const [input, value] of submittedValues) {
+      if (input.type === "checkbox") input.defaultChecked = value;
+      else input.defaultValue = value;
+    }
   }
   apply(result);
 }
@@ -354,7 +367,58 @@ function generalTab(g) {
     })
   );
   box.appendChild(actionRow(apply));
-  return [box, panelIntervalsGroup(g.panelIntervals), crashReportingGroup(g.crashReporting)];
+  return [box, machineAlertsGroup(g.machineAlerts), panelIntervalsGroup(g.panelIntervals), crashReportingGroup(g.crashReporting)];
+}
+
+function machineAlertsGroup(g) {
+  const box = group(g.heading);
+  box.classList.add("machine-alerts");
+  box.appendChild(help(g.help));
+  const inputs = new Map();
+  const fields = node("div", "machine-alert-fields");
+  const inherited = !g.shared ? checkbox(g.inherited) : null;
+  if (inherited) {
+    inherited.defaultChecked = inherited.checked;
+    inherited.dataset.applyGated = "true";
+  }
+  if (inherited) {
+    inherited.id = `machine-alerts-${g.hostId}-inherit`;
+    const label = node("label", "connection-toggle");
+    label.append(inherited, node("span", null, g.useDefaultsLabel));
+    box.appendChild(label);
+  }
+  for (const entry of g.fields) {
+    const input = numberInput(entry.value, g.min, g.max);
+    input.step = "1";
+    input.required = true;
+    input.disabled = !!inherited?.checked;
+    inputs.set(entry.id, input);
+    fields.appendChild(field(`machine-alerts-${g.hostId || "defaults"}-${entry.id}`, entry.label, input));
+  }
+  let draft = Object.fromEntries(g.fields.map(entry => [entry.id, String(entry.value)]));
+  inherited?.addEventListener("input", () => {
+    if (inherited.checked) draft = Object.fromEntries([...inputs].map(([key, input]) => [key, input.value]));
+    for (const [key, input] of inputs) {
+      input.value = inherited.checked ? String(g.defaults[key]) : draft[key];
+      input.disabled = inherited.checked;
+    }
+  });
+  const apply = button(g.saveLabel, "machine-alerts-save");
+  apply.addEventListener("click", () => {
+    if ([...inputs.values()].some(input => !input.reportValidity())) return;
+    const thresholds = inherited?.checked ? null : Object.fromEntries(
+      [...inputs].map(([key, input]) => [key, input.valueAsNumber]),
+    );
+    mutate("settings_save_machine_alerts", { hostId: g.hostId, thresholds }, [...inputs.values(), ...(inherited ? [inherited] : [])]);
+  });
+  const actions = actionRow(apply);
+  if (g.shared) {
+    const reset = button(g.resetLabel, "machine-alerts-reset");
+    reset.addEventListener("click", () => mutate("settings_save_machine_alerts", { hostId:null, thresholds:null }, [...inputs.values()]));
+    actions.appendChild(reset);
+  }
+  box.append(fields, help(g.rangeHelp), actions);
+  return box;
 }
 
 /** The four per-panel poll cadences, one row each.
@@ -796,6 +860,7 @@ function hostsTab(t, options = {}) {
   }
 
   if (options.edit) {
+    boxes.push(...t.rows.map(host => machineAlertsGroup(host.machineAlerts)));
     boxes.push(advanced(rulesGroup(t.rules)));
     return boxes;
   }
@@ -1992,7 +2057,7 @@ function connectionEditor() {
     const hosts = S.view.hosts;
     const local = group(hosts.localHidden.heading);
     for (const mount of hosts.localHidden.mounts) local.appendChild(hiddenRow(hosts, mount, null));
-    content = [help(entry.help), ...(hosts.localHidden.mounts.length ? [local] : []), rulesGroup(hosts.rules)];
+    content = [help(entry.help), machineAlertsGroup(hosts.localMachineAlerts), ...(hosts.localHidden.mounts.length ? [local] : []), rulesGroup(hosts.rules)];
   } else if (entry.kind === "claude") content = [help(entry.help)];
   else if (entry.kind === "services") {
     const add = button(t.addLabel, "connection-add");

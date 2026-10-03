@@ -66,9 +66,22 @@ pub fn hex(c: u32) -> String {
 }
 
 pub fn usage_color(v: f64) -> u32 {
-    if v < 70.0 {
+    threshold_color(v, 70.0, 90.0)
+}
+
+/// Overall CPU/RAM limits supplied by the operator's validated preferences.
+/// Compare in fraction units: multiplying a fraction back to percent can put an
+/// exact boundary (e.g. 57%) just below itself through floating-point rounding.
+pub fn usage_fraction_color(v: f64, warning: u8, critical: u8) -> u32 {
+    threshold_color(v, f64::from(warning) / 100.0, f64::from(critical) / 100.0)
+}
+
+fn threshold_color(v: f64, warning: f64, critical: f64) -> u32 {
+    if !v.is_finite() {
+        MUTED
+    } else if v < warning {
         GREEN
-    } else if v < 90.0 {
+    } else if v < critical {
         AMBER
     } else {
         RED
@@ -156,6 +169,30 @@ mod tests {
         assert_eq!(usage_color(70.0), AMBER);
         assert_eq!(usage_color(89.9), AMBER);
         assert_eq!(usage_color(90.0), RED);
+    }
+
+    #[test]
+    fn configured_fraction_thresholds_include_every_integer_boundary() {
+        for warning in 1..100 {
+            let critical = warning + 1;
+            let at_warning = f64::from(warning) / 100.0;
+            let at_critical = f64::from(critical) / 100.0;
+            assert_eq!(
+                usage_fraction_color(at_warning - 0.000001, warning, critical),
+                GREEN
+            );
+            assert_eq!(
+                usage_fraction_color(at_warning, warning, critical),
+                AMBER,
+                "warning {warning}"
+            );
+            assert_eq!(
+                usage_fraction_color(at_critical, warning, critical),
+                RED,
+                "critical {critical}"
+            );
+        }
+        assert_eq!(usage_fraction_color(f64::NAN, 70, 90), MUTED);
     }
 
     #[test]

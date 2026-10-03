@@ -177,6 +177,7 @@ fn lower_unknowns(card: &mut Value, snapshot: &localhost::LocalSnapshot) {
         // `to_wire` already drops the per-core list to empty, so the core grid
         // simply has no cells — there is no row of fabricated 0% to blank.
         card["cpuValue"] = json!(UNKNOWN);
+        card["cpuFraction"] = Value::Null;
         card["cpuValueColor"] = json!(color::hex(color::MUTED));
     }
 }
@@ -382,6 +383,7 @@ mod tests {
 
         let muted = color::hex(color::MUTED);
         assert_eq!(card["cpuValueColor"], muted);
+        assert!(card["cpuFraction"].is_null());
         assert_eq!(card["pressureColor"], muted);
         assert_eq!(card["gpuValue"], UNKNOWN);
         assert_eq!(card["gpuValueColor"], muted);

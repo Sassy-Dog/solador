@@ -534,6 +534,8 @@ pub struct Settings {
     /// store written by a newer build survives a round-trip through an older one.
     #[serde(default)]
     pub panel_intervals: BTreeMap<String, u32>,
+    /// Shared CPU/RAM limits and explicit per-machine overrides.
+    pub machine_alerts: crate::machine_alerts::MachineAlerts,
 }
 
 impl Settings {
@@ -622,6 +624,7 @@ impl Default for Settings {
             local_hidden_volume_mounts: Vec::new(),
             // Empty, not pre-filled with the defaults — see the field's note.
             panel_intervals: BTreeMap::new(),
+            machine_alerts: crate::machine_alerts::MachineAlerts::default(),
         }
     }
 }
@@ -770,6 +773,7 @@ mod tests {
                 ("containers".to_owned(), 30),
                 ("azure_cost".to_owned(), 6 * 3600),
             ]),
+            machine_alerts: crate::machine_alerts::MachineAlerts::default(),
         };
         let json = serde_json::to_string(&s).expect("serialize");
         assert_eq!(
