@@ -896,6 +896,11 @@ the bundle's floor.
   owns sorting/aggregation. Architecture is carried from GitHub's standard labels
   through the runner roster so absences retain their type; unknown stays unknown.
   See `app/README.md` for controls, count meanings and responsive behavior.
+- Settings → Preferences has shared CPU/RAM alert thresholds; Connections has
+  per-machine overrides, including the local machine. Defaults remain 70/90%.
+  `store::machine_alerts` owns persistence/validation; the shell applies the
+  resolved limits to cached numeric fractions on every render, so meter colors
+  and dashboard attention agree without restarting host pollers.
 
 ## Testing
 

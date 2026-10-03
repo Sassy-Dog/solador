@@ -1244,6 +1244,7 @@ fn general_tab(settings: &Settings, crash: CrashFacts) -> Value {
         // decision now (Settings → Layout), because one global switch could not
         // say "tabs in a narrow column, side by side when wide".
         "saveLabel": "Apply",
+        "machineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, None),
         "panelIntervals": panel_intervals_section(settings),
         "crashReporting": crash_reporting_section(settings, crash),
     })
@@ -2245,6 +2246,7 @@ fn hosts_tab(
                 "enabled": host.enabled,
                 "tokenStored": stored.hosts.contains(&host.id),
                 "hiddenVolumes": host.hidden_volume_mounts,
+                "machineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, Some(&host.id.to_string())),
                 // The pin is a public certificate's hash, so it is shown in
                 // full: it is what the operator compares against the host.
                 "pinned": host.tls_fingerprint.is_some(),
@@ -2273,6 +2275,7 @@ fn hosts_tab(
             "heading": "Hidden Volumes — this machine",
             "mounts": settings.local_hidden_volume_mounts,
         },
+        "localMachineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, Some("local")),
         "add": {
             "heading": "Add Host",
             "nameLabel": "Name (e.g. ubu-01)",

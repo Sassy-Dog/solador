@@ -756,6 +756,7 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .settings-content .help { font-size:11px; line-height:1.55; }
 .settings-content .input { min-width:0; width:100%; min-height:34px; }
 .settings-content .field { gap:6px; }
+.machine-alert-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; max-width:640px; }
 .settings-content .btn { min-height:31px; font-weight:500; }
 .settings .primary { background:var(--ink); color:var(--panel); border-color:var(--ink); }
 .connection-heading { margin-bottom:6px; }

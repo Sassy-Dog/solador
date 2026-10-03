@@ -37,6 +37,7 @@ pub mod containers;
 pub mod dashboard;
 pub mod hosts;
 pub mod layout;
+pub mod machine_alerts;
 pub mod repos;
 pub mod runners;
 pub mod secrets;
@@ -494,6 +495,11 @@ impl Store {
     /// delete must not decide whether the host row goes away.
     pub fn remove_host(&mut self, id: Uuid) -> Option<Host> {
         let index = self.data.hosts.iter().position(|host| host.id == id)?;
+        self.data
+            .settings
+            .machine_alerts
+            .overrides
+            .remove(&id.to_string());
         Some(self.data.hosts.remove(index))
     }
 
@@ -1218,6 +1224,7 @@ mod tests {
                 "azure_cost".to_owned(),
                 6 * 3600,
             )]),
+            machine_alerts: machine_alerts::MachineAlerts::default(),
         });
 
         let mut host = Host::new("ubu-01", "100.100.100.100");

@@ -24,6 +24,7 @@ mod crons;
 mod dashboard;
 mod github;
 mod local;
+mod machine_alerts;
 mod openclaw;
 mod panel;
 mod resume;
@@ -2857,7 +2858,7 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
     // laundered on the way out as well as on the way in (`breakpoints`), so a
     // store hand-edited to name a panel this build does not have still renders
     // every panel it does.
-    let (overflow, core_row_span, row_gap_px, layout) = {
+    let (overflow, core_row_span, row_gap_px, layout, alerts) = {
         let store = state.store.lock().expect("store poisoned");
         let settings = store.settings();
         let bands = settings::breakpoints(store.layout(), settings.host_overflow_mode);
@@ -2867,9 +2868,10 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
             settings.core_row_span as usize,
             settings.row_gap_px,
             band.layout(),
+            settings.machine_alerts.clone(),
         )
     };
-    cockpit_view(
+    let mut payload = cockpit_view(
         Some(local),
         &hosts,
         width,
@@ -2877,7 +2879,9 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         core_row_span,
         row_gap_px,
         &layout,
-    )
+    );
+    machine_alerts::apply(&mut payload, &alerts);
+    payload
 }
 
 // MARK: the Usage + Azure Cost panels
@@ -3746,6 +3750,30 @@ fn settings_save_general(
     wake_github(&state);
     wake_usage(&state, false);
     settings_response(&state, status)
+}
+
+#[tauri::command]
+fn settings_save_machine_alerts(
+    host_id: Option<String>,
+    thresholds: Option<Value>,
+    state: tauri::State<'_, Arc<App>>,
+) -> Value {
+    let result = machine_alerts::save(
+        &mut state.store.lock().expect("store poisoned"),
+        host_id.as_deref(),
+        thresholds.as_ref(),
+    );
+    // Rendering reads these preferences every second; no poller or history is reset.
+    let saved = result.is_ok();
+    let mut response = settings_response(
+        &state,
+        Some(match result {
+            Ok(()) => "Machine alert thresholds saved.".into(),
+            Err(error) => format!("Failed: {error}"),
+        }),
+    );
+    response["saved"] = json!(saved);
+    response
 }
 
 /// Cuts short the sleep of the one loop whose cadence just changed.
@@ -6289,6 +6317,7 @@ fn main() {
             update_install,
             settings_view,
             settings_save_general,
+            settings_save_machine_alerts,
             settings_save_panel_interval,
             settings_clear_panel_interval,
             settings_set_crash_reporting,
