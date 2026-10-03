@@ -1087,9 +1087,11 @@ derivation and mint, and `publish --agent`, are tested in
   root loads it, so the `/v1/health` check and the TLS fingerprint belong to the
   follow-up `--system-daemon --verify` run. Refused: root, a non-macOS platform,
   `--enable-timer` (no update job in daemon mode), and an existing per-user
-  LaunchAgent install for the same user. `solador-agent update`/`rollback` do
-  NOT support this mode yet (they read only a per-user LaunchAgent plist); a
-  host re-pins. Exit 0 means *staged* on install, not serving.
+  LaunchAgent install for the same user. `solador-agent update`/`rollback`
+  support this mode (#507): run **as the service user** (`sudo -u <svc> -H
+  ~<svc>/.local/bin/solador-agent update`), never as root, with no unattended
+  job. See the `update`/`rollback` bullet below for the mechanism. Exit 0 means
+  *staged* on install, not serving.
   `--uninstall --system-daemon` removes the user files and prints the root
   `bootout`/remove step. `agent/README.md`'s "Running as a system daemon under a
   service user" is the procedure; `lib_test.sh` records `launchctl` and `sudo`
@@ -1371,7 +1373,33 @@ derivation and mint, and `publish --agent`, are tested in
   process whose signed pages change); restart the **metrics** service
   (`systemctl --user restart` / `launchctl kickstart -k gui/<uid>/…`, never
   the updater's own process, which refuses if the manager says it *is* the
-  service); poll the authenticated `/v1/health` until it reports the new
+  service); **the system-domain LaunchDaemon variant (#507, the org's agent
+  management spec §5.3) restarts with no `launchctl` mutation at all**:
+  `resolve_launchd_with` adopts `/Library/LaunchDaemons/<label>.plist` (the
+  shape #506's `app.solador.agent.daemon.plist` renders, read through
+  `plutil`) only when its `UserName` is the invoking user (from the password
+  database, not `$USER`) and its `ProgramArguments` binary is under that user's `$HOME`
+  (not `pw_dir`) with no `..`; a per-user LaunchAgent plus such a system plist is
+  **ambiguous** and refused naming both paths, a system plist for another
+  user is refused with that reason (unless the invoking user has their own
+  LaunchAgent, which then stays the install), and nothing is adopted
+  otherwise. `Service::LaunchDaemon` does the manager check with
+  `launchctl print system/<label>` (readable without root) before any
+  download, takes the main pid from that print's `pid =` line, and
+  **restarts by `SIGTERM` to that process after checking, in the preflight and
+  again at the signal, that its owner is the invoking uid and its executable is
+  the resolved binary** (a pid that is not ours is refused before any download
+  or swap, and a signal is never sent to it), then waits, bounded, for a
+  *different* pid that `KeepAlive` relaunches (the plist's
+  `ThrottleInterval` is 3 s; a daemon with no pid at all is waited for the
+  same way). No relaunch in the bound is a restart failure, so the existing
+  restore (exit 5, or 3) applies, and `rollback` restarts the same way. Its
+  `inspect_hint` is `launchctl print system/<label>` plus
+  `ProgramArguments[3]`. It runs as the service user and still refuses root; the
+  host side is the `DaemonHost` trait, so `update_flow.rs` drives the real
+  mechanism over a fake that mimics `KeepAlive` and nothing in a test touches
+  the real system domain or signals a real process; poll the authenticated
+  `/v1/health` until it reports the new
   CalVer — an HTTP 200 with a stale or absent `version` is **not** a success;
   on any failure after the swap, restore `.prev` the same way, restart, and
   require the previous version back. **Exit non-zero either way**: **5**

@@ -9,7 +9,8 @@
 //!
 //! 1. Resolves the **installed service** through #392's contract — reading
 //!    only: the executable path out of the systemd user unit's `ExecStart=`
-//!    (Linux) or the LaunchAgent plist's `ProgramArguments` (macOS), the env
+//!    (Linux) or the LaunchAgent plist's `ProgramArguments` (macOS; or, #507, a
+//!    system LaunchDaemon's, adopted only for its own `UserName`), the env
 //!    file beside it, and the token/bind/port the running service was
 //!    started with — read from that file the way `EnvironmentFile=` and the
 //!    launcher read it, never `source`d. Root is refused outright; an
@@ -22,7 +23,8 @@
 //!    job, say — reports *busy* and changes nothing. The lock is released by
 //!    process exit, so a crashed updater cannot wedge the next one. Then the
 //!    service manager must **answer** (`systemctl --user` / the `gui/<uid>`
-//!    domain), and must not name this process as the service: a manager
+//!    domain, or `system/<label>` for a system LaunchDaemon run as this user,
+//!    #507), and must not name this process as the service: a manager
 //!    discovered unreachable at the restart, after the swap, is the
 //!    half-applied update this whole design exists to prevent.
 //! 3. Fetches the feed from its **fixed location**: `agent-latest.json` and
@@ -849,6 +851,16 @@ pub enum Service {
     Systemd { unit: String },
     /// `launchctl kickstart -k gui/<uid>/<label>`.
     Launchd { label: String, uid: u32 },
+    /// A system-domain LaunchDaemon running as the invoking user (#507, #505):
+    /// `launchctl print system/<label>` answers the manager check and names
+    /// the main pid, and the restart is a `SIGTERM` to that process, which
+    /// the plist's `KeepAlive` relaunches. No root, no `kickstart`.
+    /// `binary` is the resolved executable the process must be running.
+    LaunchDaemon {
+        label: String,
+        uid: u32,
+        binary: PathBuf,
+    },
 }
 
 /// Restart and inspect the metrics service. A trait so the transaction can
@@ -877,6 +889,7 @@ impl ServiceControl for Service {
         match self {
             Service::Systemd { unit } => format!("systemd user unit {unit}"),
             Service::Launchd { label, uid } => format!("LaunchAgent gui/{uid}/{label}"),
+            Service::LaunchDaemon { label, .. } => format!("LaunchDaemon system/{label}"),
         }
     }
 
@@ -890,6 +903,9 @@ impl ServiceControl for Service {
                  a real login session for this user (not via sudo -u or su), or set \
                  XDG_RUNTIME_DIR=/run/user/$(id -u)",
             ),
+            Service::LaunchDaemon { label, uid, binary } => {
+                return system_daemon(label, *uid, binary).preflight()
+            }
             Service::Launchd { uid, .. } => (
                 "launchctl",
                 vec!["print".into(), format!("gui/{uid}")],
@@ -927,6 +943,9 @@ impl ServiceControl for Service {
                     format!("gui/{uid}/{label}"),
                 ],
             ),
+            Service::LaunchDaemon { label, uid, binary } => {
+                return system_daemon(label, *uid, binary).restart()
+            }
         };
         let out = Command::new(program)
             .args(&args)
@@ -967,6 +986,9 @@ impl ServiceControl for Service {
                 }
                 launchctl_pid(&String::from_utf8_lossy(&out.stdout))
             }
+            Service::LaunchDaemon { label, uid, binary } => {
+                system_daemon(label, *uid, binary).main_pid()
+            }
         }
     }
 
@@ -980,7 +1002,262 @@ impl ServiceControl for Service {
                 log.map(|p| p.display().to_string())
                     .unwrap_or_else(|| "~/Library/Logs/solador-agent.log".to_string())
             ),
+            Service::LaunchDaemon { label, uid, binary } => {
+                system_daemon(label, *uid, binary).inspect_hint(log)
+            }
         }
+    }
+}
+
+/// The system-daemon mechanism over this host's real `launchctl`, libproc
+/// and `kill`.
+fn system_daemon(label: &str, uid: u32, binary: &Path) -> DaemonControl<SystemDaemonHost> {
+    DaemonControl::new(
+        label.to_string(),
+        uid,
+        binary.to_path_buf(),
+        SystemDaemonHost,
+    )
+}
+
+/// What the system-daemon restart needs from the host, so the mechanism can be
+/// driven by a fake that mimics `KeepAlive` on a machine with no launchd
+/// (#507). The real one is [`SystemDaemonHost`]; a test must never reach it,
+/// because it talks to the real system domain and signals real processes.
+pub trait DaemonHost {
+    /// `launchctl print system/<label>`'s stdout. `Err` when it did not
+    /// answer (non-zero exit, or no launchctl): the manager check.
+    fn print(&self, label: &str) -> Result<String, String>;
+    /// The effective uid owning `pid`, when it can be read.
+    fn owner_uid(&self, pid: u32) -> Option<u32>;
+    /// The executable `pid` is running, when it can be read.
+    fn executable(&self, pid: u32) -> Option<PathBuf>;
+    /// `SIGTERM` to `pid`.
+    fn terminate(&self, pid: u32) -> Result<(), String>;
+}
+
+/// How long the daemon variant waits for launchd to relaunch the process
+/// after `SIGTERM`, and how often it asks. The plist's `ThrottleInterval` is 3
+/// seconds, so 30 seconds is ten throttle periods.
+pub const RELAUNCH_ATTEMPTS: u32 = 60;
+pub const RELAUNCH_INTERVAL: Duration = Duration::from_millis(500);
+
+/// The system-domain LaunchDaemon variant of [`ServiceControl`] (#507):
+/// restart by `SIGTERM` to the daemon's own process, with launchd's
+/// `KeepAlive` relaunching it. The updater runs as the daemon's user, so it
+/// may signal that process and needs no root, no sudoers rule and no helper.
+pub struct DaemonControl<H: DaemonHost> {
+    label: String,
+    uid: u32,
+    binary: PathBuf,
+    host: H,
+    attempts: u32,
+    interval: Duration,
+}
+
+impl<H: DaemonHost> DaemonControl<H> {
+    #[must_use]
+    pub fn new(label: String, uid: u32, binary: PathBuf, host: H) -> Self {
+        Self {
+            label,
+            uid,
+            binary,
+            host,
+            attempts: RELAUNCH_ATTEMPTS,
+            interval: RELAUNCH_INTERVAL,
+        }
+    }
+
+    /// Shorten the relaunch wait (tests).
+    #[must_use]
+    pub fn with_relaunch_wait(mut self, attempts: u32, interval: Duration) -> Self {
+        self.attempts = attempts;
+        self.interval = interval;
+        self
+    }
+
+    fn print_pid(&self) -> Result<Option<u32>, String> {
+        let out = self.host.print(&self.label)?;
+        Ok(launchctl_pid(&out))
+    }
+
+    /// The process about to be signalled must be this user's and be this
+    /// install's binary. A pid that is neither is somebody else's process,
+    /// and no signal is sent to it.
+    fn check_signalable(&self, pid: u32) -> Result<(), String> {
+        let owner = self.host.owner_uid(pid).ok_or_else(|| {
+            format!(
+                "cannot read the owner of pid {pid}, the daemon's main process; not signalling it"
+            )
+        })?;
+        if owner != self.uid {
+            return Err(format!(
+                "the daemon's main process (pid {pid}) is owned by uid {owner}, not by this \
+                 user (uid {}); refusing to signal it. Run this as the user the daemon runs as",
+                self.uid
+            ));
+        }
+        let exe = self.host.executable(pid).ok_or_else(|| {
+            format!(
+                "cannot read the executable of pid {pid}, the daemon's main process; not \
+                 signalling it"
+            )
+        })?;
+        let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if canonical(&exe) != canonical(&self.binary) {
+            return Err(format!(
+                "the daemon's main process (pid {pid}) is running {}, not the installed binary \
+                 {}; refusing to signal it",
+                exe.display(),
+                self.binary.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<H: DaemonHost> ServiceControl for DaemonControl<H> {
+    fn describe(&self) -> String {
+        format!("LaunchDaemon system/{}", self.label)
+    }
+
+    /// `launchctl print system/<label>` must answer, and a running main
+    /// process must already pass the signal checks: a daemon this user cannot
+    /// restart is found out here, before any download, not after the swap.
+    fn preflight(&self) -> Result<(), String> {
+        let pid = self.print_pid().map_err(|e| {
+            format!(
+                "launchctl print system/{} did not answer ({e}); the system-domain daemon \
+                 cannot be inspected, so it cannot be restarted from here",
+                self.label
+            )
+        })?;
+        pid.map_or(Ok(()), |pid| self.check_signalable(pid))
+    }
+
+    fn restart(&self) -> Result<(), String> {
+        let old = self
+            .print_pid()
+            .map_err(|e| format!("launchctl print system/{} failed: {e}", self.label))?;
+        if let Some(old) = old {
+            self.check_signalable(old)?;
+            self.host
+                .terminate(old)
+                .map_err(|e| format!("SIGTERM to pid {old} failed: {e}"))?;
+        }
+        // No process at all means launchd is between a death and its
+        // throttled relaunch; that relaunch reads the live path after the
+        // swap, so waiting for a pid is the same restart.
+        let mut last = "no answer was read".to_string();
+        for _ in 0..self.attempts {
+            std::thread::sleep(self.interval);
+            match self.print_pid() {
+                Ok(Some(now)) if Some(now) != old => return Ok(()),
+                Ok(Some(now)) => last = format!("still pid {now}, the process that was signalled"),
+                Ok(None) => last = "no process running".to_string(),
+                Err(e) => last = format!("launchctl print failed: {e}"),
+            }
+        }
+        Err(format!(
+            "launchd did not relaunch {} with a new process within {}s of the SIGTERM \
+             (KeepAlive); last observed: {last}",
+            self.label,
+            (self.interval * self.attempts).as_secs()
+        ))
+    }
+
+    fn main_pid(&self) -> Option<u32> {
+        self.print_pid().ok().flatten()
+    }
+
+    fn inspect_hint(&self, log: Option<&Path>) -> String {
+        format!(
+            "Inspect:  launchctl print system/{}\n          tail -n 50 \"{}\"",
+            self.label,
+            log.map(|p| p.display().to_string())
+                .unwrap_or_else(|| "~/Library/Logs/solador-agent.log".to_string())
+        )
+    }
+}
+
+/// The real host: this machine's `launchctl`, libproc and `kill`.
+pub struct SystemDaemonHost;
+
+impl DaemonHost for SystemDaemonHost {
+    fn print(&self, label: &str) -> Result<String, String> {
+        let out = Command::new("launchctl")
+            .args(["print", &format!("system/{label}")])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("could not run launchctl: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(format!(
+                "launchctl exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn owner_uid(&self, pid: u32) -> Option<u32> {
+        // SAFETY: proc_pidinfo writes at most `size` bytes into a zeroed,
+        // correctly sized struct and returns the byte count it wrote.
+        unsafe {
+            let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let n = libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            );
+            (n == size).then_some(info.pbi_uid)
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn owner_uid(&self, _pid: u32) -> Option<u32> {
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn executable(&self, pid: u32) -> Option<PathBuf> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: the buffer is valid for its stated length.
+        let n = unsafe {
+            libc::proc_pidpath(
+                pid as libc::c_int,
+                buf.as_mut_ptr().cast(),
+                buf.len() as u32,
+            )
+        };
+        (n > 0).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..n as usize])))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn executable(&self, _pid: u32) -> Option<PathBuf> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn terminate(&self, pid: u32) -> Result<(), String> {
+        // SAFETY: kill has no memory-safety preconditions. The pid was just
+        // checked to be this user's process running the installed binary.
+        if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error().to_string())
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn terminate(&self, _pid: u32) -> Result<(), String> {
+        Err("signals are not available on this platform".to_string())
     }
 }
 
@@ -1161,47 +1438,210 @@ fn resolve_launchd(home: &Path, label: &str) -> Result<Install, UpdateError> {
              must start with a letter or digit"
         )));
     }
-    let plist = home
-        .join("Library/LaunchAgents")
-        .join(format!("{label}.plist"));
-    if !plist.is_file() {
-        return Err(UpdateError::Install(format!(
-            "no installed agent: {} not found. Install with agent/deploy/install.sh first",
-            plist.display()
-        )));
-    }
-    // plutil, on every macOS: the plist is XML the installer rendered, and
-    // reading it back through the system's own parser is what keeps this
-    // from growing a plist parser of its own.
+    let user = current_user_name();
+    resolve_launchd_with(&LaunchdLookup {
+        home,
+        label,
+        system_dir: Path::new(SYSTEM_LAUNCHDAEMONS_DIR),
+        user: user.as_deref(),
+        uid: current_uid(),
+        read_plist: &plutil_json,
+    })
+}
+
+/// Where a system-domain LaunchDaemon's plist lives (#506).
+pub const SYSTEM_LAUNCHDAEMONS_DIR: &str = "/Library/LaunchDaemons";
+
+/// Everything `resolve_launchd_with` reads from the host, so the resolution
+/// rules run in tests on any platform: the system plist directory, the
+/// invoking user's name and uid, and the plist-to-JSON reader (`plutil` on a
+/// Mac, which a Linux CI runner does not have).
+pub struct LaunchdLookup<'a> {
+    pub home: &'a Path,
+    pub label: &'a str,
+    pub system_dir: &'a Path,
+    /// The invoking user's login name; `None` when it cannot be read, which
+    /// can never match a daemon's `UserName`.
+    pub user: Option<&'a str>,
+    pub uid: u32,
+    pub read_plist: &'a dyn Fn(&Path) -> Result<String, String>,
+}
+
+/// The plist at `path` as JSON, through `plutil` — on every macOS: the plist
+/// is XML the installer rendered, and reading it back through the system's own
+/// parser is what keeps this from growing a plist parser of its own.
+pub fn plutil_json(path: &Path) -> Result<String, String> {
     let out = Command::new("plutil")
         .args(["-convert", "json", "-o", "-"])
-        .arg(&plist)
+        .arg(path)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| UpdateError::Install(format!("could not run plutil: {e}")))?;
+        .map_err(|e| format!("could not run plutil: {e}"))?;
     if !out.status.success() {
-        return Err(UpdateError::Install(format!(
+        return Err(format!(
             "plutil could not read {}: {}",
-            plist.display(),
+            path.display(),
             String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Resolve the macOS install: the per-user LaunchAgent, or the system-domain
+/// LaunchDaemon `install.sh --system-daemon` renders (#506), which this user
+/// may update only when the plist says it runs as this user, from a binary
+/// under this user's home (#507). Never adopts anything else:
+///
+/// - a system plist whose `UserName` is another user is refused, unless this
+///   user also has its own LaunchAgent (then it is somebody else's daemon and
+///   this user's install is the LaunchAgent, unchanged);
+/// - both a LaunchAgent and a system plist of this user's for the same label
+///   is ambiguous, and is refused naming both paths — updating the wrong one
+///   would restart through a manager that does not run the binary;
+/// - a system plist of this user's naming a binary outside this user's home
+///   is refused: it is not an install this user owns.
+pub fn resolve_launchd_with(l: &LaunchdLookup<'_>) -> Result<Install, UpdateError> {
+    let agent_plist = l
+        .home
+        .join("Library/LaunchAgents")
+        .join(format!("{}.plist", l.label));
+    let system_plist = l.system_dir.join(format!("{}.plist", l.label));
+    let has_agent = agent_plist.is_file();
+
+    if system_plist.is_file() {
+        let not_ours = |e: String| {
+            UpdateError::Install(format!(
+                "{} is not the LaunchDaemon install.sh --system-daemon renders ({e}); re-run \
+                 agent/deploy/install.sh --system-daemon",
+                system_plist.display()
+            ))
+        };
+        let parsed = (l.read_plist)(&system_plist)
+            .map_err(UpdateError::Install)
+            .and_then(|json| {
+                serde_json::from_str::<serde_json::Value>(&json)
+                    .map(|v| (json, v))
+                    .map_err(|e| not_ours(e.to_string()))
+            });
+        let (json, v) = match parsed {
+            Ok(parsed) => parsed,
+            // A system plist this user cannot read or parse is not their
+            // install; with a LaunchAgent of their own it must not break it.
+            Err(_) if has_agent => return resolve_launchd_agent(l, &agent_plist),
+            Err(e) => return Err(e),
+        };
+        let owner = v.get("UserName").and_then(|u| u.as_str());
+        if owner.is_some() && owner == l.user {
+            let (binary, env_file, log) = launchd_program_arguments(&json).map_err(not_ours)?;
+            let under_home = binary.is_absolute()
+                && !binary
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                && binary.starts_with(l.home);
+            if !under_home {
+                return Err(UpdateError::Install(format!(
+                    "{} runs {} as this user, but that binary is not under this user's home \
+                     ({}), so it is not an install this command will replace",
+                    system_plist.display(),
+                    binary.display(),
+                    l.home.display()
+                )));
+            }
+            if has_agent {
+                return Err(UpdateError::Install(format!(
+                    "ambiguous install: both a per-user LaunchAgent ({}) and a system \
+                     LaunchDaemon ({}) exist for the label {} and this command cannot tell \
+                     which one runs the agent. Remove the one that is not in use \
+                     (install.sh --uninstall removes the per-user one); nothing was changed",
+                    agent_plist.display(),
+                    system_plist.display(),
+                    l.label
+                )));
+            }
+            return Ok(Install {
+                service: Service::LaunchDaemon {
+                    label: l.label.to_string(),
+                    uid: l.uid,
+                    binary: binary.clone(),
+                },
+                binary,
+                env_file,
+                log,
+            });
+        }
+        if !has_agent {
+            return Err(UpdateError::Install(format!(
+                "{} runs as {}, not as this user ({}); `update` and `rollback` replace only an \
+                 install that runs as the user invoking them. Run this as that user",
+                system_plist.display(),
+                owner.map_or_else(|| "no UserName (root)".to_string(), |u| format!("'{u}'")),
+                l.user
+                    .map_or_else(|| format!("uid {}", l.uid), |u| format!("'{u}'"))
+            )));
+        }
+    }
+
+    if !has_agent {
+        return Err(UpdateError::Install(format!(
+            "no installed agent: {} not found. Install with agent/deploy/install.sh first",
+            agent_plist.display()
         )));
     }
-    let (binary, env_file, log) = launchd_program_arguments(&String::from_utf8_lossy(&out.stdout))
-        .map_err(|e| {
-            UpdateError::Install(format!(
-                "{} is not the LaunchAgent install.sh renders ({e}); re-run agent/deploy/install.sh",
-                plist.display()
-            ))
-        })?;
+    resolve_launchd_agent(l, &agent_plist)
+}
+
+/// The per-user LaunchAgent at `agent_plist`, which exists.
+fn resolve_launchd_agent(
+    l: &LaunchdLookup<'_>,
+    agent_plist: &Path,
+) -> Result<Install, UpdateError> {
+    let json = (l.read_plist)(agent_plist).map_err(UpdateError::Install)?;
+    let (binary, env_file, log) = launchd_program_arguments(&json).map_err(|e| {
+        UpdateError::Install(format!(
+            "{} is not the LaunchAgent install.sh renders ({e}); re-run agent/deploy/install.sh",
+            agent_plist.display()
+        ))
+    })?;
     Ok(Install {
         binary,
         env_file,
         service: Service::Launchd {
-            label: label.to_string(),
-            uid: current_uid(),
+            label: l.label.to_string(),
+            uid: l.uid,
         },
         log,
     })
+}
+
+/// The invoking user's login name, from the password database (never `$USER`,
+/// which `sudo -u` and `su` leave stale or unset).
+#[cfg(unix)]
+fn current_user_name() -> Option<String> {
+    let mut buf = vec![0u8; 4096];
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: the buffer and struct outlive the call; getpwuid_r writes only
+    // within them and sets `result` to null or to `pwd`.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 || result.is_null() {
+        return None;
+    }
+    // SAFETY: on success pw_name is a NUL-terminated string inside `buf`.
+    let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
+    name.to_str().ok().map(str::to_string)
+}
+
+#[cfg(not(unix))]
+fn current_user_name() -> Option<String> {
+    None
 }
 
 #[cfg(unix)]

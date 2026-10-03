@@ -130,7 +130,9 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 axum-server = { version = "0.7.3", default-features = false, features = ["tls-rustls-no-provider"] }
 
 [target.'cfg(unix)'.dependencies]
-# `getuid` for the launchd `gui/<uid>` domain and `access(W_OK)` for the
+# `getuid` for the launchd `gui/<uid>` domain, `getpwuid_r` for the invoking
+# user's name, `kill(SIGTERM)` plus libproc's `proc_pidinfo`/`proc_pidpath` for
+# the system-daemon restart (#507), and `access(W_OK)` for the
 # install-directory writability refusal. Already a transitive dependency of
 # tokio; this is a new edge, not a new package.
 libc = "0.2"

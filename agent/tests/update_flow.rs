@@ -45,8 +45,8 @@ use solador_agent::tls;
 #[cfg(target_os = "macos")]
 use solador_agent::update::Expect;
 use solador_agent::update::{
-    self, asset_name, sha256_hex, Context, Install, RollbackOutcome, Service, ServiceControl,
-    Trust, UpdateError, UpdateOutcome, FEED_ASSET,
+    self, asset_name, sha256_hex, Context, DaemonControl, DaemonHost, Install, LaunchdLookup,
+    RollbackOutcome, Service, ServiceControl, Trust, UpdateError, UpdateOutcome, FEED_ASSET,
 };
 
 // ---------------------------------------------------------------------------
@@ -686,6 +686,10 @@ struct Harness {
     _home: tempfile::TempDir,
     install: Install,
     service: Arc<FakeService>,
+    /// Set by [`Harness::new_daemon`]: the system-daemon mechanism over a
+    /// fake host, used as the Context's service instead of `service`.
+    daemon: Option<Arc<DaemonControl<FakeDaemonHost>>>,
+    host: Option<Arc<FakeDaemonState>>,
     served: Arc<Mutex<Served>>,
     lines: Arc<Mutex<Vec<String>>>,
     env_file: PathBuf,
@@ -737,6 +741,8 @@ impl Harness {
             },
             _home: home,
             service,
+            daemon: None,
+            host: None,
             served,
             lines: Arc::new(Mutex::new(Vec::new())),
             env_file,
@@ -794,6 +800,8 @@ impl Harness {
             },
             _home: home,
             service,
+            daemon: None,
+            host: None,
             served,
             lines: Arc::new(Mutex::new(Vec::new())),
             env_file,
@@ -870,7 +878,10 @@ impl Harness {
         let lines = self.lines.clone();
         let mut report = move |l: &str| lines.lock().unwrap().push(l.to_string());
         let serving = update::read_serving(&self.env_file).unwrap();
-        let service: &dyn ServiceControl = &*self.service;
+        let service: &dyn ServiceControl = match &self.daemon {
+            Some(d) => &**d,
+            None => &*self.service,
+        };
         let mut ctx = Context {
             release_base: base.to_string(),
             trust,
@@ -890,7 +901,10 @@ impl Harness {
         let lines = self.lines.clone();
         let mut report = move |l: &str| lines.lock().unwrap().push(l.to_string());
         let serving = update::read_serving(&self.env_file).unwrap();
-        let service: &dyn ServiceControl = &*self.service;
+        let service: &dyn ServiceControl = match &self.daemon {
+            Some(d) => &**d,
+            None => &*self.service,
+        };
         let mut ctx = Context {
             release_base: "https://unused.invalid".to_string(),
             trust: trust(&[&key_a()]),
@@ -3120,4 +3134,695 @@ async fn launchd_smoke() {
     assert!(served_after_forward.is_ok(), "{served_after_forward:?}");
 
     assert_real_feed(real_feed);
+}
+
+// ---------------------------------------------------------------------------
+// The system-domain LaunchDaemon (#507, part of #505): restart by SIGTERM to
+// the daemon's own process, relaunched by KeepAlive. Everything below runs on
+// any platform against a fake host; nothing here calls launchctl or kill.
+// ---------------------------------------------------------------------------
+
+/// Our fake uid, and the one a foreign process is owned by.
+const SVC_UID: u32 = 501;
+const OTHER_UID: u32 = 502;
+const DAEMON_LABEL: &str = "app.solador.agent";
+/// Relaunch wait the daemon tests use: four asks, 10 ms apart.
+const WAIT_ATTEMPTS: u32 = 4;
+
+/// What launchd and the process table say, and what a `SIGTERM` does to it.
+struct FakeDaemonState {
+    /// `launchctl print system/<label>` answers at all.
+    answers: Mutex<bool>,
+    pid: Mutex<Option<u32>>,
+    owner: Mutex<Option<u32>>,
+    exe: Mutex<Option<PathBuf>>,
+    /// The process ignores SIGTERM: it stays up under the same pid.
+    ignore_sigterm: Mutex<bool>,
+    next_pid: Mutex<u32>,
+    /// Every pid a `SIGTERM` reached.
+    terminated: Mutex<Vec<u32>>,
+    /// `None`: KeepAlive relaunches at once on a SIGTERM. `Some(n)`: the
+    /// process is down and launchd relaunches only on the nth `print` after
+    /// the signal, which is how a relaunch past the updater's wait is
+    /// modelled without a clock.
+    relaunch_on_print: Mutex<Option<u32>>,
+    prints_since_signal: Mutex<u32>,
+    down: Mutex<bool>,
+    service: Arc<FakeService>,
+}
+
+impl FakeDaemonState {
+    fn new(service: Arc<FakeService>, exe: PathBuf, pid: u32) -> FakeDaemonState {
+        FakeDaemonState {
+            answers: Mutex::new(true),
+            pid: Mutex::new(Some(pid)),
+            owner: Mutex::new(Some(SVC_UID)),
+            exe: Mutex::new(Some(exe)),
+            ignore_sigterm: Mutex::new(false),
+            next_pid: Mutex::new(pid),
+            terminated: Mutex::new(Vec::new()),
+            relaunch_on_print: Mutex::new(None),
+            prints_since_signal: Mutex::new(0),
+            down: Mutex::new(false),
+            service,
+        }
+    }
+    /// launchd starts the process anew: a fresh pid running whatever is at
+    /// the live path now, which the fake service serves.
+    fn relaunch(&self) {
+        let mut next = self.next_pid.lock().unwrap();
+        *next += 1;
+        *self.pid.lock().unwrap() = Some(*next);
+        *self.down.lock().unwrap() = false;
+        self.service.restart().unwrap();
+    }
+    fn terminated(&self) -> Vec<u32> {
+        self.terminated.lock().unwrap().clone()
+    }
+}
+
+struct FakeDaemonHost(Arc<FakeDaemonState>);
+
+impl DaemonHost for FakeDaemonHost {
+    fn print(&self, _label: &str) -> Result<String, String> {
+        let st = &self.0;
+        if !*st.answers.lock().unwrap() {
+            return Err("Could not find service in domain (stubbed)".into());
+        }
+        if *st.down.lock().unwrap() {
+            let mut n = st.prints_since_signal.lock().unwrap();
+            *n += 1;
+            let due = Some(*n) == *st.relaunch_on_print.lock().unwrap();
+            drop(n);
+            if due {
+                st.relaunch();
+            }
+        }
+        Ok(match *st.pid.lock().unwrap() {
+            Some(pid) => format!("\tstate = running\n\tpid = {pid}\n"),
+            None => "\tstate = not running\n".to_string(),
+        })
+    }
+    fn owner_uid(&self, _pid: u32) -> Option<u32> {
+        *self.0.owner.lock().unwrap()
+    }
+    fn executable(&self, _pid: u32) -> Option<PathBuf> {
+        self.0.exe.lock().unwrap().clone()
+    }
+    fn terminate(&self, pid: u32) -> Result<(), String> {
+        let st = &self.0;
+        st.terminated.lock().unwrap().push(pid);
+        if *st.ignore_sigterm.lock().unwrap() {
+            return Ok(());
+        }
+        *st.pid.lock().unwrap() = None;
+        *st.prints_since_signal.lock().unwrap() = 0;
+        if st.relaunch_on_print.lock().unwrap().is_none() {
+            st.relaunch();
+        } else {
+            *st.down.lock().unwrap() = true;
+            *st.service.served.lock().unwrap() = Served::default();
+        }
+        Ok(())
+    }
+}
+
+impl Harness {
+    /// A harness whose service is the system-daemon mechanism over a fake
+    /// host: a running pid owned by [`SVC_UID`] whose executable is the
+    /// installed binary, relaunched by KeepAlive on a SIGTERM.
+    async fn new_daemon(installed: &[u8]) -> Harness {
+        let mut h = Harness::new(installed, "127.0.0.1").await;
+        let st = Arc::new(FakeDaemonState::new(
+            h.service.clone(),
+            h.install.binary.clone(),
+            4242,
+        ));
+        h.install.service = Service::LaunchDaemon {
+            label: DAEMON_LABEL.into(),
+            uid: SVC_UID,
+            binary: h.install.binary.clone(),
+        };
+        h.daemon = Some(Arc::new(
+            DaemonControl::new(
+                DAEMON_LABEL.into(),
+                SVC_UID,
+                h.install.binary.clone(),
+                FakeDaemonHost(st.clone()),
+            )
+            .with_relaunch_wait(WAIT_ATTEMPTS, Duration::from_millis(10)),
+        ));
+        h.host = Some(st);
+        h
+    }
+
+    fn host(&self) -> &FakeDaemonState {
+        self.host.as_ref().unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_update_signals_its_own_process_and_verifies_the_keepalive_relaunch() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    let outcome = h.update(&rig.base, trust(&[&key_a()])).await.unwrap();
+    assert!(
+        matches!(outcome, UpdateOutcome::Updated { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(h.live(), candidate);
+    assert_eq!(h.prev().unwrap(), installed);
+    assert_eq!(
+        h.host().terminated(),
+        vec![4242],
+        "exactly the daemon's pid"
+    );
+    assert_eq!(h.service.restarts(), 1, "one KeepAlive relaunch");
+    assert_eq!(h.served_version().as_deref(), Some(NEW));
+    assert!(
+        h.output().contains("LaunchDaemon system/"),
+        "{}",
+        h.output()
+    );
+    assert!(!h.output().contains(TOKEN));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_that_is_not_relaunched_in_time_is_restored_with_exit_five() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    // Down after the SIGTERM, and launchd does not bring it back until the
+    // 8th ask after the signal: the 4 of the first wait, one for the failure
+    // report, then the recovery's pid read, its own first read and its first
+    // wait ask.
+    *h.host().relaunch_on_print.lock().unwrap() = Some(WAIT_ATTEMPTS + 4);
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    match &err {
+        UpdateError::UpdateFailedRecovered {
+            failure, restored, ..
+        } => {
+            assert!(failure.contains("did not relaunch"), "{failure}");
+            assert_eq!(restored, OLD);
+        }
+        other => panic!("{other}"),
+    }
+    assert_eq!(err.exit_code(), 5, "{err}");
+    assert_eq!(h.live(), installed, "the previous binary is back");
+    assert_eq!(h.prev().unwrap(), installed);
+    assert!(!h.new_exists());
+    assert_eq!(h.host().terminated(), vec![4242], "no second signal");
+    assert_eq!(h.served_version().as_deref(), Some(OLD));
+    assert!(err.to_string().contains("launchctl print system/"), "{err}");
+}
+
+/// Negative control for the test above: the same flow with launchd relaunching
+/// at once is a success, so the exit 5 came from the missing relaunch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_daemon_update_succeeds_when_launchd_relaunches() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    assert!(h.update(&rig.base, trust(&[&key_a()])).await.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_pid_owned_by_another_uid_is_refused_before_any_request_or_signal() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    *h.host().owner.lock().unwrap() = Some(OTHER_UID);
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(matches!(err, UpdateError::Install(_)), "{err}");
+    assert!(err.to_string().contains("owned by uid 502"), "{err}");
+    h.assert_untouched(&installed, "foreign pid owner");
+    assert!(h.host().terminated().is_empty());
+    assert!(rig.requests().is_empty(), "{:?}", rig.requests());
+    fs::write(h.install.sibling(".prev"), &candidate).unwrap();
+    let err = h.rollback().await.unwrap_err();
+    assert!(err.to_string().contains("owned by uid 502"), "{err}");
+    assert!(h.host().terminated().is_empty());
+
+    // Control: the same install with our own uid on the pid goes through.
+    *h.host().owner.lock().unwrap() = Some(SVC_UID);
+    fs::remove_file(h.install.sibling(".prev")).unwrap();
+    assert!(h.update(&rig.base, trust(&[&key_a()])).await.is_ok());
+    assert_eq!(h.host().terminated(), vec![4242]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_pid_running_another_executable_is_never_signalled() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    *h.host().exe.lock().unwrap() = Some(PathBuf::from("/usr/bin/some-other-program"));
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(
+        err.to_string().contains("not the installed binary"),
+        "{err}"
+    );
+    h.assert_untouched(&installed, "foreign executable");
+    assert!(h.host().terminated().is_empty());
+    assert!(rig.requests().is_empty());
+
+    *h.host().exe.lock().unwrap() = Some(h.install.binary.clone());
+    assert!(h.update(&rig.base, trust(&[&key_a()])).await.is_ok());
+}
+
+/// The restart repeats the pid checks itself: a pid that became someone
+/// else's between the preflight and the signal is not signalled, and the
+/// failure goes down the restore path rather than being skipped.
+#[test]
+fn the_restart_alone_refuses_a_pid_that_is_not_ours() {
+    let tmp = tempfile::tempdir().unwrap();
+    let binary = tmp.path().join("solador-agent");
+    fs::write(&binary, b"x").unwrap();
+    let service = Arc::new(FakeService {
+        live: binary.clone(),
+        served: Arc::new(Mutex::new(Served::default())),
+        restarts: AtomicUsize::new(0),
+        mode: Mutex::new(RestartMode::Faithful),
+        pid: Mutex::new(None),
+        reachable: Mutex::new(true),
+    });
+    let st = Arc::new(FakeDaemonState::new(service, binary.clone(), 77));
+    *st.owner.lock().unwrap() = Some(OTHER_UID);
+    let control = DaemonControl::new(
+        DAEMON_LABEL.into(),
+        SVC_UID,
+        binary,
+        FakeDaemonHost(st.clone()),
+    )
+    .with_relaunch_wait(2, Duration::from_millis(5));
+    let err = control.restart().unwrap_err();
+    assert!(err.contains("owned by uid 502"), "{err}");
+    assert!(st.terminated().is_empty());
+    *st.owner.lock().unwrap() = Some(SVC_UID);
+    control.restart().unwrap();
+    assert_eq!(st.terminated(), vec![77]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_manager_that_does_not_answer_is_refused_before_any_request() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    *h.host().answers.lock().unwrap() = false;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(matches!(err, UpdateError::Install(_)), "{err}");
+    assert!(err.to_string().contains("system/"), "{err}");
+    h.assert_untouched(&installed, "silent manager");
+    assert!(rig.requests().is_empty());
+    *h.host().answers.lock().unwrap() = true;
+    assert!(h.update(&rig.base, trust(&[&key_a()])).await.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_updater_is_refused_as_the_daemon_itself() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    *h.host().pid.lock().unwrap() = Some(std::process::id());
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(matches!(err, UpdateError::IsTheService { .. }), "{err}");
+    h.assert_untouched(&installed, "is the daemon");
+    assert!(h.host().terminated().is_empty());
+    // Control: any other pid is not the updater.
+    *h.host().pid.lock().unwrap() = Some(std::process::id().wrapping_add(7919));
+    assert!(h.update(&rig.base, trust(&[&key_a()])).await.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rollback_goes_through_the_daemon_variant_and_is_reversible() {
+    let old = fake_agent(Some(OLD), "old");
+    let new = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&new).await;
+    fs::write(h.install.sibling(".prev"), &old).unwrap();
+
+    let out = h.rollback().await.unwrap();
+    assert_eq!(out.restored_version.as_deref(), Some(OLD));
+    assert_eq!(out.served_version.as_deref(), Some(OLD));
+    assert_eq!(h.live(), old);
+    assert_eq!(h.prev().unwrap(), new);
+    assert_eq!(h.host().terminated(), vec![4242]);
+    assert_eq!(h.service.restarts(), 1);
+
+    let out = h.rollback().await.unwrap();
+    assert_eq!(out.restored_version.as_deref(), Some(NEW));
+    assert_eq!(
+        h.host().terminated(),
+        vec![4242, 4243],
+        "the relaunched pid"
+    );
+}
+
+// --- install resolution: which plist is the install (#507) -----------------
+
+/// A system plist in the shape `app.solador.agent.daemon.plist` renders, as
+/// the JSON `plutil -convert json` prints for it.
+fn daemon_plist_json(user: &str, binary: &Path, env_file: &Path, log: &Path) -> String {
+    serde_json::json!({
+        "Label": DAEMON_LABEL,
+        "UserName": user,
+        "GroupName": "staff",
+        "ProgramArguments": [
+            binary.with_file_name("solador-agent-launchd"),
+            binary,
+            env_file,
+            log,
+        ],
+        "EnvironmentVariables": {
+            "PATH": "/usr/bin",
+            "HOME": "/x",
+            "SOLADOR_AGENT_CONFIG_DIR": "/x/.config"
+        },
+        "RunAtLoad": true,
+        "KeepAlive": true,
+        "ThrottleInterval": 3,
+    })
+    .to_string()
+}
+
+struct Tree {
+    _tmp: tempfile::TempDir,
+    home: PathBuf,
+    system_dir: PathBuf,
+    binary: PathBuf,
+    env_file: PathBuf,
+    log: PathBuf,
+}
+
+impl Tree {
+    fn new() -> Tree {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let system_dir = tmp.path().join("LaunchDaemons");
+        fs::create_dir_all(home.join(".local/bin")).unwrap();
+        fs::create_dir_all(&system_dir).unwrap();
+        let binary = home.join(".local/bin/solador-agent");
+        fs::write(&binary, fake_agent(Some(OLD), "x")).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        Tree {
+            env_file: home.join(".config/solador-agent.env"),
+            log: home.join("Library/Logs/solador-agent.log"),
+            _tmp: tmp,
+            home,
+            system_dir,
+            binary,
+        }
+    }
+    fn system_plist(&self) -> PathBuf {
+        self.system_dir.join(format!("{DAEMON_LABEL}.plist"))
+    }
+    fn agent_plist(&self) -> PathBuf {
+        self.home
+            .join("Library/LaunchAgents")
+            .join(format!("{DAEMON_LABEL}.plist"))
+    }
+    fn write_system(&self, user: &str, binary: &Path) {
+        fs::write(
+            self.system_plist(),
+            daemon_plist_json(user, binary, &self.env_file, &self.log),
+        )
+        .unwrap();
+    }
+    fn write_agent(&self) {
+        fs::create_dir_all(self.agent_plist().parent().unwrap()).unwrap();
+        fs::write(
+            self.agent_plist(),
+            serde_json::json!({"ProgramArguments": [
+                "/x/launcher", self.binary, self.env_file, self.log]})
+            .to_string(),
+        )
+        .unwrap();
+    }
+    fn resolve(&self, user: Option<&str>) -> Result<Install, UpdateError> {
+        let read = |p: &Path| fs::read_to_string(p).map_err(|e| e.to_string());
+        update::resolve_launchd_with(&LaunchdLookup {
+            home: &self.home,
+            label: DAEMON_LABEL,
+            system_dir: &self.system_dir,
+            user,
+            uid: SVC_UID,
+            read_plist: &read,
+        })
+    }
+}
+
+#[test]
+fn a_system_plist_for_this_user_under_this_home_resolves_as_the_daemon_variant() {
+    let t = Tree::new();
+    t.write_system("svc", &t.binary);
+    let install = t.resolve(Some("svc")).unwrap();
+    assert_eq!(install.binary, t.binary);
+    assert_eq!(install.env_file, t.env_file);
+    assert_eq!(install.log.as_deref(), Some(t.log.as_path()));
+    assert_eq!(
+        install.service,
+        Service::LaunchDaemon {
+            label: DAEMON_LABEL.into(),
+            uid: SVC_UID,
+            binary: t.binary.clone()
+        }
+    );
+    assert!(update::check_install_replaceable(&install).is_ok());
+}
+
+#[test]
+fn a_per_user_agent_and_a_system_plist_together_are_refused_naming_both_paths() {
+    let t = Tree::new();
+    t.write_system("svc", &t.binary);
+    t.write_agent();
+    let err = t.resolve(Some("svc")).unwrap_err();
+    assert!(matches!(err, UpdateError::Install(_)), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("ambiguous"), "{text}");
+    assert!(
+        text.contains(&t.agent_plist().display().to_string()),
+        "{text}"
+    );
+    assert!(
+        text.contains(&t.system_plist().display().to_string()),
+        "{text}"
+    );
+    // Control: either alone resolves, to its own variant.
+    fs::remove_file(t.agent_plist()).unwrap();
+    assert!(matches!(
+        t.resolve(Some("svc")).unwrap().service,
+        Service::LaunchDaemon { .. }
+    ));
+    t.write_agent();
+    fs::remove_file(t.system_plist()).unwrap();
+    assert!(matches!(
+        t.resolve(Some("svc")).unwrap().service,
+        Service::Launchd { .. }
+    ));
+}
+
+#[test]
+fn a_system_plist_for_another_user_is_refused_with_that_reason_never_adopted() {
+    let t = Tree::new();
+    t.write_system("someone-else", &t.binary);
+    let err = t.resolve(Some("svc")).unwrap_err();
+    let text = err.to_string();
+    assert!(matches!(err, UpdateError::Install(_)), "{text}");
+    assert!(
+        text.contains("'someone-else'") && text.contains("not as this user"),
+        "{text}"
+    );
+    // A user that cannot be named matches nothing.
+    assert!(t.resolve(None).is_err());
+    // Control: the same plist for this user resolves.
+    t.write_system("svc", &t.binary);
+    assert!(t.resolve(Some("svc")).is_ok());
+    // And another user's daemon does not take over this user's own LaunchAgent.
+    t.write_system("someone-else", &t.binary);
+    t.write_agent();
+    assert!(matches!(
+        t.resolve(Some("svc")).unwrap().service,
+        Service::Launchd { .. }
+    ));
+}
+
+#[test]
+fn a_system_plist_for_this_user_naming_a_binary_outside_this_home_is_refused() {
+    let t = Tree::new();
+    t.write_system("svc", Path::new("/opt/solador-agent/solador-agent"));
+    let err = t.resolve(Some("svc")).unwrap_err();
+    assert!(
+        err.to_string().contains("not under this user's home"),
+        "{err}"
+    );
+    let dotdot = t.home.join("../elsewhere/solador-agent");
+    t.write_system("svc", &dotdot);
+    assert!(
+        t.resolve(Some("svc")).is_err(),
+        "a .. path is not under the home"
+    );
+    t.write_system("svc", &t.binary);
+    assert!(t.resolve(Some("svc")).is_ok());
+}
+
+#[test]
+fn a_system_plist_that_is_not_the_daemon_install_sh_renders_is_refused() {
+    let t = Tree::new();
+    fs::write(
+        t.system_plist(),
+        r#"{"UserName":"svc","ProgramArguments":["/x"]}"#,
+    )
+    .unwrap();
+    let err = t.resolve(Some("svc")).unwrap_err();
+    assert!(err.to_string().contains("--system-daemon"), "{err}");
+    fs::write(t.system_plist(), "not json").unwrap();
+    assert!(t.resolve(Some("svc")).is_err());
+}
+
+/// The real template, through the real `plutil`: the shape the resolver parses
+/// is the shape `install.sh --system-daemon` renders (#506), not a copy of it.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_rendered_daemon_template_is_what_the_resolver_parses() {
+    let t = Tree::new();
+    let template = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("deploy/app.solador.agent.daemon.plist"),
+    )
+    .unwrap();
+    let rendered = template
+        .replace("@LABEL@", DAEMON_LABEL)
+        .replace("@USER@", "svc")
+        .replace("@GROUP@", "staff")
+        .replace(
+            "@LAUNCHER@",
+            &t.binary
+                .with_file_name("solador-agent-launchd")
+                .to_string_lossy(),
+        )
+        .replace("@BINARY@", &t.binary.to_string_lossy())
+        .replace("@ENV_FILE@", &t.env_file.to_string_lossy())
+        .replace("@LOG_FILE@", &t.log.to_string_lossy())
+        .replace("@HOME@", &t.home.to_string_lossy())
+        .replace("@CONFIG_DIR@", &t.home.join(".config").to_string_lossy());
+    fs::write(t.system_plist(), rendered).unwrap();
+    let install = update::resolve_launchd_with(&LaunchdLookup {
+        home: &t.home,
+        label: DAEMON_LABEL,
+        system_dir: &t.system_dir,
+        user: Some("svc"),
+        uid: SVC_UID,
+        read_plist: &update::plutil_json,
+    })
+    .unwrap();
+    assert_eq!(install.binary, t.binary);
+    assert_eq!(install.env_file, t.env_file);
+    assert_eq!(install.log.as_deref(), Some(t.log.as_path()));
+    assert!(matches!(install.service, Service::LaunchDaemon { .. }));
+}
+
+/// The pid's owner or executable cannot be read: that is not "fine". Both are
+/// refused before any request or signal; the control is the readable case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_pid_whose_owner_or_executable_cannot_be_read_is_never_signalled() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    *h.host().owner.lock().unwrap() = None;
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(matches!(err, UpdateError::Install(_)), "{err}");
+    assert!(err.to_string().contains("cannot read the owner"), "{err}");
+    h.assert_untouched(&installed, "unreadable owner");
+    assert!(h.host().terminated().is_empty());
+    assert!(rig.requests().is_empty());
+    *h.host().owner.lock().unwrap() = Some(SVC_UID);
+
+    *h.host().exe.lock().unwrap() = None;
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(
+        err.to_string().contains("cannot read the executable"),
+        "{err}"
+    );
+    h.assert_untouched(&installed, "unreadable executable");
+    assert!(h.host().terminated().is_empty());
+    assert!(rig.requests().is_empty());
+    *h.host().exe.lock().unwrap() = Some(h.install.binary.clone());
+
+    assert!(h.update(&rig.base, trust(&[&key_a()])).await.is_ok());
+}
+
+/// A candidate that is relaunched but serves the wrong version is restored:
+/// the recovery signals the candidate's own (new) pid and verifies the old
+/// version back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relaunch_serving_the_wrong_version_is_restored_through_a_second_signal() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    h.service.set_mode(RestartMode::Sticky);
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    assert!(
+        matches!(err, UpdateError::UpdateFailedRecovered { .. }),
+        "{err}"
+    );
+    assert_eq!(err.exit_code(), 5);
+    assert_eq!(h.live(), installed);
+    assert_eq!(
+        h.host().terminated(),
+        vec![4242, 4243],
+        "the recovery signals the relaunched candidate"
+    );
+}
+
+/// A process that ignores SIGTERM never gets a new pid: the update fails, the
+/// recovery cannot restart it either, and that is exit 3 with the previous
+/// bytes back at the live path and the last observation in the message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_that_ignores_sigterm_fails_the_update_and_the_recovery_with_exit_three() {
+    let installed = fake_agent(Some(OLD), "old");
+    let candidate = fake_agent(Some(NEW), "new");
+    let h = Harness::new_daemon(&installed).await;
+    *h.host().ignore_sigterm.lock().unwrap() = true;
+    let rig = release_for(NEW, &candidate, &key_a()).await;
+
+    let err = h.update(&rig.base, trust(&[&key_a()])).await.unwrap_err();
+    match &err {
+        UpdateError::UpdateFailedRecoveryFailed {
+            failure, recovery, ..
+        } => {
+            assert!(failure.contains("still pid 4242"), "{failure}");
+            assert!(recovery.contains("still pid 4242"), "{recovery}");
+        }
+        other => panic!("{other}"),
+    }
+    assert_eq!(err.exit_code(), 3);
+    assert_eq!(h.live(), installed, "the failed candidate is not left live");
+    assert_eq!(h.host().terminated(), vec![4242, 4242]);
+}
+
+/// A system plist this user cannot read or parse must not break the user's own
+/// LaunchAgent; without a LaunchAgent it is the refusal it always was.
+#[test]
+fn an_unreadable_system_plist_does_not_break_a_users_own_launchagent() {
+    let t = Tree::new();
+    fs::write(t.system_plist(), "not json").unwrap();
+    assert!(t.resolve(Some("svc")).is_err());
+    t.write_agent();
+    assert!(matches!(
+        t.resolve(Some("svc")).unwrap().service,
+        Service::Launchd { .. }
+    ));
 }

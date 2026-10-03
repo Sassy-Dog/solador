@@ -81,12 +81,13 @@
 # matching root bootout/remove step. Refused: root, a platform that is not
 # macOS, an existing per-user LaunchAgent install for this user (remove it
 # first — two must never fight over the port), and --enable-timer, which has no
-# meaning here. `solador-agent update` and `rollback` find the service only
-# through a per-user LaunchAgent plist and the gui/<uid> domain, so they do NOT
-# support this mode until #505's update-side follow-up lands: a host moves by
-# re-pinning (re-run with SOLADOR_AGENT_RELEASE, then root's kickstart, then
-# --verify). See agent/README.md, "Running as a system daemon under a service
-# user".
+# meaning here. There is no unattended update job, but `solador-agent update`
+# and `rollback` (#507) work in this mode when run AS THE SERVICE USER, never
+# as root: `sudo -u <service user> -H ~<service user>/.local/bin/solador-agent update`. They
+# adopt /Library/LaunchDaemons/<label>.plist only for that user, check the
+# daemon with `launchctl print system/<label>`, and restart it by SIGTERM to
+# its own process, which KeepAlive relaunches. See agent/README.md, "Running as
+# a system daemon under a service user".
 #
 # Exit status in --system-daemon mode, where 0 does NOT mean "serving": install
 # exit 0 = STAGED, not running (root's step, then --verify, are still owed);
@@ -387,8 +388,8 @@ if [ "$VERIFY" = true ] && { [ "$UNINSTALL" = true ] || [ "$ENABLE_TLS" = true ]
 fi
 if [ "$SYSTEM_DAEMON" = true ] && [ "$ENABLE_TIMER" = true ]; then
     echo "ERROR: --enable-timer is refused with --system-daemon: there is no update job in daemon" >&2
-    echo "       mode (\`solador-agent update\` does not support it yet). A host moves by re-pinning:" >&2
-    echo "       re-run with SOLADOR_AGENT_RELEASE, then root's kickstart. Nothing has been changed." >&2
+    echo "       mode. To move the host, run \`solador-agent update\` as the service user" >&2
+    echo "       (sudo -u <service user> -H). Nothing has been changed." >&2
     exit 2
 fi
 
@@ -2433,7 +2434,9 @@ if [ "$SYSTEM_DAEMON" = true ]; then
     echo "Then, as $(id -un), once root has run it:"
     echo "    $RERUN_CMD --system-daemon --verify"
     echo "(it checks /v1/health and, with TLS on, prints the certificate fingerprint to pair.)"
-    echo "There is no unattended update job in daemon mode; re-pin to move this host."
+    echo "There is no unattended update job in daemon mode. To move this host, run as $(id -un):"
+    echo "    \"$DEST_BIN\" update      (or: rollback)"
+    echo "or, from an administrator account:  sudo -u $(id -un) -H \"$DEST_BIN\" update"
     exit 0
 fi
 
