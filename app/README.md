@@ -14,18 +14,24 @@ A tile is a saved view of a source. Duplicates can have independent names, scope
 widths and Summary/Detail presentations. Hiding a tile leaves its source
 monitored, and **Needs Attention** covers every source, including ones with no
 visible tile. The default source order remains stable as readings change.
-Summary rows use automatic caps, with a count and a Details link for remaining
+Summary rows use automatic caps, with a count and a Detail link for remaining
 resources; omitted problems are named in that count. A resource scope that
 disappears stays empty.
 
 **Summary** keeps the tile compact with status and its key readings. **Detail**
-adds context in the tile and opens a single vertical list of resources: name,
-status, explanation and primary CPU/RAM or repository counts stay visible.
-Expand a row for secondary fields, volumes and resource actions; opening one
-specific resource starts it expanded. Expansion and keyboard focus survive
-live reading updates, and collapsing a row releases the extra height. **Full**
-opens the complete source panel with its specialized readings and controls.
-Clicking an active **Needs Attention** chip again closes its Detail list;
+adds context in the tile and opens a compact table by default: one resource per
+row, shared column headers, aligned readings and status. **Table / List** switches
+between that table and a vertical list; the preference is saved per source,
+independent of its tiles. Old dashboards default to Table, and failed saves leave
+the previous choice selected. Wide tables scroll horizontally within the view
+at narrow widths, keeping all columns available without widening the page.
+Expand a resource for explanations, volumes and actions; opening one specific
+resource starts it expanded. List shows key readings and context immediately,
+with secondary fields on expansion. Expansion, table scroll position and keyboard
+focus survive live reading updates, and collapsing a row releases the extra
+height. **Full** opens the complete source panel with its specialized readings
+and controls.
+Clicking an active **Needs Attention** chip again closes its Detail view;
 clicking a different chip switches sources. The active chip is highlighted.
 
 **Machines** displays colored CPU and RAM utilization bars alongside the exact
@@ -106,12 +112,13 @@ Tile bodies, hidden previews, the Detail inspector, full panels and host
 cards grow to fit their content in the **page's** scroll. `layout-stability.js`
 retains their largest measured height at the current width, so temporary empty
 or failed polls do not collapse them. Minimum reservations are 196px for Machines,
-144px for other summary tiles, 360px for detailed tiles/inspectors, 200px for
+144px for other summary tiles, 360px for detailed tiles/List inspectors, 200px for
 list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards.
+Table inspectors fit their rows without a minimum-height reservation.
 These are floors, never clipping limits. New resources or a first larger reading
 can expand the page; resizing or changing a tile’s source, scope, presentation,
-row limit, repo selection, runner view, or a deliberate Detail expansion/filter
-resets its measured reservation.
+row limit, repo selection, runner view, or a deliberate Detail expansion,
+filter or view change resets its measured reservation.
 Disconnected host cards hide old readings while retaining their occupied space.
 Settings reserves space for probe results, update notes/actions and status
 messages. Browser regressions measure both status stability and fully visible

@@ -529,6 +529,10 @@
   flex-shrink: 0;
   white-space: nowrap;
 }
+#dashboardOverview .db-inspector-tools { display:flex; align-items:center; gap:10px; flex:none; }
+#dashboardOverview .db-view-switch { display:flex; gap:0; border:1px solid var(--db-line); border-radius:5px; overflow:hidden; }
+#dashboardOverview .db-view-switch button { border:0; border-radius:0; padding:5px 10px; background:transparent; }
+#dashboardOverview .db-view-switch [aria-pressed="true"] { color:var(--db-blue); background:var(--db-panel); }
 #dashboardOverview .db-inspector h3 {
   font-size: 14px;
   font-weight: 500;
@@ -577,6 +581,20 @@
   display: flex;
   flex-direction: column;
 }
+#dashboardOverview .db-table-scroll { overflow-x:auto; max-width:100%; }
+#dashboardOverview .db-detail-table { width:100%; border-collapse:collapse; font-size:12px; line-height:18px; }
+#dashboardOverview .db-detail-table th, #dashboardOverview .db-detail-table td { padding:5px 10px; text-align:left; white-space:nowrap; border-bottom:1px solid var(--db-line); font-weight:400; }
+#dashboardOverview .db-detail-table th:first-child, #dashboardOverview .db-detail-table td:first-child { padding-left:0; }
+#dashboardOverview .db-detail-table thead th { color:var(--db-muted); font-size:10px; padding-top:3px; }
+#dashboardOverview .db-detail-table .db-numeric { text-align:right; font-variant-numeric:tabular-nums; }
+#dashboardOverview .db-detail-table button.db-table-toggle { display:flex; align-items:center; gap:6px; padding:0; min-height:0; background:none; border:0; font:inherit; color:var(--db-text); max-width:26ch; }
+#dashboardOverview .db-table-name { overflow:hidden; text-overflow:ellipsis; }
+#dashboardOverview .db-table-arrow { width:10px; color:var(--db-muted); flex:none; }
+#dashboardOverview .db-table-context { display:block; max-width:50ch; overflow:hidden; text-overflow:ellipsis; color:var(--db-muted); }
+#dashboardOverview .db-table-extra td { white-space:normal; }
+#dashboardOverview .db-table-extra .db-detail-extra { padding:4px 0 6px 24px; }
+#dashboardOverview .db-table-extra .db-detail-copy { max-width:100%; }
+#dashboardOverview .db-inspector[data-detail-view="table"] .db-inspector-head { margin-bottom:4px; }
 #dashboardOverview .db-detail-resource { border-bottom:1px solid var(--db-line); }
 #dashboardOverview .db-detail-resource:last-child { border-bottom:0; }
 #dashboardOverview .db-detail-resource > summary { position:relative; padding:10px 20px 10px 0; cursor:pointer; list-style:none; }
@@ -831,6 +849,11 @@
 
 #dashboardOverview .db-inspector[data-kind="details"] .db-inspector-body {
   min-height:360px; overflow:visible;
+}
+#dashboardOverview .db-inspector[data-kind="details"][data-detail-view="table"] .db-inspector-body { min-height:0; }
+@media (max-width:600px) {
+  #dashboardOverview .db-inspector-tools { gap:5px; }
+  #dashboardOverview .db-inspector-tools button { padding:5px 7px; }
 }
 #dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head > div { min-width:0; }
 #dashboardOverview .db-inspector[data-kind="details"] .db-inspector-head h3 {

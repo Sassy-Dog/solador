@@ -92,6 +92,10 @@ async function openDashboard(page, baseURL, expanded = false) {
               return snapshot;
             }
             if (command === "dashboard_save") {
+              if (window.__HOLD_SAVE__) {
+                window.__HOLD_SAVE__ = false;
+                await new Promise(resolve => { window.__RELEASE_SAVE__ = resolve; });
+              }
               if (window.__FAIL_SAVE__)
                 throw new Error(
                   "Could not save the dashboard: disk unavailable.",
@@ -148,33 +152,112 @@ test("attention chips toggle their inspector and keep expanded state through ref
   await expect(second).toHaveAttribute("aria-expanded", "false");
 });
 
-test("Detail lists resources vertically and preserves expanded rows through live readings", async ({ page, baseURL }) => {
+test("Detail uses compact aligned table rows and preserves focus through live readings", async ({ page, baseURL }) => {
   const model = await openDashboard(page, baseURL);
   await tile(page, "ghWorkflows").locator('.db-tile-footer [data-action="details"]').click();
   const rows = page.locator('.db-detail-resource');
   await expect(rows).toHaveCount(6);
-  await expect(rows.first()).not.toHaveAttribute('open', '');
+  await expect(page.locator('.db-detail-table')).toBeVisible();
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
   for (const width of [375, 1440]) {
     await page.setViewportSize({width, height:950});
-    const boxes = await rows.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return {x:r.x,y:r.y,bottom:r.bottom}; }));
+    const boxes = await rows.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return {x:r.x,y:r.y,bottom:r.bottom,height:r.height}; }));
     expect(new Set(boxes.map(r => r.x)).size).toBe(1);
     for (let i=1; i<boxes.length; i++) expect(boxes[i].y).toBeGreaterThanOrEqual(boxes[i-1].bottom);
+    expect(Math.max(...boxes.map(r=>r.height))).toBeLessThanOrEqual(36);
+    const columns = await rows.evaluateAll(els=>els.map(el=>[...el.cells].map(c=>c.getBoundingClientRect().x)));
+    for (const positions of columns) expect(positions).toEqual(columns[0]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   }
-  await rows.first().locator('summary').click();
-  await expect(rows.first()).toHaveAttribute('open', '');
-  await expect(rows.first().locator('summary')).toBeFocused();
-  await expect(rows.first().locator('[data-action="openRepo"]')).toBeVisible();
+  await rows.first().locator('[data-action="detail-toggle"]').click();
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toBeFocused();
+  await expect(page.locator('.db-detail-extra [data-action="openRepo"]').first()).toBeVisible();
+  await page.setViewportSize({width:375, height:950});
+  await page.locator('.db-table-scroll').evaluate(el => { el.scrollLeft = 200; });
+  const scrollLeft = await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft);
+  expect(scrollLeft).toBeGreaterThan(0);
   const changed = structuredClone(model.sources.find(s => s.id === 'ghWorkflows').rows);
   changed[0].value = 'Running';
   await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
-  await expect(rows.first().locator('summary')).toContainText('Running');
-  await expect(rows.first()).toHaveAttribute('open', '');
-  await expect(rows.first().locator('summary')).toBeFocused();
+  await expect(rows.first()).toContainText('Running');
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toBeFocused();
+  expect(await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
+  await page.locator('.db-table-scroll').focus();
+  changed[0].value = 'Healthy';
+  await page.evaluate(rows => window.__SET_SOURCE_ROWS__('ghWorkflows', rows), changed);
+  await expect(rows.first()).toContainText('Healthy');
+  await expect(page.locator('.db-table-scroll')).toBeFocused();
+  expect(await page.locator('.db-table-scroll').evaluate(el => el.scrollLeft)).toBe(scrollLeft);
   const expandedHeight = (await page.locator('.db-inspector-body').boundingBox()).height;
-  await rows.first().locator('summary').click();
-  await expect(rows.first()).not.toHaveAttribute('open', '');
+  await rows.first().locator('[data-action="detail-toggle"]').click();
+  await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
   await expect.poll(async () => (await page.locator('.db-inspector-body').boundingBox()).height).toBeLessThan(expandedHeight);
+});
+
+test("Detail Table/List choice persists per source and failed saves keep the selected view", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  const table = page.getByRole('button', {name:'Table', exact:true});
+  const list = page.getByRole('button', {name:'List', exact:true});
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  await page.evaluate(() => { window.__FAIL_SAVE__ = true; });
+  await list.click();
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.db-detail-table')).toBeVisible();
+  await page.evaluate(() => { window.__FAIL_SAVE__ = false; });
+  await list.click();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.db-detail-grid details')).toHaveCount(6);
+  expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('list');
+  await page.reload();
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await tile(page, 'hosts').locator('.db-tile-footer [data-action="details"]').click();
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await table.click();
+  await expect(table).toHaveAttribute('aria-pressed', 'true');
+  expect((await savedLayout(page)).detailViews.ghWorkflows).toBe('table');
+});
+
+test("delayed Detail view saves preserve keyboard focus without stealing it after navigation", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  const table = page.getByRole('button', {name:'Table', exact:true});
+  const list = page.getByRole('button', {name:'List', exact:true});
+  const hold = async fail => {
+    await page.evaluate(fail => { window.__HOLD_SAVE__ = true; window.__FAIL_SAVE__ = fail; }, fail);
+  };
+  const release = async () => {
+    await page.evaluate(async () => {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      window.__RELEASE_SAVE__();
+    });
+  };
+  await hold(false);
+  await list.focus();
+  await list.press('Enter');
+  await expect(list).toBeDisabled();
+  await release();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await expect(list).toBeFocused();
+  await hold(true);
+  await table.press('Enter');
+  await expect(table).toBeDisabled();
+  await release();
+  await expect(table).toBeEnabled();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await expect(table).toBeFocused();
+  await hold(false);
+  await table.press('Enter');
+  await expect(table).toBeDisabled();
+  await action(page, 'attention').first().click();
+  await expect(action(page, 'close')).toBeFocused();
+  await release();
+  await expect(action(page, 'close')).toBeFocused();
+  await expect(action(page, 'attention').first()).toHaveAttribute('aria-expanded', 'true');
 });
 
 test("GitHub tile row limits and runner grouping are saved independently", async ({ page, baseURL }) => {
