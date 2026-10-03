@@ -1284,6 +1284,28 @@ derivation and mint, and `publish --agent`, are tested in
   `SOLADOR_AGENT_BIND` and `SOLADOR_AGENT_BIND_AUTO` (or set one address), since
   the agent honours a bind it finds there. The wildcard-to-tailnet move is what
   the SAN-independent probes above exist for.
+  **`SOLADOR_AGENT_REQUIRE_TAILNET=1` closes the wildcard for a host that must
+  never have one (#497, the org's agent management spec §3.3).** `resolve_bind_host`
+  takes it as a third input: under it the resolved bind must be a Tailscale IP
+  literal — IPv4 `100.64.0.0/10`, or IPv6 `fd7a:115c:a1e0::/48` minus the 4via6
+  prefix `fd7a:115c:a1e0:b1a::/64`, restated in `agent/src/main.rs`'s
+  `is_tailnet_literal` as a twin of `crates/agentclient`'s plain-HTTP rule
+  because `agent/` must not depend on that crate — or the agent exits FATAL.
+  Refused under it: any wildcard, any other address, a bracketed form, any DNS
+  name (its addresses can change after the check), an explicit
+  `SOLADOR_AGENT_BIND` among them, and auto-detection finding nothing **even with
+  TLS on** (the `0.0.0.0` fallback above is never taken). An empty bind is unset
+  and falls to detection. The sentence is one constant,
+  `update::TAILNET_REFUSAL_CORE`, which `install.sh` repeats byte for byte
+  (`lib_test.sh` reads it out of the source) the way `zone_id_refusal` is
+  shared; `install.sh` refuses before any download or prompt in every case,
+  since nothing under it depends on TLS, persists the key as an installer-owned
+  env-file key (and in `run-agent.sh`'s allow-list, which `lib_test.sh` holds
+  to parity), keeps it on a re-run that does not mention it (any value other than
+  `1` set in the installer's environment removes it), and says `Tailnet: only` in the Done block. Unset or `0` is
+  exactly the behaviour above. On macOS a launcher installed before #497 drops the
+  key and `update` never refreshes the launcher, so the setting is enforced there
+  only after `install.sh` is re-run.
 - **`solador-agent update` / `rollback` are in the binary (#393), and the
   order of operations is the security design.** `agent/src/update.rs`:
   refuse root; resolve #392's install — reading only — from the unit's

@@ -17,6 +17,8 @@
 #                                     (a release cut before the agent had its own
 #                                     train) that carries agent assets
 #   SOLADOR_AGENT_BIND / _PORT        as documented in agent/README.md
+#   SOLADOR_AGENT_REQUIRE_TAILNET=1   refuse any bind that is not a Tailscale address literal
+#                                     (#497); persisted, and kept by a re-run. 0 turns it off
 #   SOLADOR_AGENT_TLS=0|1             pin the TLS opt-in (#447) outright, overriding both
 #                                     the fresh-install default and --enable-tls; as
 #                                     documented in agent/README.md's TLS section
@@ -1460,6 +1462,120 @@ case "$BIND" in
         ;;
 esac
 
+# SOLADOR_AGENT_REQUIRE_TAILNET=1 (#497): the bind must be a Tailscale address
+# LITERAL, or this install refuses. Set in the environment of this run it wins
+# (0 or empty turns it off, and the key is then not written); unset, the env
+# file's value is kept, so a re-run and `update` keep a host tailnet-only. The
+# refusal lands here, before any download or token prompt, in every case: it
+# does not depend on TLS (a wildcard is never an option under it) and the
+# bind's source is already known.
+if [ -n "${SOLADOR_AGENT_REQUIRE_TAILNET+x}" ]; then
+    REQUIRE_TAILNET_RAW="$SOLADOR_AGENT_REQUIRE_TAILNET"
+    REQUIRE_TAILNET_SOURCE="SOLADOR_AGENT_REQUIRE_TAILNET"
+else
+    REQUIRE_TAILNET_RAW="$(env_value "$ENV_FILE" SOLADOR_AGENT_REQUIRE_TAILNET)"
+    REQUIRE_TAILNET_SOURCE="kept from the existing env file"
+fi
+REQUIRE_TAILNET=false
+# The agent trims and compares to exactly "1" (tls::flag_enabled); so do we.
+REQUIRE_TAILNET_RAW="${REQUIRE_TAILNET_RAW#"${REQUIRE_TAILNET_RAW%%[![:space:]]*}"}"
+REQUIRE_TAILNET_RAW="${REQUIRE_TAILNET_RAW%"${REQUIRE_TAILNET_RAW##*[![:space:]]}"}"
+[ "$REQUIRE_TAILNET_RAW" = "1" ] && REQUIRE_TAILNET=true
+
+# The core sentence of the refusal. It is the agent's own
+# (agent/src/update.rs's `TAILNET_REFUSAL_CORE`, its start-time FATAL), and
+# lib_test.sh requires the two to be byte-identical.
+TAILNET_REFUSAL_CORE='SOLADOR_AGENT_REQUIRE_TAILNET=1 allows only a Tailscale address literal as the bind (IPv4 100.64.0.0/10, or IPv6 fd7a:115c:a1e0::/48 other than the 4via6 prefix fd7a:115c:a1e0:b1a::/64), never a wildcard, another address or a DNS name'
+
+# is_tailnet_literal <host>: is it a bare Tailscale IP literal? IPv4
+# 100.64.0.0/10, or IPv6 fd7a:115c:a1e0::/48 minus the 4via6 prefix
+# fd7a:115c:a1e0:b1a::/64. The twin of agent/src/main.rs's `is_tailnet_literal`
+# (itself the twin of crates/agentclient's plain-HTTP rule); a name, a
+# bracketed form, a zone id and an empty string are all "no". Plain POSIX
+# patterns, since this runs under macOS's bash 3.2.
+is_tailnet_literal() {
+    local lc head tail g n=0 rest
+    lc="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
+    case "$lc" in
+        '' | *[!0-9a-f:.]*) return 1 ;;
+    esac
+    case "$lc" in
+        *:*)
+            # IPv6: no embedded IPv4 form, at most one "::", groups of 1-4 hex
+            # digits, eight groups (fewer with a "::").
+            case "$lc" in *.* | *:::* | :[!:]* | *[!:]:) return 1 ;; esac
+            if [ "${lc#*::}" != "$lc" ]; then
+                head="${lc%%::*}"
+                tail="${lc#*::}"
+                case "$tail" in *::*) return 1 ;; esac
+                for g in $(printf '%s' "$head" | tr ':' ' ') $(printf '%s' "$tail" | tr ':' ' '); do
+                    case "$g" in ?????* ) return 1 ;; esac
+                    n=$((n + 1))
+                done
+                [ "$n" -le 7 ] || return 1
+            else
+                for g in $(printf '%s' "$lc" | tr ':' ' '); do
+                    case "$g" in ?????* ) return 1 ;; esac
+                    n=$((n + 1))
+                done
+                [ "$n" -eq 8 ] || return 1
+            fi
+            case "$lc" in
+                fd7a:115c:a1e0:*) ;;
+                *) return 1 ;;
+            esac
+            rest="${lc#fd7a:115c:a1e0:}"
+            g="${rest%%:*}"
+            g="${g#"${g%%[!0]*}"}"
+            [ "$g" != "b1a" ]
+            return
+            ;;
+        *)
+            # IPv4: four decimal octets, no leading zeros (Rust's parser, and
+            # so the agent's, refuses them), each at most 255.
+            case "$lc" in
+                *[!0-9.]* | .* | *. | *..*) return 1 ;;
+            esac
+            local IFS=.
+            set -- $lc
+            [ "$#" -eq 4 ] || return 1
+            for g in "$@"; do
+                case "$g" in
+                    0 | [1-9] | [1-9][0-9]) ;;
+                    1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) ;;
+                    *) return 1 ;;
+                esac
+            done
+            [ "$1" -eq 100 ] && [ "$2" -ge 64 ] && [ "$2" -le 127 ]
+            return
+            ;;
+    esac
+}
+
+# refuse_not_tailnet [<bind>]: the REQUIRE_TAILNET refusal, with the bind it
+# found (none: nothing was given and nothing could be detected).
+refuse_not_tailnet() {
+    if [ -n "${1:-}" ]; then
+        echo "ERROR: $TAILNET_REFUSAL_CORE; the bind '$1' is not one." >&2
+        echo "       (${BIND_SOURCE}.) Bind the host's own tailnet address (100.x.y.z)," >&2
+        echo "       or unset SOLADOR_AGENT_REQUIRE_TAILNET if this host is not meant to be tailnet-only." >&2
+    else
+        echo "ERROR: $TAILNET_REFUSAL_CORE; no bind was given and no Tailscale address could be detected." >&2
+        echo "       Bring up Tailscale, or set SOLADOR_AGENT_BIND to the host's tailnet address." >&2
+        echo "       TLS does not change this: a wildcard bind is never an option under it." >&2
+    fi
+    echo "       Nothing has been changed." >&2
+    exit 1
+}
+
+if [ "$REQUIRE_TAILNET" = true ]; then
+    if [ -z "$BIND" ]; then
+        refuse_not_tailnet
+    fi
+    is_tailnet_literal "$BIND" || refuse_not_tailnet "$BIND"
+    echo "==> Tailnet-only bind: SOLADOR_AGENT_REQUIRE_TAILNET=1 ($REQUIRE_TAILNET_SOURCE)"
+fi
+
 # The refusal for a host with no bind address and no TLS. One place, so the
 # early (pre-download) and late (post-staging) callers say the same thing.
 refuse_no_bind() {
@@ -1835,7 +1951,7 @@ fi
 # macOS launcher). That script is installed standalone and cannot source this
 # one, so lib_test.sh asserts the parity.
 ENV_CARRIED_KEYS="SOLADOR_AGENT_SKIP_FSTYPES RUST_LOG"
-ENV_OWNED_KEYS="SOLADOR_AGENT_TOKEN SOLADOR_AGENT_BIND SOLADOR_AGENT_PORT SOLADOR_AGENT_TLS SOLADOR_AGENT_BIND_AUTO"
+ENV_OWNED_KEYS="SOLADOR_AGENT_TOKEN SOLADOR_AGENT_BIND SOLADOR_AGENT_PORT SOLADOR_AGENT_TLS SOLADOR_AGENT_BIND_AUTO SOLADOR_AGENT_REQUIRE_TAILNET"
 
 # carry_env_lines <file>: the lines of <file> that survive a re-run, on stdout;
 # one warning per dropped key on stderr.
@@ -1914,6 +2030,11 @@ ENV_NEW="$ENV_FILE.new"
         printf 'SOLADOR_AGENT_TLS=%s\n' "$TLS_VALUE"
         if [ "$BIND_AUTO" = true ]; then
             printf 'SOLADOR_AGENT_BIND_AUTO=1\n'
+        fi
+        # #497: persisted only when on, so a re-run and `update` keep it; off
+        # is the absence of the key.
+        if [ "$REQUIRE_TAILNET" = true ]; then
+            printf 'SOLADOR_AGENT_REQUIRE_TAILNET=1\n'
         fi
         if [ -f "$ENV_FILE" ]; then
             carry_env_lines "$ENV_FILE"
@@ -2136,6 +2257,9 @@ elif [ "$BIND_ALL_INTERFACES" = true ]; then
     echo "    Bind:    $BIND:$PORT — ALL interfaces ($BIND_SOURCE)"
 else
     echo "    Bind:    $BIND:$PORT — that interface only ($BIND_SOURCE)"
+fi
+if [ "$REQUIRE_TAILNET" = true ]; then
+    echo "    Tailnet: only — SOLADOR_AGENT_REQUIRE_TAILNET=1 is set; the agent and this installer refuse any bind that is not a Tailscale address literal"
 fi
 case "$OS" in
     Linux)

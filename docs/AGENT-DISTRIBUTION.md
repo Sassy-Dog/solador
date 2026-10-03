@@ -1037,7 +1037,7 @@ artifact's own version, and anything else is non-zero.
 
 **The bind follows the transport, and Tailscale is optional (#449, part 3 of
 #445).** The agent and the installer resolve the bind the same way: an
-explicit `SOLADOR_AGENT_BIND` always wins; else the env file's existing value
+explicit `SOLADOR_AGENT_BIND` always wins (except under the opt-in `SOLADOR_AGENT_REQUIRE_TAILNET=1`, #497, which refuses anything but a Tailscale address literal); else the env file's existing value
 (installer only, and not a bind the installer itself chose — below); else the
 detected Tailscale IP; else — and only with TLS on — all interfaces (`0.0.0.0`). With TLS off the last step is still a refusal, as
 it always was: over plain HTTP the tailnet is the only thing between the

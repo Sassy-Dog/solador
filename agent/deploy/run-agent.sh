@@ -251,7 +251,8 @@ while IFS= read -r line || [ -n "$line" ]; do
         SOLADOR_AGENT_BIND_AUTO=*)
             ;;
         SOLADOR_AGENT_TOKEN=* | SOLADOR_AGENT_BIND=* | SOLADOR_AGENT_PORT=* | \
-        SOLADOR_AGENT_TLS=* | SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)
+        SOLADOR_AGENT_TLS=* | SOLADOR_AGENT_REQUIRE_TAILNET=* | \
+        SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)
             key="${line%%=*}"
             value="${line#*=}"
             # Trim surrounding whitespace.

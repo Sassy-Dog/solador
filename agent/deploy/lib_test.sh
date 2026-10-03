@@ -4507,6 +4507,172 @@ test_install_tls_no_tailnet_bind() {
         pass "the kept zone-id refusal downloads nothing"
     fi
 
+    # ---- SOLADOR_AGENT_REQUIRE_TAILNET=1 (#497): a Tailscale literal or a refusal ----
+    # One core sentence everywhere: the agent's FATAL says it from
+    # agent/src/update.rs's TAILNET_REFUSAL_CORE, and the installer must say the
+    # same bytes. Read the constant out of the source rather than restating it,
+    # so editing either side alone turns the case red.
+    local core
+    core="$(sed -n 's/^pub const TAILNET_REFUSAL_CORE: &str = "\(.*\)";$/\1/p' "$SCRIPT_DIR/../src/update.rs")"
+    [ -n "$core" ] && pass "the agent's tailnet refusal sentence was read from its source" \
+        || fail "the agent's tailnet refusal sentence was read from its source" "empty"
+
+    # refused_tailnet <label> <env...>: run the installer under the flag with
+    # the given extra environment; it must refuse with the core sentence,
+    # change nothing and download nothing.
+    refused_tailnet() {
+        local label="$1" o
+        shift
+        o="$(cat "$INSTALL_OUT")"
+        assert_eq "install.sh: $label is refused under REQUIRE_TAILNET" "1" "$INSTALL_STATUS"
+        assert_output_has "$label: the refusal carries the agent's core sentence" "$o" "$core"
+        if [ -e "$home/.local/bin/solador-agent" ] || [ -e "$env_file" ]; then
+            fail "$label: the refusal changes nothing" "the binary or env file exists"
+        else
+            pass "$label: the refusal changes nothing"
+        fi
+        if [ -s "$STUB_CURL_ARGV" ]; then
+            fail "$label: the refusal happens before a download" "curl was invoked: $(head -n1 "$STUB_CURL_ARGV")"
+        else
+            pass "$label: the refusal happens before a download"
+        fi
+    }
+    for tls_v in 0 1; do
+        for bad_bind in "0.0.0.0" "::" "[::]" "192.168.1.20" "127.0.0.1" "my-host.example.net" \
+            "fd7a:115c:a1e0:b1a::1" "100.63.0.1" "100.128.0.1" "[fd7a:115c:a1e0::1]"; do
+            rm -rf "$home"
+            mkdir -p "$home"
+            reset_argv_logs
+            SOLADOR_AGENT_REQUIRE_TAILNET=1 SOLADOR_AGENT_BIND="$bad_bind" INSTALL_TLS="$tls_v" \
+                INSTALL_STDIN="" run_install "$home"
+            refused_tailnet "bind '$bad_bind' (TLS=$tls_v)"
+            assert_output_has "bind '$bad_bind' (TLS=$tls_v): the refusal names the bind" "$(cat "$INSTALL_OUT")" "the bind '$bad_bind' is not one"
+        done
+    done
+    # No tailnet with TLS on: the wildcard fallback is exactly what the flag forbids.
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    SOLADOR_AGENT_REQUIRE_TAILNET=1 INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset \
+        INSTALL_STDIN="" run_install "$home"
+    refused_tailnet "no tailnet with TLS on"
+    assert_output_has "no tailnet: the refusal says nothing could be detected" "$(cat "$INSTALL_OUT")" \
+        "no Tailscale address could be detected"
+    # ...and with TLS off, where it was already refused: the flag's sentence wins.
+    reset_argv_logs
+    SOLADOR_AGENT_REQUIRE_TAILNET=1 INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=0 \
+        INSTALL_STDIN="" run_install "$home"
+    refused_tailnet "no tailnet with TLS off"
+    # A kept bind is held to it too: a LAN bind an earlier install wrote.
+    mkdir -p "$home/.config"
+    printf 'SOLADOR_AGENT_TOKEN=tok\nSOLADOR_AGENT_BIND=192.168.1.20\nSOLADOR_AGENT_PORT=7878\nSOLADOR_AGENT_TLS=0\n' > "$env_file"
+    env_before="$(cat "$env_file")"
+    reset_argv_logs
+    SOLADOR_AGENT_REQUIRE_TAILNET=1 INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a LAN bind kept in the env file is refused under the flag" "1" "$INSTALL_STATUS"
+    assert_output_has "the kept bind is refused with the core sentence" "$(cat "$INSTALL_OUT")" "$core"
+    assert_output_has "the kept bind says where it came from" "$(cat "$INSTALL_OUT")" "kept from the existing env file"
+    assert_eq "the refused re-run leaves the env file unchanged" "$env_before" "$(cat "$env_file")"
+    # A provisional wildcard from an earlier TLS install is set aside, then refused or replaced.
+    printf 'SOLADOR_AGENT_TOKEN=tok\nSOLADOR_AGENT_BIND=0.0.0.0\nSOLADOR_AGENT_PORT=7878\nSOLADOR_AGENT_TLS=1\nSOLADOR_AGENT_BIND_AUTO=1\n' > "$env_file"
+    env_before="$(cat "$env_file")"
+    reset_argv_logs
+    SOLADOR_AGENT_REQUIRE_TAILNET=1 INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset \
+        INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a provisional wildcard with no tailnet is refused under the flag" "1" "$INSTALL_STATUS"
+    assert_eq "...and the env file is untouched" "$env_before" "$(cat "$env_file")"
+
+    # Negative control: with the check bypassed the same wildcard installs, so
+    # the refusals above are the check's doing, not a side effect of the harness.
+    local mut_sh="$CHECKOUT/agent/deploy/install-mut497.sh"
+    sed 's|^if \[ "\$REQUIRE_TAILNET" = true \]; then$|if false; then|' "$CHECKOUT/agent/deploy/install.sh" > "$mut_sh"
+    if cmp -s "$mut_sh" "$CHECKOUT/agent/deploy/install.sh"; then
+        fail "negative control: the tailnet check was bypassed" "the sed did not match install.sh"
+    else
+        rm -rf "$home"
+        mkdir -p "$home"
+        reset_argv_logs
+        SOLADOR_AGENT_REQUIRE_TAILNET=1 SOLADOR_AGENT_BIND="0.0.0.0" INSTALL_SCRIPT="$mut_sh" INSTALL_TLS=0 \
+            INSTALL_STDIN="tok-neg497
+" run_install "$home"
+        assert_eq "negative control: a bypassed check installs the wildcard (the refusals above would be red)" "0" "$INSTALL_STATUS"
+        assert_file_has "negative control: the wildcard reached the env file" "$env_file" "SOLADOR_AGENT_BIND=0.0.0.0"
+        rm -rf "$home"
+        mkdir -p "$home/.config"
+        printf 'FAKE-DER-BYTES' > "$home/.config/solador-agent.tls.crt"
+        reset_argv_logs
+        SOLADOR_AGENT_REQUIRE_TAILNET=1 INSTALL_SCRIPT="$mut_sh" INSTALL_PATH="$TMP/stubs-no-tailscale:$TOOLBIN" INSTALL_TLS=unset \
+            INSTALL_STDIN="tok-neg497b
+" run_install "$home"
+        assert_eq "negative control: a bypassed check falls back to all interfaces with no tailnet" "0" "$INSTALL_STATUS"
+        assert_file_has "negative control: the fallback wildcard reached the env file" "$env_file" "SOLADOR_AGENT_BIND=0.0.0.0"
+    fi
+    rm -f "$mut_sh"
+    INSTALL_SCRIPT=""
+
+    # The flag off: unset and 0 behave exactly as before (the #449 cases above
+    # run with it unset). 0 over a LAN bind is allowed and writes no key.
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    SOLADOR_AGENT_REQUIRE_TAILNET=0 SOLADOR_AGENT_BIND="192.168.1.20" INSTALL_TLS=0 INSTALL_STDIN="tok-off497
+" run_install "$home"
+    assert_eq "install.sh: REQUIRE_TAILNET=0 leaves a LAN bind alone" "0" "$INSTALL_STATUS"
+    if grep -q REQUIRE_TAILNET "$env_file"; then
+        fail "REQUIRE_TAILNET=0 writes no key" "$(grep REQUIRE_TAILNET "$env_file")"
+    else
+        pass "REQUIRE_TAILNET=0 writes no key"
+    fi
+
+    # Accepted, persisted, kept on a re-run, and visible in the Done block.
+    for ok_bind in "100.64.0.9" "fd7a:115c:a1e0::9"; do
+        rm -rf "$home"
+        mkdir -p "$home"
+        reset_argv_logs
+        SOLADOR_AGENT_REQUIRE_TAILNET=1 SOLADOR_AGENT_BIND="$ok_bind" INSTALL_TLS=0 INSTALL_STDIN="tok-ok497
+" run_install "$home"
+        out="$(cat "$INSTALL_OUT")"
+        assert_eq "install.sh: a tailnet literal ($ok_bind) installs under the flag" "0" "$INSTALL_STATUS"
+        assert_file_has "the key is persisted ($ok_bind)" "$env_file" "SOLADOR_AGENT_REQUIRE_TAILNET=1"
+        assert_eq "the key is written exactly once ($ok_bind)" "1" "$(grep -c '^SOLADOR_AGENT_REQUIRE_TAILNET=' "$env_file")"
+        assert_output_has "the Done block says the bind is tailnet-only ($ok_bind)" "$out" "Tailnet: only"
+    done
+    # Detection under the flag: the stubbed tailscale CLI answers 100.64.0.9.
+    rm -rf "$home"
+    mkdir -p "$home"
+    reset_argv_logs
+    SOLADOR_AGENT_REQUIRE_TAILNET=1 INSTALL_TLS=0 INSTALL_STDIN="tok-det497
+" run_install "$home"
+    assert_eq "install.sh: the detected tailnet address installs under the flag" "0" "$INSTALL_STATUS"
+    assert_file_has "the detected bind is written" "$env_file" "SOLADOR_AGENT_BIND=100.64.0.9"
+    assert_file_has "the key is persisted after detection" "$env_file" "SOLADOR_AGENT_REQUIRE_TAILNET=1"
+    # A re-run with the variable unset keeps the key (so `update` and re-runs stay tailnet-only)...
+    reset_argv_logs
+    INSTALL_TLS=0 INSTALL_STDIN="" run_install "$home"
+    out="$(cat "$INSTALL_OUT")"
+    assert_eq "install.sh: a re-run without the variable" "0" "$INSTALL_STATUS"
+    assert_file_has "the key survives a re-run that does not mention it" "$env_file" "SOLADOR_AGENT_REQUIRE_TAILNET=1"
+    assert_eq "the key is still written exactly once" "1" "$(grep -c '^SOLADOR_AGENT_REQUIRE_TAILNET=' "$env_file")"
+    assert_output_has "the re-run says the setting was kept" "$out" "kept from the existing env file"
+    # ...and then holds a hand-edited LAN bind to it.
+    sed -i.bak 's/^SOLADOR_AGENT_BIND=.*/SOLADOR_AGENT_BIND=192.168.1.20/' "$env_file"
+    rm -f "$env_file.bak"
+    reset_argv_logs
+    INSTALL_TLS=0 INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: a persisted key refuses a LAN bind written after it" "1" "$INSTALL_STATUS"
+    assert_output_has "the persisted-key refusal carries the core sentence" "$(cat "$INSTALL_OUT")" "$core"
+    # Only an explicit 0 turns it off, and the key goes with it.
+    sed -i.bak 's/^SOLADOR_AGENT_BIND=.*/SOLADOR_AGENT_BIND=100.64.0.9/' "$env_file"
+    rm -f "$env_file.bak"
+    reset_argv_logs
+    SOLADOR_AGENT_REQUIRE_TAILNET=0 INSTALL_TLS=0 INSTALL_STDIN="" run_install "$home"
+    assert_eq "install.sh: an explicit 0 turns the setting off" "0" "$INSTALL_STATUS"
+    if grep -q REQUIRE_TAILNET "$env_file"; then
+        fail "an explicit 0 removes the key" "$(grep REQUIRE_TAILNET "$env_file")"
+    else
+        pass "an explicit 0 removes the key"
+    fi
+
     # ---- a bind chosen for TLS is provisional: set aside on every re-run (#449) ----
     # The env file carries 0.0.0.0 only because this script picked it for a TLS
     # host with no tailnet, and it said so with SOLADOR_AGENT_BIND_AUTO=1. A
@@ -8891,7 +9057,7 @@ test_install_env_allowlist() {
         fail "parity control: a key added only to install.sh is detected" "no difference seen"
     fi
     cp "$SCRIPT_DIR/run-agent.sh" "$TMP/run-agent-mut.sh"
-    sed -i.bak 's/^\( *\)SOLADOR_AGENT_TLS=\* | SOLADOR_AGENT_SKIP_FSTYPES=\* | RUST_LOG=\*)/\1SOLADOR_AGENT_TLS=* | DOCKER_HOST=* | SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)/' "$TMP/run-agent-mut.sh"
+    sed -i.bak 's/^\( *\)SOLADOR_AGENT_SKIP_FSTYPES=\* | RUST_LOG=\*)/\1DOCKER_HOST=* | SOLADOR_AGENT_SKIP_FSTYPES=* | RUST_LOG=*)/' "$TMP/run-agent-mut.sh"
     if ! grep -q 'DOCKER_HOST=\*' "$TMP/run-agent-mut.sh"; then
         fail "parity control: a key added only to run-agent.sh is detected" "the mutation did not apply"
     elif [ "$(launcher_keys "$TMP/run-agent-mut.sh")" != "$(installer_keys "$SCRIPT_DIR/install.sh")" ]; then

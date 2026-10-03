@@ -1368,6 +1368,27 @@ pub fn zone_id_refusal(bind: &str) -> String {
     )
 }
 
+/// The core of every `SOLADOR_AGENT_REQUIRE_TAILNET=1` refusal (#497): the one
+/// sentence the agent's start-time FATAL ([`tailnet_refusal`]) and
+/// `install.sh` both say, so the two cannot drift. `lib_test.sh` reads this
+/// constant out of the source and requires the installer's refusal to contain
+/// it verbatim, so keep it on one line.
+pub const TAILNET_REFUSAL_CORE: &str = "SOLADOR_AGENT_REQUIRE_TAILNET=1 allows only a Tailscale address literal as the bind (IPv4 100.64.0.0/10, or IPv6 fd7a:115c:a1e0::/48 other than the 4via6 prefix fd7a:115c:a1e0:b1a::/64), never a wildcard, another address or a DNS name";
+
+/// The refusal under `SOLADOR_AGENT_REQUIRE_TAILNET=1`: [`TAILNET_REFUSAL_CORE`]
+/// plus what was found. `Some(bind)` is a bind that is not a tailnet literal;
+/// `None` is "no bind was given and none could be detected". `install.sh` says
+/// the same thing in shell.
+#[must_use]
+pub fn tailnet_refusal(bind: Option<&str>) -> String {
+    match bind {
+        Some(b) => format!("{TAILNET_REFUSAL_CORE}; the bind '{b}' is not one"),
+        None => format!(
+            "{TAILNET_REFUSAL_CORE}; no bind was given and no Tailscale address could be detected"
+        ),
+    }
+}
+
 /// The URL to probe and where its connection goes, for every bind form
 /// `lib.sh`'s `health_url` + `connect_line` handle. Under TLS the URL always
 /// names `localhost` — a name every generated certificate carries, since the
