@@ -150,6 +150,17 @@
       wrap.append(colored("p", "db-warning", v.text, v.color));
     return wrap;
   }
+  function tileHeading(t, tag) {
+    const heading = node("div", "db-tile-heading");
+    const context = `${t.scopeLabel} · ${L(t.presentation)}`;
+    heading.title = context;
+    const subtitle = node("div", "db-tile-subtitle");
+    subtitle.append(node("p", "db-tile-note", context), warnings(t.warnings));
+    const title = node(tag, "db-tile-title", t.title);
+    title.setAttribute("aria-description", context);
+    heading.append(title, subtitle);
+    return heading;
+  }
   function makeRow(row, t, detail = false, interactive = true) {
     const wrap = node(
       "div",
@@ -317,11 +328,7 @@
           b.disabled = disabled || busy;
           tools.append(b);
         }
-        const heading = node("div");
-        heading.append(
-          node("h2", "db-tile-title", t.title),
-          node("p", "db-tile-note", `${t.scopeLabel} · ${L(t.presentation)}`),
-        );
+        const heading = tileHeading(t, "h2");
         const config = actionLabel(
           button(L("configure"), "configure", t.id),
           t.title,
@@ -331,17 +338,16 @@
         el.querySelector(".db-tile-head").replaceChildren(heading, config);
       }
       if (force || fresh || (!editing && !dragged)) {
+        warnings(t.warnings, el.querySelector(".db-tile-head .db-warnings"));
         const content = el.querySelector(".db-tile-content");
         content.tabIndex = 0;
         content.setAttribute("role", "region");
         content.setAttribute("aria-label", t.title);
-        let warning = content.querySelector(":scope > .db-warnings");
         let rows = content.querySelector(":scope > .db-tile-rows");
-        if (!warning) {
-          warning = warnings(t.warnings);
+        if (!rows) {
           rows = node("div", "db-tile-rows");
-          content.append(warning, rows);
-        } else warnings(t.warnings, warning);
+          content.append(rows);
+        }
         rows.replaceChildren();
         if (t.sortColumns?.length && t.rows.length) rows.append(repoHeader(t));
         if (!t.rows.length) {
@@ -701,14 +707,12 @@
     card.dataset.presentation = t.presentation;
     card.dataset.scope = t.scopeLabel;
     card.dataset.options = JSON.stringify([t.rowLimit, t.runnerView, t.selectedRepos]);
-    const head = node("header", "db-tile-head"), heading = node("div");
-    heading.append(node("h3", "db-tile-title", t.title), node("p", "db-tile-note", `${t.scopeLabel} · ${L(t.presentation)}`));
-    head.append(heading);
+    const head = node("header", "db-tile-head");
+    head.append(tileHeading(t, "h3"));
     const content = node("div", "db-tile-content");
     content.tabIndex = 0;
     content.setAttribute("role", "region");
     content.setAttribute("aria-label", t.title);
-    content.append(warnings(t.warnings));
     const rows = node("div", "db-tile-rows");
     if (t.sortColumns?.length && t.rows.length) rows.append(repoHeader(t, false));
     if (!t.rows.length) rows.append(node("p", "db-sub", t.empty));

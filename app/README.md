@@ -62,10 +62,13 @@ other tiles, and is one line: title, the sources needing attention packed
 from the left at their own width, then the note (the chips take a second line
 under ~600px). That chip row has a fixed height whether it holds nothing or
 every source — overflow scrolls sideways rather than adding a row — so status
-changes do not push the dashboard down. Tile warnings
-reserve a separate line; long diagnostics are abbreviated visually, with the
-complete accessible text and hover title retained. Status values use fixed
-columns, and machine metric slots show `—` while disconnected. Tile headings
+changes do not push the dashboard down. Tile warnings replace the scope/presentation
+subtitle in the same fixed-height line, leaving only a 6px gap before the content.
+The scope and presentation remain in the heading's accessible description and hover
+title; long diagnostics are abbreviated visually, with complete accessible text and
+their own hover title retained. Healthy tiles and previews reserve no separate
+warning row. Status values use fixed columns, and machine metric slots show `—`
+while disconnected. Tile headings
 capitalize each word, preserving brand/acronym casing, including saved names.
 
 Tile bodies, hidden previews, the Details inspector, detailed panels and host
@@ -1436,8 +1439,9 @@ is "yes, the network is up". The card carries `error.kind`
 typed `AgentError`, never parsed from the sentence); `host_rows` paints those as
 `Cert changed` / `No TLS` / `Not paired` instead of `Unreachable`, and `all_remote_hosts_unreachable` requires *every*
 remote to be an ordinary failure — one pairing failure among them silences the
-hint, since its claim that every remote is unreachable would be false. It rides the Machines tile's fixed-height
-warning line (#436), so it moves no geometry, and it is recomputed from the
+hint, since its claim that every remote is unreachable would be false. It replaces
+the Machines tile's subtitle in the same fixed-height line, so it moves no geometry,
+and it is recomputed from the
 payload on every frame with no state kept, so it clears the instant any
 remote host answers. The full detailed Hosts panel (`?view=details`) carries
 no such line — every card there already reads `Unreachable` on its own, which

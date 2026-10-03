@@ -48,6 +48,12 @@ for (const width of [375, 1024, 1600]) {
     initial.tiles[0].rows[0].value = 'Connected';
     await changeDashboard(page, initial);
     await expect(page.locator('.db-attention-items button')).toHaveCount(0);
+    const subtitle = page.locator('.db-grid .db-tile-note').first();
+    await expect(subtitle).toBeVisible();
+    expect(await page.locator('.db-tile').first().evaluate(tile =>
+      tile.querySelector('.db-tile-rows').getBoundingClientRect().top -
+      tile.querySelector('.db-tile-note').getBoundingClientRect().bottom,
+    )).toBeLessThanOrEqual(8);
     const before = await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item');
     const failed = structuredClone(initial);
     failed.attention = failed.sources.map(s => ({ source:s.id, label:`${s.title} · 999 need attention`, color:'#ff9384' }));
@@ -62,6 +68,9 @@ for (const width of [375, 1024, 1600]) {
     expect(await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item')).toEqual(before);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     const warnings = page.locator('.db-grid .db-warnings').first();
+    await expect(subtitle).toBeHidden();
+    await expect(warnings).toBeVisible();
+    await expect(page.locator('.db-grid .db-tile-title').first()).toHaveAccessibleDescription('All resources · Summary');
     await warnings.focus();
     await expect(warnings).toBeFocused();
     await expect(warnings).toHaveAttribute('title', failed.tiles[0].warnings[0].text);
@@ -71,6 +80,7 @@ for (const width of [375, 1024, 1600]) {
     await expect(warnings).toBeFocused();
     await expect(warnings).toHaveAttribute('title', failed.tiles[0].warnings[0].text);
     await changeDashboard(page, initial);
+    await expect(subtitle).toBeVisible();
     expect(await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item')).toEqual(before);
   });
 }
@@ -215,7 +225,7 @@ test('the Machines tile warns when every remote host is unreachable, and clears 
   const before = await bounds(page, '.db-grid, .db-tile, .db-tile-footer, .db-host-stats, .db-item');
 
   // Every remote host down at once (#446): the Machines tile's fixed-height
-  // warning line (#436) carries the hint, without moving anything around it.
+  // subtitle carries the hint, without moving anything around it.
   // `all_remote_hosts_unreachable` itself is exercised by the Rust unit tests
   // beside `host_rows`; this frame only proves the frontend paints the
   // warning `dashboard_view` would hand it and keeps the grid anchored.
