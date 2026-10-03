@@ -1303,6 +1303,7 @@ test("every panel's row list carries the same vertical rhythm", async ({ page, b
   // and every list would agree about nothing.
   await stubPanels(page, baseURL, vm);
   await gotoApp(page);
+  await page.evaluate(async () => { window.soladorDashboard.detailView = () => 'list'; await refreshPanels(); });
   await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
   await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
 
@@ -1348,7 +1349,8 @@ for (const px of [0, 16]) {
     vm.rowGapPx = px;
     await stubPanels(page, baseURL, vm);
     await gotoApp(page);
-    await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
+    await page.evaluate(async () => { window.soladorDashboard.detailView = () => 'list'; await refreshPanels(); });
+  await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
     await expect(page.locator("#openclawBody .oc-agent").first()).toBeVisible();
 
     for (const { panel, gaps } of await measureRowGaps(page)) {
@@ -1359,16 +1361,8 @@ for (const px of [0, 16]) {
 }
 
 test("the Runners list has no trailing gap inside its reserved viewport", async ({ page, baseURL }) => {
-  // The trap in the mechanism that gives Runners its gap. `.gh-list` is
-  // multi-column, so the gap is a child `margin-bottom` — and the bottom row of
-  // EVERY column carries one, while the balancer sizes the list to its tallest
-  // column. That is where a trailing gap turns into dead space inside the card
-  // and the panel's bottom padding stops reading like every other panel's.
-  //
-  // Driven at both column counts on purpose: `:last-child` — the exemption the
-  // stylesheet rejects — is indistinguishable from the container compensation
-  // at ONE column and wrong at two, because the last child is last in flow, not
-  // last in each column. Only the two-column render tells them apart.
+  // List stays in one column at every width. A non-zero row gap must not
+  // leave extra space below the last row.
   const vm = await fixture(baseURL, "sample-cockpit.json");
   // Non-zero, for the same reason the rhythm test is: the trailing gap this
   // catches is a `margin-bottom`, and at the shipped 0 there is no margin to
@@ -1377,9 +1371,10 @@ test("the Runners list has no trailing gap inside its reserved viewport", async 
   vm.rowGapPx = 10;
   await stubPanels(page, baseURL, vm);
   await gotoApp(page);
+  await page.evaluate(async () => { window.soladorDashboard.detailView = () => 'list'; await refreshPanels(); });
   await expect(page.locator("#runnersBody .gh-list > .gh-row").first()).toBeVisible();
 
-  for (const cols of [1, 2]) {
+  for (const cols of [1]) {
     const measured = await page.evaluate((n) => {
       const list = document.querySelector("#runnersBody .gh-list");
       // The same custom property `applyPanelColumns` publishes from Rust's
@@ -1399,7 +1394,7 @@ test("the Runners list has no trailing gap inside its reserved viewport", async 
       else panel.style.removeProperty("--panel-cols");
       return { px, columns };
     }, cols);
-    expect(measured.columns, `the list must actually split at --panel-cols:${cols}`).toBe(cols);
+    expect(measured.columns, `the list stays in one column`).toBe(cols);
     expect(measured.px, `dead space under the last row at ${cols} column(s)`).toBeLessThan(0.5);
   }
 });

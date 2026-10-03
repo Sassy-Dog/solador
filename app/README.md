@@ -6,7 +6,8 @@ and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings and the existing full panel; **All
 full panels** opens the original cockpit. Connections and credentials remain
-in **Settings**, backed by the OS credential store.
+in **Settings**, backed by the OS credential store. Settings and Overview share
+the same header inset, with space around the logo, heading and action buttons.
 
 ### Dashboard tiles
 
@@ -25,10 +26,15 @@ between that table and a vertical list; the preference is saved per source,
 independent of its tiles. Old dashboards default to Table, and failed saves leave
 the previous choice selected. Wide tables scroll horizontally within the view
 at narrow widths, keeping all columns available without widening the page.
+Column widths are fixed by the view definition, so changing readings, names or
+status words do not move neighboring columns. Truncated cells retain their full
+text on hover.
 Expand a resource for explanations, volumes and actions; opening one specific
-resource starts it expanded. List shows key readings and context immediately,
-with secondary fields on expansion. Expansion, table scroll position and keyboard
-focus survive live reading updates, and collapsing a row releases the extra
+resource starts it expanded. Machine volumes use an alphabetized table of mount,
+used, total and usage percentage in both views. This does not change the Full host card's fullest-first
+ordering or which volume triggers attention. List shows key readings and context
+immediately, with secondary fields on expansion. Expansion, table scroll position
+and keyboard focus survive live reading updates, and collapsing a row releases the extra
 height. **Full** opens the complete source panel with its specialized readings
 and controls.
 Clicking an active **Needs Attention** chip again closes its Detail view;
@@ -70,10 +76,15 @@ Each type shows online / total, busy, idle and offline counts, plus recycling,
 missing or unknown counts when present. Grouping follows the tile's scope and
 precedes its row limit. Selecting a group opens **Full** directly, filtered to
 that OS + architecture across the source, with its own counts and individual
-members in one vertical list. **All runners** clears the temporary filter;
+members in the same compact Table/List design as Detail. The saved Runners
+view choice applies to both entry points; List stays in one vertical column.
+**All runners** clears the temporary filter;
 returning to Overview clears it too. Membership follows live readings, and a
 type with no remaining members says so instead of showing other types. Full
 runner rows include architecture and retain the absent runner's Forget action.
+Table supports the context-menu key or Shift+F10 on an absent runner as well as
+right-click. Full panels share Detail's palette and heading style; focused Full
+panels fit their rows rather than reserving an empty list area.
 Architecture comes from GitHub's ARM64, X64 or ARM labels and survives in the
 absence roster. Missing or conflicting labels render Unknown architecture.
 The existing source warnings accompany grouped counts too.

@@ -434,43 +434,12 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .gh-runner-name { font-size:11px; font-weight:700; white-space:nowrap;
   overflow:hidden; text-overflow:ellipsis; }
 .gh-runner-os { font-size:8px; color:var(--muted); flex:none; }
-/* The runner list splits into `--panel-cols` columns once Rust says the panel
-   is wide enough. CSS multi-column, not grid, because *balancing* is the
-   feature: it fills top-to-bottom then wraps, so the list keeps its reading
-   order down each column. A grid would need the row count, which is data the
-   stylesheet does not have. `break-inside` keeps a row whole across the
-   boundary. */
-/* 40px, not the 24 the other splits use: a runner row ends in a right-aligned
-   status, so its text finishes hard against the boundary and the next column
-   opens with a dot and a bold name. At 24 the two read as one crowded run. */
-.gh-list { column-count: var(--panel-cols, 1); column-gap:40px; }
-.gh-list > .gh-row { break-inside:avoid; }
+/* The alternate List view keeps one reading order at every width, using the
+   same configurable gap as the other panel lists. */
+.gh-list { display:flex; flex-direction:column; gap:var(--row-gap); }
 .gh-runner-filter { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
 .gh-runner-filter strong { font-size:12px; font-weight:500; }
 .gh-group-summary { color:var(--muted); font-size:11px; margin:0 0 12px; }
-/* …and the row gap as a child MARGIN, because this list cannot express one any
-   other way: `gap` on a multi-column container is `column-gap` alone, and
-   `row-gap` is ignored outright. That is why this list rendered flush at 0
-   beside Repos at 10 — no value was ever chosen here and rejected; the
-   mechanism silently discarded the one that was. Converting to grid or flex to
-   get a `gap` would buy it at the cost of the balancing the comment above
-   defends, which is the feature, so the margin is the mechanism.
-
-   Scoped to `.gh-list >`: `.gh-row` is Repos' row class too, where the gap
-   already comes from `.gh-col`'s flex — unscoped, Repos would render gap PLUS
-   margin and land 20px apart while fixing Runners.
-
-   On EVERY row, with exactly one gap taken back off the container. The obvious
-   `:last-child` exemption does not do this job: in multicol the last child is
-   last in FLOW, so at two columns the bottom row of the OTHER column keeps its
-   margin, and the balancer sizes the list to the tallest column — a trailing
-   gap inside the card, in the one shape a single-column test never renders.
-   Taking one gap off the container is right at either count, because the
-   tallest column ends in exactly one either way. `:not(:empty)` because a
-   panel showing a message instead of rows has no margin to take back, and
-   pulling its body up by 10px would be this bug in the other direction. */
-.gh-list > .gh-row { margin-bottom:var(--row-gap); }
-.gh-list:not(:empty) { margin-bottom:calc(-1 * var(--row-gap)); }
 /* The width is Rust's `statusWidth`, applied via CSSOM, and there is no
    `min-width` fallback on purpose: a minimum is what let "recycling 1m" grow
    its own column and shove the OS chip left on that one row (#206). `overflow`

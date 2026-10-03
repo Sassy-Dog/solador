@@ -299,6 +299,9 @@ pub fn host_card(
             let pct = v.percent_used();
             json!({
                 "mount": v.mount,
+                "used": format!("{} GB", fmt(v.used_gb)),
+                "total": format!("{} GB", fmt(v.total_gb)),
+                "percent": or_unknown(pct, |p| format!("{}%", p.round() as i64)),
                 "detail": format!(
                     "{} / {} GB · {}",
                     fmt(v.used_gb),
@@ -694,6 +697,9 @@ mod tests {
         let unmeasurable = &volumes[1];
         assert_eq!(unmeasurable["mount"], "/media/empty");
         assert_eq!(unmeasurable["detail"], "0.0 / 0.0 GB · —");
+        assert_eq!(unmeasurable["used"], "0.0 GB");
+        assert_eq!(unmeasurable["total"], "0.0 GB");
+        assert_eq!(unmeasurable["percent"], "—");
         assert_eq!(unmeasurable["tint"], color::hex(color::MUTED));
         assert_eq!(
             unmeasurable["fraction"], 0.0,

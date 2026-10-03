@@ -393,7 +393,8 @@ test("registered and absent runner rows carry Rust's state words and colours", a
   for (const [index, expected] of runners.rows.entries()) {
     const row = runnerRows(page).nth(index);
     await expect(row).toHaveAttribute("data-kind", expected.kind);
-    await expect(row.locator(".gh-runner-os")).toHaveText(expected.platform);
+    await expect(row.locator(".gh-runner-os")).toHaveText(expected.os);
+    await expect(row.locator('td').nth(2)).toHaveText(expected.architecture);
     await expect(row.locator(".gh-runner-status")).toHaveText(expected.status);
     await expect(row.locator(".dot")).toHaveCSS("background-color", rgb(expected.dotColor));
     await expect(row.locator(".gh-runner-status")).toHaveCSS("color", rgb(expected.statusColor));
@@ -497,7 +498,7 @@ test("the OS column holds one position across every runner state", async ({ page
   expect(new Set(chips.map((b) => (b.x + b.width).toFixed(2))).size, "one right edge").toBe(1);
 });
 
-test("the widest presence label fits the reserved slot without truncating", async ({ page, baseURL }) => {
+test("the widest presence label fits its table cell without truncating", async ({ page, baseURL }) => {
   const { runners } = await gotoWithFixtures(page, baseURL);
   await page.locator("#runnersPanel").evaluate((el) => {
     el.style.width = "400px";
@@ -506,11 +507,7 @@ test("the widest presence label fits the reserved slot without truncating", asyn
   const rows = runnerRows(page);
   for (const [index, expected] of runners.rows.entries()) {
     const status = rows.nth(index).locator(".gh-runner-status");
-    // Rust's figure reaches the element as a width, not as a minimum.
-    await expect(status).toHaveCSS("width", `${expected.statusWidth}px`);
-    // `overflow:hidden` means an outgrown reservation clips silently instead
-    // of shifting the row, so the panel would look right and read wrong —
-    // this is the assertion that would catch it.
+    await expect(status).toHaveText(expected.status);
     const [scroll, client] = await status.evaluate((el) => [el.scrollWidth, el.clientWidth]);
     expect(scroll, `"${expected.status}" is clipped by its reserved slot`).toBeLessThanOrEqual(client);
   }
@@ -847,7 +844,7 @@ test("repo and runner names reach the DOM as text, never as markup", async ({ pa
 
 // MARK: - two-column content
 
-test("a wide panel splits Repos into two tables and the runner list into two columns", async ({ page, baseURL }) => {
+test("a wide panel splits Repos and keeps Runners in one aligned table", async ({ page, baseURL }) => {
   // sample-cockpit.json is dumped at 2732pt, so its two-panel rows are 1358pt
   // each — past both breakpoints (Repos needs 1136, Runners 816).
   const { repos, runners } = await gotoWithFixtures(page, baseURL);
@@ -875,13 +872,9 @@ test("a wide panel splits Repos into two tables and the runner list into two col
     repos.rows.slice(0, Math.ceil(repos.rows.length / 2)).map((r) => r.name)
   );
 
-  // Runners: one list, two CSS columns — balancing keeps the reading order.
+  // Runners: one shared set of columns, regardless of panel width.
   await expect(runnerRows(page)).toHaveCount(runners.rows.length);
-  expect(
-    await page.locator("#runnersBody .gh-list").evaluate((el) =>
-      getComputedStyle(el).columnCount
-    )
-  ).toBe("2");
+  await expect(page.locator("#runnersBody .db-detail-table")).toHaveCount(1);
 });
 
 test("a narrow panel keeps every list in one column", async ({ page, baseURL }) => {
@@ -897,11 +890,7 @@ test("a narrow panel keeps every list in one column", async ({ page, baseURL }) 
   await expect(page.locator("#reposBody .gh-col")).toHaveCount(1);
   await expect(page.locator("#reposBody .gh-head")).toHaveCount(1);
   await expect(repoRows(page)).toHaveCount(repos.rows.length);
-  expect(
-    await page.locator("#runnersBody .gh-list").evaluate((el) =>
-      getComputedStyle(el).columnCount
-    )
-  ).toBe("1");
+  await expect(page.locator("#runnersBody .db-detail-table")).toHaveCount(1);
 });
 
 test("the repo name column is a reservation, so the numeric block never moves", async ({ page, baseURL }) => {

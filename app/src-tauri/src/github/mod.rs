@@ -127,7 +127,7 @@ const JOBS_W: f64 = 22.0; // "JOBS" 21.6
 const LONGEST_W: f64 = 42.0; // "LONGEST" 37.8
 
 /// The cockpit's monospace advance at the repo rows' 11pt, in points — the
-/// same 0.6em rule [`MONO_9_CHAR_W`] rests on, one size up.
+/// same 0.6em rule [`REPO_MONO_CHAR_W`] rests on, one size up.
 #[cfg(test)]
 const MONO_11_CHAR_W: f64 = 6.6;
 
@@ -1118,14 +1118,16 @@ fn elapsed(secs: i64) -> String {
 
 // MARK: - Runners
 
-/// The cockpit's monospace advance at the runner rows' 9pt, in points. Every
+/// The cockpit's monospace advance at the runner rows' 12pt, in points. Every
 /// glyph in `ui-monospace`/SF Mono is 0.6em wide, which is the only reason a
 /// *character* count below can become a *point* width at all.
 ///
 /// Only the test that re-derives [`RUNNER_STATUS_W`] reads it: the shipped
 /// payload carries the points, not the arithmetic behind them.
 #[cfg(test)]
-const MONO_9_CHAR_W: f64 = 5.4;
+const RUNNER_MONO_CHAR_W: f64 = 7.2;
+#[cfg(test)]
+const REPO_MONO_CHAR_W: f64 = 5.4;
 
 /// The longest status a runner row can hold, in characters: `"recycling 59s"`
 /// and `"missing 1234d"` both land here, and
@@ -1135,7 +1137,7 @@ const MONO_9_CHAR_W: f64 = 5.4;
 const RUNNER_STATUS_CHARS: usize = 13;
 
 /// The status column's reserved footprint, in points — `RUNNER_STATUS_CHARS`
-/// characters of the panel's 9pt monospace, rounded up.
+/// characters of the panel's 12pt monospace, rounded up.
 ///
 /// **Fixed, not a minimum.** A row's status is the widest thing in it that
 /// changes: a presence label (`"recycling 40s"`) is nearly three times the
@@ -1144,7 +1146,7 @@ const RUNNER_STATUS_CHARS: usize = 13;
 /// so the panel's alignment breaks at the moment it is being read hardest
 /// (#206). `GHRunnersPanel` reserves 48pt, which fits the state words and not
 /// the presence labels; this is the same reservation sized for both.
-const RUNNER_STATUS_W: f64 = 74.0;
+const RUNNER_STATUS_W: f64 = 104.0;
 
 /// The whole GitHub Runners payload.
 ///
@@ -1176,6 +1178,7 @@ fn runners_setup_view(state: &GitHubState, now: u64, message: &str) -> Value {
         "groups": [],
         "allRunnersLabel": "All runners",
         "emptyGroupMessage": "No runners currently match this type.",
+        "detailLabels": runner_detail_labels(),
     })
 }
 
@@ -1264,12 +1267,20 @@ pub fn runners_view(state: &GitHubState, now: u64) -> Value {
         "groups": groups,
         "allRunnersLabel": "All runners",
         "emptyGroupMessage": "No runners currently match this type.",
+        "detailLabels": runner_detail_labels(),
         "showOrgTags": show_org_tags,
         // The absent rows' context-menu label. From here rather than authored
         // in github.js, which owns layout and wiring but no words.
         "forgetLabel": "Forget",
         "footer": runners_footer(state, now),
     })
+}
+
+fn runner_detail_labels() -> Value {
+    json!({"table":"Table", "list":"List", "view":"Detail view",
+        "columns":["Runner", "Organization", "OS", "Architecture", "Status"],
+        "widths":[260,180,110,120,180],
+        "failed":"Could not save the view. Try again."})
 }
 
 /// The Runners panel's footer. With one selected org this is exactly the
@@ -2490,7 +2501,7 @@ mod tests {
     fn every_numeric_column_fits_its_header_without_padding_it() {
         for (label, width) in COLUMNS.iter().skip(1) {
             let width = width.expect("numeric columns carry a width");
-            let header = label.len() as f64 * MONO_9_CHAR_W;
+            let header = label.len() as f64 * REPO_MONO_CHAR_W;
             assert!(
                 width >= header,
                 "{label} is {header}pt of header in a {width}pt column"
@@ -3149,8 +3160,8 @@ mod tests {
             "the widest status the panel can say moved; re-derive the reservation"
         );
         assert!(
-            RUNNER_STATUS_W >= RUNNER_STATUS_CHARS as f64 * MONO_9_CHAR_W,
-            "{RUNNER_STATUS_W}pt cannot hold {RUNNER_STATUS_CHARS} characters of 9pt monospace"
+            RUNNER_STATUS_W >= RUNNER_STATUS_CHARS as f64 * RUNNER_MONO_CHAR_W,
+            "{RUNNER_STATUS_W}pt cannot hold {RUNNER_STATUS_CHARS} characters of 12pt monospace"
         );
     }
 
