@@ -43,8 +43,8 @@ SIGN_TARGET="$TAURI_BINARY"
 # An icon cannot come from the binary. tauri-build embeds an Info.plist into
 # __TEXT,__info_plist (that is where "Solador" in the menu bar comes from),
 # but CFBundleIconFile names a file in Contents/Resources and a bare Mach-O
-# has no Resources — so a Dock icon needs a real bundle, and `bundle.active`
-# is false because we are not shipping from here.
+# has no Resources — so a Dock icon needs a real bundle, and the plain
+# `cargo build` above never runs Tauri's bundler (`./dev build --bundle` does).
 #
 # The binary is *launched from inside* the bundle rather than via `open`:
 # macOS reads the enclosing bundle either way, and exec keeps stdout,

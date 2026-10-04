@@ -454,6 +454,27 @@ pub fn fixture_state(
     (state, rules, presence)
 }
 
+/// The marketing counterpart of [`fixture_state`] (`--dump-containers
+/// --showcase`): the same machines and the same collapsed runner group, minus
+/// the expected-VM rule whose absences are the e2e fixture's red and amber rows.
+///
+/// Derived from [`fixture_state`] rather than built twice, so the two cannot
+/// drift apart on anything but the one difference this names.
+pub fn showcase_state(
+    now: u64,
+) -> (
+    ContainersState,
+    Vec<ContainerGroupRule>,
+    BTreeMap<String, ContainerPresenceRecord>,
+) {
+    let (state, rules, _presence) = fixture_state(now);
+    let rules = rules
+        .into_iter()
+        .filter(|rule| rule.action != store::ContainerRuleAction::Expect)
+        .collect();
+    (state, rules, BTreeMap::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

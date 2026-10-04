@@ -2282,6 +2282,9 @@ cargo run -p solador-app -- --dump-services sample-services.json   # the Service
 #   incidents", and one never read). Plus `--empty` — a pass that LOOKED and
 #   found nothing to watch, which is what an unconfigured cockpit now gets and
 #   is deliberately not the same payload as one that has not looked yet.
+cargo run -p solador-app -- --dump-dashboard sample-showcase-dashboard.json --showcase
+#   …and every panel dump above, plus `--dump-cockpit`, takes `--showcase`: the
+#   marketing counterpart the README and solador.app screenshots render.
 ```
 
 `--dump-settings` is a `settings_view` payload built from a fixed configuration
@@ -2328,6 +2331,18 @@ byte-stability reason, and it carries the em dashes the shipped card really does
 (pressure, GPU) so the Playwright suite asserts that rule against Rust's own
 output. `npm test` in `tests/frontend` writes them all under `app/ui/` (all
 gitignored) — which matters for the smoke test below.
+
+`--showcase` points the other way. The fixtures above exercise every failure a
+panel renders, which is right for a test and wrong for a picture of the product;
+the showcase is a working morning — healthy hosts whose charts move, one failing
+repo, and nothing else amber or red. `the_showcase_dashboard_has_exactly_one_tile_out_of_true`
+asserts exactly that, so a screenshot cannot quietly contradict the copy printed
+beside it. `npm run fixtures:showcase` writes them as `app/ui/sample-showcase-*.json`
+(gitignored), the cockpit once per grid width the screenshot viewports measure,
+and `npm run screenshots` renders them into `site/assets/screenshots/`. Its stub
+refuses a cockpit request at any other width rather than paint a layout computed
+for a different one — answering every width with one payload is how
+`cockpit-narrow.png` once showed overlapping host cards.
 
 ## Manual IPC smoke test
 

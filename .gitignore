@@ -94,6 +94,8 @@ app/ui/sample-openclaw-error.json
 app/ui/sample-openclaw-idle.json
 app/ui/sample-openclaw-empty.json
 app/ui/sample-openclaw-unmeasured.json
+# The marketing screenshots' fixtures (`npm run fixtures:showcase`)
+app/ui/sample-showcase-*.json
 app/src-tauri/gen/
 tests/frontend/node_modules/
 tests/frontend/test-results/

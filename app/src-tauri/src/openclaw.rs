@@ -707,6 +707,9 @@ pub enum Fixture {
     Idle,
     /// No runtime at all, which is the panel's own empty state.
     Empty,
+    /// The live farm on a good day, for the marketing screenshots: no agent
+    /// mid-turn, no cron error, every channel answering or deliberately off.
+    Showcase,
 }
 
 /// A hand-made state for the offline fixtures.
@@ -738,7 +741,7 @@ pub fn fixture_state(kind: Fixture) -> OpenClawState {
             },
             "awaiting device pairing",
         ),
-        Fixture::Connected | Fixture::Unmeasured => {
+        Fixture::Connected | Fixture::Unmeasured | Fixture::Showcase => {
             state.connected(1_700_000_000_000);
             state.snapshot.agents = vec![
                 AgentRollupItem::new("main", "Sebastian", AgentStatus::Running)
@@ -775,6 +778,24 @@ pub fn fixture_state(kind: Fixture) -> OpenClawState {
                     last_error: None,
                 },
             ];
+            if kind == Fixture::Showcase {
+                // Running is amber — activity, not trouble, but still the eye's
+                // second stop — so the showcase farm is between turns.
+                for agent in &mut state.snapshot.agents {
+                    if agent.status == AgentStatus::Running {
+                        agent.status = AgentStatus::Ok;
+                    }
+                }
+                state.snapshot.cron = CronSummary {
+                    ok: 4,
+                    ..CronSummary::default()
+                };
+                for channel in &mut state.snapshot.channels {
+                    if channel.status == AgentStatus::Unknown {
+                        channel.status = AgentStatus::Ok;
+                    }
+                }
+            }
             // The unmeasured fixture keeps the session — and therefore the
             // line — and only drops the counters. `SessionUsageRollup::default`
             // is four `None`s, which is precisely "a session that reported

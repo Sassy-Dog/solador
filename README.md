@@ -7,7 +7,7 @@ vendor status, agents — read at a glance from a second monitor.
 
 <br clear="left">
 
-![The Solador overview](docs/assets/screenshots/overview.png)
+![The Solador overview](site/assets/screenshots/overview.png)
 
 The mark is a tiler's 3×3 grid with **one tile out of true**, and the name is
 Spanish: *solar* — to floor, to pave, to tile — plus *-dor*, the tradesperson
@@ -87,15 +87,15 @@ Runners can show every individual runner or counts grouped by OS and architectur
 
 | | |
 |:--:|:--:|
-| ![Repos](docs/assets/screenshots/panel-repos.png) | ![Runners](docs/assets/screenshots/panel-runners.png) |
-| ![Containers](docs/assets/screenshots/panel-containers.png) | ![Usage](docs/assets/screenshots/panel-usage.png) |
-| ![Sentry Crons](docs/assets/screenshots/panel-crons.png) | ![Services](docs/assets/screenshots/panel-services.png) |
-| ![Azure Cost](docs/assets/screenshots/panel-azure-cost.png) | ![OpenClaw](docs/assets/screenshots/panel-openclaw.png) |
+| ![Repos](site/assets/screenshots/panel-repos.png) | ![Runners](site/assets/screenshots/panel-runners.png) |
+| ![Containers](site/assets/screenshots/panel-containers.png) | ![Usage](site/assets/screenshots/panel-usage.png) |
+| ![Sentry Crons](site/assets/screenshots/panel-crons.png) | ![Services](site/assets/screenshots/panel-services.png) |
+| ![Azure Cost](site/assets/screenshots/panel-azure-cost.png) | ![OpenClaw](site/assets/screenshots/panel-openclaw.png) |
 
 At a narrower width the layout reflows rather than scrolling, and you can
 rearrange the panels per width band in Settings → Layout:
 
-![Narrow](docs/assets/screenshots/cockpit-narrow.png)
+![Narrow](site/assets/screenshots/cockpit-narrow.png)
 
 </details>
 
@@ -241,8 +241,9 @@ thin on purpose, so panels are testable without a UI —
 
 Screenshots in this README are generated, not captured
 (`cd tests/frontend && npm run screenshots`). They render the real frontend
-against the same fixtures the tests assert on, so they cannot drift from the
-shipped palette.
+against showcase fixtures that Rust builds — a working morning with exactly one
+thing wrong, which a test holds them to — so they cannot drift from the shipped
+palette.
 
 </details>
 

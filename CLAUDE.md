@@ -590,6 +590,8 @@ the bundle's floor.
 │                           #   producer, read by it and by the updater)
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
 ├── brand/                  # Brand assets
+├── site/assets/screenshots/  # Product screenshots (README + solador.app), from
+│                           #   `npm run screenshots` over the `--showcase` fixtures
 └── docs/                   # Versioning, secrets, PRD
 ```
 
