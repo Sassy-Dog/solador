@@ -1586,30 +1586,13 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
     use github::runners::RunnerOs;
     use github::workflows::WorkflowRun;
 
-    let run = |id: i64, name: &str, status: &str, conclusion: Option<&str>, minutes_ago: i64| {
-        WorkflowRun {
-            id,
-            name: name.to_owned(),
-            event: "push".to_owned(),
-            status: status.to_owned(),
-            html_url: format!("https://github.com/acme/x/actions/runs/{id}"),
-            created_at: (now - chrono::TimeDelta::minutes(minutes_ago)).to_rfc3339(),
-            head_branch: Some("main".to_owned()),
-            conclusion: conclusion.map(ToOwned::to_owned),
-            run_started_at: None,
-            display_title: Some("a commit".to_owned()),
-        }
+    let run = |id, name, status, conclusion, minutes_ago| {
+        fixture_run(now, id, name, status, conclusion, minutes_ago)
     };
     let health = |slug: &str, runs: &[WorkflowRun], counts: github::workflows::RepoCounts| {
         github::workflows::health(slug, runs, None, counts, now)
     };
-    let counts = |branches, issues_incl_prs, prs, ready| github::workflows::RepoCounts {
-        remote_branches: branches,
-        open_issues_including_prs: issues_incl_prs,
-        open_pull_requests: prs,
-        ready_issues: ready,
-        ready_error: None,
-    };
+    let counts = fixture_counts;
 
     let mut state = GitHubState::new();
     state.apply_repos(vec![
@@ -1686,13 +1669,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         ),
     ]));
 
-    let runner = |id: i64, name: &str, os: RunnerOs, state: RunnerState| GhRunner {
-        architecture: Some("ARM64".into()),
-        id,
-        name: name.to_owned(),
-        os,
-        state,
-    };
+    let runner = fixture_runner;
     let registered = [
         runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Busy),
         runner(2, "mac-s2", RunnerOs::MacOs, RunnerState::Idle),
@@ -1732,6 +1709,139 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         incident: None,
     });
     state
+}
+
+/// The marketing counterpart of [`fixture_state`] (`--dump-repos --showcase`,
+/// `--dump-runners --showcase`): the screenshots on solador.app and in the
+/// README.
+///
+/// [`fixture_state`] is built to exercise every failure the panels render, which
+/// is what a test wants and the opposite of what a picture of the product should
+/// say. This one is a working morning with **exactly one tile out of true** —
+/// `acme/gadget`'s CI failed — because noticing the one thing that is not right
+/// is the whole pitch. `main.rs`'s showcase test holds it to that: one attention
+/// source on the whole dashboard, and it is this repo.
+///
+/// Nothing amber either, since amber is the eye's second stop: no build in
+/// flight, no approval gate, only idle runners and no remembered absences.
+/// `acme/cogwheel` keeps its unknown side counts, which stay green — the real
+/// picture of an em dash that is not a zero.
+#[must_use]
+pub fn showcase_state(now: DateTime<Utc>) -> GitHubState {
+    use github::runners::RunnerOs;
+
+    let health = |slug: &str, id, conclusion, minutes_ago, counts| {
+        let run = fixture_run(now, id, "CI", "completed", Some(conclusion), minutes_ago);
+        github::workflows::health(slug, &[run], None, counts, now)
+    };
+    let counts = |branches, issues_incl_prs, prs, ready| {
+        fixture_counts(
+            Some(branches),
+            Some(issues_incl_prs),
+            Some(prs),
+            Some(ready),
+        )
+    };
+
+    let mut state = GitHubState::new();
+    state.apply_repos(vec![
+        health("acme/widget", 1, "success", 30, counts(12, 4, 1, 2)),
+        health("acme/flywheel", 2, "success", 55, counts(5, 7, 2, 3)),
+        // The one tile out of true.
+        health("acme/gadget", 3, "failure", 12, counts(9, 11, 3, 4)),
+        health("acme/pipe-fitting", 4, "success", 140, counts(3, 2, 0, 1)),
+        // Runs readable, side counts not: em dashes on a green row.
+        health(
+            "acme/cogwheel",
+            5,
+            "success",
+            240,
+            fixture_counts(None, None, None, None),
+        ),
+    ]);
+    state.apply_local(BTreeMap::from([
+        (
+            "widget".to_owned(),
+            LocalRepoCounts {
+                local_branches: Some(4),
+                worktrees: Some(2),
+            },
+        ),
+        (
+            "gadget".to_owned(),
+            LocalRepoCounts {
+                local_branches: Some(2),
+                worktrees: Some(1),
+            },
+        ),
+    ]));
+
+    let registered = [
+        fixture_runner(1, "mac-s1", RunnerOs::MacOs, RunnerState::Idle),
+        fixture_runner(2, "mac-s2", RunnerOs::MacOs, RunnerState::Idle),
+        fixture_runner(3, "ubu-01", RunnerOs::Linux, RunnerState::Idle),
+    ];
+    let update = roster::apply_fetch(&[], &registered, now, github::presence::DEFAULT_GRACE_SECS);
+    state.apply_runner_selection(&[("acme".to_owned(), "GitHub".to_owned())]);
+    state.apply_org_runners("acme", &update, u64::try_from(now.timestamp()).unwrap_or(0));
+    state.apply_service_status(servicestatus::ServiceStatus {
+        component: Some(servicestatus::ComponentStatus::Operational),
+        incident: None,
+    });
+    state
+}
+
+/// One `main`-branch push run for the fixtures, `minutes_ago` before `now`.
+fn fixture_run(
+    now: DateTime<Utc>,
+    id: i64,
+    name: &str,
+    status: &str,
+    conclusion: Option<&str>,
+    minutes_ago: i64,
+) -> github::workflows::WorkflowRun {
+    github::workflows::WorkflowRun {
+        id,
+        name: name.to_owned(),
+        event: "push".to_owned(),
+        status: status.to_owned(),
+        html_url: format!("https://github.com/acme/x/actions/runs/{id}"),
+        created_at: (now - chrono::TimeDelta::minutes(minutes_ago)).to_rfc3339(),
+        head_branch: Some("main".to_owned()),
+        conclusion: conclusion.map(ToOwned::to_owned),
+        run_started_at: None,
+        display_title: Some("a commit".to_owned()),
+    }
+}
+
+fn fixture_counts(
+    branches: Option<u32>,
+    issues_incl_prs: Option<u32>,
+    prs: Option<u32>,
+    ready: Option<u32>,
+) -> github::workflows::RepoCounts {
+    github::workflows::RepoCounts {
+        remote_branches: branches,
+        open_issues_including_prs: issues_incl_prs,
+        open_pull_requests: prs,
+        ready_issues: ready,
+        ready_error: None,
+    }
+}
+
+fn fixture_runner(
+    id: i64,
+    name: &str,
+    os: github::runners::RunnerOs,
+    state: RunnerState,
+) -> GhRunner {
+    GhRunner {
+        architecture: Some("ARM64".into()),
+        id,
+        name: name.to_owned(),
+        os,
+        state,
+    }
 }
 
 #[cfg(test)]

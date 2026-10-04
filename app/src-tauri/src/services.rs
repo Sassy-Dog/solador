@@ -790,6 +790,46 @@ pub fn fixture_statuses() -> ServiceStatuses {
     s
 }
 
+/// The marketing counterpart of [`fixture_statuses`] (`--dump-services
+/// --showcase`): the same five built-ins, every one of them read and fine.
+///
+/// Neon is read too. An unread vendor is `Unknown`, and the dashboard counts
+/// an unknown as needing attention — correctly, so the showcase has to have
+/// looked at it rather than leave it out.
+#[must_use]
+pub fn showcase_statuses() -> ServiceStatuses {
+    let mut s = ServiceStatuses::new();
+    s.watching(
+        ServiceId::ALL
+            .iter()
+            .filter_map(|&id| ActiveVendor::builtin(id))
+            .collect(),
+    );
+    for id in [
+        ServiceId::GitHub,
+        ServiceId::Anthropic,
+        ServiceId::Vercel,
+        ServiceId::Neon,
+    ] {
+        s.succeeded(
+            id,
+            ServiceStatus {
+                component: Some(ComponentStatus::Operational),
+                incident: None,
+            },
+        );
+    }
+    // Azure's healthy reading: nothing decoded, and no error either.
+    s.succeeded(
+        ServiceId::Azure,
+        ServiceStatus {
+            component: None,
+            incident: None,
+        },
+    );
+    s
+}
+
 /// Read one **built-in** vendor's status page.
 ///
 /// The three transports differ enough to need their own clients and the same

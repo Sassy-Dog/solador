@@ -5242,7 +5242,20 @@ fn dump_single(connection: &Connection) -> Value {
 /// Playwright suite assert the em-dash rule against a payload Rust built rather
 /// than one hand-written in JS.
 fn dump_local_card() -> Value {
-    let snapshot = localhost::LocalSnapshot {
+    let snapshot = local_fixture_snapshot();
+    let mut histories = HostHistories::new();
+    let wired = snapshot.to_wire();
+    for _ in 0..viewmodel::layout::HISTORY_CAPACITY {
+        histories.record(&wired);
+    }
+    // The same function the live card goes through, so the fixture cannot
+    // diverge from what the app actually paints.
+    local::card_from("mac-studio", &snapshot, &histories)
+}
+
+/// The sample behind [`dump_local_card`], shared with the showcase card.
+fn local_fixture_snapshot() -> localhost::LocalSnapshot {
+    localhost::LocalSnapshot {
         timestamp: "2026-07-31T12:00:00Z".to_string(),
         cpu: localhost::LocalCpu {
             usage: Some(localhost::CpuUsage {
@@ -5281,16 +5294,187 @@ fn dump_local_card() -> Value {
             wire::Process::from_cpu_percent(501, "Xcode".to_string(), 62.0, 4096.0),
             wire::Process::from_cpu_percent(733, "rust-analyzer".to_string(), 18.5, 2048.0),
         ],
-    };
-
-    let mut histories = HostHistories::new();
-    let wired = snapshot.to_wire();
-    for _ in 0..viewmodel::layout::HISTORY_CAPACITY {
-        histories.record(&wired);
     }
-    // The same function the live card goes through, so the fixture cannot
-    // diverge from what the app actually paints.
-    local::card_from("mac-studio", &snapshot, &histories)
+}
+
+// MARK: - The showcase fixtures (`--showcase`)
+//
+// The pictures on solador.app and in the README. The fixtures above exercise
+// every failure a panel renders, which is right for a test and wrong for a
+// picture of the product: the showcase is a working morning with exactly one
+// tile out of true, and `the_showcase_dashboard_has_exactly_one_tile_out_of_true`
+// holds it to that.
+
+/// A slow drift and a short jitter, in percentage points, for the showcase
+/// histories. Fixed tables rather than a `sin`, so the payload is byte-stable
+/// everywhere; coprime lengths (the drift advancing every third step), so their
+/// sum does not visibly repeat inside one history buffer.
+const SHOWCASE_DRIFT: [f64; 17] = [
+    0.0, 1.0, 2.5, 3.5, 4.0, 3.0, 1.5, 0.0, -1.0, -2.0, -3.5, -4.0, -3.0, -2.0, -1.5, -0.5, 0.5,
+];
+const SHOWCASE_JITTER: [f64; 11] = [0.0, 1.5, -1.0, 2.5, -2.0, 0.5, 3.0, -1.5, 1.0, -0.5, 2.0];
+
+fn showcase_wobble(step: usize, offset: usize) -> f64 {
+    SHOWCASE_DRIFT[(step / 3 + offset) % SHOWCASE_DRIFT.len()]
+        + SHOWCASE_JITTER[(step + offset) % SHOWCASE_JITTER.len()]
+}
+
+/// A history buffer that moves: `latest` recorded last, preceded by the same
+/// sample nudged along [`showcase_wobble`] — total and per-core CPU and the
+/// I/O rates — so every chart on the card has a shape instead of a flat line.
+fn showcase_histories(latest: &wire::Snapshot) -> HostHistories {
+    let wobble = |value: f64, step: usize, offset: usize| {
+        (value + showcase_wobble(step, offset)).clamp(1.0, 99.0)
+    };
+    let scale = |value: Option<f64>, step: usize, offset: usize| {
+        value.map(|v| v * (1.0 + showcase_wobble(step, offset) / 20.0))
+    };
+    let mut histories = HostHistories::new();
+    let samples = viewmodel::layout::HISTORY_CAPACITY;
+    for step in 0..samples {
+        let mut sample = latest.clone();
+        if step + 1 < samples {
+            sample.cpu.total_usage = wobble(latest.cpu.total_usage, step, 0);
+            for (core, usage) in sample.cpu.core_usages.iter_mut().enumerate() {
+                *usage = wobble(*usage, step, core * 3);
+            }
+            sample.disk.read_mbps = scale(latest.disk.read_mbps, step, 2);
+            sample.disk.write_mbps = scale(latest.disk.write_mbps, step, 7);
+            sample.network.download_mbps = scale(latest.network.download_mbps, step, 11);
+            sample.network.upload_mbps = scale(latest.network.upload_mbps, step, 4);
+        }
+        histories.record(&sample);
+    }
+    histories
+}
+
+/// This machine's card, as [`dump_local_card`] paints it but with moving charts.
+fn showcase_local_card() -> Value {
+    let snapshot = local_fixture_snapshot();
+    local::card_from(
+        "mac-studio",
+        &snapshot,
+        &showcase_histories(&snapshot.to_wire()),
+    )
+}
+
+/// One healthy remote host. Hand-made rather than read from the wire fixture,
+/// whose `/boot` volume sits at 92% on purpose — amber from 85%, so the Machines
+/// row would need attention — and whose cores run hot.
+fn showcase_remote_card() -> Value {
+    let snapshot = wire::Snapshot {
+        timestamp: "2026-07-31T12:00:00Z".to_string(),
+        cpu: wire::Cpu {
+            total_usage: 18.4,
+            core_usages: vec![
+                22.0, 14.0, 31.0, 9.0, 18.0, 26.0, 12.0, 7.0, 35.0, 16.0, 11.0, 24.0, 8.0, 19.0,
+                13.0, 21.0,
+            ],
+            model: "AMD Ryzen 9 7950X 16-Core Processor".to_string(),
+            // Linux exposes no thermal source and no memory pressure; the card
+            // says so with an em dash, exactly as a real ubu-01 does.
+            thermal_state: None,
+        },
+        memory: wire::Memory {
+            used_gb: 21.6,
+            total_gb: 62.7,
+            swap_used_gb: 0.0,
+            pressure: None,
+        },
+        disk: wire::Disk {
+            read_mbps: Some(6.8),
+            write_mbps: Some(24.5),
+        },
+        network: wire::Network {
+            download_mbps: Some(3.4),
+            upload_mbps: Some(1.2),
+        },
+        gpu: wire::Gpu::unknown(),
+        battery: None,
+        volumes: vec![
+            wire::Volume {
+                mount: "/".to_string(),
+                fstype: Some("ext4".to_string()),
+                used_gb: 388.0,
+                total_gb: 916.0,
+            },
+            wire::Volume {
+                mount: "/mnt/data".to_string(),
+                fstype: Some("xfs".to_string()),
+                used_gb: 1_712.0,
+                total_gb: 3_686.0,
+            },
+        ],
+        processes: vec![
+            wire::Process::from_cpu_percent(991, "podman".to_string(), 31.0, 612.0),
+            wire::Process::from_cpu_percent(1204, "postgres".to_string(), 12.5, 1_840.0),
+        ],
+    };
+    let mut card = host_card(
+        "ubu-01",
+        &snapshot,
+        &showcase_histories(&snapshot),
+        &Connection::Live,
+    );
+    card["id"] = json!("ubu-01");
+    card
+}
+
+/// The showcase Hosts payload: this machine and one healthy remote host — the
+/// solo developer's desk and the box under it.
+fn dump_showcase_cockpit(available: f64) -> Value {
+    cockpit_payload(
+        vec![showcase_local_card(), showcase_remote_card()],
+        1,
+        available,
+        HostOverflowMode::Stack,
+        viewmodel::layout::CORE_ROW_SPAN_DEFAULT,
+        store::settings::DEFAULT_ROW_GAP_PX,
+        &CockpitLayout::hosts_forward(),
+    )
+}
+
+/// The Usage quota the showcase passes: the fixture's 9,400 events land at 38%
+/// of it, where the e2e fixture's `10_000` deliberately lands them amber.
+const SHOWCASE_USAGE_QUOTA: u64 = 25_000;
+/// The Azure budget the showcase passes: comfortably above the fixture's
+/// projected month, where the e2e fixture's `2_000.0` lands it at 97%.
+const SHOWCASE_AZURE_BUDGET: f64 = 3_000.0;
+
+/// The overview, composed from the showcase views.
+fn dump_showcase_dashboard() -> Value {
+    let mut hosts = dump_showcase_cockpit(1200.0);
+    hosts["id"] = json!("hosts");
+    dashboard::view(
+        &dashboard::default_layout(),
+        &[
+            hosts,
+            dump_github_showcase(false),
+            dump_github_showcase(true),
+            dump_containers_showcase(),
+            services::view(&services::showcase_statuses()),
+            dump_crons(crons::Fixture::Healthy, false),
+            dump_usage(usage::Fixture::Measured, false, SHOWCASE_USAGE_QUOTA),
+            dump_azure(azure::Fixture::Measured, false, SHOWCASE_AZURE_BUDGET),
+            dump_openclaw(openclaw::Fixture::Showcase),
+        ],
+    )
+}
+
+fn dump_github_showcase(runners: bool) -> Value {
+    let now = chrono::DateTime::from_timestamp(1_780_056_300, 0).expect("valid timestamp");
+    let state = github::showcase_state(now);
+    if runners {
+        github::runners_view(&state, u64::try_from(now.timestamp()).unwrap_or(0))
+    } else {
+        github::repos_view(&state, now)
+    }
+}
+
+fn dump_containers_showcase() -> Value {
+    const NOW: u64 = 1_700_000_000;
+    let (state, rules, presence) = containers::showcase_state(NOW);
+    containers::view(&state, &rules, &presence, NOW)
 }
 
 /// Three hosts in three different connection states, so the Playwright suite
@@ -5352,15 +5536,19 @@ fn dump_cockpit(available: f64, hosts: usize, overflow: HostOverflowMode) -> Val
 /// magnitude faster and its staleness is a different fixture's job. Like
 /// [`dump_azure`], a fixture has no store, so the cadence the age is classified
 /// against is the one an unconfigured store polls at.
-fn dump_usage(kind: usage::Fixture, stale: bool) -> Value {
+/// A quota the e2e fixture's own count lands at 94% of, so the amber step is
+/// exercised rather than a flat green bar.
+const FIXTURE_USAGE_QUOTA: u64 = 10_000;
+/// The e2e fixture's Azure budget, which its projected month lands at 97% of.
+const FIXTURE_AZURE_BUDGET: f64 = 2_000.0;
+
+fn dump_usage(kind: usage::Fixture, stale: bool, quota: u64) -> Value {
     const NOW: u64 = 1_700_000_000;
     let cadence_secs = u64::from(PanelInterval::UsageProviders.spec().default_secs);
     let providers_at = if stale { NOW - 23 * 3_600 } else { NOW };
-    // A quota the fixture's own count lands at 94% of, so the amber step is
-    // exercised rather than a flat green bar.
     usage::view(
         &usage::fixture_state(kind, NOW, providers_at),
-        10_000,
+        quota,
         usage::NeonRates {
             usd_per_cu_hour: 0.106,
             usd_per_gib_month: 0.35,
@@ -5375,13 +5563,13 @@ fn dump_usage(kind: usage::Fixture, stale: bool) -> Value {
 /// dimmed, with its age beside the footer's separate warning about the poller.
 /// A fixture has no store, so the cadence it is classified against is the one an
 /// unconfigured store polls at.
-fn dump_azure(kind: azure::Fixture, stale: bool) -> Value {
+fn dump_azure(kind: azure::Fixture, stale: bool, budget: f64) -> Value {
     const NOW: u64 = 1_700_000_000;
     let cadence_secs = u64::from(PanelInterval::AzureCost.spec().default_secs);
     let read_at = if stale { NOW - 23 * 3_600 } else { NOW };
     azure::view(
         &azure::fixture_state(kind, read_at),
-        2_000.0,
+        budget,
         cadence_secs,
         NOW,
     )
@@ -5740,8 +5928,8 @@ fn dump_dashboard() -> Value {
             dump_containers(false),
             services::view(&services::fixture_statuses()),
             dump_crons(crons::Fixture::Alerting, false),
-            dump_usage(usage::Fixture::Measured, false),
-            dump_azure(azure::Fixture::Measured, false),
+            dump_usage(usage::Fixture::Measured, false, FIXTURE_USAGE_QUOTA),
+            dump_azure(azure::Fixture::Measured, false, FIXTURE_AZURE_BUDGET),
             dump_openclaw(openclaw::Fixture::Connected),
         ],
     )
@@ -5774,8 +5962,15 @@ fn write_json(path: &str, value: &Value) {
 /// Handles every `--dump*` flag, returning `true` when one was given and the
 /// process should exit without starting a window.
 fn run_dump(args: &[String]) -> bool {
+    // `--showcase` swaps any of the panel dumps below for its marketing
+    // counterpart — see "The showcase fixtures" above.
+    let showcase = args.iter().any(|arg| arg == "--showcase");
     if let Some(path) = dump_flag_path(args, "--dump-dashboard", "sample-dashboard.json") {
-        let mut snapshot = dump_dashboard();
+        let mut snapshot = if showcase {
+            dump_showcase_dashboard()
+        } else {
+            dump_dashboard()
+        };
         if args.iter().any(|arg| arg == "--expanded") {
             let mut layout = dashboard::default_layout();
             let repos = &mut layout.tiles[1];
@@ -5843,6 +6038,13 @@ fn run_dump(args: &[String]) -> bool {
         } else {
             HostOverflowMode::Stack
         };
+        if showcase {
+            write_json(
+                &path,
+                &dump_showcase_cockpit(value_flag(args, "--width", default_width)),
+            );
+            return true;
+        }
         write_json(
             &path,
             &dump_cockpit(
@@ -5858,20 +6060,32 @@ fn run_dump(args: &[String]) -> bool {
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-containers", "sample-containers.json") {
-        write_json(
-            &path,
-            &dump_containers(args.iter().any(|arg| arg == "--empty")),
-        );
+        if showcase {
+            write_json(&path, &dump_containers_showcase());
+        } else {
+            write_json(
+                &path,
+                &dump_containers(args.iter().any(|arg| arg == "--empty")),
+            );
+        }
         return true;
     }
     let empty = args.iter().any(|arg| arg == "--empty");
     let stale = args.iter().any(|arg| arg == "--stale");
     if let Some(path) = dump_flag_path(args, "--dump-repos", "sample-repos.json") {
-        write_json(&path, &dump_github(empty, false));
+        if showcase {
+            write_json(&path, &dump_github_showcase(false));
+        } else {
+            write_json(&path, &dump_github(empty, false));
+        }
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-runners", "sample-runners.json") {
-        write_json(&path, &dump_github(empty, true));
+        if showcase {
+            write_json(&path, &dump_github_showcase(true));
+        } else {
+            write_json(&path, &dump_github(empty, true));
+        }
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-usage", "sample-usage.json") {
@@ -5882,7 +6096,12 @@ fn run_dump(args: &[String]) -> bool {
         } else {
             usage::Fixture::Measured
         };
-        write_json(&path, &dump_usage(kind, stale));
+        let quota = if showcase {
+            SHOWCASE_USAGE_QUOTA
+        } else {
+            FIXTURE_USAGE_QUOTA
+        };
+        write_json(&path, &dump_usage(kind, stale, quota));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-azure", "sample-azure.json") {
@@ -5895,14 +6114,21 @@ fn run_dump(args: &[String]) -> bool {
         } else {
             azure::Fixture::Measured
         };
-        write_json(&path, &dump_azure(kind, stale));
+        let budget = if showcase {
+            SHOWCASE_AZURE_BUDGET
+        } else {
+            FIXTURE_AZURE_BUDGET
+        };
+        write_json(&path, &dump_azure(kind, stale, budget));
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-services", "sample-services.json") {
         // `--empty` is a pass that *looked* and found nothing to watch — the
         // rendering an unconfigured cockpit gets now that the vendor list is
         // derived (#284/#375), and the one that must never read "all clear".
-        let statuses = if empty {
+        let statuses = if showcase {
+            services::showcase_statuses()
+        } else if empty {
             let mut statuses = services::ServiceStatuses::new();
             statuses.watching(Vec::new());
             statuses
@@ -5913,7 +6139,7 @@ fn run_dump(args: &[String]) -> bool {
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-crons", "sample-crons.json") {
-        let kind = if empty {
+        let kind = if empty || showcase {
             crons::Fixture::Healthy
         } else if args.iter().any(|arg| arg == "--blind") {
             crons::Fixture::Blind
@@ -5928,7 +6154,9 @@ fn run_dump(args: &[String]) -> bool {
         return true;
     }
     if let Some(path) = dump_flag_path(args, "--dump-openclaw", "sample-openclaw.json") {
-        let kind = if empty {
+        let kind = if showcase {
+            openclaw::Fixture::Showcase
+        } else if empty {
             openclaw::Fixture::Empty
         } else if args.iter().any(|arg| arg == "--pairing") {
             openclaw::Fixture::Pairing
@@ -9248,6 +9476,52 @@ mod tests {
     fn the_local_fixture_card_does_not_vary_per_run() {
         assert_eq!(dump_local_card(), dump_local_card());
         assert_eq!(dump_local_card()["hostName"], "mac-studio");
+    }
+
+    /// The showcase is what solador.app and the README show, and its claim is
+    /// the product's: a grid where exactly one thing is not right. Held here
+    /// rather than eyeballed in a PNG, so a fixture edit that adds a second
+    /// anomaly — or loses the first — fails a test instead of shipping a
+    /// screenshot that contradicts the copy beside it.
+    ///
+    /// Attention and colour are separate rules (a running build is amber and
+    /// needs no attention), so both are checked: one attention source, and no
+    /// amber or red anywhere but the failing repo's row.
+    #[test]
+    fn the_showcase_dashboard_has_exactly_one_tile_out_of_true() {
+        let vm = dump_showcase_dashboard();
+        assert_eq!(
+            vm,
+            dump_showcase_dashboard(),
+            "the fixture must not vary per run"
+        );
+
+        let attention = vm["attention"].as_array().expect("attention list");
+        assert_eq!(attention.len(), 1, "{attention:?}");
+        assert_eq!(attention[0]["source"], "ghWorkflows");
+
+        let warm = [
+            Value::from(viewmodel::color::hex(viewmodel::color::RED)),
+            Value::from(viewmodel::color::hex(viewmodel::color::AMBER)),
+        ];
+        let flagged: Vec<String> = vm["sources"]
+            .as_array()
+            .expect("sources")
+            .iter()
+            .flat_map(|source| {
+                source["rows"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .filter(|row| {
+                        row["attention"] == true
+                            || warm.contains(&row["color"])
+                            || warm.contains(&row["valueColor"])
+                    })
+                    .map(move |row| format!("{}/{}", source["id"], row["id"]))
+            })
+            .collect();
+        assert_eq!(flagged, vec![r#""ghWorkflows"/"acme/gadget""#]);
     }
 
     /// The settings fixture must be stable across dumps (ids the Playwright
