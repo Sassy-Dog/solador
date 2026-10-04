@@ -80,12 +80,7 @@
     const mark = node("img", "brandmark");
     mark.src = "mark.svg";
     mark.alt = "";
-    const title = node("div");
-    title.append(
-      node("h1", "", L("title")),
-      node("p", "db-sub", L("subtitle")),
-    );
-    brand.append(mark, title);
+    brand.append(mark, node("h1", "", L("title")));
     const actions = node("div", "db-actions");
     if (!window.__TAURI__)
       actions.append(node("span", "db-sample", L("preview")));

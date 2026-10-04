@@ -910,8 +910,9 @@ the bundle's floor.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
   Machine Detail volumes sort by mount and align used/total/percentage; Full
-  host cards retain their fullest-first order. Overview and Settings headers
-  share a 12px vertical/16px horizontal inset.
+  host cards retain their fullest-first order. Overview has a compact wrapping
+  toolbar without a background frame or divider; Settings keeps a 12px vertical/
+  16px horizontal header inset.
 
 ## Testing
 
