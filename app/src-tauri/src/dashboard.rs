@@ -725,8 +725,15 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         "openclawAgents" => "Activity from your OpenClaw gateway",
         _ => "",
     };
-    json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
-        "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false}})
+    let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
+        "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false}});
+    if id == "ghRunners" {
+        // Detail and Full describe the same source-wide group, independent
+        // of the tile's scope and row limit.
+        source["groups"] = payload["groups"].clone();
+        source["emptyGroupMessage"] = payload["emptyGroupMessage"].clone();
+    }
+    source
 }
 
 fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
@@ -1256,6 +1263,22 @@ mod tests {
         assert_eq!(rows[0]["metrics"][0]["fraction"], 0.24);
         assert_eq!(rows[0]["metrics"][1]["fraction"], 0.75);
         assert_eq!(rows[0]["metrics"][1]["color"], "#ffaa00");
+    }
+
+    #[test]
+    fn runner_detail_groups_share_full_counts_and_row_identities() {
+        let payload = crate::dump_github(false, true);
+        let source = source_view("ghRunners", "Runners", &payload);
+        assert_eq!(source["groups"], payload["groups"]);
+        assert_eq!(source["emptyGroupMessage"], payload["emptyGroupMessage"]);
+        assert!(!list(&source, "groups").is_empty());
+        for group in list(&source, "groups") {
+            let members = list(&source, "rows")
+                .iter()
+                .filter(|r| r["groupId"] == group["id"])
+                .count();
+            assert_eq!(group["summary"]["total"], members);
+        }
     }
 
     #[test]

@@ -830,6 +830,7 @@
   }
   function selectedRows(s) {
     if (active.row) return s.rows.filter((r) => r.id === active.row);
+    if (active.group) return s.rows.filter((r) => r.groupId === active.group.id);
     const t = active.tile && tile(active.tile);
     if (!t) return s.rows;
     return s.rows.filter(r => !t.selectedRepos?.length || t.selectedRepos.includes(r.id)).filter(
@@ -852,14 +853,16 @@
       control.disabled = busy;
     }
     const selected = active.tile && model.tiles.find(t => t.id === active.tile);
-    const signature = JSON.stringify([view, rows, s.detailColumns, s.warnings, s.message, s.trailing, selected?.empty]);
+    const group = active.group && s.groups?.find(g => g.id === active.group.id);
+    const title = active.group ? group?.label || active.group.label : active.row ? rows[0]?.label || s.title : s.title;
+    const subtitle = active.group ? [group?.value, group?.detail].filter(Boolean).join(" · ") : s.trailing || "";
+    const empty = (active.group ? s.message || s.emptyGroupMessage : selected?.empty || s.message) || L("missingReading");
+    const signature = JSON.stringify([view, rows, s.detailColumns, s.warnings, s.message, title, subtitle, empty]);
     if (active.signature === signature) return;
     active.signature = signature;
-    text(
-      box.querySelector("h3"),
-      active.row ? rows[0]?.label || s.title : s.title,
-    );
-    text(box.querySelector(".db-inspector-head .db-sub"), s.trailing || "");
+    text(box.querySelector("h3"), title);
+    text(box.querySelector(".db-inspector-head .db-sub"), subtitle);
+    box.setAttribute("aria-label", title);
     const body = box.querySelector(".db-inspector-body");
     const focused = body.contains(document.activeElement) ? document.activeElement : null;
     const focusRow = focused?.closest('[data-resource]')?.dataset.resource;
@@ -922,7 +925,7 @@
       list.append(item);
     }
     if (!rows.length)
-      list.append(node("p", "db-muted", selected?.empty || s.message || L("missingReading")));
+      list.append(node("p", "db-muted", empty));
     body.append(list);
     if (view === "table") list.scrollLeft = active.tableScroll || 0;
     if (focusRow) {
@@ -1171,7 +1174,7 @@
     }
     if (action === "runner-group") {
       const group = model.tiles.find(t => t.id === b.dataset.tileId)?.rows.find(r => r.id === id);
-      if (group) await fullPanel(b.dataset.source, {id, label:group.label});
+      if (group) openInspector({ kind: "details", source: b.dataset.source, group: {id, label:group.label} });
       return;
     }
     if (action === "details") {
@@ -1184,7 +1187,7 @@
       return;
     }
     if (action === "full") {
-      await fullPanel(id);
+      await fullPanel(id, active?.source === id ? active.group : null);
       return;
     }
     if (action === "manage" || action === "manage-resource") {

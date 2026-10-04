@@ -74,14 +74,17 @@ start descending, Repo and Status ascending.
 Runners can switch from **Individual runners** to **By OS + architecture**.
 Each type shows online / total, busy, idle and offline counts, plus recycling,
 missing or unknown counts when present. Grouping follows the tile's scope and
-precedes its row limit. Selecting a group opens **Full** directly, filtered to
-that OS + architecture across the source, with its own counts and individual
-members in the same compact Table/List design as Detail. The saved Runners
-view choice applies to both entry points; List stays in one vertical column.
-**All runners** clears the temporary filter;
-returning to Overview clears it too. Membership follows live readings, and a
-type with no remaining members says so instead of showing other types. Full
-runner rows include architecture and retain the absent runner's Forget action.
+precedes its row limit. Selecting a group opens the inline **Detail** inspector,
+just like selecting a machine, while keeping the dashboard visible. It shows
+that OS + architecture across the source with current counts and individual
+members. **Open full panel** carries the selected group into Full; the tile's
+**Details** link opens all runners within its scope. The saved Runners Table/List
+choice applies to both Detail and Full; List stays in one vertical column.
+In Full, **All runners** clears the temporary filter, and returning to Overview
+restores the inline Detail selection. Membership and counts follow live readings
+in both views; a type with no remaining members says so instead of showing other
+types. Full runner rows include architecture and retain the absent runner's
+Forget action.
 Table supports the context-menu key or Shift+F10 on an absent runner as well as
 right-click. Full panels share Detail's palette and heading style; focused Full
 panels fit their rows rather than reserving an empty list area.

@@ -904,8 +904,9 @@ the bundle's floor.
 - Attention chips toggle their Detail inspector. Detail defaults to compact
   tables, with a Table/List choice persisted per source in `detailViews`.
   Summary stays compact and Full keeps source-specific controls.
-  Grouped runners open Full filtered by the Rust-authored OS/architecture group
-  identity; membership and counts refresh together, and All runners clears it.
+  Grouped runners open inline Detail, like Machines, filtered by the Rust-authored
+  OS/architecture group identity; membership and counts refresh together.
+  Open full panel retains the group, and Full's All runners clears that filter.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
   Machine Detail volumes sort by mount and align used/total/percentage; Full
