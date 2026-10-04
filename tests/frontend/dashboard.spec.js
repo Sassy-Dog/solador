@@ -31,6 +31,7 @@ async function openDashboard(page, baseURL, expanded = false) {
       window.__CALLS__ = [];
       window.__SET_LAYOUT__ = (next) => { layout = structuredClone(next); };
       window.__SET_SOURCE_ROWS__ = (id, rows) => { original.sources.find(s => s.id === id).rows = structuredClone(rows); };
+      window.__SET_RUNNER_SOURCE__ = (source) => { Object.assign(original.sources.find(s => s.id === 'ghRunners'), structuredClone(source)); };
       window.__SET_RUNNER_PAYLOAD__ = (payload) => { fixtures.runners = payload; };
       function project(previewTile) {
         const view = structuredClone(original);
@@ -133,6 +134,7 @@ const savedLayout = (page) =>
 test('Full runners share Detail tables and the saved view choice', async ({page, baseURL}) => {
   await openDashboard(page, baseURL, true);
   await tile(page, 'ghRunners').getByRole('button', {name:/MACOS · ARM64/}).click();
+  await action(page, 'full').click();
   const panel = page.locator('#runnersPanel');
   await expect(panel.locator('.db-detail-table')).toBeVisible();
   await expect(panel.locator('thead th')).toHaveText(['Runner', 'Organization', 'OS', 'Architecture', 'Status']);
@@ -145,6 +147,7 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
   await expect(page.getByRole('button',{name:'List',exact:true})).toHaveAttribute('aria-pressed','true');
   await page.getByRole('button',{name:'Table',exact:true}).click();
   await tile(page,'ghRunners').getByRole('button',{name:/MACOS · ARM64/}).click();
+  await action(page, 'full').click();
   await expect(panel.locator('.db-detail-table')).toBeVisible();
   for (const width of [375,1200]) {
     await page.setViewportSize({width,height:900});
@@ -410,14 +413,89 @@ test("Rust expanded view renders sorted repos, grouped runners and live meters a
     expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   }
   await tile(page,"ghRunners").getByRole("button",{name:/LINUX · ARM64/}).click();
-  await expect(page.locator('#runnersPanel')).toBeVisible();
-  await expect(page.locator('#runnersBody .gh-runner-name')).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare']);
+  await expect(page.locator('#dashboardOverview')).toBeVisible();
+  await expect(page.locator('#cockpitView')).toBeHidden();
+  await expect(page.locator('#dashboardInspector .db-table-name')).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare']);
 });
 
-test("runner groups open Full, track current membership, and clear the filter", async ({ page, baseURL }) => {
+test('runner groups open the shared inline Detail panel like machines', async ({page, baseURL}) => {
+  const model = await openDashboard(page, baseURL, true);
+  const inspector = page.locator('#dashboardInspector');
+  await tile(page, 'hosts').locator('[data-action="row"]').first().click();
+  const machineControls = await inspector.locator('button[data-action]').evaluateAll(buttons =>
+    buttons.map(b => b.dataset.action).filter(action => action !== 'detail-toggle'));
+  await tile(page, 'ghRunners').getByRole('button', {name:/LINUX · ARM64/}).click();
+  await expect(page.locator('#dashboardOverview')).toBeVisible();
+  await expect(page.locator('#cockpitView')).toBeHidden();
+  await expect(tile(page, 'hosts')).toBeVisible();
+  await expect(inspector.getByRole('heading')).toHaveText('LINUX · ARM64');
+  await expect(inspector.locator('.db-table-name')).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare']);
+  const controls = await inspector.locator('button[data-action]').evaluateAll(buttons =>
+    buttons.map(b => b.dataset.action).filter(action => !['detail-toggle', 'manage-resource'].includes(action)));
+  expect(controls).toEqual(machineControls.filter(action => action !== 'manage-resource'));
+  await inspector.getByRole('button', {name:'List', exact:true}).click();
+  await expect(inspector.locator('.db-detail-resource')).toHaveCount(3);
+  await tile(page, 'ghRunners').getByRole('button', {name:/MACOS · ARM64/}).click();
+  await expect(inspector.getByRole('heading')).toHaveText('MACOS · ARM64');
+  await expect(inspector.getByRole('button', {name:'List', exact:true})).toHaveAttribute('aria-pressed', 'true');
+  const macs = model.sources.find(s => s.id === 'ghRunners').rows.filter(r => r.os === 'MACOS');
+  await expect(inspector.locator('.db-detail-title strong')).toHaveText(macs.map(r => r.label));
+  await inspector.getByRole('button', {name:'Close', exact:true}).click();
+  await expect(inspector).toBeHidden();
+  await tile(page, 'ghRunners').locator('.db-tile-footer [data-action="details"]').click();
+  await expect(inspector.getByRole('heading')).toHaveText('Runners');
+  await expect(inspector.locator('.db-detail-resource')).toHaveCount(6);
+});
+
+test('inline runner groups follow live membership and keep an empty group selected', async ({page, baseURL}) => {
+  const model = await openDashboard(page, baseURL, true);
+  const source = structuredClone(model.sources.find(s => s.id === 'ghRunners'));
+  const linux = source.groups.find(g => g.label === 'LINUX · ARM64');
+  const mac = source.groups.find(g => g.label === 'MACOS · ARM64');
+  const inspector = page.locator('#dashboardInspector');
+  const names = inspector.locator('.db-table-name');
+  const subtitle = inspector.locator('.db-inspector-head .db-sub');
+  await tile(page, 'ghRunners').getByRole('button', {name:/LINUX · ARM64/}).click();
+  await expect(subtitle).toHaveText(`${linux.value} · ${linux.detail}`);
+  const added = {...source.rows.find(r => r.groupId === linux.id), id:'acme/new-runner', label:'new-runner'};
+  source.rows.push(added);
+  linux.value = '2 online / 4';
+  linux.detail = '0 busy · 2 idle · 1 offline · 1 missing';
+  await page.evaluate(source => window.__SET_RUNNER_SOURCE__(source), source);
+  await expect(names).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare', 'new-runner']);
+  await expect(subtitle).toHaveText(`${linux.value} · ${linux.detail}`);
+  // A runner moving type must leave the open group, even though its ID stays.
+  added.groupId = mac.id;
+  const originalGroup = model.sources.find(s => s.id === 'ghRunners').groups.find(g => g.id === linux.id);
+  Object.assign(linux, originalGroup);
+  await page.evaluate(source => window.__SET_RUNNER_SOURCE__(source), source);
+  await expect(names).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare']);
+  await expect(subtitle).toHaveText(`${linux.value} · ${linux.detail}`);
+  source.groups = source.groups.filter(g => g.id !== linux.id);
+  source.rows = source.rows.filter(r => r.groupId !== linux.id);
+  await page.evaluate(source => window.__SET_RUNNER_SOURCE__(source), source);
+  await expect(names).toHaveCount(0);
+  await expect(inspector.getByRole('heading')).toHaveText('LINUX · ARM64');
+  await expect(inspector).toContainText('No runners currently match this type.');
+  await expect(subtitle).toBeEmpty();
+  await expect(page.locator('#dashboardOverview')).toBeVisible();
+  await inspector.getByRole('button', {name:'List', exact:true}).click();
+  await expect(inspector.locator('.db-detail-resource')).toHaveCount(0);
+  await expect(inspector).toContainText('No runners currently match this type.');
+  // A connection problem must not look like a successfully read empty group.
+  source.rows = [];
+  source.groups = [];
+  source.message = 'Configure a GitHub token in Settings to see runners.';
+  await page.evaluate(source => window.__SET_RUNNER_SOURCE__(source), source);
+  await expect(inspector).toContainText(source.message);
+  await expect(inspector).not.toContainText('No runners currently match this type.');
+});
+
+test("runner group Open full panel preserves the filter, tracks membership, and clears it", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL, true);
   const payload = await (await fetch(`${baseURL}/sample-runners.json`)).json();
   await tile(page,"ghRunners").getByRole("button",{name:/LINUX · ARM64/}).click();
+  await action(page, 'full').click();
   await expect(page.locator('#dashboardOverview')).toBeHidden();
   await expect(page.locator('#runnersPanel')).toBeVisible();
   await expect(page.locator('#reposPanel')).toBeHidden();
