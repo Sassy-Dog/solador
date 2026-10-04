@@ -181,14 +181,12 @@ test('machine volumes use sorted aligned columns in both Detail views', async ({
   }
 });
 
-test('Settings header has the same inset as the overview header', async ({page,baseURL}) => {
+test('Settings header keeps space around the logo and Done button', async ({page,baseURL}) => {
   await openDashboard(page,baseURL);
   for (const width of [375,1200]) {
     await page.setViewportSize({width,height:900});
-    const overview = await page.locator('.db-chrome').evaluate(el=>({padding:getComputedStyle(el).padding}));
     await action(page,'settings').click();
-    const settings = await page.locator('#settings > .topbar').evaluate(el=>({padding:getComputedStyle(el).padding,left:el.querySelector('img').getBoundingClientRect().left-el.getBoundingClientRect().left,top:el.querySelector('button').getBoundingClientRect().top-el.getBoundingClientRect().top,right:el.getBoundingClientRect().right-el.querySelector('button').getBoundingClientRect().right}));
-    expect(settings.padding).toBe(overview.padding);
+    const settings = await page.locator('#settings > .topbar').evaluate(el=>({left:el.querySelector('img').getBoundingClientRect().left-el.getBoundingClientRect().left,top:el.querySelector('button').getBoundingClientRect().top-el.getBoundingClientRect().top,right:el.getBoundingClientRect().right-el.querySelector('button').getBoundingClientRect().right}));
     expect(Math.min(settings.left,settings.top,settings.right)).toBeGreaterThanOrEqual(12);
     await page.locator('#settingsClose').click();
   }

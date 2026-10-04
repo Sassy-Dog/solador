@@ -12,8 +12,6 @@
 }
 #dashboardOverview {
   color: var(--db-text);
-  background: var(--db-bg);
-  border-radius: 12px;
   font:
     13px/1.5 ui-monospace,
     SFMono-Regular,
@@ -79,8 +77,6 @@
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--db-line);
 }
 #dashboardOverview .db-brand {
   display: flex;
@@ -868,8 +864,8 @@
 #dashboardOverview .db-end > .db-live-note { flex:1; min-width:0; }
 #dashboardOverview .db-end > button { flex:none; }
 
-/* Shared chrome for overview, focused Full panels and Settings. */
-#dashboardOverview .db-chrome, #settings > .topbar {
+/* Settings keeps an inset within its frame; Overview uses a plain toolbar. */
+#settings > .topbar {
   padding:12px 16px; margin:0; min-height:60px; gap:11px;
 }
 #settings { gap:0; border-radius:12px; overflow:hidden; }

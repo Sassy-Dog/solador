@@ -6,8 +6,10 @@ and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
 and OpenClaw. Each tile opens its readings and the existing full panel; **All
 full panels** opens the original cockpit. Connections and credentials remain
-in **Settings**, backed by the OS credential store. Settings and Overview share
-the same header inset, with space around the logo, heading and action buttons.
+in **Settings**, backed by the OS credential store. Overview uses a compact
+toolbar with the logo, app name and actions, without a background frame or
+divider. Actions wrap when space is tight. Settings keeps space around its logo,
+heading and Done button.
 
 ### Dashboard tiles
 
