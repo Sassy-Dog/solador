@@ -42,4 +42,4 @@ wiremock = "0.6"
 # `ring` for the same reason as above; `rcgen` mints the throwaway certificates,
 # with the same feature set `agent/` uses for the certificate it ships.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
