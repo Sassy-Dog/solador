@@ -1290,8 +1290,8 @@ has no dump for, rather than paint a layout computed for another one.
   meanwhile does it by hand — stop the service, rename `<bin>.prev` over `<bin>`,
   start it — which bypasses the health verification (`agent/README.md`, **Roll
   back**). Axum's TLS comes from
-  `axum-server`'s `tls-rustls-no-provider` feature rather than its default
-  `tls-rustls`, specifically to avoid pulling in `aws-lc-rs` (a second
+  `axum-server`'s `tls-rustls-no-provider` feature rather than its
+  `tls-rustls` one, specifically to avoid pulling in `aws-lc-rs` (a second
   crypto backend, and a `cmake`/C build the musl cross-compile does not
   need): the agent installs `rustls::crypto::ring::default_provider()`
   itself, the same `ring` the workspace already resolves for `reqwest`.

@@ -4323,8 +4323,10 @@ mod tests {
             .await
             .unwrap();
         let app = axum::Router::new().route("/v1/health", axum::routing::get(|| async { "ok" }));
+        // axum-server 0.8 no longer does this itself, and tokio requires it.
+        listener.set_nonblocking(true).unwrap();
         tokio::spawn(async move {
-            axum_server::from_tcp_rustls(listener, config)
+            axum_server::from_tcp_rustls(listener, config)?
                 .serve(app.into_make_service())
                 .await
         })
@@ -4426,11 +4428,11 @@ mod tests {
         let ca_key = rcgen::KeyPair::generate().unwrap();
         let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let ca = rcgen::Issuer::new(ca_params, ca_key);
         let leaf_key = rcgen::KeyPair::generate().unwrap();
         let leaf = rcgen::CertificateParams::new(vec!["localhost".to_string()])
             .unwrap()
-            .signed_by(&leaf_key, &ca, &ca_key)
+            .signed_by(&leaf_key, &ca)
             .unwrap();
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

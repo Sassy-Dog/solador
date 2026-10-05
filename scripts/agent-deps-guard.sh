@@ -54,7 +54,8 @@ fi
 # A third absence, since #447: agent/Cargo.toml deliberately pins `rcgen`,
 # `rustls` and `axum-server` onto the `ring` crypto provider (the one
 # `reqwest`'s `rustls-tls` already resolves for the whole workspace) rather
-# than each crate's own default `aws-lc-rs` — a second crypto backend, and
+# than `aws-lc-rs` (rustls's default, and what axum-server's `tls-rustls` and
+# rcgen's `aws_lc_rs` features turn on) — a second crypto backend, and
 # a C/cmake build (`aws-lc-sys`) the musl cross-compile (`cargo-zigbuild`,
 # no Docker on the runner) does not need and must not gain silently the
 # next time one of those three crates' feature defaults change underneath
