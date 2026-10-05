@@ -133,7 +133,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 # unconditionally (the same C/cmake backend `rcgen` above is kept off);
 # "tls-rustls-no-provider" was added between 0.7.0 and 0.7.3, so the floor
 # is load-bearing, not habit.
-axum-server = { version = "0.7.3", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
 
 [target.'cfg(unix)'.dependencies]
 # `getuid` for the launchd `gui/<uid>` domain, `getpwuid_r` for the invoking
