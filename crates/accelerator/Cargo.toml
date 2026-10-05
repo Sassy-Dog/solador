@@ -9,7 +9,7 @@ rust-version.workspace = true
 # The IOKit `IOAccelerator` reader, on its own so both samplers can share it:
 # `crates/localhost` (this machine's card) and `agent/` (a Mac host's card).
 # The agent depends on this crate rather than on `crates/localhost` so an
-# unattended daemon does not also pull in the battery and Foundation readers
+# unattended daemon does not also pull in the battery and local sampler
 # for one function. Keep it narrow: wire plus the two IOKit bindings.
 
 [lib]

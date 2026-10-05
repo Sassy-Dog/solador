@@ -19,11 +19,10 @@
 //! - `memory.pressure` — **measured** on Linux from `/proc/pressure/memory`
 //!   (PSI, see [`parse_psi_some_avg10`]); omitted where that file does not
 //!   exist (macOS, or a kernel built without `CONFIG_PSI`).
-//! - `cpu.thermalState` — **always omitted**. The contract's 0–3 ladder is
-//!   macOS's `ProcessInfo.ThermalState`. Linux exposes thermal *zones* in
-//!   millidegrees, and collapsing those into the ladder needs per-machine trip
-//!   points nothing here knows — a different fabrication, not a fix for this
-//!   one.
+//! - `cpu.thermalState` — **measured on macOS** through `crates/thermal`, the
+//!   local cockpit's `ProcessInfo.thermalState` reader. Omitted elsewhere:
+//!   Linux thermal zones expose temperatures, and converting those into the
+//!   contract's 0–3 pressure ladder needs per-machine policy we do not know.
 //! - `gpu` — **measured on Macs and on hosts with an NVIDIA card**, never by
 //!   `sysinfo`, which reports no GPU on any platform: IOKit's `IOAccelerator`
 //!   registry on macOS (through `crates/accelerator`, the cockpit's own
@@ -673,6 +672,7 @@ async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
             &skip,
             ProbedReadings {
                 pressure: read_memory_pressure(),
+                thermal_state: thermal::read(),
                 gpu: gpu_state.latest(),
             },
         );
@@ -717,7 +717,7 @@ pub(crate) fn empty_snapshot() -> Snapshot {
     }
 }
 
-/// The readings that do not come from `sysinfo` — the two things this agent
+/// The readings that do not come from `sysinfo` — the things this agent
 /// measures itself, each of which may measure nothing at all.
 ///
 /// Grouped rather than passed as loose arguments so [`compute_snapshot`] keeps
@@ -726,6 +726,8 @@ pub(crate) fn empty_snapshot() -> Snapshot {
 struct ProbedReadings {
     /// Memory PSI, from [`read_memory_pressure`]. `None` off Linux.
     pressure: Option<f64>,
+    /// macOS thermal pressure; unknown on unsupported platforms.
+    thermal_state: Option<thermal::ThermalState>,
     /// The GPU probe's most recent reading ([`crate::gpu::GpuState::latest`]).
     /// [`Gpu::unknown`] wherever it measured nothing.
     gpu: Gpu,
@@ -738,9 +740,9 @@ struct ProbedReadings {
 ///
 /// `probed` carries the readings that do not come from `sysinfo`, passed in
 /// rather than read here so this stays a pure function of its inputs: the
-/// sampler owns the procfs read ([`read_memory_pressure`]) and the cached GPU
-/// reading ([`crate::gpu::GpuState::latest`]), and a test can hand this both a
-/// measured value and an unmeasured one.
+/// sampler owns the procfs read ([`read_memory_pressure`]), OS thermal query
+/// ([`thermal::read`]) and cached GPU reading ([`crate::gpu::GpuState::latest`]),
+/// and a test can hand this both a measured value and an unmeasured one.
 fn compute_snapshot(
     sys: &System,
     networks: &Networks,
@@ -750,7 +752,11 @@ fn compute_snapshot(
     skip_fstypes: &std::collections::HashSet<String>,
     probed: ProbedReadings,
 ) -> Snapshot {
-    let ProbedReadings { pressure, gpu } = probed;
+    let ProbedReadings {
+        pressure,
+        thermal_state,
+        gpu,
+    } = probed;
     let interval = if interval_secs > 0.0 {
         interval_secs
     } else {
@@ -811,9 +817,7 @@ fn compute_snapshot(
             total_usage,
             core_usages,
             model,
-            // Omitted, never guessed: there is no Linux source for the
-            // contract's macOS 0–3 thermal ladder. See the module docs.
-            thermal_state: None,
+            thermal_state: thermal_state.map(thermal::ThermalState::to_wire),
         },
         memory: Memory {
             used_gb,
@@ -848,9 +852,10 @@ mod tests {
     /// byte-for-key by the original `Codable` type, and the lock on how a *present*
     /// value serialises.
     ///
-    /// It is deliberately NOT what this agent emits any more — since #183 it
-    /// omits `thermalState` and the GPU, and `pressure` only appears where PSI
-    /// exists. This shape is still on the wire (every agent deployed before
+    /// It is deliberately NOT what every host emits — since #183 optional
+    /// readings are omitted unless measured. Thermal state is available on
+    /// macOS, the GPU only where a probe answers, and pressure where PSI exists.
+    /// This shape is still on the wire (every agent deployed before
     /// #183 sends it) and both consumers must keep decoding it, which is what
     /// this pins. What the agent emits *today* is pinned by
     /// `linux_snapshot_*`/`empty_snapshot_*` below.
@@ -934,6 +939,30 @@ mod tests {
         sampled_snapshot_with(pressure, Gpu::unknown())
     }
 
+    #[tokio::test]
+    async fn live_sampler_reports_the_platform_thermal_state() {
+        let state = spawn_sampler();
+        let snapshot = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let snapshot = state.latest().await;
+                if snapshot.disk.read_mbps.is_some() {
+                    break snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the sampler must produce a measured snapshot");
+        if cfg!(target_os = "macos") {
+            assert!(
+                matches!(snapshot.cpu.thermal_state, Some(0..=3)),
+                "a Mac agent must report its measured thermal state"
+            );
+        } else {
+            assert_eq!(snapshot.cpu.thermal_state, None);
+        }
+    }
+
     fn sampled_snapshot_with(pressure: Option<f64>, gpu: Gpu) -> Snapshot {
         compute_snapshot(
             &System::new(),
@@ -942,11 +971,39 @@ mod tests {
             1.0,
             Vec::new(),
             &skip_fstypes(None),
-            ProbedReadings { pressure, gpu },
+            ProbedReadings {
+                pressure,
+                thermal_state: None,
+                gpu,
+            },
         )
     }
 
-    /// CONTRACT LOCK (#183): the keys this agent never measures are ABSENT from
+    #[test]
+    fn sampled_snapshot_preserves_each_measured_thermal_level_on_the_wire() {
+        use thermal::ThermalState::{Critical, Fair, Nominal, Serious};
+        for (state, expected) in [(Nominal, 0), (Fair, 1), (Serious, 2), (Critical, 3)] {
+            let snapshot = compute_snapshot(
+                &System::new(),
+                &Networks::new(),
+                &Disks::new(),
+                1.0,
+                Vec::new(),
+                &skip_fstypes(None),
+                ProbedReadings {
+                    pressure: None,
+                    thermal_state: Some(state),
+                    gpu: Gpu::unknown(),
+                },
+            );
+            assert_eq!(
+                serde_json::to_value(snapshot).unwrap()["cpu"]["thermalState"],
+                expected
+            );
+        }
+    }
+
+    /// CONTRACT LOCK (#183): the keys this sample did not measure are ABSENT from
     /// what it serves, not zero. A hardcoded `"thermalState": 0` /
     /// `"gpu": {…0.0}` is indistinguishable from a reading once it is on the
     /// wire — which is how every remote card came to paint a green
@@ -958,7 +1015,7 @@ mod tests {
         let cpu = v["cpu"].as_object().unwrap();
         assert!(
             !cpu.contains_key("thermalState"),
-            "no Linux source for the 0–3 ladder; the key must be absent, got {cpu:?}"
+            "an unmeasured thermal state must stay absent, got {cpu:?}"
         );
         assert_eq!(
             v["gpu"],

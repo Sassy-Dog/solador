@@ -40,7 +40,6 @@
 mod battery;
 mod process;
 mod rate;
-mod thermal;
 mod volume;
 
 use std::time::{Duration, Instant};

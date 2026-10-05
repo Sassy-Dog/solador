@@ -1,4 +1,4 @@
-//! Host thermal pressure.
+//! Host thermal pressure, shared by the local cockpit and remote agent.
 
 /// How hard the machine is thermally throttling.
 ///
@@ -30,12 +30,12 @@ impl ThermalState {
 
 /// Reads the host's thermal state, or `None` where the platform exposes none.
 ///
-/// `None` is *unknown*, and is why [`crate::LocalCpu::thermal_state`] is an
-/// `Option`: the wire contract encodes nominal as `0`, so a platform with no
-/// thermal source that answered "0" would render a permanently reassuring
+/// `None` is *unknown*: the wire contract encodes nominal as `0`, so a platform
+/// with no thermal source that answered "0" would render a permanently reassuring
 /// "Normal" badge on a machine nobody is measuring.
 #[cfg(target_os = "macos")]
-pub(crate) fn read() -> Option<ThermalState> {
+#[must_use]
+pub fn read() -> Option<ThermalState> {
     use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState};
 
     let state = NSProcessInfo::processInfo().thermalState();
@@ -51,12 +51,12 @@ pub(crate) fn read() -> Option<ThermalState> {
     }
 }
 
-/// Windows (and anything else) has no cheap `NSProcessInfo.thermalState`
-/// equivalent: thermal zones live behind WMI/ACPI, which costs a WMI round trip
-/// per sample and reports raw kelvin rather than a pressure level. Unknown until
-/// a slice decides that trade is worth making.
+/// Linux thermal zones and Windows WMI/ACPI expose temperatures rather than
+/// this pressure ladder. There is no shared conversion without knowing each
+/// machine's thermal policy, so those platforms remain unknown.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn read() -> Option<ThermalState> {
+#[must_use]
+pub fn read() -> Option<ThermalState> {
     None
 }
 

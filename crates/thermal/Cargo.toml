@@ -1,0 +1,16 @@
+[package]
+name = "solador-thermal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "thermal"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# One thermal-pressure reader for the local cockpit and remote agent. No
+# battery, GPU or sysinfo sampler dependencies are needed for this OS query.
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSProcessInfo",
+] }
