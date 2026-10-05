@@ -79,10 +79,14 @@ Notes:
   - `pressure` is memory PSI (`some avg10` from `/proc/pressure/memory`,
     already a 0–100 percentage). Omitted where that file doesn't exist —
     macOS, or a kernel built without `CONFIG_PSI`.
-  - `thermalState` is **always omitted**. The contract's 0–3 ladder is macOS's
-    `ProcessInfo.ThermalState`; Linux exposes thermal zones in millidegrees, and
-    collapsing those into the ladder needs per-machine trip points this agent
-    doesn't know.
+  - `thermalState` is **measured on macOS** (contract marker ≥ 0.5.2), using
+    `ProcessInfo.thermalState` through `crates/thermal`, the same reader as the
+    local cockpit. Values 0–3 mean nominal, fair, serious and critical. The
+    API is available below the agent's macOS 11.0 floor and is read each sample.
+    Other platforms omit it: Linux thermal zones expose temperatures, and
+    converting those into this pressure ladder needs per-machine policy the
+    agent doesn't know. Existing remote Macs need the updated agent before
+    they can supply this reading; an app update alone cannot add it.
   - `gpu` is **measured on Macs** (agent ≥ 0.5.1) **and on hosts with an
     NVIDIA card** (agent ≥ 0.4.0) — `sysinfo` reports no GPU on any platform.
     - **macOS** reads IOKit's `IOAccelerator` registry through
@@ -107,7 +111,8 @@ Notes:
   - `battery` stays JSON `null` (not omitted) — the one optional the contract
     deliberately keeps emitting.
   - Before the first sample lands, `disk`, `network`, `gpu` are all `{}` and
-    `pressure` is absent: a rate needs two readings to diff. `/v1/health`'s
+    `pressure` and `thermalState` are absent: a rate needs two readings to diff.
+    `/v1/health`'s
     `samplerStale` is how you tell that placeholder from a live sample.
   - Agents **before 0.3.0** sent `"thermalState": 0`, `"pressure": 0.0` and an
     all-zero `gpu` on every host. Those literals are indistinguishable from

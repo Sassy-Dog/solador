@@ -47,6 +47,12 @@ readings, with configurable green/amber/red utilization thresholds. Fractions
 come from the current numeric measurements, never from parsing display text.
 Unavailable measurements leave an empty track and `—` instead of a zero reading.
 
+Machines Detail also shows thermal pressure: Normal, Fair, Hot or Critical when
+the host reports it, and `—` when unavailable, in both Table and List. Local and
+remote Macs use the same OS reader (`crates/thermal`); remote Macs need an agent
+with thermal collection enabled. Linux hosts do not currently report a pressure
+state, and their temperatures are not converted into an assumed Normal state.
+
 Set shared CPU and RAM warning/critical percentages under **Settings → Preferences
 → Machine alerts**. Defaults are 70% warning and 90% critical for both. Each
 percentage must be a whole number from 1 to 100, with warning below critical;
@@ -1422,14 +1428,11 @@ the platform host name minus macOS's cosmetic `.local`, exactly as
 
 It is otherwise the *same* card a remote host gets — same charts, same core grid,
 same volume bars — because it is built by the same `viewmodel::card::host_card`.
-What [`src/local.rs`](src-tauri/src/local.rs) adds is the honest-unknown pass.
-`LocalSnapshot::to_wire()` is lossy **by construction**: `wire::Memory::pressure`
-and the two rate pairs are bare `f64`s where the sampler has `Option`s, so an
-unmeasured pressure lands as `0.0` and would paint a permanently green
-"Pressure: 0%". So each field whose *source* was `None` is replaced with the
-muted em dash afterwards — driven by matching on the `Option` itself, never by
-testing the lowered number for zero. An idle disk really does read `0.0 MB/s`,
-and hiding that would be the mirror-image bug.
+`LocalSnapshot::to_wire()` preserves optional readings, including pressure,
+thermal state, GPU values and both rate pairs. The shared card view model renders
+unmeasured values as muted em dashes and omits an unavailable thermal badge;
+Machines Detail normalizes that absent badge to `—` in its Thermal field.
+Measured zero remains a real value: an idle disk still reads `0.0 MB/s`.
 
 On macOS today that means memory pressure (no portable source: the original
 collector reaches into mach for wired and compressed page counts) renders `—`
@@ -1437,9 +1440,9 @@ permanently, as does the GPU on a Mac with no `IOAccelerator` (a VM) and on
 Windows — a real Mac's GPU is read from IOKit by `crates/accelerator`, the
 same reader the agent uses for a Mac host — and the disk and
 network rates render `—` for exactly one tick at startup, before there are two
-samples to diff. A partially-measured sample is **shown but not plotted**:
-pushing the wire lowering's `0.0` into a history buffer would draw a spike from a
-floor nobody measured.
+samples to diff. Unmeasured values are shown as unknown and omitted from their
+history series; a sample without CPU usage is not plotted. Inventing a `0.0`
+for a history buffer would draw a spike from a floor nobody measured.
 
 "No hosts configured. Add one in Settings." is therefore about *monitored* hosts
 and still appears beside the local card on a fresh install.

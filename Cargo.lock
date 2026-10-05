@@ -4276,7 +4276,7 @@ dependencies = [
 
 [[package]]
 name = "solador-agent"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "axum",
  "axum-server",
@@ -4296,6 +4296,7 @@ dependencies = [
  "solador-accelerator",
  "solador-buildversion",
  "solador-certpin",
+ "solador-thermal",
  "solador-wire",
  "sysinfo",
  "tempfile",
@@ -4407,9 +4408,9 @@ dependencies = [
 name = "solador-localhost"
 version = "0.1.0"
 dependencies = [
- "objc2-foundation",
  "serde_json",
  "solador-accelerator",
+ "solador-thermal",
  "solador-wire",
  "starship-battery",
  "sysinfo",
@@ -4458,6 +4459,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "uuid",
+]
+
+[[package]]
+name = "solador-thermal"
+version = "0.1.0"
+dependencies = [
+ "objc2-foundation",
 ]
 
 [[package]]

@@ -14,6 +14,7 @@ solador-wire = { path = "../wire" }
 # The GPU card: the IOKit `IOAccelerator` reader, shared with `agent/` so a
 # Mac host's remote card and this machine's local one read the same mapping.
 solador-accelerator = { path = "../accelerator" }
+solador-thermal = { path = "../thermal" }
 # Same major as `agent/Cargo.toml` so the two samplers share semantics and the
 # repo only ever learns one sysinfo API. Default features off: this crate needs
 # CPU/memory/processes (`system`), mounted filesystems (`disk`) and interface
@@ -36,12 +37,3 @@ starship-battery = "0.11"
 [dev-dependencies]
 # The smoke test round-trips a real sample through the wire contract's JSON.
 serde_json = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-# `NSProcessInfo.thermalState` — the same source the original collector reads
-# (`HostMetricsCollector.mapThermalState`). Already in the workspace tree via
-# tauri, so this costs no extra build.
-objc2-foundation = { version = "0.3", default-features = false, features = [
-  "std",
-  "NSProcessInfo",
-] }

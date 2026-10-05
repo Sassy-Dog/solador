@@ -263,7 +263,15 @@ fn host_rows(p: &Value) -> Vec<Value> {
             });
             // Keep the same reading slots through connection transitions. Unknown
             // values preserve the layout without presenting old data as current.
-            let reading = |key: &str| if down { &Value::Null } else { &h[key] };
+            // An absent thermal badge is an empty string on a host card.
+            // Detail fields use null so both Table and List display `—`.
+            let reading = |key: &str| {
+                if down || h[key].as_str() == Some("") {
+                    &Value::Null
+                } else {
+                    &h[key]
+                }
+            };
             r["metrics"] = json!([
                 field("CPU", reading("cpuValue")),
                 field("RAM", reading("memValue"))
@@ -1337,6 +1345,26 @@ mod tests {
     }
 
     use store::{LayoutProfile, LayoutSlot, Store};
+
+    #[test]
+    fn host_thermal_readings_preserve_measured_states_and_normalize_missing_badges() {
+        for (badge, expected) in [
+            (json!("Normal"), json!("Normal")),
+            (json!("Hot"), json!("Hot")),
+            (json!(""), Value::Null),
+            (Value::Null, Value::Null),
+        ] {
+            let rows = host_rows(&json!({"hosts": [{
+                "id":"remote", "hostName":"remote", "connection":{"state":"live"},
+                "thermalText":badge
+            }]}));
+            let thermal = list(&rows[0], "details")
+                .iter()
+                .find(|field| field["label"] == "Thermal")
+                .unwrap();
+            assert_eq!(thermal["value"], expected);
+        }
+    }
 
     #[test]
     fn disconnected_hosts_keep_unknown_metric_slots() {

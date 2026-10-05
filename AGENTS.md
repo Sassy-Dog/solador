@@ -540,6 +540,7 @@ the bundle's floor.
 │   ├── accelerator/        # the IOKit `IOAccelerator` GPU reader, shared by
 │   │                       #   localhost (this Mac's card) and agent/ (a Mac
 │   │                       #   host's). Floor 11.0, the agent's: no newer symbol
+│   ├── thermal/            # OS thermal pressure, shared by localhost and agent/
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
 │   ├── usage/              # Codex log rollups + Neon + Sentry + Vercel
@@ -649,6 +650,13 @@ the bundle's floor.
   Graphics card read `—`. `crates/accelerator` must not reference a symbol newer
   than the agent's macOS 11.0 floor: `kIOMainPortDefault` is 12.0, so the walk
   passes its value, `0`, instead — a check `vtool` cannot make.
+- **Thermal pressure is measured on local and remote Macs** through the shared
+  `crates/thermal` reader (`NSProcessInfo.thermalState`, available since macOS
+  10.10.3, below the agent's 11.0 floor). The agent reads it each sample;
+  unsupported platforms and unknown future OS states omit `cpu.thermalState`.
+  Linux temperatures are not converted into a guessed pressure level. Machines
+  Detail renders an unavailable state as `—`; the full host card omits its
+  badge. A remote Mac needs the updated agent to begin reporting this field.
 - **A host is pinned to its agent's certificate, or it is plain HTTP — never
   both, and never a fallback (#448).** `Host.tls_fingerprint` (`store.json`,
   non-secret, canonical form from `crates/certpin`) makes `Host::base_url()`
