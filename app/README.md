@@ -2148,6 +2148,9 @@ cargo run -p solador-app          # from the repo root
 CI builds the same binary the same way — `cargo test --locked --workspace` in both
 the `rust-workspace` (hosted macOS) and `windows-tests` jobs — and the
 Playwright suite's `pretest` shells out to it for its fixtures.
+[Change-based CI](../docs/CI.md) selects these steps for relevant changes:
+UI-only changes run frontend and Rust view-model parity tests; agent-only changes
+narrow Rust tests to the agent, and documentation-only changes skip compilation.
 
 ### Configuration
 

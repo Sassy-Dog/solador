@@ -685,6 +685,8 @@ It keeps its own CI job (`agent-tests`) because it is the only piece that builds
 and deploys to Linux. That job is scoped `-p solador-agent` deliberately — a
 bare `cargo build` on the Linux runner would resolve the whole workspace,
 including `app/src-tauri` and its webkit2gtk system dependencies.
+Change-based selection retains agent tests on Linux/macOS/Windows for agent
+changes and skips unrelated app builds; see [CI selection](../docs/CI.md).
 
 ### Testing `deploy/`
 
@@ -698,12 +700,13 @@ bash -n agent/deploy/*.sh
 ```
 
 `./dev test` runs the first, `./dev lint` the other two (skipping shellcheck
-with a warning if it isn't installed). All three run unconditionally in CI.
+with a warning if it isn't installed). All three run in CI when deploy/helper
+checks are selected.
 
 Since #390 both shell gates cover `scripts/*.sh` and `dev`/`prd` too, not just
 `agent/deploy/`: `scripts/build-agent.sh`'s full four-target, signed run happens
 only in `release-agent.yml` on an `agent-v*` tag, and an ungated break there would be found
-mid-release. PR CI does build one target
+mid-release. For agent/build changes, PR CI builds one target
 through it, `x86_64-unknown-linux-musl` (#457), so a static-link break shows
 up before a tag; the other three targets and the signing still run only at
 release.

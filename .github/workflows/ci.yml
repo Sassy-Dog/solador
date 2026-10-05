@@ -8,6 +8,7 @@ on:
   # Required for the merge queue: without this the queue builds a merge_group
   # ref, no check ever reports against it, and entries sit until they time out.
   merge_group:
+  workflow_dispatch:
 
 # Least-privilege default token: jobs only read repo contents. Widen per-job if
 # a future step needs more (e.g. packages: write).
@@ -21,7 +22,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Select CI work
+    runs-on: ubuntu-latest
+    outputs:
+      agent_rust: ${{ steps.select.outputs.agent_rust }}
+      rust_scope: ${{ steps.select.outputs.rust_scope }}
+      frontend: ${{ steps.select.outputs.frontend }}
+      bundle: ${{ steps.select.outputs.bundle }}
+      helpers: ${{ steps.select.outputs.helpers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Complete history avoids API file caps and covers the whole merge group.
+          fetch-depth: 0
+          filter: blob:none
+      - id: select
+        run: python3 -B scripts/ci_changes.py
+
   agent-tests:
+    needs: changes
+    if: ${{ needs.changes.outputs.agent_rust == 'true' || needs.changes.outputs.helpers == 'true' }}
     name: Rust agent
     # GitHub-hosted, and it must stay that way: on a public repo a self-hosted
     # runner executes any fork's pull request on our own machines. Nothing here
@@ -38,6 +59,7 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        if: ${{ needs.changes.outputs.agent_rust == 'true' }}
 
       # `-p solador-agent` is load-bearing, not tidiness. The agent joined the
       # root workspace, so a bare `cargo build` here resolves the whole
@@ -46,17 +68,21 @@ jobs:
       # install. Scoping to the package keeps the Linux job building only what
       # actually deploys to Linux.
       - name: Format check
+        if: ${{ needs.changes.outputs.agent_rust == 'true' }}
         run: cargo fmt -p solador-agent --check
 
       - name: Clippy
+        if: ${{ needs.changes.outputs.agent_rust == 'true' }}
         run: cargo clippy --locked -p solador-agent --all-targets -- -D warnings
 
       - name: Build
+        if: ${{ needs.changes.outputs.agent_rust == 'true' }}
         run: cargo build --locked -p solador-agent --verbose
 
       # The one test that dials a non-loopback bind skips on a host with no
       # route; here that would be a silent pass, so it is a failure instead.
       - name: Test
+        if: ${{ needs.changes.outputs.agent_rust == 'true' }}
         env:
           SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK: "1"
         run: cargo test --locked -p solador-agent --verbose
@@ -71,16 +97,18 @@ jobs:
       # outcome — a lint gate that silently skips itself is what got us here.
       # Widened past agent/deploy/ in #390. `scripts/build-agent.sh` builds and
       # signs the four published agent binaries and signs/publishes ONLY on an
-      # `agent-v*` tag (one target is built below on every PR, #457), so an ungated
+      # `agent-v*` tag (one target is built below for agent/build changes, #457), so an ungated
       # break there is discovered mid-release — the same shape as
       # #268, on the path with no second chance. The whole of scripts/ is
       # covered rather than that one file, so the next release script is not
       # equally unguarded, and `dev`/`prd` because Git Bash executes them on the
       # Windows release leg.
       - name: Shell syntax check
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: bash -n agent/deploy/*.sh scripts/*.sh dev prd
 
       - name: ShellCheck
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: |
           shellcheck --version
           shellcheck -S warning agent/deploy/*.sh scripts/*.sh dev prd
@@ -92,6 +120,7 @@ jobs:
       # verifier by feeding the same fixture through an accept-all stub — and a
       # gate that quietly skips itself in CI is the #268 shape again.
       - name: Install minisign (for the signature-rejection cases)
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends minisign
@@ -106,11 +135,12 @@ jobs:
       # failures. Without it, dropping the apt step above would leave the
       # tamper cases skipped and this job green.
       - name: Deploy helper tests (agent/deploy/lib.sh + install.sh)
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         env:
           SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN: "1"
         run: bash agent/deploy/lib_test.sh
 
-      # One static musl build on every PR (#457), so a link break shows up here
+      # One static musl build for agent/build changes (#457), so a link break shows up here
       # rather than partway through an `agent-v*` release (the #269 shape). It goes
       # through `./dev agent` -> scripts/build-agent.sh, which adds the rustup
       # target, installs the pinned cargo-zigbuild into its own venv, and
@@ -123,6 +153,7 @@ jobs:
       # (see the `fetch-depth: 0` note in the bundle job). It sits after the
       # Rust and deploy steps so they keep seeing the checkout they always did.
       - name: Static musl build (x86_64)
+        if: ${{ needs.changes.outputs.agent_rust == 'true' }}
         run: |
           if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
             git fetch --quiet --unshallow --filter=blob:none
@@ -137,6 +168,7 @@ jobs:
       # mint otherwise runs ONLY on a release, where a break surfaces
       # mid-release.
       - name: Versioning suite (scripts/versioning-test.sh)
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: bash scripts/versioning-test.sh
 
       # The agent feed's publish-time guards (#491): publish-agent-feed.yml's
@@ -150,11 +182,14 @@ jobs:
       # REQUIRE_MINISIGN does for the deploy suite: a runner image that lost
       # `jq` must not leave this gate green having run nothing.
       - name: Agent feed guards (scripts/agent-feed-guard-test.sh)
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         env:
           SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
         run: bash scripts/agent-feed-guard-test.sh
 
   rust-workspace:
+    needs: changes
+    if: ${{ needs.changes.outputs.rust_scope != 'none' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.helpers == 'true' }}
     name: Rust workspace + frontend e2e
     # macOS is required, not preferred: app/src-tauri only builds on
     # macOS/Windows targets, and the frontend suite needs a real WebView-capable
@@ -175,21 +210,38 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        if: ${{ needs.changes.outputs.rust_scope != 'none' || needs.changes.outputs.frontend == 'true' }}
         with:
           workspaces: .
 
       - name: Format
+        if: ${{ needs.changes.outputs.rust_scope == 'workspace' }}
         run: cargo fmt --all -- --check
 
       - name: Clippy
+        if: ${{ needs.changes.outputs.rust_scope == 'workspace' }}
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # As in agent-tests: the non-loopback health-probe test must not skip
       # silently on a runner without a route.
       - name: Test
+        if: ${{ needs.changes.outputs.rust_scope == 'workspace' }}
         env:
           SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK: "1"
         run: cargo test --locked --workspace
+
+      # Agent-only changes retain native Mac coverage without building Tauri.
+      - name: Format agent
+        if: ${{ needs.changes.outputs.rust_scope == 'agent' }}
+        run: cargo fmt -p solador-agent --check
+      - name: Clippy agent
+        if: ${{ needs.changes.outputs.rust_scope == 'agent' }}
+        run: cargo clippy --locked -p solador-agent --all-targets -- -D warnings
+      - name: Test agent
+        if: ${{ needs.changes.outputs.rust_scope == 'agent' }}
+        env:
+          SOLADOR_AGENT_TEST_REQUIRE_NONLOOPBACK: "1"
+        run: cargo test --locked -p solador-agent
 
       # The deploy suite once more, under the bash this repo actually promises
       # to run the installer on: macOS stock /bin/bash 3.2 (#392). agent-tests
@@ -206,6 +258,7 @@ jobs:
       # step, not the gate, or a red "Deploy helper tests" reads as a suite
       # failure the suite never ran.
       - name: Install minisign (for the signature-rejection cases)
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -214,6 +267,7 @@ jobs:
           minisign -v
 
       - name: Deploy helper tests under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         env:
           SOLADOR_DEPLOY_TEST_REQUIRE_MINISIGN: "1"
         run: |
@@ -225,6 +279,7 @@ jobs:
       # The harness runs the scripts under test and the mint with "$BASH", so
       # this is 3.2 all the way down, not just the harness.
       - name: Versioning suite under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: /bin/bash scripts/versioning-test.sh
 
       # The same guard suite (#491) under the bash a maintainer's `./dev test`
@@ -235,6 +290,7 @@ jobs:
       # REQUIRE_JQ, as in agent-tests: a runner without `jq` fails here rather
       # than skipping.
       - name: Agent feed guards under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         env:
           SOLADOR_AGENT_FEED_GUARD_TEST_REQUIRE_JQ: "1"
         run: /bin/bash scripts/agent-feed-guard-test.sh
@@ -243,27 +299,38 @@ jobs:
       # certificate ahead of its renewal. The helper suite stubs `security` and
       # proves the selected SHA-1 and trust-checked PEM stay identical.
       - name: Local run signing helpers under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: /bin/bash scripts/run-test.sh
 
       # log_error/log_warning write to stderr so a `$(fn)` caller cannot swallow
       # a refusal (#474); the suite stubs `security` and pins the messages.
       - name: Signing-identity refusals under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: /bin/bash scripts/signing-identity-test.sh
+
+      # These Rust tests read CSS/SVG/frontend test files to assert parity.
+      # The fixture generator builds Rust but does not execute these tests.
+      - name: Frontend view-model parity tests
+        if: ${{ needs.changes.outputs.frontend == 'true' && needs.changes.outputs.rust_scope != 'workspace' }}
+        run: cargo test --locked -p viewmodel
 
       # Node/Playwright is the only npm in the repo (tests/frontend/package.json).
       # cache: npm speeds up repeat runs the same way Swatinem/rust-cache does
       # for cargo above.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: tests/frontend/package-lock.json
 
       - name: Install frontend test dependencies
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
         working-directory: tests/frontend
         run: npm ci
 
       - name: Install Playwright browser
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
         working-directory: tests/frontend
         run: npx playwright install chromium
 
@@ -274,6 +341,7 @@ jobs:
       # asserted here rather than timed anywhere. Stdlib unittest, no
       # dependencies; python3 is already what serves the suite below.
       - name: Frontend server bind test (csp_server_test.py)
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
         working-directory: tests/frontend
         run: python3 -m unittest -v csp_server_test
 
@@ -286,15 +354,18 @@ jobs:
       # reads it directly) — a Critical CSP regression in an earlier task was
       # caught solely by this suite, not by the Rust tests above.
       - name: Frontend e2e (Playwright)
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
         working-directory: tests/frontend
         run: npm test
 
   macos-bundle:
+    needs: changes
+    if: ${{ needs.changes.outputs.bundle == 'true' }}
     name: macOS bundle (unsigned)
     # The bundle path used to run nowhere. That is the #269 shape exactly: a
     # path only exercised at release time is a path where "all green" carries
     # no information, and #268 broke every agent deploy behind three green
-    # required checks. This job is the fix — every PR assembles a real
+    # required checks. This job is the fix — app/backend/build changes assemble a real
     # Solador.app, so a break in bundling is a red check, not a discovery made
     # on release day.
     #
@@ -383,6 +454,8 @@ jobs:
         run: git diff --exit-code
 
   windows-tests:
+    needs: changes
+    if: ${{ needs.changes.outputs.rust_scope != 'none' || needs.changes.outputs.helpers == 'true' }}
     name: Windows workspace tests
     # GitHub-hosted, deliberately not self-hosted: the former self-hosted fleet was
     # macOS/Linux only. This replaces what used to be a `cargo check --target
@@ -410,16 +483,19 @@ jobs:
       # not cover — so the same suite runs here too (#405), before the long
       # Rust build. Git only; it pushes nowhere but a scratch bare origin.
       - name: Versioning suite under Git Bash
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
         shell: bash
         run: bash scripts/versioning-test.sh
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: ${{ needs.changes.outputs.rust_scope != 'none' }}
 
       # GitHub-hosted runners are ephemeral (no persistent disk between runs,
       # unlike the self-hosted pool above), so caching matters more here, not
       # less — same action as the other two Rust jobs in this file, just
       # pointed at this job's own cache key via runner.os.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        if: ${{ needs.changes.outputs.rust_scope != 'none' }}
         with:
           workspaces: .
 
@@ -432,9 +508,16 @@ jobs:
       # if a real run shows app/src-tauri needs something this image doesn't
       # have, and say why in the job/PR rather than narrowing silently.
       - name: Test
+        if: ${{ needs.changes.outputs.rust_scope == 'workspace' }}
         run: cargo test --locked --workspace
 
+      - name: Test agent
+        if: ${{ needs.changes.outputs.rust_scope == 'agent' }}
+        run: cargo test --locked -p solador-agent
+
   secrets-guard:
+    needs: changes
+    if: ${{ always() }}
     name: Secrets guard
     # Asserts the security property the rest of the release design rests on
     # (#307, widened by #391, re-scoped by #491): a secret may be read ONLY by a
@@ -481,6 +564,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Dependent jobs can be skipped when selection fails. This existing
+      # required check always runs and rejects failed or malformed selection.
+      - name: Validate CI selection
+        env:
+          SELECT_RESULT: ${{ needs.changes.result }}
+          SELECT_OUTPUTS: ${{ toJSON(needs.changes.outputs) }}
+        run: |
+          python3 -B - <<'PYTHON'
+          import json, os
+          assert os.environ["SELECT_RESULT"] == "success", "CI selection failed"
+          outputs = json.loads(os.environ["SELECT_OUTPUTS"])
+          assert set(outputs) == {"agent_rust", "rust_scope", "frontend", "bundle", "helpers"}
+          assert outputs["rust_scope"] in {"none", "agent", "workspace"}
+          for key in ("agent_rust", "frontend", "bundle", "helpers"):
+              assert outputs[key] in {"true", "false"}, key
+          PYTHON
+
+      - name: CI selection regression tests
+        run: python3 -B -m unittest -v scripts.ci_changes_test
 
       - name: Only release.yml, and the two agent workflows' protected jobs, may reference secrets
         run: scripts/secrets-guard.sh

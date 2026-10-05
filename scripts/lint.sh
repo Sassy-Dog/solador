@@ -15,6 +15,10 @@ ensure_project_root
 
 status=0
 
+# Selection is cheap to test locally; local validation itself stays unconditional.
+log_info "Running CI selection regression tests (Python 3.11+)…"
+python3 -B -m unittest -v scripts.ci_changes_test
+
 # --- Rust workspace (crates/*, app/src-tauri). Mirrors CI's rust-workspace job
 # (fmt --check + clippy -D warnings). The agent is a workspace member, so
 # --workspace/--all lint it here as well.
@@ -48,7 +52,7 @@ fi
 #
 # scripts/ is the same shape one level up. `build-agent.sh` builds and signs the
 # four published agent binaries; that full run happens only in release-agent.yml
-# on an `agent-v*` tag (one target is built on every PR, #457), so an ungated
+# on an `agent-v*` tag (one target is built for agent/build changes, #457), so an ungated
 # break there surfaces
 # mid-release — the exact failure mode above, on the path that has
 # no second chance. The whole directory is covered rather than that one file,
@@ -69,8 +73,8 @@ fi
 
 # The linter below is not a repo dependency, so a machine without it gets a loud
 # skip rather than a red run — the same rule scripts/test.sh applies to a missing
-# toolchain (PR #126). CI runs it unconditionally, so the gate itself never
-# skips. (Named obliquely for the reason the block above records: a comment that
+# toolchain (PR #126). CI requires it whenever helper checks are selected.
+# (Named obliquely for the reason the block above records: a comment that
 # opens with the tool's name is read as a directive, and #390 pointed the tool at
 # this file for the first time.)
 if command_exists shellcheck; then

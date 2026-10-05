@@ -8,6 +8,9 @@
 # a ruleset waits forever on a context no job reports. `satisfies` records
 # which category each check covers, so a future job can be added without
 # rediscovering why these five exist.
+# Job-level skips are intentional for unrelated paths (docs/CI.md).
+# Secrets guard always runs and rejects failed/malformed CI selection, so a
+# failed selector cannot satisfy protection through skipped dependent jobs.
 required_checks:
   - context: "Rust agent"
     satisfies: [lint, unit]
