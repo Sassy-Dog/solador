@@ -32,7 +32,7 @@ time = { version = "0.3", default-features = false, features = [
 ] }
 # Cross-platform battery readout (macOS/Windows/Linux). The maintained fork of
 # the unmaintained `battery` crate.
-starship-battery = "0.11"
+starship-battery = "0.12"
 
 [dev-dependencies]
 # The smoke test round-trips a real sample through the wire contract's JSON.
