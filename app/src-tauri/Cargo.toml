@@ -101,6 +101,8 @@ tauri-plugin-updater = { version = "2.10.1", default-features = false, features 
   "rustls-tls",
   "zip",
 ] }
+# Native geometry only; Rust registers it and the webview receives no grant.
+tauri-plugin-window-state = "2.5.0"
 
 # macOS only, and only to call `set_application` BEFORE the notification plugin
 # does — see `claim_notification_identity` in `src/main.rs` for why that one

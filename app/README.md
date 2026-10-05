@@ -2149,6 +2149,48 @@ CI builds the same binary the same way — `cargo test --locked --workspace` in 
 the `rust-workspace` (hosted macOS) and `windows-tests` jobs — and the
 Playwright suite's `pretest` shells out to it for its fixtures.
 
+### Remembered window size and position
+
+The main window remembers its size, screen position and maximized state on
+normal quit or close, and restores them on the next launch. First launch uses
+the configured 1024 × 768 logical-pixel default. An unreadable or malformed
+state file also falls back to the defaults. A saved position wholly outside
+all connected displays is ignored so the OS can place the window on screen.
+
+The Rust-only `tauri-plugin-window-state` registration in `src/window_state.rs`
+stores `.window-state.json` in Tauri's app configuration directory:
+`~/Library/Application Support/app.solador.desktop/` on macOS and
+`%APPDATA%\app.solador.desktop\` on Windows. It stores physical-pixel geometry;
+it does not promise the same logical size after a display scale-factor change.
+Only the `main` window is tracked. Visibility, fullscreen and decorations are
+not restored: launching opens a visible window with its configured frame.
+Minimized windows do not replace the normal saved bounds. No frontend plugin
+permission or JavaScript dependency is needed.
+
+This file is separate from `store.json`; `SOLADOR_STORE_DIR` overrides the
+settings store only. State is saved on orderly exit, not guaranteed after a
+force-quit or crash. Delete `.window-state.json` while the app is closed to
+reset its geometry.
+
+An opt-in native smoke harness uses the same registration with a blank webview
+and temporary HOME/config directories under the repository's `tmp/`. It opens
+and closes its own test window and never starts cockpit polling or accesses
+credentials. Run from an unlocked desktop session:
+
+```sh
+cargo build --locked -p solador-app --example window_state_smoke
+python3 scripts/window-state-smoke.py
+```
+
+It checks size, position and maximized state across separate processes, proves
+minimizing preserves normal bounds, ignores a saved hidden state, recovers from
+an off-screen position, and opens with defaults after
+malformed JSON. It is deliberately separate from headless `./dev test` and
+the frontend suite: browsers cannot verify native window placement. The
+2026-10-05 macOS run passed these checks; Windows and mixed-DPI monitor changes
+have not been exercised by this smoke run. This does not cover the Tauri IPC
+boundary described below.
+
 ### Configuration
 
 The store is the configuration, and the Settings view above is how you edit it.
