@@ -329,53 +329,48 @@
   text-align: right;
   font-size: 11px;
 }
-/* The count strip sits against the status word and keeps its width: every
-   row's strip is the same fixed-width cells, so a strip that never shrinks
-   is what keeps the numbers in columns. The repo name gives way instead —
-   it ellipsizes (full name on the row's title) down to a few characters,
-   and only a tile narrower than that clips the strip, as a last resort.
-   The order falls out of the bases: the name's is 0, so it only ever grows
-   into spare room, and a row short of room shrinks the strip — by then the
-   name is already at its floor. */
+/* The count strip keeps fixed-width columns beside the status. The repo
+   name grows into spare room and ellipsizes before the counts give way. */
 #dashboardOverview .db-item-tabular > .db-row-label {
   flex: 1 1 0;
   min-width: 6ch;
 }
 #dashboardOverview .db-row-counts {
   margin-left: auto;
-  flex: 0 1 auto;
+  flex: none;
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 11px;
+  /* Suppress sentence separators: column headers carry the units at every
+     width, while the accessible row name retains the full count labels. */
+  font-size: 0;
   color: var(--db-muted);
 }
-/* Columns, not a sentence: every cell is the same width on every row, so the
-   numbers sit in a column down the tile. The number takes three characters
-   right-aligned (the widest count the table shows), the word a slot sized to
-   the longest word its column prints — `issue`/`issues`, `ready`, `PR`/`PRs`
-   — so a singular does not pull the next number left. `ch` rather than px so
-   the slots track the font. */
-#dashboardOverview .db-count {
+/* Header and numeric cells share widths, including room for a sort arrow.
+   `ch` keeps the slots proportional to the monospace font. */
+#dashboardOverview .db-row-counts .db-count {
   display: inline-block;
+  width: 7ch;
+  font-size: 11px;
+  text-align: right;
   white-space: nowrap;
 }
+#dashboardOverview .db-row-counts .db-count[data-header="PRS"] { width: 5ch; }
 #dashboardOverview .db-count > strong {
   display: inline-block;
-  min-width: 3ch;
+  width: 100%;
+  min-width: 0;
   text-align: right;
   color: var(--db-text);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 #dashboardOverview .db-count > span {
-  display: inline-block;
-  text-align: left;
+  display: none;
 }
-#dashboardOverview .db-count[data-header="ISSUES"] > span { width: 6ch; }
-#dashboardOverview .db-count[data-header="READY"] > span { width: 5ch; }
-#dashboardOverview .db-count[data-header="PRS"] > span { width: 3ch; }
+#dashboardOverview .db-repo-head .db-count > strong { width: auto; }
+#dashboardOverview .db-repo-head .db-count > span {
+  display: inline-block;
+}
 #dashboardOverview .db-item > .db-value {
   flex: none;
 }
@@ -464,17 +459,6 @@
 #dashboardOverview .db-repo-choices label { flex-direction: row; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 #dashboardOverview .db-repo-choices input { flex: none; }
 #dashboardOverview .db-tile-content { container: tile / inline-size; }
-/* At narrow tile widths the headers carry the units. Every numeric column
-   stays visible; full count labels remain on the accessible row name. */
-@container tile (max-width: 470px) {
-  #dashboardOverview .db-row-counts { font-size: 0; flex: none; overflow: visible; }
-  #dashboardOverview .db-row-counts .db-count { width: 7ch; font-size: 11px; text-align: right; }
-  #dashboardOverview .db-row-counts .db-count[data-header="PRS"] { width: 5ch; }
-  #dashboardOverview .db-item .db-count > span { display: none; }
-  #dashboardOverview .db-item .db-count > strong { width: 100%; min-width: 0; }
-  #dashboardOverview .db-repo-head .db-count > strong { width: auto; min-width: 0; }
-  #dashboardOverview .db-repo-head .db-count > span { width: auto; }
-}
 #dashboardOverview :is(.db-tile, .db-preview-tile)[data-presentation] .db-runner-group .db-row-description { height: auto; min-height: 33px; white-space: normal; overflow: visible; }
 #dashboardOverview .db-tools {
   display: flex;
