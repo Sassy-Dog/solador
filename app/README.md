@@ -94,19 +94,15 @@ Architecture comes from GitHub's ARM64, X64 or ARM labels and survives in the
 absence roster. Missing or conflicting labels render Unknown architecture.
 The existing source warnings accompany grouped counts too.
 A **GitHub Repos** row carries its backlog on the row itself, in both
-presentations — `7 issues · 3 ready · 2 PRs`, where *ready* is the repo's open
-issues whose project-board Status is `Ready` — verbatim from the detailed
-table's cells, so an unreadable count is the same `—` there. The strip is
-columns, not a sentence: each number sits right-aligned in a slot at least
-three characters wide, each word in a slot sized to its column's longest, and
-the status word beside it occupies a reserved column, so the
-numbers line up down the tile whether a row reads `1 PR` or `10 PRs` (a count
-past three digits widens its own row, and only that row). The status column
+presentations: numeric-only Issues, Ready and PRs columns at every tile width,
+without repeated labels or dot separators. *Ready* is the repo's open issues
+whose project-board Status is `Ready`. Counts come verbatim from the detailed
+table's cells, so an unreadable count is the same `—` there. Numbers and their
+column headers align to the right in fixed-width slots. The status column
 is exactly as wide as the widest Repos status (`Needs approval`), and a long
-repo name ellipsizes before the strip gives up a character. Below 470px of tile
-content width the strip uses numeric-only cells, with column headers carrying
-the units and full count labels in the accessible row name. Keeping counts on
-the same line makes the overview compact at laptop widths; longer content
+repo name ellipsizes before the counts give way. Full count labels remain in
+the accessible row name. Keeping counts on the same line makes the overview
+compact at laptop widths; longer content
 extends the page instead of creating a scrollbar inside the tile.
 
 Live status changes keep the dashboard footprint stable without scrolling inside

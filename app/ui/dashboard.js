@@ -172,14 +172,9 @@
     name.append(dot, node("span", "db-item-name", row.label));
     b.append(name);
     if (row.counts?.length) {
-      // A repo's `7 issues · 3 ready · 2 PRs`, on the row rather than under
-      // it: the strip is the one line the tile has for it. Both halves are
-      // Rust's — the value verbatim from the cell, the word already singular
-      // or plural — and this only lays them side by side.
-      // Each count is a fixed-width cell — the number right-aligned in
-      // three characters, the word in a slot sized for that column's
-      // longest word — so the numbers line up down the tile whether a row
-      // reads `1 PR` or `10 PRs`. The header names the column for the CSS.
+      // Values and singular/plural labels come verbatim from Rust. CSS
+      // shows only the numbers beneath shared column headers at every
+      // width; the accessible row name below keeps the full count labels.
       const counts = node("span", "db-row-counts");
       b.classList.add("db-item-tabular");
       row.counts.forEach((c, i) => {
