@@ -39,7 +39,7 @@ granted, and polls the organizations it watches.
 
 ## 2. Add the account to Solador
 
-1. Open **Settings → Accounts**.
+1. Open **Settings → Connections → Add connection → GitHub**.
 2. Under **Add Account**, choose the vendor (**GitHub**), give it a name — `work`
    or `personal`, whatever you'll recognise — and paste the token into
    **Fine-grained PAT**.

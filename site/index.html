@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <title>Solador · everything around your code, at a glance</title>
+  <meta name="description" content="A desktop cockpit for machines, CI, containers, spend, vendor status and agents, read at a glance from a second monitor. Free and open source for macOS and Windows.">
+  <link rel="canonical" href="https://solador.app/">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#070b13">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Solador">
+  <meta property="og:title" content="Solador: everything around your code, at a glance">
+  <meta property="og:description" content="Machines, CI, containers, spend, vendor status and agents, read from a second monitor. Free and open source for macOS and Windows.">
+  <meta property="og:url" content="https://solador.app/">
+  <meta property="og:image" content="https://solador.app/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The Solador mark beside the cockpit overview, one failing build flagged.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="/assets/site.css">
+  <script type="module" src="/assets/download.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/"><img src="/assets/mark.svg" alt="" width="28" height="28"><span>Solador</span></a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="/download/">Download</a>
+        <a href="/setup/">Setup</a>
+        <a href="https://github.com/Sassy-Dog/solador">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="wrap">
+        <p class="eyebrow">For the developer who is also the ops team</p>
+        <h1>Everything around your code, at a glance.</h1>
+        <p class="lede">
+          Machines, CI, containers, spend, vendor status and agents in one window
+          you leave open on a second monitor. <strong>Free and open source</strong>
+          for macOS and Windows. No account, no sign-up, no server.
+        </p>
+
+        <div class="download" data-download>
+          <div class="download-buttons">
+            <a class="btn" data-platform="mac" href="https://github.com/Sassy-Dog/solador/releases/latest">Download for macOS</a>
+            <a class="btn" data-platform="windows" href="https://github.com/Sassy-Dog/solador/releases/latest">Download for Windows</a>
+          </div>
+          <p class="download-meta"><span data-release-version>Latest release</span> · macOS 14+ universal · Windows 10/11 x64</p>
+          <p class="download-note" data-download-note hidden>
+            Solador is a desktop app for macOS and Windows. A Linux box shows up
+            in it by running the <a href="/setup/#remote-hosts">agent</a>.
+          </p>
+        </div>
+
+        <figure class="screen">
+          <img src="/assets/screenshots/overview.png" width="2048" height="1536"
+               alt="The Solador overview. Two machines connected, five GitHub repositories with one failed build flagged under Needs Attention, three idle runners, every vendor operational, and no scheduled job in trouble.">
+          <figcaption>One build failed. It is the only red on the screen.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="name">
+      <div class="wrap story">
+        <img class="story-mark" src="/assets/mark.svg" alt="The Solador mark: a 3×3 grid of tiles in terracotta, cobalt and amber, the top-right tile larger and rotated." width="220" height="220">
+        <div>
+          <span class="kicker">The name</span>
+          <h2>One tile out of true</h2>
+          <p>
+            The mark is a tiler's 3×3 grid with one tile out of true, and the
+            name is Spanish: <em>solar</em>, to floor, to pave, to tile, plus
+            <em>-dor</em>, the tradesperson who lays them.
+          </p>
+          <p>
+            The odd tile is the whole point. A grid where everything is square
+            says nothing; what you want from a wall of panels is to notice the
+            one thing that isn't right. So Solador stays quiet while things are
+            fine, and the one thing that isn't is what you see.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="panels">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="kicker">What it shows</span>
+          <h2>Nine panels, one glance.</h2>
+          <p>
+            It opens on compact tiles you can move, hide, duplicate and scope.
+            Open any tile for its detailed panel, or all of them at once for the
+            full cockpit.
+          </p>
+        </div>
+
+        <ul class="tiles">
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-hosts.png" alt="A host card: per-core CPU sparklines, memory, disk and network I/O." loading="lazy" width="1736" height="1922"></div>
+            <div class="tile-body">
+              <h3>Hosts</h3>
+              <p>CPU, memory, disk, network, GPU and battery for this machine, plus any host you can reach that runs the agent.</p>
+            </div>
+          </li>
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-containers.png" alt="Containers and VMs on this machine and on a remote host." loading="lazy" width="1752" height="728"></div>
+            <div class="tile-body">
+              <h3>Containers / VMs</h3>
+              <p>docker, podman and tart, locally and on every host.</p>
+            </div>
+          </li>
+          <li class="tile tile-odd">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-repos.png" alt="GitHub repositories with workflow health and counts; one repo's build failed." loading="lazy" width="1752" height="578"></div>
+            <div class="tile-body">
+              <h3>GitHub Repos</h3>
+              <p>Workflow health for every repo you watch, with its open issues, ready work, pull requests, branches and worktrees beside it.</p>
+            </div>
+          </li>
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-runners.png" alt="Self-hosted runners grouped by OS, all idle." loading="lazy" width="1752" height="578"></div>
+            <div class="tile-body">
+              <h3>GitHub Runners</h3>
+              <p>Your self-hosted runners, with an absence roster for the ones that should be there and aren't.</p>
+            </div>
+          </li>
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-usage.png" alt="Claude Code token rollups beside Neon, Sentry and Vercel consumption." loading="lazy" width="860" height="728"></div>
+            <div class="tile-body">
+              <h3>Usage</h3>
+              <p>Claude Code token rollups from the logs already on your disk, plus Neon, Sentry and Vercel consumption.</p>
+            </div>
+          </li>
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-azure-cost.png" alt="Azure month-to-date cost against a budget." loading="lazy" width="1752" height="728"></div>
+            <div class="tile-body">
+              <h3>Azure Cost</h3>
+              <p>The daily cost export, month to date, read with the <code>az</code> CLI you are already signed in to.</p>
+            </div>
+          </li>
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-crons.png" alt="Sentry cron monitors, all healthy." loading="lazy" width="860" height="728"></div>
+            <div class="tile-body">
+              <h3>Sentry Crons</h3>
+              <p>Every cron monitor that is not ok, and how long it has been broken.</p>
+            </div>
+          </li>
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-services.png" alt="Vendor status: GitHub, Anthropic, Vercel, Neon and Azure, all operational." loading="lazy" width="860" height="728"></div>
+            <div class="tile-body">
+              <h3>Services</h3>
+              <p>Status pages for the vendors you already use, with a desktop notification when one changes.</p>
+            </div>
+          </li>
+          <li class="tile">
+            <div class="tile-shot"><img src="/assets/screenshots/panel-openclaw.png" alt="An OpenClaw agent farm: agents, cron and channels." loading="lazy" width="860" height="728"></div>
+            <div class="tile-body">
+              <h3>OpenClaw</h3>
+              <p>An OpenClaw agent farm over a live WebSocket, the one panel that is event-driven rather than polled.</p>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="right-away">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="kicker">The first minute</span>
+          <h2>Useful before you configure anything.</h2>
+          <p>Open it and it does something useful immediately. No token, nothing to set up first.</p>
+        </div>
+        <div class="features">
+          <div class="feature">
+            <h3>This machine</h3>
+            <p>Per-core CPU, memory, disk and network rates, GPU and battery, sparklined at 1&nbsp;Hz.</p>
+          </div>
+          <div class="feature">
+            <h3>Your containers</h3>
+            <p>Whatever <code>docker</code>, <code>podman</code> or <code>tart</code> you already run.</p>
+          </div>
+          <div class="feature">
+            <h3>Vendor status</h3>
+            <p>The status pages of the vendors your cockpit already reads, derived from what you have connected rather than shipped as a list.</p>
+          </div>
+          <div class="feature">
+            <h3>Claude Code usage</h3>
+            <p>Token rollups folded up from the logs already on your disk. No key, and nothing leaves the machine.</p>
+          </div>
+        </div>
+        <p class="aside">
+          Everything after that is opt-in, one credential at a time. A panel you
+          haven't set up shows a muted line saying what it wants, never a red
+          error. <em>Setup is not failure.</em>
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="unknown">
+      <div class="wrap split">
+        <div>
+          <span class="kicker">The one design rule</span>
+          <h2>Unknown is never rendered as zero.</h2>
+          <p class="aside">
+            Every value Solador might fail to measure stays optional the whole
+            way down, so a reading nobody could take never shows up as a
+            reassuring zero. A cockpit you glance at has to be one you can
+            believe.
+          </p>
+        </div>
+        <ul class="legend">
+          <li><span class="glyph">—</span><span>Nobody could find out.</span></li>
+          <li><span class="glyph glyph-zero">0</span><span>A dimmed zero: there are genuinely none.</span></li>
+          <li><span class="glyph glyph-approx">≈</span><span>Inferred, not observed, and tinted amber to say so.</span></li>
+          <li><span class="glyph glyph-empty">empty</span><span>An empty green panel is treated as a bug: it looks exactly like one that has never read anything.</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="privacy">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="kicker">Your data stays yours</span>
+          <h2>No telemetry, no analytics, ever.</h2>
+          <p>Apart from the vendors you configure, with your own credentials, the app talks to nothing.</p>
+        </div>
+        <ul class="points">
+          <li>
+            <strong>Credentials in your OS keychain</strong>
+            <p>Keychain on macOS, Credential Manager on Windows, never the settings file. GitHub access is a read-only, fine-grained token.</p>
+          </li>
+          <li>
+            <strong>Crash reports only if you ask</strong>
+            <p>Off until you turn it on. Even then, a report is rebuilt from an allow-list of named fields: no host names, tokens or absolute paths.</p>
+          </li>
+          <li>
+            <strong>Signed, end to end</strong>
+            <p>A notarized macOS app and a signed Windows installer. Agent binaries are signature-checked before they run, and a paired host is reached over TLS pinned to the certificate you approved.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="wrap">
+      <section class="cta" id="get">
+        <span class="kicker">Get it</span>
+        <h2>Give your second monitor something to say.</h2>
+        <p>
+          It ships, it's signed, and it runs all day, and it is still young. If it
+          doesn't fit your stack, <a href="https://github.com/Sassy-Dog/solador/discussions">say where</a>:
+          that is the feedback that shapes it.
+        </p>
+        <div class="download" data-download>
+          <div class="download-buttons">
+            <a class="btn" data-platform="mac" href="https://github.com/Sassy-Dog/solador/releases/latest">Download for macOS</a>
+            <a class="btn" data-platform="windows" href="https://github.com/Sassy-Dog/solador/releases/latest">Download for Windows</a>
+            <a class="btn" href="/setup/">Setup guide</a>
+          </div>
+          <p class="download-meta"><span data-release-version>Latest release</span> · <a href="https://github.com/Sassy-Dog/solador">Source on GitHub</a></p>
+          <p class="download-note" data-download-note hidden>
+            Solador is a desktop app for macOS and Windows. A Linux box shows up
+            in it by running the <a href="/setup/#remote-hosts">agent</a>.
+          </p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <div class="footer-brand"><img src="/assets/mark.svg" alt="" width="20" height="20"> Solador</div>
+      <p>
+        Open source under the <a href="https://github.com/Sassy-Dog/solador/blob/main/LICENSE">Apache License 2.0</a>.
+        © 2026 Sassy Dog Enterprises LLC. The Solador name and mark are not covered by
+        the license; see the <a href="https://github.com/Sassy-Dog/solador/blob/main/brand/README.md">brand terms</a>.
+      </p>
+      <p>This site sets no cookies and runs no analytics. The download buttons ask api.github.com for the latest release, from your browser.</p>
+    </div>
+  </footer>
+</body>
+</html>

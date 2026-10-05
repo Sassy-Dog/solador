@@ -590,8 +590,10 @@ the bundle's floor.
 │                           #   producer, read by it and by the updater)
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
 ├── brand/                  # Brand assets
-├── site/assets/screenshots/  # Product screenshots (README + solador.app), from
-│                           #   `npm run screenshots` over the `--showcase` fixtures
+├── site/                   # solador.app: plain HTML/CSS + one JS module, no
+│                           #   build step; deployed by .github/workflows/pages.yml
+│                           #   (see **Website** below). assets/screenshots/ is
+│                           #   generated (`npm run screenshots`), never authored
 └── docs/                   # Versioning, secrets, PRD
 ```
 
@@ -1026,6 +1028,44 @@ tested in `crates/buildversion` against real `--depth 1` and full clones the
 tests build (#417, #490); the crate still has zero dependencies. The agent's
 derivation and mint, and `publish --agent`, are tested in
 `scripts/versioning-test.sh` against temporary bare origins with a `gh` shim.
+
+## Website (`site/`, solador.app)
+
+The marketing site is **static, in this repo, and makes product claims**, so the
+docs rule applies to it like any README: a change that alters something the site
+says (a panel, a permission, an install step, a platform floor) updates `site/`
+in the same PR. It is plain HTML/CSS and one module (`site/assets/download.js`),
+no bundler, under a `<meta>` CSP as strict as the app's — GitHub Pages cannot
+send headers, so `frame-ancestors` is the one directive it does not carry.
+Paths are **root-absolute**, because Pages serves `404.html` at any missing
+path and a relative stylesheet breaks below `/`. There are **no analytics**:
+the README's "no telemetry, ever" is the product's promise, and the site keeps
+it. Conversion is the release download counts.
+
+**Deploy:** `.github/workflows/pages.yml`, on a push to `main` touching `site/`
+(or by hand). `deploy-pages` authenticates with the job's OIDC token, scoped to
+the `github-pages` environment, so it holds **no credential** and
+`scripts/secrets-guard.sh` needs no allowance for it. The custom domain lives in
+the repository's Pages settings, not a `CNAME` file (an Actions-deployed site
+ignores one); DNS is on Cloudflare, DNS-only, so GitHub issues the certificate.
+
+**Download buttons never fabricate a URL.** Each link's static href is the
+releases page; `download.js` replaces it only with the `browser_download_url`
+GitHub returned for an asset found by **exact name** in a `v*` latest release
+(`Solador-<v>.dmg`, `Solador_<v>_x64-setup.exe`). The API down, a rate limit, a
+missing asset or an unexpected tag all leave the releases page in place, and
+`tests/frontend/site.spec.js` holds each of those cases — every routed API
+response carries CORS headers, so a fallback cannot pass because the browser
+refused the response. The same suite serves `site/` through `page.route` (no
+second server, so no #401 bind stall) and asserts no CSP violation and no
+missing local link or asset on every page.
+
+**Screenshots are the showcase fixtures.** `npm run screenshots` renders the
+`--showcase` dumps — a working morning with exactly one tile out of true, held by
+`the_showcase_dashboard_has_exactly_one_tile_out_of_true` — into
+`site/assets/screenshots/`, which the README shares, plus `site/assets/og.png`
+from `tests/frontend/og-card.html`. Its cockpit stub refuses any grid width it
+has no dump for, rather than paint a layout computed for another one.
 
 ## Common Tasks
 

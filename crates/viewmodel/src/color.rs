@@ -303,14 +303,29 @@ mod css_sync {
     /// mark. This is the same guard the CSS mirror above provides, for the same
     /// reason -- see also the six drifted hex values recorded in
     /// `brand/README.md`, which is what an unwatched duplicate looks like.
+    ///
+    /// solador.app carries two more copies (the header mark and the favicon),
+    /// under `site/` because GitHub Pages serves that directory and nothing
+    /// outside it. They go stale the same quiet way, so they are held here too.
     #[test]
     fn the_frontend_mark_matches_the_brand_mark() {
-        assert_eq!(
-            include_str!("../../../app/ui/mark.svg"),
-            include_str!("../../../brand/mark.svg"),
-            "app/ui/mark.svg has drifted from brand/mark.svg -- \
-             re-run ./scripts/generate-icons.sh"
-        );
+        let brand = include_str!("../../../brand/mark.svg");
+        for (path, copy) in [
+            ("app/ui/mark.svg", include_str!("../../../app/ui/mark.svg")),
+            (
+                "site/assets/mark.svg",
+                include_str!("../../../site/assets/mark.svg"),
+            ),
+            (
+                "site/favicon.svg",
+                include_str!("../../../site/favicon.svg"),
+            ),
+        ] {
+            assert_eq!(
+                copy, brand,
+                "{path} has drifted from brand/mark.svg -- re-run ./scripts/generate-icons.sh"
+            );
+        }
     }
 
     /// The Playwright crons suite writes four of these out as literals,
