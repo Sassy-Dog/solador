@@ -32,6 +32,7 @@ mod services;
 mod settings;
 mod update;
 mod usage;
+mod window_state;
 
 use azure::AzureState;
 use containers::ContainersState;
@@ -6466,7 +6467,7 @@ fn main() {
     // gateway is configured and wakes the moment one is saved.
     rt.spawn(openclaw_loop(Arc::clone(&app)));
 
-    tauri::Builder::default()
+    window_state::configure(tauri::Builder::default())
         // Opening a repo row's Actions page. The webview's grant is one
         // command, scoped to one URL shape — see `capabilities/default.json`.
         .plugin(tauri_plugin_opener::init())

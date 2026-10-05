@@ -84,7 +84,10 @@ detailed than this file.
 Rows are reflowed by `viewmodel::cockpit` for the measured width, and every card
 in a row is the same height. An in-app Settings surface over `crates/store`
 (hosts CRUD, portfolio, credentials, container group rules, cockpit layout,
-general prefs) applies changes without a restart.
+general prefs) applies changes without a restart. The main window also remembers
+its size, position and maximized state across normal launches through the
+Rust-only window-state plugin; see app/README.md for storage and the isolated
+native smoke check.
 
 The Tauri IPC boundary itself is **not** automatically tested — `app/README.md`
 carries a five-minute manual smoke checklist, plus a dated observation log, and
