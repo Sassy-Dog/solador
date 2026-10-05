@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <title>Set up Solador</title>
+  <meta name="description" content="Install Solador, connect GitHub with a read-only token, add remote hosts with the signed agent, and connect Neon, Sentry, Vercel and Azure when you want them.">
+  <link rel="canonical" href="https://solador.app/setup/">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#070b13">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Solador">
+  <meta property="og:title" content="Set up Solador">
+  <meta property="og:description" content="Useful on first launch; everything after that is one credential at a time.">
+  <meta property="og:url" content="https://solador.app/setup/">
+  <meta property="og:image" content="https://solador.app/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="/assets/site.css">
+  <script type="module" src="/assets/download.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/"><img src="/assets/mark.svg" alt="" width="28" height="28"><span>Solador</span></a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="/download/">Download</a>
+        <a href="/setup/" aria-current="page">Setup</a>
+        <a href="https://github.com/Sassy-Dog/solador">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="wrap">
+      <div class="page-head">
+        <span class="kicker">Setup</span>
+        <h1>From first launch to a full cockpit</h1>
+        <p>
+          Solador is useful the moment it opens. Everything after that is
+          opt-in, one credential at a time, in any order. A panel you haven't
+          set up says what it wants in a muted line, never a red error.
+        </p>
+      </div>
+
+      <ol class="steps">
+        <li id="install">
+          <h2>Install it and open it</h2>
+          <p>
+            <a href="/download/">Download</a> the signed installer for macOS or
+            Windows. With nothing configured, the cockpit already shows:
+          </p>
+          <ul>
+            <li>this machine: per-core CPU, memory, disk and network, GPU and battery;</li>
+            <li>your local <code>docker</code>, <code>podman</code> or <code>tart</code> containers;</li>
+            <li>your Claude Code token usage, read from the logs on your disk;</li>
+            <li>the status pages of the vendors it can see you use, starting with Anthropic once those logs exist.</li>
+          </ul>
+        </li>
+
+        <li id="github">
+          <h2>Connect GitHub <span class="optional">optional</span></h2>
+          <p>
+            For the Repos and Runners panels, create a
+            <a href="https://github.com/settings/personal-access-tokens/new">fine-grained personal access token</a>.
+            Solador never writes to GitHub, so everything is read-only:
+          </p>
+          <ul>
+            <li><strong>Repository permissions:</strong> Actions, Contents, Issues and Pull requests (Metadata comes with them).</li>
+            <li><strong>Organization permissions:</strong> Self-hosted runners, for the Runners panel, and Projects, for the Repos panel's Ready column.</li>
+            <li>Everything else stays at <strong>No access</strong>.</li>
+          </ul>
+          <p>
+            Then in Solador: <span class="path">Settings → Connections → Add connection → GitHub</span>.
+            Name the account, paste the token into <strong>Fine-grained PAT</strong> and
+            choose <strong>Add Account</strong>. On the account's card,
+            <strong>Configure repos…</strong> picks the repositories to watch, and
+            <strong>Runner organizations</strong> takes the orgs whose runners you want.
+          </p>
+          <p>
+            The full walkthrough, with what each permission feeds:
+            <a href="https://github.com/Sassy-Dog/solador/blob/main/docs/github-setup.md">docs/github-setup.md</a>.
+          </p>
+        </li>
+
+        <li id="remote-hosts">
+          <h2>Add your other machines <span class="optional">optional</span></h2>
+          <p>
+            Another machine (a Linux server, a second Mac) shows up in your
+            cockpit by running the agent. It runs as your user, with no
+            <code>sudo</code>, on Linux with systemd or macOS 11 and later. It
+            needs <code>minisign</code> to check the release's signature:
+            <code>brew install minisign</code>, <code>apt install minisign</code>
+            (Debian 12+, Ubuntu 24.04+) or <code>dnf install minisign</code>.
+          </p>
+          <p>On the host:</p>
+<pre><code>curl -fsSLo bootstrap.sh https://raw.githubusercontent.com/Sassy-Dog/solador/main/agent/deploy/bootstrap.sh
+bash bootstrap.sh</code></pre>
+          <p>
+            It fetches the installer from <code>main</code>, verifies the agent
+            binary's signature before anything runs, installs it, and asks for a
+            bearer token (press Enter to generate one). It finishes by printing
+            the agent's certificate fingerprint. Two steps rather than a
+            <code>curl | sh</code>, deliberately, so you can read what you run.
+          </p>
+          <p>
+            Then in Solador: <span class="path">Settings → Connections → Add connection → Remote host</span>.
+            Enter a name, the host's address and the token, then
+            <strong>Check certificate</strong>. Compare the fingerprint it shows with
+            the one the installer printed, choose <strong>Trust</strong>, and
+            <strong>Add Host</strong>.
+          </p>
+          <p class="note">
+            Any network path works: a LAN, a VPN, Tailscale, an SSH tunnel. A
+            paired host is reached over TLS pinned to the certificate you
+            approved, and Solador never sends the token over plain HTTP anywhere
+            but loopback or Tailscale. A fresh install serves TLS, and on a
+            machine without Tailscale it listens on all interfaces, behind TLS
+            and the token: firewall its port on a machine with a public address. The <a href="https://github.com/Sassy-Dog/solador/blob/main/agent/README.md">agent reference</a>
+            covers binding, updates, unattended updates and uninstalling.
+          </p>
+        </li>
+
+        <li id="more">
+          <h2>Connect the rest <span class="optional">optional</span></h2>
+          <p>Each is independent, under <span class="path">Settings → Connections → Add connection</span>:</p>
+          <ul>
+            <li><strong>Neon:</strong> an organization API key, for compute, storage and estimated charges.</li>
+            <li><strong>Sentry:</strong> an <code>org:read</code> token and your org slug. One credential feeds both Usage and Sentry Crons.</li>
+            <li><strong>Vercel:</strong> a token, for month-to-date spend from the billing export.</li>
+            <li><strong>Azure Cost:</strong> a daily cost export in blob storage. Nothing to paste: each read is signed by the <code>az</code> CLI you are already signed in to.</li>
+            <li><strong>OpenClaw:</strong> your gateway's URL. Solador shows the command that approves this device on the gateway, then follows it over a live WebSocket.</li>
+            <li><strong>Status page:</strong> any Atlassian Statuspage you depend on, watched beside the built-in vendors.</li>
+          </ul>
+          <p>
+            Credentials go to your OS credential store (Keychain on macOS,
+            Credential Manager on Windows), never the settings file.
+          </p>
+        </li>
+
+        <li id="arrange">
+          <h2>Make it yours</h2>
+          <p>
+            <strong>Edit dashboard</strong> moves, hides, duplicates and scopes
+            the overview's tiles. <span class="path">Settings → Detailed layout</span>
+            arranges the full cockpit per window width. Then put it on your
+            second monitor and leave it open.
+          </p>
+          <p>
+            Doesn't fit your stack?
+            <a href="https://github.com/Sassy-Dog/solador/discussions">Start a discussion</a>
+            or <a href="https://github.com/Sassy-Dog/solador/issues/new/choose">open an issue</a>.
+          </p>
+        </li>
+      </ol>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <div class="footer-brand"><img src="/assets/mark.svg" alt="" width="20" height="20"> Solador</div>
+      <p>
+        Open source under the <a href="https://github.com/Sassy-Dog/solador/blob/main/LICENSE">Apache License 2.0</a>.
+        © 2026 Sassy Dog Enterprises LLC. The Solador name and mark are not covered by
+        the license; see the <a href="https://github.com/Sassy-Dog/solador/blob/main/brand/README.md">brand terms</a>.
+      </p>
+      <p>This site sets no cookies and runs no analytics. The download buttons ask api.github.com for the latest release, from your browser.</p>
+    </div>
+  </footer>
+</body>
+</html>

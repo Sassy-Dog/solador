@@ -1,0 +1,916 @@
+/*
+ * solador.app. Plain CSS, no build step, no webfont: the brand has no typeface
+ * on purpose (brand/README.md), so type is the system stack the app itself uses.
+ * Colours are the app's own dashboard tokens (app/ui/dashboard.css) plus the
+ * mark's terracotta, cobalt and sand. No inline styles anywhere: the page runs
+ * under `style-src 'self'`, the same policy as the app.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #070b13;
+  --panel: #101725;
+  --raised: #182235;
+  --line: #2a374c;
+  --text: #ede8de;
+  --muted: #9caec5;
+  --green: #68d3a0;
+  --amber: #f2ba63;
+  --red: #ff9384;
+  --blue: #97b9fc;
+
+  --terracotta: #e0614f;
+  --cobalt: #1e4fa0;
+  --sand: #f5e6cd;
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --wrap: 1120px;
+  --gutter: clamp(16px, 4vw, 32px);
+  --radius: 12px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 17px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: var(--blue);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: clamp(2.3rem, 5.6vw, 4rem);
+}
+
+h2 {
+  font-size: clamp(1.7rem, 3.4vw, 2.4rem);
+}
+
+h3 {
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--mono);
+  font-size: 0.86em;
+}
+
+code {
+  padding: 0.1em 0.35em;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  overflow-wrap: anywhere;
+}
+
+pre {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow-x: auto;
+  line-height: 1.55;
+}
+
+pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.82rem;
+  overflow-wrap: normal;
+}
+
+.wrap {
+  width: 100%;
+  max-width: var(--wrap);
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip:focus {
+  left: var(--gutter);
+  top: 12px;
+  z-index: 10;
+  padding: 8px 12px;
+  background: var(--sand);
+  color: var(--bg);
+}
+
+/* ---------------------------------------------------------------- header */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-height: 64px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 650;
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+
+.brand img {
+  width: 28px;
+  height: 28px;
+}
+
+.site-nav {
+  display: flex;
+  gap: clamp(14px, 3vw, 28px);
+  margin-left: auto;
+  font-size: 0.95rem;
+}
+
+.site-nav a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.site-nav a:hover,
+.site-nav a[aria-current="page"] {
+  color: var(--text);
+}
+
+/* --------------------------------------------------------------- buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--text);
+  font: 600 0.98rem/1 var(--sans);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color 0.15s, background-color 0.15s, transform 0.15s;
+}
+
+.btn:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  border-color: var(--sand);
+  background: var(--sand);
+  color: #0b1020;
+}
+
+.btn-primary:hover {
+  border-color: #fff;
+  background: #fff;
+  color: #0b1020;
+}
+
+/* ------------------------------------------------------------- downloads */
+
+.download {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  justify-items: start;
+}
+
+.download-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.download-meta {
+  color: var(--muted);
+  font: 0.82rem/1.5 var(--mono);
+}
+
+.download-note {
+  max-width: 34rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+/* `download.js` reveals this only where neither installer fits the visitor's
+   machine (Linux, phones): both buttons still render, so nothing is hidden
+   from someone sending themselves the link. */
+.download-note[hidden] {
+  display: none;
+}
+
+/* ----------------------------------------------------------------- hero */
+
+.hero {
+  padding: clamp(48px, 9vw, 104px) 0 0;
+}
+
+.eyebrow {
+  margin-bottom: 18px;
+  color: var(--amber);
+  font: 500 0.82rem/1.4 var(--mono);
+  letter-spacing: 0.04em;
+}
+
+.hero h1 {
+  max-width: 15ch;
+}
+
+.hero .lede {
+  max-width: 40rem;
+  margin: 22px 0 30px;
+  color: var(--muted);
+  font-size: clamp(1.05rem, 1.6vw, 1.22rem);
+}
+
+.hero .lede strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.screen {
+  margin: clamp(44px, 7vw, 72px) 0 0;
+}
+
+.screen img,
+.shot {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #000;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.6),
+    0 30px 80px -20px rgb(30 79 160 / 0.45),
+    0 18px 40px -24px rgb(0 0 0 / 0.9);
+}
+
+.screen figcaption,
+.caption {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* -------------------------------------------------------------- sections */
+
+.section {
+  padding: clamp(72px, 11vw, 128px) 0 0;
+}
+
+.section-head {
+  max-width: 44rem;
+  margin-bottom: clamp(32px, 5vw, 48px);
+}
+
+.section-head p {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 1.08rem;
+}
+
+.kicker {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font: 500 0.78rem/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The name and the mark, side by side. */
+.story {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: clamp(28px, 6vw, 72px);
+  align-items: center;
+}
+
+.story-mark {
+  width: 100%;
+  max-width: 220px;
+}
+
+.story p + p {
+  margin-top: 16px;
+}
+
+.story p {
+  color: var(--muted);
+  font-size: 1.08rem;
+}
+
+.story em {
+  color: var(--text);
+}
+
+/* ------------------------------------------------------- the 3×3 panel grid */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+/* A window onto each panel's top-left corner, where its names and first
+   readings sit. `cover` keeps every crop at a legible scale whatever its
+   aspect: a wide panel is cut on the right, a tall one at the bottom. */
+.tile-shot {
+  height: 210px;
+  padding: 14px 14px 0;
+  border-bottom: 1px solid var(--line);
+  background: #000;
+  overflow: hidden;
+}
+
+.tile-shot img {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px 8px 0 0;
+  object-fit: cover;
+  object-position: left top;
+}
+
+.tile-body {
+  padding: 16px 18px 20px;
+}
+
+.tile-body h3 {
+  font: 600 0.98rem/1.3 var(--mono);
+  letter-spacing: 0;
+}
+
+.tile-body p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+
+/* The one tile out of true — the mark's top-right tile, made literal. It is
+   also the one failing repo in every screenshot on this page. */
+.tile-odd {
+  position: relative;
+  z-index: 1;
+  border-color: var(--terracotta);
+  box-shadow: 0 22px 50px -24px rgb(224 97 79 / 0.55);
+  transform: rotate(2.2deg) scale(1.025);
+}
+
+.tile-odd h3::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 10px;
+  border-radius: 50%;
+  background: var(--terracotta);
+  vertical-align: 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tile-odd {
+    transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .tile-odd:hover {
+    transform: rotate(0deg) scale(1);
+  }
+}
+
+/* ----------------------------------------------------------- feature grid */
+
+.features {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.feature {
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.feature h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.feature h3::before {
+  content: "";
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.feature p {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.97rem;
+}
+
+.aside {
+  max-width: 44rem;
+  margin-top: 28px;
+  color: var(--muted);
+}
+
+.aside em {
+  color: var(--text);
+}
+
+/* ------------------------------------------------ the unknown-is-not-zero key */
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(28px, 5vw, 56px);
+  align-items: center;
+}
+
+.legend {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--line);
+  overflow: hidden;
+  list-style: none;
+}
+
+.legend li {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  padding: 16px 20px;
+  background: var(--panel);
+}
+
+.legend .glyph {
+  font: 600 1.35rem/1 var(--mono);
+  text-align: center;
+}
+
+.legend .glyph-zero {
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+.legend .glyph-approx {
+  color: var(--amber);
+}
+
+.legend .glyph-empty {
+  color: var(--red);
+  font-size: 0.82rem;
+}
+
+.legend span:last-child {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+/* ------------------------------------------------------------ privacy list */
+
+.points {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.points li {
+  padding: 22px 24px;
+  border-top: 2px solid var(--cobalt);
+  background: var(--panel);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.points strong {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.points p {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+/* ------------------------------------------------------------------ CTA */
+
+.cta {
+  margin-top: clamp(72px, 11vw, 128px);
+  padding: clamp(40px, 6vw, 64px);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgb(30 79 160 / 0.35), transparent 60%),
+    var(--panel);
+}
+
+.cta h2 {
+  max-width: 20ch;
+}
+
+.cta p {
+  max-width: 38rem;
+  margin: 14px 0 26px;
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------- inner pages */
+
+.page-head {
+  padding: clamp(48px, 8vw, 88px) 0 clamp(28px, 4vw, 40px);
+}
+
+.page-head p {
+  max-width: 42rem;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 1.1rem;
+}
+
+.platforms {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.platform {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.platform h2 {
+  font-size: 1.35rem;
+}
+
+.platform .req {
+  color: var(--amber);
+  font: 500 0.8rem/1.4 var(--mono);
+}
+
+.platform ul {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.platform .btn {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.prose {
+  max-width: 46rem;
+}
+
+.prose > * + * {
+  margin-top: 16px;
+}
+
+.prose h2 {
+  margin-top: 56px;
+  font-size: 1.6rem;
+}
+
+.prose h3 {
+  margin-top: 28px;
+}
+
+.prose p,
+.prose li {
+  color: var(--muted);
+}
+
+.prose strong {
+  color: var(--text);
+}
+
+.prose ul,
+.prose ol {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding-left: 22px;
+}
+
+.steps {
+  counter-reset: step;
+  display: grid;
+  /* minmax(0, …): an implicit track sizes to its widest child, and a long
+     <pre> line would otherwise widen the whole page on a phone. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.steps > li {
+  counter-increment: step;
+  position: relative;
+  padding: 26px 28px 28px 84px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.steps > li::before {
+  content: counter(step);
+  position: absolute;
+  top: 24px;
+  left: 26px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--raised);
+  color: var(--sand);
+  font: 600 1rem/1 var(--mono);
+}
+
+.steps > li > * + * {
+  margin-top: 14px;
+}
+
+.steps p,
+.steps li li {
+  color: var(--muted);
+}
+
+.steps ul,
+.steps ol {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin-bottom: 0;
+  padding-left: 20px;
+}
+
+.steps .optional {
+  margin-left: 8px;
+  color: var(--muted);
+  font: 500 0.75rem/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: 3px;
+}
+
+.path {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.note {
+  padding: 14px 18px;
+  border-left: 3px solid var(--amber);
+  border-radius: 0 8px 8px 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+/* ---------------------------------------------------------------- 404 */
+
+.lost {
+  display: grid;
+  justify-items: start;
+  gap: 18px;
+  padding: clamp(64px, 12vw, 140px) 0;
+}
+
+.lost img {
+  width: 96px;
+  transform: rotate(-8deg);
+}
+
+.lost p {
+  color: var(--muted);
+}
+
+/* -------------------------------------------------------------- footer */
+
+.site-footer {
+  margin-top: clamp(72px, 11vw, 128px);
+  padding: 40px 0 56px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.footer-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.footer-brand img {
+  width: 20px;
+  height: 20px;
+}
+
+.site-footer p {
+  max-width: 52rem;
+}
+
+.site-footer a {
+  color: var(--muted);
+}
+
+.site-footer a:hover {
+  color: var(--text);
+}
+
+/* --------------------------------------------------------- responsive */
+
+@media (max-width: 960px) {
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .points,
+  .platforms {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  body {
+    font-size: 16px;
+  }
+
+  .header-inner {
+    gap: 12px;
+  }
+
+  .site-nav {
+    font-size: 0.9rem;
+  }
+
+  .story {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .story-mark {
+    max-width: 120px;
+  }
+
+  .tiles,
+  .features {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tile-odd {
+    transform: rotate(1.2deg);
+  }
+
+  .download-buttons,
+  .download-buttons .btn {
+    width: 100%;
+  }
+
+  .steps > li {
+    padding: 72px 20px 22px;
+  }
+
+  .steps > li::before {
+    top: 20px;
+    left: 20px;
+  }
+
+  .legend li {
+    grid-template-columns: 44px minmax(0, 1fr);
+    padding: 14px 16px;
+  }
+}

@@ -4,6 +4,7 @@
 
 A cockpit for everything around your code — machines, CI, containers, spend,
 vendor status, agents — read at a glance from a second monitor.
+**[solador.app](https://solador.app)**
 
 <br clear="left">
 
@@ -31,10 +32,7 @@ thing that isn't right.
 (`agent-vYYYY.M.N`), found through a signed feed on a permanent `agent-latest`
 release rather than through "latest release" above, which is the cockpit's.
 [`agent/deploy/install.sh`](agent/README.md) does the finding, the signature
-check and the install for you; `agent/README.md` is the reference. (Until the
-first `agent-v` release is published there is no feed yet, and the unpinned
-installer says so: pin the last combined release, which carries the agent's
-binaries, with `SOLADOR_AGENT_RELEASE=v2026.10.14`.)
+check and the install for you; `agent/README.md` is the reference.
 
 Prefer to build it yourself? See [Build from source](#build-from-source).
 Windows 10 also needs the WebView2 runtime; Windows 11 already has it.

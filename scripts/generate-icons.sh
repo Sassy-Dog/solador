@@ -20,6 +20,7 @@ ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
 BRAND="$ROOT_DIR/brand"
 ICONS="$ROOT_DIR/app/src-tauri/icons"
 UI="$ROOT_DIR/app/ui"
+SITE="$ROOT_DIR/site"
 NODE_MODULES="$ROOT_DIR/tests/frontend/node_modules"
 
 # Chromium, not ImageMagick -- see the header of render-icons.mjs for why. It
@@ -59,6 +60,8 @@ mkdir -p "$ICONSET"
 node "$SCRIPT_DIR/render-icons.mjs" "$BRAND/icon.svg" "$ICONSET"     "$MACOS_SIZES"  "$NODE_MODULES" >/dev/null
 node "$SCRIPT_DIR/render-icons.mjs" "$BRAND/icon.svg" "$TMP/square" "$SQUARE_SIZES" "$NODE_MODULES" >/dev/null
 node "$SCRIPT_DIR/render-icons.mjs" "$BRAND/icon.svg" "$ICONS"      "$TAURI_SIZES"  "$NODE_MODULES" >/dev/null
+# Square, not rounded: iOS applies its own mask to a home-screen icon.
+node "$SCRIPT_DIR/render-icons.mjs" "$BRAND/icon.svg" "$SITE" "apple-touch-icon.png:180:square" "$NODE_MODULES" >/dev/null
 
 log_success "PNG set rendered"
 
@@ -83,4 +86,10 @@ log_success "icon.ico ($(du -h "$ICONS/icon.ico" | cut -f1 | tr -d ' '))"
 cp "$BRAND/mark.svg" "$UI/mark.svg"
 log_success "app/ui/mark.svg copied from brand/"
 
-log_success "Icons generated. Commit app/src-tauri/icons/ and app/ui/mark.svg."
+# solador.app: the header mark and the favicon are the mark itself, which reads
+# on light and dark alike (brand/README.md), so neither needs a variant.
+cp "$BRAND/mark.svg" "$SITE/assets/mark.svg"
+cp "$BRAND/mark.svg" "$SITE/favicon.svg"
+log_success "site/assets/mark.svg and site/favicon.svg copied from brand/"
+
+log_success "Icons generated. Commit app/src-tauri/icons/, app/ui/mark.svg and site/."

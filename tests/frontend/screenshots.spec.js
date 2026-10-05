@@ -170,3 +170,23 @@ test.describe("at 1x: the full-height shots", () => {
     await page.screenshot({ path: path.join(OUT, "cockpit-narrow.png"), fullPage: true });
   });
 });
+
+/**
+ * solador.app's social card, from `og-card.html` (not shipped). Its images are
+ * answered from `site/` itself, so the card shows the same mark and the same
+ * overview the site serves, the overview written by the test above in this run.
+ * Runs last for that reason: Playwright runs a file's tests in order unless
+ * told otherwise, and this config does not.
+ */
+test("the social card", async ({ page }) => {
+  const site = path.resolve(__dirname, "..", "..", "site");
+  await page.setViewportSize({ width: 1200, height: 630 });
+  await page.route("https://og.test/**", async (route) => {
+    const { pathname } = new URL(route.request().url());
+    if (pathname === "/") return route.fulfill({ path: path.join(__dirname, "og-card.html") });
+    return route.fulfill({ path: path.join(site, pathname) });
+  });
+  await page.goto("https://og.test/");
+  await page.waitForLoadState("networkidle");
+  await page.screenshot({ path: path.join(site, "assets", "og.png") });
+});

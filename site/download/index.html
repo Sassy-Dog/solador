@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <title>Download Solador</title>
+  <meta name="description" content="Download Solador for macOS 14+ (universal, signed and notarized) or Windows 10/11 (signed installer). Linux hosts run the agent.">
+  <link rel="canonical" href="https://solador.app/download/">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#070b13">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Solador">
+  <meta property="og:title" content="Download Solador">
+  <meta property="og:description" content="macOS 14+ universal, signed and notarized. Windows 10/11, signed installer. Linux hosts run the agent.">
+  <meta property="og:url" content="https://solador.app/download/">
+  <meta property="og:image" content="https://solador.app/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="/assets/site.css">
+  <script type="module" src="/assets/download.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/"><img src="/assets/mark.svg" alt="" width="28" height="28"><span>Solador</span></a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="/download/" aria-current="page">Download</a>
+        <a href="/setup/">Setup</a>
+        <a href="https://github.com/Sassy-Dog/solador">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="wrap">
+      <div class="page-head">
+        <span class="kicker">Download</span>
+        <h1>Get Solador</h1>
+        <p>
+          <span data-release-version>The latest release</span>, signed on every
+          platform it ships for. <a data-release-notes href="https://github.com/Sassy-Dog/solador/releases/latest">Release notes</a>.
+        </p>
+      </div>
+
+      <div class="platforms" data-download>
+        <section class="platform">
+          <h2>macOS</h2>
+          <span class="req">macOS 14 or later · Apple silicon and Intel</span>
+          <ul>
+            <li>A universal disk image, signed, notarized and stapled, so it opens without a Gatekeeper argument.</li>
+            <li>Checks for an update on launch, and never installs one behind your back.</li>
+          </ul>
+          <a class="btn" data-platform="mac" href="https://github.com/Sassy-Dog/solador/releases/latest">Download .dmg</a>
+        </section>
+
+        <section class="platform">
+          <h2>Windows</h2>
+          <span class="req">Windows 10 or 11 · x64</span>
+          <ul>
+            <li>An Authenticode-signed installer from Sassy Dog Enterprises LLC.</li>
+            <li>No update channel yet: the app says so plainly, and you install the next release over this one.</li>
+            <li>Windows 10 needs the WebView2 runtime; Windows 11 already has it.</li>
+          </ul>
+          <a class="btn" data-platform="windows" href="https://github.com/Sassy-Dog/solador/releases/latest">Download installer</a>
+        </section>
+
+        <section class="platform">
+          <h2>Linux</h2>
+          <span class="req">The agent, not the cockpit</span>
+          <ul>
+            <li>There is no cockpit build for Linux.</li>
+            <li>A Linux box shows up in your cockpit by running the agent: a small signed binary that serves its metrics and containers to the cockpits you pair with it.</li>
+          </ul>
+          <a class="btn" href="/setup/#remote-hosts">Install the agent</a>
+        </section>
+      </div>
+
+      <div class="prose">
+        <h2>The agent</h2>
+        <p>
+          The agent is how another machine appears in your cockpit: a Linux
+          server, a second Mac, the box under your desk. It ships on a release
+          train of its own (<code>agent-vYYYY.M.N</code>), found through a
+          signed feed rather than the cockpit's latest release above, and its
+          installer checks every signature before anything runs.
+          <a href="/setup/#remote-hosts">Set one up</a>, or see the
+          <a href="https://github.com/Sassy-Dog/solador/blob/main/agent/README.md">agent reference</a>.
+        </p>
+
+        <h2>Build it yourself</h2>
+        <p>
+          Solador is Apache-2.0 and the whole of it is on
+          <a href="https://github.com/Sassy-Dog/solador">GitHub</a>: a Rust
+          workspace and a Tauri v2 app.
+          <a href="https://github.com/Sassy-Dog/solador#build-from-source">Build from source</a>
+          with a Rust toolchain and <code>./dev</code>.
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <div class="footer-brand"><img src="/assets/mark.svg" alt="" width="20" height="20"> Solador</div>
+      <p>
+        Open source under the <a href="https://github.com/Sassy-Dog/solador/blob/main/LICENSE">Apache License 2.0</a>.
+        © 2026 Sassy Dog Enterprises LLC. The Solador name and mark are not covered by
+        the license; see the <a href="https://github.com/Sassy-Dog/solador/blob/main/brand/README.md">brand terms</a>.
+      </p>
+      <p>This site sets no cookies and runs no analytics. The download buttons ask api.github.com for the latest release, from your browser.</p>
+    </div>
+  </footer>
+</body>
+</html>
