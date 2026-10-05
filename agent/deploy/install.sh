@@ -10,6 +10,7 @@
 #   ./deploy/install.sh --uninstall         # remove THIS USER's install (env file, TLS key/cert kept)
 #   ./deploy/install.sh --uninstall --purge # ...and delete the env file + TLS key/cert too
 #   ./deploy/install.sh --system-daemon     # macOS: stage everything as the SERVICE USER, render a LaunchDaemon plist, print the root step (#506)
+#   ./deploy/install.sh --system-daemon --enable-timer # ...also stage a separate daily update LaunchDaemon
 #   ./deploy/install.sh --system-daemon --verify      # ...then, once root has loaded it: the /v1/health check
 #   ./deploy/install.sh --uninstall --system-daemon   # remove that user's files, print the root bootout step
 #   ./deploy/install.sh --help
@@ -80,9 +81,10 @@
 # `--uninstall --system-daemon` removes the user-owned files and PRINTS the
 # matching root bootout/remove step. Refused: root, a platform that is not
 # macOS, an existing per-user LaunchAgent install for this user (remove it
-# first — two must never fight over the port), and --enable-timer, which has no
-# meaning here. There is no unattended update job, but `solador-agent update`
-# and `rollback` (#507) work in this mode when run AS THE SERVICE USER, never
+# first — two must never fight over the port). --enable-timer also stages a
+# separate update LaunchDaemon, with its root load step printed. It stays off
+# by default; a re-run without the flag leaves an existing updater untouched.
+# `solador-agent update` and `rollback` (#507) work AS THE SERVICE USER, never
 # as root: `sudo -u <service user> -H ~<service user>/.local/bin/solador-agent update`. They
 # adopt /Library/LaunchDaemons/<label>.plist only for that user, check the
 # daemon with `launchctl print system/<label>`, and restart it by SIGTERM to
@@ -185,8 +187,7 @@
 #   2  usage: an unknown argument, --purge without --uninstall, or
 #      --uninstall combined with --migrate-from-opt or --enable-timer; and,
 #      for --system-daemon (#506), --verify without it, --verify beside
-#      --uninstall, --enable-tls or --migrate-from-opt, or --enable-timer
-#      beside it.
+#      --uninstall, --enable-tls, --migrate-from-opt or --enable-timer.
 #   4  the uninstall could not confirm the service is gone: a reachable
 #      manager refused a specific stop or disable request, or a unit's state
 #      could not be read. Every file this run found was still removed
@@ -283,6 +284,9 @@ SYSTEMD_MIN_FOR_GUARD=243
 UPDATE_LABEL="${LAUNCHD_LABEL}.update"
 UPDATE_PLIST_SRC="$SCRIPT_DIR/app.solador.agent.update.plist"
 UPDATE_PLIST_DST="$HOME/Library/LaunchAgents/${UPDATE_LABEL}.plist"
+DAEMON_UPDATE_PLIST_SRC="$SCRIPT_DIR/app.solador.agent.update.daemon.plist"
+DAEMON_UPDATE_PLIST_DST="$HOME/.config/${UPDATE_LABEL}.daemon.plist"
+SYSTEM_UPDATE_PLIST="/Library/LaunchDaemons/${UPDATE_LABEL}.plist"
 UPDATE_LOG_FILE="$HOME/Library/Logs/${UPDATE_NAME}.log"
 # The no-catch-up stamp both guards write (update-guard.sh on Linux,
 # run-agent.sh's update mode on macOS) — one path, one name, on both
@@ -381,15 +385,9 @@ if [ "$VERIFY" = true ] && [ "$SYSTEM_DAEMON" != true ]; then
     echo "       that checks /v1/health once root has loaded the LaunchDaemon)." >&2
     exit 2
 fi
-if [ "$VERIFY" = true ] && { [ "$UNINSTALL" = true ] || [ "$ENABLE_TLS" = true ] || [ "$MIGRATE_FROM_OPT" = true ]; }; then
+if [ "$VERIFY" = true ] && { [ "$UNINSTALL" = true ] || [ "$ENABLE_TLS" = true ] || [ "$MIGRATE_FROM_OPT" = true ] || [ "$ENABLE_TIMER" = true ]; }; then
     echo "ERROR: --verify only checks /v1/health; it does not combine with --uninstall," >&2
-    echo "       --enable-tls or --migrate-from-opt." >&2
-    exit 2
-fi
-if [ "$SYSTEM_DAEMON" = true ] && [ "$ENABLE_TIMER" = true ]; then
-    echo "ERROR: --enable-timer is refused with --system-daemon: there is no update job in daemon" >&2
-    echo "       mode. To move the host, run \`solador-agent update\` as the service user" >&2
-    echo "       (sudo -u <service user> -H). Nothing has been changed." >&2
+    echo "       --enable-tls, --migrate-from-opt or --enable-timer." >&2
     exit 2
 fi
 
@@ -398,15 +396,15 @@ fi
 # are built in variables and printed as one line so each is exactly the text an
 # operator can paste, with paths shell-quoted only where they need it.
 print_daemon_load_step() {
-    local copy_cmd boot_cmd
-    copy_cmd="sudo install -o root -g wheel -m 644 $(printf '%q' "$DAEMON_PLIST_DST") $(printf '%q' "$SYSTEM_PLIST")"
-    boot_cmd="sudo launchctl bootstrap system $(printf '%q' "$SYSTEM_PLIST")"
+    local copy_cmd boot_cmd source="${1:-$DAEMON_PLIST_DST}" destination="${2:-$SYSTEM_PLIST}"
+    copy_cmd="sudo install -o root -g wheel -m 644 $(printf '%q' "$source") $(printf '%q' "$destination")"
+    boot_cmd="sudo launchctl bootstrap system $(printf '%q' "$destination")"
     echo "    $copy_cmd && $boot_cmd"
 }
 print_daemon_unload_step() {
-    local boot_cmd rm_cmd
-    boot_cmd="sudo launchctl bootout system/$LAUNCHD_LABEL"
-    rm_cmd="sudo rm $(printf '%q' "$SYSTEM_PLIST")"
+    local boot_cmd rm_cmd label="${2:-$LAUNCHD_LABEL}" destination="${3:-$SYSTEM_PLIST}"
+    boot_cmd="sudo launchctl bootout system/$label"
+    rm_cmd="sudo rm $(printf '%q' "$destination")"
     if [ "${1:-}" = "bootout-only" ]; then
         echo "    $boot_cmd"
         return
@@ -763,6 +761,10 @@ linux_uninstall_hint() {
 }
 
 run_uninstall() {
+    local daemon_update_present=false
+    if [ "$SYSTEM_DAEMON" = true ] && { [ -e "$DAEMON_UPDATE_PLIST_DST" ] || [ -e "$SYSTEM_UPDATE_PLIST" ]; }; then
+        daemon_update_present=true
+    fi
     # Same refusal, and the same reason, as --enable-timer's: the install is
     # user-owned, so removing it is too.
     if [ "$(id -u)" = "0" ]; then
@@ -1102,6 +1104,7 @@ run_uninstall() {
                 # only root can boot it out (printed below). This removes what
                 # the service user owns, and nothing else.
                 uninstall_remove "$DAEMON_PLIST_DST" "rendered LaunchDaemon plist"
+                uninstall_remove "$DAEMON_UPDATE_PLIST_DST" "rendered update LaunchDaemon plist"
             else
                 local metrics_svc update_svc
                 metrics_svc="gui/$(id -u 9>&-)/$LAUNCHD_LABEL"
@@ -1205,6 +1208,10 @@ run_uninstall() {
         echo "==> The LaunchDaemon is loaded by root, so unloading it is a root step this script"
         echo "    does not run. If it is still loaded, run this now: the agent keeps running from"
         echo "    the binary it started with until root boots it out:"
+        if [ "$daemon_update_present" = true ]; then
+            echo "    Stop the updater first:"
+            print_daemon_unload_step remove "$UPDATE_LABEL" "$SYSTEM_UPDATE_PLIST"
+        fi
         print_daemon_unload_step
     fi
 
@@ -1432,7 +1439,9 @@ case "$OS" in
         fi
         [ -f "$LAUNCHER_SRC" ] || { echo "ERROR: $LAUNCHER_SRC not found — this checkout is incomplete." >&2; exit 1; }
         if [ "$ENABLE_TIMER" = true ]; then
-            [ -f "$UPDATE_PLIST_SRC" ] || { echo "ERROR: $UPDATE_PLIST_SRC not found — this checkout is incomplete." >&2; exit 1; }
+            update_template="$UPDATE_PLIST_SRC"
+            [ "$SYSTEM_DAEMON" = true ] && update_template="$DAEMON_UPDATE_PLIST_SRC"
+            [ -f "$update_template" ] || { echo "ERROR: $update_template not found — this checkout is incomplete." >&2; exit 1; }
         fi
         ;;
     Linux)
@@ -2407,6 +2416,9 @@ if [ "$SYSTEM_DAEMON" = true ]; then
         echo "       Installed binary: $DEST_BIN; nothing was loaded and nothing is running." >&2
         exit 1
     fi
+    if [ "$ENABLE_TIMER" = true ]; then
+        stage_launch_agent_plist "$DAEMON_UPDATE_PLIST_SRC" "$DAEMON_UPDATE_PLIST_DST" "$UPDATE_LABEL" "$UPDATE_LOG_FILE" || exit 1
+    fi
     echo
     echo "==> Staged: $BIN_NAME $TARGET_VERSION installed for $(id -un). NOT RUNNING YET: this script loaded and"
     echo "    restarted nothing (exit 0 means staged, not serving)."
@@ -2434,7 +2446,19 @@ if [ "$SYSTEM_DAEMON" = true ]; then
     echo "Then, as $(id -un), once root has run it:"
     echo "    $RERUN_CMD --system-daemon --verify"
     echo "(it checks /v1/health and, with TLS on, prints the certificate fingerprint to pair.)"
-    echo "There is no unattended update job in daemon mode. To move this host, run as $(id -un):"
+    if [ -f "$DAEMON_UPDATE_PLIST_DST" ]; then
+        echo
+        echo "Unattended updates: plist staged, scheduling is not verified. Review it, then as root:"
+        print_daemon_load_step "$DAEMON_UPDATE_PLIST_DST" "$SYSTEM_UPDATE_PLIST"
+        echo "If the update job is already loaded and its plist changed, boot it out first:"
+        print_daemon_unload_step bootout-only "$UPDATE_LABEL"
+        echo "The loaded job checks daily, with no catch-up; first check in 24h. Verify loading with:"
+        echo "    sudo launchctl print system/$UPDATE_LABEL"
+        echo "    Update log: $UPDATE_LOG_FILE"
+    else
+        echo "Unattended updates: no plist staged (opt in with: $RERUN_CMD --system-daemon --enable-timer)."
+    fi
+    echo "To check immediately, run as $(id -un):"
     echo "    \"$DEST_BIN\" update      (or: rollback)"
     echo "or, from an administrator account:  sudo -u $(id -un) -H \"$DEST_BIN\" update"
     exit 0
