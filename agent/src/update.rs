@@ -3960,7 +3960,13 @@ mod tests {
     #[test]
     fn a_missing_install_is_refused_with_the_installer_named() {
         let home = tempfile::tempdir().unwrap();
-        let err = resolve_install(home.path(), LAUNCHD_LABEL).expect_err("nothing installed");
+        // A label no real install uses: the system-domain lookup is
+        // `/Library/LaunchDaemons/<label>.plist`, so with the shipped label a
+        // Mac holding a real system-daemon install would answer instead of
+        // the empty HOME (#532). The shipped path is not redirected.
+        let label = format!("app.solador.agent.test-{}", std::process::id());
+        assert!(valid_launchd_label(&label), "{label}");
+        let err = resolve_install(home.path(), &label).expect_err("nothing installed");
         match std::env::consts::OS {
             "linux" | "macos" => {
                 assert!(matches!(err, UpdateError::Install(_)), "{err}");

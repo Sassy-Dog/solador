@@ -2535,11 +2535,15 @@ async fn rollback_that_does_not_come_back_is_reported_and_left_reversible() {
 fn the_cli_refuses_an_empty_home_and_an_unknown_argument_before_doing_anything() {
     let real = PathBuf::from(env!("CARGO_BIN_EXE_solador-agent"));
     let home = tempfile::tempdir().unwrap();
+    let label = format!("app.solador.agent.test-{}", std::process::id());
     for cmd in ["update", "rollback"] {
         let out = Command::new(&real)
             .arg(cmd)
             .env("HOME", home.path())
-            .env_remove("SOLADOR_AGENT_LAUNCHD_LABEL")
+            // A label no real install uses, so the system-domain lookup
+            // (`/Library/LaunchDaemons/<label>.plist`) misses on a Mac that
+            // has a real system-daemon install (#532).
+            .env("SOLADOR_AGENT_LAUNCHD_LABEL", &label)
             .env_remove("SOLADOR_AGENT_TOKEN")
             .output()
             .unwrap();
