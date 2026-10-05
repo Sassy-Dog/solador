@@ -44,7 +44,7 @@ fn identity() -> Identity {
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("certificate");
     Identity {
         cert_der: generated.cert.der().to_vec(),
-        key_der: generated.key_pair.serialize_der(),
+        key_der: generated.signing_key.serialize_der(),
     }
 }
 

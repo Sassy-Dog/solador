@@ -660,6 +660,8 @@ async fn serve_health_tls(
 ) -> Option<u16> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let listener = std::net::TcpListener::bind(format!("{bind}:0")).ok()?;
+    // axum-server 0.8 no longer does this itself, and tokio requires it.
+    listener.set_nonblocking(true).ok()?;
     let port = listener.local_addr().unwrap().port();
     let config = axum_server::tls_rustls::RustlsConfig::from_der(
         vec![material.cert_der.clone()],
@@ -672,6 +674,7 @@ async fn serve_health_tls(
         .with_state(served);
     tokio::spawn(async move {
         axum_server::from_tcp_rustls(listener, config)
+            .unwrap()
             .serve(app.into_make_service())
             .await
             .unwrap();

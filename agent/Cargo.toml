@@ -114,7 +114,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # workspace's one crypto backend, and rcgen's alternative pulls in
 # `aws-lc-sys`, a C/cmake build the musl cross-compile (`cargo-zigbuild`, no
 # Docker on the runner) does not need and should not gain.
-rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 # Only for `rustls::crypto::ring::default_provider().install_default()`
 # (main.rs's TLS startup path): rustls needs a process-wide default crypto
 # provider installed once, and axum-server's "tls-rustls-no-provider" feature
@@ -124,16 +124,16 @@ rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 # to 0.23.0) — a MINIMUM, via cargo's ordinary caret requirement (a later
 # 0.23.x is still allowed and wanted), not an exact pin: RUSTSEC-2026-0285.
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
-# The TLS server itself: `axum_server::bind_rustls` around the same `Router`
-# the plain-HTTP path serves. The floor is 0.7.3, not "0.7" (a bare "0.7"
-# would let cargo resolve down to 0.7.0) — a MINIMUM, via cargo's ordinary
-# caret requirement (a later 0.7.x is still allowed and wanted), not an
-# exact pin — and on the "tls-rustls-no-provider" feature specifically —
-# NOT the crate's own default "tls-rustls", which pulls `rustls/aws-lc-rs`
-# unconditionally (the same C/cmake backend `rcgen` above is kept off);
-# "tls-rustls-no-provider" was added between 0.7.0 and 0.7.3, so the floor
-# is load-bearing, not habit.
-axum-server = { version = "0.7.3", default-features = false, features = ["tls-rustls-no-provider"] }
+# The TLS server itself: `axum_server::from_tcp_rustls` around the same
+# `Router` the plain-HTTP path serves, on the "tls-rustls-no-provider"
+# feature specifically — NOT "tls-rustls", which pulls `rustls/aws-lc-rs`
+# unconditionally (the same C/cmake backend `rcgen` above is kept off).
+# Since 0.8 `from_tcp_rustls` hands the listener straight to tokio's
+# `TcpListener::from_std` and no longer switches it to non-blocking mode
+# itself (0.7 did, inside `serve`), so every listener given to it must
+# already be non-blocking: main.rs's comes from tokio's `into_std()`, and the
+# tests set it by hand.
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 
 [target.'cfg(unix)'.dependencies]
 # `getuid` for the launchd `gui/<uid>` domain, `getpwuid_r` for the invoking

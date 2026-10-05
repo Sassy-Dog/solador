@@ -417,8 +417,13 @@ async fn serve_tls(app: axum::Router, addr: &str, bind_host: &str, hostname: &st
             std::process::exit(1);
         }
     };
-    let std_listener = match tokio_listener.into_std() {
-        Ok(l) => l,
+    // Since axum-server 0.8 `from_tcp_rustls` registers the listener with
+    // tokio eagerly and can fail, so it is part of preparing the socket.
+    let server = match tokio_listener
+        .into_std()
+        .and_then(|l| axum_server::from_tcp_rustls(l, rustls_config))
+    {
+        Ok(s) => s,
         Err(e) => {
             eprintln!("FATAL: could not prepare {addr} for TLS: {e}");
             std::process::exit(1);
@@ -433,10 +438,7 @@ async fn serve_tls(app: axum::Router, addr: &str, bind_host: &str, hostname: &st
         VERSION.map_or_else(|| "(no version)".to_string(), |v| format!("v{v}"))
     );
 
-    if let Err(e) = axum_server::from_tcp_rustls(std_listener, rustls_config)
-        .serve(app.into_make_service())
-        .await
-    {
+    if let Err(e) = server.serve(app.into_make_service()).await {
         eprintln!("FATAL: server error: {e}");
         std::process::exit(1);
     }
