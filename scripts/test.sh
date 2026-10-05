@@ -7,6 +7,10 @@ source "$SCRIPT_DIR/config.sh"
 
 log_info "Running tests for $APP_NAME"
 
+# Selection is cheap to test locally; local validation itself stays unconditional.
+log_info "Running CI selection regression tests (Python 3.11+)…"
+python3 -B -m unittest -v scripts.ci_changes_test
+
 # --- Rust workspace (crates/*, app/src-tauri, agent). One workspace, so
 # --workspace covers the agent too.
 # Skip-with-a-warning when the toolchain is absent, matching how the frontend

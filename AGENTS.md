@@ -96,6 +96,10 @@ coverage it does not have would be worse than the checklist.
 
 ## Development Workflow
 
+CI selects work by changed paths; see [docs/CI.md](docs/CI.md) for the matrix,
+merge-queue handling and required-check failure guard. Local test/lint commands
+remain full validation and include the Python 3.11+ CI-selection regression suite.
+
 ### Quick Commands
 - `./dev` — Build and run (debug)
 - `./dev run --release` — Run release build
@@ -182,8 +186,8 @@ it" were two different claims. So the build now asserts `lipo -archs` reports
 both slices, and checks the deployment floor **per architecture** — `vtool` on
 a fat binary prints one block per slice, and reading only the first verifies
 half the artifact while reporting on all of it. CI runs the same path at
-the debug profile on every PR (`./dev build --bundle`, job **macOS bundle
-(unsigned)**), so bundling cannot break unnoticed the way the agent deploy did
+the debug profile for app/backend/build changes (`./dev build --bundle`,
+job **macOS bundle (unsigned)**), so bundling cannot break unnoticed the way the agent deploy did
 in #269.
 
 `./dev build --release --notarize` produces a **signed, notarized, stapled
@@ -1032,8 +1036,8 @@ the tag refs a fetch moves) exists once. Its order is the pin
 **`MARKETING_VERSION` never reaches the agent**; it is a desktop release's
 number. `scripts/build-agent.sh` takes the same pin, else `--agent-version`, for
 its `--version` assertion and the artifact names, so `./dev agent` (and CI's
-musl build on every PR) is a `+dev` build that passes. `solador-agent --version`
-prints it and nothing else — a contract both `agent/deploy/lib.sh` and the
+musl build for agent/build changes) is a `+dev` build that passes.
+`solador-agent --version` prints it and nothing else — a contract both `agent/deploy/lib.sh` and the
 release workflow read directly — and `/v1/health` serves the same string.
 `agent/Cargo.toml`'s semver is unpublished metadata in exactly the sense
 `app/src-tauri`'s `0.1.0` is, kept as the wire-contract marker and read by
@@ -1043,8 +1047,8 @@ nothing at runtime.
 month (and the agent's `+dev` count is commits since its base), and a
 `fetch-depth: 1` checkout answers that question with `1` instead of
 failing — CI's bundle job already pins `fetch-depth: 0` for exactly this reason,
-and the other jobs are still shallow (`agent-tests` unshallows inside the one
-step that needs a version, its musl build). So the build script checks
+and selection also fetches full history; the other jobs are still shallow
+(`agent-tests` unshallows inside the one step that needs a version, its musl build). So the build script checks
 `--is-shallow-repository` and emits *no* version there; About renders `Version —`
 and the Sentry release is omitted entirely. Sentry groups and regresses by
 release, so a placeholder is worse than nothing: every un-nameable build would
@@ -1616,8 +1620,9 @@ derivation and mint, and `publish --agent`, are tested in
   (dependency-free bash; stubs cargo/curl/sleep and, since #392, every host
   command `install.sh` drives — uname, sw_vers, systemctl, launchctl — and
   runs the installer end to end against a temporary HOME) plus
-  `shellcheck`/`bash -n`, all three in the `agent-tests` job. Before that the
-  deploy path was the one place where "all green" carried no information —
+  `shellcheck`/`bash -n`, all three in the `agent-tests` job;
+  helper checks are selected for deploy/helper changes (see docs/CI.md). Before
+  that the deploy path was the one place where "all green" carried no information —
   #264 broke every deploy (fixed in #268) and nothing could have caught it. Two assertions are
   load-bearing. `build_release_binary` *fails* when the workspace target dir is
   empty: a lenient fallback finds the stale pre-#264 binary in
@@ -1638,8 +1643,8 @@ derivation and mint, and `publish --agent`, are tested in
   (#390). `build-agent.sh`'s full run — all four targets, signed — happens only
   in `release-agent.yml` on an `agent-v*` tag, so an ungated break there surfaces mid-release
   — the #269 shape again, on the path with no second chance. Its build half runs
-  on every PR for one target (#457): `agent-tests` ("Rust agent") runs `./dev
-  agent --targets x86_64-unknown-linux-musl`, which asserts the ELF is static
+  for one target on agent/build changes (#457): `agent-tests` ("Rust agent")
+  runs `./dev agent --targets x86_64-unknown-linux-musl`, which asserts the ELF is static
   and reads `--version` back out of it. The aarch64 and darwin builds (including
   the macOS floor check), release-agent.yml's per-target `--version` run and the
   signing still run only at release. The whole directory is covered rather than
