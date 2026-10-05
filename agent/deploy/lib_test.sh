@@ -2234,7 +2234,7 @@ FIXTURES="$TMP/fixtures"
 DEPLOY_SOURCE_FILES="install.sh lib.sh run-agent.sh solador-agent.service \
     app.solador.agent.plist solador-agent-update.service \
     solador-agent-update.timer app.solador.agent.update.plist update-guard.sh \
-    app.solador.agent.daemon.plist"
+    app.solador.agent.daemon.plist app.solador.agent.update.daemon.plist"
 
 # Lay out a copy of agent/deploy plus the given public key as
 # agent/release-signing-key.pub.
@@ -8253,6 +8253,9 @@ STUB
     assert_eq "--system-daemon: the rendered plist is mode 0644 even under umask 002" "644" "$(file_mode "$dplist")"
     [ -e "$agent_plist" ] && fail "--system-daemon renders no per-user LaunchAgent plist" "$agent_plist exists" \
         || pass "--system-daemon renders no per-user LaunchAgent plist"
+    [ -e "$home/.config/app.solador.agent.update.daemon.plist" ] \
+        && fail "daemon updates stay off without opt-in" "updater was staged" \
+        || pass "daemon updates stay off without opt-in"
     if [ -s "$STUB_LAUNCHCTL_ARGV" ]; then
         fail "--system-daemon bootstraps nothing: launchctl is never called" "$(cat "$STUB_LAUNCHCTL_ARGV")"
     else
@@ -8300,16 +8303,94 @@ STUB
         skip "the rendered daemon plist carries the expected keys" "python3 not on PATH"
     fi
 
-    # ---- --enable-timer, refused in this mode (either order) ----
+    # ---- opt-in update daemon: staged as this user, loaded only by root ----
     rm -rf "$ctl_home"
     mkdir -p "$ctl_home"
     reset_argv_logs
-    run_install "$ctl_home" --system-daemon --enable-timer
-    assert_eq "--system-daemon --enable-timer is refused (usage error)" "2" "$INSTALL_STATUS"
-    assert_output_has "the --enable-timer refusal says there is no update job in daemon mode" "$(cat "$INSTALL_OUT")" "no update job in daemon"
+    INSTALL_STDIN="daemon-update-token\n" run_install "$ctl_home" --system-daemon --enable-timer
+    assert_eq "--system-daemon --enable-timer stages without a login session" "0" "$INSTALL_STATUS"
+    local update_daemon="$ctl_home/.config/app.solador.agent.update.daemon.plist"
+    local update_check="missing"
+    if [ -f "$update_daemon" ]; then
+        pass "daemon opt-in stages the update plist"
+        if command -v python3 >/dev/null 2>&1; then
+        update_check="$(python3 - "$update_daemon" "$user" "$group" "$ctl_home" <<'PY'
+import plistlib, sys
+path, user, group, home = sys.argv[1:]
+with open(path, 'rb') as stream:
+    d = plistlib.load(stream)
+expected = [home+'/.local/bin/solador-agent-launchd', home+'/.local/bin/solador-agent',
+            home+'/.config/solador-agent.env', home+'/Library/Logs/solador-agent-update.log', 'update']
+ok = (d.get('Label') == 'app.solador.agent.update'
+      and d.get('UserName') == user and d.get('GroupName') == group
+      and d.get('ProgramArguments') == expected
+      and d.get('EnvironmentVariables') == {'HOME': home, 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+          'SOLADOR_AGENT_LAUNCHD_LABEL': 'app.solador.agent'}
+      and d.get('StartInterval') == 86400 and d.get('ProcessType') == 'Background'
+      and d.get('StandardOutPath') == d.get('StandardErrorPath') == expected[3]
+      and not any(k in d for k in ('RunAtLoad', 'KeepAlive', 'StartCalendarInterval', 'SessionCreate')))
+print('ok' if ok else 'mismatch')
+PY
+)"
+        fi
+        assert_eq "the update daemon plist is mode 0644" "644" "$(file_mode "$update_daemon")"
+        if grep -q 'daemon-update-token\|@[A-Z_]*@' "$update_daemon"; then
+            fail "update daemon contains neither tokens nor unresolved placeholders" "found one"
+        else
+            pass "update daemon contains neither tokens nor unresolved placeholders"
+        fi
+    else
+        fail "daemon opt-in stages the update plist" "missing"
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        assert_eq "update daemon runs the guarded daily updater as the service user" "ok" "$update_check"
+    else
+        skip "update daemon runs the guarded daily updater as the service user" "python3 not on PATH"
+    fi
+    assert_output_has "opt-in prints the separate root update-daemon load step" "$(cat "$INSTALL_OUT")" \
+        "sudo launchctl bootstrap system /Library/LaunchDaemons/app.solador.agent.update.plist"
+    if [ -s "$STUB_LAUNCHCTL_ARGV" ] || [ -s "$sudo_log" ] || grep -q 'v1/health' "$STUB_CURL_ARGV" || grep -qx update "$AGENT_ARGV"; then
+        fail "staging an update daemon starts no job, health probe or update" "a runtime action was recorded"
+    else
+        pass "staging an update daemon starts no job, health probe or update"
+    fi
+    [ -e "$ctl_home/Library/LaunchAgents/app.solador.agent.update.plist" ] \
+        && fail "daemon opt-in creates no update LaunchAgent" "found one" \
+        || pass "daemon opt-in creates no update LaunchAgent"
+    if [ -f "$update_daemon" ]; then
+        printf '\n<!-- preserve existing opt-in -->\n' >> "$update_daemon"
+        cp "$update_daemon" "$TMP/update-daemon-before"
+        run_install "$ctl_home" --system-daemon
+        assert_eq "a daemon re-run without opt-in succeeds" "0" "$INSTALL_STATUS"
+        cmp -s "$update_daemon" "$TMP/update-daemon-before" \
+            && pass "no-flag daemon re-run leaves the update job unchanged" \
+            || fail "no-flag daemon re-run leaves the update job unchanged" "changed or removed"
+    fi
     run_install "$ctl_home" --enable-timer --system-daemon
-    assert_eq "--enable-timer --system-daemon is refused in the other order too" "2" "$INSTALL_STATUS"
-    assert_untouched "a refused --system-daemon --enable-timer changes nothing" "$ctl_home"
+    assert_eq "daemon opt-in works with flags in either order" "0" "$INSTALL_STATUS"
+    reset_argv_logs
+    run_install "$ctl_home" --uninstall --system-daemon
+    assert_eq "daemon uninstall with an updater succeeds without a GUI domain" "0" "$INSTALL_STATUS"
+    [ -e "$update_daemon" ] && fail "daemon uninstall removes the staged updater" "still exists" \
+        || pass "daemon uninstall removes the staged updater"
+    assert_output_has "daemon uninstall prints the root updater unload before removal" "$(cat "$INSTALL_OUT")" \
+        "sudo launchctl bootout system/app.solador.agent.update"
+    if [ -s "$STUB_LAUNCHCTL_ARGV" ] || [ -s "$sudo_log" ]; then
+        fail "daemon updater uninstall runs no privileged or launchctl command" "a call was recorded"
+    else
+        pass "daemon updater uninstall runs no privileged or launchctl command"
+    fi
+    rm -rf "$ctl_home"
+    mkdir -p "$ctl_home"
+    reset_argv_logs
+    run_install "$ctl_home" --system-daemon --verify --enable-timer
+    assert_eq "verification cannot silently ignore an update opt-in" "2" "$INSTALL_STATUS"
+    assert_untouched "verify with enable-timer changes nothing" "$ctl_home"
+    mv "$CHECKOUT/agent/deploy/app.solador.agent.update.daemon.plist" "$TMP/update-daemon-template"
+    run_install "$ctl_home" --system-daemon --enable-timer
+    assert_eq "an incomplete checkout cannot stage a daemon updater" "1" "$INSTALL_STATUS"
+    assert_untouched "a missing update daemon template is refused before installation" "$ctl_home"
+    mv "$TMP/update-daemon-template" "$CHECKOUT/agent/deploy/app.solador.agent.update.daemon.plist"
     # control: --enable-timer alone is not refused on this platform (per-user path)
     STUB_LAUNCHCTL_DOMAIN_EXIT=0 INSTALL_STDIN="ctl-tok
 " run_install "$ctl_home" --enable-timer

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Opt-in unattended updater for a system-domain metrics daemon. The installer
+  renders this as the service user; the operator reviews, copies and loads it
+  as root. UserName keeps the updater unprivileged, with the same identity and
+  HOME as the metrics daemon. It needs no GUI login or SessionCreate.
+
+  This is a separate job: update signals the metrics process, waits for
+  KeepAlive to relaunch it, and verifies health or restores the previous binary.
+  Running update inside that process would kill its own verifier.
+
+  Like the update LaunchAgent, it uses run-agent.sh's wake/boot and 23-hour
+  guards, a system-only PATH, and StartInterval for daily checks without
+  catch-up. No RunAtLoad, KeepAlive or calendar schedule: loading this job
+  performs no check, and a failure is not retried until the next interval.
+  The launcher reads no token into the environment in update mode; update
+  reads the env file itself. Neither credentials nor a checkout belong here.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>@LABEL@</string>
+    <key>UserName</key>
+    <string>@USER@</string>
+    <key>GroupName</key>
+    <string>@GROUP@</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@LAUNCHER@</string>
+        <string>@BINARY@</string>
+        <string>@ENV_FILE@</string>
+        <string>@LOG_FILE@</string>
+        <string>update</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>@HOME@</string>
+        <key>SOLADOR_AGENT_LAUNCHD_LABEL</key>
+        <string>@METRICS_LABEL@</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>86400</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>@LOG_FILE@</string>
+    <key>StandardErrorPath</key>
+    <string>@LOG_FILE@</string>
+</dict>
+</plist>

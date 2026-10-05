@@ -1117,11 +1117,18 @@ derivation and mint, and `publish --agent`, are tested in
   `--enable-timer` do). Nothing is running until
   root loads it, so the `/v1/health` check and the TLS fingerprint belong to the
   follow-up `--system-daemon --verify` run. Refused: root, a non-macOS platform,
-  `--enable-timer` (no update job in daemon mode), and an existing per-user
-  LaunchAgent install for the same user. `solador-agent update`/`rollback`
+  and an existing per-user LaunchAgent install for the same user.
+  `solador-agent update`/`rollback`
   support this mode (#507): run **as the service user** (`sudo -u <svc> -H
-  ~<svc>/.local/bin/solador-agent update`), never as root, with no unattended
-  job. See the `update`/`rollback` bullet below for the mechanism. Exit 0 means
+  ~<svc>/.local/bin/solador-agent update`), never as root. Adding
+  `--enable-timer` stages `app.solador.agent.update.daemon.plist` as a second,
+  daily LaunchDaemon under the same service user and prints its own root
+  copy/load step. It uses the existing launcher guards, system-only PATH and
+  `StartInterval=86400`, with no `RunAtLoad`, `KeepAlive` or catch-up. No-flag
+  re-runs preserve the updater; uninstall removes its staged plist and prints
+  the updater's root unload before the metrics daemon's. Scheduling is not
+  inferred from staging. See the `update`/`rollback` bullet below for the
+  mechanism. Exit 0 means
   *staged* on install, not serving.
   `--uninstall --system-daemon` removes the user files and prints the root
   `bootout`/remove step. `agent/README.md`'s "Running as a system daemon under a
@@ -1500,15 +1507,19 @@ derivation and mint, and `publish --agent`, are tested in
   `EnvironmentFile=`, `SuccessExitStatus=4`), a second LaunchAgent on macOS
   (`agent/deploy/app.solador.agent.update.plist`, label `<metrics
   label>.update`, `StartInterval=86400`, no `RunAtLoad`, `ProgramArguments`
-  = the same launcher plus the literal `update`). Separate because `update`
+  = the same launcher plus the literal `update`), or with `--system-daemon`
+  a second LaunchDaemon with the same cadence and service-user identity.
+  Separate because `update`
   restarts the metrics service and then verifies and restores it; inside
   that service it would kill its own verifier. A default install creates
   **nothing** and makes no check; a re-run without the flag leaves an
   earlier opt-in exactly as it is (files, enablement, phase) and says so —
   revocation is the documented disable/remove commands
   (`agent/README.md`, **Unattended updates**), or `install.sh --uninstall`,
-  which removes it along with everything else (#439). The job is created only
-  *after* the metrics install verified, and refused before anything is
+  which removes it along with everything else (#439); daemon mode additionally
+  needs `--system-daemon` and root's printed unload steps. The job is created only
+  *after* the metrics install verified for per-user installs; daemon mode
+  stages both jobs for root to load and the operator to verify. Opt-in is refused before anything is
   created as root, on an unwritable install directory or binary, and on an
   unmigrated `/opt` host (`--migrate-from-opt --enable-timer` does both).
   **Cadence is the recorded decision, daily with no catch-up**, and each

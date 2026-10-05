@@ -1258,7 +1258,7 @@ LaunchAgent stays down after an unattended reboot until someone logs in at the
 console, which is wrong for a dedicated, non-login service user (the org's agent
 management spec, §1.3 and §5.3, requires one). `install.sh --system-daemon` is a
 **two-step install**: the service user stages everything it owns, and **root
-only loads one plist**. The script never runs `sudo`, never calls `launchctl
+only loads the rendered plists**. The script never runs `sudo`, never calls `launchctl
 bootstrap system`, and refuses to run as root — the privileged step is printed
 for an operator or provisioner to run.
 
@@ -1302,8 +1302,7 @@ before anything changes: **root**; a platform that is **not macOS**
 (Linux already has user units with linger); an existing **per-user LaunchAgent
 install** for the same user (its plist, or the updater's — remove it first with
 `./deploy/install.sh --uninstall` from a login session, so two agents never
-fight over the port); and **`--enable-timer`**, which has no meaning here. There
-is no unattended update job in daemon mode, but `solador-agent update` and
+fight over the port). `solador-agent update` and
 `rollback` work (#507, the org's agent management spec §5.3), **run as the
 service user, never as root**:
 
@@ -1332,7 +1331,50 @@ running*; `--verify` exits 0 only when `/v1/health` reports the installed
 version; `--uninstall --system-daemon` exits 0 when the user files are gone,
 with the root unload printed and not confirmed. `--verify` needs
 `--system-daemon` and does not combine with `--uninstall`, `--enable-tls` or
-`--migrate-from-opt`.
+`--migrate-from-opt` or `--enable-timer`.
+
+### Optional daily updates for the daemon
+
+As the service user, run `./deploy/install.sh --system-daemon --enable-timer`.
+Alongside the metrics plist this renders
+`~/.config/app.solador.agent.update.daemon.plist`. Review its `UserName`,
+`GroupName`, `HOME` and paths, then load the separate updater as root:
+
+```bash
+sudo install -o root -g wheel -m 644 ~svc/.config/app.solador.agent.update.daemon.plist /Library/LaunchDaemons/app.solador.agent.update.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/app.solador.agent.update.plist
+sudo launchctl print system/app.solador.agent.update
+```
+
+The updater runs as the **service user**, even though root loads its plist.
+It uses the same launcher, signed feed, health verification and rollback as
+manual `update`. `StartInterval=86400` schedules daily checks with the existing
+wake/boot and 23-hour guards; there is no `RunAtLoad`, `KeepAlive` or calendar
+schedule. Loading it performs no check; the first is 24 hours later. It works
+with nobody logged in, and starts a fresh interval after reboot. The update
+log is `~svc/Library/Logs/solador-agent-update.log`. A failed check is retried
+at the next daily interval, never in a restart loop.
+
+The installer only **stages** this job; it does not claim it is loaded. A
+re-run without `--enable-timer` leaves the existing update plist untouched.
+A re-run with the flag regenerates it; if root already loaded it, root must
+boot out `system/app.solador.agent.update` before copying and loading the new
+plist. That reload starts a new 24-hour interval. Updates remain off by
+default, so hosts pinned by a provisioner need not opt in.
+
+To disable unattended updates while keeping the metrics daemon, run as root:
+
+```bash
+sudo launchctl bootout system/app.solador.agent.update
+sudo rm /Library/LaunchDaemons/app.solador.agent.update.plist
+```
+
+The service user may also remove the staged
+`~/.config/app.solador.agent.update.daemon.plist`; staging alone never runs it.
+For an immediate check, run the manual `update` command above as the service
+user; it deliberately does not apply the scheduling guard.
+
+### Removing the daemon
 
 To remove it, run `./deploy/install.sh --uninstall --system-daemon` as the
 service user (add `--purge` to delete the token and TLS keypair too). It removes
@@ -1342,6 +1384,10 @@ runs no `launchctl` and no `sudo`, and prints the matching root step:
 ```bash
 sudo launchctl bootout system/app.solador.agent && sudo rm /Library/LaunchDaemons/app.solador.agent.plist
 ```
+
+If the update daemon was staged or its system plist exists, uninstall also
+removes its staged plist and prints its root bootout/remove step **first**.
+Root must unload both jobs; removing user-owned files alone cannot stop them.
 
 ## Moving the agent to another user
 
@@ -1577,24 +1623,28 @@ current, anything else is a failed run that stays visible as one — there is
 no retry loop, and a failed attempt is next tried the following day.
 
 **Cadence: daily, no catch-up** (decision recorded on #394). One check per
-24 hours while your session is up. The first check is a day after enabling,
+24 hours while the job's service manager is up. The first check is a day after enabling,
 never at enable time. A check whose moment falls while the machine is asleep,
-or while nobody is logged in, is **discarded**: it is not run at wake, login
+or while its service manager is stopped, is **discarded**: it is not run at wake, login
 or boot to make up for the miss, and several missed intervals are not
 coalesced into one late run. A session restart begins a fresh day. On macOS
-this is a login-session job like the metrics agent — no boot-without-login
-promise — and on Linux it lives in your user manager, which `loginctl
-enable-linger` keeps up across logouts (the installer enables that, best
+the default is a login-session job like the metrics agent. With
+`--system-daemon --enable-timer`, it is instead a LaunchDaemon that runs
+without a login, as described above. On Linux it lives in your user manager,
+which `loginctl enable-linger` keeps up across logouts (the installer enables that, best
 effort).
 
 **Consent is preserved, and revoked only by you.** A re-run of the installer
 *without* the flag leaves an enabled job exactly as it is (its files and its
-enablement) and reports what the service manager says about it — enabled /
-loaded, present but paused, or off — never re-enabling a job you paused; a
+enablement), never re-enabling a job you paused. Per-user mode reports the
+manager's state — enabled / loaded, present but paused, or off; daemon mode
+reports staging only and prints the system-domain inspection command. A
 re-run *with* the flag regenerates the job's files from the checkout
 (exactly like the metrics unit or plist) and never creates a second copy.
 The disable/remove commands below take it away on its own, and
-`install.sh --uninstall` takes it away along with everything else. A fresh
+`install.sh --uninstall` takes it away along with everything else for per-user
+installs. Daemon installs use `--uninstall --system-daemon` followed by the
+printed root unload steps. A fresh
 install without the flag never has one. One timing effect of any re-run on
 Linux: the installer's `daemon-reload` re-bases a timer that has **not yet
 fired** to the reload time, so a first check due in an hour becomes one due
@@ -1603,7 +1653,7 @@ in **before #411** keeps its unguarded oneshot across no-flag re-runs; the
 summary line then reads `enabled but UNGUARDED` rather than `enabled`, and
 one re-run *with* the flag is how the guard arrives.
 
-**Exit status.** The installer exits `0` when the agent is installed and
+**Exit status for per-user installs.** The installer exits `0` when the agent is installed and
 serving (and, with the flag, scheduled); `1` when the install failed or was
 refused; `2` on a bad argument; and **`3`** when the metrics service *is*
 installed and serving but the opt-in failed — the `==> Done` block above the
@@ -1616,8 +1666,9 @@ explicit `--migrate-from-opt` first — both flags together do it in one run;
 and, on Linux, when the *running* user manager is older than systemd 243
 (RHEL 8, Ubuntu 18.04) or will not say its version, because `ExecCondition=`
 would be ignored there and the updater would run unguarded.
-The job is also only ever created *after* the metrics install verified, so a
-failed install never records consent.
+For a per-user install the job is created only *after* the metrics install
+verified. Daemon mode stages both plists and leaves loading and checking the
+jobs to the operator; its exit 0 means staged, not serving or scheduled.
 
 ### Linux: `solador-agent-update.timer` + `.service` + the guard
 
@@ -1740,9 +1791,12 @@ silent-skip shape above.
 
 ### macOS: `app.solador.agent.update`
 
-A second LaunchAgent, `~/Library/LaunchAgents/app.solador.agent.update.plist`,
+The default is a second LaunchAgent, `~/Library/LaunchAgents/app.solador.agent.update.plist`,
 in the same `gui/<uid>` domain as the metrics one — always `<metrics
 label>.update`, so `launchctl kickstart -k` of one never touches the other.
+For `--system-daemon`, use the separate system-domain updater described in
+**Optional daily updates for the daemon** above; the launcher and guard below
+are shared by both modes, while the commands below target the login-session job.
 Its `ProgramArguments` are the metrics launcher's, plus the word `update`;
 in that mode `solador-agent-launchd` exports nothing from the env file and
 `exec`s `solador-agent update`, so the exit status launchd records is the
@@ -1769,7 +1823,7 @@ guard that cannot read a clock, finds that stamp unreadable, or cannot
 write it, **holds** the check with exit **`6`** — a code the agent never
 uses, so `launchctl print`'s `last exit code` cannot show a permanently
 held job as a good day — and names what to fix in the log. The guard covers
-the LaunchAgent only — a `solador-agent update` you type runs now. The
+the scheduled LaunchAgent and LaunchDaemon — a `solador-agent update` you type runs now. The
 plist's `PATH` is the four system directories and nothing else: this job
 needs no container CLI, and a process that reads the token and renames a
 binary over the service, unattended, must not resolve a command under a

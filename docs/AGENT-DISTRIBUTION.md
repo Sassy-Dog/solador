@@ -530,7 +530,8 @@ status command and the log path.
 **Unattended checking ships off by default**, opt-in at install
 (`--enable-timer`, SHIPPED, #394): a systemd user timer + oneshot on Linux
 (`solador-agent-update.timer` / `.service`), a second LaunchAgent on macOS
-(`<metrics label>.update`). People running a monitoring agent on their own
+(`<metrics label>.update`), or a second LaunchDaemon with `--system-daemon`.
+People running a monitoring agent on their own
 servers should not get surprise restarts; those who want hands-off can ask.
 A default install creates no job and makes no check; a re-run without the
 flag leaves an earlier opt-in exactly as it is, and the documented
@@ -552,16 +553,18 @@ two of its own for the firings it does not hand to `update`: `0` for one it
 discarded by design, `6` for one it **held** because it could not read a
 clock or its stamp — distinct from every code the agent uses, so a
 permanently held job cannot read as a good day in `launchctl print`. The
-installer itself exits `3`, not `1`, when the metrics install verified but
+installer's per-user path exits `3`, not `1`, when the metrics install verified but
 the opt-in failed, and prints the install's `Done` block before the opt-in
-runs, so a scripted caller can tell the two apart.
+runs, so a scripted caller can tell the two apart. Daemon mode instead stages
+both plists for root to load, with exit 0 meaning staged, not scheduled.
 
 **Scheduling policy — decided 2026-09-09 on #394: daily, no catch-up.** One
 check per 24 hours while the user session/manager is up; never a check at
 enable, boot, login or wake to recover a missed interval; a missed check is
 discarded outright — no replay, no coalescing of several misses into one
-late run; a session restart begins a fresh day; no boot-without-login
-promise on macOS. On Linux the property is the timer's clock:
+late run; a session restart begins a fresh day. The default macOS LaunchAgent
+needs a login; the opt-in LaunchDaemon runs without one and begins a fresh
+interval after reboot. On Linux the property is the timer's clock:
 `OnActiveSec=24h` + `OnUnitActiveSec=24h` are **monotonic**, the first
 firing is a day after the timer starts, later ones a day after the last run
 started, and the monotonic clock pauses through suspend
@@ -1336,7 +1339,17 @@ the same label, `KeepAlive`, `RunAtLoad` and `ThrottleInterval`, and no
 `SessionCreate` (no keychain). What it deliberately omits: the post-install
 `/v1/health` check and the TLS fingerprint, which need a running agent and so
 belong to the follow-up `--system-daemon --verify` (same user, after root's
-step); and any update job (`--enable-timer` is refused). `solador-agent update`
+step). With `--enable-timer`, it also stages
+`~/.config/app.solador.agent.update.daemon.plist` and prints a separate root
+copy/load step for `/Library/LaunchDaemons/app.solador.agent.update.plist`.
+This opt-in job runs as the same service user, using the existing launcher
+guards and system-only PATH, with `StartInterval=86400` and no `RunAtLoad`,
+`KeepAlive` or calendar schedule. Loading it performs no check; the first is
+a day later, with no catch-up. A no-flag re-run preserves it, and uninstall
+removes the staged updater and prints its root unload before the metrics
+daemon's. Staging does not assert scheduling; the operator checks
+`launchctl print system/app.solador.agent.update`. `agent/README.md` documents
+the root load, status and disable commands. `solador-agent update`
 and `rollback` work in this mode (#507, the org's agent management spec §5.3),
 run on demand as the service user and never as root: `resolve_launchd_with`
 adopts `/Library/LaunchDaemons/<label>.plist` only when its `UserName` is the
