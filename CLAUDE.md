@@ -124,8 +124,11 @@ coverage it does not have would be worse than the checklist.
   `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
   does not resolve `crates/updatefeed` or `crates/agentrelease`, and `scripts/tauri-cli-pin-guard.sh`
   (#485: `TAURI_CLI_VERSION` and `Cargo.lock`'s `tauri` must share major.minor,
-  text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh` —
-  the scripts CI's `secrets-guard` job runs; mirrors CI
+  text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh`, and
+  `scripts/claude-dir-guard.sh` (nothing named `.claude` is tracked except
+  `.claude/sassy-dog/<name>.md`) with its negative control
+  `scripts/claude-dir-guard-test.sh` — the scripts CI's `secrets-guard` job
+  runs; mirrors CI
 - `./dev format` — `cargo fmt`
 - `./dev clean` — Clean build artifacts
 - `./dev publish` — mint the CalVer tag, then build a signed, notarized,
@@ -499,6 +502,10 @@ the bundle's floor.
 
 ### Project Structure
 ```
+├── .claude/sassy-dog/      # config the OPTIONAL sassy-dog Claude Code plugin
+│                           #   reads, one .md per skill. The only tracked path
+│                           #   under .claude/ (see .gitignore and Security
+│                           #   Considerations below)
 ├── dev                     # Development entry point
 ├── prd                     # ./dev build --release
 ├── scripts/                # Build and development scripts
@@ -1681,6 +1688,30 @@ has no dump for, rather than paint a layout computed for another one.
 ## Security Considerations
 
 - Never log credentials or tokens (the agent must not echo its bearer token).
+- **`.claude/` is untracked except `.claude/sassy-dog/`**, the config of the
+  optional sassy-dog plugin (the public Sassy-Dog/skills). Nothing reads it
+  unless that plugin is installed, but it is not inert for those who have it:
+  `preflight_commands` runs as a shell command, `tidy-repo.md`'s lists decide
+  what an untracked-file sweep deletes, and the skills read the CHECKED-OUT
+  branch's copy. Review changes there like changes to `scripts/`. Never commit
+  `.claude/settings.json` or `.claude/hooks/`: hooks in a committed settings
+  file run with no trust prompt in parent-trusted, `claude -p`/SDK and cloud
+  sessions, and a cloud session never loads a repository's `enabledPlugins`
+  anyway. Never commit a per-checkout key there (`execution_site` above all:
+  it names the one machine a checkout answers to). `scripts/claude-dir-guard.sh`
+  fails CI on any other tracked `.claude` path, at any depth and in any case.
+- **Check out contributor PRs into a worktree, never into the main checkout.**
+  A branch that force-adds an ignored path (`git add -f .claude/settings.json`)
+  silently overwrites the local ignored copy when it is checked out, and
+  deletes it on switching back, before any CI has run. The guard above keeps
+  such a branch from merging, not from being checked out. A fresh worktree has
+  no ignored files to overwrite, but it does not stop the PR's OWN hooks: a
+  worktree under this checkout's `.claude/worktrees/` is inside a trusted
+  folder, so a `.claude/settings.json` the PR tracks loads there with no
+  prompt. Before starting Claude Code in a contributor's worktree, check
+  `gh pr diff <n> --name-only` for any `.claude` path, or run `main`'s guard
+  against it (`REPO_DIR=<worktree> scripts/claude-dir-guard.sh` from the main
+  checkout), never the PR's own copy, which the PR can edit.
 - Use the OS credential store for all sensitive data; never persist tokens in
   `store.json`.
 - Request minimal token scopes (fine-grained, read-only where possible).

@@ -561,6 +561,12 @@ jobs:
     # scripts/config.sh and `Cargo.lock`'s `tauri` are on different minor
     # trains, and prove that with a mutated copy. Text only: no cargo, no
     # network, so they sit with the credential-free checks of this job.
+    #
+    # The `.claude` pair asserts that nothing named .claude is tracked except
+    # `.claude/sassy-dog/<name>.md`. A tracked .claude/settings.json is hooks
+    # that run with no trust prompt in parent-trusted, `claude -p` and cloud
+    # sessions, and .gitignore cannot stop `git add -f`. It reads only git's
+    # index, so it sits with the other credential-free checks.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -590,6 +596,12 @@ jobs:
 
       - name: The guard refuses what it claims to refuse
         run: scripts/secrets-guard-test.sh
+
+      - name: Nothing named .claude is tracked except .claude/sassy-dog/
+        run: scripts/claude-dir-guard.sh
+
+      - name: The .claude guard refuses what it claims to refuse
+        run: scripts/claude-dir-guard-test.sh
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
