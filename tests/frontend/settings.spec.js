@@ -74,7 +74,7 @@ async function stubIpc(page, cockpit, settings, probe, updates, discover) {
             // `about.updates` shape — not `{status, settings}` — because an
             // update check is not a settings mutation and nothing is
             // persisted. A test that wants a different state passes one.
-            if (command.startsWith("update_")) return updates;
+            if (command.startsWith("update_")) return window.__UPDATES__ || updates;
             return { status: "Saved.", settings };
           },
         },
@@ -1814,7 +1814,10 @@ test("the device key is not a field anyone can type into", async ({ page, baseUR
 });
 
 test("update status, notes and buttons change inside a stable group", async ({ page, baseURL }) => {
-  const failed = { heading:"Updates", status:{text:"Could not check: " + "network unavailable ".repeat(20), color:"#e0a03a"}, notes:null, checkLabel:"Check for updates", installLabel:null, help:"Solador checks once when it starts." };
+  // `help` is one constant in Rust (`update::HELP`) and carries no fixed height
+  // (#540), so the stub must not vary it between the two renders.
+  const settings = await fixture(baseURL, "sample-settings.json");
+  const failed = { heading:"Updates", status:{text:"Could not check: " + "network unavailable ".repeat(20), color:"#e0a03a"}, notes:null, checkLabel:"Check for updates", installLabel:null, help:settings.about.updates.help };
   await openSettings(page, baseURL, null, failed);
   await tab(page, "about").click();
   const group = page.locator('.group[data-group="updates"]');
@@ -1822,6 +1825,128 @@ test("update status, notes and buttons change inside a stable group", async ({ p
   await group.locator('.check-updates').click();
   await expect(group.locator('.update-status')).toHaveText(failed.status.text);
   expect(await group.boundingBox()).toEqual(before);
+});
+
+// The real v2026.10.47 release body (`gh release view`), pasted so CI stays hermetic.
+const RELEASE_NOTES_V2026_10_47 = [
+  "The Windows installer is Authenticode-signed via Azure Trusted Signing (publisher: Sassy Dog Enterprises LLC) and RFC 3161-timestamped. The macOS disk image is Developer ID-signed and notarized.",
+  "",
+  "## What's Changed",
+  "* feat(agent): own CalVer, agent-v mint, and agent-v feed producer + installer (#472) by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/494",
+  "* ci: agent-v release and publish-agent-feed workflows, desktop-only publish-feed (#472) by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/495",
+  "* docs(versioning): declare the agent release-counter mint as a deviation from \u00a77 by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/499",
+  "* feat(cockpit): show a verified agent update available per host by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/500",
+  "* feat(agent): install.sh carries only documented env-file keys (#496) by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/501",
+  "* test(cockpit): permanent guard that the agent-release client stays HTTPS-only by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/503",
+  "* feat(agent): opt-in tailnet-only bind, SOLADOR_AGENT_REQUIRE_TAILNET=1 (#497) by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/504",
+  "* feat(agent): install.sh --system-daemon, service user stages and root loads a LaunchDaemon (macOS) by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/508",
+  "* feat(agent): update/rollback a system-domain LaunchDaemon (SIGTERM + KeepAlive, macOS) by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/509",
+  "* Add machine meters, configurable repo tables and runner groups by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/510",
+  "* Tighten dashboard tile heading spacing by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/511",
+  "* Make machine CPU and RAM alert thresholds configurable by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/512",
+  "* Add compact Detail tables and a saved Table/List switch by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/513",
+  "* Unify detail styling and stabilize live table columns by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/514",
+  "* fix: make runner group clicks open inline Detail by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/515",
+  "* fix: compact the Overview app header by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/516",
+  "* feat(screenshots): showcase fixtures with exactly one tile out of true, at 2x by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/517",
+  "* Fix duplicate repository count labels at wide widths by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/518",
+  "* Report thermal state from remote Macs by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/519",
+  "* feat(agent): enable daily updates for macOS system daemons by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/520",
+  "* ci: select builds and tests by changed areas by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/521",
+  "* feat: remember window size and position by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/522",
+  "* feat(site): solador.app, a static marketing site deployed by GitHub Pages by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/523",
+  "* chore(deps): bump tauri-plugin-opener from 2.5.5 to 2.7.0 by @dependabot[bot] in https://github.com/Sassy-Dog/solador/pull/528",
+  "* chore(deps): bump starship-battery from 0.11.1 to 0.12.0 by @dependabot[bot] in https://github.com/Sassy-Dog/solador/pull/525",
+  "* chore(deps): bump tokio-rustls from 0.26.4 to 0.26.6 by @dependabot[bot] in https://github.com/Sassy-Dog/solador/pull/530",
+  "* chore(deps): bump tauri-plugin-notification from 2.4.0 to 2.5.1 by @dependabot[bot] in https://github.com/Sassy-Dog/solador/pull/526",
+  "* chore(deps): bump rcgen to 0.14 and axum-server to 0.8 by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/531",
+  "* chore(deps): bump tauri-plugin-updater from 2.13.0 to 2.13.1 by @dependabot[bot] in https://github.com/Sassy-Dog/solador/pull/527",
+  "* test(agent): make two update tests independent of the host's system daemon by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/534",
+  "* fix(localhost): report no battery when the platform cannot state a capacity by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/535",
+  "* chore: track the sassy-dog plugin config, and guard everything else in .claude/ by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/536",
+  "* docs: make AGENTS.md the single agent-instruction source; CLAUDE.md imports it (#537) by @cpmadrid in https://github.com/Sassy-Dog/solador/pull/538",
+  "",
+  "",
+  "**Full Changelog**: https://github.com/Sassy-Dog/solador/compare/v2026.10.14...v2026.10.47",
+].join("\n");
+
+/**
+ * #540: the Updates group's fixed heights (#436) must be whole numbers of
+ * lines, or a scroll box slices a line through its glyphs and a constant help
+ * sentence grows a scrollbar. Run at a phone-width window (390px) and a wide one,
+ * with the real v2026.10.47 release body.
+ */
+const INSTALLED_UPDATE = {
+  heading: "Updates",
+  status: { text: "Update installed. It takes effect the next time you open Solador.", color: "#3fb950" },
+  notes: RELEASE_NOTES_V2026_10_47,
+  checkLabel: "Check for updates",
+  installLabel: null,
+  help: "", // the real sentence is read from the fixture (`update::HELP`) per test
+};
+const installedUpdate = async (baseURL) => ({
+  ...INSTALLED_UPDATE,
+  help: (await fixture(baseURL, "sample-settings.json")).about.updates.help,
+});
+
+for (const width of [390, 1000]) {
+  test(`the Updates group never slices a line or scrolls its help (${width}px)`, async ({ page, baseURL }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await openSettings(page, baseURL, null, await installedUpdate(baseURL));
+    await tab(page, "about").click();
+    const group = page.locator('.group[data-group="updates"]');
+    await expect(group.locator(".update-notes")).toHaveText(INSTALLED_UPDATE.notes);
+
+    const m = await group.evaluate((g) => {
+      const box = (sel) => {
+        const el = g.querySelector(sel);
+        return {
+          sh: el.scrollHeight,
+          ch: el.clientHeight,
+          h: el.getBoundingClientRect().height,
+          lh: parseFloat(getComputedStyle(el).lineHeight),
+        };
+      };
+      return {
+        help: box(":scope > .help"),
+        status: box(".update-status"),
+        slot: box(".update-notes-slot"),
+        text: box(".update-notes"),
+        notesOverflow: getComputedStyle(g.querySelector(".update-notes")).overflowY,
+      };
+    });
+    expect(m.help.sh).toBeLessThanOrEqual(m.help.ch);
+    expect(m.status.sh).toBeLessThanOrEqual(m.status.ch);
+    // The notes scroll (the body is 39 lines), but in one box, by whole lines.
+    expect(m.slot.sh).toBeGreaterThan(m.slot.ch);
+    expect(m.notesOverflow).toBe("visible");
+    // Measured against the TEXT's own line box, not the slot's.
+    const lines = m.slot.h / m.text.lh;
+    expect(Math.abs(lines - Math.round(lines))).toBeLessThan(0.01);
+    expect(Math.round(lines)).toBeGreaterThanOrEqual(8);
+  });
+}
+
+test("moving between update states does not move Check for updates (#540)", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  const base = await installedUpdate(baseURL);
+  await openSettings(page, baseURL, null, base);
+  await tab(page, "about").click();
+  const group = page.locator('.group[data-group="updates"]');
+  const y = async () => (await group.locator(".btn.check-updates").boundingBox()).y;
+  const installed = await y();
+  const states = [
+    { ...base, notes: null, status: { text: "Checking for updates...", color: "#8b949e" } },
+    { ...base, notes: null, status: { text: "Solador is up to date.", color: "#3fb950" } },
+    { ...base, installLabel: "Install update", status: { text: "Update 2026.10.47 is available.", color: "#e0a03a" } },
+    base,
+  ];
+  for (const next of states) {
+    await page.evaluate((u) => { window.__UPDATES__ = u; }, next);
+    await group.locator(".btn.check-updates").click();
+    await expect(group.locator(".update-status")).toHaveText(next.status.text);
+    expect(await y()).toBe(installed);
+  }
 });
 
 // MARK: pairing a host's agent certificate (#448)
