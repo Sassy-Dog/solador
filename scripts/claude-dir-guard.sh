@@ -18,7 +18,7 @@ set -euo pipefail
 # merge queue from ever landing such a file. It cannot protect a working tree:
 # checking a branch out silently overwrites a local ignored copy of the same
 # path before CI has run, which is why contributor PRs are checked out into a
-# worktree (CLAUDE.md, Security Considerations).
+# worktree (AGENTS.md, Security Considerations).
 #
 # Matched case-insensitively and at any depth: macOS volumes are
 # case-insensitive, so a tracked `.CLAUDE/settings.json` lands in `.claude/`;

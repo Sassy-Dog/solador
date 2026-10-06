@@ -493,7 +493,7 @@ pub struct Settings {
     pub notify_on_service_change: bool,
     /// Send a scrubbed report when this app panics.
     ///
-    /// **Off, and off is the commitment** — `CLAUDE.md`'s "No telemetry or
+    /// **Off, and off is the commitment** — `AGENTS.md`'s "No telemetry or
     /// analytics by default", and #18's opt-in policy. The Settings toggle is
     /// the opt-in and nothing else is: not a DSN being present, not a build
     /// profile, not an inference from any other preference.

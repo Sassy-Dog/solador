@@ -3,7 +3,7 @@
 > **⚠️ Superseded — see #20.** This document describes the original cloud-estate
 > direction (Vercel/Neon/Cloudflare service monitoring) that was deferred. The
 > shipped product is a local-first host/CI/worktree cockpit. For the current
-> architecture, see the [README](../README.md) and [CLAUDE.md](../CLAUDE.md).
+> architecture, see the [README](../README.md) and [AGENTS.md](../AGENTS.md).
 > This file is retained for historical context only.
 
 **Product Requirements Document**

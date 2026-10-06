@@ -697,7 +697,7 @@ make_dmg() {
 #
 # Credentials are the **ASC API key**, never an Apple ID plus app-specific
 # password: the key is revocable on its own, scoped, and carries no account
-# password. Names are the org-canonical `APPLE_ASC_*` (CLAUDE.md); the value
+# password. Names are the org-canonical `APPLE_ASC_*` (AGENTS.md); the value
 # lives in Doppler `_stores/apple` and reaches this script through the
 # environment, never through the repo.
 notarize_and_staple() {
