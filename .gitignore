@@ -103,17 +103,40 @@ tests/frontend/test-results/
 tests/frontend/__pycache__/
 
 # Local agent tooling. Everything under .claude/ is per-machine assistant setup
-# -- hooks, settings, and generated config -- and none of it is shared.
+# -- settings, hooks, worktrees, generated state -- and is not shared, with ONE
+# exception: .claude/sassy-dog/, the config the optional sassy-dog Claude Code
+# plugin (the public Sassy-Dog/skills) reads when someone invokes one of its
+# skills. It is tracked so every worktree, machine and reviewer sees the same
+# config. A contributor who never installs the plugin is unaffected: nothing
+# else reads it. It is not inert, though: `preflight_commands` runs as a shell
+# command, and tidy-repo.md's lists decide what an untracked-file sweep
+# deletes, so review changes there like changes to scripts/.
 #
-# Deny-by-default with NO exceptions, on purpose. An earlier `!.claude/hooks/`
-# carve-out was justified as "self-contained and useful to any contributor":
-# true of those scripts' contents, false of their filenames and provenance
-# markers, which shipped in the repo as a result. An exception for one path
-# also leaves the next path the tooling invents equally exposed.
-.claude/
-# Serena MCP's per-project state (cache, memories, project.yml) — the same
-# per-machine class as .claude/, self-created the moment the server touches
-# the repo. Same deny-by-default, no carve-outs.
+# Everything else stays out, deliberately. A committed settings.json buys
+# nothing (a cloud session never loads a repository's `enabledPlugins`), and
+# its hooks would run with no trust prompt in parent-trusted, `claude -p`/SDK
+# and cloud sessions; committed hooks/ scripts would also become editable by
+# any PR. (#259 removed an earlier `!.claude/hooks/` carve-out for leaking
+# filenames and provenance markers while the plugin was private.)
+#
+# Never commit a per-checkout key there, `execution_site` above all: it names
+# the one machine a checkout answers to, and a committed one would claim every
+# clone is that machine.
+#
+# Excluding `.claude/*`, not `.claude/`, is what makes the re-include possible:
+# git cannot re-include a path under an excluded directory, so `.claude/` +
+# `!...` re-includes nothing. The last two lines then narrow sassy-dog/ to
+# exactly what the plugin reads, `<name>.md` one level deep. An ignore rule is
+# only a default (`git add -f` tracks an ignored path anyway), so
+# scripts/claude-dir-guard.sh fails CI if anything else named .claude is ever
+# tracked.
+.claude/*
+!.claude/sassy-dog/
+.claude/sassy-dog/*
+!.claude/sassy-dog/*.md
+# Serena MCP's per-project state (cache, memories, project.yml): per-machine,
+# self-created the moment the server touches the repo. Deny-by-default with no
+# carve-outs.
 .serena/
 
 # direnv: `.envrc` is committed and holds no values; the real ones live here.

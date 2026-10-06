@@ -37,7 +37,7 @@ must match `ci.yml`'s `name:` values exactly):
 | `Rust workspace + frontend e2e` | the root workspace, `lib_test.sh`, the versioning suite, the agent feed guards, `run-test.sh` and `signing-identity-test.sh` under macOS `/bin/bash` 3.2, then Playwright |
 | `macOS bundle (unsigned)` | assembles a real `Solador.app` on every PR, so bundling cannot break unnoticed. Deliberately unsigned and secret-free, so it runs on fork PRs too |
 | `Windows workspace tests` | the workspace on `windows-latest`, after the versioning suite under Git Bash (the interpreter the Windows release leg uses) |
-| `Secrets guard` | asserts that no workflow references a secret except `release.yml` and two jobs allowed by `file:job` pair — `release-agent.yml`'s `publish` and `publish-agent-feed.yml`'s `agent-feed` (each only with its `environment: prd` line present, and the guard fails closed per pair) — runs that guard's mutation corpus, and asserts `agent/` does not resolve `crates/updatefeed` |
+| `Secrets guard` | asserts that no workflow references a secret except `release.yml` and two jobs allowed by `file:job` pair — `release-agent.yml`'s `publish` and `publish-agent-feed.yml`'s `agent-feed` (each only with its `environment: prd` line present, and the guard fails closed per pair) — runs that guard's mutation corpus, asserts `agent/` does not resolve `crates/updatefeed`, that the Tauri CLI pin shares `Cargo.lock`'s `tauri` minor, and that nothing named `.claude` is tracked except `.claude/sassy-dog/` |
 
 `agent/` is a workspace member, so `./dev test` and `./dev lint` cover it. It
 still has its own CI job because it is the only piece that builds and deploys to
@@ -82,6 +82,14 @@ fix has to keep true. Matching that is more useful than matching the formatting.
   first — if it passes before your change, it isn't testing the bug.
 - Say what you verified, and what you didn't. "Tests pass" and "I ran it" are
   different claims and both are useful.
+
+## `.claude/sassy-dog/`
+
+Maintainer workflow config for [sassy-dog](https://github.com/Sassy-Dog/skills),
+an optional Claude Code plugin. Nothing reads it unless that plugin is installed,
+so you can ignore it: you need neither Claude Code nor the plugin to contribute.
+Pull requests from outside contributors that change anything under `.claude/`
+are not accepted, and CI refuses any other tracked `.claude` path outright.
 
 ## Reporting bugs
 

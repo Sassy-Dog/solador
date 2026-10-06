@@ -102,6 +102,18 @@ else
     status=1
 fi
 
+# --- Nothing named .claude may be tracked except .claude/sassy-dog/<name>.md,
+# and the negative control proving the guard refuses each bypass. Reads only
+# git's index; see the header of claude-dir-guard.sh for why it exists.
+log_info ".claude tracking guard…"
+if claude_out="$("$SCRIPT_DIR/claude-dir-guard.sh" 2>&1 && "$SCRIPT_DIR/claude-dir-guard-test.sh" 2>&1)"; then
+    log_success "nothing named .claude is tracked outside .claude/sassy-dog/, and the guard's corpus behaves"
+else
+    echo "$claude_out"
+    log_error "the .claude tracking guard, or its self-test, failed (see above)"
+    status=1
+fi
+
 # --- The Tauri CLI pin must share a minor train with Cargo.lock's `tauri`
 # (#485), and the negative control proving the guard fails when it should.
 # Text-only (no cargo), so unlike the check below it needs no toolchain.
