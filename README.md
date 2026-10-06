@@ -24,7 +24,7 @@ thing that isn't right.
 
 | Platform | You want | Notes |
 |---|---|---|
-| **macOS 14+** | `Solador-<version>.dmg` | Universal — Apple silicon and Intel. Signed, notarized and stapled, so it opens without a Gatekeeper argument. Checks for an update on launch and never installs one behind your back. |
+| **macOS 14+** | `Solador-<version>.dmg` | Universal — Apple silicon and Intel. Signed, notarized and stapled, so it opens without a Gatekeeper argument. Open it and drag Solador onto the Applications shortcut beside it. Checks for an update on launch and never installs one behind your back. |
 | **Windows 10/11** | `Solador_<version>_x64-setup.exe` | x64, Authenticode-signed. **No update channel yet** — the app says so plainly rather than reporting a failed check, and you install the next one over it. |
 | **Linux** | — | No cockpit build. Linux runs the [agent](agent/), which is how a Linux box appears in someone else's cockpit. |
 

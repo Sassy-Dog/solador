@@ -34,7 +34,7 @@ must match `ci.yml`'s `name:` values exactly):
 | Job | Runs |
 |---|---|
 | `Rust agent` | fmt, clippy, build and test inside `agent/`, plus `bash -n`, ShellCheck and `lib_test.sh` over `agent/deploy/`, and the versioning suite (`scripts/versioning-test.sh`: the mint, the build number, and the release-tag assertion) and the agent feed guards (`scripts/agent-feed-guard-test.sh`: the freeze and latest guards of `publish-agent-feed.yml`, against a stub `gh`) |
-| `Rust workspace + frontend e2e` | the root workspace, `lib_test.sh`, the versioning suite, the agent feed guards, `run-test.sh` and `signing-identity-test.sh` under macOS `/bin/bash` 3.2, then Playwright |
+| `Rust workspace + frontend e2e` | the root workspace, `lib_test.sh`, the versioning suite, the agent feed guards, `run-test.sh`, `signing-identity-test.sh` and `dmg-layout-test.sh` under macOS `/bin/bash` 3.2, then Playwright |
 | `macOS bundle (unsigned)` | assembles a real `Solador.app` on every PR, so bundling cannot break unnoticed. Deliberately unsigned and secret-free, so it runs on fork PRs too |
 | `Windows workspace tests` | the workspace on `windows-latest`, after the versioning suite under Git Bash (the interpreter the Windows release leg uses) |
 | `Secrets guard` | asserts that no workflow references a secret except `release.yml` and two jobs allowed by `file:job` pair — `release-agent.yml`'s `publish` and `publish-agent-feed.yml`'s `agent-feed` (each only with its `environment: prd` line present, and the guard fails closed per pair) — runs that guard's mutation corpus, asserts `agent/` does not resolve `crates/updatefeed`, that the Tauri CLI pin shares `Cargo.lock`'s `tauri` minor, and that nothing named `.claude` is tracked except `.claude/sassy-dog/` |

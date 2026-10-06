@@ -106,6 +106,17 @@ else
     exit 1
 fi
 
+# --- .dmg layout (#539): the image must hold the app and an `Applications`
+# symlink to /Applications. Builds real images from a dummy bundle; no
+# credentials. Skips itself off macOS (hdiutil).
+log_info "Running .dmg layout tests (scripts/dmg-layout-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/dmg-layout-test.sh; then
+    log_success ".dmg layout tests passed"
+else
+    log_error ".dmg layout tests failed"
+    exit 1
+fi
+
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
 # Needs BOTH npm and cargo: the suite's `pretest` shells out to

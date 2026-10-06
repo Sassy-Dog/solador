@@ -121,7 +121,9 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   publish-time guards (`scripts/agent-feed-guard-test.sh`, #491 — the freeze and
   latest guards against a stub `gh`), the local run/signing helper
   suite (`scripts/run-test.sh`), the signing-identity refusal test
-  (`scripts/signing-identity-test.sh`, #474), the e2e server's bind test
+  (`scripts/signing-identity-test.sh`, #474), the `.dmg` layout test
+  (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the
+  `Applications` symlink must be present and point at `/Applications`), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
   e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
@@ -964,7 +966,12 @@ only an Apple-issued certificate stops the keychain prompts; see app/README.md,
 `scripts/signing-identity-test.sh`
 (#474: `log_error` and `log_warning` write to stderr, so a refusal inside a
 `$(fn)` caller such as `resolve_signing_identity` is seen, not captured),
-`tests/frontend/csp_server_test.py`,
+`scripts/dmg-layout-test.sh` (#539: the `.dmg` is built from a staging
+directory holding the `ditto`-copied app and an `Applications` symlink, and
+`build.sh` mounts the finished image read-only and fails unless its root is
+exactly those two; the test builds real images from a dummy bundle and proves
+the assertion refuses a missing or mis-targeted link; macOS only, skips itself
+elsewhere), `tests/frontend/csp_server_test.py`,
 and the `tests/frontend` Playwright suite. Agent tests run via `cargo test` in
 `agent/`.
 

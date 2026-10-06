@@ -24,7 +24,8 @@ AGENT_HELPERS = {
 }
 APP_HELPERS = {
     "scripts/build.sh", "scripts/run.sh", "scripts/run-test.sh",
-    "scripts/signing-identity-test.sh", "scripts/generate-icons.sh", "scripts/render-icons.mjs",
+    "scripts/signing-identity-test.sh", "scripts/dmg-layout-test.sh",
+    "scripts/generate-icons.sh", "scripts/render-icons.mjs",
 }
 
 
