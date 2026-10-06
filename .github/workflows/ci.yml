@@ -308,6 +308,12 @@ jobs:
         if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: /bin/bash scripts/signing-identity-test.sh
 
+      # The .dmg must carry an Applications symlink beside the app (#539); the
+      # suite builds real images from a dummy bundle and needs no credentials.
+      - name: DMG layout under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
+        run: /bin/bash scripts/dmg-layout-test.sh
+
       # These Rust tests read CSS/SVG/frontend test files to assert parity.
       # The fixture generator builds Rust but does not execute these tests.
       - name: Frontend view-model parity tests

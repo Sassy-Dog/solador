@@ -664,6 +664,45 @@ sign_app() {
 # DMG, notarization, staple (#306)
 # ---------------------------------------------------------------------------
 
+stage_dmg_source() {
+    local app="$1" stage="$2"
+
+    ditto "$app" "$stage/$(basename "$app")" || return 1
+    ln -s /Applications "$stage/Applications"
+}
+
+# Mount the finished image read-only and require its root to hold exactly the
+# app and an `Applications` symlink whose target is `/Applications`. The
+# `.DS_Store`-style Finder metadata is not expected: no window layout is built.
+assert_dmg_layout() {
+    local dmg="$1" app_name="$2"
+    local mnt entries target status=0
+    mnt="$(mktemp -d)"
+
+    if ! hdiutil attach -nobrowse -readonly -noverify -mountpoint "$mnt" "$dmg" >/dev/null; then
+        rm -rf "$mnt"
+        log_error "could not mount $dmg to check its layout"
+        return 1
+    fi
+
+    entries="$(ls -A "$mnt" | LC_ALL=C sort)"
+    target="$(readlink "$mnt/Applications" 2>/dev/null || true)"
+    if [[ "$entries" != "$(printf 'Applications\n%s' "$app_name" | LC_ALL=C sort)" ]]; then
+        log_error "the disk image must hold exactly '$app_name' and 'Applications'; found: $(printf '%s' "$entries" | tr '\n' ' ')"
+        status=1
+    elif [[ ! -L "$mnt/Applications" || "$target" != "/Applications" ]]; then
+        log_error "'Applications' in the disk image must be a symlink to /Applications; target: ${target:-<not a symlink>}"
+        status=1
+    elif [[ ! -d "$mnt/$app_name" ]]; then
+        log_error "'$app_name' in the disk image is not a directory"
+        status=1
+    fi
+
+    hdiutil detach "$mnt" >/dev/null 2>&1 || hdiutil detach -force "$mnt" >/dev/null 2>&1 || true
+    rmdir "$mnt" 2>/dev/null || true
+    return "$status"
+}
+
 # The .dmg is built HERE rather than by `cargo tauri build --bundles dmg`, for
 # the same ordering reason signing is: the CLI would package the app it just
 # bundled, which is before the CFBundleVersion stamp and before the signature.
@@ -673,13 +712,30 @@ make_dmg() {
 
     rm -f "$dmg"
     log_info "Building $dmg"
-    # UDZO is compressed and read-only. No fancy window layout: that is what
-    # Tauri's dmg bundler adds, and we cannot use it (above).
-    if ! hdiutil create -volname "$APP_NAME" -srcfolder "$app" \
+    # The image is built from a staging directory holding the app and an
+    # `Applications` symlink (#539), so the mounted volume has a drag-to-install
+    # target. Staged with `ditto`, which keeps the already-applied signature
+    # and extended attributes; removed on every exit path.
+    local stage
+    stage="$(mktemp -d)"
+    trap 'rm -rf "$stage"' EXIT
+    if ! stage_dmg_source "$app" "$stage"; then
+        log_error "could not stage the disk image contents"
+        exit 1
+    fi
+    # UDZO is compressed and read-only. No fancy window layout (background,
+    # icon positions): that is what Tauri's dmg bundler adds, and we cannot
+    # use it (above). The symlink alone is the drag target.
+    if ! hdiutil create -volname "$APP_NAME" -srcfolder "$stage" \
             -ov -format UDZO "$dmg" >/dev/null; then
         log_error "hdiutil failed to build the disk image"
         exit 1
     fi
+    rm -rf "$stage"
+    trap - EXIT
+
+    # Assert the artifact, not the step (the plist and lipo rule).
+    assert_dmg_layout "$dmg" "$(basename "$app")" || exit 1
 
     # The .dmg is signed too. Notarization staples to the container that is
     # actually distributed, and Gatekeeper checks the container a user

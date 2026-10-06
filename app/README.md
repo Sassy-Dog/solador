@@ -316,7 +316,9 @@ It is now *distributable*. `./dev build --release` produces a real
 the CalVer and build number derived from git
 ([#303](https://github.com/Sassy-Dog/solador/issues/303)) — and
 `./dev build --release --notarize` signs, notarizes and staples a `.dmg`
-([#306](https://github.com/Sassy-Dog/solador/issues/306)). Pushing a `v*` tag
+([#306](https://github.com/Sassy-Dog/solador/issues/306)); the volume holds
+`Solador.app` and an `Applications` shortcut to drag it onto, asserted from the
+mounted image ([#539](https://github.com/Sassy-Dog/solador/issues/539)). Pushing a `v*` tag
 runs that same build on CI against the `prd` environment
 ([#307](https://github.com/Sassy-Dog/solador/issues/307)) and attaches a
 **draft** release; publishing that draft is what generates the signed update
