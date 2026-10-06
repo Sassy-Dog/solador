@@ -128,7 +128,11 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
   `shellcheck -S warning` over every shell source this repo ships
-  (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`), the secrets guard and
+  (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`), `scripts/shellcheck-pin-guard.sh`
+  (#548: fails on any local ShellCheck other than `SHELLCHECK_VERSION`, naming both
+  and how to install the pinned one; CI downloads that release and verifies
+  `SHELLCHECK_SHA256_LINUX_X86_64` rather than using the runner image's) with its
+  negative control `scripts/shellcheck-pin-guard-test.sh` (stub binaries), the secrets guard and
   its mutation corpus (`scripts/secrets-guard.sh`, `scripts/secrets-guard-test.sh`),
   `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
   does not resolve `crates/updatefeed` or `crates/agentrelease`, and `scripts/tauri-cli-pin-guard.sh`

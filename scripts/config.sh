@@ -34,6 +34,17 @@ export TAURI_PACKAGE="solador-app"
 # It reads the line below as text, so keep it a plain `export TAURI_CLI_VERSION="X.Y.Z"`.
 export TAURI_CLI_VERSION="2.12.1"
 
+# The ShellCheck both `./dev lint` and CI's ShellCheck step run (#548). Before
+# the pin CI used whatever the ubuntu-latest image carried (0.9.0) and a Mac
+# used Homebrew's (0.11.0), so a script could lint clean locally and fail CI.
+# `scripts/shellcheck-pin-guard.sh` fails `./dev lint` on any other version;
+# CI downloads exactly this release and checks the tarball against the SHA-256
+# below (the release publishes no checksum file, so the pin carries its own):
+# `shellcheck-v<version>.linux.x86_64.tar.xz`. Bump both together. Both are read
+# as text, so keep them plain `export NAME="..."` lines.
+export SHELLCHECK_VERSION="0.11.0"
+export SHELLCHECK_SHA256_LINUX_X86_64="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+
 # Every macOS bundle is universal (#335), and the triple lives here because it
 # is part of the OUTPUT PATH: `--target` moves cargo's output under the triple,
 # so build.sh, publish.sh and the workflows must all agree on where the bundle

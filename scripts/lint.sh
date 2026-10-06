@@ -78,15 +78,35 @@ fi
 # opens with the tool's name is read as a directive, and #390 pointed the tool at
 # this file for the first time.)
 if command_exists shellcheck; then
-    log_info "shellcheck -S warning over ${#SHELL_SOURCES[@]} shell sources…"
-    if shellcheck -S warning "${SHELL_SOURCES[@]}"; then
-        log_success "shellcheck clean"
+    # CI runs exactly SHELLCHECK_VERSION (#548), so any other version here is a
+    # failure, not a warning: a different release has different checks.
+    log_info "shellcheck version pin…"
+    if pin_sc_out="$("$SCRIPT_DIR/shellcheck-pin-guard.sh" 2>&1)"; then
+        log_success "$pin_sc_out"
+        log_info "shellcheck -S warning over ${#SHELL_SOURCES[@]} shell sources…"
+        if shellcheck -S warning "${SHELL_SOURCES[@]}"; then
+            log_success "shellcheck clean"
+        else
+            log_error "shellcheck found problems in a shell script"
+            status=1
+        fi
     else
-        log_error "shellcheck found problems in a shell script"
+        echo "$pin_sc_out"
+        log_error "shellcheck is not the pinned version (see above), so the shell lint did not run"
         status=1
     fi
 else
-    log_warning "shellcheck not found — skipping the shell lint (CI still runs it; brew install shellcheck)"
+    log_warning "shellcheck not found — skipping the shell lint (CI still runs it; install exactly ${SHELLCHECK_VERSION}; the pin guard's failure text says how)"
+fi
+
+# --- The negative control for the pin guard above (#548): stub binaries only.
+log_info "ShellCheck pin guard's corpus…"
+if sc_test_out="$("$SCRIPT_DIR/shellcheck-pin-guard-test.sh" 2>&1)"; then
+    log_success "the ShellCheck pin guard refuses what it claims to refuse"
+else
+    echo "$sc_test_out"
+    log_error "the ShellCheck pin guard's self-test failed (see above)"
+    status=1
 fi
 
 # --- The secrets guard and its corpus, exactly as CI's `secrets-guard` job
