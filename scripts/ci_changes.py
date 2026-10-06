@@ -80,7 +80,7 @@ def agent_dependency_roots(repo):
 
 def is_documentation(path):
     p = PurePosixPath(path)
-    if path in {"README.md", "AGENTS.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "LICENSE.md"}:
+    if path in {"README.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "LICENSE.md"}:
         return True
     if p.name in {"README.md", "AGENTS.md"} and (
         p.parent.as_posix() in {"agent", "app"}

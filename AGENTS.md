@@ -1,6 +1,6 @@
 # Solador — AI Assistant Instructions
 
-This file provides context for Codex when working with the Solador codebase.
+This file provides context for coding agents (Codex, and Claude Code through `CLAUDE.md`'s import) when working with the Solador codebase.
 
 ## Project Overview
 
@@ -45,7 +45,7 @@ detailed than this file.
   issue-side so no board identity lives in config; it needs the PAT's org
   Projects permission and renders `—`, never `0`, without it — and, alone
   among the four counts, says why in the panel footer (`ready_error`).
-- **Usage** — Codex token rollups (same interval); Neon, Sentry + Vercel
+- **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
   (MTD)` from operator-entered rates, and a best-effort `NEON LAST INVOICE` off
@@ -68,7 +68,7 @@ detailed than this file.
   in either direction fires a desktop notification. **The watched list is
   derived from configuration, never shipped** (#284, wired up in #375):
   `services::active_vendors` answers it every pass from the credentials and
-  accounts already in the cockpit — plus Codex rollups, which are Anthropic's
+  accounts already in the cockpit — plus Claude rollups, which are Anthropic's
   only evidence — and appends the operator's own Atlassian Statuspages
   (`store.json`'s `status_vendors`). `poll_service_status` reads exactly that
   list through `read_vendor`, and `readings`/`view` render exactly that list, so
@@ -557,7 +557,7 @@ the bundle's floor.
 │   ├── thermal/            # OS thermal pressure, shared by localhost and agent/
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
-│   ├── usage/              # Codex log rollups + Neon + Sentry + Vercel
+│   ├── usage/              # Claude Code log rollups + Neon + Sentry + Vercel
 │   ├── azurecost/          # Azure Cost Management export reader (SAS blob + CSV)
 │   ├── openclaw/           # OpenClaw gateway client: WS protocol v3, Ed25519
 │   │                       #   device identity, the frame→snapshot reducer
@@ -605,6 +605,10 @@ the bundle's floor.
 │                           #   producer, read by it and by the updater)
 ├── tests/frontend/         # Playwright e2e suite for app/ui/
 ├── brand/                  # Brand assets
+├── site/                   # solador.app: plain HTML/CSS + one JS module, no
+│                           #   build step; deployed by .github/workflows/pages.yml
+│                           #   (see **Website** below). assets/screenshots/ is
+│                           #   generated (`npm run screenshots`), never authored
 └── docs/                   # Versioning, secrets, PRD
 ```
 
@@ -800,7 +804,7 @@ the bundle's floor.
 ### CI & usage data
 - GitHub Actions data: `crates/github` (workflow health, self-hosted runners,
   remote branch / open-issue / open-PR counts).
-- Codex usage rollups: `crates/usage` (tokens only — USD is computed and
+- Claude Code usage rollups: `crates/usage` (tokens only — USD is computed and
   unit-tested but never displayed, since the account is subscription-based).
 - Neon, Sentry, Vercel consumption: `crates/usage`. Own 1h cadence, not the
   shared refresh interval; render `—` when the key is missing or the API fails.
@@ -833,8 +837,8 @@ the bundle's floor.
   it that one column reads `—` and everything else is unaffected.
 - **Remote hosts**: per-host bearer token, plus — once paired (#448) — the
   pinned certificate fingerprint, which is public and lives in `store.json`.
-- **Usage → Codex**: no credential — and **no account either**. The rollups
-  are a walk of `~/.Codex/projects`, and those logs record what was consumed,
+- **Usage → Claude**: no credential — and **no account either**. The rollups
+  are a walk of `~/.claude/projects`, and those logs record what was consumed,
   never who paid for it: a full key survey of a real session file — 50+
   top-level fields including `cwd`, `gitBranch`, `sessionId`, `version`,
   `userType`, `requestId`, `messageId` — carries no `account`, `organization`,
@@ -1069,6 +1073,44 @@ tested in `crates/buildversion` against real `--depth 1` and full clones the
 tests build (#417, #490); the crate still has zero dependencies. The agent's
 derivation and mint, and `publish --agent`, are tested in
 `scripts/versioning-test.sh` against temporary bare origins with a `gh` shim.
+
+## Website (`site/`, solador.app)
+
+The marketing site is **static, in this repo, and makes product claims**, so the
+docs rule applies to it like any README: a change that alters something the site
+says (a panel, a permission, an install step, a platform floor) updates `site/`
+in the same PR. It is plain HTML/CSS and one module (`site/assets/download.js`),
+no bundler, under a `<meta>` CSP as strict as the app's — GitHub Pages cannot
+send headers, so `frame-ancestors` is the one directive it does not carry.
+Paths are **root-absolute**, because Pages serves `404.html` at any missing
+path and a relative stylesheet breaks below `/`. There are **no analytics**:
+the README's "no telemetry, ever" is the product's promise, and the site keeps
+it. Conversion is the release download counts.
+
+**Deploy:** `.github/workflows/pages.yml`, on a push to `main` touching `site/`
+(or by hand). `deploy-pages` authenticates with the job's OIDC token, scoped to
+the `github-pages` environment, so it holds **no credential** and
+`scripts/secrets-guard.sh` needs no allowance for it. The custom domain lives in
+the repository's Pages settings, not a `CNAME` file (an Actions-deployed site
+ignores one); DNS is on Cloudflare, DNS-only, so GitHub issues the certificate.
+
+**Download buttons never fabricate a URL.** Each link's static href is the
+releases page; `download.js` replaces it only with the `browser_download_url`
+GitHub returned for an asset found by **exact name** in a `v*` latest release
+(`Solador-<v>.dmg`, `Solador_<v>_x64-setup.exe`). The API down, a rate limit, a
+missing asset or an unexpected tag all leave the releases page in place, and
+`tests/frontend/site.spec.js` holds each of those cases — every routed API
+response carries CORS headers, so a fallback cannot pass because the browser
+refused the response. The same suite serves `site/` through `page.route` (no
+second server, so no #401 bind stall) and asserts no CSP violation and no
+missing local link or asset on every page.
+
+**Screenshots are the showcase fixtures.** `npm run screenshots` renders the
+`--showcase` dumps — a working morning with exactly one tile out of true, held by
+`the_showcase_dashboard_has_exactly_one_tile_out_of_true` — into
+`site/assets/screenshots/`, which the README shares, plus `site/assets/og.png`
+from `tests/frontend/og-card.html`. Its cockpit stub refuses any grid width it
+has no dump for, rather than paint a layout computed for another one.
 
 ## Common Tasks
 

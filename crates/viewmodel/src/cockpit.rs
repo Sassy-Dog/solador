@@ -567,7 +567,7 @@ pub fn host_columns(available: f64, host_count: usize, min_card_width: f64, spac
 /// four-quarter grid**, the same grid on every row of the cockpit.
 ///
 /// `CockpitView.panelWidth(inRowOf:of:)` generalised to spans, and the reason it
-/// exists is the rule in CLAUDE.md: *panels never measure themselves*. One
+/// exists is that *panels never measure themselves*. One
 /// measurement at the cockpit root becomes every panel's width by arithmetic, so
 /// a panel can decide its own content layout without a second, disagreeing,
 /// measurement of its own.

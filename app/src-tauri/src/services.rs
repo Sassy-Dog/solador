@@ -234,7 +234,7 @@ impl ActiveVendor {
 /// A vendor is watched when that vendor's data is already in the cockpit. A
 /// stranger with one token sees one tile; the operator this app was written on
 /// sees the same five they saw before, because all five are configured. Nobody
-/// gets a shipped opinion — the same rule `CLAUDE.md` records for container
+/// gets a shipped opinion — the same rule `AGENTS.md` records for container
 /// grouping, where a shipped example rule *"silently groups a stranger's
 /// containers by a rule they never wrote"*. A shipped vendor list is that
 /// error with a different noun.
@@ -1915,7 +1915,7 @@ mod tests {
 
     /// The rule this list exists for. A store nobody has configured watches
     /// **nothing**, because the five vendors this file used to ship were one
-    /// operator's stack — the same error `CLAUDE.md` records for container
+    /// operator's stack — the same error `AGENTS.md` records for container
     /// grouping, where a shipped example rule groups a stranger's containers by
     /// a rule they never wrote.
     #[test]

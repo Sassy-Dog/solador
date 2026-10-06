@@ -1,6 +1,6 @@
 //! Opt-in, off-by-default crash reporting.
 //!
-//! `CLAUDE.md` commits to "No telemetry or analytics by default", and #18
+//! `AGENTS.md` commits to "No telemetry or analytics by default", and #18
 //! settled the policy for the integration that used to live in the deleted
 //! macOS app: **opt-in, off by default**. This crate is the Tauri port of that
 //! decision, and the toggle is the opt-in — nothing else is.

@@ -33,7 +33,7 @@ is withheld (Sassy-Dog/skills#373). Nothing parses these numbers; they are a rea
 >    forever on a context no job reports.
 > 6. The Windows job gates every merge, but `./dev test` runs on this machine only. Avoid unix-only
 >    path separators, permissions and process assumptions in `crates/*` and `app/src-tauri`.
-> 7. Reconcile `CLAUDE.md`, `app/README.md`, `agent/README.md` and `docs/` in the same PR
+> 7. Reconcile `AGENTS.md`, `app/README.md`, `agent/README.md` and `docs/` in the same PR
 >    whenever the change makes a claim in them untrue.
 
 ## extra-guardrails
