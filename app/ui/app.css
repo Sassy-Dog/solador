@@ -815,10 +815,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .update-status { font-size:11px; font-weight:600; margin:0; max-width:640px; }
 /* The offered release's notes, verbatim. `pre-wrap` because GitHub's generated
    notes are line-broken prose and reflowing them runs the entries together;
-   capped and scrollable because a long release is not a reason for the button
-   under it to leave the window. */
+   scrolled by `.update-notes-slot`, its one scroll box: a long release is not a
+   reason for the button under it to leave the window. */
 .update-notes { font-size:10px; color:var(--muted); margin:0; max-width:640px;
-  white-space:pre-wrap; max-height:140px; overflow-y:auto; }
+  white-space:pre-wrap; }
 .dim { color:var(--muted); }
 /* A host's agent-release line (#489). The colour is Rust's, assigned through the
    CSSOM -- only a host that is behind is amber, and no state is ever red. */
@@ -921,12 +921,14 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .cont-status { width:16ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
 .settings .status { min-width:0; max-width:50%; white-space:nowrap; overflow:auto; }
 .connection-state { width:18ch; justify-content:flex-end; white-space:nowrap; overflow:auto; }
-.update-status { height:32px; overflow:auto; }
-.update-notes-slot { height:64px; overflow:auto; }
-.update-notes-slot .update-notes { margin:0; }
+/* #540: the status (3 lines) and the notes box (8) are whole numbers of LINES
+   (the controls row keeps its own 28px, #436), of an explicit
+   line-height, so a scroll box can never cut a line through its glyphs. */
+.update-status { line-height:1.5; height:calc(3 * 1.5em); overflow:auto; }
+.update-notes-slot { font-size:10px; line-height:1.5; height:calc(8 * 1.5em); overflow:auto; }
+.update-notes-slot .update-notes { line-height:inherit; margin:0; }
 .settings .update-controls { height:28px; }
 
-.settings [data-group="updates"] > .help { height:32px; overflow:auto; }
 .settings .update-controls { flex-wrap:nowrap; overflow:auto; }
 .settings .update-controls > button { flex:none; white-space:nowrap; }
 .host-row > .row > .stack { flex:1; }
