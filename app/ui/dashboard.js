@@ -169,6 +169,7 @@
       dot = node("span", "db-dot");
     dot.setAttribute("aria-hidden", "true");
     dot.style.color = row.color;
+    if (row.blinking) dot.classList.add("db-dot-blink");
     name.append(dot, node("span", "db-item-name", row.label));
     b.append(name);
     if (row.counts?.length) {
@@ -1159,6 +1160,17 @@
       return;
     }
     if (action === "row") {
+      // A repo waiting on approval opens GitHub at the URL Rust composed for
+      // it, byte for byte; every other row opens Detail.
+      const target = source(b.dataset.source)?.rows.find((r) => r.id === id)?.approvalUrl;
+      if (target) {
+        try {
+          await callRust("plugin:opener|open_url", { url: target });
+        } catch (e) {
+          status(String(e), true);
+        }
+        return;
+      }
       openInspector({ kind: "details", source: b.dataset.source, row: id });
       return;
     }

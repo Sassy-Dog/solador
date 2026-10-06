@@ -722,13 +722,36 @@ fn status_blinks(status: RepoStatus) -> bool {
 /// `https://github.com/\(slug)/actions`, character for character.
 ///
 /// Built **here**, from the slug the poll pass fetched, and never assembled in
-/// the webview. That is not style: this string is the only thing the granted
-/// `opener:allow-open-url` scope will accept, and a frontend free to compose it
+/// the webview. That is not style: this string is one of the two shapes the granted
+/// `opener:allow-open-url` scope will accept (the other is [`run_url`]), and a frontend free to compose it
 /// would be a frontend free to compose everything else that scope's glob also
 /// matches. See `actions_url_is_the_only_shape_the_granted_scope_admits`.
 #[must_use]
 pub fn actions_url(slug: &str) -> String {
     format!("https://github.com/{slug}/actions")
+}
+
+/// The page of one workflow run, where GitHub's **Review deployments** button
+/// lives (#541): `https://github.com/{slug}/actions/runs/{run_id}`.
+///
+/// Composed here from the slug and the numeric run id, **never** taken from
+/// `RunRef.html_url`: an API-supplied string would be the first URL the granted
+/// scope admits that no function of ours produced, and "only Rust composes the
+/// URLs this scope admits" is the security design (see [`actions_url`]).
+#[must_use]
+pub fn run_url(slug: &str, run_id: i64) -> String {
+    format!("https://github.com/{slug}/actions/runs/{run_id}")
+}
+
+/// Where a `Waiting` row's click goes: the one waiting run when exactly one is,
+/// else the repo's Actions page (several gates, and no single run is *the* one
+/// to approve). `None` for every other state, which keeps opening Detail.
+fn approval_url(health: &RepoWorkflowHealth) -> Option<String> {
+    match health.needs_approval.as_slice() {
+        [] => None,
+        [run] => Some(run_url(&health.repo, run.run_id)),
+        _ => Some(actions_url(&health.repo)),
+    }
 }
 
 /// What a screen reader announces for the row, and the only *label* the click
@@ -1042,7 +1065,7 @@ fn repo_row(
         },
         "statusLabel": match status {
             RepoStatus::Unreachable => "Unreadable", RepoStatus::Failed => "Failed",
-            RepoStatus::NeedsApproval => "Needs approval", RepoStatus::Running => "Running",
+            RepoStatus::NeedsApproval => "Waiting", RepoStatus::Running => "Running",
             RepoStatus::Healthy => "Healthy",
         },
         "attention": !matches!(status, RepoStatus::Healthy | RepoStatus::Running),
@@ -1054,6 +1077,11 @@ fn repo_row(
         // when you want to go and look at them.
         "url": actions_url(&health.repo),
         "linkLabel": open_label(&health.repo),
+        // Present only while a run is parked at a gate: the dashboard row opens
+        // it instead of Detail. Rust decides the target; the webview opens it.
+        // Keyed on the status, not on `needs_approval` alone: a failed repo
+        // with a parked run reads Failed and keeps opening Detail.
+        "approvalUrl": if status == RepoStatus::NeedsApproval { approval_url(health) } else { None },
         "cells": [
             count_cell(health.open_issues, ISSUES_W, color::INK),
             count_cell(health.ready_issues, READY_W, color::INK),
@@ -2084,8 +2112,8 @@ mod tests {
     ///
     /// Reads the **real** `capabilities/default.json`, rebuilds the granted
     /// glob with the same `glob::Pattern` the plugin uses, and asserts it both
-    /// admits every URL [`actions_url`] can produce and refuses everything
-    /// else — including the App links this app deliberately still cannot open.
+    /// admits every URL [`actions_url`] and [`run_url`] can produce and refuses
+    /// everything else — including the App links this app deliberately still cannot open.
     /// Widening the scope in that file breaks this test, which is the point.
     #[test]
     fn actions_url_is_the_only_shape_the_granted_scope_admits() {
@@ -2105,15 +2133,23 @@ mod tests {
         assert_eq!(permissions[0]["identifier"], "opener:allow-open-url");
 
         let allow = permissions[0]["allow"].as_array().expect("allow array");
-        assert_eq!(allow.len(), 1, "one URL shape, not a list of them");
-        // No `app` key: the entry keeps `Application::Default`, so the webview
+        // Two shapes, one per function of ours that composes a URL: the Actions
+        // page and a single run (#541). A third entry is a widening that has to
+        // be argued for in app/README.md first.
+        assert_eq!(allow.len(), 2, "two URL shapes: actions_url and run_url");
+        // No `app` key: the entries keep `Application::Default`, so the webview
         // cannot name *which* program opens the URL either.
         assert!(
-            allow[0].get("app").is_none(),
+            allow.iter().all(|entry| entry.get("app").is_none()),
             "the scope must not let the caller pick an application"
         );
-        let pattern =
-            glob::Pattern::new(allow[0]["url"].as_str().expect("scope url")).expect("valid glob");
+        let patterns: Vec<glob::Pattern> = allow
+            .iter()
+            .map(|entry| {
+                glob::Pattern::new(entry["url"].as_str().expect("scope url")).expect("valid glob")
+            })
+            .collect();
+        let admitted = |url: &str| patterns.iter().any(|p| p.matches(url));
 
         for slug in [
             "acme/widget",
@@ -2122,7 +2158,11 @@ mod tests {
             "some-org/some.repo",
         ] {
             let url = actions_url(slug);
-            assert!(pattern.matches(&url), "the scope must admit {url}");
+            assert!(admitted(&url), "the scope must admit {url}");
+            for run_id in [1, 25_000_000_000] {
+                let url = run_url(slug, run_id);
+                assert!(admitted(&url), "the scope must admit {url}");
+            }
         }
 
         for refused in [
@@ -2136,8 +2176,87 @@ mod tests {
             "https://github.com.evil.example/o/r/actions",
             "file:///etc/passwd",
             "javascript:alert(1)",
+            // A run-shaped URL on another host, and one over http://.
+            "https://evil.example/o/r/actions/runs/1",
+            "https://github.com.evil.example/o/r/actions/runs/1",
+            "http://github.com/o/r/actions/runs/1",
+            // Neighbours of the run page that are not it.
+            "https://github.com/o/r/actions/workflows/ci.yml",
+            "https://github.com/o/r/actions/runs",
+            "https://github.com/o/r/pull/1",
         ] {
-            assert!(!pattern.matches(refused), "the scope must refuse {refused}");
+            assert!(!admitted(refused), "the scope must refuse {refused}");
+        }
+    }
+
+    /// A run parked at a gate reads `Waiting`, and its click target is Rust's:
+    /// the run page for one, the Actions page for several, nothing otherwise.
+    #[test]
+    fn a_waiting_row_carries_its_own_click_target() {
+        let waiting = |id: i64| -> WorkflowRun {
+            serde_json::from_value(json!({
+                "id": id, "name": "Deploy", "event": "push", "status": "waiting",
+                "conclusion": null, "head_branch": "main",
+                "html_url": "https://evil.example/not-ours",
+                "created_at": now().to_rfc3339(),
+            }))
+            .expect("waiting run")
+        };
+        let one = only_row(
+            &ready(vec![health_of(
+                "acme/widget",
+                &[waiting(42)],
+                RepoCounts::default(),
+            )]),
+            now(),
+        );
+        assert_eq!(one["statusLabel"], "Waiting");
+        assert_eq!(one["blinking"], true);
+        assert_eq!(
+            one["approvalUrl"],
+            "https://github.com/acme/widget/actions/runs/42"
+        );
+        // The Detail views' url is unchanged.
+        assert_eq!(one["url"], "https://github.com/acme/widget/actions");
+
+        let two = only_row(
+            &ready(vec![health_of(
+                "acme/widget",
+                &[waiting(42), waiting(43)],
+                RepoCounts::default(),
+            )]),
+            now(),
+        );
+        assert_eq!(two["approvalUrl"], "https://github.com/acme/widget/actions");
+
+        for health in [
+            health_of("o/r", &[run("in_progress", None, 5)], RepoCounts::default()),
+            health_of(
+                "o/r",
+                &[run("completed", Some("success"), 5)],
+                RepoCounts::default(),
+            ),
+            RepoWorkflowHealth::unreachable("o/r"),
+            // Failed outranks a parked run: it stays red and opens Detail. The
+            // parked run is a PR run so it does not supersede main's failure.
+            health_of(
+                "o/r",
+                &[
+                    run("completed", Some("failure"), 30),
+                    serde_json::from_value(json!({
+                        "id": 7, "name": "Deploy", "event": "pull_request",
+                        "status": "waiting", "conclusion": null,
+                        "head_branch": "feat/x", "html_url": "https://x",
+                        "created_at": now().to_rfc3339(),
+                    }))
+                    .expect("waiting pr run"),
+                ],
+                RepoCounts::default(),
+            ),
+        ] {
+            let row = only_row(&ready(vec![health]), now());
+            assert!(row["approvalUrl"].is_null(), "{row}");
+            assert_ne!(row["statusLabel"], "Waiting");
         }
     }
 

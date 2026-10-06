@@ -108,8 +108,9 @@ function repoHeader(columns) {
  *
  * `row.url` is Rust's (`github::actions_url`) and is never built here: the
  * granted ACL scope in `src-tauri/capabilities/default.json` admits exactly
- * that one URL shape, so a URL composed in this file would be a second author
- * of the only string the webview is trusted with. It is passed straight
+ * two URL shapes (`github::actions_url` and `github::run_url`), so a URL
+ * composed in this file would be a second author of the strings the webview is
+ * trusted with. It is passed straight
  * through, unmodified.
  *
  * `plugin:opener|open_url` is the raw IPC spelling of the opener plugin's
