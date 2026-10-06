@@ -105,8 +105,17 @@ export APP_NAME=Solador
 if assert_dmg_layout "$work/full.dmg" Solador.app 2>/dev/null; then pass "make_dmg output has the Applications link"; else fail "make_dmg output has the Applications link"; fi
 rm -f "$work/full.dmg"
 # Negative control: a make_dmg whose staging omits the link must fail the build.
+# The stub is sourced like the real function, never defined inline: an inline
+# definition would be the only one ShellCheck can see, and 0.9.0 (CI's) then
+# reports the calls above as SC2218, "only defined later".
+cat > "$work/stage-without-link.sh" <<'EOF'
 stage_dmg_source() { ditto "$1" "$2/$(basename "$1")"; }
-if ( make_dmg "$app" "$work/bad.dmg" "stub identity" ) >/dev/null 2>"$work/err"; then
+EOF
+if (
+    # shellcheck source=/dev/null
+    source "$work/stage-without-link.sh"
+    make_dmg "$app" "$work/bad.dmg" "stub identity"
+) >/dev/null 2>"$work/err"; then
     fail "make_dmg without the link fails the build"
 else
     case "$(cat "$work/err")" in
