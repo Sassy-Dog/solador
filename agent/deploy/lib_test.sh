@@ -264,6 +264,114 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ---- watchdog (#554) --------------------------------------------------------
+#
+# A wall-clock bound on the whole suite. This file hung without ever finishing
+# four times on 2026-10-06, all under several agents building in parallel and
+# none on a change to agent/deploy/, and nothing bounded it: `./dev test`
+# waited forever and CI's two invocations run to GitHub's 6-hour job limit.
+# Living here (not in scripts/test.sh) is what covers every caller.
+#
+# On expiry it prints which case was running and the full descendant tree with
+# elapsed times and commands, kills that tree, then makes this shell exit 124
+# through its EXIT trap, so $TMP is still removed.
+#
+# SOLADOR_DEPLOY_TEST_TIMEOUT_SECS overrides the bound; the default is 900 s
+# (15 min), about 10x the ~90 s a full run takes on a Mac under no load: room
+# for a Mac running several agents or a slow CI runner, still far below the
+# 47+ minutes a real hang was observed to cost.
+WATCHDOG_SECS="${SOLADOR_DEPLOY_TEST_TIMEOUT_SECS:-900}"
+case "$WATCHDOG_SECS" in
+    '' | *[!0-9]* | 0)
+        printf 'lib_test.sh: SOLADOR_DEPLOY_TEST_TIMEOUT_SECS must be a positive integer of seconds, got "%s"\n' "$WATCHDOG_SECS" >&2
+        exit 2
+        ;;
+esac
+WATCHDOG_CASE_FILE="$TMP/current-case"
+WATCHDOG_PID_FILE="$TMP/watchdog.pid"
+WATCHDOG_FIRED_FILE="$TMP/watchdog.fired"
+CURRENT_CASE="(before the first case)"
+printf '%s\n' "$CURRENT_CASE" > "$WATCHDOG_CASE_FILE"
+WATCHDOG_MAIN_PID=$$
+
+# watchdog_tree <root-pid>: "pid ppid etime command" for every descendant of
+# the root, root excluded, from one ps snapshot. POSIX awk, no bash 4 features.
+watchdog_tree() {
+    ps -axo pid=,ppid=,etime=,command= 2>/dev/null | awk -v root="$1" '
+        { pid[NR] = $1; ppid[NR] = $2; line[NR] = $0 }
+        END {
+            keep[root] = 1
+            changed = 1
+            while (changed) {
+                changed = 0
+                for (i = 1; i <= NR; i++)
+                    if (!(pid[i] in keep) && (ppid[i] in keep)) { keep[pid[i]] = 1; changed = 1 }
+            }
+            for (i = 1; i <= NR; i++)
+                if (pid[i] != root && (pid[i] in keep)) print line[i]
+        }'
+}
+
+watchdog_fire() {
+    local wd_pid pids pid
+    : > "$WATCHDOG_FIRED_FILE"
+    wd_pid="$(cat "$WATCHDOG_PID_FILE" 2>/dev/null || true)"
+    {
+        printf '\nTIMEOUT: lib_test.sh exceeded %s s (SOLADOR_DEPLOY_TEST_TIMEOUT_SECS) and is being stopped.\n' "$WATCHDOG_SECS"
+        printf 'Running case: %s\n' "$(cat "$WATCHDOG_CASE_FILE" 2>/dev/null || echo unknown)"
+        printf 'Descendant processes of pid %s (pid ppid elapsed command):\n' "$WATCHDOG_MAIN_PID"
+        watchdog_tree "$WATCHDOG_MAIN_PID" | awk -v wd="$wd_pid" '$1 != wd { print "    " $0 }'
+    } >&2
+    pids="$(watchdog_tree "$WATCHDOG_MAIN_PID" | awk -v wd="$wd_pid" '$1 != wd { print $1 }')"
+    for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+    sleep 1
+    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
+    # The main shell is waiting on one of those children; its USR1 trap runs
+    # as soon as the wait ends, and `exit 124` runs the EXIT trap (cleanup).
+    kill -USR1 "$WATCHDOG_MAIN_PID" 2>/dev/null || true
+    sleep 5
+    kill -KILL "$WATCHDOG_MAIN_PID" 2>/dev/null || true
+}
+
+watchdog_start() {
+    (
+        trap 'exit 0' TERM
+        start=$SECONDS
+        # Polling in 1 s steps (not one long sleep) keeps this from leaving a
+        # long-lived sleep behind when it is told to stop.
+        while kill -0 "$WATCHDOG_MAIN_PID" 2>/dev/null; do
+            if [ $((SECONDS - start)) -ge "$WATCHDOG_SECS" ]; then
+                watchdog_fire
+                exit 0
+            fi
+            sleep 1
+        done
+    ) &
+    printf '%s\n' "$!" > "$WATCHDOG_PID_FILE"
+}
+
+watchdog_stop() {
+    local pid
+    pid="$(cat "$WATCHDOG_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ]; then
+        kill -TERM "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+}
+
+trap 'printf "lib_test.sh: stopped by the watchdog\n" >&2; exit 124' USR1
+# A run the watchdog fired on exits 124 even if the killed child let the suite
+# run on to a normal end first (a one-case run, or the last case).
+on_exit() {
+    local rc=$?
+    [ -e "$WATCHDOG_FIRED_FILE" ] && rc=124
+    watchdog_stop
+    cleanup
+    exit "$rc"
+}
+trap on_exit EXIT
+watchdog_start
+
 STUBS="$TMP/stubs"
 STDERR="$TMP/stderr"
 mkdir -p "$STUBS"
@@ -1596,13 +1704,15 @@ test_verify_health() {
         sleep 0.3
         printf 'FAKE-PEM-FOR-THIS-SHELL-LEVEL-TEST' > "$tls_dir/solador-agent.tls.crt"
     ) &
+    local cert_writer_pid=$!
     out="$(
         PATH="$tls_stub_dir:$PATH"
         export VERIFY_HEALTH_ATTEMPTS=5
         verify_health "$tls_env" "0.4.0" 2>&1
     )"
     status=$?
-    wait
+    # Never a bare `wait`: it would also wait for the watchdog (#554).
+    wait "$cert_writer_pid"
     assert_eq "verify_health survives the certificate appearing mid-retry" "0" "$status"
     # Verified as `localhost` (in every certificate's baseline SAN list) while
     # connecting to the bind address (#449): the bind can change after the
@@ -9482,65 +9592,145 @@ test_install_env_allowlist() {
     rm -f "$TMP/install-mut.sh" "$TMP/install-mut.sh.bak"
 }
 
+# ---- watchdog self-test (#554) -----------------------------------------------
+
+# The child of the self-test: a case that blocks. Only runs under
+# SOLADOR_DEPLOY_TEST_HANG=1, where it is the whole suite. The sleep length is
+# passed in so the parent can tell its own sleep from any other on the host.
+test_watchdog_hang_probe() {
+    command sleep "${SOLADOR_DEPLOY_TEST_HANG_SECS:-300}"
+    pass "watchdog probe: the blocking case finished before the bound"
+}
+
+test_watchdog_trips_on_a_hung_case() {
+    local marker=$((20000 + $$ % 10000)) out rc nested_tmp
+    out="$TMP/watchdog-out"
+    nested_tmp="$TMP/watchdog-tmp"
+    mkdir -p "$nested_tmp"
+
+    TMPDIR="$nested_tmp" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS="$marker" \
+        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=3 "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$out" 2>&1
+    rc=$?
+    if [ "$rc" -eq 124 ]; then
+        pass "watchdog: a hung case makes the run exit 124"
+    else
+        fail "watchdog: a hung case makes the run exit 124" "exit status was $rc" "$(cat "$out")"
+    fi
+    if grep -q 'Running case: test_watchdog_hang_probe' "$out"; then
+        pass "watchdog: names the case that was running"
+    else
+        fail "watchdog: names the case that was running" "$(cat "$out")"
+    fi
+    if grep -q "sleep $marker" "$out"; then
+        pass "watchdog: prints the descendant process tree"
+    else
+        fail "watchdog: prints the descendant process tree" "$(cat "$out")"
+    fi
+    command sleep 2
+    if ps -axo command= | grep -q "[s]leep $marker\$"; then
+        fail "watchdog: leaves no orphaned process" "a 'sleep $marker' survived"
+        pkill -f "sleep $marker\$" 2>/dev/null || true
+    else
+        pass "watchdog: leaves no orphaned process"
+    fi
+    if [ -z "$(ls -A "$nested_tmp")" ]; then
+        pass "watchdog: the timed-out run still removed its temp directory"
+    else
+        fail "watchdog: the timed-out run still removed its temp directory" "$(ls -A "$nested_tmp")"
+    fi
+
+    # Negative control: the same child and a bound, but the case finishes in
+    # time -- the watchdog must not fire.
+    TMPDIR="$nested_tmp" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS=1 \
+        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=60 "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$out" 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ] && ! grep -q 'TIMEOUT' "$out"; then
+        pass "watchdog: a case that finishes in time never trips it (control)"
+    else
+        fail "watchdog: a case that finishes in time never trips it (control)" "exit status was $rc" "$(cat "$out")"
+    fi
+
+    TMPDIR="$nested_tmp" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=abc "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$out" 2>&1
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+        pass "watchdog: a non-numeric bound is refused (exit 2)"
+    else
+        fail "watchdog: a non-numeric bound is refused (exit 2)" "exit status was $rc"
+    fi
+}
+
 # ---- run --------------------------------------------------------------------
 
 printf 'agent/deploy/lib.sh + install.sh\n\n'
 
-test_binary_version
-test_health_url
-test_health_version
-test_target_dir
-test_build_release_binary
-test_verify_health
-test_agent_target_for
-test_release_contract_matches_config
-test_validate_release_tag
-test_is_calver_version
-test_release_version_of_tag
-test_agent_feed_version
-test_service_rendering
-test_verify_agent_signature
-test_resolve_latest_agent_release
-test_install_arguments
-test_uninstall_arguments_and_refusals
-test_install_preflight
-test_install_release_resolution
-test_install_through_the_feed
-test_install_signature_gate
-test_bootstrap_extraction_and_passthrough
-test_bootstrap_help_when_piped
-test_bootstrap_resolves_commit_from_pax_header
-test_bootstrap_truncated_runs_nothing
-test_bootstrap_refuses_root
-test_bootstrap_validate_ref
-test_bootstrap_ref_must_be_reachable_from_main
-test_bootstrap_ref_reachable_via_jq
-test_bootstrap_ref_reachable_pretty_printed
-test_bootstrap_failure_paths
-test_bootstrap_passes_through_install_exit_status
-test_bootstrap_signature_gate
-test_bootstrap_rerun_hint_names_bootstrap
-test_bootstrap_uninstall_rerun_hint
-test_install_linux_flow
-test_install_env_allowlist
-test_install_tls
-test_install_tls_capability_gate
-test_install_tls_no_tailnet_bind
-test_install_macos_flow
-test_install_update_timer_linux
-test_install_update_timer_macos
-test_launchd_launcher
-test_launchd_launcher_update
-test_update_guard_linux
-test_launchd_smoke
-test_uninstall_linux
-test_unowned_service_binary_survives_set_e
-test_uninstall_macos
-test_uninstall_hardening_linux
-test_uninstall_hardening_macos
-test_install_system_daemon
-test_standby_key_script
-test_deploy_script_invariants
+# HANG mode is the watchdog self-test's child: it runs only the probe.
+if [ "${SOLADOR_DEPLOY_TEST_HANG:-}" = "1" ]; then
+    CASES="test_watchdog_hang_probe"
+else
+    CASES="
+        test_binary_version
+        test_health_url
+        test_health_version
+        test_target_dir
+        test_build_release_binary
+        test_verify_health
+        test_agent_target_for
+        test_release_contract_matches_config
+        test_validate_release_tag
+        test_is_calver_version
+        test_release_version_of_tag
+        test_agent_feed_version
+        test_service_rendering
+        test_verify_agent_signature
+        test_resolve_latest_agent_release
+        test_install_arguments
+        test_uninstall_arguments_and_refusals
+        test_install_preflight
+        test_install_release_resolution
+        test_install_through_the_feed
+        test_install_signature_gate
+        test_bootstrap_extraction_and_passthrough
+        test_bootstrap_help_when_piped
+        test_bootstrap_resolves_commit_from_pax_header
+        test_bootstrap_truncated_runs_nothing
+        test_bootstrap_refuses_root
+        test_bootstrap_validate_ref
+        test_bootstrap_ref_must_be_reachable_from_main
+        test_bootstrap_ref_reachable_via_jq
+        test_bootstrap_ref_reachable_pretty_printed
+        test_bootstrap_failure_paths
+        test_bootstrap_passes_through_install_exit_status
+        test_bootstrap_signature_gate
+        test_bootstrap_rerun_hint_names_bootstrap
+        test_bootstrap_uninstall_rerun_hint
+        test_install_linux_flow
+        test_install_env_allowlist
+        test_install_tls
+        test_install_tls_capability_gate
+        test_install_tls_no_tailnet_bind
+        test_install_macos_flow
+        test_install_update_timer_linux
+        test_install_update_timer_macos
+        test_launchd_launcher
+        test_launchd_launcher_update
+        test_update_guard_linux
+        test_launchd_smoke
+        test_uninstall_linux
+        test_unowned_service_binary_survives_set_e
+        test_uninstall_macos
+        test_uninstall_hardening_linux
+        test_uninstall_hardening_macos
+        test_install_system_daemon
+        test_standby_key_script
+        test_deploy_script_invariants
+        test_watchdog_trips_on_a_hung_case
+    "
+fi
+
+for CURRENT_CASE in $CASES; do
+    printf '%s\n' "$CURRENT_CASE" > "$WATCHDOG_CASE_FILE"
+    "$CURRENT_CASE"
+done
 
 printf '\npassed %d, failed %d, skipped %d\n' "$PASSED" "$FAILED" "$SKIPPED"
 if [ "$SKIPPED" -gt 0 ]; then

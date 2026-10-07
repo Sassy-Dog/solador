@@ -1720,6 +1720,14 @@ has no dump for, rather than paint a layout computed for another one.
   command `install.sh` drives — uname, sw_vers, systemctl, launchctl — and
   runs the installer end to end against a temporary HOME) plus
   `shellcheck`/`bash -n`, all three in the `agent-tests` job;
+  **`lib_test.sh` bounds itself (#554)**: a built-in watchdog stops a run after
+  15 minutes by default (`SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` overrides it, in
+  seconds; about 10x a full run's ~90 s), printing the case that was running and
+  the descendant process tree, killing that tree and exiting 124 with its temp
+  directory removed. It covers `./dev test` and both CI invocations alike, and
+  a self-test case (a deliberately blocking child) proves it trips and that a
+  case finishing in time does not. A test must therefore never use a bare
+  `wait` (it would wait for the watchdog too); wait on a pid;
   helper checks are selected for deploy/helper changes (see docs/CI.md). Before
   that the deploy path was the one place where "all green" carried no information —
   #264 broke every deploy (fixed in #268) and nothing could have caught it. Two assertions are

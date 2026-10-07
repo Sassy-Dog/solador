@@ -722,6 +722,10 @@ through it, `x86_64-unknown-linux-musl` (#457), so a static-link break shows
 up before a tag; the other three targets and the signing still run only at
 release.
 
+`lib_test.sh` bounds its own wall-clock time (#554): after 900 s (15 minutes;
+set `SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` to change it) it prints the running case
+and the descendant process tree, kills the tree and exits 124.
+
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs every host command (`cargo`,
 `curl`, `sleep`, `uname`, `sw_vers`, `systemctl`, `loginctl`, `launchctl`,
