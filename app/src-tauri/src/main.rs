@@ -6469,8 +6469,11 @@ fn main() {
     rt.spawn(openclaw_loop(Arc::clone(&app)));
 
     window_state::configure(tauri::Builder::default())
-        // Opening a repo row's Actions page. The webview's grant is one
-        // command, scoped to one URL shape — see `capabilities/default.json`.
+        // Opening a repo row's Actions page, or the one waiting run's page.
+        // The webview's grant is one command, scoped to two URL shapes:
+        // `https://github.com/*/*/actions`, composed by `github::actions_url`,
+        // and `https://github.com/*/*/actions/runs/*`, composed by
+        // `github::run_url` — see `capabilities/default.json`.
         .plugin(tauri_plugin_opener::init())
         // Needs-approval banners. Registered so `NotificationExt` resolves in
         // `deliver_approval_notices`; granted nothing, because only Rust ever

@@ -250,14 +250,19 @@ doppler run --project solador --config prd --no-fallback \
 
 The notarization wait is up to **60 minutes** (`notarytool submit --wait
 --timeout 60m`). If it runs out while Apple still reports `In Progress`, the
-build exits non-zero and prints the submission id; do **not** resubmit. Finish
-with `xcrun notarytool wait <id>` using the `APPLE_ASC_*` key, then
+build exits non-zero and prints the submission id; locally, do **not**
+resubmit. Finish with `xcrun notarytool wait <id>` using the `APPLE_ASC_*` key, then
 `xcrun stapler staple`, `xcrun stapler validate` and `spctl -a -vvv --type
 install` on the `.dmg`. That yields a notarized `.dmg` only: the build stopped
 before stapling the `.app` and before making the updater payload
 (`Solador-<version>.app.tar.gz`), and there is no standalone command for the
 latter, so staple the `.app` with `xcrun stapler staple` too and treat the
-local build as having no updater payload. A non-zero
+local build as having no updater payload; the terminal message says both. On CI
+(`GITHUB_ACTIONS=true`) none of these steps can be followed, because the runner
+and its `.dmg` are gone when the job ends and the release also needs the
+stapled `.app` and the updater payload the build never got to make: the message
+says that and the remedy is re-running the release job, which is a fresh
+submission. A non-zero
 `notarytool` exit with Apple reporting `Accepted` continues to the staple with
 a warning, and `Invalid` / `Rejected` fails with Apple's log.
 

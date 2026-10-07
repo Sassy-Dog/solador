@@ -34,6 +34,13 @@ const bounds = (page, selector) => page.locator(selector).evaluateAll(elements =
   const r = el.getBoundingClientRect();
   return { x:r.x, y:r.y + scrollY, width:r.width, height:r.height };
 }));
+// app/ui/layout-stability.js records a panel's height floor on the animation
+// frame after its content changes, so content replaced before that frame has
+// run is measured without the floor the previous content would have set.
+// Awaiting two frames (the second covers the pass the first one's min-height
+// writes trigger) is the condition the app guarantees: the floors are in place.
+const layoutSettled = page => page.evaluate(() => new Promise(done =>
+  requestAnimationFrame(() => requestAnimationFrame(done))));
 async function changeDashboard(page, model) {
   await page.evaluate(model => { window.framesForTest.dashboard_view = model; }, model);
   await expect(page.locator('.db-value').first()).toHaveText(model.tiles[0].rows[0].value);
@@ -167,6 +174,7 @@ for (const presentation of ['summary', 'detailed']) test(`all overview sources r
 test('detailed panels retain their footprint through failure, empty and recovery frames', async ({ page, baseURL }) => {
   const frames = await open(page, baseURL, true);
   await page.evaluate(() => refreshPanels());
+  await layoutSettled(page);
   const before = await bounds(page, '.panel');
   for (const suffix of ['empty', 'error', 'stale']) {
     const changed = structuredClone(frames);
@@ -176,9 +184,11 @@ test('detailed panels retain their footprint through failure, empty and recovery
       if (variants[suffix].includes(file)) changed[command] = await (await fetch(`${baseURL}/sample-${file}-${suffix}.json`)).json();
     }
     await page.evaluate(async changed => { window.framesForTest = changed; await refreshPanels(); }, changed);
+    await layoutSettled(page);
     expect(await bounds(page, '.panel'), suffix).toEqual(before);
   }
   await page.evaluate(async frames => { window.framesForTest = frames; await refreshPanels(); }, frames);
+  await layoutSettled(page);
   expect(await bounds(page, '.panel')).toEqual(before);
 });
 
