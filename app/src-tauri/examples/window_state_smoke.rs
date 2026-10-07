@@ -11,10 +11,10 @@ use tauri::Manager;
 fn main() {
     let mode = std::env::args()
         .nth(1)
-        .expect("write, read, maximize or minimize");
+        .expect("write, read, maximize, unmaximize or minimize");
     assert!(matches!(
         mode.as_str(),
-        "write" | "read" | "maximize" | "minimize"
+        "write" | "read" | "maximize" | "unmaximize" | "minimize"
     ));
     let scratch = std::path::PathBuf::from(
         std::env::var_os("SOLADOR_WINDOW_SMOKE_DIR").expect("scratch directory"),
@@ -25,6 +25,12 @@ fn main() {
     context.config_mut().app.windows[0].url =
         tauri::WebviewUrl::External("about:blank".parse().unwrap());
     let result_path = scratch.join(format!("{mode}.json"));
+    let monitor_index: usize = std::env::args()
+        .nth(2)
+        .unwrap_or("0".into())
+        .parse()
+        .unwrap();
+    let quit = std::env::args().nth(3).as_deref() == Some("quit");
     window_state::configure(tauri::Builder::default())
         .setup(move |app| {
             // HOME/APPDATA must point inside scratch, protecting real state.
@@ -34,19 +40,33 @@ fn main() {
                 "isolated config required: {config_dir:?}"
             );
             let window = app.get_webview_window("main").expect("main window");
+            let monitors = window.available_monitors()?;
+            std::fs::write(
+                scratch.join("monitors.json"),
+                serde_json::to_vec(&monitors)?,
+            )?;
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(500));
                 if mode == "write" {
+                    let monitor = &monitors[monitor_index];
+                    let origin = monitor.position().to_logical::<f64>(monitor.scale_factor());
+                    window
+                        .set_position(tauri::LogicalPosition::new(
+                            origin.x + 120.0,
+                            origin.y + 150.0,
+                        ))
+                        .unwrap();
+                    std::thread::sleep(Duration::from_millis(500));
                     window
                         .set_size(tauri::LogicalSize::new(700.0, 500.0))
-                        .unwrap();
-                    window
-                        .set_position(tauri::PhysicalPosition::new(120, 150))
                         .unwrap();
                     std::thread::sleep(Duration::from_millis(500));
                 }
                 if mode == "maximize" {
                     window.maximize().unwrap();
+                    std::thread::sleep(Duration::from_millis(500));
+                } else if mode == "unmaximize" {
+                    window.unmaximize().unwrap();
                     std::thread::sleep(Duration::from_millis(500));
                 } else if mode == "minimize" {
                     window.minimize().unwrap();
@@ -67,11 +87,16 @@ fn main() {
                         "visible": window.is_visible().unwrap(),
                         "maximized": window.is_maximized().unwrap(),
                         "minimized": window.is_minimized().unwrap(),
+                        "scale": window.scale_factor().unwrap(),
                     }))
                     .unwrap(),
                 )
                 .unwrap();
-                window.close().unwrap();
+                if quit {
+                    window.app_handle().exit(0);
+                } else {
+                    window.close().unwrap();
+                }
             });
             Ok(())
         })

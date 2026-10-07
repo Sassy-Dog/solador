@@ -17,8 +17,8 @@ with tempfile.TemporaryDirectory(prefix="window-state-", dir=root / "tmp") as di
     scratch = Path(directory)
     env = dict(os.environ, HOME=directory, APPDATA=directory, XDG_CONFIG_HOME=directory,
                SOLADOR_WINDOW_SMOKE_DIR=directory)
-    def launch(mode):
-        subprocess.run([str(exe), mode], env=env, check=True, timeout=30)
+    def launch(mode, *args):
+        subprocess.run([str(exe), mode, *map(str, args)], env=env, check=True, timeout=30)
         return json.loads((scratch / f"{mode}.json").read_text())
 
     defaults = launch("read")
@@ -32,6 +32,8 @@ with tempfile.TemporaryDirectory(prefix="window-state-", dir=root / "tmp") as di
     maximized = launch("maximize")
     assert maximized["maximized"], "native window did not maximize"
     assert launch("read")["maximized"], "maximized state must survive restart"
+    assert launch("unmaximize") == expected, "unmaximizing after restart must restore normal bounds"
+    assert launch("read") == expected, "unmaximized bounds must survive restart"
     state = list(scratch.rglob(".window-state.json"))
     assert len(state) == 1, f"expected one isolated persistence file: {state}"
     saved = json.loads(state[0].read_text())
@@ -44,4 +46,14 @@ with tempfile.TemporaryDirectory(prefix="window-state-", dir=root / "tmp") as di
     fallback = launch("read")
     assert fallback["visible"]
     assert (fallback["width"], fallback["height"]) == (defaults["width"], defaults["height"]), "corrupt state must restore configured size"
+    monitors = json.loads((scratch / "monitors.json").read_text())
+    for index, monitor in enumerate(monitors):
+        expected = launch("write", index, "quit")
+        for restart in range(3):
+            restored = launch("read")
+            assert restored == expected, f"monitor {index} ({monitor}), restart {restart}: {expected} -> {restored}"
+        maximized = launch("maximize")
+        assert launch("read") == maximized, f"maximized bounds must reopen on monitor {index}"
+        assert launch("unmaximize") == expected, f"normal bounds must survive maximized restart on monitor {index}"
+    print(f"PASS: three restarts on each of {len(monitors)} connected displays preserve bounds and scale")
     print("PASS: real native size/position and maximize survive restart; minimize preserves bounds; off-screen/hidden and corrupt state recover visibly")

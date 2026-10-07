@@ -131,6 +131,30 @@ const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
 
+test("dashboard toolbar icons keep accessible labels and keyboard tooltips through editing", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  const toolbar = page.locator(".db-chrome");
+  for (const name of ["All full panels", "Edit dashboard", "Settings"]) {
+    const button = toolbar.getByRole("button", { name, exact: true });
+    await expect(button).toBeVisible();
+    await button.focus();
+    await expect(button.getByRole("tooltip")).toBeVisible();
+  }
+  const edit = action(page, "edit");
+  await edit.press("Enter");
+  await expect(edit).toHaveAccessibleName("Done editing");
+  await expect(edit.getByRole("tooltip")).toHaveText("Done editing");
+  await expect(edit).toHaveAttribute("aria-pressed", "true");
+  await edit.press("Enter");
+  await expect(edit).toHaveAccessibleName("Edit dashboard");
+  await expect(edit).toHaveAttribute("aria-pressed", "false");
+  await toolbar.getByRole("button", { name: "All full panels", exact: true }).click();
+  await expect(page.locator("#cockpitView")).toBeVisible();
+  await page.locator("#dashboardBack").click();
+  await toolbar.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.locator("#settings")).toBeVisible();
+});
+
 test('Full runners share Detail tables and the saved view choice', async ({page, baseURL}) => {
   await openDashboard(page, baseURL, true);
   await tile(page, 'ghRunners').getByRole('button', {name:/MACOS · ARM64/}).click();

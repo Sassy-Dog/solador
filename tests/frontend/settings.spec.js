@@ -1694,6 +1694,25 @@ test("About offers the update Rust found, with the label Rust chose", async ({ p
  * The distinction the whole feature rests on: a check that could not run must
  * not paint as one that ran and found nothing. Neither may offer an install.
  */
+test("About update actions fit without their own scrollbar", async ({ page, baseURL }) => {
+  await openSettings(page, baseURL);
+  await tab(page, "about").click();
+  for (const width of [1280, 390, 240]) {
+    await page.setViewportSize({ width, height: 900 });
+    const actions = page.locator(".update-controls");
+    expect(await actions.evaluate(el => ({
+      vertical: el.scrollHeight > el.clientHeight,
+      horizontal: el.scrollWidth > el.clientWidth,
+    }))).toEqual({ vertical: false, horizontal: false });
+    for (const button of await actions.locator("button").all()) {
+      const bounds = await button.boundingBox();
+      const row = await actions.boundingBox();
+      expect(bounds.y).toBeGreaterThanOrEqual(row.y);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(row.y + row.height);
+    }
+  }
+});
+
 test("a failed update check does not render as being up to date", async ({ page, baseURL }) => {
   const failed = {
     heading: "Updates",

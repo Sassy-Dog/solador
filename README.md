@@ -63,7 +63,9 @@ not failure*, and the code says so in as many words.
 The app opens on five compact tiles. **Edit dashboard** lets you move, hide,
 duplicate and scope them, or add a view of any of the nine sources below.
 **Needs attention** includes hidden sources. Open a tile's **Details** for more,
-or **All detailed panels** for the full cockpit. Connections stay in **Settings**.
+or **All full panels** for the full cockpit. **All full panels**, **Edit dashboard**
+and **Settings** are icon buttons with tooltips at the top right.
+Connections stay in **Settings**.
 Machines includes colored CPU/RAM utilization bars. GitHub Repos supports
 per-tile repository selection, sortable columns and an All rows option.
 Runners can show every individual runner or counts grouped by OS and architecture.

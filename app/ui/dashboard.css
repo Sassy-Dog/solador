@@ -101,6 +101,64 @@
   gap: 7px;
   align-items: center;
   flex-wrap: wrap;
+  margin-left: auto;
+}
+#dashboardOverview button.db-icon {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  padding: 8px;
+  flex: none;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 8px;
+  color: var(--db-muted);
+}
+#dashboardOverview button.db-icon:hover,
+#dashboardOverview button.db-icon[aria-pressed="true"] {
+  background: var(--db-raised);
+  color: var(--db-text);
+}
+#dashboardOverview button.db-icon:focus-visible {
+  outline: 2px solid var(--db-blue);
+  outline-offset: 2px;
+}
+#dashboardOverview .db-icon svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#dashboardOverview .db-tooltip {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 8px);
+  right: 0;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 5px 8px;
+  border: 1px solid var(--db-line);
+  border-radius: 6px;
+  background: var(--db-raised);
+  color: var(--db-text);
+  font-size: 11px;
+  box-shadow: 0 4px 12px #0006;
+  pointer-events: none;
+  visibility: hidden;
+}
+#dashboardOverview .db-icon:is(:hover, :focus-visible) .db-tooltip {
+  visibility: visible;
+}
+#dashboardOverview .db-actions:has(.db-icon:hover) .db-icon:not(:hover) .db-tooltip {
+  visibility: hidden;
+}
+#dashboardOverview [data-action="allPanels"] .db-tooltip {
+  left: 0;
+  right: auto;
 }
 #dashboardOverview .db-sample {
   font-size: 11px;
