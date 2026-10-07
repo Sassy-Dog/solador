@@ -149,6 +149,9 @@ class SelectionTests(unittest.TestCase):
     def test_dmg_layout_test_runs_app_checks(self):
         self.assert_change(["scripts/dmg-layout-test.sh"], dict(APP, helpers=True))
 
+    def test_notarize_outcome_test_runs_app_checks(self):
+        self.assert_change(["scripts/notarize-outcome-test.sh"], dict(APP, helpers=True))
+
     def test_shared_script_forces_full_suite(self):
         self.assert_change(["scripts/config.sh"], FULL)
 

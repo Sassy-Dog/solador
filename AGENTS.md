@@ -123,7 +123,9 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   suite (`scripts/run-test.sh`), the signing-identity refusal test
   (`scripts/signing-identity-test.sh`, #474), the `.dmg` layout test
   (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the
-  `Applications` symlink must be present and point at `/Applications`), the e2e server's bind test
+  `Applications` symlink must be present and point at `/Applications`), the
+  notarization outcome test (`scripts/notarize-outcome-test.sh`, #551 — a stub
+  `xcrun`: a timed-out wait is "still in progress", never "rejected"), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
   e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
@@ -975,7 +977,14 @@ directory holding the `ditto`-copied app and an `Applications` symlink, and
 `build.sh` mounts the finished image read-only and fails unless its root is
 exactly those two; the test builds real images from a dummy bundle and proves
 the assertion refuses a missing or mis-targeted link; macOS only, skips itself
-elsewhere), `tests/frontend/csp_server_test.py`,
+elsewhere), `scripts/notarize-outcome-test.sh` (#551: `notarize_and_staple`
+classifies a failed `notarytool submit --wait` by Apple's submission status
+from `notarytool info`, never by the exit code — the wait is 60 minutes, and
+one that runs out reads "still in progress" with the `notarytool wait` → staple
+resume path, a rejection prints Apple's log, a submit with no id says it never
+happened, and only Accepted staples; lifted out of `build.sh` and run against a
+stub `xcrun`, so nothing is submitted; `NOTARIZE_SOURCE` points it at another
+copy of `build.sh` for the negative control), `tests/frontend/csp_server_test.py`,
 and the `tests/frontend` Playwright suite. Agent tests run via `cargo test` in
 `agent/`.
 

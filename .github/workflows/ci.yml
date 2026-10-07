@@ -331,6 +331,12 @@ jobs:
         if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: /bin/bash scripts/dmg-layout-test.sh
 
+      # A notarytool wait that times out is "still in progress", never
+      # "rejected" (#551); the suite stubs `xcrun` and needs no credentials.
+      - name: Notarization outcomes under macOS bash 3.2
+        if: ${{ needs.changes.outputs.helpers == 'true' }}
+        run: /bin/bash scripts/notarize-outcome-test.sh
+
       # These Rust tests read CSS/SVG/frontend test files to assert parity.
       # The fixture generator builds Rust but does not execute these tests.
       - name: Frontend view-model parity tests

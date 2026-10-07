@@ -117,6 +117,16 @@ else
     exit 1
 fi
 
+# --- Notarization outcomes (#551): a timed-out wait is "still in progress",
+# never "rejected". Stub `xcrun`; no credentials, nothing submitted to Apple.
+log_info "Running notarization outcome tests (scripts/notarize-outcome-test.sh, under $DEPLOY_TEST_SHELL)…"
+if "$DEPLOY_TEST_SHELL" scripts/notarize-outcome-test.sh; then
+    log_success "Notarization outcome tests passed"
+else
+    log_error "Notarization outcome tests failed"
+    exit 1
+fi
+
 # --- Frontend e2e (Playwright), tests/frontend --- the only thing that
 # exercises app/ui/ under the app's real CSP; mirrors CI's rust-workspace job.
 # Needs BOTH npm and cargo: the suite's `pretest` shells out to
