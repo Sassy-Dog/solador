@@ -35,5 +35,16 @@ is withheld (Sassy-Dog/skills#373). Nothing parses these numbers; they are a rea
 >    path separators, permissions and process assumptions in `crates/*` and `app/src-tauri`.
 > 7. Reconcile `AGENTS.md`, `app/README.md`, `agent/README.md` and `docs/` in the same PR
 >    whenever the change makes a claim in them untrue.
+> 8. Release-path work (signed or notarized builds, `scripts/build.sh`, `scripts/publish.sh`)
+>    takes its credentials from Doppler `solador/prd` through the recipe in `docs/SECRETS.md`
+>    ("Locally — the notarized build"; run its "Every notarized build" recipe), never from the
+>    ambient environment. An unset `APPLE_*` or `TAURI_SIGNING_*` variable means "not fetched", not
+>    "unavailable". Unlock the signing keychain first, as that recipe does, and follow its
+>    notarization timeout and resume steps rather than resubmitting. Creating the keychain or
+>    importing the identity is operator setup: if `security find-identity -v -p codesigning` lists
+>    none, report that and stop. Never run `./dev publish` without `--skip-mint` (that form needs a
+>    clean, current `main`, so a worktree exercises the signed path with `./dev build --release
+>    --notarize`). If the recipe itself fails, report its error verbatim rather than concluding the
+>    credentials do not exist.
 
 ## extra-guardrails
