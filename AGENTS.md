@@ -1007,8 +1007,12 @@ the assertion refuses a missing or mis-targeted link; macOS only, skips itself
 elsewhere), `scripts/notarize-outcome-test.sh` (#551: `notarize_and_staple`
 classifies a failed `notarytool submit --wait` by Apple's submission status
 from `notarytool info`, never by the exit code — the wait is 60 minutes, and
-one that runs out reads "still in progress" with the `notarytool wait` → staple
-resume path, a rejection prints Apple's log, a submit with no id says it never
+one that runs out reads "still in progress" and, locally, gives the
+`notarytool wait` → staple resume path plus the two caveats that it yields a
+`.dmg` only (staple the `.app` too, no updater payload), while with
+`GITHUB_ACTIONS=true` it says the runner's artifacts are gone and the remedy is
+re-running the release job, never "do NOT resubmit" (both cases are tested; the
+suite pins `GITHUB_ACTIONS` itself); a rejection prints Apple's log, a submit with no id says it never
 happened, and only Accepted staples; lifted out of `build.sh` and run against a
 stub `xcrun`, so nothing is submitted; `NOTARIZE_SOURCE` points it at another
 copy of `build.sh` for the negative control), `tests/frontend/csp_server_test.py`,

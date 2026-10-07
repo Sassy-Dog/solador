@@ -77,12 +77,17 @@ export APPLE_ASC_KEY_ID=KEYID APPLE_ASC_ISSUER_ID=ISSUER
 APPLE_ASC_KEY_BASE64="$(printf 'fake-key' | base64)"
 export APPLE_ASC_KEY_BASE64
 
-# run_case <scenario>: the function exits, so it runs in a subshell.
+# run_case <scenario> [ci]: the function exits, so it runs in a subshell.
+# GITHUB_ACTIONS is pinned either way (set to true with "ci", unset otherwise),
+# because this suite itself runs on GitHub Actions and must not inherit it.
 rc=0
 run_case() {
     SCENARIO="$1"; : > "$CALLS"
     rc=0
-    ( notarize_and_staple "$work/Solador.dmg" ) > "$work/out" 2>&1 || rc=$?
+    (
+        if [[ "${2:-}" == ci ]]; then export GITHUB_ACTIONS=true; else unset GITHUB_ACTIONS; fi
+        notarize_and_staple "$work/Solador.dmg"
+    ) > "$work/out" 2>&1 || rc=$?
 }
 called() { grep -qF -- "$1" "$CALLS"; }
 said() { grep -qF -- "$1" "$work/out"; }
@@ -115,8 +120,28 @@ check "timeout: then staple" said "xcrun stapler staple"
 check "timeout: never suggests notarytool log" never_said "notarytool log"
 check "timeout: never fetches the log" never_called "notarytool log"
 check "timeout: does not staple" never_called "stapler staple"
+check "timeout: says the .app must be stapled too" said "also staple the .app"
+check "timeout: says there is no updater payload" said "no updater payload"
+check "timeout: does not give the CI advice" never_said "re-run the release job"
 
-# --- Rejected: says so, prints Apple's log, non-zero.
+# --- Timed out on CI: the runner and its .dmg are gone, so the local resume
+# steps cannot be followed. The remedy is re-running the job, and it must not
+# say "do NOT resubmit" (a re-run is a fresh submission).
+run_case timeout ci
+check "timeout on CI: exits non-zero" exited_nonzero
+check "timeout on CI: says still in progress" said "still in progress at Apple"
+check "timeout on CI: says the runner's artifacts are gone" said "are gone when this job ends"
+check "timeout on CI: says to re-run the release job" said "re-run the release job"
+check "timeout on CI: never says do NOT resubmit" never_said "do NOT resubmit"
+check "timeout on CI: gives no notarytool wait resume path" never_said "notarytool wait"
+check "timeout on CI: gives no local staple steps" never_said "xcrun stapler"
+check "timeout on CI: never says rejected" never_said "was rejected"
+check "timeout on CI: does not staple" never_called "stapler staple"
+
+# --- Rejected: says so, prints Apple's log, non-zero. The same on CI.
+run_case invalid ci
+check "invalid on CI: says rejected, not the timeout advice" said "was rejected by Apple"
+check "invalid on CI: does not give the timeout advice" never_said "re-run the release job"
 run_case invalid
 check "invalid: exits non-zero" exited_nonzero
 check "invalid: says rejected" said "was rejected by Apple"

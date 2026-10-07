@@ -823,11 +823,23 @@ notarize_and_staple() {
                 ;;
             "In Progress")
                 log_error "notarization is still in progress at Apple (submission $id): the wait ran out before Apple gave a verdict"
-                log_error "do NOT resubmit. Finish with the App Store Connect API key (APPLE_ASC_*):"
-                log_error "  xcrun notarytool wait $id --key <AuthKey.p8> --key-id <key id> --issuer <issuer id>"
-                log_error "  xcrun stapler staple \"$dmg\""
-                log_error "  xcrun stapler validate \"$dmg\""
-                log_error "  spctl -a -vvv --type install \"$dmg\""
+                if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+                    # The resume steps below need this runner's .dmg, and the
+                    # runner is discarded when the job fails. The release also
+                    # needs the stapled .app and the updater payload, which
+                    # this build exits before making, so a stapled .dmg alone
+                    # would not be a release.
+                    log_error "this runner and its $dmg are gone when this job ends, and the release also needs the stapled .app and the updater payload this build never got to make"
+                    log_error "re-run the release job; that is a fresh submission to Apple"
+                else
+                    log_error "do NOT resubmit. Finish with the App Store Connect API key (APPLE_ASC_*):"
+                    log_error "  xcrun notarytool wait $id --key <AuthKey.p8> --key-id <key id> --issuer <issuer id>"
+                    log_error "  xcrun stapler staple \"$dmg\""
+                    log_error "  xcrun stapler validate \"$dmg\""
+                    log_error "  spctl -a -vvv --type install \"$dmg\""
+                    log_error "That yields a notarized .dmg only: also staple the .app (xcrun stapler staple <the .app>)."
+                    log_error "There is no updater payload (Solador-<version>.app.tar.gz) for this build."
+                fi
                 exit 1
                 ;;
             *)
