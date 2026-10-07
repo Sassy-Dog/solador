@@ -1,7 +1,7 @@
 ---
 max_in_flight: 3
 merge_queue: true
-review_site: agent
+review_site: coordinator
 board:
   number: 5
   owner: Sassy-Dog
