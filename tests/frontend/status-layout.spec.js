@@ -298,7 +298,10 @@ for (const width of [375, 1024, 1600]) test(`tile content is fully visible witho
   const frames = await open(page, baseURL);
   const next = structuredClone(frames.dashboard_view);
   const runners = next.tiles.find(t => t.source === 'ghRunners');
-  runners.rows = Array.from({length:12}, (_, i) => ({...runners.rows[0], id:`runner-${i}`, name:`runner-${i}`}));
+  // Individual rows: the shipped default is grouped, but stored List tiles still paint these.
+  const individual = next.sources.find(s => s.id === 'ghRunners').rows[0];
+  runners.runnerView = 'list';
+  runners.rows = Array.from({length:12}, (_, i) => ({...individual, id:`runner-${i}`, name:`runner-${i}`}));
   await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   await expect(page.locator('[data-source="ghRunners"] .db-item')).toHaveCount(12);
   const clipped = () => page.locator('.db-tile-content, .card, .panel-body').evaluateAll(elements => elements.filter(el => el.getClientRects().length && el.scrollHeight > el.clientHeight + 1).map(el => el.className));
@@ -315,7 +318,8 @@ test('resizing releases obsolete height reservations without clipping content', 
   const frames = await open(page, baseURL);
   const next = structuredClone(frames.dashboard_view);
   const runners = next.tiles.find(t => t.source === 'ghRunners');
-  runners.rows = Array.from({length:20}, (_, i) => ({...runners.rows[0], id:`runner-${i}`}));
+  runners.runnerView = 'list';
+  runners.rows = Array.from({length:20}, (_, i) => ({...next.sources.find(s => s.id === 'ghRunners').rows[0], id:`runner-${i}`}));
   await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   const body = page.locator('.db-tile[data-source="ghRunners"] .db-tile-content');
   await expect.poll(() => body.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThan(400);

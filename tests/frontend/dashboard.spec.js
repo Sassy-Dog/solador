@@ -349,15 +349,27 @@ test("GitHub tile row limits and runner grouping are saved independently", async
   expect((await savedLayout(page)).tiles.find(t => t.source === "ghWorkflows").rowLimit).toBe("all");
   await expect(tile(page,"ghWorkflows").locator('.db-item')).toHaveCount(6);
   await tile(page, "ghRunners").locator('[data-action="configure"]').click();
-  await page.getByLabel("Runner view", { exact: true }).selectOption("grouped");
+  await page.getByLabel("Runner view", { exact: true }).selectOption("list");
   await page.getByLabel("Rows to show", { exact: true }).selectOption("all");
   await action(page, "apply").click();
-  expect((await savedLayout(page)).tiles.find(t => t.source === "ghRunners").runnerView).toBe("grouped");
+  expect((await savedLayout(page)).tiles.find(t => t.source === "ghRunners").runnerView).toBe("list");
   await page.reload();
   await action(page, "edit").click();
   await tile(page, "ghRunners").locator('[data-action="configure"]').click();
-  await expect(page.getByLabel("Runner view", { exact: true })).toHaveValue("grouped");
+  await expect(page.getByLabel("Runner view", { exact: true })).toHaveValue("list");
   await expect(page.getByLabel("Rows to show", { exact: true })).toHaveValue("all");
+});
+
+test("a fresh dashboard groups Runners by OS and architecture, and an added Runners tile starts grouped with List one click away", async ({ page, baseURL }) => {
+  const original = await openDashboard(page, baseURL);
+  expect(original.tiles.find(t => t.source === "ghRunners").runnerView).toBe("grouped");
+  await expect(tile(page, "ghRunners").locator('.db-item-name')).toHaveText(["LINUX · ARM64", "MACOS · ARM64"]);
+  await action(page, "edit").click();
+  await action(page, "catalog").click();
+  await page.locator('[data-action="add"][data-id="ghRunners"]').click();
+  await expect(page.getByLabel("Runner view", { exact: true })).toHaveValue("grouped");
+  await page.getByLabel("Runner view", { exact: true }).selectOption("list");
+  await expect(page.getByLabel("Runner view", { exact: true })).toHaveValue("list");
 });
 
 test("repo column sorts save direction, survive refresh, and support the keyboard", async ({ page, baseURL }) => {
@@ -681,7 +693,13 @@ test("presets open scoped drafts, can be customized, and never save on selection
     await expect(page.locator("#dashboard-width")).toHaveValue(preset.tile.width);
     await expect(page.locator(".db-preview-tile .db-tile-title")).toHaveText(preset.tile.title);
     const rows = original.sources.find(s => s.id === preset.tile.source).rows.filter(r => preset.tile.scope === "attention" ? r.attention : r.scopes.includes(preset.tile.scope));
-    await expect(page.locator(".db-preview-tile .db-item-name")).toHaveText(rows.slice(0, preset.tile.source === "hosts" ? 4 : 5).map(r => r.label));
+    if (preset.tile.runnerView === "grouped") {
+      // Group rows are Rust's (the IPC double serves the fixture's own groups; scope filtering of them is Rust-tested).
+      await expect(page.locator(".db-preview-tile .db-item-name")).toHaveText(["LINUX · ARM64", "MACOS · ARM64"]); // the double does not scope-filter group rows
+      await expect(page.getByLabel("Runner view", { exact: true })).toHaveValue("grouped");
+    } else {
+      await expect(page.locator(".db-preview-tile .db-item-name")).toHaveText(rows.slice(0, preset.tile.source === "hosts" ? 4 : 5).map(r => r.label));
+    }
     await page.locator("#dashboard-scope").press("Enter");
     expect(await savedLayout(page)).toBeNull();
     await action(page, "close").click();

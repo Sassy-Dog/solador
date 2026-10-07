@@ -62,7 +62,14 @@ pub fn default_layout() -> DashboardLayout {
                 selected_repos: vec![],
                 sort_by: "name".into(),
                 sort_descending: false,
-                runner_view: "list".into(),
+                // Grouped answers "is this pool healthy?" per OS and
+                // architecture; it is only valid on Runners.
+                runner_view: if *source == "ghRunners" {
+                    "grouped"
+                } else {
+                    "list"
+                }
+                .into(),
             })
             .collect(),
     }
@@ -753,7 +760,8 @@ fn source_view(id: &str, title: &str, payload: &Value) -> Value {
         _ => "",
     };
     let mut source = json!({"id":id,"title":title,"detailColumns":detail_columns(id, &rows),"rows":rows,"message":message,"loading":payload["loading"]==true,"warnings":warnings,"scopes":scopes,"attentionCount":attention,"attentionColor":color::hex(attention_color),"attentionLabel":attention_label,"trailing":payload["trailing"],"hint":hint,
-        "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false}});
+        "defaultTile":{"id":"draft","source":id,"title":title,"scope":if id=="sentryCrons" {"active"} else {"all"},"presentation":"summary","width":if id=="hosts" {"medium"} else {"small"},"hidden":false,
+        "runnerView":if id=="ghRunners" {"grouped"} else {"list"}}});
     if id == "ghRunners" {
         // Detail and Full describe the same source-wide group, independent
         // of the tile's scope and row limit.
@@ -1052,7 +1060,7 @@ fn presets() -> Value {
         {
             "id":"linux-runners",
             "hint":"See Linux runner availability in one compact tile.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into() }
+            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"grouped".into() }
         }
     ])
 }
@@ -1244,13 +1252,53 @@ mod tests {
             for presentation in ["summary", "detailed"] {
                 let tile = configured_tile(
                     source_id,
-                    json!({"rowLimit":"all","presentation":presentation}),
+                    json!({"rowLimit":"all","presentation":presentation,"runnerView":"list"}),
                 );
                 let view = tile_view(&tile, &source);
                 assert_eq!(list(&view, "rows").len(), 30);
                 assert_eq!(view["moreCount"], 0);
             }
         }
+    }
+
+    #[test]
+    fn runners_default_to_grouped_everywhere_a_tile_is_born_but_a_stored_tile_keeps_its_choice() {
+        for tile in default_layout().tiles {
+            let want = if tile.source == "ghRunners" {
+                "grouped"
+            } else {
+                "list"
+            };
+            assert_eq!(tile.runner_view, want, "{}", tile.source);
+        }
+        assert!(validate(&default_layout()).is_ok());
+        let snapshot = crate::dump_dashboard();
+        for source in list(&snapshot, "sources") {
+            let draft: DashboardTile =
+                serde_json::from_value(source["defaultTile"].clone()).unwrap();
+            let want = if source["id"] == "ghRunners" {
+                "grouped"
+            } else {
+                "list"
+            };
+            assert_eq!(draft.runner_view, want, "{}", source["id"]);
+            assert_eq!(source["defaultTile"]["runnerView"], want);
+            assert!(validate(&DashboardLayout {
+                revision: 0,
+                detail_views: Default::default(),
+                tiles: vec![draft]
+            })
+            .is_ok());
+        }
+        let stored = json!({"id":"s","source":"ghRunners","title":"R","scope":"all","presentation":"summary","width":"small","runnerView":"list"});
+        let tile: DashboardTile = serde_json::from_value(stored).unwrap();
+        assert_eq!(tile.runner_view, "list");
+        let bare = json!({"id":"s","source":"ghRunners","title":"R","scope":"all","presentation":"summary","width":"small"});
+        let tile: DashboardTile = serde_json::from_value(bare).unwrap();
+        assert_eq!(
+            tile.runner_view, "list",
+            "a stored tile without the key was a list"
+        );
     }
 
     #[test]
@@ -1746,7 +1794,12 @@ mod tests {
             let projected = preview(&tile, &snapshot).unwrap();
             assert!(!list(&projected, "rows").is_empty());
             for row in list(&projected, "rows") {
-                assert!(in_scope(row, &tile.scope));
+                if tile.runner_view == "grouped" {
+                    // Group rows are OS + architecture; the preset's scope is the OS.
+                    assert!(string(row, "label").starts_with(&tile.scope));
+                } else {
+                    assert!(in_scope(row, &tile.scope));
+                }
             }
             let empty = preview(&tile, &unmeasured).unwrap();
             assert!(list(&empty, "rows").is_empty());

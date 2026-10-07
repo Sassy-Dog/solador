@@ -5980,7 +5980,6 @@ fn run_dump(args: &[String]) -> bool {
             repos.sort_descending = true;
             let runners = &mut layout.tiles[2];
             runners.row_limit = "all".into();
-            runners.runner_view = "grouped".into();
             snapshot["tiles"] = json!(layout
                 .tiles
                 .iter()

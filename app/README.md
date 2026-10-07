@@ -81,7 +81,9 @@ use repository identity. Status sorts Unreadable, Failed, Waiting (a run held at
 an approval gate), Running, Healthy. The column and direction are saved per tile; numeric columns
 start descending, Repo and Status ascending.
 
-Runners can switch from **Individual runners** to **By OS + architecture**.
+Runners default to **By OS + architecture** (the shipped overview tile and any
+Runners tile you add start there); **Individual runners** is one click away. A
+saved tile that says `list`, or carries no choice, stays a list.
 Each type shows online / total, busy, idle and offline counts, plus recycling,
 missing or unknown counts when present. Grouping follows the tile's scope and
 precedes its row limit. Selecting a group opens the inline **Detail** inspector,
