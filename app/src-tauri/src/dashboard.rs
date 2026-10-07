@@ -369,7 +369,7 @@ const ROW_COUNTS: [(&str, &str, &str); 3] = [
 /// The widest word each strip column prints, in characters, and the widest
 /// status word beside it. `app/ui/dashboard.css` reserves exactly these —
 /// `.db-count[data-header=…] > span { width: Nch }` and
-/// `.db-item.db-item-tabular > .db-value { width: 14ch }` — so a longer word
+/// `.db-item.db-item-tabular > .db-value { width: 10ch }` — so a longer word
 /// here would overflow its slot on every row without moving a number the
 /// e2e alignment test could see. The test below is the link.
 #[cfg(test)]
@@ -379,7 +379,7 @@ const ROW_COUNT_SLOT_CH: [(&str, usize); 3] = [
     (crate::github::COL_PRS, 3),
 ];
 #[cfg(test)]
-const ROW_STATUS_SLOT_CH: usize = 14;
+const ROW_STATUS_SLOT_CH: usize = 10;
 
 /// One entry of a repo row's count strip: the value verbatim from the cell,
 /// the word the strip prints beside it (singular for exactly `1`, plural for
@@ -410,6 +410,12 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                 );
                 r["url"] = v["url"].clone();
                 r["sortValues"] = v["sortValues"].clone();
+                // A run parked at a gate: the pulse that tells "a human must
+                // act" from "a machine is working" (both are amber), and the
+                // click target Rust chose for it. Copied verbatim; the webview
+                // decides nothing, and only this state carries a target.
+                r["blinking"] = v["blinking"].clone();
+                r["approvalUrl"] = v["approvalUrl"].clone();
                 if v["status"] == "healthy" {
                     add_scope(&mut r, "healthy");
                 }
@@ -428,8 +434,15 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                         .find(|(l, _)| *l == label)
                         .map_or(&Value::Null, |(_, text)| *text)
                 };
+                // The tooltip's words are Rust's: a waiting repo is prefixed with
+                // what the human is being asked to do, keeping the rest.
                 r["detail"] = json!(format!(
-                    "{} · longest running: {}",
+                    "{}{} · longest running: {}",
+                    if v["status"] == "approval" {
+                        "Approval needed · "
+                    } else {
+                        ""
+                    },
                     string(v, "repo"),
                     cell(crate::github::COL_LONGEST).as_str().unwrap_or("—")
                 ));
@@ -1861,6 +1874,27 @@ mod tests {
             "{}",
             get("pipe-fitting")["detail"]
         );
+        // The waiting repo's row carries what Rust decided: the pulse, the run
+        // page to open, and a tooltip prefixed (not replaced) by the ask. No
+        // other row has any of them.
+        let waiting = get("flywheel");
+        assert_eq!(waiting["value"], "Waiting");
+        assert_eq!(waiting["blinking"], true);
+        assert_eq!(
+            waiting["approvalUrl"],
+            "https://github.com/acme/flywheel/actions/runs/3"
+        );
+        assert!(
+            string(waiting, "detail")
+                .starts_with("Approval needed · acme/flywheel · longest running:"),
+            "{}",
+            waiting["detail"]
+        );
+        for row in rows.iter().filter(|r| r["id"] != "acme/flywheel") {
+            assert_ne!(row["blinking"], true, "{row}");
+            assert!(row["approvalUrl"].is_null(), "{row}");
+            assert!(!string(row, "detail").contains("Approval needed"), "{row}");
+        }
         assert_eq!(
             labels(get("widget"), "details"),
             ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
@@ -1893,7 +1927,7 @@ mod tests {
         assert!(
             list(&p, "rows")
                 .iter()
-                .any(|r| r["statusLabel"] == "Needs approval"),
+                .any(|r| r["statusLabel"] == "Unreadable"),
             "the widest status is in the fixture, so the bound is exercised"
         );
     }

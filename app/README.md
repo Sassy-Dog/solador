@@ -75,8 +75,8 @@ the tile in the page scroll. Repos also has a checklist of repositories within
 the tile's scope; leaving every checkbox clear includes all repos, including
 new ones. Click Repo, Issues, Ready, PRs or Status to sort; click again to reverse.
 Counts use raw numeric values, unknowns stay last in either direction, and ties
-use repository identity. Status sorts Unreadable, Failed, Needs approval,
-Running, Healthy. The column and direction are saved per tile; numeric columns
+use repository identity. Status sorts Unreadable, Failed, Waiting (a run held at
+an approval gate), Running, Healthy. The column and direction are saved per tile; numeric columns
 start descending, Repo and Status ascending.
 
 Runners can switch from **Individual runners** to **By OS + architecture**.
@@ -105,8 +105,15 @@ without repeated labels or dot separators. *Ready* is the repo's open issues
 whose project-board Status is `Ready`. Counts come verbatim from the detailed
 table's cells, so an unreadable count is the same `—` there. Numbers and their
 column headers align to the right in fixed-width slots. The status column
-is exactly as wide as the widest Repos status (`Needs approval`), and a long
-repo name ellipsizes before the counts give way. Full count labels remain in
+is exactly as wide as the widest Repos status (`Unreadable`, 10ch), and a long
+repo name ellipsizes before the counts give way. A repo with a run parked at a
+deployment-protection gate reads `Waiting` (GitHub's own word) in the overview
+row and its Detail (the full panel shows the dot, not a status word); the
+overview dot pulses like the full panel's, the row's tooltip carries
+`Approval needed` after the label and status, and **clicking the row opens GitHub**
+instead of Detail: at the waiting run (where **Review deployments** is) when one
+is waiting, at the repo's Actions page when several are. Rust composes both
+URLs; every other row still opens Detail. Full count labels remain in
 the accessible row name. Keeping counts on the same line makes the overview
 compact at laptop widths; longer content
 extends the page instead of creating a scrollbar inside the tile.
@@ -824,9 +831,13 @@ setting doing nothing. This is the periodic-service counterpart to
 **Tapping a row opens its Actions page**, the way the original panel's
 `onTapGesture` + `NSWorkspace.open` does
 ([#187](https://github.com/Sassy-Dog/solador/issues/187)). The URL is
-`github::actions_url`'s and is never composed in the webview — it is the only
-string the granted ACL scope accepts, and a second author of it would be a
-second author of the app's whole browser-opening surface. See
+`github::actions_url`'s and is never composed in the webview — it is one of the
+two shapes the granted ACL scope accepts, and a second author of it would be a
+second author of the app's whole browser-opening surface. The other shape is
+`github::run_url`'s, a single run's page (#541): the click target of a repo
+waiting on approval, carried on the dashboard row as `approvalUrl` and present
+only in that state. It is built from the run's numeric id, never from the API's
+`html_url`. See
 [The one granted capability](#the-one-granted-capability).
 
 The row is a `div`, not an `<a>`, so github.js spells out what a real link would
@@ -1860,7 +1871,7 @@ Two things worth knowing about this surface:
   selectable URLs rather than anchors — following one would navigate the
   cockpit's own webview away from the app, and the opener scope granted below
   deliberately does **not** reach them. They are repo roots and issue pages; the
-  grant admits `/{owner}/{repo}/actions` and nothing else, so making those links
+  grant admits `/{owner}/{repo}/actions` and `/{owner}/{repo}/actions/runs/{id}` and nothing else, so making those links
   openable would be a second widening, argued separately.
 
 ### The Accounts tab
@@ -1991,7 +2002,10 @@ without a grant. Here is the whole `permissions` list, line by line:
 "permissions": [
   {
     "identifier": "opener:allow-open-url",              // 1
-    "allow": [{ "url": "https://github.com/*/*/actions" }]   // 2
+    "allow": [                                               // 2
+      { "url": "https://github.com/*/*/actions" },
+      { "url": "https://github.com/*/*/actions/runs/*" }
+    ]
   }
 ]
 ```
@@ -2001,12 +2015,15 @@ without a grant. Here is the whole `permissions` list, line by line:
    directory with the system handler) and `allow-reveal-item-in-dir`; neither is
    granted, so the webview can reach no path on this machine. The plugin's own
    `opener:default` bundles all three, which is why it is not used here.
-2. **`allow: [{url}]`** — a *scope* on that one command. The plugin compiles the
-   string into a `glob::Pattern` and rejects any `open_url` whose URL does not
+2. **`allow: [{url}, {url}]`** — a *scope* on that one command, two shapes: a
+   repo's Actions page (`github::actions_url`) and one run's page
+   (`github::run_url`, #541), which is where a `Waiting` row's click goes. Both
+   are composed in Rust, never taken from the API's `html_url`. The plugin
+   compiles each string into a `glob::Pattern` and rejects any `open_url` whose URL does not
    match ([`src/commands.rs`](https://docs.rs/tauri-plugin-opener) →
    `scope.is_url_allowed`), so the grant is "this shape of URL", not "URLs". The
-   glob is the tightest static expression of the Repos row's target: the scheme
-   and host are literal, and the two `*`s are the owner and repo, which are
+   globs are the tightest static expression of the Repos row's targets: the scheme
+   and host are literal, and the `*`s are the owner and repo (and the run id), which are
    user-editable at runtime and so cannot be enumerated in a file compiled at
    build time. Omitting the entry's optional `app` key leaves it at
    `Application::Default`, which additionally means the caller cannot name
@@ -2043,7 +2060,8 @@ without a grant. Here is the whole `permissions` list, line by line:
 **How far it is verified.** `actions_url_is_the_only_shape_the_granted_scope_admits`
 (in `src/github/mod.rs`) reads the real capability file, rebuilds the glob with
 the same `glob::Pattern` the plugin enforces it with, and asserts it admits every
-URL `github::actions_url` can produce and refuses a list it must not — including
+URL `github::actions_url` and `github::run_url` can produce and refuses a list it
+must not (the test keeps its original name, which the log below cites) — including
 the About tab's own links, `http://` instead of `https://`, and
 `https://github.com.evil.example/…`. Widening the scope fails that test.
 
@@ -2508,7 +2526,7 @@ and that immediacy is itself the check on the corresponding wake:
 |---|---|---|
 | `github_wake` / Repos / Runners | save a fine-grained PAT on an account under Settings → Connections → GitHub (Replace token + Save) | both panels fill within seconds. `—` (not `0`) under LOCAL/WT for a repo absent from `~/Repos` |
 | `settings_set_account_org` / Runners | under Settings → Connections → GitHub, type an org under **Runner organizations** and press **Watch**; then **Stop watching** | the Runners panel fills within seconds, and empties just as fast — dropping to "no organizations selected — choose them in Settings → Connections → GitHub". Watching the same org from a second account is refused with the owner named |
-| **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
+| **the ACL** (`capabilities/`), `github::actions_url`, github.js | with the Repos panel populated, **click any repo row** — then **Tab** to one and press **Enter** | your default browser opens `https://github.com/{owner}/{repo}/actions`. For a repo that is `Waiting`, click its **dashboard** row too: it opens `.../actions/runs/{id}` (or the Actions page when several runs wait). Nothing happens ⇒ the grant or the scope is wrong; the webview console names the rejected URL. **This is the only check on the granted scope at the boundary** — step 11 |
 | the needs-approval notifier | with a PAT saved and the panel already populated, add a repo that has a run **parked at a deployment-protection gate** under Settings → Connections → GitHub (Configure repos… on its account's card, add-by-name in the modal footer) | one banner, `{repo} · needs approval`, within seconds. It must **not** repeat on later passes, and adding a repo with no gate must produce nothing — step 11 |
 | `agentRelease` on each host row (`settings_payload` → `hosts_tab`, `agent_release_loop`, #489) | Settings → Connections → the seeded host. Then, against a real agent with `\|$TOKEN` on `SOLADOR_SEED_HOST` | the row carries a persistent line with **no Test press**. With no token (the default smoke run) it reads `Agent version — · not compared with releases`, because no health read can land. With a live agent it reads `Agent v<version> · …` and, while no `agent-v*` release has been published (the feed 404s), `no agent release published yet` in a muted colour — **never** `up to date`, and never amber or red. Amber appears only as `<release> available` beside a host whose CalVer is lower than a verified release. Terminal: one `agent release: …` line at startup, then hourly (`newest verified is …`, `none published yet`, or `the check failed: …`). A line that stays `checking for a newer release…` for more than a few seconds with a network means `agent_release_loop` never ran |
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
@@ -2726,7 +2744,9 @@ and that immediacy is itself the check on the corresponding wake:
 
     **11a — tap to open (the ACL).** With a PAT saved (step 7) and the Repos
     table populated, click any repo row. Your default browser should open
-    `https://github.com/{owner}/{repo}/actions` for that repo. Then press
+    `https://github.com/{owner}/{repo}/actions` for that repo. (On the
+    **dashboard** a row opens Detail instead, except a `Waiting` one; see
+    below.) Then press
     **Tab** until a row takes the focus ring and press **Enter** — same result,
     because a click-only target is one a keyboard cannot reach.
 
@@ -2738,8 +2758,17 @@ and that immediacy is itself the check on the corresponding wake:
     clickable at all is neither — that is `row.url` missing from the payload,
     i.e. a Rust-side regression the unit tests should have caught.
 
+    The dashboard's waiting-run half is the same step with a run parked at a gate
+    (#541): click the repo's **`Waiting`** row on the Repos tile. The browser
+    should open `https://github.com/{owner}/{repo}/actions/runs/{id}` when one
+    run is waiting, or the repo's Actions page when several are, and the
+    pulsing dot should stop being the only sign. A `Forbidden URL` error here
+    means `/actions/runs/*` is missing from the scope.
+
     The negative half cannot be clicked, only reasoned about: the granted scope
-    admits `/{owner}/{repo}/actions` and nothing else, which
+    admits those two shapes of github.com URL and nothing else (the glob's `*`
+    also spans `/`, `?` and `#`, as the one before it did, which is why the
+    host and scheme are literal and Rust composes every URL), which
     `actions_url_is_the_only_shape_the_granted_scope_admits` asserts against the
     real file. The About tab's links are the visible proof — they render as
     selectable text and stay unopenable.
@@ -2883,7 +2912,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The local card is missing, or the grid leads with a remote host. | The local sampler never started, or its first sample has not landed (it renders `waiting for first sample…` for one tick). A card that never appears at all points at the poll task, not the ACL: the card is built in `cockpit`, which the terminal line in step 3 already proved runs. |
 | The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. Note that `Pressure: —` and `VRAM: —` are permanent and correct on macOS — see [This machine leads](#this-machine-leads). |
 | Clicking a repo row does nothing, and the console says `opener.open_url not allowed`. | The **permission** is missing: `opener:allow-open-url` is not in `capabilities/default.json`, or the plugin is not registered on the builder. Not a scope problem — the command was rejected before any URL was looked at. |
-| Clicking a repo row does nothing, and the console names a `Forbidden URL`. | The permission is there and its **scope** rejected the URL. Either the glob was narrowed, or something other than `github::actions_url` composed the string — the two live one line apart in `capabilities/default.json` and `src/github/mod.rs`, and only they may disagree. |
+| Clicking a repo row does nothing, and the console names a `Forbidden URL`. | The permission is there and its **scope** rejected the URL. Either a glob was narrowed, or something other than `github::actions_url` / `github::run_url` composed the string — the scope's two entries (`.../actions` and `.../actions/runs/*`) and those two composers live in `capabilities/default.json` and `src/github/mod.rs`, and only they may disagree. For a dashboard `Waiting` row, the entry to check is `.../actions/runs/*`. |
 | The rows render but none of them is clickable, and no console error appears. | Neither: `row.url` is absent from the payload, so github.js never wires a handler. A Rust-side regression, and `a_row_carries_the_original_tap_target` should have caught it — check the fixtures are not stale first (step 1). |
 | No needs-approval banner for a run that is definitely parked at a gate. | Four ordinary causes before suspecting the code: it was the **seeding** pass (the first pass after launch never alerts — see step 11b for how to force a real transition); the run was already parked on the previous pass, so this one is not a transition; `notify_on_approval_needed` is `false` in the store file; or macOS Focus / denied notifications for **Solador** is swallowing it silently. (Before 2026-08-13 the id was `com.apple.Terminal` and the banner was dropped outright on a machine that does not use Terminal.app — if you are on an older build, that is the cause.) |
 | A needs-approval banner repeats every poll pass. | A real failure, and the one this feature exists to avoid: the baseline is not being retained across passes. `ApprovalWatch` lives on `App`, so a per-pass instance would produce exactly this. |
@@ -2902,6 +2931,7 @@ evidence the boundary works.
 
 | Date       | Change under test | Step 3 (terminal) | Step 4 (visual) |
 |------------|-------------------|-------------------|-----------------|
+| 2026-10-06 | `Waiting` label, pulse and click-through on the dashboard Repos row, and the second opener scope (`actions/runs/*`) ([#541](https://github.com/Sassy-Dog/solador/issues/541)) | **Not performed** — headless: `cargo test` (the scope test now admits every `actions_url` and `run_url` output and refuses a run URL on another host and over `http://`), and the Playwright dashboard suite against the Rust-dumped fixture (label, `db-dot-blink`, reduced motion, tooltip, the URL handed to `plugin:opener|open_url` byte for byte). | **Not performed.** **11a is owed after merge** and not run here: it needs the native app, a PAT and a run parked at a gate. Until it is, the widened scope is written and unit-tested but not observed to be enforced at the boundary. |
 | 2026-09-20/21 | READY backlog column and the summary count strip ([#430](https://github.com/Sassy-Dog/solador/pull/430), [#431](https://github.com/Sassy-Dog/solador/pull/431)) | **Not performed** — observed through the running app's overview, not the terminal. | **Fail, then pass, on the operator's real fine-grained PAT.** First run (#430 alone): every repo with an open issue read `— ready` under `⚠ READY for 5 repos: couldn't read GitHub's response — likely an API contract change`, and the one repo with no open issues read `0 ready`. That was the decoder, not the API: GitHub answers an issue on a board the token cannot read with `projectItems.nodes: [null]` and **no** `errors[]` — not the `projectItems: null` + `FORBIDDEN` shape #430 was written against — and #430 had typed the item as required. After #431 (item nullable, refused with the likely cause) the footer named the permission; after granting the token the organization permission **Projects (read)**, READY populated on every repo on the next poll with no token re-entry, and the footer cleared. The count strip's numbers sat in columns across `1 issue`, `12 issues` and a `Needs approval` row. Windows untested. |
 | 2026-09-19 | Compact dashboard with saved credentials | **Pass for the rebuilt app's signing identity.** `./dev run` selected the valid replacement Apple Development certificate, rejected the revoked predecessor, and preserved the existing `solador-app` designated requirement across the rebuild. The rebuilt bundle passed strict signature verification. The prior instance was closed before launching this debug bundle with the normal store and credential service. | **Pass on a fresh native launch.** Saved connections loaded without a password prompt during the check. The overview showed live remote-host metrics, GitHub repositories and runners, service status and Sentry cron readings. All detailed panels also displayed live container, Neon/Sentry usage, Azure Cost and OpenClaw data. Returning to Overview worked. No connection settings or tile layout were edited. This verifies credential reuse on macOS with the current trusted identity; Windows remains untested. |
 | 2026-09-18 | Compact dashboard and tile configuration | **Pass for dashboard IPC and persistence.** Fixture files were absent from the native build. The test used a scratch `SOLADOR_STORE_DIR`, a distinctive `dashboard-smoke` host without a token, and an empty credential service selected only in the test build; the production credential factory was restored afterward. Actual edits advanced the saved dashboard revision and survived relaunch. This run used UI observations and the scratch store, not the older terminal-log checklist. | **Pass on macOS.** Hiding Machines retained its attention alert; restoration succeeded. A duplicate retained its own name, Remote machines scope, Detailed presentation and Wide size across relaunch, while the original stayed unchanged. Arrow moves, Undo and dragging saved the order. Native dragging exposed an HTML drop-event problem; pointer capture fixed it and was retested in the native window. Details opened the existing full panel, Overview returned, and Manage connection opened Hosts settings with a working return path. No provider credentials were entered in the isolated run; authenticated-provider behavior and Windows remain unverified. Earlier attempts with the normal credential service triggered Keychain prompts; isolating only the settings file was insufficient. |

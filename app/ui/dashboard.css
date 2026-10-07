@@ -375,14 +375,16 @@
   flex: none;
 }
 /* …and the status word beside the strip is a column too: the strip is
-   anchored to it, so a `Needs approval` row would otherwise pull its three
-   numbers 7ch left of a `Healthy` row's. 14ch is the widest status the Repos
-   panel produces (`Needs approval`), and exactly 14ch rather than the 18ch
-   other rows reserve, so the strip sits as far right as any status allows.
+   anchored to it, so a `Waiting` row would otherwise pull its three
+   numbers left of a `Healthy` row's. 10ch is the widest status the Repos
+   panel produces (`Unreadable`; `Waiting` is the approval gate's word, #541),
+   and exactly 10ch rather than the 18ch other rows reserve, so the strip sits
+   as far right as any status allows. `ROW_STATUS_SLOT_CH` in dashboard.rs
+   asserts the fixture's statuses fit it.
    The doubled class outranks the generic 18ch `.db-item > .db-value` rule
    later in this file, so this stays the one rule for the Repos column. */
 #dashboardOverview .db-item.db-item-tabular > .db-value {
-  width: 14ch;
+  width: 10ch;
   max-width: none;
 }
 #dashboardOverview .db-host {
@@ -426,8 +428,16 @@
   background-image: linear-gradient(90deg, transparent, #ffffff30);
   transition: width 350ms ease;
 }
+/* A repo parked at a deployment-protection gate. Rust says which rows blink
+   (`blinking`); this is the same pulse as the full panel's `.dot.blink`, from
+   the one `gh-blink` keyframes in app.css, because "a human must act" and "a
+   machine is working" are both amber and the pulse is all that separates them. */
+#dashboardOverview .db-dot.db-dot-blink {
+  animation: gh-blink 0.7s ease-in-out infinite alternate;
+}
 @media (prefers-reduced-motion: reduce) {
   #dashboardOverview .db-meter-fill { transition: none; }
+  #dashboardOverview .db-dot.db-dot-blink { animation: none; }
 }
 #dashboardOverview .db-repo-head {
   display: flex;
@@ -438,7 +448,7 @@
   font-size: 11px;
 }
 #dashboardOverview .db-repo-head > .db-row-label { flex: 1; min-width: 6ch; }
-#dashboardOverview .db-repo-head > .db-value { width: 14ch; flex: none; max-width: none; text-align: right; }
+#dashboardOverview .db-repo-head > .db-value { width: 10ch; flex: none; max-width: none; text-align: right; }
 #dashboardOverview .db-sort {
   display: inline-block;
   min-height: 22px;

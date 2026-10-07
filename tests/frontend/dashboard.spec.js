@@ -1225,3 +1225,39 @@ test("a failed refresh keeps the last view and clears its warning on recovery", 
     model.tiles.map((t) => t.title),
   );
 });
+
+test("a repo waiting on approval reads Waiting, pulses, and opens GitHub at Rust's URL", async ({ page, baseURL }) => {
+  const model = await openDashboard(page, baseURL);
+  const rows = model.sources.find((s) => s.id === "ghWorkflows").rows;
+  const waiting = rows.find((r) => r.value === "Waiting");
+  expect(waiting.approvalUrl).toMatch(/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/\d+$/);
+  const item = (label) => tile(page, "ghWorkflows").locator(".db-item", { has: page.locator(".db-item-name", { hasText: new RegExp(`^${label}$`) }) });
+  const row = item(waiting.label);
+  await expect(row.locator(".db-value")).toHaveText("Waiting");
+  await expect(row).toHaveAttribute("title", /Approval needed · acme\/flywheel · longest running/);
+  // The label fits its column at every width the tile renders.
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 950 });
+    const fits = await row.locator(".db-value").evaluate((el) => el.scrollWidth <= el.clientWidth);
+    expect(fits, `${width}px`).toBe(true);
+  }
+  // Only the waiting row pulses.
+  await expect(row.locator(".db-dot")).toHaveClass(/db-dot-blink/);
+  const running = rows.find((r) => r.value === "Running");
+  await expect(item(running.label).locator(".db-dot")).not.toHaveClass(/db-dot-blink/);
+  expect(await row.locator(".db-dot").evaluate((el) => getComputedStyle(el).animationName)).toBe("gh-blink");
+  expect(await item(running.label).locator(".db-dot").evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await row.locator(".db-dot").evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+
+  // Clicking it hands Rust's string, byte for byte, to the opener, not to Detail.
+  await row.click();
+  await expect(page.locator("#dashboardInspector")).toBeHidden();
+  const opened = () => page.evaluate(() => window.__CALLS__.filter((c) => c.command === "plugin:opener|open_url"));
+  expect(await opened()).toEqual([{ command: "plugin:opener|open_url", args: { url: waiting.approvalUrl } }]);
+
+  // Every other row still opens Detail and opens nothing.
+  await item(running.label).click();
+  await expect(page.locator("#dashboardInspector")).toBeVisible();
+  expect(await opened()).toHaveLength(1);
+});
