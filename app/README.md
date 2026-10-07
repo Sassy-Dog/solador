@@ -64,6 +64,12 @@ machine IDs and are removed when a remote host is deleted.
 
 The preferences apply on the next render without restarting or resetting history.
 Overall CPU/RAM colors, the Machines row dot and the attention count use the same limits.
+The CPU limits apply to **sustained** load (#545): CPU counts as over a threshold
+only when the lowest of the last 60 samples (about a minute at the 1 s poll) is at
+or above it, so a build or test run that crosses 70% for a few seconds raises
+nothing. A host with fewer than 60 recorded samples (just added or the app just
+launched) raises no CPU alert yet; the window counts successful samples, so an
+outage does not reset it. The meter's fill and `%` always show the live sample.
 A CPU/RAM breach alone leaves the row reading `Connected` (the meters carry it); a
 thermal breach reads `Thermal: Hot` / `Thermal: Critical` and wins over it;
 per-core colors, memory-pressure, thermal, disk-space and connection checks retain
