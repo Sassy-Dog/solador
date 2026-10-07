@@ -216,7 +216,8 @@ mod tests {
         assert_eq!(rows[0]["value"], "Connected");
         assert_eq!(rows[0]["metrics"][1]["color"], color::hex(color::GREEN));
         assert_eq!(rows[1]["attention"], true);
-        assert_eq!(rows[1]["value"], "Check metrics");
+        assert_eq!(rows[1]["value"], "Connected");
+        assert_eq!(rows[1]["color"], color::hex(color::AMBER));
     }
 
     #[test]

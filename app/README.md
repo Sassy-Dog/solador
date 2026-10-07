@@ -63,7 +63,9 @@ so subsequent shared changes apply to that machine too. Overrides follow stable
 machine IDs and are removed when a remote host is deleted.
 
 The preferences apply on the next render without restarting or resetting history.
-Overall CPU/RAM colors, “Check metrics” and the attention count use the same limits;
+Overall CPU/RAM colors, the Machines row dot and the attention count use the same limits.
+A CPU/RAM breach alone leaves the row reading `Connected` (the meters carry it); a
+thermal breach reads `Thermal: Hot` / `Thermal: Critical` and wins over it;
 per-core colors, memory-pressure, thermal, disk-space and connection checks retain
 their own meanings. RAM here is used memory divided by total memory, not the OS's
 memory-pressure measurement. Invalid edits save nothing, and a disk write failure
@@ -2537,7 +2539,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Detailed layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
-| `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, Check metrics and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
+| `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 

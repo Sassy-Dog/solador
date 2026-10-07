@@ -202,6 +202,10 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 .or_else(|| volumes.iter().find(|v| amber(&v["tint"])));
             let metric_colors = [&h["cpuValueColor"], &h["memValueColor"], &h["thermalColor"]];
             let metric_warning = metric_colors.iter().any(|v| red(v) || amber(v));
+            let thermal_badge = Some(&h["thermalColor"])
+                .filter(|v| red(v) || amber(v))
+                .and_then(|_| h["thermalText"].as_str())
+                .filter(|t| !t.is_empty());
             let status = if pending {
                 "Connecting".to_owned()
             } else if down {
@@ -222,8 +226,10 @@ fn host_rows(p: &Value) -> Vec<Value> {
                     || format!("{} · check disk space", string(v, "mount")),
                     |fraction| format!("{} at {:.0}%", string(v, "mount"), fraction * 100.0),
                 )
-            } else if metric_warning {
-                "Check metrics".into()
+            } else if let Some(badge) = thermal_badge {
+                // A CPU/RAM breach keeps reading "Connected": the meters already
+                // carry it. Thermal state is on no meter, so the word names it.
+                format!("Thermal: {badge}")
             } else {
                 "Connected".into()
             };
@@ -1358,6 +1364,44 @@ mod tests {
     }
 
     use store::{LayoutProfile, LayoutSlot, Store};
+
+    #[test]
+    fn a_thermal_breach_names_itself_and_a_cpu_ram_breach_stays_connected() {
+        let amber = color::hex(color::AMBER);
+        let red_hex = color::hex(color::RED);
+        let host = |cpu: &str, thermal: &str, badge: &str| {
+            json!({"hosts": [{
+                "id":"remote", "hostName":"remote", "connection":{"state":"live"},
+                "cpuValueColor":cpu, "memValueColor":color::hex(color::GREEN),
+                "thermalColor":thermal, "thermalText":badge
+            }]})
+        };
+        let green = color::hex(color::GREEN);
+        // CPU/RAM alone: the word is Connected, the dot and attention still follow.
+        let r = &host_rows(&host(&red_hex, &green, "Normal"))[0];
+        assert_eq!(r["value"], "Connected");
+        assert_eq!(r["color"], red_hex);
+        assert_eq!(r["attention"], true);
+        // Thermal wins over a CPU/RAM breach, taking the card's own badge.
+        let r = &host_rows(&host(&red_hex, &amber, "Hot"))[0];
+        assert_eq!(r["value"], "Thermal: Hot");
+        assert_eq!(r["color"], red_hex);
+        let r = &host_rows(&host(&green, &amber, "Hot"))[0];
+        assert_eq!(r["value"], "Thermal: Hot");
+        assert_eq!(r["color"], amber);
+        let r = &host_rows(&host(&green, &red_hex, "Critical"))[0];
+        assert_eq!(r["value"], "Thermal: Critical");
+        assert_eq!(r["color"], red_hex);
+        assert_eq!(r["attention"], true);
+        // A disk-volume warning still outranks the thermal word.
+        let mut h = host(&green, &red_hex, "Critical");
+        h["hosts"][0]["volumes"] =
+            json!([{"mount":"/","fraction":0.91,"tint":color::hex(color::AMBER)}]);
+        assert_eq!(host_rows(&h)[0]["value"], "/ at 91%");
+        // No thermal reading never reaches the thermal rung.
+        let r = &host_rows(&host(&green, &amber, ""))[0];
+        assert_eq!(r["value"], "Connected");
+    }
 
     #[test]
     fn host_thermal_readings_preserve_measured_states_and_normalize_missing_badges() {
