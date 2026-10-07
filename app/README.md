@@ -86,6 +86,24 @@ level's word (`normal` / `warning` / `critical`). Linux, Windows and an agent
 predating the field keep the thresholds. Invalid edits save nothing, and a disk write failure
 restores the effective preferences while preserving the form's draft.
 
+For an expected CPU or RAM warning, open the machine's **Details** and choose
+**Acknowledge CPU warning** or **Acknowledge RAM warning**. Both Table and List
+offer the action in the machine's expanded details. It removes only that
+machine/metric's **warning** from Needs Attention; the reading and machine dot
+stay amber, and the overview meter says **Acknowledged** (Detail uses a checkmark
+with an explanatory tooltip). **Critical always needs attention**, including
+critical macOS memory pressure. Disk, thermal, connection and other metric
+problems remain independent. Critical readings never carry an Acknowledged badge.
+
+Acknowledgements persist in `settings.machine_alerts.acknowledged_warnings`, keyed
+by stable host ID and CPU/RAM, across restarts, normal readings and critical
+episodes. They stay until **Clear CPU/RAM acknowledgement** is pressed in the same
+details, including while the metric is normal or the machine is unavailable.
+Returning from critical to warning reapplies the acknowledgement. Changing or
+resetting thresholds does not clear it; deleting a remote host does. Saves are
+applied only after persistence succeeds, and an in-flight dashboard read cannot
+replace the newly saved state with an older acknowledgement.
+
 **GitHub Repos** and **Runners** offer **Rows to show** in Configure: Automatic,
 5, 10, 20, 50 or All, independent of Summary/Detail presentation. All grows
 the tile in the page scroll. Repos also has a checklist of repositories within
@@ -2573,6 +2591,7 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
+| `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with an Acknowledged indicator, and the saved choice survives relaunch. A critical reading still needs attention and has no Acknowledged badge. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 

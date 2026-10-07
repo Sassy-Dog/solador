@@ -500,6 +500,11 @@ impl Store {
             .machine_alerts
             .overrides
             .remove(&id.to_string());
+        self.data
+            .settings
+            .machine_alerts
+            .acknowledged_warnings
+            .remove(&id.to_string());
         Some(self.data.hosts.remove(index))
     }
 

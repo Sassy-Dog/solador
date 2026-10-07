@@ -472,6 +472,12 @@
   font-variant-numeric: tabular-nums;
 }
 #dashboardOverview .db-metric { min-width: 0; }
+#dashboardOverview .db-acknowledged { color:var(--db-muted); font-size:10px; }
+#dashboardOverview .db-metric > .db-acknowledged { display:block; margin-top:3px; }
+#dashboardOverview .db-warning-controls { display:grid; gap:10px; margin-top:12px; }
+#dashboardOverview .db-warning-control { display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; }
+#dashboardOverview .db-warning-control button { flex:none; max-width:100%; white-space:normal; }
+#dashboardOverview .db-warning-control p { flex:1 1 220px; font-size:11px; }
 #dashboardOverview .db-meter {
   height: 5px;
   margin-top: 5px;

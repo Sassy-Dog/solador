@@ -60,11 +60,47 @@ pub struct MachineAlerts {
     pub defaults: MachineThresholds,
     /// Stable machine ids, including "local"; names and addresses can change.
     pub overrides: BTreeMap<String, MachineThresholds>,
+    /// Persistent acknowledgement of warning severity only, keyed by stable host id.
+    pub acknowledged_warnings: BTreeMap<String, AcknowledgedWarnings>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MachineMetric {
+    Cpu,
+    Ram,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AcknowledgedWarnings {
+    pub cpu: bool,
+    pub ram: bool,
 }
 
 impl MachineAlerts {
     pub fn for_host(&self, id: &str) -> MachineThresholds {
         self.overrides.get(id).copied().unwrap_or(self.defaults)
+    }
+
+    pub fn acknowledged(&self, id: &str, metric: MachineMetric) -> bool {
+        self.acknowledged_warnings
+            .get(id)
+            .is_some_and(|warnings| match metric {
+                MachineMetric::Cpu => warnings.cpu,
+                MachineMetric::Ram => warnings.ram,
+            })
+    }
+
+    pub fn acknowledge(&mut self, id: &str, metric: MachineMetric, acknowledged: bool) {
+        let warnings = self.acknowledged_warnings.entry(id.to_owned()).or_default();
+        match metric {
+            MachineMetric::Cpu => warnings.cpu = acknowledged,
+            MachineMetric::Ram => warnings.ram = acknowledged,
+        }
+        if !warnings.cpu && !warnings.ram {
+            self.acknowledged_warnings.remove(id);
+        }
     }
 }
 
@@ -79,6 +115,26 @@ mod tests {
         let limits = settings.machine_alerts.for_host("local");
         assert_eq!((limits.cpu_warning, limits.cpu_critical), (70, 90));
         assert_eq!((limits.ram_warning, limits.ram_critical), (70, 90));
+    }
+
+    #[test]
+    fn warning_acknowledgements_survive_reopening_without_changing_thresholds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::Store::open_in(dir.path(), false).unwrap();
+        store.settings_mut().machine_alerts = serde_json::from_value(json!({
+            "acknowledged_warnings": {"local": {"ram":true}, "another": {"cpu":true}}
+        }))
+        .unwrap();
+        store.save().unwrap();
+        let reopened = crate::Store::open_in(dir.path(), false).unwrap();
+        let saved = serde_json::to_value(&reopened.settings().machine_alerts).unwrap();
+        assert_eq!(saved["acknowledged_warnings"]["local"]["ram"], true);
+        assert_eq!(saved["acknowledged_warnings"]["local"]["cpu"], false);
+        assert_eq!(saved["acknowledged_warnings"]["another"]["cpu"], true);
+        assert_eq!(
+            reopened.settings().machine_alerts.for_host("local"),
+            MachineThresholds::default()
+        );
     }
 
     #[test]
@@ -139,6 +195,14 @@ mod tests {
         store
             .settings_mut()
             .machine_alerts
+            .acknowledge(&id.to_string(), MachineMetric::Ram, true);
+        store
+            .settings_mut()
+            .machine_alerts
+            .acknowledge("local", MachineMetric::Cpu, true);
+        store
+            .settings_mut()
+            .machine_alerts
             .overrides
             .insert(id.to_string(), MachineThresholds::default());
         store
@@ -149,6 +213,14 @@ mod tests {
         store.remove_host(id).unwrap();
         store.save().unwrap();
         let reopened = crate::Store::open_in(dir.path(), false).unwrap();
+        assert!(!reopened
+            .settings()
+            .machine_alerts
+            .acknowledged(&id.to_string(), MachineMetric::Ram));
+        assert!(reopened
+            .settings()
+            .machine_alerts
+            .acknowledged("local", MachineMetric::Cpu));
         assert!(!reopened
             .settings()
             .machine_alerts

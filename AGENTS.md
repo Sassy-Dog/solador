@@ -963,6 +963,15 @@ the bundle's floor.
   `store::machine_alerts` owns persistence/validation; the shell applies the
   resolved limits to cached numeric fractions on every render, so meter colors
   and dashboard attention agree without restarting host pollers.
+- Machine Details (Table/List) can acknowledge CPU/RAM warnings independently
+  per stable host ID. `settings.machine_alerts.acknowledged_warnings` persists
+  until explicitly cleared, even across recovery/critical episodes. Only warning
+  severity is excluded from attention: colours remain truthful, critical always
+  breaks through, and disk/thermal/connection problems are unaffected. The
+  overview meter marks an acknowledged warning; Detail adds a tooltip checkmark.
+  `machine_acknowledge_warning` saves before rendering, rolls back on failure,
+  and does not enter dashboard layout undo history. Host deletion removes its
+  acknowledgements. Polls started before the save cannot overwrite its response.
 - Attention chips toggle their Detail inspector. Detail defaults to compact
   tables, with a Table/List choice persisted per source in `detailViews`.
   Summary stays compact and Full keeps source-specific controls.

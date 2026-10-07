@@ -1,7 +1,7 @@
 //! Applies the current machine preferences to cached readings on every render.
 
 use serde_json::{json, Value};
-use store::machine_alerts::{MachineAlerts, MachineThresholds};
+use store::machine_alerts::{MachineAlerts, MachineMetric, MachineThresholds};
 use viewmodel::color::{self, MemoryPressure};
 
 pub fn apply(payload: &mut Value, alerts: &MachineAlerts) {
@@ -9,6 +9,11 @@ pub fn apply(payload: &mut Value, alerts: &MachineAlerts) {
         return;
     };
     for host in hosts {
+        let id = host["id"].as_str().unwrap_or_default();
+        let cpu_acknowledged = alerts.acknowledged(id, MachineMetric::Cpu);
+        let ram_acknowledged = alerts.acknowledged(id, MachineMetric::Ram);
+        host["cpuWarningAcknowledged"] = json!(cpu_acknowledged);
+        host["memWarningAcknowledged"] = json!(ram_acknowledged);
         // Pending/unreachable cards carry no readings. Their connection owns the alert.
         if host.get("cpuFraction").is_none() {
             continue;
@@ -75,12 +80,7 @@ pub fn save(
     host_id: Option<&str>,
     input: Option<&Value>,
 ) -> Result<(), String> {
-    if let Some(id) = host_id.filter(|id| *id != "local") {
-        let found = uuid::Uuid::parse_str(id).ok().and_then(|id| store.host(id));
-        if found.is_none() {
-            return Err("Unknown machine. Reopen Settings and try again.".into());
-        }
-    }
+    validate_host(store, host_id)?;
     let thresholds = input.map(MachineThresholds::parse).transpose()?;
     let previous = store.settings().machine_alerts.clone();
     let alerts = &mut store.settings_mut().machine_alerts;
@@ -93,6 +93,35 @@ pub fn save(
             alerts.overrides.remove(id);
         }
     }
+    persist(store, previous)
+}
+
+fn validate_host(store: &store::Store, host_id: Option<&str>) -> Result<(), String> {
+    if let Some(id) = host_id.filter(|id| *id != "local") {
+        let found = uuid::Uuid::parse_str(id).ok().and_then(|id| store.host(id));
+        if found.is_none() {
+            return Err("Unknown machine. Reopen Settings and try again.".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn acknowledge(
+    store: &mut store::Store,
+    host_id: &str,
+    metric: MachineMetric,
+    acknowledged: bool,
+) -> Result<(), String> {
+    validate_host(store, Some(host_id))?;
+    let previous = store.settings().machine_alerts.clone();
+    store
+        .settings_mut()
+        .machine_alerts
+        .acknowledge(host_id, metric, acknowledged);
+    persist(store, previous)
+}
+
+fn persist(store: &mut store::Store, previous: MachineAlerts) -> Result<(), String> {
     if let Err(error) = store.save() {
         store.settings_mut().machine_alerts = previous;
         return Err(error.to_string());
@@ -105,9 +134,9 @@ pub fn settings(alerts: &MachineAlerts, host_id: Option<&str>) -> Value {
     json!({
         "heading": "Machine alerts",
         "help": if host_id.is_none() {
-            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Values at or above either threshold need attention. CPU counts only sustained load: it must stay at or above a threshold for about a minute (60 samples), so a build or test run does not raise it, and a machine with fewer samples than that raises no CPU alert yet. A machine that reports the kernel's memory-pressure level (a Mac) is coloured by that level instead, so the RAM thresholds apply only to machines that do not report one. Changes apply on the next refresh. Override these in Connections for individual machines."
+            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Warnings need attention unless acknowledged for that machine and metric; critical always needs attention. CPU counts only sustained load: it must stay at or above a threshold for about a minute (60 samples), so a build or test run does not raise it, and a machine with fewer samples than that raises no CPU alert yet. A machine that reports the kernel's memory-pressure level (a Mac) is coloured by that level instead, so the RAM thresholds apply only to machines that do not report one. Changes apply on the next refresh. Override these in Connections for individual machines."
         } else {
-            "Choose this machine's CPU and RAM limits, or follow the shared defaults in Preferences. Values at or above a warning or critical threshold need attention; CPU counts only if it stays there for about a minute. The RAM limits apply only if this machine does not report memory pressure; a Mac does, and is coloured by that level."
+            "Choose this machine's CPU and RAM limits, or follow the shared defaults in Preferences. Warnings need attention unless acknowledged for this metric; critical always needs attention. CPU counts only if it stays there for about a minute. The RAM limits apply only if this machine does not report memory pressure; a Mac does, and is coloured by that level."
         },
         "rangeHelp": "Use whole percentages from 1 to 100. Each warning must be lower than its critical threshold.",
         "hostId": host_id,
@@ -227,6 +256,144 @@ mod tests {
             .as_array()
             .unwrap()
             .clone()
+    }
+
+    #[test]
+    fn acknowledged_ram_warning_stays_amber_but_only_critical_needs_attention() {
+        let alerts: MachineAlerts = serde_json::from_value(json!({
+            "acknowledged_warnings": {"local": {"ram": true}}
+        }))
+        .unwrap();
+        // Recovery and a critical episode do not erase the persistent acknowledgement.
+        for (fraction, attention, tint) in [
+            (0.79, false, color::AMBER),
+            (0.90, true, color::RED),
+            (0.50, false, color::GREEN),
+            (0.79, false, color::AMBER),
+        ] {
+            let mut payload = readings();
+            payload["hosts"][0]["memFraction"] = json!(fraction);
+            apply(&mut payload, &alerts);
+            let rows = machine_rows(payload);
+            assert_eq!(rows[0]["attention"], attention, "RAM {fraction}");
+            assert_eq!(rows[0]["metrics"][1]["color"], color::hex(tint));
+            assert_eq!(
+                rows[0]["metrics"][1]["acknowledgement"]["acknowledged"],
+                true
+            );
+            assert_eq!(rows[1]["attention"], true, "another host is independent");
+        }
+    }
+
+    #[test]
+    fn ram_acknowledgement_cannot_hide_other_machine_problems() {
+        let alerts: MachineAlerts = serde_json::from_value(json!({
+            "acknowledged_warnings": {"local": {"ram": true}}
+        }))
+        .unwrap();
+        for (key, value) in [
+            ("cpuSustainedFraction", json!(0.75)),
+            ("thermalColor", json!(color::hex(color::AMBER))),
+            (
+                "volumes",
+                json!([{"mount":"/", "fraction":0.9, "tint":color::hex(color::AMBER)}]),
+            ),
+            (
+                "connection",
+                json!({"state":"stale", "color":color::hex(color::AMBER)}),
+            ),
+            ("error", json!({"message":"Unreachable"})),
+        ] {
+            let mut payload = readings();
+            payload["hosts"][0][key] = value;
+            apply(&mut payload, &alerts);
+            assert_eq!(machine_rows(payload)[0]["attention"], true, "{key}");
+        }
+    }
+
+    #[test]
+    fn acknowledged_memory_pressure_warning_still_escalates_to_critical() {
+        let alerts: MachineAlerts = serde_json::from_value(json!({
+            "acknowledged_warnings": {"local": {"ram": true}}
+        }))
+        .unwrap();
+        // Wire levels are 0/1/2, normalized from the kernel's 1/2/4.
+        for (pressure, attention) in [(1, false), (2, true), (0, false), (1, false)] {
+            let mut payload = readings();
+            payload["hosts"][0]["memPressureLevel"] = json!(pressure);
+            apply(&mut payload, &alerts);
+            assert_eq!(
+                machine_rows(payload)[0]["attention"],
+                attention,
+                "pressure {pressure}"
+            );
+        }
+    }
+
+    #[test]
+    fn acknowledgement_saves_clear_independently_and_roll_back_on_disk_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store::Store::open_in(dir.path(), false).unwrap();
+        let host = store::Host::new("mac", "mac.local");
+        let id = host.id.to_string();
+        store.upsert_host(host);
+        acknowledge(&mut store, "local", MachineMetric::Ram, true).unwrap();
+        acknowledge(&mut store, "local", MachineMetric::Cpu, true).unwrap();
+        acknowledge(&mut store, &id, MachineMetric::Ram, true).unwrap();
+        acknowledge(&mut store, "local", MachineMetric::Ram, false).unwrap();
+        let reopened = store::Store::open_in(dir.path(), false).unwrap();
+        let alerts = &reopened.settings().machine_alerts;
+        assert!(!alerts.acknowledged("local", MachineMetric::Ram));
+        assert!(alerts.acknowledged("local", MachineMetric::Cpu));
+        assert!(alerts.acknowledged(&id, MachineMetric::Ram));
+        let before = store.settings().machine_alerts.clone();
+        assert!(acknowledge(&mut store, "missing", MachineMetric::Ram, true).is_err());
+        assert_eq!(store.settings().machine_alerts, before);
+        std::fs::remove_file(dir.path().join("store.json")).unwrap();
+        std::fs::create_dir(dir.path().join("store.json")).unwrap();
+        assert!(acknowledge(&mut store, "local", MachineMetric::Cpu, false).is_err());
+        assert_eq!(store.settings().machine_alerts, before);
+    }
+
+    #[test]
+    fn cpu_acknowledgement_only_quiets_sustained_warning_and_clear_restores_attention() {
+        let mut alerts = MachineAlerts::default();
+        alerts.acknowledge("local", MachineMetric::Cpu, true);
+        for (sustained, attention) in [(0.75, false), (0.90, true), (0.20, false)] {
+            let mut payload = readings();
+            payload["hosts"][0]["memFraction"] = json!(0.2);
+            payload["hosts"][0]["cpuSustainedFraction"] = json!(sustained);
+            apply(&mut payload, &alerts);
+            assert_eq!(machine_rows(payload)[0]["attention"], attention);
+        }
+        alerts.acknowledge("local", MachineMetric::Cpu, false);
+        let mut payload = readings();
+        payload["hosts"][0]["memFraction"] = json!(0.2);
+        payload["hosts"][0]["cpuSustainedFraction"] = json!(0.75);
+        apply(&mut payload, &alerts);
+        assert_eq!(machine_rows(payload)[0]["attention"], true);
+    }
+
+    #[test]
+    fn acknowledgement_controls_never_offer_to_dismiss_critical_or_claim_it_is_acknowledged() {
+        for (fraction, acknowledged, available, badge) in [
+            (0.79, false, true, ""),
+            (0.90, false, false, ""),
+            (0.90, true, true, ""),
+            (0.79, true, true, "Acknowledged"),
+            (0.50, true, true, ""),
+            (0.50, false, false, ""),
+        ] {
+            let mut alerts = MachineAlerts::default();
+            alerts.acknowledge("local", MachineMetric::Ram, acknowledged);
+            let mut payload = readings();
+            payload["hosts"][0]["memFraction"] = json!(fraction);
+            apply(&mut payload, &alerts);
+            let rows = machine_rows(payload);
+            let control = &rows[0]["metrics"][1]["acknowledgement"];
+            assert_eq!(control["available"], available);
+            assert_eq!(control["badge"], badge);
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 // Real UI and Rust-dumped readings under Tauri's CSP. The IPC double projects
 // edited tiles; Rust tests separately cover policy and actual disk persistence.
-async function openDashboard(page, baseURL, expanded = false) {
+async function openDashboard(page, baseURL, expanded = false, prepare = null) {
   const names = {
     dashboard_view: expanded ? "dashboard-expanded" : "dashboard",
     cockpit: "cockpit",
@@ -22,6 +22,7 @@ async function openDashboard(page, baseURL, expanded = false) {
       await fetch(`${baseURL}/sample-${name}.json`)
     ).json();
   }
+  prepare?.(fixtures.dashboard_view);
   await page.addInitScript(
     ({ fixtures }) => {
       const original = fixtures.dashboard_view;
@@ -30,6 +31,7 @@ async function openDashboard(page, baseURL, expanded = false) {
         original.layout;
       window.__CALLS__ = [];
       window.__SET_LAYOUT__ = (next) => { layout = structuredClone(next); };
+      window.__SET_DASHBOARD__ = (next) => { Object.assign(original, structuredClone(next)); };
       window.__SET_SOURCE_ROWS__ = (id, rows) => { original.sources.find(s => s.id === id).rows = structuredClone(rows); };
       window.__SET_RUNNER_SOURCE__ = (source) => { Object.assign(original.sources.find(s => s.id === 'ghRunners'), structuredClone(source)); };
       window.__SET_RUNNER_PAYLOAD__ = (payload) => { fixtures.runners = payload; };
@@ -72,6 +74,14 @@ async function openDashboard(page, baseURL, expanded = false) {
         core: {
           invoke: async (command, args) => {
             window.__CALLS__.push({ command, args });
+            if (command === "machine_acknowledge_warning") {
+              if (window.__HOLD_ACK__) await new Promise(resolve => { window.__RELEASE_ACK__ = resolve; });
+              // Result<Value, String> rejects with a string across the Tauri boundary.
+              if (window.__FAIL_ACK__) throw "Could not save the warning acknowledgement.";
+              if (!window.__ACK_RESPONSE__) throw new Error("Missing acknowledgement response fixture");
+              Object.assign(original, structuredClone(window.__ACK_RESPONSE__));
+              return project();
+            }
             if (command === "dashboard_preview") {
               const preview = project(args.tile).tiles[0];
               if (window.__HOLD_PREVIEW__) {
@@ -130,6 +140,119 @@ const action = (page, name) =>
 const tile = (page, source) => page.locator(`[data-tile="overview-${source}"]`);
 const savedLayout = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("test-dashboard")));
+
+// These are IPC response fixtures, not a test-side alert evaluator. Rust tests
+// exercise severity, scoping and disk persistence; these exercise the real UI.
+function warningFrame(view, acknowledged, critical = false) {
+  const result = structuredClone(view), source = result.sources.find(s => s.id === 'hosts');
+  const row = structuredClone(source.rows[0]);
+  row.label = 'mac-n87k';
+  row.attention = critical || !acknowledged;
+  row.metrics[1] = {
+    ...row.metrics[1], value: '25.2 / 32 GB', fraction: .7875,
+    color: critical ? '#ef6b5b' : '#e9b44c',
+    acknowledgement: {
+      metric:'ram', acknowledged, available:acknowledged || !critical,
+      badge: acknowledged && !critical ? 'Acknowledged' : '',
+      actionLabel: acknowledged ? 'Clear RAM acknowledgement' : 'Acknowledge RAM warning',
+      help: critical ? 'RAM is critical and needs attention. Only warnings are acknowledged.' :
+        'RAM warnings acknowledged until cleared; critical alerts remain enabled.',
+    },
+  };
+  row.color = row.valueColor = row.metrics[1].color;
+  source.rows = [row];
+  source.warnings = [];
+  source.attentionCount = row.attention ? 1 : 0;
+  result.attention = result.attention.filter(s => s.source !== 'hosts');
+  if (row.attention) result.attention.push({source:'hosts', label:'Machines · 1', color:row.metrics[1].color});
+  return result;
+}
+
+test('machine warnings can be acknowledged and cleared from details without changing the reading', async ({page, baseURL}) => {
+  const initial = await openDashboard(page, baseURL, false, view => Object.assign(view, warningFrame(view, false)));
+  const acknowledged = warningFrame(initial, true);
+  await page.evaluate(next => { window.__ACK_RESPONSE__ = next; }, acknowledged);
+  await tile(page, 'hosts').getByRole('button', {name:/mac-n87k/}).click();
+  const inspector = page.locator('.db-inspector');
+  const acknowledge = inspector.getByRole('button', {name:'Acknowledge RAM warning', exact:true});
+  await acknowledge.click();
+  await expect(inspector.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeVisible();
+  await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toBeVisible();
+  await expect(tile(page, 'hosts').getByRole('meter', {name:'mac-n87k RAM'})).toHaveAttribute('aria-valuenow', '78.75');
+  await expect(action(page, 'attention').filter({hasText:'Machines'})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === 'machine_acknowledge_warning'))).toEqual([
+    {command:'machine_acknowledge_warning', args:{hostId:initial.sources.find(s=>s.id==='hosts').rows[0].id, metric:'ram', acknowledged:true, width:expect.any(Number)}},
+  ]);
+  await page.evaluate(next => { window.__ACK_RESPONSE__ = next; }, initial);
+  await inspector.getByRole('button', {name:'Clear RAM acknowledgement'}).click();
+  await expect(inspector.getByRole('button', {name:'Acknowledge RAM warning'})).toBeVisible();
+  await expect(action(page, 'attention').filter({hasText:'Machines'})).toBeVisible();
+  expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === 'machine_acknowledge_warning').at(-1).args.acknowledged)).toBe(false);
+});
+
+test('failed acknowledgement keeps the warning actionable and allows retry', async ({page, baseURL}) => {
+  const initial = await openDashboard(page, baseURL, false, view => Object.assign(view, warningFrame(view, false)));
+  await page.evaluate(() => { window.__FAIL_ACK__ = true; });
+  await tile(page, 'hosts').getByRole('button', {name:/mac-n87k/}).click();
+  const acknowledge = page.getByRole('button', {name:'Acknowledge RAM warning',exact:true});
+  await acknowledge.click();
+  await expect(page.getByRole('alert')).toHaveText('Could not save the warning acknowledgement.');
+  await expect(acknowledge).toBeEnabled();
+  await expect(action(page, 'attention').filter({hasText:'Machines'})).toBeVisible();
+  await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toHaveCount(0);
+  await page.evaluate(next => { window.__FAIL_ACK__ = false; window.__ACK_RESPONSE__ = next; }, warningFrame(initial, true));
+  await acknowledge.click();
+  await expect(page.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeEnabled();
+  await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toBeVisible();
+});
+
+test('an old poll cannot undo an acknowledgement and duplicate clicks cannot submit twice', async ({page, baseURL}) => {
+  const initial = await openDashboard(page, baseURL, false, view => Object.assign(view, warningFrame(view, false)));
+  await tile(page, 'hosts').getByRole('button', {name:/mac-n87k/}).click();
+  await page.evaluate(next => {
+    window.__ACK_RESPONSE__ = next;
+    window.__HOLD_ACK__ = true;
+    window.__HOLD_READ__ = true;
+  }, warningFrame(initial, true));
+  await expect.poll(() => page.evaluate(() => typeof window.__RELEASE_READ__)).toBe('function');
+  const acknowledge = page.getByRole('button', {name:'Acknowledge RAM warning',exact:true});
+  await acknowledge.press('Enter');
+  await expect(acknowledge).toBeDisabled();
+  await page.evaluate(() => window.__RELEASE_ACK__());
+  const clear = page.getByRole('button', {name:'Clear RAM acknowledgement'});
+  await expect(clear).toBeEnabled();
+  await expect(clear).toBeFocused();
+  await page.evaluate(() => window.__RELEASE_READ__());
+  await expect(clear).toBeVisible();
+  await expect(action(page, 'attention').filter({hasText:'Machines'})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === 'machine_acknowledge_warning').length)).toBe(1);
+});
+
+test('critical attention stays visible with a saved acknowledgement in table and list views', async ({page, baseURL}) => {
+  const initial = await openDashboard(page, baseURL, false, view => Object.assign(view, warningFrame(view, true, true)));
+  await tile(page, 'hosts').getByRole('button', {name:/mac-n87k/}).click();
+  const inspector = page.locator('.db-inspector');
+  for (const view of ['Table', 'List']) {
+    await inspector.getByRole('button', {name:view,exact:true}).click();
+    await expect(inspector.getByText('RAM is critical and needs attention. Only warnings are acknowledged.', {exact:true})).toBeVisible();
+    await expect(inspector.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeVisible();
+    await expect(inspector.getByRole('button', {name:'Acknowledge RAM warning',exact:true})).toHaveCount(0);
+    await expect(action(page, 'attention').filter({hasText:'Machines'})).toBeVisible();
+    await expect(tile(page, 'hosts').getByText('Acknowledged',{exact:true})).toHaveCount(0);
+  }
+  await page.evaluate(next => window.__SET_DASHBOARD__(next), warningFrame(initial, true));
+  await expect(tile(page, 'hosts').getByText('Acknowledged',{exact:true})).toBeVisible();
+  for (const width of [390, 240, 1280]) {
+    await page.setViewportSize({width, height:900});
+    await expect(inspector.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeVisible();
+    const controls = inspector.locator('.db-warning-controls');
+    expect(await controls.evaluate(el => el.getBoundingClientRect().right)).toBeLessThanOrEqual(width);
+    expect(await controls.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    // Existing repository columns elsewhere have a minimum width below 390px.
+    if (width >= 390)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+});
 
 test("dashboard toolbar icons keep accessible labels and keyboard tooltips through editing", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
