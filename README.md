@@ -66,7 +66,9 @@ duplicate and scope them, or add a view of any of the nine sources below.
 or **All full panels** for the full cockpit. **All full panels**, **Edit dashboard**
 and **Settings** are icon buttons with tooltips at the top right.
 Connections stay in **Settings**.
-Machines includes colored CPU/RAM utilization bars. GitHub Repos supports
+Machines includes colored CPU/RAM utilization bars and persistent acknowledgements
+for expected warnings on a specific machine and metric; critical alerts still
+need attention. GitHub Repos supports
 per-tile repository selection, sortable columns and an All rows option.
 Runners can show every individual runner or counts grouped by OS and architecture.
 

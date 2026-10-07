@@ -209,6 +209,13 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 .or_else(|| volumes.iter().find(|v| amber(&v["tint"])));
             let metric_colors = [&h["cpuValueColor"], &h["memValueColor"], &h["thermalColor"]];
             let metric_warning = metric_colors.iter().any(|v| red(v) || amber(v));
+            // Acknowledgement affects only this metric's warning. Actual colours
+            // remain visible; critical and unrelated problems always demand attention.
+            let metric_attention = [
+                (&h["cpuValueColor"], h["cpuWarningAcknowledged"] == true),
+                (&h["memValueColor"], h["memWarningAcknowledged"] == true),
+                (&h["thermalColor"], false),
+            ].iter().any(|(color, acknowledged)| red(color) || (amber(color) && !acknowledged));
             let thermal_badge = Some(&h["thermalColor"])
                 .filter(|v| red(v) || amber(v))
                 .and_then(|_| h["thermalText"].as_str())
@@ -255,7 +262,7 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 } else {
                     tint(&h["connection"]["color"])
                 },
-                problem || volume_warning.is_some() || metric_warning,
+                problem || volume_warning.is_some() || metric_attention,
             );
             add_scope(
                 &mut r,
@@ -289,6 +296,28 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 field("CPU", reading("cpuValue")),
                 field("RAM", reading("memValue"))
             ]);
+            for (index, metric, label, tint, preference) in [
+                (0, "cpu", "CPU", "cpuValueColor", "cpuWarningAcknowledged"),
+                (1, "ram", "RAM", "memValueColor", "memWarningAcknowledged"),
+            ] {
+                let acknowledged = h[preference] == true;
+                let warning = !down && amber(&h[tint]);
+                let critical = !down && red(&h[tint]);
+                r["metrics"][index]["acknowledgement"] = json!({
+                    "metric": metric,
+                    "acknowledged": acknowledged,
+                    "available": acknowledged || warning,
+                    "badge": if acknowledged && warning { "Acknowledged" } else { "" },
+                    "actionLabel": if acknowledged { format!("Clear {label} acknowledgement") } else { format!("Acknowledge {label} warning") },
+                    "help": if acknowledged && critical {
+                        format!("{label} is critical and needs attention. Only warnings are acknowledged.")
+                    } else if acknowledged {
+                        format!("{label} warnings acknowledged until cleared; critical alerts remain enabled.")
+                    } else {
+                        format!("Acknowledge this machine's {label} warnings until cleared. Critical alerts remain enabled.")
+                    },
+                });
+            }
             if !down {
                 for (index, fraction, color) in [
                     (0, "cpuFraction", "cpuValueColor"),
@@ -1099,6 +1128,9 @@ fn labels() -> Value {
         ("move", "Move"),
         ("close", "Close"),
         ("apply", "Apply"),
+        ("warningAcknowledged", "Warning acknowledged. Critical alerts remain enabled."),
+        ("warningAcknowledgementCleared", "Acknowledgement cleared. Warnings need attention again."),
+        ("warningAcknowledgementFailed", "Could not save the warning acknowledgement. Your previous choice is still active."),
         ("duplicate", "Duplicate tile"),
         ("name", "Tile name"),
         ("scope", "Show"),
@@ -1476,12 +1508,19 @@ mod tests {
         let rows = host_rows(&json!({"hosts": [{
             "id": "remote", "connection": {"state":"unreachable"},
             "error": {"hostName":"remote", "message":"Connection failed"},
-            "cpuValue":"99%", "memValue":"31 GB"
+            "cpuValue":"99%", "memValue":"31 GB", "memWarningAcknowledged":true
         }]}));
-        assert_eq!(
-            rows[0]["metrics"],
-            json!([field("CPU", &Value::Null), field("RAM", &Value::Null)])
-        );
+        let metrics = rows[0]["metrics"].as_array().unwrap();
+        assert_eq!(metrics.len(), 2);
+        for (metric, label) in metrics.iter().zip(["CPU", "RAM"]) {
+            assert_eq!(metric["label"], label);
+            assert!(metric["value"].is_null());
+            assert!(metric["fraction"].is_null());
+            assert_eq!(metric["acknowledgement"]["badge"], "");
+        }
+        assert_eq!(metrics[0]["acknowledgement"]["available"], false);
+        assert_eq!(metrics[1]["acknowledgement"]["available"], true);
+        assert_eq!(rows[0]["attention"], true);
         assert_eq!(rows[0]["details"].as_array().unwrap().len(), 6);
         assert!(rows[0]["details"]
             .as_array()

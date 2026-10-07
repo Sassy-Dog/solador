@@ -3777,6 +3777,23 @@ fn settings_save_machine_alerts(
     response
 }
 
+#[tauri::command]
+fn machine_acknowledge_warning(
+    host_id: String,
+    metric: store::machine_alerts::MachineMetric,
+    acknowledged: bool,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    machine_alerts::acknowledge(
+        &mut state.store.lock().expect("store poisoned"),
+        &host_id,
+        metric,
+        acknowledged,
+    ).map_err(|_| "Could not save the warning acknowledgement. Check that the machine still exists and your settings can be saved, then try again.".to_owned())?;
+    Ok(dashboard_view(width, state))
+}
+
 /// Cuts short the sleep of the one loop whose cadence just changed.
 ///
 /// Exhaustive over [`PanelInterval`], so a fifth settable panel cannot be added
@@ -6551,6 +6568,7 @@ fn main() {
             settings_view,
             settings_save_general,
             settings_save_machine_alerts,
+            machine_acknowledge_warning,
             settings_save_panel_interval,
             settings_clear_panel_interval,
             settings_set_crash_reporting,

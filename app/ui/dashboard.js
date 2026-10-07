@@ -29,6 +29,7 @@
   let pointerDrag = null;
   let loadFailed = false;
   let previewTimer = null, previewVersion = 0;
+  let acknowledgementVersion = 0;
   const tiles = new Map();
   const q = (selector) => root.querySelector(selector);
   const text = (el, value) => {
@@ -87,6 +88,35 @@
   function actionLabel(b, title) {
     b.setAttribute("aria-label", `${b.textContent} ${title}`);
     return b;
+  }
+  function acknowledgementBadge(metric, compact = false) {
+    const acknowledgement = metric?.acknowledgement;
+    if (!acknowledgement?.badge) return null;
+    const badge = node("span", "db-acknowledged", compact ? "✓" : acknowledgement.badge);
+    badge.title = acknowledgement.help;
+    if (compact) {
+      badge.setAttribute("role", "img");
+      badge.setAttribute("aria-label", `${metric.label}: ${acknowledgement.badge}`);
+    }
+    return badge;
+  }
+  function warningControls(row) {
+    const controls = node("div", "db-warning-controls");
+    for (const metric of row.metrics || []) {
+      const acknowledgement = metric.acknowledgement;
+      if (!acknowledgement?.available) continue;
+      const field = node("div", "db-warning-control");
+      const control = button(acknowledgement.actionLabel, "acknowledge-warning", row.id);
+      control.dataset.metric = acknowledgement.metric;
+      control.disabled = busy || !window.__TAURI__;
+      const help = node("p", "db-sub", acknowledgement.help);
+      help.id = `db-warning-${row.id}-${acknowledgement.metric}`;
+      control.setAttribute("aria-describedby", help.id);
+      field.append(control, help);
+      controls.append(field);
+    }
+    controls.hidden = !controls.childElementCount;
+    return controls;
   }
   function makeChrome() {
     const chrome = node("header", "db-chrome"),
@@ -229,6 +259,8 @@
           track.append(fill);
         } else track.setAttribute("aria-hidden", "true");
         metric.append(label, track);
+        const badge = acknowledgementBadge(m);
+        if (badge) metric.append(badge);
         stats.append(metric);
       }
       wrap.append(stats);
@@ -452,12 +484,14 @@
   async function refresh(force = false) {
     if (pending || busy || settingsOpen) return;
     pending = true;
+    const version = acknowledgementVersion;
     try {
       const next = await callRust(
         "dashboard_view",
         { width: root.clientWidth || legacy.clientWidth || innerWidth },
         "sample-dashboard.json",
       );
+      if (busy || version !== acknowledgementVersion) return;
       if (!next?.layout?.tiles || !Array.isArray(next.sources) || !next.labels)
         return;
       if (model && next.layout.revision < model.layout.revision) return;
@@ -473,6 +507,7 @@
       const error = document.getElementById("dashboardLoadError");
       if (error) error.remove();
     } catch (error) {
+      if (busy || version !== acknowledgementVersion) return;
       if (initialized) {
         loadFailed = true;
         status(L("loadFailed"), true);
@@ -876,6 +911,7 @@
     const focused = body.contains(document.activeElement) ? document.activeElement : null;
     const focusRow = focused?.closest('[data-resource]')?.dataset.resource;
     const focusAction = focused?.dataset.action;
+    const focusMetric = focused?.dataset.metric;
     const previousTable = body.querySelector('.db-table-scroll');
     const focusTable = focused === previousTable && !!previousTable;
     if (previousTable) active.tableScroll = previousTable.scrollLeft;
@@ -905,6 +941,8 @@
       const field = m => {
         const pair = node("div", "db-detail-field");
         pair.append(node("dt", "db-muted", m.header ?? m.label), colored("dd", "", m.value ?? "—", m.color));
+        const badge = acknowledgementBadge(m, true);
+        if (badge) pair.lastElementChild.append(" ", badge);
         return pair;
       };
       for (const m of [...(row.metrics || []), ...(row.counts || [])]) primary.append(field(m));
@@ -914,6 +952,7 @@
       for (const m of row.details || []) metrics.append(field(m));
       if (metrics.childElementCount) extra.append(metrics);
       if (row.volumes?.length) extra.append(volumeTable(row.volumes));
+      extra.append(warningControls(row));
       const actions = node("div", "db-detail-actions");
       item.addEventListener("toggle", () => {
         if (!item.isConnected || active?.kind !== "details") return;
@@ -939,7 +978,7 @@
     if (view === "table") list.scrollLeft = active.tableScroll || 0;
     if (focusRow) {
       const candidates = [...list.querySelectorAll(`[data-resource="${CSS.escape(focusRow)}"]`)];
-      const selector = focusAction ? `[data-action="${CSS.escape(focusAction)}"]` : 'summary, [data-action="detail-toggle"]';
+      const selector = focusAction ? `[data-action="${CSS.escape(focusAction)}"]${focusMetric ? `[data-metric="${CSS.escape(focusMetric)}"]` : ""}` : 'summary, [data-action="detail-toggle"]';
       const target = candidates.map(row => row.querySelector(selector)).find(Boolean);
       (target || box.querySelector('[data-action="close"]')).focus({preventScroll:true});
     } else if (focusTable) list.focus({preventScroll:true});
@@ -983,6 +1022,8 @@
         } else {
           const field = row[column.section]?.find(m => (m.header ?? m.label) === column.label);
           cell.append(colored("span", "", field?.value ?? "—", field?.color));
+          const badge = acknowledgementBadge(field, true);
+          if (badge) cell.append(" ", badge);
         }
         cell.title = cell.textContent;
         tr.append(cell);
@@ -995,6 +1036,7 @@
       cell.colSpan = columns.length;
       if (row.explanation || row.detail) content.append(node("p", "db-detail-copy", row.explanation || row.detail));
       if (row.volumes?.length) content.append(volumeTable(row.volumes));
+      content.append(warningControls(row));
       const actions = node("div", "db-detail-actions");
       if (row.url) {
         const open = button(L("openRepo"), "openRepo", row.id);
@@ -1097,6 +1139,37 @@
       render(true);
       status(error?.message || String(error) || L("failed"), true);
       return false;
+    }
+  }
+  async function acknowledgeWarning(control) {
+    const row = source("hosts")?.rows.find(row => row.id === control.dataset.id);
+    const acknowledgement = row?.metrics?.find(metric => metric.acknowledgement?.metric === control.dataset.metric)?.acknowledgement;
+    if (!acknowledgement?.available || !window.__TAURI__ || busy) return;
+    const inspector = active, restoreFocus = document.activeElement === control;
+    const acknowledged = !acknowledgement.acknowledged;
+    // A poll already in flight may contain the old acknowledgement at the same
+    // layout revision. Discard it even if it completes after this save.
+    acknowledgementVersion++;
+    busy = true;
+    if (active) active.signature = null;
+    render(true);
+    try {
+      const saved = await callRust("machine_acknowledge_warning", {
+        hostId: row.id, metric: acknowledgement.metric, acknowledged,
+        width: root.clientWidth || innerWidth,
+      });
+      if (!saved?.layout?.tiles || !Array.isArray(saved.sources) || !saved.labels)
+        throw new Error(L("warningAcknowledgementFailed"));
+      model = saved;
+      status(L(acknowledged ? "warningAcknowledged" : "warningAcknowledgementCleared"));
+    } catch (error) {
+      status((typeof error === "string" ? error : error?.message) || L("warningAcknowledgementFailed"), true);
+    } finally {
+      busy = false;
+      if (active) active.signature = null;
+      render(true);
+      if (restoreFocus && active === inspector && mode === "overview" && !settingsOpen && document.activeElement === document.body)
+        q(`[data-action="acknowledge-warning"][data-id="${CSS.escape(row.id)}"][data-metric="${CSS.escape(acknowledgement.metric)}"]`)?.focus({preventScroll:true});
     }
   }
   function copyLayout() {
@@ -1229,6 +1302,10 @@
       return;
     }
     if (busy) return;
+    if (action === "acknowledge-warning") {
+      await acknowledgeWarning(b);
+      return;
+    }
     if (action === "detail-toggle") {
       if (active?.kind !== "details") return;
       if (active.expanded.has(id)) active.expanded.delete(id);
