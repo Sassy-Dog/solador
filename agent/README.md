@@ -728,7 +728,9 @@ of seconds — anything else, `0` included, is refused with exit 2) it prints th
 process tree, then makes up to 10 one-second passes killing a fresh snapshot of
 that tree until the shell exits 124 with its temp directory removed. A shell
 still alive after those passes has its temp directory removed and is SIGKILLed
-(exit 137).
+(exit 137). The watchdog self-test probes run before deployment fixture setup,
+so their short deadlines measure the blocking case rather than fixture creation;
+normal runs remain bounded during setup as well.
 
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs every host command (`cargo`,

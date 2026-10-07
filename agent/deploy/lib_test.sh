@@ -418,6 +418,52 @@ on_exit() {
 trap on_exit EXIT
 watchdog_start
 
+# The child of the self-test: a case that blocks. Only runs under
+# `--watchdog-probe`, where it is the whole suite. The sleep length is
+# passed in so the parent can tell its own sleep from any other on the host.
+test_watchdog_hang_probe() {
+    command sleep "$HANG_SECS"
+    pass "watchdog probe: the blocking case finished before the bound"
+}
+
+# A second blocking case, one second longer than the first so the two sleeps
+# are told apart. In mode "two" it is the case that would start in the gap
+# between the watchdog killing the first and the shell exiting.
+test_watchdog_second_hang_probe() {
+    command sleep "$((HANG_SECS + 1))"
+    pass "watchdog probe: the second blocking case finished before the bound"
+}
+
+# A case AFTER the hang. Under a fired watchdog it must never start.
+test_watchdog_after_probe() {
+    printf 'AFTER-PROBE-RAN\n'
+    pass "watchdog probe: the case after the hang ran"
+}
+
+# Both the probes and the real suite use the same case-start refusal and
+# current-case recording. Probes need no deployment fixtures: creating those
+# consumed their entire 3 s budget on a busy macOS runner (#565 follow-up).
+# Keep the real suite's watchdog above setup so setup hangs are still bounded.
+run_cases() {
+    for CURRENT_CASE in $CASES; do
+        [ -e "$WATCHDOG_FIRED_FILE" ] && watchdog_stopped
+        printf '%s\n' "$CURRENT_CASE" > "$WATCHDOG_CASE_FILE"
+        "$CURRENT_CASE"
+    done
+}
+
+case "$HANG_MODE" in
+    1) CASES="test_watchdog_hang_probe" ;;
+    after) CASES="test_watchdog_hang_probe test_watchdog_after_probe" ;;
+    two) CASES="test_watchdog_hang_probe test_watchdog_second_hang_probe test_watchdog_after_probe" ;;
+    *) CASES="" ;;
+esac
+if [ -n "$CASES" ]; then
+    run_cases
+    printf '\npassed %d, failed %d, skipped %d\n' "$PASSED" "$FAILED" "$SKIPPED"
+    exit "$FAILED"
+fi
+
 STUBS="$TMP/stubs"
 STDERR="$TMP/stderr"
 mkdir -p "$STUBS"
@@ -9640,28 +9686,6 @@ test_install_env_allowlist() {
 
 # ---- watchdog self-test (#554) -----------------------------------------------
 
-# The child of the self-test: a case that blocks. Only runs under
-# `--watchdog-probe`, where it is the whole suite. The sleep length is
-# passed in so the parent can tell its own sleep from any other on the host.
-test_watchdog_hang_probe() {
-    command sleep "$HANG_SECS"
-    pass "watchdog probe: the blocking case finished before the bound"
-}
-
-# A second blocking case, one second longer than the first so the two sleeps
-# are told apart. In mode "two" it is the case that would start in the gap
-# between the watchdog killing the first and the shell exiting.
-test_watchdog_second_hang_probe() {
-    command sleep "$((HANG_SECS + 1))"
-    pass "watchdog probe: the second blocking case finished before the bound"
-}
-
-# A case AFTER the hang. Under a fired watchdog it must never start.
-test_watchdog_after_probe() {
-    printf 'AFTER-PROBE-RAN\n'
-    pass "watchdog probe: the case after the hang ran"
-}
-
 # watchdog_nested_run <mode> <hang-secs> <bound-secs>: the suite in HANG mode as
 # a child, output in $WD_OUT, status in $WD_RC, its TMPDIR in $WD_TMP.
 watchdog_nested_run() {
@@ -9712,9 +9736,31 @@ test_watchdog_trips_on_a_hung_case() {
     WD_TMP="$TMP/watchdog-tmp"
     mkdir -p "$WD_TMP"
 
-    # 1. The hung case is the last one.
-    watchdog_nested_run 1 "$marker" 3
+    # Make fixture setup deterministically slower than the probe's deadline.
+    # A no-argument cat writes each fixture heredoc; watchdog reads pass a
+    # filename. Probes must skip setup, while a normal run must still bound it.
+    local slow_setup="$TMP/watchdog-slow-setup"
+    mkdir -p "$slow_setup"
+    cat > "$slow_setup/cat" <<'STUB'
+#!/bin/bash
+if [ "$#" -eq 0 ]; then
+    : > "$WATCHDOG_SETUP_MARKER"
+    command sleep 4
+fi
+exec /bin/cat "$@"
+STUB
+    chmod +x "$slow_setup/cat"
+    local setup_marker="$TMP/watchdog-setup-entered"
+
+    # 1. The hung case is the last one, even with slow fixture creation.
+    PATH="$slow_setup:$PATH" WATCHDOG_SETUP_MARKER="$setup_marker" \
+        watchdog_nested_run 1 "$marker" 3
     watchdog_assert_fired "hang is last" "$marker"
+    if [ ! -e "$setup_marker" ]; then
+        pass "watchdog: probes skip deployment fixture setup"
+    else
+        fail "watchdog: probes skip deployment fixture setup" "slow fixture creation ran"
+    fi
     if grep -q 'Running case: test_watchdog_hang_probe' "$WD_OUT"; then
         pass "watchdog: names the case that was running"
     else
@@ -9758,7 +9804,8 @@ test_watchdog_trips_on_a_hung_case() {
     # suite when the watchdog fires: exit 124, and the case it names is not the
     # probe. (Were the leaked variable honoured, the child would run only the
     # probe and report a green "passed 1".)
-    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS=300 \
+    PATH="$slow_setup:$PATH" WATCHDOG_SETUP_MARKER="$setup_marker" \
+        TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS=300 \
         SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=3 \
         "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$WD_OUT" 2>&1
     WD_RC=$?
@@ -9767,6 +9814,13 @@ test_watchdog_trips_on_a_hung_case() {
         pass "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit a normal run"
     else
         fail "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit a normal run" "exit status was $WD_RC" "$(grep -a 'Running case\|^passed' "$WD_OUT")"
+    fi
+
+    if [ "$WD_RC" -eq 124 ] && [ -e "$setup_marker" ] \
+        && grep -q '^Running case: (before the first case)$' "$WD_OUT"; then
+        pass "watchdog: a normal run still times out during fixture setup"
+    else
+        fail "watchdog: a normal run still times out during fixture setup" "exit status was $WD_RC" "$(cat "$WD_OUT")"
     fi
 
     # Bad bounds are refused with exit 2 -- in probe mode, so that were the
@@ -9798,15 +9852,7 @@ test_watchdog_trips_on_a_hung_case() {
 
 printf 'agent/deploy/lib.sh + install.sh\n\n'
 
-# HANG mode is the watchdog self-test's child: it runs only the probe.
-case "$HANG_MODE" in
-    1) CASES="test_watchdog_hang_probe" ;;
-    after) CASES="test_watchdog_hang_probe test_watchdog_after_probe" ;;
-    two) CASES="test_watchdog_hang_probe test_watchdog_second_hang_probe test_watchdog_after_probe" ;;
-    *) CASES="" ;;
-esac
-if [ -z "$CASES" ]; then
-    CASES="
+CASES="
         test_binary_version
         test_health_url
         test_health_version
@@ -9864,14 +9910,8 @@ if [ -z "$CASES" ]; then
         test_deploy_script_invariants
         test_watchdog_trips_on_a_hung_case
     "
-fi
 
-for CURRENT_CASE in $CASES; do
-    # Once the watchdog has fired nothing else may start.
-    [ -e "$WATCHDOG_FIRED_FILE" ] && watchdog_stopped
-    printf '%s\n' "$CURRENT_CASE" > "$WATCHDOG_CASE_FILE"
-    "$CURRENT_CASE"
-done
+run_cases
 
 printf '\npassed %d, failed %d, skipped %d\n' "$PASSED" "$FAILED" "$SKIPPED"
 if [ "$SKIPPED" -gt 0 ]; then
