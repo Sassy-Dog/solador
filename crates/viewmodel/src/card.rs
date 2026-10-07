@@ -187,6 +187,35 @@ pub fn pending_card(host_name: &str, p: &Pending) -> Value {
     })
 }
 
+/// How many consecutive CPU samples must all be over a threshold before the
+/// CPU counts as over it (#545): 60 samples, about a minute at the 1 s poll.
+///
+/// A development machine crosses 70% for every build, test run or indexing
+/// pass, so one sample over the line says nothing about the machine being in
+/// trouble; a minute over it does. Deliberately a constant and not an operator
+/// setting, and a starting value to retune from dogfooding rather than a
+/// measured one.
+pub const CPU_SUSTAIN_SAMPLES: usize = 60;
+
+/// The CPU level the host has **stayed at or above** for the last
+/// [`CPU_SUSTAIN_SAMPLES`] samples, as a fraction: the *minimum* of the window,
+/// because "at or above X the whole time" is exactly "the minimum is at least X"
+/// (an average would let one long spike beside a quiet half-minute read as
+/// load).
+///
+/// `None` when the claim cannot be made yet: fewer samples than the window
+/// (just launched or just added; the window counts successful samples, so an outage does not reset it) or an unmeasurable sample in
+/// it. Never `0`: absent means no claim, and a zero would claim an idle host.
+pub fn sustained_cpu_fraction(cpu: &History) -> Option<f64> {
+    let values = cpu.values();
+    let window = values.get(values.len().checked_sub(CPU_SUSTAIN_SAMPLES)?..)?;
+    if window.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let lowest = window.iter().copied().fold(f64::INFINITY, f64::min);
+    Some(lowest.clamp(0.0, 100.0) / 100.0)
+}
+
 /// Every series a host card plots.
 #[derive(Debug, Clone, Default)]
 pub struct HostHistories {
@@ -266,6 +295,7 @@ pub fn host_card(
     // The kernel's memory-pressure level (#544), where the producer has one. An
     // out-of-contract value is unknown, not a guess.
     let pressure_level = s.memory.pressure_level.and_then(MemoryPressure::from_wire);
+    let sustained = sustained_cpu_fraction(&h.cpu);
     let (badge, badge_col) = match s.cpu.thermal_state {
         Some(state) => color::thermal_badge(ThermalState::from_wire(state)),
         None => ("", color::MUTED),
@@ -402,7 +432,9 @@ pub fn host_card(
         "hostName": host_name,
         "cpuModel": s.cpu.model,
         "cpuValue": format!("{}%", s.cpu.total_usage.round() as i64),
-        "cpuValueColor": color::hex(color::usage_color(s.cpu.total_usage)),
+        // Coloured by the sustained figure, not this sample (#545); no claim
+        // yet is no alert, never muted, because the live reading exists.
+        "cpuValueColor": color::hex(sustained.map_or(color::GREEN, |f| color::usage_color(f * 100.0))),
         "thermalText": badge,
         "thermalColor": color::hex(badge_col),
         "cpuHistory": h.cpu.values(),
@@ -461,6 +493,9 @@ pub fn host_card(
     } else {
         None
     });
+    // The sustained figure `machine_alerts::apply` colours the CPU from (#545).
+    // The fill and `%` text above stay the current sample.
+    card["cpuSustainedFraction"] = json!(sustained);
     let memory_fraction =
         if s.memory.total_gb > 0.0 && s.memory.used_gb.is_finite() && s.memory.total_gb.is_finite()
         {
@@ -506,6 +541,69 @@ mod tests {
         snapshot.memory.total_gb = 0.0;
         let vm = host_card("test", &snapshot, &h, &Connection::Live);
         assert!(vm["memFraction"].is_null());
+    }
+
+    /// #545: a history of CPU readings, oldest first.
+    fn cpu_history(samples: &[f64]) -> HostHistories {
+        let mut h = HostHistories::new();
+        for v in samples {
+            h.cpu.push(*v);
+        }
+        h
+    }
+
+    fn sustained_card(samples: &[f64], live: f64) -> Value {
+        let mut snapshot = fixture();
+        snapshot.cpu.total_usage = live;
+        host_card("t", &snapshot, &cpu_history(samples), &Connection::Live)
+    }
+
+    #[test]
+    fn a_short_spike_is_not_sustained_and_the_live_meter_keeps_tracking() {
+        let mut samples = vec![10.0; CPU_SUSTAIN_SAMPLES - 5];
+        samples.extend([95.0; 5]);
+        let vm = sustained_card(&samples, 95.0);
+        assert_eq!(vm["cpuSustainedFraction"], 0.10);
+        assert_eq!(vm["cpuFraction"], 0.95);
+        assert_eq!(vm["cpuValue"], "95%");
+        assert_eq!(vm["cpuValueColor"], color::hex(color::GREEN));
+    }
+
+    #[test]
+    fn a_full_window_over_the_threshold_is_sustained() {
+        let vm = sustained_card(&[75.0; CPU_SUSTAIN_SAMPLES], 75.0);
+        assert_eq!(vm["cpuSustainedFraction"], 0.75);
+        assert_eq!(vm["cpuValueColor"], color::hex(color::AMBER));
+        let vm = sustained_card(&[93.0; CPU_SUSTAIN_SAMPLES], 93.0);
+        assert_eq!(vm["cpuValueColor"], color::hex(color::RED));
+    }
+
+    #[test]
+    fn one_dip_inside_the_window_breaks_the_run_and_the_minimum_is_used() {
+        let mut samples = vec![95.0; CPU_SUSTAIN_SAMPLES];
+        samples[CPU_SUSTAIN_SAMPLES / 2] = 40.0;
+        let vm = sustained_card(&samples, 95.0);
+        assert_eq!(vm["cpuSustainedFraction"], 0.40);
+        assert_eq!(vm["cpuValueColor"], color::hex(color::GREEN));
+        // Once the dip is older than the window, the run counts again.
+        let mut older = samples.clone();
+        older.extend([95.0; CPU_SUSTAIN_SAMPLES / 2 + 1]);
+        let vm = sustained_card(&older, 95.0);
+        assert_eq!(vm["cpuSustainedFraction"], 0.95);
+    }
+
+    #[test]
+    fn a_history_shorter_than_the_window_makes_no_sustained_claim() {
+        let vm = sustained_card(&[99.0; CPU_SUSTAIN_SAMPLES - 1], 99.0);
+        assert!(vm["cpuSustainedFraction"].is_null());
+        assert_eq!(vm["cpuFraction"], 0.99);
+        assert_eq!(vm["cpuValueColor"], color::hex(color::GREEN));
+        let vm = sustained_card(&[], 50.0);
+        assert!(vm["cpuSustainedFraction"].is_null());
+        // An unmeasurable sample in the window is no claim either.
+        let mut samples = vec![99.0; CPU_SUSTAIN_SAMPLES];
+        samples[3] = f64::NAN;
+        assert!(sustained_cpu_fraction(&cpu_history(&samples).cpu).is_none());
     }
 
     /// A #183-era agent's payload: everything it cannot measure is omitted, so

@@ -41,7 +41,28 @@ pub fn apply(payload: &mut Value, alerts: &MachineAlerts) {
                     continue;
                 }
             }
-            let value = host[fraction].as_f64();
+            // CPU is judged on the sustained figure (#545), not the live
+            // sample: a build crossing the line for a few seconds is not an
+            // alert. With no sustained claim yet the CPU raises none (green,
+            // not muted: the live reading exists and the meter shows it).
+            // The fill and `%` text stay the live sample.
+            let value = if fraction == "cpuFraction" {
+                // An unmeasured live CPU stays muted, as before, whatever the
+                // history still holds from earlier samples.
+                match host["cpuSustainedFraction"]
+                    .as_f64()
+                    .filter(|_| !host[fraction].is_null())
+                {
+                    Some(sustained) => Some(sustained),
+                    None if host[fraction].is_null() => None,
+                    None => {
+                        host[tint] = json!(color::hex(color::GREEN));
+                        continue;
+                    }
+                }
+            } else {
+                host[fraction].as_f64()
+            };
             host[tint] = json!(color::hex(value.map_or(color::MUTED, |v| {
                 color::usage_fraction_color(v, warning, critical)
             })));
@@ -84,9 +105,9 @@ pub fn settings(alerts: &MachineAlerts, host_id: Option<&str>) -> Value {
     json!({
         "heading": "Machine alerts",
         "help": if host_id.is_none() {
-            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Values at or above either threshold need attention. A machine that reports the kernel's memory-pressure level (a Mac) is coloured by that level instead, so the RAM thresholds apply only to machines that do not report one. Changes apply on the next refresh. Override these in Connections for individual machines."
+            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Values at or above either threshold need attention. CPU counts only sustained load: it must stay at or above a threshold for about a minute (60 samples), so a build or test run does not raise it, and a machine with fewer samples than that raises no CPU alert yet. A machine that reports the kernel's memory-pressure level (a Mac) is coloured by that level instead, so the RAM thresholds apply only to machines that do not report one. Changes apply on the next refresh. Override these in Connections for individual machines."
         } else {
-            "Choose this machine's CPU and RAM limits, or follow the shared defaults in Preferences. Values at or above a warning or critical threshold need attention. The RAM limits apply only if this machine does not report memory pressure; a Mac does, and is coloured by that level."
+            "Choose this machine's CPU and RAM limits, or follow the shared defaults in Preferences. Values at or above a warning or critical threshold need attention; CPU counts only if it stays there for about a minute. The RAM limits apply only if this machine does not report memory pressure; a Mac does, and is coloured by that level."
         },
         "rangeHelp": "Use whole percentages from 1 to 100. Each warning must be lower than its critical threshold.",
         "hostId": host_id,
@@ -118,6 +139,7 @@ mod tests {
         payload["id"] = json!("hosts");
         for host in payload["hosts"].as_array_mut().unwrap() {
             host["cpuFraction"] = json!(0.45);
+            host["cpuSustainedFraction"] = json!(0.45);
             host["memFraction"] = json!(0.83);
             host["volumes"] = json!([]);
             host["thermalColor"] = json!(color::hex(color::GREEN));
@@ -246,9 +268,60 @@ mod tests {
             (None, color::MUTED),
         ] {
             payload["hosts"][0]["cpuFraction"] = json!(fraction);
+            payload["hosts"][0]["cpuSustainedFraction"] = json!(fraction);
             apply(&mut payload, &alerts);
             assert_eq!(payload["hosts"][0]["cpuValueColor"], color::hex(expected));
         }
+    }
+
+    /// #545: the colour and attention follow the sustained figure; the live
+    /// fraction (the meter's fill) is not consulted, and a missing sustained
+    /// figure is no alert (green), not muted.
+    #[test]
+    fn cpu_colour_and_attention_follow_the_sustained_figure_not_the_live_sample() {
+        let alerts = MachineAlerts::default();
+        // Live 95% but not sustained: a spike. Green, and the fill is intact.
+        let mut payload = readings();
+        payload["hosts"][0]["memFraction"] = json!(0.2);
+        payload["hosts"][0]["cpuFraction"] = json!(0.95);
+        payload["hosts"][0]["cpuSustainedFraction"] = json!(0.3);
+        apply(&mut payload, &alerts);
+        assert_eq!(
+            payload["hosts"][0]["cpuValueColor"],
+            color::hex(color::GREEN)
+        );
+        assert_eq!(payload["hosts"][0]["cpuFraction"], 0.95);
+        // Live 20% but sustained 75%: amber; sustained 92%: red.
+        for (sustained, expected) in [(0.75, color::AMBER), (0.92, color::RED)] {
+            payload["hosts"][0]["cpuFraction"] = json!(0.2);
+            payload["hosts"][0]["cpuSustainedFraction"] = json!(sustained);
+            apply(&mut payload, &alerts);
+            assert_eq!(payload["hosts"][0]["cpuValueColor"], color::hex(expected));
+            assert_eq!(
+                machine_rows(payload.clone())[0]["metrics"][0]["color"],
+                color::hex(expected)
+            );
+            assert_eq!(machine_rows(payload.clone())[0]["attention"], true);
+        }
+        // No sustained claim yet: no alert, attention clear, live number kept.
+        payload["hosts"][0]["cpuFraction"] = json!(0.99);
+        payload["hosts"][0]["cpuSustainedFraction"] = json!(null);
+        apply(&mut payload, &alerts);
+        assert_eq!(
+            payload["hosts"][0]["cpuValueColor"],
+            color::hex(color::GREEN)
+        );
+        assert_eq!(machine_rows(payload)[0]["attention"], false);
+        // An unmeasured live CPU is muted even with a sustained history.
+        let mut payload = readings();
+        payload["hosts"][0]["memFraction"] = json!(0.2);
+        payload["hosts"][0]["cpuFraction"] = json!(null);
+        payload["hosts"][0]["cpuSustainedFraction"] = json!(0.95);
+        apply(&mut payload, &alerts);
+        assert_eq!(
+            payload["hosts"][0]["cpuValueColor"],
+            color::hex(color::MUTED)
+        );
     }
 
     /// #544: on a host reporting the kernel's level, the level colours the RAM

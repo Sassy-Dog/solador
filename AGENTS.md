@@ -951,8 +951,14 @@ the bundle's floor.
   See `app/README.md` for controls, count meanings and responsive behavior.
 - Settings → Preferences has shared CPU/RAM alert thresholds; Connections has
   per-machine overrides, including the local machine. Defaults remain 70/90%.
-  The RAM pair applies only to machines that do not report the kernel's
-  memory-pressure level (a Mac does; see Hosts & metrics).
+  The CPU pair applies to **sustained** load (#545): the minimum of the last
+  `CPU_SUSTAIN_SAMPLES` (60, about a minute) samples in `HostHistories.cpu`,
+  carried on the card as `cpuSustainedFraction`, so a build or test run does
+  not flap the row. With fewer samples than the window (just launched or just
+  added; it counts successful samples, so an outage does not reset it) it is
+  absent and the CPU raises no alert; the meter's fill and `%` stay the live
+  sample. The RAM pair applies only to machines that do not report the
+  kernel's memory-pressure level (a Mac does; see Hosts & metrics).
   `store::machine_alerts` owns persistence/validation; the shell applies the
   resolved limits to cached numeric fractions on every render, so meter colors
   and dashboard attention agree without restarting host pollers.
