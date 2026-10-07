@@ -8,7 +8,10 @@ and OpenClaw. Each tile opens its readings and the existing full panel; **All
 full panels** opens the original cockpit. Connections and credentials remain
 in **Settings**, backed by the OS credential store. Overview uses a compact
 toolbar with the logo, app name and actions, without a background frame or
-divider. Actions wrap when space is tight. Settings keeps space around its logo,
+divider. **All full panels**, **Edit dashboard** and **Settings** are outline
+icon buttons at the top right, with labels on hover or keyboard focus. Edit
+dashboard stays highlighted while editing and its label becomes **Done editing**.
+Actions wrap when space is tight. Settings keeps space around its logo,
 heading and Done button.
 
 ### Dashboard tiles
@@ -2200,15 +2203,24 @@ the configured 1024 × 768 logical-pixel default. An unreadable or malformed
 state file also falls back to the defaults. A saved position wholly outside
 all connected displays is ignored so the OS can place the window on screen.
 
-The Rust-only `tauri-plugin-window-state` registration in `src/window_state.rs`
-stores `.window-state.json` in Tauri's app configuration directory:
+The Rust-only registration in `src/window_state.rs` stores `.window-state.json`
+in Tauri's app configuration directory:
 `~/Library/Application Support/app.solador.desktop/` on macOS and
-`%APPDATA%\app.solador.desktop\` on Windows. It stores physical-pixel geometry;
-it does not promise the same logical size after a display scale-factor change.
+`%APPDATA%\app.solador.desktop\` on Windows. Windows uses
+`tauri-plugin-window-state` and physical-pixel geometry; it does not promise
+the same logical size after a display scale-factor change. macOS uses
+`src/window_state_macos.rs` to save and restore logical points in AppKit's
+shared desktop coordinate space. The plugin's physical-pixel restore used the
+startup screen's scale before the destination screen was assigned: a window
+saved on a 1× external display shrank to half its bounds on every restart from
+a 2× screen. Logical bounds avoid that conversion entirely. The macOS file
+marks its coordinate space explicitly; legacy pixel files have no saved scale
+and reset to the configured defaults once, then remember the next placement.
 Only the `main` window is tracked. Visibility, fullscreen and decorations are
 not restored: launching opens a visible window with its configured frame.
-Minimized windows do not replace the normal saved bounds. No frontend plugin
-permission or JavaScript dependency is needed.
+Minimized windows do not replace the normal saved bounds. On macOS, fullscreen
+also preserves normal bounds, and writes replace the state file atomically.
+No frontend plugin permission or JavaScript dependency is needed.
 
 This file is separate from `store.json`; `SOLADOR_STORE_DIR` overrides the
 settings store only. State is saved on orderly exit, not guaranteed after a
@@ -2226,13 +2238,14 @@ python3 scripts/window-state-smoke.py
 ```
 
 It checks size, position and maximized state across separate processes, proves
-minimizing preserves normal bounds, ignores a saved hidden state, recovers from
-an off-screen position, and opens with defaults after
-malformed JSON. It is deliberately separate from headless `./dev test` and
+minimizing and unmaximizing after restart preserve normal bounds, ignores a
+saved hidden state, recovers from an off-screen position, and opens with
+defaults after malformed JSON. It is deliberately separate from headless `./dev test` and
 the frontend suite: browsers cannot verify native window placement. The
-2026-10-05 macOS run passed these checks; Windows and mixed-DPI monitor changes
-have not been exercised by this smoke run. This does not cover the Tauri IPC
-boundary described below.
+2026-10-07 macOS run also passed three successive restarts on each of three
+connected displays (1× and 2×), using both window close and application exit.
+Windows has not been exercised by this smoke run. This does not cover the
+Tauri IPC boundary described below.
 
 ### Configuration
 

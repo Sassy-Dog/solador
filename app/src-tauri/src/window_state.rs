@@ -1,5 +1,15 @@
 //! Native window persistence, shared with the opt-in native smoke example.
 
+#[cfg(target_os = "macos")]
+#[path = "window_state_macos.rs"]
+mod macos;
+
+#[cfg(target_os = "macos")]
+pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    builder.plugin(macos::plugin())
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     use tauri_plugin_window_state::StateFlags;
 

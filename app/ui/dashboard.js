@@ -49,6 +49,20 @@
     if (id) b.dataset.id = id;
     return b;
   }
+  function iconButton(label, action, path) {
+    const b = button("", action, null, "db-icon");
+    b.setAttribute("aria-label", label);
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const shape = document.createElementNS(svg.namespaceURI, "path");
+    shape.setAttribute("d", path);
+    svg.append(shape);
+    const tooltip = node("span", "db-tooltip", label);
+    tooltip.setAttribute("role", "tooltip");
+    b.append(svg, tooltip);
+    return b;
+  }
   function status(message, error = false) {
     const el = q(".db-live-note");
     if (!el) return;
@@ -87,8 +101,9 @@
     actions.append(
       button(L("add"), "catalog"),
       button(L("undo"), "undo"),
-      button(L("edit"), "edit"),
-      button(L("settings"), "settings"),
+      iconButton(L("allPanels"), "allPanels", "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1ZM3 9h18M9 9v12"),
+      iconButton(L("edit"), "edit", "M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M16 3a2.12 2.12 0 0 1 3 3l-9 9-4 1 1-4ZM14 5l3 3"),
+      iconButton(L("settings"), "settings", "m9 3-.5 2-2 1L4.5 5.5l-2 3.5L4 10.5v3L2.5 15l2 3.5 2-.5 2 1 .5 2h4l.5-2 2-1 2 .5 2-3.5-1.5-1.5v-3L19.5 9l-2-3.5-2 .5-2-1-.5-2ZM14.5 12a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z"),
     );
     chrome.append(brand, actions);
     const attention = node("section", "db-attention");
@@ -120,7 +135,7 @@
     const live = node("span", "db-live-note");
     live.setAttribute("role", "status");
     live.setAttribute("aria-live", "polite");
-    footer.append(live, button(L("allPanels"), "allPanels", null, "db-plain"));
+    footer.append(live);
     root.replaceChildren(chrome, attention, editbar, inspector, grid, footer);
     const back = button(L("back"), "back");
     back.id = "dashboardBack";
@@ -392,8 +407,11 @@
     if (!model.attention.length)
       attention.append(node("span", "db-muted db-attention-quiet",
         model.sources.some(s => s.loading) ? L("loading") : L("quiet")));
-    q('[data-action="edit"]').textContent = editing ? L("done") : L("edit");
-    q('[data-action="edit"]').classList.toggle("db-primary", editing);
+    const edit = q('[data-action="edit"]');
+    const editLabel = editing ? L("done") : L("edit");
+    edit.setAttribute("aria-label", editLabel);
+    edit.setAttribute("aria-pressed", String(editing));
+    text(edit.querySelector(".db-tooltip"), editLabel);
     q('[data-action="edit"]').disabled = busy || !window.__TAURI__;
     q('[data-action="catalog"]').hidden = !editing;
     q('[data-action="undo"]').hidden = !editing;

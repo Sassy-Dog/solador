@@ -921,16 +921,14 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .cont-status { width:16ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
 .settings .status { min-width:0; max-width:50%; white-space:nowrap; overflow:auto; }
 .connection-state { width:18ch; justify-content:flex-end; white-space:nowrap; overflow:auto; }
-/* #540: the status (3 lines) and the notes box (8) are whole numbers of LINES
-   (the controls row keeps its own 28px, #436), of an explicit
-   line-height, so a scroll box can never cut a line through its glyphs. */
+/* #540: the status (3 lines) and notes box (8) reserve whole lines of an
+   explicit line-height, so a scroll box never cuts through a glyph. The
+   controls row grows to fit its buttons and wraps on narrow windows. */
 .update-status { line-height:1.5; height:calc(3 * 1.5em); overflow:auto; }
 .update-notes-slot { font-size:10px; line-height:1.5; height:calc(8 * 1.5em); overflow:auto; }
 .update-notes-slot .update-notes { line-height:inherit; margin:0; }
-.settings .update-controls { height:28px; }
-
-.settings .update-controls { flex-wrap:nowrap; overflow:auto; }
-.settings .update-controls > button { flex:none; white-space:nowrap; }
+.settings .update-controls { min-height:31px; flex-wrap:wrap; }
+.settings .update-controls > button { max-width:100%; white-space:normal; }
 .host-row > .row > .stack { flex:1; }
 .host-row > .row > .stack > .result { height:29px; overflow:auto; }
 .crash-status, .cadence-status { height:29px; overflow:auto; }
