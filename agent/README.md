@@ -729,7 +729,7 @@ and the descendant process tree, kills the tree and exits 124.
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs every host command (`cargo`,
 `curl`, `sleep`, `uname`, `sw_vers`, `systemctl`, `loginctl`, `launchctl`,
-`tailscale`), so it touches no host and takes about ten seconds. It covers
+`tailscale`), so it touches no host and takes about 90-110 seconds (longer under load). It covers
 `binary_version` (the artifact's own `--version`, including its three
 fail-closed cases — no version compiled in, nothing printed, no such binary),
 `health_url` (wildcard → loopback, IPv6 bracketing), `health_version`,

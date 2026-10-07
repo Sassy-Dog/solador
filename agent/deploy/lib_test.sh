@@ -294,10 +294,13 @@ CURRENT_CASE="(before the first case)"
 printf '%s\n' "$CURRENT_CASE" > "$WATCHDOG_CASE_FILE"
 WATCHDOG_MAIN_PID=$$
 
-# watchdog_tree <root-pid>: "pid ppid etime command" for every descendant of
-# the root, root excluded, from one ps snapshot. POSIX awk, no bash 4 features.
+# watchdog_tree <root-pid> <skip-pid>: "pid ppid etime command" for every
+# descendant of the root, from one ps snapshot, root excluded. The skip pid
+# (the watchdog itself) and everything under it -- its sleep, its ps and awk --
+# are pruned, so the list is the suite's own processes and nothing the
+# watchdog is. POSIX awk, no bash 4 features.
 watchdog_tree() {
-    ps -axo pid=,ppid=,etime=,command= 2>/dev/null | awk -v root="$1" '
+    ps -axo pid=,ppid=,etime=,command= 2>/dev/null | awk -v root="$1" -v skip="${2:-0}" '
         { pid[NR] = $1; ppid[NR] = $2; line[NR] = $0 }
         END {
             keep[root] = 1
@@ -305,32 +308,50 @@ watchdog_tree() {
             while (changed) {
                 changed = 0
                 for (i = 1; i <= NR; i++)
-                    if (!(pid[i] in keep) && (ppid[i] in keep)) { keep[pid[i]] = 1; changed = 1 }
+                    if (!(pid[i] in keep) && (ppid[i] in keep) && pid[i] != skip) { keep[pid[i]] = 1; changed = 1 }
             }
             for (i = 1; i <= NR; i++)
                 if (pid[i] != root && (pid[i] in keep)) print line[i]
         }'
 }
 
+# Signal every current descendant. Always a fresh snapshot: the suite keeps
+# running between two looks, and a child started after the first look would
+# otherwise survive.
+watchdog_kill_tree() {
+    local sig="$1" wd_pid="$2" pid
+    for pid in $(watchdog_tree "$WATCHDOG_MAIN_PID" "$wd_pid" | awk '{ print $1 }'); do
+        kill "-$sig" "$pid" 2>/dev/null || true
+    done
+}
+
 watchdog_fire() {
-    local wd_pid pids pid
+    local wd_pid tries=0
     : > "$WATCHDOG_FIRED_FILE"
     wd_pid="$(cat "$WATCHDOG_PID_FILE" 2>/dev/null || true)"
     {
         printf '\nTIMEOUT: lib_test.sh exceeded %s s (SOLADOR_DEPLOY_TEST_TIMEOUT_SECS) and is being stopped.\n' "$WATCHDOG_SECS"
         printf 'Running case: %s\n' "$(cat "$WATCHDOG_CASE_FILE" 2>/dev/null || echo unknown)"
         printf 'Descendant processes of pid %s (pid ppid elapsed command):\n' "$WATCHDOG_MAIN_PID"
-        watchdog_tree "$WATCHDOG_MAIN_PID" | awk -v wd="$wd_pid" '$1 != wd { print "    " $0 }'
+        watchdog_tree "$WATCHDOG_MAIN_PID" "$wd_pid" | sed 's/^/    /'
     } >&2
-    pids="$(watchdog_tree "$WATCHDOG_MAIN_PID" | awk -v wd="$wd_pid" '$1 != wd { print $1 }')"
-    for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
-    sleep 1
-    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
-    # The main shell is waiting on one of those children; its USR1 trap runs
-    # as soon as the wait ends, and `exit 124` runs the EXIT trap (cleanup).
-    kill -USR1 "$WATCHDOG_MAIN_PID" 2>/dev/null || true
-    sleep 5
-    kill -KILL "$WATCHDOG_MAIN_PID" 2>/dev/null || true
+    # The main shell is blocked on a child; its USR1 trap (exit 124 -> on_exit
+    # -> cleanup) runs only once that child is gone. A case that starts in the
+    # gap would defer it again, so keep killing a FRESH tree and re-sending
+    # USR1 until the shell has exited. The case loop also refuses to start a
+    # case once the fired file exists, which closes the gap from the other side.
+    while kill -0 "$WATCHDOG_MAIN_PID" 2>/dev/null && [ "$tries" -lt 10 ]; do
+        watchdog_kill_tree KILL "$wd_pid"
+        kill -USR1 "$WATCHDOG_MAIN_PID" 2>/dev/null || true
+        sleep 1
+        tries=$((tries + 1))
+    done
+    if kill -0 "$WATCHDOG_MAIN_PID" 2>/dev/null; then
+        # Last resort: SIGKILL would skip on_exit, so do its cleanup first.
+        watchdog_kill_tree KILL "$wd_pid"
+        rm -rf "$TMP"
+        kill -KILL "$WATCHDOG_MAIN_PID" 2>/dev/null || true
+    fi
 }
 
 watchdog_start() {
@@ -359,7 +380,11 @@ watchdog_stop() {
     fi
 }
 
-trap 'printf "lib_test.sh: stopped by the watchdog\n" >&2; exit 124' USR1
+watchdog_stopped() {
+    printf 'lib_test.sh: stopped by the watchdog\n' >&2
+    exit 124
+}
+trap watchdog_stopped USR1
 # A run the watchdog fired on exits 124 even if the killed child let the suite
 # run on to a normal end first (a one-case run, or the last case).
 on_exit() {
@@ -9602,55 +9627,111 @@ test_watchdog_hang_probe() {
     pass "watchdog probe: the blocking case finished before the bound"
 }
 
-test_watchdog_trips_on_a_hung_case() {
-    local marker=$((20000 + $$ % 10000)) out rc nested_tmp
-    out="$TMP/watchdog-out"
-    nested_tmp="$TMP/watchdog-tmp"
-    mkdir -p "$nested_tmp"
+# A second blocking case, one second longer than the first so the two sleeps
+# are told apart. In mode "two" it is the case that would start in the gap
+# between the watchdog killing the first and the shell exiting.
+test_watchdog_second_hang_probe() {
+    command sleep "$((${SOLADOR_DEPLOY_TEST_HANG_SECS:-300} + 1))"
+    pass "watchdog probe: the second blocking case finished before the bound"
+}
 
-    TMPDIR="$nested_tmp" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS="$marker" \
-        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=3 "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$out" 2>&1
-    rc=$?
-    if [ "$rc" -eq 124 ]; then
-        pass "watchdog: a hung case makes the run exit 124"
+# A case AFTER the hang. Under a fired watchdog it must never start.
+test_watchdog_after_probe() {
+    printf 'AFTER-PROBE-RAN\n'
+    pass "watchdog probe: the case after the hang ran"
+}
+
+# watchdog_nested_run <mode> <hang-secs> <bound-secs>: the suite in HANG mode as
+# a child, output in $WD_OUT, status in $WD_RC, its TMPDIR in $WD_TMP.
+watchdog_nested_run() {
+    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_HANG="$1" SOLADOR_DEPLOY_TEST_HANG_SECS="$2" \
+        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS="$3" "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$WD_OUT" 2>&1
+    WD_RC=$?
+}
+
+# The assertions every fired run must satisfy, whatever ran after the hang.
+# <label> <marker-sleep-secs...>: no sleep of those lengths may survive.
+watchdog_assert_fired() {
+    local label="$1" m
+    shift
+    if [ "$WD_RC" -eq 124 ]; then
+        pass "watchdog ($label): the run exits 124"
     else
-        fail "watchdog: a hung case makes the run exit 124" "exit status was $rc" "$(cat "$out")"
+        fail "watchdog ($label): the run exits 124" "exit status was $WD_RC" "$(cat "$WD_OUT")"
     fi
-    if grep -q 'Running case: test_watchdog_hang_probe' "$out"; then
-        pass "watchdog: names the case that was running"
+    if grep -q 'stopped by the watchdog' "$WD_OUT"; then
+        pass "watchdog ($label): the run says it was stopped by the watchdog"
     else
-        fail "watchdog: names the case that was running" "$(cat "$out")"
+        fail "watchdog ($label): the run says it was stopped by the watchdog" "$(cat "$WD_OUT")"
     fi
-    if grep -q "sleep $marker" "$out"; then
-        pass "watchdog: prints the descendant process tree"
+    if grep -q 'AFTER-PROBE-RAN' "$WD_OUT"; then
+        fail "watchdog ($label): no case starts after the watchdog fired" "$(cat "$WD_OUT")"
     else
-        fail "watchdog: prints the descendant process tree" "$(cat "$out")"
+        pass "watchdog ($label): no case starts after the watchdog fired"
     fi
     command sleep 2
-    if ps -axo command= | grep -q "[s]leep $marker\$"; then
-        fail "watchdog: leaves no orphaned process" "a 'sleep $marker' survived"
-        pkill -f "sleep $marker\$" 2>/dev/null || true
+    for m in "$@"; do
+        if ps -axo command= | grep -q "[s]leep $m\$"; then
+            fail "watchdog ($label): leaves no orphaned process" "a 'sleep $m' survived"
+            pkill -f "sleep $m\$" 2>/dev/null || true
+        else
+            pass "watchdog ($label): leaves no orphaned process (sleep $m)"
+        fi
+    done
+    if [ -z "$(ls -A "$WD_TMP")" ]; then
+        pass "watchdog ($label): the timed-out run removed its temp directory"
     else
-        pass "watchdog: leaves no orphaned process"
+        fail "watchdog ($label): the timed-out run removed its temp directory" "$(ls -A "$WD_TMP")"
     fi
-    if [ -z "$(ls -A "$nested_tmp")" ]; then
-        pass "watchdog: the timed-out run still removed its temp directory"
+}
+
+test_watchdog_trips_on_a_hung_case() {
+    local marker=$((20000 + $$ % 10000)) WD_OUT WD_RC WD_TMP rc
+    WD_OUT="$TMP/watchdog-out"
+    WD_TMP="$TMP/watchdog-tmp"
+    mkdir -p "$WD_TMP"
+
+    # 1. The hung case is the last one.
+    watchdog_nested_run 1 "$marker" 3
+    watchdog_assert_fired "hang is last" "$marker"
+    if grep -q 'Running case: test_watchdog_hang_probe' "$WD_OUT"; then
+        pass "watchdog: names the case that was running"
     else
-        fail "watchdog: the timed-out run still removed its temp directory" "$(ls -A "$nested_tmp")"
+        fail "watchdog: names the case that was running" "$(cat "$WD_OUT")"
     fi
+    if grep -q "sleep $marker" "$WD_OUT"; then
+        pass "watchdog: prints the descendant process tree"
+    else
+        fail "watchdog: prints the descendant process tree" "$(cat "$WD_OUT")"
+    fi
+    # The tree is the suite's own processes: nothing of the watchdog's (its
+    # sleep 1, its ps, its awk) may be listed as a descendant.
+    if sed -n '/^Descendant processes/,$p' "$WD_OUT" | grep -q ' sleep 1$\|awk -v root'; then
+        fail "watchdog: the listed tree excludes the watchdog's own processes" "$(cat "$WD_OUT")"
+    else
+        pass "watchdog: the listed tree excludes the watchdog's own processes"
+    fi
+
+    # 2. A case AFTER the hang: it must never start.
+    watchdog_nested_run after "$((marker + 10))" 3
+    watchdog_assert_fired "case after the hang" "$((marker + 10))"
+
+    # 3. A SECOND blocking case after the hang, the shape that used to defer
+    # the shell's USR1 trap until the last-resort SIGKILL (exit 137, temp dir
+    # leaked, orphaned sleep).
+    watchdog_nested_run two "$((marker + 20))" 3
+    watchdog_assert_fired "second blocking case" "$((marker + 20))" "$((marker + 21))"
 
     # Negative control: the same child and a bound, but the case finishes in
     # time -- the watchdog must not fire.
-    TMPDIR="$nested_tmp" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS=1 \
-        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=60 "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$out" 2>&1
-    rc=$?
-    if [ "$rc" -eq 0 ] && ! grep -q 'TIMEOUT' "$out"; then
+    watchdog_nested_run 1 1 60
+    if [ "$WD_RC" -eq 0 ] && ! grep -q 'TIMEOUT' "$WD_OUT"; then
         pass "watchdog: a case that finishes in time never trips it (control)"
     else
-        fail "watchdog: a case that finishes in time never trips it (control)" "exit status was $rc" "$(cat "$out")"
+        fail "watchdog: a case that finishes in time never trips it (control)" "exit status was $WD_RC" "$(cat "$WD_OUT")"
     fi
 
-    TMPDIR="$nested_tmp" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=abc "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$out" 2>&1
+    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=abc "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$WD_OUT" 2>&1
     rc=$?
     if [ "$rc" -eq 2 ]; then
         pass "watchdog: a non-numeric bound is refused (exit 2)"
@@ -9664,9 +9745,13 @@ test_watchdog_trips_on_a_hung_case() {
 printf 'agent/deploy/lib.sh + install.sh\n\n'
 
 # HANG mode is the watchdog self-test's child: it runs only the probe.
-if [ "${SOLADOR_DEPLOY_TEST_HANG:-}" = "1" ]; then
-    CASES="test_watchdog_hang_probe"
-else
+case "${SOLADOR_DEPLOY_TEST_HANG:-}" in
+    1) CASES="test_watchdog_hang_probe" ;;
+    after) CASES="test_watchdog_hang_probe test_watchdog_after_probe" ;;
+    two) CASES="test_watchdog_hang_probe test_watchdog_second_hang_probe test_watchdog_after_probe" ;;
+    *) CASES="" ;;
+esac
+if [ -z "$CASES" ]; then
     CASES="
         test_binary_version
         test_health_url
@@ -9728,6 +9813,8 @@ else
 fi
 
 for CURRENT_CASE in $CASES; do
+    # Once the watchdog has fired nothing else may start.
+    [ -e "$WATCHDOG_FIRED_FILE" ] && watchdog_stopped
     printf '%s\n' "$CURRENT_CASE" > "$WATCHDOG_CASE_FILE"
     "$CURRENT_CASE"
 done

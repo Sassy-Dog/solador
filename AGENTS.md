@@ -1720,14 +1720,6 @@ has no dump for, rather than paint a layout computed for another one.
   command `install.sh` drives — uname, sw_vers, systemctl, launchctl — and
   runs the installer end to end against a temporary HOME) plus
   `shellcheck`/`bash -n`, all three in the `agent-tests` job;
-  **`lib_test.sh` bounds itself (#554)**: a built-in watchdog stops a run after
-  15 minutes by default (`SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` overrides it, in
-  seconds; about 10x a full run's ~90 s), printing the case that was running and
-  the descendant process tree, killing that tree and exiting 124 with its temp
-  directory removed. It covers `./dev test` and both CI invocations alike, and
-  a self-test case (a deliberately blocking child) proves it trips and that a
-  case finishing in time does not. A test must therefore never use a bare
-  `wait` (it would wait for the watchdog too); wait on a pid;
   helper checks are selected for deploy/helper changes (see docs/CI.md). Before
   that the deploy path was the one place where "all green" carried no information —
   #264 broke every deploy (fixed in #268) and nothing could have caught it. Two assertions are
@@ -1746,6 +1738,17 @@ has no dump for, rather than paint a layout computed for another one.
   uses `/bin/bash` for the same reason. `SOLADOR_DEPLOY_TEST_LAUNCHD=1` opts
   into a real launchd bootstrap under a throwaway label (macOS only) and is
   deliberately not run in CI.
+- **`lib_test.sh` bounds itself (#554).** A built-in watchdog stops a run after
+  15 minutes by default (`SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` overrides it, in
+  seconds). A full run takes about 90-110 s (longer under load), so the bound is
+  roughly 10x that. On expiry it prints the case that was running and the
+  suite's descendant process tree, keeps killing a fresh snapshot of that tree
+  until the shell exits, and exits 124 with its temp directory removed. It lives
+  in the file, so it covers `./dev test` and both CI invocations alike.
+  Self-test cases run the suite as a child with a deliberately blocking case
+  (last, followed by another case, and followed by a second blocking case) and a
+  control that finishes in time and must not trip it. A test must never use a
+  bare `wait`, which would wait for the watchdog too; wait on a pid.
 - **Those two shell gates now cover `scripts/*.sh` and `dev`/`prd` as well**
   (#390). `build-agent.sh`'s full run — all four targets, signed — happens only
   in `release-agent.yml` on an `agent-v*` tag, so an ungated break there surfaces mid-release
