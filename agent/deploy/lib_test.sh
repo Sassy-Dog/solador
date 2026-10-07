@@ -72,6 +72,13 @@ HANG_SECS=300
 if [ "${1:-}" = "--watchdog-probe" ]; then
     HANG_MODE="${2:?--watchdog-probe needs a mode}"
     HANG_SECS="${3:?--watchdog-probe needs a sleep length}"
+    case "$HANG_MODE" in
+        1 | after | two) ;;
+        *)
+            printf 'usage: lib_test.sh [--watchdog-probe 1|after|two <sleep-secs>] (got mode "%s")\n' "$HANG_MODE" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 # ---- harness ----------------------------------------------------------------
@@ -291,12 +298,16 @@ trap cleanup EXIT
 # for a Mac running several agents or a slow CI runner, still far below the
 # 47+ minutes a real hang was observed to cost.
 WATCHDOG_SECS="${SOLADOR_DEPLOY_TEST_TIMEOUT_SECS:-900}"
+WATCHDOG_BAD=0
 case "$WATCHDOG_SECS" in
-    '' | *[!0-9]* | 0)
-        printf 'lib_test.sh: SOLADOR_DEPLOY_TEST_TIMEOUT_SECS must be a positive integer of seconds, got "%s"\n' "$WATCHDOG_SECS" >&2
-        exit 2
-        ;;
+    '' | *[!0-9]*) WATCHDOG_BAD=1 ;;
+    # All digits: still refuse zero in any spelling ("0", "00"); "007" is 7.
+    *) [ "$WATCHDOG_SECS" -le 0 ] && WATCHDOG_BAD=1 ;;
 esac
+if [ "$WATCHDOG_BAD" -eq 1 ]; then
+    printf 'lib_test.sh: SOLADOR_DEPLOY_TEST_TIMEOUT_SECS must be a positive integer of seconds, got "%s"\n' "$WATCHDOG_SECS" >&2
+    exit 2
+fi
 WATCHDOG_CASE_FILE="$TMP/current-case"
 WATCHDOG_PID_FILE="$TMP/watchdog.pid"
 WATCHDOG_FIRED_FILE="$TMP/watchdog.fired"
@@ -9741,28 +9752,45 @@ test_watchdog_trips_on_a_hung_case() {
         fail "watchdog: a case that finishes in time never trips it (control)" "exit status was $WD_RC" "$(cat "$WD_OUT")"
     fi
 
-    # A probe knob leaking in from the environment must be inert: with the old
-    # variables set to the short-circuiting values, the child still runs the
-    # two cases its ARGUMENT asked for ("passed 2"), not the lone probe.
-    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS=1 \
-        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=60 \
-        "$BASH" "$SCRIPT_DIR/lib_test.sh" --watchdog-probe after 1 > "$WD_OUT" 2>&1
+    # A probe knob leaking in from the environment must not short-circuit a
+    # NORMAL run. A plain child (no arguments) with the old variables set to
+    # the short-circuiting values and a 3 s bound must be running the real
+    # suite when the watchdog fires: exit 124, and the case it names is not the
+    # probe. (Were the leaked variable honoured, the child would run only the
+    # probe and report a green "passed 1".)
+    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS=300 \
+        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=3 \
+        "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$WD_OUT" 2>&1
     WD_RC=$?
-    if [ "$WD_RC" -eq 0 ] && grep -q '^passed 2, failed 0' "$WD_OUT"; then
-        pass "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit the suite"
+    if [ "$WD_RC" -eq 124 ] && grep -q '^Running case: ' "$WD_OUT" \
+        && ! grep -q '^Running case: test_watchdog_hang_probe' "$WD_OUT"; then
+        pass "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit a normal run"
     else
-        fail "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit the suite" "exit status was $WD_RC" "$(cat "$WD_OUT")"
+        fail "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit a normal run" "exit status was $WD_RC" "$(grep -a 'Running case\|^passed' "$WD_OUT")"
     fi
 
-    # In probe mode too: were the validation ever to regress, this child must
-    # not fall through to the full suite and recurse into this self-test.
-    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=abc \
-        "$BASH" "$SCRIPT_DIR/lib_test.sh" --watchdog-probe 1 1 > "$WD_OUT" 2>&1
+    # Bad bounds are refused with exit 2 -- in probe mode, so that were the
+    # validation ever to regress the child cannot fall through to the full
+    # suite and recurse into this self-test. "00" is all digits and still zero.
+    local bad
+    for bad in abc 0 00 -5; do
+        TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS="$bad" \
+            "$BASH" "$SCRIPT_DIR/lib_test.sh" --watchdog-probe 1 1 > "$WD_OUT" 2>&1
+        rc=$?
+        if [ "$rc" -eq 2 ]; then
+            pass "watchdog: the bound '$bad' is refused (exit 2)"
+        else
+            fail "watchdog: the bound '$bad' is refused (exit 2)" "exit status was $rc"
+        fi
+    done
+
+    # An unrecognised probe mode is a usage error, not the full suite.
+    TMPDIR="$WD_TMP" "$BASH" "$SCRIPT_DIR/lib_test.sh" --watchdog-probe tow 1 > "$WD_OUT" 2>&1
     rc=$?
     if [ "$rc" -eq 2 ]; then
-        pass "watchdog: a non-numeric bound is refused (exit 2)"
+        pass "watchdog: an unknown --watchdog-probe mode is refused (exit 2)"
     else
-        fail "watchdog: a non-numeric bound is refused (exit 2)" "exit status was $rc"
+        fail "watchdog: an unknown --watchdog-probe mode is refused (exit 2)" "exit status was $rc"
     fi
 }
 
