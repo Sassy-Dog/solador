@@ -15,6 +15,7 @@ solador-wire = { path = "../wire" }
 # Mac host's remote card and this machine's local one read the same mapping.
 solador-accelerator = { path = "../accelerator" }
 solador-thermal = { path = "../thermal" }
+solador-mempressure = { path = "../mempressure" }
 # Same major as `agent/Cargo.toml` so the two samplers share semantics and the
 # repo only ever learns one sysinfo API. Default features off: this crate needs
 # CPU/memory/processes (`system`), mounted filesystems (`disk`) and interface

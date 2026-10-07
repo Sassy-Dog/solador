@@ -14,6 +14,12 @@ name = "solador-agent"
 # `crates/wire`'s tolerance notes cite. Nothing reads it at runtime any more —
 # `crate_version()` left `agent/deploy/lib.sh` with it — so keep bumping it for
 # the contract, never for a release.
+# 0.6.0: `memory.pressureLevel` (#544) — the kernel's memory-pressure level on
+# macOS (`kern.memorystatus_vm_pressure_level`) through `crates/mempressure`,
+# encoded 0 normal / 1 warning / 2 critical. A minor: a wire field this agent
+# has never produced before. Omitted everywhere the platform has no such level
+# (Linux, an unreadable sysctl); an agent predating this omits the key, and the
+# absent key is the whole version check.
 # 0.5.2: `cpu.thermalState` is measured on macOS through the shared thermal
 # reader. The existing 0–3 wire encoding is unchanged; unsupported platforms
 # still omit the key instead of inventing a nominal state.
@@ -37,7 +43,7 @@ name = "solador-agent"
 # keys are omitted instead. `/v1/health`'s `version` is how you tell a
 # redeployed agent from one still sending the old zeros (or, now, the old
 # fabricated thread rows).
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "Per-host metrics agent polled by Solador"
 license = "MIT"
@@ -60,6 +66,9 @@ solador-wire = { path = "../crates/wire" }
 # The same OS thermal-pressure reader as the local cockpit; unsupported
 # platforms return None without depending on any platform framework.
 solador-thermal = { path = "../crates/thermal" }
+# The kernel's memory-pressure level on macOS (#544): one sysctl, no sampler
+# dependency; other platforms return None.
+solador-mempressure = { path = "../crates/mempressure" }
 # How a certificate fingerprint is WRITTEN (#448), shared with the cockpit's
 # pinning client so `tls-fingerprint` and Settings' Trust dialog cannot drift.
 # Dependency-free, so this edge costs the musl cross-build nothing.

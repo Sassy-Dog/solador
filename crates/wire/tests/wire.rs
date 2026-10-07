@@ -593,3 +593,42 @@ fn round_tripping_through_json_preserves_containers_and_health() {
         .expect("re-read own health output");
     assert_eq!(h, again);
 }
+/// A Mac agent's snapshot (#544): `memory.pressureLevel` present. A snapshot
+/// without the key (every other fixture here, and every agent predating the
+/// field) decodes it as unknown, and an unknown re-encodes as an omitted key.
+const MAC_FIXTURE: &str = include_str!("fixtures/snapshot-mac.json");
+
+#[test]
+fn the_mac_fixture_carries_a_pressure_level_and_the_others_do_not() {
+    let mac: Snapshot = serde_json::from_str(MAC_FIXTURE).unwrap();
+    assert_eq!(mac.memory.pressure_level, Some(0));
+    // The percentage is a different claim and is not filled from the level.
+    assert_eq!(mac.memory.pressure, None);
+    for fixture in [FIXTURE, UNKNOWNS_FIXTURE] {
+        let s: Snapshot = serde_json::from_str(fixture).unwrap();
+        assert_eq!(s.memory.pressure_level, None);
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(!v["memory"]
+            .as_object()
+            .unwrap()
+            .contains_key("pressureLevel"));
+    }
+    let v = serde_json::to_value(&mac).unwrap();
+    assert_eq!(v["memory"]["pressureLevel"], 0);
+}
+
+/// The wire crate's copy of the Mac fixture must not drift from the shared one.
+#[test]
+fn the_local_mac_fixture_is_byte_identical_to_the_shared_one() {
+    let shared_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/snapshot_mac.json"
+    );
+    let shared = std::fs::read_to_string(shared_path)
+        .unwrap_or_else(|e| panic!("read shared mac fixture {shared_path}: {e}"));
+    assert_eq!(
+        shared, MAC_FIXTURE,
+        "crates/wire/tests/fixtures/snapshot-mac.json has drifted from \
+         tests/fixtures/snapshot_mac.json — copy the shared one over it"
+    );
+}

@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 use store::machine_alerts::{MachineAlerts, MachineThresholds};
-use viewmodel::color;
+use viewmodel::color::{self, MemoryPressure};
 
 pub fn apply(payload: &mut Value, alerts: &MachineAlerts) {
     let Some(hosts) = payload["hosts"].as_array_mut() else {
@@ -28,6 +28,19 @@ pub fn apply(payload: &mut Value, alerts: &MachineAlerts) {
                 limits.ram_critical,
             ),
         ] {
+            // Where the host reports the kernel's memory-pressure level (#544),
+            // it decides the RAM colour and the RAM thresholds do not apply:
+            // a Mac keeps RAM full on purpose, so `used ÷ total` is not the
+            // question. The meter's fill is untouched.
+            if fraction == "memFraction" {
+                if let Some(level) = host["memPressureLevel"]
+                    .as_i64()
+                    .and_then(MemoryPressure::from_wire)
+                {
+                    host[tint] = json!(color::hex(level.color()));
+                    continue;
+                }
+            }
             let value = host[fraction].as_f64();
             host[tint] = json!(color::hex(value.map_or(color::MUTED, |v| {
                 color::usage_fraction_color(v, warning, critical)
@@ -71,9 +84,9 @@ pub fn settings(alerts: &MachineAlerts, host_id: Option<&str>) -> Value {
     json!({
         "heading": "Machine alerts",
         "help": if host_id.is_none() {
-            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Values at or above either threshold need attention. Changes apply on the next refresh. Override these in Connections for individual machines."
+            "Warning (amber) and critical (red) percentages for overall CPU and used RAM. Values at or above either threshold need attention. A machine that reports the kernel's memory-pressure level (a Mac) is coloured by that level instead, so the RAM thresholds apply only to machines that do not report one. Changes apply on the next refresh. Override these in Connections for individual machines."
         } else {
-            "Choose this machine's CPU and RAM limits, or follow the shared defaults in Preferences. Values at or above a warning or critical threshold need attention."
+            "Choose this machine's CPU and RAM limits, or follow the shared defaults in Preferences. Values at or above a warning or critical threshold need attention. The RAM limits apply only if this machine does not report memory pressure; a Mac does, and is coloured by that level."
         },
         "rangeHelp": "Use whole percentages from 1 to 100. Each warning must be lower than its critical threshold.",
         "hostId": host_id,
@@ -235,6 +248,73 @@ mod tests {
             payload["hosts"][0]["cpuFraction"] = json!(fraction);
             apply(&mut payload, &alerts);
             assert_eq!(payload["hosts"][0]["cpuValueColor"], color::hex(expected));
+        }
+    }
+
+    /// #544: on a host reporting the kernel's level, the level colours the RAM
+    /// meter and raises (or does not raise) attention, whatever `used ÷ total`
+    /// and the RAM thresholds say; the fill stays the fraction.
+    #[test]
+    fn a_reported_memory_pressure_level_replaces_the_ram_thresholds() {
+        let alerts = MachineAlerts::default();
+        for (level, expected, attention) in [
+            (json!(0), color::GREEN, false),
+            (json!(1), color::AMBER, true),
+            (json!(2), color::RED, true),
+        ] {
+            let mut payload = readings();
+            payload["hosts"][0]["memPressureLevel"] = level.clone();
+            // 83% used is amber on the thresholds alone; at 20% used a
+            // critical level must still be red.
+            if level == json!(2) {
+                payload["hosts"][0]["memFraction"] = json!(0.2);
+            }
+            apply(&mut payload, &alerts);
+            assert_eq!(payload["hosts"][0]["memValueColor"], color::hex(expected));
+            let rows = machine_rows(payload);
+            assert_eq!(rows[0]["attention"], attention, "level {level}");
+            assert_eq!(rows[0]["metrics"][1]["color"], color::hex(expected));
+        }
+    }
+
+    /// The operator's RAM limits do not matter on a host that reports a level:
+    /// strict limits cannot redden a normal Mac, lax limits cannot hide a
+    /// critical one.
+    #[test]
+    fn operator_ram_limits_do_not_override_a_reported_level() {
+        let mut strict = MachineAlerts::default();
+        strict.defaults.ram_warning = 10;
+        strict.defaults.ram_critical = 20;
+        let mut payload = readings();
+        payload["hosts"][0]["memPressureLevel"] = json!(0);
+        apply(&mut payload, &strict);
+        assert_eq!(
+            payload["hosts"][0]["memValueColor"],
+            color::hex(color::GREEN)
+        );
+        assert_eq!(machine_rows(payload)[0]["attention"], false);
+
+        let mut lax = MachineAlerts::default();
+        lax.defaults.ram_warning = 99;
+        lax.defaults.ram_critical = 100;
+        let mut payload = readings();
+        payload["hosts"][0]["memPressureLevel"] = json!(2);
+        apply(&mut payload, &lax);
+        assert_eq!(payload["hosts"][0]["memValueColor"], color::hex(color::RED));
+        assert_eq!(machine_rows(payload)[0]["attention"], true);
+    }
+
+    #[test]
+    fn an_absent_or_out_of_contract_level_leaves_the_thresholds_in_charge() {
+        let alerts = MachineAlerts::default();
+        for level in [json!(null), json!(3), json!("normal")] {
+            let mut payload = readings();
+            payload["hosts"][0]["memPressureLevel"] = level;
+            apply(&mut payload, &alerts);
+            assert_eq!(
+                payload["hosts"][0]["memValueColor"],
+                color::hex(color::AMBER)
+            );
         }
     }
 

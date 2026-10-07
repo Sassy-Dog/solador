@@ -17,7 +17,7 @@
 //! zero: `0.0` is a legitimate reading (an idle disk, a cool CPU) and hiding it
 //! is the mirror-image bug.
 
-use crate::color::{self, ThermalState};
+use crate::color::{self, MemoryPressure, ThermalState};
 use crate::format::{core_label, fmt, fmt_axis, fmt_rate, memory_label, relative_age};
 use crate::history::History;
 use crate::layout::{
@@ -263,6 +263,9 @@ pub fn host_card(
     // "Normal" badge produces, but reached deliberately rather than by the
     // encoding coincidence that `0` happens to mean Nominal. The badge must
     // never claim a state nobody measured.
+    // The kernel's memory-pressure level (#544), where the producer has one. An
+    // out-of-contract value is unknown, not a guess.
+    let pressure_level = s.memory.pressure_level.and_then(MemoryPressure::from_wire);
     let (badge, badge_col) = match s.cpu.thermal_state {
         Some(state) => color::thermal_badge(ThermalState::from_wire(state)),
         None => ("", color::MUTED),
@@ -407,13 +410,19 @@ pub fn host_card(
         "memValue": format!("{} / {} GB", fmt(s.memory.used_gb), s.memory.total_gb as i64),
         "memHistory": h.mem.values(),
         "swapText": format!("Swap: {} GB", fmt(s.memory.swap_used_gb)),
+        // The level's word wins where the kernel reported one; otherwise the
+        // percentage (Linux PSI), otherwise `—`.
         "pressureText": format!(
             "Pressure: {}",
-            or_unknown(s.memory.pressure, |p| format!("{}%", p.round() as i64)),
+            match pressure_level {
+                Some(level) => level.word().to_owned(),
+                None => or_unknown(s.memory.pressure, |p| format!("{}%", p.round() as i64)),
+            },
         ),
-        "pressureColor": color::hex(
-            s.memory.pressure.map_or(color::MUTED, color::pressure_color),
-        ),
+        "pressureColor": color::hex(match pressure_level {
+            Some(level) => level.color(),
+            None => s.memory.pressure.map_or(color::MUTED, color::pressure_color),
+        }),
         "gpuValue": gpu_value,
         "gpuValueColor": gpu_color,
         "gpuHistory": gpu_history,
@@ -460,11 +469,17 @@ pub fn host_card(
             None
         };
     card["memFraction"] = json!(memory_fraction);
-    card["memValueColor"] = json!(color::hex(
-        memory_fraction.map_or(color::MUTED, |fraction| color::usage_color(
+    // The meter's fill stays `used ÷ total`; its colour follows the kernel's
+    // level where there is one (#544) and the thresholds where there is not.
+    // `machine_alerts::apply` re-applies the same rule with the operator's
+    // limits, so the level is carried on the card for it to read.
+    card["memPressureLevel"] = json!(s.memory.pressure_level.filter(|_| pressure_level.is_some()));
+    card["memValueColor"] = json!(color::hex(match pressure_level {
+        Some(level) => level.color(),
+        None => memory_fraction.map_or(color::MUTED, |fraction| color::usage_color(
             fraction * 100.0
-        ))
-    ));
+        )),
+    }));
     card
 }
 
@@ -600,6 +615,58 @@ mod tests {
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuValue"], UNKNOWN);
         assert_eq!(vm["vramText"], "VRAM: 3.5 / 24.0 GB");
+    }
+
+    // MARK: the kernel's memory-pressure level (#544)
+
+    fn mac_fixture() -> wire::Snapshot {
+        serde_json::from_str(include_str!("../../wire/tests/fixtures/snapshot-mac.json")).unwrap()
+    }
+
+    /// Acceptance: a Mac the kernel calls normal is green at 80% used, the
+    /// fill is still `used ÷ total`, and the Pressure line names the level.
+    #[test]
+    fn a_mac_at_normal_pressure_is_green_at_eighty_percent_used() {
+        let s = mac_fixture();
+        let vm = host_card("mac", &s, &HostHistories::new(), &Connection::Live);
+        assert_eq!(vm["memFraction"], 0.8);
+        assert_eq!(vm["memValueColor"], color::hex(color::GREEN));
+        assert_eq!(vm["memPressureLevel"], 0);
+        assert_eq!(vm["pressureText"], "Pressure: normal");
+        assert_eq!(vm["pressureColor"], color::hex(color::GREEN));
+    }
+
+    #[test]
+    fn warning_and_critical_levels_colour_the_meter_and_the_pressure_line() {
+        for (level, word, expected) in [(1, "warning", color::AMBER), (2, "critical", color::RED)] {
+            let mut s = mac_fixture();
+            s.memory.pressure_level = Some(level);
+            s.memory.used_gb = 4.0; // low fill, so only the level can colour it
+            let vm = host_card("mac", &s, &HostHistories::new(), &Connection::Live);
+            assert_eq!(vm["memValueColor"], color::hex(expected));
+            assert_eq!(vm["pressureText"], format!("Pressure: {word}"));
+            assert_eq!(vm["pressureColor"], color::hex(expected));
+        }
+    }
+
+    /// No `pressureLevel` (Linux, Windows, a pre-#544 agent): coloured exactly
+    /// as before, from `used ÷ total`; and an out-of-contract value is unknown,
+    /// not a guess.
+    #[test]
+    fn without_a_level_the_thresholds_colour_the_meter_as_they_always_did() {
+        let mut s = fixture();
+        s.memory.used_gb = 50.0;
+        s.memory.total_gb = 62.7;
+        let vm = host_card("ubu", &s, &HostHistories::new(), &Connection::Live);
+        assert_eq!(vm["memValueColor"], color::hex(color::AMBER));
+        assert!(vm["memPressureLevel"].is_null());
+        assert_eq!(vm["pressureText"], "Pressure: 22%");
+
+        s.memory.pressure_level = Some(7);
+        let vm = host_card("ubu", &s, &HostHistories::new(), &Connection::Live);
+        assert_eq!(vm["memValueColor"], color::hex(color::AMBER));
+        assert!(vm["memPressureLevel"].is_null());
+        assert_eq!(vm["pressureText"], "Pressure: 22%");
     }
 
     // MARK: the shared unknown-lowering (#191)

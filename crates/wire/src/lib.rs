@@ -10,7 +10,7 @@
 //! # Unknown is representable
 //!
 //! Every field a producer may be unable to measure — [`Memory::pressure`],
-//! [`Cpu::thermal_state`], the [`Gpu`] fields, the [`Disk`] and [`Network`]
+//! [`Memory::pressure_level`], [`Cpu::thermal_state`], the [`Gpu`] fields, the [`Disk`] and [`Network`]
 //! rates — is an `Option` carrying [`Volume::fstype`]'s exact serde pair:
 //! `#[serde(default)]` so an absent key decodes to `None` rather than failing,
 //! and `skip_serializing_if = "Option::is_none"` so an unknown is *omitted*
@@ -90,6 +90,17 @@ pub struct Memory {
     /// pressure badge, which is the fabrication this `Option` exists to stop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pressure: Option<f64>,
+    /// The kernel's memory-pressure level (#544): `0` normal, `1` warning,
+    /// `2` critical. `None` where the platform reports none (Linux, Windows) or
+    /// from an agent predating the field; the absent key is the whole version
+    /// check. `pressure` is not filled from it: the level and a free
+    /// percentage are different claims.
+    #[serde(
+        default,
+        rename = "pressureLevel",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pressure_level: Option<i64>,
 }
 
 /// Disk I/O rates. Both `None` before a producer has two cumulative readings to
