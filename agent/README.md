@@ -723,13 +723,18 @@ up before a tag; the other three targets and the signing still run only at
 release.
 
 `lib_test.sh` bounds its own wall-clock time (#554): after 900 s (15 minutes;
-set `SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` to change it) it prints the running case
-and the descendant process tree, kills the tree and exits 124.
+set `SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` to change it, in whole seconds — anything
+else is refused with exit 2) it prints the running case and the descendant
+process tree, then makes up to 10 one-second passes killing a fresh snapshot of
+that tree until the shell exits 124 with its temp directory removed. A shell
+still alive after those passes has its temp directory removed and is SIGKILLed
+(exit 137).
 
 `lib_test.sh` is dependency-free — bash plus the coreutils the deploy scripts
 already need, no bats and no jq — and stubs every host command (`cargo`,
 `curl`, `sleep`, `uname`, `sw_vers`, `systemctl`, `loginctl`, `launchctl`,
-`tailscale`), so it touches no host and takes about 90-110 seconds (longer under load). It covers
+`tailscale`), so it touches no host and takes about 90-110 seconds (longer
+under load). It covers
 `binary_version` (the artifact's own `--version`, including its three
 fail-closed cases — no version compiled in, nothing printed, no such binary),
 `health_url` (wildcard → loopback, IPv6 bracketing), `health_version`,

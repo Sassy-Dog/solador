@@ -1738,17 +1738,6 @@ has no dump for, rather than paint a layout computed for another one.
   uses `/bin/bash` for the same reason. `SOLADOR_DEPLOY_TEST_LAUNCHD=1` opts
   into a real launchd bootstrap under a throwaway label (macOS only) and is
   deliberately not run in CI.
-- **`lib_test.sh` bounds itself (#554).** A built-in watchdog stops a run after
-  15 minutes by default (`SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` overrides it, in
-  seconds). A full run takes about 90-110 s (longer under load), so the bound is
-  roughly 10x that. On expiry it prints the case that was running and the
-  suite's descendant process tree, keeps killing a fresh snapshot of that tree
-  until the shell exits, and exits 124 with its temp directory removed. It lives
-  in the file, so it covers `./dev test` and both CI invocations alike.
-  Self-test cases run the suite as a child with a deliberately blocking case
-  (last, followed by another case, and followed by a second blocking case) and a
-  control that finishes in time and must not trip it. A test must never use a
-  bare `wait`, which would wait for the watchdog too; wait on a pid.
 - **Those two shell gates now cover `scripts/*.sh` and `dev`/`prd` as well**
   (#390). `build-agent.sh`'s full run — all four targets, signed — happens only
   in `release-agent.yml` on an `agent-v*` tag, so an ungated break there surfaces mid-release
@@ -1762,6 +1751,23 @@ has no dump for, rather than paint a layout computed for another one.
   release script is not equally unguarded. Two comments in `scripts/lint.sh`
   had to be reworded: a comment opening with the linter's own name is parsed as
   a directive, and the file refuses to lint.
+- **`lib_test.sh` bounds itself (#554).** A built-in watchdog stops a run after
+  15 minutes by default (`SOLADOR_DEPLOY_TEST_TIMEOUT_SECS` overrides it, in
+  seconds; a value that is not a positive whole number is refused with exit 2).
+  A full run takes about 90-110 s (longer under load), so the bound is roughly
+  10x that. On expiry it prints the case that was running and the suite's
+  descendant process tree, then makes up to 10 one-second passes, each killing a
+  fresh snapshot of that tree and re-signalling the shell, until it exits 124
+  with its temp directory removed. If the shell is still alive after those
+  passes it removes the temp directory and SIGKILLs the shell (exit 137). It
+  lives in the file, so it covers `./dev test` and both CI invocations alike.
+  Self-test cases run the suite as a child, chosen by the argument
+  `--watchdog-probe <mode> <sleep-secs>` rather than an environment variable (a
+  leaked variable must never replace the suite with one probe), with a
+  deliberately blocking case (last, followed by another case, and followed by a
+  second blocking case) and a control that finishes in time and must not trip
+  it. A test must never use a bare `wait`, which would wait for the watchdog
+  too; wait on a pid.
 
 ## Debugging
 

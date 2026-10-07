@@ -63,6 +63,16 @@ unset STUB_SYSTEMCTL_DISABLE_EXIT STUB_SYSTEMCTL_STOP_EXIT STUB_LAUNCHCTL_BOOTOU
 unset STUB_SYSTEMCTL_PROBE_LOCK STUB_SYSTEMCTL_PROBE_RESULT STUB_SYSTEMCTL_UNIT_STATE STUB_SYSTEMCTL_SHOW_EXIT
 unset STUB_LAUNCHCTL_PROBE_LOCK STUB_LAUNCHCTL_PROBE_RESULT
 unset STUB_SYSTEMCTL_STOP_FAIL_UNITS STUB_SYSTEMCTL_DISABLE_FAIL_UNITS STUB_FD9_LOG
+# The watchdog self-test's probe mode is chosen by an ARGUMENT (below), never by
+# the environment: a value leaking in from a caller must not replace the suite
+# with one sleeping case and report a green run that tested nothing.
+unset SOLADOR_DEPLOY_TEST_HANG SOLADOR_DEPLOY_TEST_HANG_SECS
+HANG_MODE=""
+HANG_SECS=300
+if [ "${1:-}" = "--watchdog-probe" ]; then
+    HANG_MODE="${2:?--watchdog-probe needs a mode}"
+    HANG_SECS="${3:?--watchdog-probe needs a sleep length}"
+fi
 
 # ---- harness ----------------------------------------------------------------
 
@@ -9620,10 +9630,10 @@ test_install_env_allowlist() {
 # ---- watchdog self-test (#554) -----------------------------------------------
 
 # The child of the self-test: a case that blocks. Only runs under
-# SOLADOR_DEPLOY_TEST_HANG=1, where it is the whole suite. The sleep length is
+# `--watchdog-probe`, where it is the whole suite. The sleep length is
 # passed in so the parent can tell its own sleep from any other on the host.
 test_watchdog_hang_probe() {
-    command sleep "${SOLADOR_DEPLOY_TEST_HANG_SECS:-300}"
+    command sleep "$HANG_SECS"
     pass "watchdog probe: the blocking case finished before the bound"
 }
 
@@ -9631,7 +9641,7 @@ test_watchdog_hang_probe() {
 # are told apart. In mode "two" it is the case that would start in the gap
 # between the watchdog killing the first and the shell exiting.
 test_watchdog_second_hang_probe() {
-    command sleep "$((${SOLADOR_DEPLOY_TEST_HANG_SECS:-300} + 1))"
+    command sleep "$((HANG_SECS + 1))"
     pass "watchdog probe: the second blocking case finished before the bound"
 }
 
@@ -9644,8 +9654,8 @@ test_watchdog_after_probe() {
 # watchdog_nested_run <mode> <hang-secs> <bound-secs>: the suite in HANG mode as
 # a child, output in $WD_OUT, status in $WD_RC, its TMPDIR in $WD_TMP.
 watchdog_nested_run() {
-    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_HANG="$1" SOLADOR_DEPLOY_TEST_HANG_SECS="$2" \
-        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS="$3" "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$WD_OUT" 2>&1
+    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS="$3" \
+        "$BASH" "$SCRIPT_DIR/lib_test.sh" --watchdog-probe "$1" "$2" > "$WD_OUT" 2>&1
     WD_RC=$?
 }
 
@@ -9731,7 +9741,23 @@ test_watchdog_trips_on_a_hung_case() {
         fail "watchdog: a case that finishes in time never trips it (control)" "exit status was $WD_RC" "$(cat "$WD_OUT")"
     fi
 
-    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=abc "$BASH" "$SCRIPT_DIR/lib_test.sh" > "$WD_OUT" 2>&1
+    # A probe knob leaking in from the environment must be inert: with the old
+    # variables set to the short-circuiting values, the child still runs the
+    # two cases its ARGUMENT asked for ("passed 2"), not the lone probe.
+    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_HANG=1 SOLADOR_DEPLOY_TEST_HANG_SECS=1 \
+        SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=60 \
+        "$BASH" "$SCRIPT_DIR/lib_test.sh" --watchdog-probe after 1 > "$WD_OUT" 2>&1
+    WD_RC=$?
+    if [ "$WD_RC" -eq 0 ] && grep -q '^passed 2, failed 0' "$WD_OUT"; then
+        pass "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit the suite"
+    else
+        fail "watchdog: a leaked SOLADOR_DEPLOY_TEST_HANG does not short-circuit the suite" "exit status was $WD_RC" "$(cat "$WD_OUT")"
+    fi
+
+    # In probe mode too: were the validation ever to regress, this child must
+    # not fall through to the full suite and recurse into this self-test.
+    TMPDIR="$WD_TMP" SOLADOR_DEPLOY_TEST_TIMEOUT_SECS=abc \
+        "$BASH" "$SCRIPT_DIR/lib_test.sh" --watchdog-probe 1 1 > "$WD_OUT" 2>&1
     rc=$?
     if [ "$rc" -eq 2 ]; then
         pass "watchdog: a non-numeric bound is refused (exit 2)"
@@ -9745,7 +9771,7 @@ test_watchdog_trips_on_a_hung_case() {
 printf 'agent/deploy/lib.sh + install.sh\n\n'
 
 # HANG mode is the watchdog self-test's child: it runs only the probe.
-case "${SOLADOR_DEPLOY_TEST_HANG:-}" in
+case "$HANG_MODE" in
     1) CASES="test_watchdog_hang_probe" ;;
     after) CASES="test_watchdog_hang_probe test_watchdog_after_probe" ;;
     two) CASES="test_watchdog_hang_probe test_watchdog_second_hang_probe test_watchdog_after_probe" ;;
