@@ -71,6 +71,12 @@ That `--only-secrets` list is the whole set: `v2026.9.8` (2026-09-11) was cut
 with the two `TAURI_SIGNING_*` names missing from it, and found out after the
 tag, the build, the notarization and the staple (#402).
 
+When the Developer ID identity lives in the dedicated keychain described under
+"Locally — the notarized build", `./dev publish` also needs that keychain
+unlocked first: add `APPLE_KEYCHAIN_PASSWORD` to `--only-secrets` and put
+`security unlock-keychain …` in front of `./dev publish` inside a `bash -c`,
+exactly as that section's recipe does for `./dev build --release --notarize`.
+
 ### Crash reporting is opt-in and off by default
 
 `crates/crashreport` (#309) carries the Sentry SDK and installs a panic hook —
@@ -129,6 +135,150 @@ Then `direnv allow` once. If you pull `SENTRY_DSN` or `DEVELOPMENT_TEAM` from
 a secret manager, do that in `.envrc.local` too — the build scripts never see
 the difference. The release inputs (the signing pair, the `APPLE_ASC_*` triple)
 go through the `doppler run` recipe above instead.
+
+### Locally — the notarized build
+
+`./dev build --release --notarize` and `./dev publish` need exactly one
+`Developer ID Application` identity in a keychain, and `build.sh` manages no
+keychains: it resolves whatever is already there by that prefix (two matches is
+refused). CI imports the identity into a throwaway keychain
+(`release.yml`, "Import the signing certificate into a temporary keychain");
+a maintainer's Mac needs the same thing made persistent. Do not run this on a
+Mac that already lists one (`security find-identity -v -p codesigning`).
+
+The identity lives in its **own keychain**, `solador-signing.keychain-db`, so
+that no login password is needed, an unattended build never meets a GUI prompt,
+and removal is deleting one file. The material is in Doppler `solador/prd`: the
+same .p12 `release.yml` imports, as `APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64`
+and `APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD`, and the keychain password,
+`APPLE_KEYCHAIN_PASSWORD`. Nothing below prints a value, and no certificate hash
+belongs in the repo or a doc: the build resolves by prefix on purpose.
+
+1. **Create the keychain.** One `doppler run` pulls the three values into one
+   process tree, decodes the .p12 into a private temp dir that is removed on
+   exit, creates and unlocks the keychain, imports the identity, lets codesign
+   use the key without a prompt, and adds the keychain to the search list:
+
+   ```sh
+   doppler run --project solador --config prd --no-fallback \
+     --only-secrets APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64,APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD,APPLE_KEYCHAIN_PASSWORD \
+     -- bash -c '
+       set -euo pipefail
+       KC="$HOME/Library/Keychains/solador-signing.keychain-db"
+       dir="$(mktemp -d)"; chmod 700 "$dir"; trap "rm -rf \"$dir\"" EXIT
+       ( umask 077; printf "%s" "$APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64" | base64 --decode > "$dir/cert.p12" )
+       # create, no auto-lock timeout, unlock
+       security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KC"
+       security set-keychain-settings "$KC"
+       security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KC"
+       # import, then let codesign use the key without a prompt
+       security import "$dir/cert.p12" -k "$KC" -P "$APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD" \
+         -T /usr/bin/codesign -T /usr/bin/security -f pkcs12
+       security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KC" >/dev/null
+       # add it to the search list, keeping the existing entries
+       # shellcheck disable=SC2046
+       security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed "s/[[:space:]\"]//g")
+     '
+   ```
+
+   `set-keychain-settings` with no flags means no timeout: a locked keychain
+   fails `codesign`, and the build is long.
+2. **Install Apple's G2 intermediate into the login keychain** (below). This is
+   the step that is easy to miss.
+3. **Prove it.** `security find-identity -v -p codesigning` must list exactly
+   one `Developer ID Application` identity, and a throwaway signature must
+   verify:
+
+   ```sh
+   cp /usr/bin/true /tmp/solador-sign-probe
+   codesign --force --timestamp --options runtime \
+     --sign "Developer ID Application" /tmp/solador-sign-probe
+   codesign -dvv /tmp/solador-sign-probe 2>&1 | grep '^Authority='
+   rm /tmp/solador-sign-probe
+   ```
+
+   The chain reads `Developer ID Application` → `Developer ID Certification
+   Authority` → `Apple Root CA`.
+
+#### The G2 intermediate, and the symptom of its absence
+
+The leaf is issued by `Developer ID Certification Authority` (`OU=G2`). macOS
+ships only the older G1 intermediate in its system roots, so after the import
+`find-identity -v` lists **0 valid identities**. Fetch G2, check that it chains
+to the system's `Apple Root CA`, and import it into the **login** keychain:
+
+```sh
+d="$(mktemp -d)"
+curl -fsS -o "$d/g2.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+openssl x509 -inform der -in "$d/g2.cer" -out "$d/g2.pem"
+security find-certificate -a -c "Apple Root CA" -p \
+  /System/Library/Keychains/SystemRootCertificates.keychain > "$d/root.pem"
+openssl verify -CAfile "$d/root.pem" "$d/g2.pem" \
+  && security import "$d/g2.cer" -k ~/Library/Keychains/login.keychain-db
+rm -rf "$d"
+```
+
+Putting G2 only in the signing keychain made `find-identity -v` report the
+identity valid, **but `codesign` still failed**:
+
+```
+Warning: unable to build chain to self-signed root for signer "Developer ID Application: Sassy Dog Enterprises LLC (<TEAM_ID>)"
+…: errSecInternalComponent
+```
+
+It signed only once G2 was **also** in the login keychain. That was observed
+from a shell whose `launchctl managername` is `Background` (an agent session);
+an Aqua Terminal session was not tested, where the signing keychain alone may
+suffice. If you see `errSecInternalComponent` on an identity `find-identity`
+calls valid, check the login keychain for G2, then check that the signing
+keychain is unlocked.
+
+#### Every notarized build
+
+A dedicated keychain is locked after a reboot, and a locked keychain fails
+`codesign` with the same `errSecInternalComponent`. So every build unlocks it
+first, which is why `APPLE_KEYCHAIN_PASSWORD` is in the list:
+
+```sh
+doppler run --project solador --config prd --no-fallback \
+  --only-secrets APPLE_KEYCHAIN_PASSWORD,APPLE_ASC_KEY_ID,APPLE_ASC_ISSUER_ID,APPLE_ASC_KEY_BASE64,TAURI_SIGNING_PRIVATE_KEY,TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+  -- bash -c 'security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" ~/Library/Keychains/solador-signing.keychain-db && ./dev build --release --notarize'
+```
+
+`./dev publish` needs the same unlock; see the note under the recipe in
+"Build-time configuration".
+
+The notarization wait is up to **60 minutes** (`notarytool submit --wait
+--timeout 60m`). If it runs out while Apple still reports `In Progress`, the
+build exits non-zero and prints the submission id; do **not** resubmit. Finish
+with `xcrun notarytool wait <id>` using the `APPLE_ASC_*` key, then
+`xcrun stapler staple`, `xcrun stapler validate` and `spctl -a -vvv --type
+install` on the `.dmg`. That yields a notarized `.dmg` only: the build stopped
+before stapling the `.app` and before making the updater payload
+(`Solador-<version>.app.tar.gz`), and there is no standalone command for the
+latter, so staple the `.app` with `xcrun stapler staple` too and treat the
+local build as having no updater payload. A non-zero
+`notarytool` exit with Apple reporting `Accepted` continues to the staple with
+a warning, and `Invalid` / `Rejected` fails with Apple's log.
+
+#### Removal, and what this puts on the Mac
+
+```sh
+security delete-keychain ~/Library/Keychains/solador-signing.keychain-db
+```
+
+Deleting it also drops it from the search list. G2 in the login keychain is a
+public certificate and can stay.
+
+The exposure is the Developer ID private key itself, now on this Mac, and the
+partition list plus `-T` let `codesign` use it without a prompt. Any process
+running as you, with the keychain unlocked, can sign a binary as `Sassy Dog
+Enterprises LLC`, and because the import does not mark the key non-extractable
+(`-x`) it may also be able to export the identity; this has not been tested.
+It needs code execution as you. With no auto-lock timeout the keychain stays
+unlocked until logout, reboot or a manual lock. `security lock-keychain
+~/Library/Keychains/solador-signing.keychain-db` after a build closes that
+window; the recipe above unlocks it again per build.
 
 ### In CI — workflow secrets
 
