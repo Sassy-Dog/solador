@@ -11,7 +11,7 @@ set -euo pipefail
 #                       (the overrides are how shellcheck-pin-guard-test.sh
 #                        points it at stub binaries)
 #
-# ShellCheck adds checks in minor releases (0.9.0 missed an SC2218 that 0.11.0
+# ShellCheck adds checks in minor releases (0.9.0 reported an SC2218 that 0.11.0
 # did not, and the reverse is as likely), so the match is exact. The config is
 # read as text, never sourced, so no code in it runs. An unreadable answer from
 # the binary fails, it is never taken as a match.

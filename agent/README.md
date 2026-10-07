@@ -700,7 +700,8 @@ bash -n agent/deploy/*.sh
 ```
 
 `./dev test` runs the first, `./dev lint` the other two (skipping shellcheck
-with a warning if it isn't installed). All three run in CI when deploy/helper
+with a warning if it isn't installed, and failing if it is not exactly the
+version pinned as `SHELLCHECK_VERSION` in `scripts/config.sh`, #548). All three run in CI when deploy/helper
 checks are selected.
 
 Since #390 both shell gates cover `scripts/*.sh` and `dev`/`prd` too, not just
