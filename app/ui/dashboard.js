@@ -571,7 +571,7 @@
         fields.append(selectField("rowLimit", L("rowLimit"), ["auto", "5", "10", "20", "50", "all"].map(value => ({value, label:L(value) || value})), t.rowLimit || "auto"));
       }
       if (t.source === "ghRunners") {
-        fields.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView || "list"));
+        fields.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView));
       }
       if (t.source === "ghWorkflows") {
         const repos = node("fieldset", "db-repo-selection");
@@ -731,7 +731,7 @@
     const fields = new FormData(form);
     return { ...original, title: String(fields.get("title")).trim(), scope: fields.get("scope"), presentation: fields.get("presentation"), width: fields.get("width"),
       rowLimit: fields.get("rowLimit") || original.rowLimit || "auto",
-      runnerView: fields.get("runnerView") || original.runnerView || "list",
+      runnerView: fields.get("runnerView") || original.runnerView,
       selectedRepos: original.source === "ghWorkflows" ? fields.getAll("selectedRepos") : (original.selectedRepos || []),
     };
   }
