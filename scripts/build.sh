@@ -782,16 +782,60 @@ notarize_and_staple() {
     fi
 
     log_info "Submitting $dmg to Apple (this waits for the verdict)…"
-    # --wait turns "submitted" into "accepted or rejected". Without it the
-    # staple below runs against a ticket Apple has not issued yet and fails
-    # with a message about the ticket, not about the submission.
-    if ! xcrun notarytool submit "$dmg" \
-            --key "$keyfile" \
-            --key-id "$APPLE_ASC_KEY_ID" \
-            --issuer "$APPLE_ASC_ISSUER_ID" \
-            --wait --timeout 30m; then
-        log_error "notarization was rejected — run 'xcrun notarytool log <id>' with the submission id above"
-        exit 1
+    # --wait turns "submitted" into "Apple has finished, or the wait ran out".
+    # It does NOT mean accepted-or-rejected: a non-zero exit is also what a
+    # timeout, a dead network and a bad key look like, so the exit code alone
+    # says nothing about the verdict (#551). Without --wait the staple below
+    # would run against a ticket Apple has not issued yet.
+    #
+    # 60 minutes, not 30: Apple's queue took longer than 30 on 2026-10-06
+    # (accepted about 40 minutes after upload). A longer wait costs nothing
+    # when Apple is fast, and release.yml sets no timeout-minutes. A slower day
+    # is still possible, which is why a timeout is classified below instead.
+    local creds=(--key "$keyfile" --key-id "$APPLE_ASC_KEY_ID" --issuer "$APPLE_ASC_ISSUER_ID")
+    local out="$keydir/submit.out" submit_ok=1
+    # tee keeps the progress visible; pipefail makes notarytool's status the
+    # pipeline's.
+    (set -o pipefail; xcrun notarytool submit "$dmg" "${creds[@]}" --wait --timeout 60m 2>&1 | tee "$out") || submit_ok=0
+    # A zero exit is not trusted either when the output names a final status
+    # that is not Accepted.
+    if (( submit_ok )) && [[ -n "$(sed -n 's/^[[:space:]]*status:[[:space:]]*//p' "$out" | tail -n 1 | grep -v '^Accepted' || true)" ]]; then
+        submit_ok=0
+    fi
+
+    if (( ! submit_ok )); then
+        # Classify by Apple's status, never by the exit code.
+        local id status
+        id="$(sed -n 's/^[[:space:]]*id:[[:space:]]*\([0-9A-Fa-f-]\{36\}\).*/\1/p' "$out" | head -n 1)"
+        if [[ -z "$id" ]]; then
+            log_error "the notarization submission did not happen: notarytool never returned a submission id (network, credentials, or the upload itself) — see its error above"
+            exit 1
+        fi
+        status="$(xcrun notarytool info "$id" "${creds[@]}" 2>&1 | sed -n 's/^[[:space:]]*status:[[:space:]]*//p' | head -n 1)" || status=""
+        case "$status" in
+            Accepted)
+                log_warning "notarytool exited non-zero but Apple reports submission $id Accepted; continuing to staple"
+                ;;
+            Invalid|Rejected)
+                log_error "notarization was rejected by Apple (submission $id, status $status). Apple's log:"
+                xcrun notarytool log "$id" "${creds[@]}" >&2 || log_error "could not fetch the log; run: xcrun notarytool log $id"
+                exit 1
+                ;;
+            "In Progress")
+                log_error "notarization is still in progress at Apple (submission $id): the wait ran out before Apple gave a verdict"
+                log_error "do NOT resubmit. Finish with the App Store Connect API key (APPLE_ASC_*):"
+                log_error "  xcrun notarytool wait $id --key <AuthKey.p8> --key-id <key id> --issuer <issuer id>"
+                log_error "  xcrun stapler staple \"$dmg\""
+                log_error "  xcrun stapler validate \"$dmg\""
+                log_error "  spctl -a -vvv --type install \"$dmg\""
+                exit 1
+                ;;
+            *)
+                log_error "notarytool failed and the status of submission $id is unrecognised or unreadable (got: ${status:-nothing}); it is not known to be rejected"
+                log_error "check it with: xcrun notarytool info $id --key <AuthKey.p8> --key-id <key id> --issuer <issuer id>"
+                exit 1
+                ;;
+        esac
     fi
 
     rm -rf "$keydir"
