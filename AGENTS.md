@@ -1770,7 +1770,8 @@ has no dump for, rather than paint a layout computed for another one.
   leaked variable must never replace the suite with one probe), with a
   deliberately blocking case (last, followed by another case, and followed by a
   second blocking case) and a control that finishes in time and must not trip
-  it. A test must never use a bare `wait`, which would wait for the watchdog
+  it. Probes run before deployment fixture setup; a slow-fixture regression
+  verifies they skip setup while normal runs still time out during it. A test must never use a bare `wait`, which would wait for the watchdog
   too; wait on a pid.
 
 ## Debugging
