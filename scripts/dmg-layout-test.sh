@@ -106,8 +106,9 @@ if assert_dmg_layout "$work/full.dmg" Solador.app 2>/dev/null; then pass "make_d
 rm -f "$work/full.dmg"
 # Negative control: a make_dmg whose staging omits the link must fail the build.
 # The stub is sourced like the real function, never defined inline: an inline
-# definition would be the only one ShellCheck can see, and 0.9.0 (CI's) then
-# reports the calls above as SC2218, "only defined later".
+# definition would be the only one ShellCheck can see, and an older ShellCheck
+# (0.9.0, CI's before #548's pin) then reports the calls above as SC2218,
+# "only defined later".
 cat > "$work/stage-without-link.sh" <<'EOF'
 stage_dmg_source() { ditto "$1" "$2/$(basename "$1")"; }
 EOF

@@ -92,9 +92,13 @@ jobs:
       # deploy for as long as it took someone to try one, behind three green
       # required checks, `./dev lint` and `./dev test`.
       #
-      # No install step for shellcheck: the ubuntu-latest image ships it. If a
-      # future image stops doing so this step goes red, which is the correct
-      # outcome — a lint gate that silently skips itself is what got us here.
+      # ShellCheck is pinned (#548): SHELLCHECK_VERSION and the tarball's SHA-256
+      # live in scripts/config.sh, and the ShellCheck step below downloads exactly
+      # that release rather than trusting the ubuntu-latest image, which carried
+      # 0.9.0 while `./dev lint` on a Mac ran 0.11.0 (PR #547's SC2218 passed
+      # locally and failed here). The step has no fallback: a failed download, a
+      # wrong checksum or a binary that is not the pinned version goes red, and a
+      # lint gate that silently skips itself is what got us here.
       # Widened past agent/deploy/ in #390. `scripts/build-agent.sh` builds and
       # signs the four published agent binaries and signs/publishes ONLY on an
       # `agent-v*` tag (one target is built below for agent/build changes, #457), so an ungated
@@ -110,8 +114,21 @@ jobs:
       - name: ShellCheck
         if: ${{ needs.changes.outputs.helpers == 'true' }}
         run: |
-          shellcheck --version
-          shellcheck -S warning agent/deploy/*.sh scripts/*.sh dev prd
+          set -euo pipefail
+          version="$(sed -n 's/^export SHELLCHECK_VERSION="\([0-9.]*\)"$/\1/p' scripts/config.sh)"
+          sha256="$(sed -n 's/^export SHELLCHECK_SHA256_LINUX_X86_64="\([0-9a-f]\{64\}\)"$/\1/p' scripts/config.sh)"
+          [ -n "$version" ] && [ -n "$sha256" ] || { echo "::error::ShellCheck pin not found in scripts/config.sh"; exit 1; }
+          dir="$RUNNER_TEMP/shellcheck-$version"
+          mkdir -p "$dir"
+          archive="$dir/shellcheck-v$version.linux.x86_64.tar.xz"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/v$version/shellcheck-v$version.linux.x86_64.tar.xz"
+          echo "$sha256  $archive" | sha256sum -c -
+          tar -xJf "$archive" -C "$dir" --strip-components=1 "shellcheck-v$version/shellcheck"
+          SHELLCHECK="$dir/shellcheck" scripts/shellcheck-pin-guard.sh
+          "$dir/shellcheck" --version
+          "$dir/shellcheck" -S warning agent/deploy/*.sh scripts/*.sh dev prd
 
       # The reference minisign, so the suite's signature-rejection cases run
       # here rather than reporting themselves SKIPPED (#392). They are the
@@ -619,3 +636,6 @@ jobs:
 
       - name: The pin guard refuses what it claims to refuse
         run: scripts/tauri-cli-pin-guard-test.sh
+
+      - name: The ShellCheck pin guard refuses what it claims to refuse
+        run: scripts/shellcheck-pin-guard-test.sh
