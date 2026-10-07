@@ -291,16 +291,14 @@ test('live hidden previews keep Restore and Remove anchored', async ({ page, bas
   expect(await bounds(page, '.db-inspector, .db-hidden-preview .db-form-actions')).toEqual(before);
 });
 
-test('refresh errors keep the narrow overview footer anchored', async ({ page, baseURL }) => {
+test('refresh failures stay beside attention without a dashboard footer', async ({ page, baseURL }) => {
   await page.setViewportSize({width:375,height:812});
   const frames = await open(page, baseURL);
-  const before = await bounds(page, '.db-end, .db-end button');
   await page.evaluate(() => { window.failDashboard = true; });
-  await expect(page.locator('.db-live-note')).toHaveText(frames.dashboard_view.labels.loadFailed);
-  expect(await bounds(page, '.db-end, .db-end button')).toEqual(before);
+  await expect(page.locator('.db-attention + .db-action-error')).toHaveText(frames.dashboard_view.labels.loadFailed);
+  await expect(page.locator('.db-end')).toHaveCount(0);
   await page.evaluate(() => { window.failDashboard = false; });
-  await expect(page.locator('.db-live-note')).toHaveText('');
-  expect(await bounds(page, '.db-end, .db-end button')).toEqual(before);
+  await expect(page.locator('.db-action-error')).toHaveCount(0);
 });
 
 for (const width of [375, 1024, 1600]) test(`tile content is fully visible without internal scrolling at ${width}px`, async ({page, baseURL}) => {

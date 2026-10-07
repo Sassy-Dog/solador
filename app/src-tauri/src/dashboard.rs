@@ -1099,7 +1099,7 @@ fn labels() -> Value {
         ("title", "Solador"),
         ("subtitle", "Overview"),
         ("settings", "Settings"),
-        ("allPanels", "All full panels"),
+        ("allPanels", "Full view"),
         ("edit", "Edit dashboard"),
         ("done", "Done editing"),
         ("add", "Add tile"),

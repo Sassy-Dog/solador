@@ -56,15 +56,12 @@ html, body {
 body { padding:var(--cockpit-gap, 16px); }
 /* The Hosts panel's own heading. Text comes from Rust's panel table. */
 .panel-title { font-size:13px; font-weight:700; margin:0; }
-/* Title, host tab bar and the Settings button on one line. Every member is
-   fixed-size except the tab strip, so the strip is what has to give when a
-   user configures more hosts than the width holds. */
+/* Hosts title and tabs share a row below the app toolbar. The tab strip
+   scrolls when configured hosts exceed the available width. Settings uses
+   the same row layout for its own heading and Done button. */
 .topbar { display:flex; align-items:center; gap:8px; flex-wrap:nowrap;
   margin:0 0 var(--cockpit-gap, 16px); }
-/* `flex:none` matters: the topbar is a nowrap flex row that already has to fit
-   a host tab strip and a Settings button on a 200px-minWidth window, and a
-   shrinkable mark would be squashed to a sliver there rather than dropping the
-   thing that can actually give way (the tab strip, which scrolls). */
+/* Keep the brand mark square even when the surrounding header is narrow. */
 .brandmark { flex:none; width:18px; height:18px; display:block; }
 /* Empty only when there is nothing to say — `hidden` is set from app.js, and
    an unstyled `[hidden]` is already display:none, so no rule is needed here. */
@@ -89,8 +86,7 @@ body { padding:var(--cockpit-gap, 16px); }
    put the overflow tabs on a second line — which is the line moving the bar
    onto the title row just reclaimed, and it would reappear precisely in the
    narrow window the tabs mode exists to serve. Scrolling keeps the topbar the
-   height of its tallest fixed member, the Settings button, no matter how many
-   hosts there are. */
+   height of its tallest member, no matter how many hosts there are. */
 .topbar .host-tabs { flex:0 1 auto; min-width:0; flex-wrap:nowrap;
   overflow-x:auto; scrollbar-width:none; }
 .topbar .host-tabs::-webkit-scrollbar { display:none; }
@@ -722,7 +718,10 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .settings-nav .tab[data-active] { background:var(--panelAlt); color:var(--ink); border-color:transparent; }
 .settings-nav .tab[data-tab="about"] { margin-top:auto; }
 .connection-count { margin-left:auto; color:var(--amber); }
-.settings-content { min-width:0; padding:24px; }
+.settings-content { min-width:0; padding:24px; display:flex; flex-direction:column; }
+.settings-body[data-tab="about"] { flex:1; }
+.settings-body[data-tab="about"] > .group { flex-shrink:0; }
+.settings-body[data-tab="about"] > [data-group="updates"] { flex:1; }
 .settings-content .group { background:transparent; border:0; border-radius:0; padding:0; gap:14px; }
 .settings-content .group + .group { border-top:1px solid var(--line); padding-top:18px; }
 .settings-content .help { font-size:11px; line-height:1.55; }
@@ -813,12 +812,19 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
    meanings come from Rust. A colour in this file would be a fourth opinion
    about which of those four states the app is in. */
 .update-status { font-size:11px; font-weight:600; margin:0; max-width:640px; }
-/* The offered release's notes, verbatim. `pre-wrap` because GitHub's generated
-   notes are line-broken prose and reflowing them runs the entries together;
-   scrolled by `.update-notes-slot`, its one scroll box: a long release is not a
-   reason for the button under it to leave the window. */
-.update-notes { font-size:10px; color:var(--muted); margin:0; max-width:640px;
-  white-space:pre-wrap; }
+/* Formatted notes remain in the page scroll, including long URLs and code. */
+.update-notes { font-size:11px; color:var(--muted); margin:0; }
+.update-notes > * { margin:0 0 14px; }
+.update-notes > :last-child { margin-bottom:0; }
+.update-notes :is(h3,h4,h5,h6) { color:var(--ink); font-size:13px; line-height:1.5; }
+.update-notes > :is(h3,h4,h5,h6):not(:first-child) { margin-top:22px; }
+.update-notes :is(ul,ol) { padding-left:22px; }
+.update-notes li + li { margin-top:8px; }
+.update-notes li > :is(ul,ol) { margin:8px 0 0; }
+.update-notes strong { color:var(--ink); }
+.update-notes code { font-family:inherit; color:var(--ink); background:var(--panelAlt); padding:1px 4px; border-radius:3px; }
+.update-notes pre { padding:10px 12px; border:1px solid var(--line); border-radius:6px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.update-notes pre code { background:none; padding:0; }
 .dim { color:var(--muted); }
 /* A host's agent-release line (#489). The colour is Rust's, assigned through the
    CSSOM -- only a host that is behind is amber, and no state is ever red. */
@@ -921,13 +927,13 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .cont-status { width:16ch; text-align:right; overflow:hidden; text-overflow:ellipsis; }
 .settings .status { min-width:0; max-width:50%; white-space:nowrap; overflow:auto; }
 .connection-state { width:18ch; justify-content:flex-end; white-space:nowrap; overflow:auto; }
-/* #540: the status (3 lines) and notes box (8) reserve whole lines of an
-   explicit line-height, so a scroll box never cuts through a glyph. The
-   controls row grows to fit its buttons and wraps on narrow windows. */
-.update-status { line-height:1.5; height:calc(3 * 1.5em); overflow:auto; }
-.update-notes-slot { font-size:10px; line-height:1.5; height:calc(8 * 1.5em); overflow:auto; }
+/* Controls precede changing content, so messages can grow without moving
+   the action row or clipping text inside fixed-height slots. */
+.update-status { line-height:1.5; overflow-wrap:anywhere; }
+.update-notes-slot { flex:1; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
 .update-notes-slot .update-notes { line-height:inherit; margin:0; }
-.settings .update-controls { min-height:31px; flex-wrap:wrap; }
+.settings .update-controls { min-height:36px; flex-wrap:wrap; gap:12px; margin:8px 0; flex-shrink:0; }
+.settings .update-controls > .btn { min-height:36px; padding:8px 12px; }
 .settings .update-controls > button { max-width:100%; white-space:normal; }
 .host-row > .row > .stack { flex:1; }
 .host-row > .row > .stack > .result { height:29px; overflow:auto; }

@@ -834,7 +834,7 @@ pub fn view(
         "tabs": [
             { "id": "connections", "title": "Connections" },
             { "id": "general", "title": "Preferences" },
-            { "id": "layout", "title": "Detailed layout" },
+            { "id": "layout", "title": "Full view layout" },
             { "id": "about", "title": "About" },
         ],
         "connections": connections_section(store, stored, openclaw),
@@ -2020,7 +2020,7 @@ fn layout_tab(stored: Option<&[store::LayoutProfile]>, seed_overflow: HostOverfl
         .map(|mode| json!({ "value": mode.as_str(), "label": host_overflow_label(mode) }))
         .collect();
     json!({
-        "heading": "Detailed panel layout",
+        "heading": "Full view layout",
         "help": "These preferences arrange the full panels. Use Edit dashboard on the overview to configure tiles. Panels fill a row four quarters at a time, in this order — a full-width panel takes a row to itself. Each breakpoint is one arrangement plus the cockpit width it starts applying at; the widest one the window clears wins. A window too narrow for a row still splits it, so a breakpoint is the widest arrangement for its band, not a promise about every size.",
         "spanLabel": "Width",
         "spanOptions": PanelSpan::ALL

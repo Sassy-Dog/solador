@@ -10,9 +10,8 @@
 // `esc()` appears nowhere in this file.
 //
 // It also adds no ACL surface. Every command it calls is app-defined, which
-// Tauri's ACL permits without a grant, so `capabilities/default.json` keeps
-// its empty `permissions` list -- the reason this is an in-app view and not a
-// second window.
+// Tauri's ACL permits without a grant. Settings does not use the repository
+// Actions URL permission granted to the cockpit's opener plugin.
 //
 // Wrapped in an IIFE, and that is not decoration: classic scripts share one
 // global scope, so a top-level `function render()` here would silently REPLACE
@@ -1837,6 +1836,85 @@ function stopUpdatePolling() {
   updateTimer = null;
 }
 
+/** Render the small Markdown subset used in release notes as safe DOM nodes.
+ * URLs remain selectable text, like About's other URLs; no HTML is interpreted
+ * and unsupported Markdown remains readable text. */
+function releaseNotes(markdown) {
+  const notes = node("div", "update-notes");
+  const inline = (parent, value) => {
+    const tokens = /https?:\/\/[^\s<]+|`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<![\p{L}\p{N}_])__([^_\n]+)__(?![\p{L}\p{N}_])|\*([^*\n]+)\*|(?<![\p{L}\p{N}_])_([^_\n]+)_(?![\p{L}\p{N}_])|\[([^\[\]\n]+)\]\(([^()\n]+)\)/gu;
+    let end = 0;
+    for (const match of value.matchAll(tokens)) {
+      parent.append(document.createTextNode(value.slice(end, match.index)));
+      if (match[1]) parent.append(node("code", "", match[1]));
+      else if (match[2] || match[3]) parent.append(node("strong", "", match[2] || match[3]));
+      else if (match[4] || match[5]) parent.append(node("em", "", match[4] || match[5]));
+      else parent.append(document.createTextNode(match[6] ? `${match[6]} (${match[7]})` : match[0]));
+      end = match.index + match[0].length;
+    }
+    parent.append(document.createTextNode(value.slice(end)));
+  };
+  let paragraph = null, lists = [], fence = null, code = null, headingLevel = null;
+  for (const line of markdown.replace(/\r\n?/g, "\n").split("\n")) {
+    if (fence) {
+      const close = line.trim();
+      if (close.length >= fence.length && [...close].every(char => char === fence[0])) {
+        fence = null;
+      } else code.append(document.createTextNode((code.childNodes.length ? "\n" : "") + line));
+      continue;
+    }
+    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (fenced) {
+      paragraph = null;
+      lists = [];
+      fence = fenced[1];
+      const pre = node("pre");
+      code = node("code");
+      pre.append(code);
+      notes.append(pre);
+      continue;
+    }
+    if (!line.trim()) { paragraph = null; continue; }
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*$/);
+    if (heading) {
+      // About and Updates already establish the page hierarchy.
+      headingLevel ??= heading[1].length;
+      const title = node(`h${Math.min(6, Math.max(3, 3 + heading[1].length - headingLevel))}`);
+      inline(title, heading[2].replace(/\s+#+\s*$/, ""));
+      notes.append(title);
+      paragraph = null;
+      lists = [];
+      continue;
+    }
+    const item = line.match(/^(\s*)(?:([-+*])|(\d+)[.)])\s+(.+)$/);
+    if (item) {
+      const indent = item[1].replace(/\t/g, "    ").length, tag = item[3] ? "ol" : "ul";
+      while (lists.length && (lists.at(-1).indent > indent ||
+        (lists.at(-1).indent === indent && lists.at(-1).tag !== tag))) lists.pop();
+      if (!lists.length || lists.at(-1).indent < indent) {
+        const list = node(tag);
+        if (tag === "ol") list.start = Number(item[3]);
+        (lists.at(-1)?.item || notes).append(list);
+        lists.push({indent, tag, list});
+      }
+      const entry = node("li");
+      inline(entry, item[4]);
+      lists.at(-1).list.append(entry);
+      lists.at(-1).item = entry;
+      paragraph = null;
+      continue;
+    }
+    if (lists.length && /^\s+/.test(line)) {
+      inline(lists.at(-1).item, " " + line.trim());
+      continue;
+    }
+    lists = [];
+    if (!paragraph) { paragraph = node("p"); notes.append(paragraph); }
+    inline(paragraph, (paragraph.childNodes.length ? " " : "") + line.trim());
+  }
+  return notes;
+}
+
 /** The Updates group: one sentence, whatever notes came with the offer, and
  *  the buttons Rust said to draw.
  *
@@ -1854,11 +1932,9 @@ function updatesGroup(u) {
   // blocked by `style-src 'self'`. Green/amber/red mean what they mean on the
   // cards, and this file does not choose between them.
   status.style.color = u.status.color;
-  box.appendChild(status);
   const notes = node("div", "update-notes-slot");
   if (u.notes) notes.tabIndex = 0;
-  if (u.notes) notes.appendChild(node("p", "update-notes", u.notes));
-  box.appendChild(notes);
+  if (u.notes) notes.appendChild(releaseNotes(u.notes));
 
   const controls = [];
   if (u.installLabel) {
@@ -1875,7 +1951,7 @@ function updatesGroup(u) {
   actions.classList.add("update-controls");
   box.appendChild(actions);
 
-  box.appendChild(help(u.help));
+  box.append(status, help(u.help), notes);
   return box;
 }
 
@@ -2069,6 +2145,7 @@ function connectionEditor() {
 
 function renderBody() {
   const body = $s("settingsBody");
+  body.dataset.tab = S.tab;
   if (S.tab === "connections") {
     body.replaceChildren(...(S.editor ? connectionEditor() : connectionsTab(S.view.connections)));
     return;

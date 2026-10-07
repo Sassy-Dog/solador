@@ -30,8 +30,10 @@
   let loadFailed = false;
   let previewTimer = null, previewVersion = 0;
   let acknowledgementVersion = 0;
+  let appChrome = null, feedback = null, feedbackNotice = null;
   const tiles = new Map();
-  const q = (selector) => root.querySelector(selector);
+  const q = (selector) => root.querySelector(selector) ||
+    (appChrome?.matches(selector) ? appChrome : appChrome?.querySelector(selector));
   const text = (el, value) => {
     el.textContent = value ?? "";
     return el;
@@ -50,8 +52,11 @@
     if (id) b.dataset.id = id;
     return b;
   }
-  function iconButton(label, action, path) {
-    const b = button("", action, null, "db-icon");
+  function iconButton(label, action, path, existing = null) {
+    const b = existing || button("", action, null, "db-icon");
+    b.replaceChildren();
+    b.className = "db-icon";
+    b.dataset.action = action;
     b.setAttribute("aria-label", label);
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
@@ -64,15 +69,26 @@
     b.append(svg, tooltip);
     return b;
   }
-  function status(message, error = false) {
+  function paintFeedback() {
+    const anchor = feedback?.anchor && q(feedback.anchor);
+    const target = feedback && mode === "overview" && (feedback.anchor
+      ? anchor?.closest(".db-warning-control") || anchor
+      : active ? q(".db-inspector") : q(".db-attention"));
+    if (!target) { feedbackNotice?.remove(); return; }
+    // Only status() announces the outcome. Polls may replace the surrounding
+    // readings, so this visual notice must not itself be a live alert.
+    feedbackNotice ||= node("p", "db-action-error");
+    if (feedbackNotice.textContent !== feedback.message) text(feedbackNotice, feedback.message);
+    if (target.matches(".db-attention")) {
+      if (target.nextElementSibling !== feedbackNotice) target.after(feedbackNotice);
+    } else if (feedbackNotice.parentElement !== target) target.append(feedbackNotice);
+  }
+  function status(message, error = false, anchor = null) {
     const el = q(".db-live-note");
     if (!el) return;
-    text(el, message);
-    el.title = message;
-    if (message) el.tabIndex = 0;
-    else el.removeAttribute("tabindex");
-    el.classList.toggle("db-save-error", error);
-    el.setAttribute("role", error ? "alert" : "status");
+    if (el.textContent !== message) text(el, message);
+    feedback = error && message ? {message, anchor} : null;
+    paintFeedback();
   }
   function source(id) {
     return model.sources.find((s) => s.id === id);
@@ -121,6 +137,7 @@
   function makeChrome() {
     const chrome = node("header", "db-chrome"),
       brand = node("div", "db-brand");
+    appChrome = chrome;
     const mark = node("img", "brandmark");
     mark.src = "mark.svg";
     mark.alt = "";
@@ -129,11 +146,11 @@
     if (!window.__TAURI__)
       actions.append(node("span", "db-sample", L("preview")));
     actions.append(
-      button(L("add"), "catalog"),
-      button(L("undo"), "undo"),
+      iconButton(L("add"), "catalog", "M12 5v14M5 12h14"),
+      iconButton(L("undo"), "undo", "M9 4 4 9l5 5M4 9h10a6 6 0 0 1 0 12h-3"),
       iconButton(L("allPanels"), "allPanels", "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1ZM3 9h18M9 9v12"),
       iconButton(L("edit"), "edit", "M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M16 3a2.12 2.12 0 0 1 3 3l-9 9-4 1 1-4ZM14 5l3 3"),
-      iconButton(L("settings"), "settings", "m9 3-.5 2-2 1L4.5 5.5l-2 3.5L4 10.5v3L2.5 15l2 3.5 2-.5 2 1 .5 2h4l.5-2 2-1 2 .5 2-3.5-1.5-1.5v-3L19.5 9l-2-3.5-2 .5-2-1-.5-2ZM14.5 12a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z"),
+      iconButton(L("settings"), "settings", "m9 3-.5 2-2 1L4.5 5.5l-2 3.5L4 10.5v3L2.5 15l2 3.5 2-.5 2 1 .5 2h4l.5-2 2-1 2 .5 2-3.5-1.5-1.5v-3L19.5 9l-2-3.5-2 .5-2-1-.5-2ZM14.5 12a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z", document.getElementById("settingsToggle")),
     );
     chrome.append(brand, actions);
     const attention = node("section", "db-attention");
@@ -161,17 +178,10 @@
     inspector.setAttribute("aria-label", L("configure"));
     const grid = node("main", "db-grid");
     grid.setAttribute("aria-label", L("subtitle"));
-    const footer = node("footer", "db-end");
     const live = node("span", "db-live-note");
     live.setAttribute("role", "status");
     live.setAttribute("aria-live", "polite");
-    footer.append(live);
-    root.replaceChildren(chrome, attention, editbar, inspector, grid, footer);
-    const back = button(L("back"), "back");
-    back.id = "dashboardBack";
-    back.className = "btn";
-    legacy.querySelector(".topbar").prepend(back);
-    back.addEventListener("click", () => showOverview());
+    root.replaceChildren(chrome, attention, editbar, inspector, grid, live);
     initialized = true;
   }
   function warnings(values, wrap = node("div", "db-warnings")) {
@@ -420,6 +430,8 @@
     const focusTile = focused?.closest("[data-tile]")?.dataset.tile;
     const focusData = focused?.dataset.action ? { ...focused.dataset } : null;
     if (!initialized) makeChrome();
+    const view = mode === "overview" ? root : legacy;
+    if (appChrome.parentElement !== view) view.prepend(appChrome);
     root.hidden = settingsOpen || mode !== "overview";
     legacy.hidden = settingsOpen || mode === "overview";
     overviewOpen = mode === "overview";
@@ -440,13 +452,14 @@
       attention.append(node("span", "db-muted db-attention-quiet",
         model.sources.some(s => s.loading) ? L("loading") : L("quiet")));
     const edit = q('[data-action="edit"]');
-    const editLabel = editing ? L("done") : L("edit");
+    const editLabel = editing && mode === "overview" ? L("done") : L("edit");
     edit.setAttribute("aria-label", editLabel);
-    edit.setAttribute("aria-pressed", String(editing));
+    edit.setAttribute("aria-pressed", String(editing && mode === "overview"));
+    q('[data-action="allPanels"]').setAttribute("aria-pressed", String(mode === "details"));
     text(edit.querySelector(".db-tooltip"), editLabel);
     q('[data-action="edit"]').disabled = busy || !window.__TAURI__;
-    q('[data-action="catalog"]').hidden = !editing;
-    q('[data-action="undo"]').hidden = !editing;
+    q('[data-action="catalog"]').hidden = !editing || mode !== "overview";
+    q('[data-action="undo"]').hidden = !editing || mode !== "overview";
     q('[data-action="catalog"]').disabled = busy;
     q('[data-action="undo"]').disabled = busy || !history.length;
     q(".db-editbar").hidden = !editing;
@@ -466,6 +479,7 @@
     }
     if (active?.kind === "details") fillDetails();
     if (active?.kind === "hidden") fillHidden();
+    paintFeedback();
     if (mode !== "overview") window.soladorGitHub?.updateView();
     if (focused && !focused.isConnected && focusData && document.activeElement === document.body) {
       const scope = focusTile
@@ -510,7 +524,7 @@
       if (busy || version !== acknowledgementVersion) return;
       if (initialized) {
         loadFailed = true;
-        status(L("loadFailed"), true);
+        status(L("loadFailed"), true, ".db-attention");
       } else if (
         mode === "overview" &&
         !document.getElementById("dashboardLoadError")
@@ -567,6 +581,7 @@
     }
   }
   function openInspector(next) {
+    status("");
     active = next;
     syncAttention();
     const box = q(".db-inspector");
@@ -1081,6 +1096,7 @@
     clearTimeout(previewTimer);
     previewVersion++;
     active = null;
+    status("");
     syncAttention();
     q(".db-inspector").hidden = true;
     q(".db-inspector").replaceChildren();
@@ -1098,6 +1114,7 @@
       return false;
     }
     busy = true;
+    const inspector = active, savedMode = mode;
     render(true);
     q(".db-inspector")
       .querySelectorAll("button,input,select")
@@ -1137,7 +1154,8 @@
         .forEach((el) => (el.disabled = false));
       await refresh();
       render(true);
-      status(error?.message || String(error) || L("failed"), true);
+      if (active === inspector && mode === savedMode)
+        status(error?.message || String(error) || L("failed"), true);
       return false;
     }
   }
@@ -1147,6 +1165,7 @@
     if (!acknowledgement?.available || !window.__TAURI__ || busy) return;
     const inspector = active, restoreFocus = document.activeElement === control;
     const acknowledged = !acknowledgement.acknowledged;
+    status("");
     // A poll already in flight may contain the old acknowledgement at the same
     // layout revision. Discard it even if it completes after this save.
     acknowledgementVersion++;
@@ -1163,7 +1182,9 @@
       model = saved;
       status(L(acknowledged ? "warningAcknowledged" : "warningAcknowledgementCleared"));
     } catch (error) {
-      status((typeof error === "string" ? error : error?.message) || L("warningAcknowledgementFailed"), true);
+      if (active === inspector && mode === "overview")
+        status((typeof error === "string" ? error : error?.message) || L("warningAcknowledgementFailed"), true,
+          `[data-action="acknowledge-warning"][data-id="${CSS.escape(row.id)}"][data-metric="${CSS.escape(acknowledgement.metric)}"]`);
     } finally {
       busy = false;
       if (active) active.signature = null;
@@ -1206,16 +1227,20 @@
     openInspector({ kind: "configure", id: newTile.id, draft: newTile, position: original ? `after:${original.id}` : "end" });
   }
   async function showOverview() {
+    status("");
     mode = "overview";
     window.soladorGitHub.setRunnerGroup(null);
     legacy.removeAttribute("data-detail-source");
     overviewOpen = true;
     root.hidden = false;
     legacy.hidden = true;
+    render(true);
     await refresh(true);
     render(true);
+    q('[data-action="allPanels"]').focus({preventScroll:true});
   }
   async function fullPanel(sourceId, runnerGroup = null) {
+    status("");
     mode = "details";
     window.soladorGitHub.setRunnerGroup(runnerGroup);
     overviewOpen = false;
@@ -1223,21 +1248,22 @@
     else legacy.removeAttribute("data-detail-source");
     root.hidden = true;
     legacy.hidden = false;
+    render(true);
     for (const [source, id] of Object.entries(sourcePanels))
       document
         .getElementById(id)
         .toggleAttribute("data-detail-active", source === sourceId);
     await refreshCockpit();
     await refreshPanels();
-    document.getElementById("dashboardBack").focus({ preventScroll: true });
+    q('[data-action="allPanels"]').focus({ preventScroll: true });
   }
-  root.addEventListener("click", async (event) => {
+  async function handleAction(event) {
     const b = event.target.closest("button[data-action]");
-    if (!b || !root.contains(b)) return;
+    if (!b || (!root.contains(b) && !appChrome?.contains(b))) return;
     const action = b.dataset.action,
       id = b.dataset.id;
     if (action === "settings") {
-      window.soladorSettings.open();
+      // The shared settingsToggle keeps settings.js's existing listener.
       return;
     }
     if (action === "close") {
@@ -1276,7 +1302,8 @@
       return;
     }
     if (action === "allPanels") {
-      await fullPanel(null);
+      if (mode === "details") await showOverview();
+      else await fullPanel(null);
       return;
     }
     if (action === "full") {
@@ -1341,9 +1368,11 @@
       return;
     }
     if (action === "edit") {
-      editing = !editing;
+      if (mode === "details") { await showOverview(); editing = true; }
+      else editing = !editing;
       closeInspector();
       render(true);
+      q('[data-action="edit"]').focus({preventScroll:true});
       return;
     }
     if (action === "catalog") {
@@ -1434,7 +1463,9 @@
         )
         ?.focus({ preventScroll: true });
     }
-  });
+  }
+  root.addEventListener("click", handleAction);
+  legacy.addEventListener("click", handleAction);
   root.addEventListener("submit", (e) => {
     if (e.target.id === "dashboardForm") {
       // WebKit can submit implicitly when Return commits a native picker.
