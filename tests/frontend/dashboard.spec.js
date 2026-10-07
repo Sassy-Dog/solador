@@ -178,6 +178,8 @@ test('machine warnings can be acknowledged and cleared from details without chan
   await acknowledge.click();
   await expect(inspector.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeVisible();
   await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toBeVisible();
+  await expect(page.locator('.db-end')).toHaveCount(0);
+  expect(await page.locator('.db-live-note').evaluate(el => el.getBoundingClientRect().height)).toBeLessThanOrEqual(1);
   await expect(tile(page, 'hosts').getByRole('meter', {name:'mac-n87k RAM'})).toHaveAttribute('aria-valuenow', '78.75');
   await expect(action(page, 'attention').filter({hasText:'Machines'})).toHaveCount(0);
   expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === 'machine_acknowledge_warning'))).toEqual([
@@ -196,7 +198,19 @@ test('failed acknowledgement keeps the warning actionable and allows retry', asy
   await tile(page, 'hosts').getByRole('button', {name:/mac-n87k/}).click();
   const acknowledge = page.getByRole('button', {name:'Acknowledge RAM warning',exact:true});
   await acknowledge.click();
-  await expect(page.getByRole('alert')).toHaveText('Could not save the warning acknowledgement.');
+  const failure = page.locator('.db-warning-control .db-action-error');
+  await expect(failure).toHaveText('Could not save the warning acknowledgement.');
+  // The persistent live region announces once; repainting a reading must not
+  // insert fresh live alerts or mutate that announcement on every poll.
+  await expect(failure).not.toHaveAttribute('role', 'alert');
+  await page.evaluate(() => {
+    window.__ANNOUNCEMENTS__ = 0;
+    new MutationObserver(() => window.__ANNOUNCEMENTS__++)
+      .observe(document.querySelector('.db-live-note'), {subtree:true,childList:true,characterData:true});
+  });
+  await page.evaluate(() => refreshPanels());
+  await expect(failure).toBeVisible();
+  expect(await page.evaluate(() => window.__ANNOUNCEMENTS__)).toBe(0);
   await expect(acknowledge).toBeEnabled();
   await expect(action(page, 'attention').filter({hasText:'Machines'})).toBeVisible();
   await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toHaveCount(0);
@@ -204,6 +218,17 @@ test('failed acknowledgement keeps the warning actionable and allows retry', asy
   await acknowledge.click();
   await expect(page.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeEnabled();
   await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toBeVisible();
+});
+
+test('an acknowledgement failure stays with its machine when changing inspectors', async ({page, baseURL}) => {
+  await openDashboard(page, baseURL, false, view => Object.assign(view, warningFrame(view, false)));
+  await page.evaluate(() => { window.__FAIL_ACK__ = true; });
+  await tile(page, 'hosts').getByRole('button', {name:/mac-n87k/}).click();
+  await page.getByRole('button', {name:'Acknowledge RAM warning',exact:true}).click();
+  await expect(page.locator('.db-action-error')).toBeVisible();
+  await tile(page, 'ghWorkflows').locator('.db-tile-footer [data-action="details"]').click();
+  await page.evaluate(() => refreshPanels());
+  await expect(page.locator('.db-action-error')).toHaveCount(0);
 });
 
 test('an old poll cannot undo an acknowledgement and duplicate clicks cannot submit twice', async ({page, baseURL}) => {
@@ -257,23 +282,38 @@ test('critical attention stays visible with a saved acknowledgement in table and
 test("dashboard toolbar icons keep accessible labels and keyboard tooltips through editing", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   const toolbar = page.locator(".db-chrome");
-  for (const name of ["All full panels", "Edit dashboard", "Settings"]) {
+  for (const name of ["Full view", "Edit dashboard", "Settings"]) {
     const button = toolbar.getByRole("button", { name, exact: true });
     await expect(button).toBeVisible();
     await button.focus();
     await expect(button.getByRole("tooltip")).toBeVisible();
   }
-  const edit = action(page, "edit");
+  const edit = toolbar.locator('[data-action="edit"]');
   await edit.press("Enter");
+  for (const name of ["Add tile", "Undo"]) {
+    const button = toolbar.getByRole("button", { name, exact: true });
+    await expect(button.locator("svg")).toHaveCount(1);
+    await expect(button.getByRole("tooltip", {includeHidden:true})).toHaveText(name);
+  }
   await expect(edit).toHaveAccessibleName("Done editing");
   await expect(edit.getByRole("tooltip")).toHaveText("Done editing");
   await expect(edit).toHaveAttribute("aria-pressed", "true");
   await edit.press("Enter");
   await expect(edit).toHaveAccessibleName("Edit dashboard");
   await expect(edit).toHaveAttribute("aria-pressed", "false");
-  await toolbar.getByRole("button", { name: "All full panels", exact: true }).click();
+  await toolbar.getByRole("button", { name: "Full view", exact: true }).click();
   await expect(page.locator("#cockpitView")).toBeVisible();
-  await page.locator("#dashboardBack").click();
+  await expect(toolbar.getByRole("heading", {name:"Solador", exact:true})).toBeVisible();
+  await expect(toolbar.locator('[data-action="allPanels"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(toolbar.getByRole("button", {name:"Settings", exact:true}).locator("svg")).toHaveCount(1);
+  await toolbar.getByRole("button", {name:"Settings", exact:true}).click();
+  await page.locator('#settingsClose').click();
+  await expect(page.locator('#cockpitView')).toBeVisible();
+  await edit.focus();
+  await edit.press('Enter');
+  await expect(edit).toBeFocused();
+  await expect(edit).toHaveAccessibleName('Done editing');
+  await expect(toolbar.locator('[data-action="allPanels"]')).toHaveAttribute("aria-pressed", "false");
   await toolbar.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page.locator("#settings")).toBeVisible();
 });
@@ -283,13 +323,14 @@ test('Full runners share Detail tables and the saved view choice', async ({page,
   await tile(page, 'ghRunners').getByRole('button', {name:/MACOS · ARM64/}).click();
   await action(page, 'full').click();
   const panel = page.locator('#runnersPanel');
+  await expect(page.locator('#cockpitView > .topbar')).toBeHidden();
   await expect(panel.locator('.db-detail-table')).toBeVisible();
   await expect(panel.locator('thead th')).toHaveText(['Runner', 'Organization', 'OS', 'Architecture', 'Status']);
   const list = panel.getByRole('button', {name:'List', exact:true});
   await list.click();
   await expect(list).toHaveAttribute('aria-pressed', 'true');
   expect((await savedLayout(page)).detailViews.ghRunners).toBe('list');
-  await page.locator('#dashboardBack').click();
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
   await tile(page,'ghRunners').locator('.db-tile-footer [data-action="details"]').click();
   await expect(page.getByRole('button',{name:'List',exact:true})).toHaveAttribute('aria-pressed','true');
   await page.getByRole('button',{name:'Table',exact:true}).click();
@@ -684,7 +725,7 @@ test("runner group Open full panel preserves the filter, tracks membership, and 
   await page.getByRole('button', {name:'All runners', exact:true}).click();
   await expect(runners).toHaveCount(6);
   await expect(page.locator('#runnersTitle')).toBeFocused();
-  await page.locator('#dashboardBack').click();
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
   await expect(page.locator('#dashboardOverview')).toBeVisible();
 });
 
@@ -1273,7 +1314,7 @@ test("details reach the existing full panel and the source's connection settings
   await expect(page.locator("#dashboardOverview")).toBeHidden();
   await expect(page.locator("#cockpit")).toBeVisible();
   await expect(page.locator("#reposPanel")).toBeHidden();
-  await page.locator("#dashboardBack").click();
+  await page.locator('.db-chrome [data-action="allPanels"]').click();
   await expect(page.locator("#dashboardOverview")).toBeVisible();
   await action(page, "close").click();
   await tile(page, "ghWorkflows")

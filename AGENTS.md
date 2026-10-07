@@ -981,8 +981,16 @@ the bundle's floor.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
   Machine Detail volumes sort by mount and align used/total/percentage; Full
-  host cards retain their fullest-first order. Overview has a compact wrapping
-  toolbar without a background frame or divider; Settings keeps a 12px vertical/
+  host cards retain their fullest-first order. Overview and Full view share one
+  compact wrapping toolbar and Solador heading without a background frame or
+  divider. Full view is a pressed-state toggle; Edit dashboard and Settings use
+  the same icons in both views, with Add tile and Undo icons during editing.
+  Tooltips appear on hover or keyboard focus. Dashboard action successes have
+  no visible footer; failures stay beside their controls, and reading failures
+  beside Needs Attention. About puts update controls above naturally flowing
+  status/help/notes without nested scrolling. Notes format headings, lists,
+  emphasis and code through DOM nodes; HTML stays text, and URLs stay selectable.
+  Settings calls the full cockpit arrangement **Full view layout** and keeps a 12px vertical/
   16px horizontal header inset.
 
 ## Testing

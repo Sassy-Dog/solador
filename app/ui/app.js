@@ -561,7 +561,10 @@ function renderCockpit(p) {
   // The Settings button's label is Rust's too, and it arrives here because the
   // button has to exist before anything has asked for the settings payload.
   const toggle = $("settingsToggle");
-  toggle.textContent = p.settingsLabel || "";
+  if (toggle.querySelector(".db-tooltip")) {
+    toggle.setAttribute("aria-label", p.settingsLabel || "");
+    toggle.querySelector(".db-tooltip").textContent = p.settingsLabel || "";
+  } else toggle.textContent = p.settingsLabel || "";
   toggle.hidden = !p.settingsLabel;
 
   const emptyEl = $("emptyMsg");

@@ -4,13 +4,15 @@ The macOS/Windows cockpit: a [Tauri v2](https://v2.tauri.app) app opening on a
 compact overview of **Machines**, **GitHub Repos**, **Runners**, **Service Health**
 and **Scheduled jobs**. **Edit dashboard** changes tile order, visibility, scope,
 presentation and width. **Add tile** also offers Containers/VMs, Usage, Azure Cost
-and OpenClaw. Each tile opens its readings and the existing full panel; **All
-full panels** opens the original cockpit. Connections and credentials remain
-in **Settings**, backed by the OS credential store. Overview uses a compact
+and OpenClaw. Each tile opens its readings and the existing full panel; **Full
+view** toggles between the overview and the full cockpit. Connections and credentials remain
+in **Settings**, backed by the OS credential store. Both views share a compact
 toolbar with the logo, app name and actions, without a background frame or
-divider. **All full panels**, **Edit dashboard** and **Settings** are outline
+divider. **Full view**, **Edit dashboard** and **Settings** are outline
 icon buttons at the top right, with labels on hover or keyboard focus. Edit
-dashboard stays highlighted while editing and its label becomes **Done editing**.
+dashboard stays highlighted while editing and its label becomes **Done editing**;
+**Add tile** and **Undo** also appear as icons with tooltips. Full view stays
+highlighted while showing full panels. Editing from Full returns to the overview.
 Actions wrap when space is tight. Settings keeps space around its logo,
 heading and Done button.
 
@@ -182,8 +184,16 @@ can expand the page; resizing or changing a tile’s source, scope, presentation
 row limit, repo selection, runner view, or a deliberate Detail expansion,
 filter or view change resets its measured reservation.
 Disconnected host cards hide old readings while retaining their occupied space.
-Settings reserves space for probe results, update notes/actions and status
-messages. Browser regressions measure both status stability and fully visible
+Settings reserves space for probe results and status messages. About places
+update buttons first with extra spacing, followed by the update status and help,
+then release notes that fill the remaining space and grow with the page. Neither
+the buttons nor the notes have an internal scrollbar. Notes render Markdown
+headings, bullet/numbered lists, emphasis and code as DOM elements. HTML remains
+literal text, and link destinations remain selectable text alongside their labels,
+like About's other URLs. Dashboard action successes
+are announced to assistive technology without a visible footer; failures appear
+beside the relevant control or inspector, and reading failures beside Needs Attention.
+Browser regressions measure both status stability and fully visible
 content at narrow, medium and wide window sizes.
 
 Placement and visibility edits save immediately; configuration saves with
@@ -212,7 +222,7 @@ repos and grouped runners without recreating those rules in JavaScript.
 `dashboard_save` validates and saves the whole layout, rolls memory back if the
 atomic disk write fails, and returns the persisted overview. The frontend keeps
 configuration drafts intact during refreshes and rejects older revisions.
-**Settings → Detailed layout** applies to **All full panels**; overview
+**Settings → Full view layout** applies to **Full view**; overview
 placement lives in **Edit dashboard**.
 
 **Add tile** and **Duplicate tile** open an unsaved draft. Choose a name,
@@ -246,7 +256,7 @@ not preserve Keychain recognition across rebuilds. For a native smoke check, use
 the scratch-store procedure below, then hide/restore a tile, duplicate Machines
 with a Remote machines scope, relaunch, and verify the saved view. Open Details
 and connection settings, and confirm Overview returns correctly. The existing full-panel
-smoke checklist starts from **All full panels**. The macOS dashboard smoke
+smoke checklist starts from **Full view**. The macOS dashboard smoke
 passed on 2026-09-18 with real IPC, a scratch store and an empty, isolated
 credential service in the test build. It covered hide/restore, duplication and
 independent scope, rename, width, presentation, arrow ordering, Undo, pointer
@@ -341,7 +351,7 @@ host's edit form offers **Re-pair** — the same Check → compare → Trust flo
 replacing the pin on Save — and that is the only way a pin changes: there is no
 one-click unpin, so going back to plain HTTP means deleting the host and adding
 it again. Preferences,
-Detailed layout and About remain available in the side navigation.
+Full view layout and About remain available in the side navigation.
 
 Settings tests cover source routing, credential replacement, unsaved drafts,
 responsive layout and host edits with temporary stores. The macOS Settings
@@ -1642,15 +1652,14 @@ live. The gap is now this app's alone to close.
 
 ## Settings
 
-The **Settings** button opens an in-app view over the cockpit: General, Detailed layout,
-Accounts, Hosts, Azure Cost, Usage, Services, OpenClaw and About — the
-original window's tabs plus **Layout** and **Services**, which have no
-original counterpart, and minus **GitHub** and **Portfolio**, which both
-retired into **Accounts**: a token is an account's, org selection lives on
-each account, and every tracked repo sits on the card of the account that
-fetches it (with an Unattributed section for repos no account claims).
+The **Settings** icon opens an in-app view with **Connections**, **Preferences**,
+**Full view layout** and **About**. Connections holds machine, GitHub account,
+Azure Cost, Usage, Service Health and OpenClaw configuration. A GitHub token is
+an account's, org selection lives on each account, and every tracked repo sits
+on the card of the account that fetches it (with an Unattributed section for
+repos no account claims).
 Every label, help string and result line it paints comes from
-`src/settings.rs`, exactly as the cards' do from `crates/viewmodel`.
+`src-tauri/src/settings.rs`, exactly as the cards' do from `crates/viewmodel`.
 
 **In-app view, not a second window.** A second window means the frontend calls
 `WebviewWindow`, which means granting the webview
@@ -2585,9 +2594,9 @@ and that immediacy is itself the check on the corresponding wake:
 | `settings_test_host` | press **Test** on the seeded host | `✓ <host> · agent v<version>`, or `✗ unreachable …`, or `✗ auth failed (401) …` with no token |
 | pairing a TLS agent (`settings_probe_host_certificate`, the pinned client, **Re-pair**) | against a real agent with `SOLADOR_AGENT_TLS=1` (a fresh `install.sh` install): Settings → Connections → **Add connection** → Remote host, fill name, address and the token, press **Check certificate**. Compare the fingerprint with `solador-agent tls-fingerprint` on the host. Note **Add Host** is disabled; press **Trust**, then **Add Host**. Then press **Test** on the new host. Finally, on the agent host, delete `solador-agent.tls.key` and `.crt` and restart the service, and watch the host | the probe shows a 95-character colon-hex fingerprint **identical** to the agent's, and *nothing is saved before Trust* (relaunch mid-flow: the host is not there). After Trust + Add the card fills with live figures, and **Test** reads `✓ …`. After the certificate is regenerated the host's card reads **the agent's certificate changed — re-pair it in Settings** (not "couldn't reach"), **Test** reads `✗ certificate changed…`, the edit form offers **Re-pair**, and re-running Check certificate → Trust → Save brings the card back. Against an agent with TLS **off**, **Check certificate** reads "answers plain HTTP" with no Trust button and Add Host stays enabled. A missing fingerprint, a Trust button on a plain-HTTP agent, or a card that keeps polling after the certificate changed is the defect this row exists to catch |
 | the rules editor | under Settings → Connections → This machine, press **Add Rule**, set its action to **Hide**, then **Delete** it | the row appears with an empty pattern; switching to Hide drops the group-label and expected-count fields; the status line reads `Added rule.` / `Saved.` / `Removed rule.` |
-| the tabs mode, per breakpoint | with two hosts configured, set Settings → **Detailed layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
-| `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Detailed layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
-| `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Detailed layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
+| the tabs mode, per breakpoint | with two hosts configured, set Settings → **Full view layout** → *Any width* → **Show as tabs**, **Done**, then narrow the window below ~1816pt | a tab bar appears above one card and the others go off screen; widening past the breakpoint puts them all back with no bar left behind. Add a breakpoint at **1816** and set it to *Stack* to prove the band, not the window, is what decides |
+| `settings_move_panel` / `settings_set_panel_span` / `settings_reset_layout` | under Settings → **Full view layout**, set **Usage** to *Full width*, press **Move up** once, then **Done** | the preview re-draws under each edit (`Saved.` on the status line), and the cockpit shows the new arrangement the moment Settings closes. **Reset to default** — enabled only once you have edited something — puts it back. A change that survives the preview but not the close means `cockpit` is not re-reading the store |
+| `settings_add_breakpoint` / `settings_remove_breakpoint` | in Settings → **Full view layout**, type `1816` under *Applies from (pt)* and press **Add**, edit the new band, then **Remove breakpoint** | the switcher gains `1816pt and up`, selected, holding a copy of what applied there; editing it leaves *Any width* untouched (switch back and check). With one band left **Remove breakpoint** is disabled |
 | `settings_save_panel_interval` / `settings_clear_panel_interval` | under Settings → **Preferences** → **Panel Poll Cadence**, set **Containers/VMs** to `1` and press **Apply**; then set it to `30` and **Apply**; then press **Use default** | the `1` is **refused** — one sentence naming the panel, its 5-second floor, why that floor exists and what you asked for — and the row still reads `Using the default, 10 seconds`, because nothing was written. `30` saves, the row becomes `Set to 30 seconds…` and **Use default** goes live; pressing it puts the row back to the default wording. A refusal that silently stores `5` instead is the defect this row exists to catch |
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |

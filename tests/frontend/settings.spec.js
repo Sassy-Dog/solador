@@ -1690,6 +1690,44 @@ test("About offers the update Rust found, with the label Rust chose", async ({ p
     .toBe(1);
 });
 
+test("release notes render readable structure while keeping remote content inert", async ({page, baseURL}) => {
+  const settings = await fixture(baseURL, 'sample-settings.json');
+  const notes = [
+    '## Highlights', '',
+    '- **Remember** window size.',
+    '  Preserve the selected position.',
+    '  - Keep `critical` alerts enabled.',
+    '- Read the *new* layout.', '',
+    '### Installation', '',
+    '1. Download the app.',
+    '2. Reopen Solador.', '',
+    '```sh', 'solador --version', '```', '',
+    'See [PR #567](https://github.com/Sassy-Dog/solador/pull/567).', '',
+    '<img src=x onerror="window.NOTES_EXECUTED=true">',
+    '[unsafe](javascript:window.NOTES_EXECUTED=true)',
+    '', '## C#', '_Emphasis_ and __strong__ alongside file_name_here.',
+  ].join('\n');
+  await openSettings(page, baseURL, null, {...settings.about.updates, notes});
+  await tab(page, 'about').click();
+  const rendered = page.locator('.update-notes');
+  await expect(rendered.getByRole('heading', {name:'Highlights',exact:true})).toBeVisible();
+  await expect(rendered.getByRole('heading', {name:'Installation',exact:true})).toBeVisible();
+  await expect(rendered.getByRole('heading', {name:'C#',exact:true})).toBeVisible();
+  await expect(rendered.locator(':scope > ul > li')).toHaveCount(2);
+  await expect(rendered.locator('ul ul li')).toHaveText('Keep critical alerts enabled.');
+  await expect(rendered.locator('strong')).toHaveText(['Remember', 'strong']);
+  await expect(rendered.locator('em')).toHaveText(['new', 'Emphasis']);
+  await expect(rendered).toContainText('file_name_here');
+  await expect(rendered.locator('ol > li')).toHaveText(['Download the app.', 'Reopen Solador.']);
+  await expect(rendered.locator('pre code')).toHaveText('solador --version');
+  await expect(rendered).toContainText('PR #567 (https://github.com/Sassy-Dog/solador/pull/567)');
+  await expect(rendered.locator('img, script, a, iframe')).toHaveCount(0);
+  expect(await page.evaluate(() => window.NOTES_EXECUTED)).toBeUndefined();
+  await tab(page, 'layout').click();
+  await expect(page.locator('#settings .tab[data-tab="layout"]')).toHaveText('Full view layout');
+  await expect(page.locator('#settingsBody h2').first()).toHaveText('Full view layout');
+});
+
 /**
  * The distinction the whole feature rests on: a check that could not run must
  * not paint as one that ran and found nothing. Neither may offer an install.
@@ -1890,10 +1928,8 @@ const RELEASE_NOTES_V2026_10_47 = [
 ].join("\n");
 
 /**
- * #540: the Updates group's fixed heights (#436) must be whole numbers of
- * lines, or a scroll box slices a line through its glyphs and a constant help
- * sentence grows a scrollbar. Run at a phone-width window (390px) and a wide one,
- * with the real v2026.10.47 release body.
+ * Long, real release notes must remain in the page scroll at narrow and wide
+ * sizes; neither formatting nor polling may reintroduce an inner scroll box.
  */
 const INSTALLED_UPDATE = {
   heading: "Updates",
@@ -1909,12 +1945,14 @@ const installedUpdate = async (baseURL) => ({
 });
 
 for (const width of [390, 1000]) {
-  test(`the Updates group never slices a line or scrolls its help (${width}px)`, async ({ page, baseURL }) => {
+  test(`update controls precede freely flowing messages (${width}px)`, async ({ page, baseURL }) => {
     await page.setViewportSize({ width, height: 900 });
     await openSettings(page, baseURL, null, await installedUpdate(baseURL));
     await tab(page, "about").click();
     const group = page.locator('.group[data-group="updates"]');
-    await expect(group.locator(".update-notes")).toHaveText(INSTALLED_UPDATE.notes);
+    await expect(group.locator('.update-notes').getByRole('heading', {name:"What's Changed"})).toBeVisible();
+    await expect(group.locator('.update-notes > ul > li')).toHaveCount(33);
+    await expect(group.locator('.update-notes')).toContainText('SOLADOR_AGENT_REQUIRE_TAILNET=1');
 
     const m = await group.evaluate((g) => {
       const box = (sel) => {
@@ -1932,27 +1970,29 @@ for (const width of [390, 1000]) {
         slot: box(".update-notes-slot"),
         text: box(".update-notes"),
         notesOverflow: getComputedStyle(g.querySelector(".update-notes")).overflowY,
+        controlsBottom: g.querySelector(".update-controls").getBoundingClientRect().bottom,
+        statusTop: g.querySelector(".update-status").getBoundingClientRect().top,
+        notesTop: g.querySelector(".update-notes-slot").getBoundingClientRect().top,
       };
     });
     expect(m.help.sh).toBeLessThanOrEqual(m.help.ch);
     expect(m.status.sh).toBeLessThanOrEqual(m.status.ch);
-    // The notes scroll (the body is 39 lines), but in one box, by whole lines.
-    expect(m.slot.sh).toBeGreaterThan(m.slot.ch);
+    // All release notes participate in the page scroll, with no nested box.
+    expect(m.slot.sh).toBeLessThanOrEqual(m.slot.ch);
     expect(m.notesOverflow).toBe("visible");
-    // Measured against the TEXT's own line box, not the slot's.
-    const lines = m.slot.h / m.text.lh;
-    expect(Math.abs(lines - Math.round(lines))).toBeLessThan(0.01);
-    expect(Math.round(lines)).toBeGreaterThanOrEqual(8);
+    expect(m.statusTop - m.controlsBottom).toBeGreaterThanOrEqual(16);
+    expect(m.notesTop).toBeGreaterThan(m.controlsBottom);
+    expect(m.slot.h).toBeGreaterThan(120);
   });
 }
 
-test("moving between update states does not move Check for updates (#540)", async ({ page, baseURL }) => {
+test("update controls stay above changing messages", async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   const base = await installedUpdate(baseURL);
   await openSettings(page, baseURL, null, base);
   await tab(page, "about").click();
   const group = page.locator('.group[data-group="updates"]');
-  const y = async () => (await group.locator(".btn.check-updates").boundingBox()).y;
+  const y = async () => (await group.locator(".update-controls").boundingBox()).y;
   const installed = await y();
   const states = [
     { ...base, notes: null, status: { text: "Checking for updates...", color: "#8b949e" } },

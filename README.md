@@ -63,8 +63,10 @@ not failure*, and the code says so in as many words.
 The app opens on five compact tiles. **Edit dashboard** lets you move, hide,
 duplicate and scope them, or add a view of any of the nine sources below.
 **Needs attention** includes hidden sources. Open a tile's **Details** for more,
-or **All full panels** for the full cockpit. **All full panels**, **Edit dashboard**
-and **Settings** are icon buttons with tooltips at the top right.
+or toggle **Full view** for the full cockpit. Both views keep the Solador heading
+and the same **Full view**, **Edit dashboard** and **Settings** icons at the top
+right. Editing also offers **Add tile** and **Undo** icons; every icon has a
+tooltip on hover or keyboard focus.
 Connections stay in **Settings**.
 Machines includes colored CPU/RAM utilization bars and persistent acknowledgements
 for expected warnings on a specific machine and metric; critical alerts still
