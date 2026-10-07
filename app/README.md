@@ -339,7 +339,9 @@ It is now *distributable*. `./dev build --release` produces a real
 the CalVer and build number derived from git
 ([#303](https://github.com/Sassy-Dog/solador/issues/303)) — and
 `./dev build --release --notarize` signs, notarizes and staples a `.dmg`
-([#306](https://github.com/Sassy-Dog/solador/issues/306)); the volume holds
+([#306](https://github.com/Sassy-Dog/solador/issues/306)) — a Mac needs the Developer ID identity, Apple's G2 intermediate and an
+unlocked keychain first, which [docs/SECRETS.md](../docs/SECRETS.md#locally--the-notarized-build)
+walks through, and the Apple wait is up to 60 minutes; the volume holds
 `Solador.app` and an `Applications` shortcut to drag it onto, asserted from the
 mounted image ([#539](https://github.com/Sassy-Dog/solador/issues/539)). Pushing a `v*` tag
 runs that same build on CI against the `prd` environment
