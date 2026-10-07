@@ -4369,7 +4369,7 @@ dependencies = [
 
 [[package]]
 name = "solador-agent"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "axum",
  "axum-server",
@@ -4389,6 +4389,7 @@ dependencies = [
  "solador-accelerator",
  "solador-buildversion",
  "solador-certpin",
+ "solador-mempressure",
  "solador-thermal",
  "solador-wire",
  "sysinfo",
@@ -4504,11 +4505,19 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "solador-accelerator",
+ "solador-mempressure",
  "solador-thermal",
  "solador-wire",
  "starship-battery",
  "sysinfo",
  "time",
+]
+
+[[package]]
+name = "solador-mempressure"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

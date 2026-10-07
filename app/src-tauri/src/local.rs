@@ -278,6 +278,7 @@ mod tests {
                 total_gb: 64.0,
                 swap_used_gb: 0.5,
                 pressure: Some(41.0),
+                pressure_level: None,
             },
             disk: wire::Disk {
                 read_mbps: Some(12.4),

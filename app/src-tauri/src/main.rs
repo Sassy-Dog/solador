@@ -5237,9 +5237,9 @@ fn dump_single(connection: &Connection) -> Value {
 /// This machine's card as a fixture — hand-made, at a fixed shape, so the file
 /// is byte-stable across regenerations and reproduces on any machine.
 ///
-/// The unknowns are the *real* ones the shipped card carries on macOS today:
-/// memory pressure has no portable source and the GPU has no dependency-free
-/// read, so both render "—" on every run. Baking them in is what lets the
+/// The unknowns are real ones the shipped card carries wherever a producer
+/// cannot answer: this fixture has no `memory.pressureLevel` (the Windows / no-
+/// level case, #544) and no GPU, so both render "—" on every run. Baking them in is what lets the
 /// Playwright suite assert the em-dash rule against a payload Rust built rather
 /// than one hand-written in JS.
 fn dump_local_card() -> Value {
@@ -5273,6 +5273,7 @@ fn local_fixture_snapshot() -> localhost::LocalSnapshot {
             // Unknown on every platform this shell runs on — see
             // `localhost::LocalMemory::pressure`.
             pressure: None,
+            pressure_level: None,
         },
         disk: wire::Disk {
             read_mbps: Some(3.2),
@@ -5381,6 +5382,7 @@ fn showcase_remote_card() -> Value {
             total_gb: 62.7,
             swap_used_gb: 0.0,
             pressure: None,
+            pressure_level: None,
         },
         disk: wire::Disk {
             read_mbps: Some(6.8),
@@ -9427,9 +9429,10 @@ mod tests {
             .collect();
         assert_eq!(ids, vec![local::CARD_ID, "ubu-01", "mac-mini", "nuc-spare"]);
 
-        // The local card carries the em dashes the shipped one really does —
-        // no portable memory-pressure source and no dependency-free GPU read —
-        // so the Playwright suite exercises that rule against Rust's own output.
+        // The local card carries the em dashes the shipped one does where a
+        // producer cannot answer — this fixture has no memory-pressure level
+        // and no GPU — so the Playwright suite exercises that rule against
+        // Rust's own output.
         assert_eq!(cards[0]["pressureText"], "Pressure: —");
         assert_eq!(cards[0]["gpuValue"], "—");
         assert_eq!(cards[0]["vramText"], "VRAM: —");

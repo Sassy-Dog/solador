@@ -139,9 +139,59 @@ pub fn thermal_badge(s: ThermalState) -> (&'static str, u32) {
     }
 }
 
+/// The kernel's memory-pressure level as `wire::Memory::pressure_level`
+/// carries it (#544): `0` normal, `1` warning, `2` critical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryPressure {
+    Normal,
+    Warning,
+    Critical,
+}
+
+impl MemoryPressure {
+    /// `None` for a value outside the contract: unknown beats guessing, and
+    /// the caller then falls back to `used ÷ total` against the thresholds.
+    pub fn from_wire(v: i64) -> Option<Self> {
+        match v {
+            0 => Some(MemoryPressure::Normal),
+            1 => Some(MemoryPressure::Warning),
+            2 => Some(MemoryPressure::Critical),
+            _ => None,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            MemoryPressure::Normal => "normal",
+            MemoryPressure::Warning => "warning",
+            MemoryPressure::Critical => "critical",
+        }
+    }
+
+    pub fn color(self) -> u32 {
+        match self {
+            MemoryPressure::Normal => GREEN,
+            MemoryPressure::Warning => AMBER,
+            MemoryPressure::Critical => RED,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_pressure_decodes_the_contract_and_nothing_else() {
+        assert_eq!(MemoryPressure::from_wire(0), Some(MemoryPressure::Normal));
+        assert_eq!(MemoryPressure::from_wire(1), Some(MemoryPressure::Warning));
+        assert_eq!(MemoryPressure::from_wire(2), Some(MemoryPressure::Critical));
+        assert_eq!(MemoryPressure::from_wire(3), None);
+        assert_eq!(MemoryPressure::from_wire(-1), None);
+        assert_eq!(MemoryPressure::Normal.color(), GREEN);
+        assert_eq!(MemoryPressure::Warning.color(), AMBER);
+        assert_eq!(MemoryPressure::Critical.color(), RED);
+    }
 
     #[test]
     fn hex_renders_six_digit_lowercase() {

@@ -21,6 +21,18 @@ floor.
 - App lock: `crates/wire/tests/wire.rs`
   (`battery_deserialises_from_shared_contract_fixture`)
 
+## `snapshot_mac.json`
+
+A Mac agent's snapshot (#544): the only fixture carrying `memory.pressureLevel`
+(`0`, the kernel's "normal") at 80% used ÷ total, which is what the cockpit must
+paint green. `snapshot.json` and `snapshot_unknowns.json` carry no such key and
+are the "no level" cases: a snapshot from Linux, Windows or a pre-#544 agent must
+colour exactly as before.
+
+- App lock: `crates/wire/tests/wire.rs` and `crates/viewmodel/src/card.rs`, via a
+  byte-identical copy at `crates/wire/tests/fixtures/snapshot-mac.json` guarded by
+  `the_local_mac_fixture_is_byte_identical_to_the_shared_one`.
+
 ## `snapshot_unknowns.json`
 
 A post-#183 snapshot from a producer that cannot measure everything: the keys it

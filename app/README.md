@@ -67,8 +67,14 @@ Overall CPU/RAM colors, the Machines row dot and the attention count use the sam
 A CPU/RAM breach alone leaves the row reading `Connected` (the meters carry it); a
 thermal breach reads `Thermal: Hot` / `Thermal: Critical` and wins over it;
 per-core colors, memory-pressure, thermal, disk-space and connection checks retain
-their own meanings. RAM here is used memory divided by total memory, not the OS's
-memory-pressure measurement. Invalid edits save nothing, and a disk write failure
+their own meanings. The RAM thresholds apply to used memory divided by total
+memory, and **only where the machine does not report the kernel's memory-pressure
+level** (#544): a Mac keeps RAM full on purpose (compressed memory, caches), so a
+Mac's RAM meter and attention follow `memory.pressureLevel` instead — normal is
+green, warning amber, critical red — whatever the percentage. The meter's fill
+stays used ÷ total either way, and the host card's `Pressure:` line reads the
+level's word (`normal` / `warning` / `critical`). Linux, Windows and an agent
+predating the field keep the thresholds. Invalid edits save nothing, and a disk write failure
 restores the effective preferences while preserving the form's draft.
 
 **GitHub Repos** and **Runners** offer **Rows to show** in Configure: Automatic,
@@ -1451,10 +1457,12 @@ unmeasured values as muted em dashes and omits an unavailable thermal badge;
 Machines Detail normalizes that absent badge to `—` in its Thermal field.
 Measured zero remains a real value: an idle disk still reads `0.0 MB/s`.
 
-On macOS today that means memory pressure (no portable source: the original
-collector reaches into mach for wired and compressed page counts) renders `—`
-permanently, as does the GPU on a Mac with no `IOAccelerator` (a VM) and on
-Windows — a real Mac's GPU is read from IOKit by `crates/accelerator`, the
+Memory pressure on macOS is the kernel's level (`crates/mempressure`,
+`kern.memorystatus_vm_pressure_level`, #544) and renders as its word; the
+*percentage* has no portable source (the original collector reaches into mach
+for wired and compressed page counts), so a Windows local card reads
+`Pressure: —` permanently, as does the GPU on a Mac with no `IOAccelerator`
+(a VM) and on Windows — a real Mac's GPU is read from IOKit by `crates/accelerator`, the
 same reader the agent uses for a Mac host — and the disk and
 network rates render `—` for exactly one tick at startup, before there are two
 samples to diff. Unmeasured values are shown as unknown and omitted from their
@@ -2395,9 +2403,10 @@ fixture without one would leave it uncovered. The rest are full `cockpit` payloa
 so the offline path cannot diverge from the real one — built from the committed
 agent-contract fixture, so they reproduce on a clean checkout with no agent
 involved. Their **local card is hand-made** at a fixed shape for the same
-byte-stability reason, and it carries the em dashes the shipped card really does
-(pressure, GPU) so the Playwright suite asserts that rule against Rust's own
-output. `npm test` in `tests/frontend` writes them all under `app/ui/` (all
+byte-stability reason, and it deliberately carries the em dashes a card shows
+where a producer cannot answer (pressure, GPU: the fixture has no
+`memory.pressureLevel`, the Windows case) so the Playwright suite asserts that
+rule against Rust's own output. `npm test` in `tests/frontend` writes them all under `app/ui/` (all
 gitignored) — which matters for the smoke test below.
 
 `--showcase` points the other way. The fixtures above exercise every failure a
@@ -2490,8 +2499,9 @@ half works on a machine whose screen you cannot see.
       appears only if this machine has Claude Code logs to roll up
 - [ ] **Terminal** — `openclaw: first frontend request (trailing: "")` — **empty is a pass**
 - [ ] **Screen** — the **local card** leads the host grid with this machine's name, a
-      green dot, CPU/memory changing between ticks, and on macOS `Pressure: —` and
-      `VRAM: —`. Those em dashes are the check, not a defect.
+      green dot, CPU/memory changing between ticks, and on macOS a `Pressure:` word
+      (`normal` on a healthy Mac) with the RAM meter green however full it is
+      (compare `sysctl -n kern.memorystatus_vm_pressure_level`: `1` is normal).
 - [ ] **Screen** — the seeded host card shows the name you passed, then either live
       figures or one of the two named failure sentences (see [Pass](#pass)).
 - [ ] **Screen** — **Containers / VMs** shows a `N total · N up · N stopped` line, or
@@ -2735,9 +2745,10 @@ and that immediacy is itself the check on the corresponding wake:
 
 10. **Read the local card**, at the head of the host grid. It should carry this
    machine's name (hostname minus `.local`), a green dot, live CPU and memory
-   that change between ticks, and — on macOS — `Pressure: —` and `VRAM: —`. Those
-   two em dashes are the point: neither figure has a portable source, and the
-   card says so rather than painting a permanently green 0%. Disk and network
+   that change between ticks, and — on macOS — a `Pressure:` word (`normal`,
+   `warning` or `critical`, from the kernel's level) and a RAM meter coloured by
+   it rather than by how full it is. A platform with no level reads `Pressure: —`:
+   the card says so rather than painting a permanently green 0%. Disk and network
    read `—` for the first tick only, then real rates.
 
 11. **Exercise the two seams that leave the app** — the only two, and the only
@@ -2914,7 +2925,7 @@ side by side above ~1816pt of window (2 × 900 + 16) and stacked below it.
 | The OpenClaw panel sits on `connecting…` forever, or cycles connecting → disconnected. | Not a boundary failure — the round-trip worked and those words are `openclaw::view`'s. The session is retrying with exponential backoff, and the disconnect reason names the cause: `handshake timed out` (no gateway there), `gateway rejected: …` (its own words, often `controlUi.allowedOrigins`), or `invalid gateway URL` (not a `ws://`/`wss://` address). |
 | The pairing banner keeps returning after the approve command was run. | Also not a failure. The command has to run **on the gateway host**, and the request id is single-use — a stale one from a previous banner will not clear it. Press **Retry now** and re-read the id from the fresh banner. If the device id in Settings changes between attempts, the credential store is refusing to persist the seed; the terminal says so (`openclaw: could not persist the device key: …`). |
 | The local card is missing, or the grid leads with a remote host. | The local sampler never started, or its first sample has not landed (it renders `waiting for first sample…` for one tick). A card that never appears at all points at the poll task, not the ACL: the card is built in `cockpit`, which the terminal line in step 3 already proved runs. |
-| The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. Note that `Pressure: —` and `VRAM: —` are permanent and correct on macOS — see [This machine leads](#this-machine-leads). |
+| The local card renders but every figure is `—`. | Sampling is failing, not the boundary. Expected on the very first tick; persisting past a few seconds means `sysinfo` is returning nothing on this platform. On a platform with no memory-pressure level or no GPU source, `Pressure: —` / `VRAM: —` are correct; on macOS they should read a level word and a VRAM figure — see [This machine leads](#this-machine-leads). |
 | Clicking a repo row does nothing, and the console says `opener.open_url not allowed`. | The **permission** is missing: `opener:allow-open-url` is not in `capabilities/default.json`, or the plugin is not registered on the builder. Not a scope problem — the command was rejected before any URL was looked at. |
 | Clicking a repo row does nothing, and the console names a `Forbidden URL`. | The permission is there and its **scope** rejected the URL. Either a glob was narrowed, or something other than `github::actions_url` / `github::run_url` composed the string — the scope's two entries (`.../actions` and `.../actions/runs/*`) and those two composers live in `capabilities/default.json` and `src/github/mod.rs`, and only they may disagree. For a dashboard `Waiting` row, the entry to check is `.../actions/runs/*`. |
 | The rows render but none of them is clickable, and no console error appears. | Neither: `row.url` is absent from the payload, so github.js never wires a handler. A Rust-side regression, and `a_row_carries_the_original_tap_target` should have caught it — check the fixtures are not stale first (step 1). |

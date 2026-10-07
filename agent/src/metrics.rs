@@ -19,6 +19,11 @@
 //! - `memory.pressure` — **measured** on Linux from `/proc/pressure/memory`
 //!   (PSI, see [`parse_psi_some_avg10`]); omitted where that file does not
 //!   exist (macOS, or a kernel built without `CONFIG_PSI`).
+//! - `memory.pressureLevel` — **measured on macOS** through
+//!   `crates/mempressure` (`kern.memorystatus_vm_pressure_level`: `0` normal,
+//!   `1` warning, `2` critical), the signal the cockpit colours a Mac's RAM
+//!   meter by (#544). Omitted elsewhere and on an unreadable sysctl. Not
+//!   derived from `used ÷ total`, and `memory.pressure` is not filled from it.
 //! - `cpu.thermalState` — **measured on macOS** through `crates/thermal`, the
 //!   local cockpit's `ProcessInfo.thermalState` reader. Omitted elsewhere:
 //!   Linux thermal zones expose temperatures, and converting those into the
@@ -672,6 +677,7 @@ async fn sampler_loop(state: MetricsState, gpu_state: crate::gpu::GpuState) {
             &skip,
             ProbedReadings {
                 pressure: read_memory_pressure(),
+                pressure_level: mempressure::read(),
                 thermal_state: thermal::read(),
                 gpu: gpu_state.latest(),
             },
@@ -706,6 +712,7 @@ pub(crate) fn empty_snapshot() -> Snapshot {
             total_gb: 0.0,
             swap_used_gb: 0.0,
             pressure: None,
+            pressure_level: None,
         },
         // A rate is a delta, and no interval has elapsed to take one over.
         disk: Disk::default(),
@@ -726,6 +733,8 @@ pub(crate) fn empty_snapshot() -> Snapshot {
 struct ProbedReadings {
     /// Memory PSI, from [`read_memory_pressure`]. `None` off Linux.
     pressure: Option<f64>,
+    /// The kernel's memory-pressure level on macOS (#544); `None` elsewhere.
+    pressure_level: Option<mempressure::Level>,
     /// macOS thermal pressure; unknown on unsupported platforms.
     thermal_state: Option<thermal::ThermalState>,
     /// The GPU probe's most recent reading ([`crate::gpu::GpuState::latest`]).
@@ -754,6 +763,7 @@ fn compute_snapshot(
 ) -> Snapshot {
     let ProbedReadings {
         pressure,
+        pressure_level,
         thermal_state,
         gpu,
     } = probed;
@@ -825,6 +835,7 @@ fn compute_snapshot(
             swap_used_gb,
             // Measured from PSI where the host has it, absent where it doesn't.
             pressure,
+            pressure_level: pressure_level.map(mempressure::Level::to_wire),
         },
         disk: Disk {
             read_mbps: Some(read_mbps),
@@ -888,6 +899,7 @@ mod tests {
                 total_gb: 32.0,
                 swap_used_gb: 0.5,
                 pressure: Some(0.0),
+                pressure_level: None,
             },
             disk: Disk {
                 read_mbps: Some(1.2),
@@ -973,6 +985,7 @@ mod tests {
             &skip_fstypes(None),
             ProbedReadings {
                 pressure,
+                pressure_level: None,
                 thermal_state: None,
                 gpu,
             },
@@ -992,6 +1005,7 @@ mod tests {
                 &skip_fstypes(None),
                 ProbedReadings {
                     pressure: None,
+                    pressure_level: None,
                     thermal_state: Some(state),
                     gpu: Gpu::unknown(),
                 },
@@ -1000,6 +1014,67 @@ mod tests {
                 serde_json::to_value(snapshot).unwrap()["cpu"]["thermalState"],
                 expected
             );
+        }
+    }
+
+    /// #544: a measured kernel level crosses as `memory.pressureLevel`
+    /// (0 normal, 1 warning, 2 critical); an unread one omits the key, so the
+    /// absent key is the whole version check for a consumer.
+    #[test]
+    fn sampled_snapshot_carries_the_memory_pressure_level_or_omits_the_key() {
+        use mempressure::Level::{Critical, Normal, Warning};
+        let sample = |pressure_level| {
+            compute_snapshot(
+                &System::new(),
+                &Networks::new(),
+                &Disks::new(),
+                1.0,
+                Vec::new(),
+                &skip_fstypes(None),
+                ProbedReadings {
+                    pressure: None,
+                    pressure_level,
+                    thermal_state: None,
+                    gpu: Gpu::unknown(),
+                },
+            )
+        };
+        for (level, expected) in [(Normal, 0), (Warning, 1), (Critical, 2)] {
+            let v = serde_json::to_value(sample(Some(level))).unwrap();
+            assert_eq!(v["memory"]["pressureLevel"], expected);
+            assert!(
+                !v["memory"].as_object().unwrap().contains_key("pressure"),
+                "the percentage is not filled from the level"
+            );
+        }
+        let v = serde_json::to_value(sample(None)).unwrap();
+        assert!(!v["memory"]
+            .as_object()
+            .unwrap()
+            .contains_key("pressureLevel"));
+    }
+
+    #[tokio::test]
+    async fn live_sampler_reports_the_platform_memory_pressure_level() {
+        let state = spawn_sampler();
+        let snapshot = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let snapshot = state.latest().await;
+                if snapshot.disk.read_mbps.is_some() {
+                    break snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the sampler must produce a measured snapshot");
+        if cfg!(target_os = "macos") {
+            assert!(
+                matches!(snapshot.memory.pressure_level, Some(0..=2)),
+                "a Mac agent must report the kernel's memory-pressure level"
+            );
+        } else {
+            assert_eq!(snapshot.memory.pressure_level, None);
         }
     }
 
@@ -1128,6 +1203,23 @@ mod tests {
                 "unrecognised PSI body must read unknown: {body:?}"
             );
         }
+    }
+
+    /// CONTRACT LOCK (#544): the shared Mac fixture, with `memory.pressureLevel`,
+    /// decodes into the agent's own `Snapshot` and re-serializes with the key.
+    #[test]
+    fn the_shared_mac_fixture_round_trips_with_its_pressure_level() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/fixtures/snapshot_mac.json"
+        );
+        let json = std::fs::read_to_string(path).unwrap();
+        let snapshot: Snapshot = serde_json::from_str(&json).expect("the Mac fixture decodes");
+        assert_eq!(snapshot.memory.pressure_level, Some(0));
+        assert_eq!(
+            serde_json::to_value(&snapshot).unwrap()["memory"]["pressureLevel"],
+            0
+        );
     }
 
     /// Load the shared cross-language battery fixture

@@ -79,6 +79,16 @@ Notes:
   - `pressure` is memory PSI (`some avg10` from `/proc/pressure/memory`,
     already a 0–100 percentage). Omitted where that file doesn't exist —
     macOS, or a kernel built without `CONFIG_PSI`.
+  - `memory.pressureLevel` is **measured on macOS** (contract marker ≥ 0.6.0,
+    #544): the kernel's `kern.memorystatus_vm_pressure_level` through
+    `crates/mempressure`, the signal Activity Monitor colours its Memory Pressure
+    graph by, encoded `0` normal, `1` warning, `2` critical. The sysctl predates
+    the agent's macOS 11.0 floor and is read each sample. Omitted on every other
+    platform and when the read fails; **an agent predating 0.6.0 omits it, and the
+    absent key is the whole version check.** The cockpit colours a Mac's RAM meter
+    and raises its attention from this level instead of used ÷ total. `pressure`
+    (the percentage) is not filled from it. Existing remote Macs need the updated
+    agent before they can supply it.
   - `thermalState` is **measured on macOS** (contract marker ≥ 0.5.2), using
     `ProcessInfo.thermalState` through `crates/thermal`, the same reader as the
     local cockpit. Values 0–3 mean nominal, fair, serious and critical. The

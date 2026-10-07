@@ -50,6 +50,7 @@ use process::ProcEntry;
 use rate::{Counters, RateTracker};
 use volume::{MountEntry, MountPolicy};
 
+pub use mempressure::Level as MemoryPressureLevel;
 pub use thermal::ThermalState;
 
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -151,6 +152,10 @@ pub struct LocalMemory {
     /// `0` here would paint a permanently green pressure badge, which is exactly
     /// the fabricated number this crate refuses to publish.
     pub pressure: Option<f64>,
+    /// The kernel's memory-pressure level (#544): the signal Activity Monitor
+    /// colours its graph by. `None` off macOS or when the sysctl declined;
+    /// never inferred from `used_gb / total_gb`.
+    pub pressure_level: Option<MemoryPressureLevel>,
 }
 
 impl LocalSnapshot {
@@ -186,6 +191,7 @@ impl LocalSnapshot {
                 total_gb: self.memory.total_gb,
                 swap_used_gb: self.memory.swap_used_gb,
                 pressure: self.memory.pressure,
+                pressure_level: self.memory.pressure_level.map(MemoryPressureLevel::to_wire),
             },
             disk: self.disk.clone(),
             network: self.network.clone(),
@@ -301,6 +307,7 @@ impl LocalSampler {
                 total_gb: self.system.total_memory() as f64 / BYTES_PER_GIB,
                 swap_used_gb: self.system.used_swap() as f64 / BYTES_PER_GIB,
                 pressure: None,
+                pressure_level: mempressure::read(),
             },
             disk: self.disk_rates(now),
             network: self.network_rates(now),
@@ -463,6 +470,7 @@ mod tests {
                 total_gb: 16.0,
                 swap_used_gb: 0.0,
                 pressure: None,
+                pressure_level: None,
             },
             disk: wire::Disk::default(),
             network: wire::Network::default(),
@@ -540,6 +548,22 @@ mod tests {
         snapshot.cpu.thermal_state = Some(ThermalState::Serious);
 
         assert_eq!(snapshot.to_wire().cpu.thermal_state, Some(2));
+    }
+
+    /// #544: the kernel's level lowers to `wire::Memory`'s `0/1/2` encoding, and
+    /// an unread level stays unknown rather than becoming a comfortable normal.
+    #[test]
+    fn the_memory_pressure_level_lowers_to_its_own_encoding_or_stays_unknown() {
+        assert_eq!(unknown_everything().to_wire().memory.pressure_level, None);
+        for (level, wire) in [
+            (MemoryPressureLevel::Normal, 0),
+            (MemoryPressureLevel::Warning, 1),
+            (MemoryPressureLevel::Critical, 2),
+        ] {
+            let mut snapshot = unknown_everything();
+            snapshot.memory.pressure_level = Some(level);
+            assert_eq!(snapshot.to_wire().memory.pressure_level, Some(wire));
+        }
     }
 
     /// Memory pressure crosses intact too, so the local card's green

@@ -562,6 +562,9 @@ the bundle's floor.
 │   ├── accelerator/        # the IOKit `IOAccelerator` GPU reader, shared by
 │   │                       #   localhost (this Mac's card) and agent/ (a Mac
 │   │                       #   host's). Floor 11.0, the agent's: no newer symbol
+│   ├── mempressure/        # the kernel's memory-pressure level on macOS (#544):
+│   │                       #   one `sysctlbyname`, shared by localhost and agent/.
+│   │                       #   Other platforms return None
 │   ├── thermal/            # OS thermal pressure, shared by localhost and agent/
 │   ├── localhost/          # this machine's metrics (sysinfo); every field the
 │   │                       #   platform can decline is an Option, never a 0
@@ -676,6 +679,22 @@ the bundle's floor.
   Graphics card read `—`. `crates/accelerator` must not reference a symbol newer
   than the agent's macOS 11.0 floor: `kIOMainPortDefault` is 12.0, so the walk
   passes its value, `0`, instead — a check `vtool` cannot make.
+- **A Mac's RAM alert follows the kernel's memory-pressure level, not used ÷
+  total (#544).** macOS keeps RAM full on purpose, so `used ÷ total` left every
+  healthy Mac amber. `crates/mempressure` (modelled on `crates/thermal`: one OS
+  query shared by `crates/localhost` and `agent/`, no sampler dependency) reads
+  `sysctlbyname("kern.memorystatus_vm_pressure_level")` — `1`/`2`/`4` map to
+  normal/warning/critical, anything else or a failed read is `None` — and the
+  wire carries it as `memory.pressureLevel`, an `Option<i64>` (`0`/`1`/`2`, the
+  thermal encoding) omitted when unknown. **The absent key is the whole version
+  check** (#378's precedent; the agent's wire-contract marker moved to 0.6.0 for
+  it). `memory.pressure` (the percentage) is deliberately **not** filled from the
+  level: they are different claims. Where the level is known the RAM colour and
+  the host's attention follow it and the RAM thresholds do not apply; where it is
+  unknown (Linux, Windows, an older agent) `used ÷ total` against the thresholds
+  is unchanged. The meter's fill stays used ÷ total everywhere. The rule lives in
+  `viewmodel::card` and is re-applied with the operator's limits by
+  `machine_alerts::apply`, which reads the card's `memPressureLevel`.
 - **Thermal pressure is measured on local and remote Macs** through the shared
   `crates/thermal` reader (`NSProcessInfo.thermalState`, available since macOS
   10.10.3, below the agent's 11.0 floor). The agent reads it each sample;
@@ -759,7 +778,7 @@ the bundle's floor.
   `settings_payload` → `StoreSections` → `hosts_tab`, as `agentRelease`
   (`state`, `text`, `color`), and `app/ui/settings.js` paints it and nothing more.
 - **Unknown is representable.** Every metric a producer may not be able to
-  measure (memory used/swap/pressure, thermal state, the GPU fields,
+  measure (memory used/swap/pressure/pressureLevel, thermal state, the GPU fields,
   disk/network rates, `processes[].cpuCores`) is an `Option` in `crates/wire`:
   an absent key decodes to `None`, `None` re-encodes as an *omitted* key, and
   `0` means measured zero.
@@ -932,6 +951,8 @@ the bundle's floor.
   See `app/README.md` for controls, count meanings and responsive behavior.
 - Settings → Preferences has shared CPU/RAM alert thresholds; Connections has
   per-machine overrides, including the local machine. Defaults remain 70/90%.
+  The RAM pair applies only to machines that do not report the kernel's
+  memory-pressure level (a Mac does; see Hosts & metrics).
   `store::machine_alerts` owns persistence/validation; the shell applies the
   resolved limits to cached numeric fractions on every render, so meter colors
   and dashboard attention agree without restarting host pollers.
