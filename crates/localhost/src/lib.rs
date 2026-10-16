@@ -526,6 +526,7 @@ mod tests {
             usage: Some(0.0),
             vram_used_gb: Some(1.0),
             vram_total_gb: Some(24.0),
+            unified_memory: None,
         };
 
         assert!(snapshot.to_wire().gpu.is_present());

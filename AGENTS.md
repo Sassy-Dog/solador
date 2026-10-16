@@ -944,7 +944,17 @@ the bundle's floor.
 - Dark mode optimized; glanceable grid of cockpit panels.
 - Status indicated by color: green (good), orange (warning), red (error).
 - Designed for persistent full-screen display on a second monitor.
-- Overview Machines has numeric CPU/RAM meters. GitHub tiles persist row limits
+- Overview Machines has numeric CPU/RAM meters, GPU and GPU-memory meters below
+  them (never threshold-coloured; labelled `Unified` only when the producer sets
+  `gpu.unifiedMemory`), and a full-width Disk strip for the fullest visible
+  volume (`disk_volume` in `app/src-tauri/src/dashboard.rs`). **Hidden volumes**
+  (`Host.hidden_volume_mounts` / `Settings.local_hidden_volume_mounts`) are
+  filtered once per frame by the `cockpit` command's `apply_machine_preferences`
+  (via `app/src-tauri/src/volumes.rs`, on `cockpit_view`'s payload), before the
+  Hosts panel or the dashboard reads a card, so a hidden volume never
+  colours the strip, names itself in the status or raises attention. Hide from
+  Detail (`machine_set_volume_hidden`) or the Connections checklist
+  (`settings_set_volume_hidden`). GitHub tiles persist row limits
   (including All); Repos also persists selected repository identities and column
   sorting, and Runners supports OS + architecture groups. `viewmodel::dashboard`
   owns sorting/aggregation. Architecture is carried from GitHub's standard labels
@@ -980,7 +990,8 @@ the bundle's floor.
   Open full panel retains the group, and Full's All runners clears that filter.
   Full Runners shares the same Table/List preference and table styling. Detail
   columns have fixed widths so live readings cannot shift their neighbors.
-  Machine Detail volumes sort by mount and align used/total/percentage; Full
+  Machine Detail volumes sort by mount and align used/total/percentage, each
+  with Hide, and hidden mounts listed beneath with Unhide; Full
   host cards retain their fullest-first order. Overview and Full view share one
   compact wrapping toolbar and Solador heading without a background frame or
   divider. Full view is a pressed-state toggle; Edit dashboard and Settings use

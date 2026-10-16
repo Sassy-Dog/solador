@@ -14,6 +14,12 @@ name = "solador-agent"
 # `crates/wire`'s tolerance notes cite. Nothing reads it at runtime any more —
 # `crate_version()` left `agent/deploy/lib.sh` with it — so keep bumping it for
 # the contract, never for a release.
+# 0.7.0: `gpu.unifiedMemory` — whether the GPU's memory figures describe a
+# pool shared with the CPU (Apple Silicon: `true`, read by `crates/accelerator`
+# only when both figures came from system RAM) or the board's own (`false`:
+# a discrete IOKit adapter, or `nvidia-smi`). A minor: a wire field this agent
+# has never produced before. Omitted where neither is known; an agent predating
+# this omits the key, and the cockpit then labels the figure plain VRAM.
 # 0.6.0: `memory.pressureLevel` (#544) — the kernel's memory-pressure level on
 # macOS (`kern.memorystatus_vm_pressure_level`) through `crates/mempressure`,
 # encoded 0 normal / 1 warning / 2 critical. A minor: a wire field this agent
@@ -43,7 +49,7 @@ name = "solador-agent"
 # keys are omitted instead. `/v1/health`'s `version` is how you tell a
 # redeployed agent from one still sending the old zeros (or, now, the old
 # fabricated thread rows).
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Per-host metrics agent polled by Solador"
 license = "MIT"

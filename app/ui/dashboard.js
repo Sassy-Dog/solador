@@ -72,7 +72,7 @@
   function paintFeedback() {
     const anchor = feedback?.anchor && q(feedback.anchor);
     const target = feedback && mode === "overview" && (feedback.anchor
-      ? anchor?.closest(".db-warning-control") || anchor
+      ? anchor?.closest(".db-warning-control, .db-volumes") || anchor
       : active ? q(".db-inspector") : q(".db-attention"));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
@@ -249,7 +249,8 @@
     if (row.metrics?.length) {
       const stats = node("div", "db-host-stats");
       for (const m of row.metrics) {
-        const metric = node("div", "db-metric");
+        const metric = node("div", m.span === "full" ? "db-metric db-metric-full" : "db-metric");
+        if (m.title) metric.title = m.title;
         const label = node("div", "db-stat-label");
         label.append(
           node("span", "", m.label),
@@ -966,7 +967,7 @@
       const extra = node("div", "db-detail-extra"), metrics = node("dl", "db-detail-fields");
       for (const m of row.details || []) metrics.append(field(m));
       if (metrics.childElementCount) extra.append(metrics);
-      if (row.volumes?.length) extra.append(volumeTable(row.volumes));
+      extra.append(...volumeSection(row));
       extra.append(warningControls(row));
       const actions = node("div", "db-detail-actions");
       item.addEventListener("toggle", () => {
@@ -1050,7 +1051,7 @@
       const cell = node("td"), content = node("div", "db-detail-extra");
       cell.colSpan = columns.length;
       if (row.explanation || row.detail) content.append(node("p", "db-detail-copy", row.explanation || row.detail));
-      if (row.volumes?.length) content.append(volumeTable(row.volumes));
+      content.append(...volumeSection(row));
       content.append(warningControls(row));
       const actions = node("div", "db-detail-actions");
       if (row.url) {
@@ -1070,22 +1071,57 @@
     wrap.append(table);
     return wrap;
   }
-  function volumeTable(volumes) {
+  // The machine's visible volumes, each with Hide, then the hidden ones with
+  // Unhide. Hidden mounts are listed even while the machine is down: undoing
+  // a hide must not wait for it to answer. The wrapper is where paintFeedback
+  // puts a failed Hide's message, never inside the button itself.
+  function volumeSection(row) {
+    const parts = [];
+    if (row.volumes?.length) parts.push(volumeTable(row));
+    const hidden = row.hiddenVolumes || [];
+    if (hidden.length) {
+      const list = node("div", "db-hidden-volumes");
+      for (const mount of hidden) {
+        const line = node("p", "db-hidden-volume");
+        line.append(node("span", "db-muted", `${L("hiddenVolume")}:`), " ", node("span", "", mount));
+        line.append(volumeButton(row, mount, false));
+        list.append(line);
+      }
+      parts.push(list);
+    }
+    if (!parts.length) return [];
+    const section = node("div", "db-volumes");
+    section.append(...parts);
+    return [section];
+  }
+  function volumeButton(row, mount, hide) {
+    const control = button(L(hide ? "hideVolume" : "unhideVolume"), "volume-hidden", row.id, "db-volume-action");
+    control.dataset.mount = mount;
+    control.dataset.hidden = String(hide);
+    control.title = hide ? L("hideVolumeHelp") : `${L("unhideVolume")} ${mount}`;
+    control.setAttribute("aria-label", `${L(hide ? "hideVolume" : "unhideVolume")} ${mount}`);
+    control.disabled = busy || !window.__TAURI__;
+    return control;
+  }
+  function volumeTable(source) {
     const wrap = node("div", "db-table-scroll"), table = node("table", "db-detail-table db-volume-table");
     const head = node("thead"), headings = node("tr"), body = node("tbody");
-    fixedColumns(table, [260, 115, 115, 75]);
-    for (const key of ["volume", "used", "total", "use"]) {
-      const cell = node("th", key === "volume" ? "" : "db-numeric", L(key));
+    fixedColumns(table, [260, 115, 115, 75, 80]);
+    for (const key of ["volume", "used", "total", "use", ""]) {
+      const cell = node("th", key === "volume" || !key ? "" : "db-numeric", key ? L(key) : "");
       cell.scope = "col";
       headings.append(cell);
     }
     head.append(headings);
-    for (const volume of volumes) {
+    for (const volume of source.volumes) {
       const row = node("tr"), name = node("th", "", volume.mount);
       name.scope = "row";
       row.append(name);
       for (const key of ["used", "total", "percent"])
         row.append(colored("td", "db-numeric", volume[key] ?? "—", volume.tint));
+      const action = node("td");
+      action.append(volumeButton(source, volume.mount, true));
+      row.append(action);
       body.append(row);
     }
     table.append(head, body);
@@ -1191,6 +1227,40 @@
       render(true);
       if (restoreFocus && active === inspector && mode === "overview" && !settingsOpen && document.activeElement === document.body)
         q(`[data-action="acknowledge-warning"][data-id="${CSS.escape(row.id)}"][data-metric="${CSS.escape(acknowledgement.metric)}"]`)?.focus({preventScroll:true});
+    }
+  }
+  // Shares acknowledgeWarning's guard: a poll already in flight carries the
+  // volume list from before this save, so it is discarded whatever its timing.
+  async function setVolumeHidden(control) {
+    const row = source("hosts")?.rows.find(row => row.id === control.dataset.id);
+    const mount = control.dataset.mount, hidden = control.dataset.hidden === "true";
+    if (!row || !mount || !window.__TAURI__ || busy) return;
+    const inspector = active, restoreFocus = document.activeElement === control;
+    // Hide and Unhide for one mount share this selector, so focus follows the
+    // volume to whichever list it lands in.
+    const selector = `[data-action="volume-hidden"][data-id="${CSS.escape(row.id)}"][data-mount="${CSS.escape(mount)}"]`;
+    status("");
+    acknowledgementVersion++;
+    busy = true;
+    if (active) active.signature = null;
+    render(true);
+    try {
+      const saved = await callRust("machine_set_volume_hidden", {
+        hostId: row.id, mount, hidden, width: root.clientWidth || innerWidth,
+      });
+      if (!saved?.layout?.tiles || !Array.isArray(saved.sources) || !saved.labels)
+        throw new Error(L("volumeHideFailed"));
+      model = saved;
+      status(L(hidden ? "volumeHidden" : "volumeUnhidden"));
+    } catch (error) {
+      if (active === inspector && mode === "overview")
+        status((typeof error === "string" ? error : error?.message) || L("volumeHideFailed"), true, selector);
+    } finally {
+      busy = false;
+      if (active) active.signature = null;
+      render(true);
+      if (restoreFocus && active === inspector && mode === "overview" && !settingsOpen && document.activeElement === document.body)
+        q(selector)?.focus({preventScroll:true});
     }
   }
   function copyLayout() {
@@ -1331,6 +1401,10 @@
     if (busy) return;
     if (action === "acknowledge-warning") {
       await acknowledgeWarning(b);
+      return;
+    }
+    if (action === "volume-hidden") {
+      await setVolumeHidden(b);
       return;
     }
     if (action === "detail-toggle") {

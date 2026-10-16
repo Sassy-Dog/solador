@@ -780,6 +780,11 @@ pub struct StoreSections<'a> {
     /// (#489). `NotChecked` until the first check settles — a state of its own,
     /// never a verdict.
     pub agent_release: &'a viewmodel::agent_release::Latest,
+    /// The volumes each machine reported on its latest read, keyed the way
+    /// cards are (`"local"` or the host's UUID). Live, like the lists above;
+    /// it is what lets Settings offer a checklist of mounts to show rather
+    /// than only the ones already hidden.
+    pub live_volumes: &'a [(String, Vec<wire::Volume>)],
 }
 
 /// What the crash-reporting section needs to say beyond the stored toggle.
@@ -826,6 +831,7 @@ pub fn view(
         plain_refused,
         agent_versions,
         agent_release,
+        live_volumes,
     } = store;
     json!({
         "title": OPEN_LABEL,
@@ -841,17 +847,22 @@ pub fn view(
         "general": general_tab(settings, crash),
         "layout": layout_tab(layout, settings.host_overflow_mode),
         "accounts": accounts_tab(accounts, repos, stored),
-        "hosts": hosts_tab(
+        "hosts": with_volume_choices(
+            hosts_tab(
+                settings,
+                hosts,
+                rules,
+                stored,
+                certificate_changed,
+                plain_refused,
+                AgentRelease {
+                    versions: agent_versions,
+                    latest: agent_release,
+                },
+            ),
             settings,
             hosts,
-            rules,
-            stored,
-            certificate_changed,
-            plain_refused,
-            AgentRelease {
-                versions: agent_versions,
-                latest: agent_release,
-            },
+            live_volumes,
         ),
         "azure": azure_tab(settings),
         "usage": usage_tab(settings, stored),
@@ -2217,6 +2228,64 @@ impl AgentRelease<'_> {
     }
 }
 
+/// Adds each machine's volume checklist to the Hosts tab: every mount it
+/// reported on its latest read, plus every hidden one it has not reported
+/// since, so a hidden mount that went away can still be unhidden.
+fn with_volume_choices(
+    mut tab: Value,
+    settings: &Settings,
+    hosts: &[Host],
+    live: &[(String, Vec<wire::Volume>)],
+) -> Value {
+    let live_for = |id: &str| {
+        live.iter()
+            .find(|(key, _)| key == id)
+            .map_or(&[][..], |(_, volumes)| volumes.as_slice())
+    };
+    if let Some(rows) = tab["rows"].as_array_mut() {
+        for row in rows {
+            let id = row["id"].as_str().unwrap_or_default().to_owned();
+            let hidden = hosts
+                .iter()
+                .find(|host| host.id.to_string() == id)
+                .map_or(&[][..], |host| host.hidden_volume_mounts.as_slice());
+            row["volumes"] = volume_choices(live_for(&id), hidden);
+        }
+    }
+    tab["localVolumes"] = volume_choices(
+        live_for(crate::volumes::LOCAL),
+        &settings.local_hidden_volume_mounts,
+    );
+    tab
+}
+
+fn volume_choices(live: &[wire::Volume], hidden: &[String]) -> Value {
+    let mut rows: Vec<(String, String, bool)> = live
+        .iter()
+        .map(|volume| {
+            let detail = match volume.percent_used() {
+                Some(percent) => format!(
+                    "{}% · {} GB",
+                    percent.round() as i64,
+                    viewmodel::format::fmt(volume.total_gb)
+                ),
+                None => viewmodel::card::UNKNOWN.to_owned(),
+            };
+            (volume.mount.clone(), detail, hidden.contains(&volume.mount))
+        })
+        .collect();
+    for mount in hidden {
+        if !rows.iter().any(|(known, ..)| known == mount) {
+            rows.push((mount.clone(), "not reported".to_owned(), true));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    json!(rows
+        .into_iter()
+        .map(|(mount, detail, hidden)| json!({"mount": mount, "detail": detail, "hidden": hidden}))
+        .collect::<Vec<_>>())
+}
+
 fn hosts_tab(
     settings: &Settings,
     hosts: &[Host],
@@ -2245,7 +2314,6 @@ fn hosts_tab(
                 "port": host.port,
                 "enabled": host.enabled,
                 "tokenStored": stored.hosts.contains(&host.id),
-                "hiddenVolumes": host.hidden_volume_mounts,
                 "machineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, Some(&host.id.to_string())),
                 // The pin is a public certificate's hash, so it is shown in
                 // full: it is what the operator compares against the host.
@@ -2267,14 +2335,8 @@ fn hosts_tab(
                 "agentRelease": agent.line(host),
             }))
             .collect::<Vec<_>>(),
-        // Rendered only when it has entries. This shell has no local-machine
-        // collector (HostMetricsKit is the original-only), so nothing here can *add*
-        // a mount — the section exists so a list written by a future local
-        // collector, or by hand, can still be undone.
-        "localHidden": {
-            "heading": "Hidden Volumes — this machine",
-            "mounts": settings.local_hidden_volume_mounts,
-        },
+        "volumesHeading": "Volumes",
+        "volumesHelp": "Unchecked volumes are still measured, but they are left off the Machines tile and the Hosts panel, and a full one raises no attention.",
         "localMachineAlerts": crate::machine_alerts::settings(&settings.machine_alerts, Some("local")),
         "add": {
             "heading": "Add Host",
@@ -3344,6 +3406,7 @@ mod tests {
             plain_refused: &[],
             agent_versions: &[],
             agent_release: &viewmodel::agent_release::Latest::NotChecked,
+            live_volumes: &[],
         }
     }
 
@@ -4046,12 +4109,17 @@ mod tests {
         assert_eq!(rows[0]["endpoint"], "100.100.100.100:9000");
         assert_eq!(rows[0]["enabled"], true);
         assert_eq!(rows[0]["tokenStored"], true);
-        assert_eq!(rows[0]["hiddenVolumes"][0], "/mnt/scratch");
+        assert_eq!(
+            rows[0]["volumes"],
+            json!([{"mount": "/mnt/scratch", "detail": "not reported", "hidden": true}]),
+            "a hidden mount the host no longer reports can still be unhidden"
+        );
         assert_eq!(rows[0]["id"], hosts[0].id.to_string());
 
         assert_eq!(rows[1]["enabled"], false);
         assert_eq!(rows[1]["tokenStored"], false);
-        assert_eq!(vm["hosts"]["localHidden"]["mounts"][0], "/Volumes/Backup");
+        assert_eq!(vm["hosts"]["localVolumes"][0]["mount"], "/Volumes/Backup");
+        assert_eq!(vm["hosts"]["localVolumes"][0]["hidden"], true);
         assert_eq!(vm["hosts"]["add"]["portDefault"], "7878");
     }
 

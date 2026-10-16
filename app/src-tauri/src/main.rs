@@ -32,6 +32,7 @@ mod services;
 mod settings;
 mod update;
 mod usage;
+mod volumes;
 mod window_state;
 
 use azure::AzureState;
@@ -537,6 +538,19 @@ fn volume_slots(cards: &[Value], columns: usize) -> usize {
         .map(|card| card["volumes"].as_array().map_or(0, Vec::len))
         .max()
         .unwrap_or(0)
+}
+
+/// Drops the operator's hidden volumes from every card, then re-derives the
+/// one payload figure computed from those lists: [`volume_slots`] pads cards to
+/// the longest *visible* list. Before anything else reads the payload, so the
+/// Hosts panel and the dashboard cannot disagree about which volumes exist.
+fn hide_volumes(payload: &mut Value, hidden: &volumes::Hidden) {
+    let columns = payload["hostColumns"].as_u64().unwrap_or(0) as usize;
+    if let Some(cards) = payload["hosts"].as_array_mut() {
+        hidden.apply(cards);
+        let slots = volume_slots(cards, columns);
+        payload["volumeSlots"] = json!(slots);
+    }
 }
 
 /// Rewrites every card's core ladder so the blocks line up across a row.
@@ -2648,6 +2662,28 @@ fn agent_versions(app: &App) -> Vec<(Uuid, String)> {
         .collect()
 }
 
+/// The volumes each machine reported on its latest read, keyed like cards.
+/// A host that has never answered is absent: it has reported nothing.
+fn live_volumes(app: &App) -> Vec<(String, Vec<wire::Volume>)> {
+    let mut live: Vec<(String, Vec<wire::Volume>)> = {
+        let hosts = app.hosts.lock().expect("poll set poisoned");
+        hosts
+            .iter()
+            .filter_map(|polled| {
+                let state = polled.state.lock().expect("host state poisoned");
+                state
+                    .latest
+                    .as_ref()
+                    .map(|snapshot| (polled.key.id.to_string(), snapshot.volumes.clone()))
+            })
+            .collect()
+    };
+    if let Some(volumes) = app.local.lock().expect("local state poisoned").volumes() {
+        live.push((volumes::LOCAL.to_owned(), volumes));
+    }
+    live
+}
+
 /// The Settings payload for the app's current state.
 fn settings_payload(app: &App) -> Value {
     // Read before the store's lock is taken, and never while it is held: the
@@ -2665,6 +2701,7 @@ fn settings_payload(app: &App) -> Value {
     let certificate_changed = certificate_changed_hosts(app);
     let plain_refused = plain_refused_hosts(app);
     let versions = agent_versions(app);
+    let live = live_volumes(app);
     let agent_release = app
         .agent_release
         .lock()
@@ -2685,6 +2722,7 @@ fn settings_payload(app: &App) -> Value {
             accounts: store.accounts(),
             certificate_changed: &certificate_changed,
             plain_refused: &plain_refused,
+            live_volumes: &live,
         },
         &stored,
         &facts,
@@ -2859,7 +2897,7 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
     // laundered on the way out as well as on the way in (`breakpoints`), so a
     // store hand-edited to name a panel this build does not have still renders
     // every panel it does.
-    let (overflow, core_row_span, row_gap_px, layout, alerts) = {
+    let (overflow, core_row_span, row_gap_px, layout, alerts, hidden) = {
         let store = state.store.lock().expect("store poisoned");
         let settings = store.settings();
         let bands = settings::breakpoints(store.layout(), settings.host_overflow_mode);
@@ -2870,6 +2908,7 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
             settings.row_gap_px,
             band.layout(),
             settings.machine_alerts.clone(),
+            volumes::Hidden::from_store(&store),
         )
     };
     let mut payload = cockpit_view(
@@ -2881,8 +2920,22 @@ fn cockpit(width: f64, state: tauri::State<'_, Arc<App>>) -> Value {
         row_gap_px,
         &layout,
     );
-    machine_alerts::apply(&mut payload, &alerts);
+    apply_machine_preferences(&mut payload, &hidden, &alerts);
     payload
+}
+
+/// The operator's per-machine choices, applied to the cockpit payload before
+/// the Hosts panel or the dashboard reads a card. One function rather than two
+/// calls in `cockpit`, so the test below exercises exactly what ships: drop it,
+/// and a full disk the operator hid would colour the strip and raise attention
+/// again.
+fn apply_machine_preferences(
+    payload: &mut Value,
+    hidden: &volumes::Hidden,
+    alerts: &store::machine_alerts::MachineAlerts,
+) {
+    hide_volumes(payload, hidden);
+    machine_alerts::apply(payload, alerts);
 }
 
 // MARK: the Usage + Azure Cost panels
@@ -3794,6 +3847,27 @@ fn machine_acknowledge_warning(
     Ok(dashboard_view(width, state))
 }
 
+/// Hides or unhides one volume on one machine from the dashboard's Detail, and
+/// answers with the re-rendered dashboard so the tile, its Disk meter and
+/// attention change in the same frame as the table.
+#[tauri::command]
+fn machine_set_volume_hidden(
+    host_id: String,
+    mount: String,
+    hidden: bool,
+    width: f64,
+    state: tauri::State<'_, Arc<App>>,
+) -> Result<Value, String> {
+    volumes::set_hidden(
+        &mut state.store.lock().expect("store poisoned"),
+        &host_id,
+        &mount,
+        hidden,
+    )
+    .map_err(|error| format!("Could not save the volume change: {error}"))?;
+    Ok(dashboard_view(width, state))
+}
+
 /// Cuts short the sleep of the one loop whose cadence just changed.
 ///
 /// Exhaustive over [`PanelInterval`], so a fifth settable panel cannot be added
@@ -4381,42 +4455,30 @@ fn settings_remove_host(id: String, state: tauri::State<'_, Arc<App>>) -> Value 
     settings_response(&state, status)
 }
 
-/// Unhides one mount — on a host when `host_id` is given, otherwise on the
-/// local machine's list.
+/// Hides or unhides one mount — on a host when `host_id` is given, otherwise on
+/// the local machine's list.
 ///
 /// Deliberately does **not** call [`reload_hosts`]: a volume edit must not
 /// cost the host card its sparkline history or its volume debounce. Same
 /// distinction the original view draws between `applyHiddenMounts()` and
 /// `reload()`.
 #[tauri::command]
-fn settings_unhide_volume(
+fn settings_set_volume_hidden(
     host_id: Option<String>,
     mount: String,
+    hidden: bool,
     state: tauri::State<'_, Arc<App>>,
 ) -> Value {
+    let id = host_id.as_deref().unwrap_or(volumes::LOCAL);
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        match host_id {
-            Some(raw) => {
-                let host = Uuid::parse_str(&raw).ok().and_then(|id| store.host_mut(id));
-                match host {
-                    Some(host) => {
-                        host.hidden_volume_mounts.retain(|m| m != &mount);
-                        save_status(&store, format!("Unhid {mount}."))
-                    }
-                    None => Some("Skipped — unknown host.".to_owned()),
-                }
-            }
-            None => {
-                store
-                    .settings_mut()
-                    .local_hidden_volume_mounts
-                    .retain(|m| m != &mount);
-                save_status(&store, format!("Unhid {mount}."))
-            }
+        match volumes::set_hidden(&mut store, id, &mount, hidden) {
+            Ok(()) if hidden => format!("Hid {mount}."),
+            Ok(()) => format!("Unhid {mount}."),
+            Err(error) => format!("Failed: {error}"),
         }
     };
-    settings_response(&state, status)
+    settings_response(&state, Some(status))
 }
 
 // MARK: the container group rules editor
@@ -5195,16 +5257,23 @@ fn wake_for(app: &App, field: SecretField) {
 /// turns_red_and_says_how_old_it_is`), and the Playwright suite depends on
 /// that holding for its dumped fixtures too.
 fn dump_card(host_name: &str, connection: &Connection) -> Value {
+    dump_card_of(host_name, &dump_snapshot(), connection)
+}
+
+fn dump_snapshot() -> wire::Snapshot {
     const FIXTURE: &str = include_str!("../../../crates/wire/tests/fixtures/snapshot.json");
-    let snap: wire::Snapshot = serde_json::from_str(FIXTURE).expect("fixture");
+    serde_json::from_str(FIXTURE).expect("fixture")
+}
+
+fn dump_card_of(host_name: &str, snap: &wire::Snapshot, connection: &Connection) -> Value {
     let mut h = HostHistories::new();
     // A full history buffer is what lets the Playwright suite assert "wider
     // charts show proportionally more samples" without needing hundreds of
     // real polls first — see HISTORY_CAPACITY's doc comment.
     for _ in 0..viewmodel::layout::HISTORY_CAPACITY {
-        h.record(&snap);
+        h.record(snap);
     }
-    let mut card = host_card(host_name, &snap, &h, connection);
+    let mut card = host_card(host_name, snap, &h, connection);
     card["id"] = json!(host_name);
     card
 }
@@ -5361,6 +5430,7 @@ fn showcase_histories(latest: &wire::Snapshot) -> HostHistories {
             sample.disk.write_mbps = scale(latest.disk.write_mbps, step, 7);
             sample.network.download_mbps = scale(latest.network.download_mbps, step, 11);
             sample.network.upload_mbps = scale(latest.network.upload_mbps, step, 4);
+            sample.gpu.usage = latest.gpu.usage.map(|usage| wobble(usage, step, 5));
         }
         histories.record(&sample);
     }
@@ -5369,7 +5439,15 @@ fn showcase_histories(latest: &wire::Snapshot) -> HostHistories {
 
 /// This machine's card, as [`dump_local_card`] paints it but with moving charts.
 fn showcase_local_card() -> Value {
-    let snapshot = local_fixture_snapshot();
+    let mut snapshot = local_fixture_snapshot();
+    // The picture of the product has the GPU the e2e fixture deliberately
+    // lacks: Apple Silicon, so its memory is the GPU's share of RAM.
+    snapshot.gpu = wire::Gpu {
+        usage: Some(23.0),
+        vram_used_gb: Some(9.8),
+        vram_total_gb: Some(64.0),
+        unified_memory: Some(true),
+    };
     local::card_from(
         "mac-studio",
         &snapshot,
@@ -5409,7 +5487,14 @@ fn showcase_remote_card() -> Value {
             download_mbps: Some(3.4),
             upload_mbps: Some(1.2),
         },
-        gpu: wire::Gpu::unknown(),
+        // Serving a local model: busy, most of its VRAM taken, and still
+        // healthy — the GPU meters never raise attention.
+        gpu: wire::Gpu {
+            usage: Some(64.0),
+            vram_used_gb: Some(18.6),
+            vram_total_gb: Some(24.0),
+            unified_memory: Some(false),
+        },
         battery: None,
         volumes: vec![
             wire::Volume {
@@ -5427,6 +5512,7 @@ fn showcase_remote_card() -> Value {
         ],
         processes: vec![
             wire::Process::from_cpu_percent(991, "podman".to_string(), 31.0, 612.0),
+            wire::Process::from_cpu_percent(1377, "ollama".to_string(), 22.0, 4_310.0),
             wire::Process::from_cpu_percent(1204, "postgres".to_string(), 12.5, 1_840.0),
         ],
     };
@@ -5652,6 +5738,28 @@ fn dump_settings() -> Value {
     // verified release (`live`), one at it (`spare`) and one that cannot say.
     let mut silent = Host::new("lab-edge", "100.64.0.9");
     silent.id = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0003);
+    // What the hosts last reported, so the Settings volume checklist renders
+    // both readings: a mount shown, one hidden while reported, and one hidden
+    // that the host no longer reports (`/mnt/scratch`).
+    let volume = |mount: &str, used_gb: f64, total_gb: f64| wire::Volume {
+        mount: mount.into(),
+        used_gb,
+        total_gb,
+        fstype: None,
+    };
+    let live_volumes = [
+        (
+            live.id.to_string(),
+            vec![volume("/", 38.0, 100.0), volume("/srv", 776.0, 800.0)],
+        ),
+        (
+            volumes::LOCAL.to_owned(),
+            vec![
+                volume("/", 1420.0, 2000.0),
+                volume("/Volumes/Time Machine", 3720.0, 4000.0),
+            ],
+        ),
+    ];
     let agent_versions = [
         (live.id, "2026.10.13".to_owned()),
         (spare.id, "2026.11.1".to_owned()),
@@ -5757,6 +5865,7 @@ fn dump_settings() -> Value {
             certificate_changed: &certificate_changed,
             plain_refused: &[],
             accounts: &accounts,
+            live_volumes: &live_volumes,
         },
         &stored,
         &facts,
@@ -5939,6 +6048,21 @@ fn dump_github(empty: bool, runners: bool) -> Value {
 fn dump_dashboard() -> Value {
     let mut hosts = dump_cockpit(1200.0, 3, HostOverflowMode::Stack);
     hosts["id"] = json!("hosts");
+    // The Machines tile's GPU meters need a GPU to draw: ubu-01 serves a local
+    // model from a 24 GB card, the shape the tile grew those meters for. Only
+    // here — the cockpit fixtures keep the GPU-less host their specs assert.
+    let mut serving = dump_snapshot();
+    serving.gpu = wire::Gpu {
+        usage: Some(97.0),
+        vram_used_gb: Some(22.1),
+        vram_total_gb: Some(24.0),
+        unified_memory: Some(false),
+    };
+    assert_eq!(
+        hosts["hosts"][1]["id"], "ubu-01",
+        "the remote host the fixture swaps"
+    );
+    hosts["hosts"][1] = dump_card_of("ubu-01", &serving, &Connection::Live);
     dashboard::view(
         &dashboard::default_layout(),
         &[
@@ -6569,6 +6693,7 @@ fn main() {
             settings_save_general,
             settings_save_machine_alerts,
             machine_acknowledge_warning,
+            machine_set_volume_hidden,
             settings_save_panel_interval,
             settings_clear_panel_interval,
             settings_set_crash_reporting,
@@ -6584,7 +6709,7 @@ fn main() {
             settings_probe_host_certificate,
             settings_set_host_enabled,
             settings_remove_host,
-            settings_unhide_volume,
+            settings_set_volume_hidden,
             settings_add_container_rule,
             settings_set_container_rule,
             settings_remove_container_rule,
@@ -7677,6 +7802,88 @@ mod tests {
             .iter()
             .map(|n| json!({ "volumes": vec![json!({ "mount": "/" }); *n] }))
             .collect()
+    }
+
+    /// Hiding volumes re-derives the reservation from what is left: a card
+    /// padded for mounts nobody can see would be dead space with no reason.
+    #[test]
+    fn hidden_volumes_leave_the_cards_and_the_reservation() {
+        let cards = vec![
+            json!({"id": "local", "volumes": [{"mount": "/"}, {"mount": "/a"}, {"mount": "/b"}]}),
+            json!({"id": "other", "volumes": [{"mount": "/"}]}),
+        ];
+        let mut payload = stacked_payload(cards, 1, 2732.0);
+        assert_eq!(payload["volumeSlots"], 3);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in(dir.path(), false).unwrap();
+        volumes::set_hidden(&mut store, volumes::LOCAL, "/a", true).unwrap();
+        volumes::set_hidden(&mut store, volumes::LOCAL, "/b", true).unwrap();
+        hide_volumes(&mut payload, &volumes::Hidden::from_store(&store));
+
+        assert_eq!(payload["hosts"][0]["volumes"], json!([{"mount": "/"}]));
+        assert_eq!(payload["volumeSlots"], 1);
+    }
+
+    /// End to end through the dashboard: a full volume the operator hid names
+    /// nothing, colours nothing and raises no attention.
+    #[test]
+    fn a_hidden_full_volume_never_reaches_the_dashboard() {
+        let mut snapshot: wire::Snapshot =
+            serde_json::from_str(include_str!("../../../tests/fixtures/snapshot_mac.json"))
+                .unwrap();
+        let volume = |mount: &str, used_gb: f64| wire::Volume {
+            mount: mount.into(),
+            used_gb,
+            total_gb: 100.0,
+            fstype: None,
+        };
+        snapshot.volumes = vec![volume("/", 41.0), volume("/srv", 97.0)];
+        let mut card = host_card(
+            "studio",
+            &snapshot,
+            &HostHistories::new(),
+            &Connection::Live,
+        );
+        card["id"] = json!(volumes::LOCAL);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in(dir.path(), false).unwrap();
+        let host_row = |store: &Store| {
+            let mut payload = stacked_payload(vec![card.clone()], 0, 1200.0);
+            apply_machine_preferences(
+                &mut payload,
+                &volumes::Hidden::from_store(store),
+                &store.settings().machine_alerts,
+            );
+            payload["id"] = json!("hosts");
+            let view = dashboard::view(&dashboard::default_layout(), &[payload]);
+            let hosts = view["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|source| source["id"] == "hosts")
+                .unwrap()
+                .clone();
+            hosts["rows"][0].clone()
+        };
+
+        let shown = host_row(&store);
+        assert_eq!(shown["value"], "/srv at 97%", "control: visible, it alerts");
+        assert_eq!(shown["attention"], true);
+
+        volumes::set_hidden(&mut store, volumes::LOCAL, "/srv", true).unwrap();
+        let hidden = host_row(&store);
+        assert_eq!(hidden["attention"], false);
+        assert_ne!(hidden["value"], "/srv at 97%");
+        let disk = hidden["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|metric| metric["header"] == "Disk")
+            .unwrap();
+        assert_eq!(disk["label"], "/");
+        assert_eq!(hidden["hiddenVolumes"], json!(["/srv"]));
     }
 
     /// Side by side, every card reserves the busiest card's volume count — the
@@ -9567,10 +9774,18 @@ mod tests {
         assert_eq!(states, ["behind", "up-to-date", "host-unknown"]);
         assert_eq!(rows[0]["tokenStored"], true);
         assert_eq!(rows[0]["enabled"], true);
-        assert!(!rows[0]["hiddenVolumes"]
+        // The checklist's three readings: shown, hidden while reported, and
+        // hidden but no longer reported (still offered, so it can be undone).
+        let volumes = rows[0]["volumes"].as_array().expect("volumes");
+        assert!(volumes.iter().any(|v| v["hidden"] == false));
+        assert!(volumes
+            .iter()
+            .any(|v| v["hidden"] == true && v["detail"] == "not reported"));
+        assert!(vm["hosts"]["localVolumes"]
             .as_array()
-            .expect("hidden volumes")
-            .is_empty());
+            .expect("local volumes")
+            .iter()
+            .any(|v| v["hidden"] == true && v["detail"] != "not reported"));
         assert_eq!(rows[1]["tokenStored"], false);
         assert_eq!(rows[1]["enabled"], false);
 

@@ -325,6 +325,8 @@ fn parse_nvidia_csv(stdout: &str) -> Option<Gpu> {
         usage: Some(usage.clamp(0.0, 100.0)),
         vram_used_gb: Some(mib_to_gb(used_mib)),
         vram_total_gb: Some(mib_to_gb(total_mib)),
+        // nvidia-smi's memory.* is the board's own memory.
+        unified_memory: Some(false),
     })
 }
 
@@ -365,6 +367,7 @@ mod tests {
         // 12288 MiB is 12 GiB exactly — the conversion, not a passthrough.
         assert_eq!(gpu.vram_total_gb, Some(12.0));
         assert!(gpu.is_present(), "12 GiB of VRAM is a present GPU");
+        assert_eq!(gpu.unified_memory, Some(false), "a board's own memory");
     }
 
     /// A busy card: utilisation and used VRAM are read straight through, in

@@ -515,7 +515,52 @@ pub fn host_card(
             fraction * 100.0
         )),
     }));
+    // The Machines tile's GPU and GPU-memory meters: numbers beside the strings
+    // above, under the same `has_gpu` rule, so a host with no GPU is `None`
+    // rather than an empty bar claiming 0%. Never threshold-coloured — a GPU
+    // pinned at 100% is what serving a local model looks like, not a fault.
+    let gpu_present = has_gpu(s);
+    card["gpuFraction"] = json!(s
+        .gpu
+        .usage
+        .filter(|usage| gpu_present && usage.is_finite())
+        .map(|usage| usage.clamp(0.0, 100.0) / 100.0));
+    let gpu_memory = match (s.gpu.vram_used_gb, s.gpu.vram_total_gb) {
+        (Some(used), Some(total)) if gpu_present && used.is_finite() => Some((used, total)),
+        _ => None,
+    };
+    card["vramFraction"] = json!(gpu_memory.map(|(used, total)| (used / total).clamp(0.0, 1.0)));
+    card["vramValue"] = json!(gpu_memory.map_or_else(
+        || UNKNOWN.to_owned(),
+        |(used, total)| format!("{} / {} GB", fmt(used), fmt(total)),
+    ));
+    // "Unified" only where the producer said the figures are system RAM: on
+    // Apple Silicon they overlap the RAM meter, and calling them VRAM would
+    // read as a second pool. An agent that predates the key gets the plain
+    // word, never a guess from the numbers.
+    card["vramLabel"] = json!(if s.gpu.unified_memory == Some(true) {
+        "Unified"
+    } else {
+        "VRAM"
+    });
     card
+}
+
+/// Drops the mounts the operator hid from a card's `volumes` and records the
+/// hidden list beside them, so the Machines tile can offer to undo it.
+///
+/// Run on the finished card, before anything reads its volumes, so the full
+/// Hosts panel, the Machines tile's Disk meter, its status line and its
+/// attention all see the same set — a hidden volume that is filling up raises
+/// nothing. `volumeCount` follows, because it is the count the card shows.
+pub fn hide_volumes(card: &mut Value, hidden: &[String]) {
+    card["hiddenVolumes"] = json!(hidden);
+    let Some(volumes) = card["volumes"].as_array_mut() else {
+        return;
+    };
+    volumes.retain(|volume| !hidden.iter().any(|mount| volume["mount"] == mount.as_str()));
+    let count = volumes.len().to_string();
+    card["volumeCount"] = json!(count);
 }
 
 #[cfg(test)]
@@ -622,6 +667,7 @@ mod tests {
             usage: Some(usage),
             vram_used_gb: Some(used),
             vram_total_gb: Some(total),
+            unified_memory: None,
         }
     }
 
@@ -709,6 +755,7 @@ mod tests {
             usage: None,
             vram_used_gb: Some(3.5),
             vram_total_gb: Some(24.0),
+            unified_memory: None,
         };
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuValue"], UNKNOWN);
@@ -1210,5 +1257,89 @@ mod tests {
             vm["connection"]["color"],
             crate::color::hex(crate::color::RED)
         );
+    }
+
+    /// The Machines tile's meters are numbers, and a host with no GPU has no
+    /// number — neither a 0% bar nor a 0 GB one.
+    #[test]
+    fn gpu_meters_are_fractions_for_a_present_gpu_and_none_for_an_absent_one() {
+        let mut s = fixture();
+        s.gpu = gpu(97.0, 22.1, 24.0);
+        let vm = host_card("llm-box", &s, &HostHistories::new(), &Connection::Live);
+        assert_eq!(vm["gpuFraction"], 0.97);
+        assert!((vm["vramFraction"].as_f64().unwrap() - 22.1 / 24.0).abs() < 1e-9);
+        assert_eq!(vm["vramValue"], "22.1 / 24.0 GB");
+        assert_eq!(vm["vramLabel"], "VRAM", "an unstated pool is plain VRAM");
+
+        for absent in [wire::Gpu::zeros(), wire::Gpu::unknown()] {
+            s.gpu = absent;
+            let vm = host_card("nas", &s, &HostHistories::new(), &Connection::Live);
+            assert!(vm["gpuFraction"].is_null(), "got {}", vm["gpuFraction"]);
+            assert!(vm["vramFraction"].is_null(), "got {}", vm["vramFraction"]);
+            assert_eq!(vm["vramValue"], UNKNOWN);
+        }
+    }
+
+    /// A present GPU whose load nobody read keeps its memory meter and loses
+    /// only the load one, the same per-field blanking `gpuValue` does.
+    #[test]
+    fn an_unreadable_gpu_load_blanks_only_its_own_meter() {
+        let mut s = fixture();
+        s.gpu = wire::Gpu {
+            usage: None,
+            ..gpu(0.0, 3.5, 24.0)
+        };
+        let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
+        assert!(vm["gpuFraction"].is_null());
+        assert_eq!(vm["vramValue"], "3.5 / 24.0 GB");
+    }
+
+    /// Unified memory is labelled as such only when the producer said so.
+    #[test]
+    fn gpu_memory_is_labelled_unified_only_on_the_producers_word() {
+        let mut s = fixture();
+        for (unified, label) in [
+            (Some(true), "Unified"),
+            (Some(false), "VRAM"),
+            (None, "VRAM"),
+        ] {
+            s.gpu = wire::Gpu {
+                unified_memory: unified,
+                ..gpu(41.0, 21.4, 64.0)
+            };
+            let vm = host_card("studio", &s, &HostHistories::new(), &Connection::Live);
+            assert_eq!(vm["vramLabel"], label, "unifiedMemory {unified:?}");
+        }
+    }
+
+    #[test]
+    fn hidden_volumes_leave_the_card_and_its_count_and_are_listed_beside_it() {
+        let mut s = fixture();
+        s.volumes = vec![
+            wire::Volume {
+                mount: "/".into(),
+                used_gb: 50.0,
+                total_gb: 100.0,
+                fstype: None,
+            },
+            wire::Volume {
+                mount: "/srv".into(),
+                used_gb: 97.0,
+                total_gb: 100.0,
+                fstype: None,
+            },
+        ];
+        let mut vm = host_card("nas", &s, &HostHistories::new(), &Connection::Live);
+        hide_volumes(&mut vm, &["/srv".to_owned(), "/gone".to_owned()]);
+
+        let mounts: Vec<&str> = vm["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["mount"].as_str().unwrap())
+            .collect();
+        assert_eq!(mounts, ["/"]);
+        assert_eq!(vm["volumeCount"], "1");
+        assert_eq!(vm["hiddenVolumes"], json!(["/srv", "/gone"]));
     }
 }

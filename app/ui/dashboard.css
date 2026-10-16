@@ -457,18 +457,28 @@
   border-top: 0;
   padding-top: 0;
 }
+/* Layout B: CPU · RAM over GPU · GPU memory, then the Disk strip spanning
+   both columns (`span: "full"` from Rust). */
 #dashboardOverview .db-host-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  gap: 6px 16px;
   margin-top: 7px;
 }
+#dashboardOverview .db-metric-full { grid-column: 1 / -1; }
 #dashboardOverview .db-stat-label {
   display: flex;
   justify-content: space-between;
   gap: 5px;
   font-size: 11px;
   color: var(--db-muted);
+}
+/* The Disk strip's label is a mount path: it ellipsizes before the % moves. */
+#dashboardOverview .db-stat-label > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #dashboardOverview .db-stat-label strong {
   color: var(--db-text);
@@ -699,6 +709,10 @@
 #dashboardOverview .db-hidden-list strong { font-weight: 500; }
 #dashboardOverview .db-hidden-list [aria-pressed="true"] { border-color: var(--db-blue); box-shadow: inset 0 0 0 1px var(--db-blue); }
 #dashboardOverview .db-hidden-preview .db-preview-tile { grid-column: span 12; }
+/* Capped like the list beside it, so a tall tile's preview (a Machines tile
+   is four meter rows per host) scrolls inside itself and never pushes Restore
+   and Remove below the fold. */
+#dashboardOverview .db-hidden-preview .db-preview-grid { max-height: min(440px, 55vh); overflow-y: auto; }
 #dashboardOverview .db-removal { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--db-line); padding-top: 14px; margin-top: 16px; }
 #dashboardOverview .db-removal-note { margin-top: 10px; }
 :is(#dashboardOverview, .db-chrome) button.db-remove { color: var(--db-red); background: transparent; }
@@ -781,7 +795,7 @@
     display: none;
   }
   #dashboardOverview .db-host-stats {
-    gap: 10px;
+    gap: 6px 10px;
   }
   .db-chrome .db-actions button {
     font-size: 11px;
@@ -942,6 +956,10 @@
 #cockpitView .db-view-status { margin:0; color:var(--db-amber); }
 #cockpitView .db-view-status:empty { display:none; }
 #dashboardOverview .db-volume-table { width:auto; min-width: min(100%, 420px); margin:8px 0; }
+#dashboardOverview .db-volume-action { min-height:0 !important; padding:1px 8px !important; font-size:11px; }
+#dashboardOverview .db-volumes > .db-action-error { margin:4px 0 8px; }
+#dashboardOverview .db-hidden-volumes { display:grid; gap:4px; margin:4px 0 8px; font-size:11px; }
+#dashboardOverview .db-hidden-volume { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 #dashboardOverview .db-volume-table th:first-child { max-width:45ch; white-space:normal; overflow-wrap:anywhere; color:var(--db-muted); }
 
 :is(#dashboardOverview, #cockpitView) .db-detail-table > :is(thead,tbody) > tr > :is(th,td) { overflow:hidden; text-overflow:ellipsis; }

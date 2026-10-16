@@ -348,6 +348,10 @@ test('changing Detailed to Summary releases the old tile height', async ({page, 
   next.layout.revision += 1;
   await page.evaluate(next => { window.framesForTest.dashboard_view = next; }, next);
   const content = page.locator('.db-tile').first().locator('.db-tile-content');
+  // Wait for the presentation itself: a Machines summary is already taller
+  // than Detailed's 360px floor, so the floor alone no longer proves the
+  // Detailed frame was painted.
+  await expect(page.locator('.db-tile').first()).toHaveAttribute('data-presentation', 'detailed');
   await expect.poll(() => content.evaluate(el => parseFloat(el.style.minHeight))).toBeGreaterThanOrEqual(360);
   const detailed = (await content.boundingBox()).height;
   next.tiles[0].presentation = 'summary';

@@ -190,6 +190,14 @@ fn field(label: &str, value: &Value) -> Value {
     json!({"label":label, "value":value, "fraction":null})
 }
 
+/// Which volume the Machines tile's Disk strip stands for: the fullest one the
+/// operator has not hidden. The card lists volumes fullest-first, with an
+/// unmeasurable one last, so that is the first — the volume closest to filling
+/// up, and the same one the status line names when it warns.
+fn disk_volume(volumes: &[Value]) -> Option<&Value> {
+    volumes.first()
+}
+
 fn host_rows(p: &Value) -> Vec<Value> {
     list(p, "hosts")
         .iter()
@@ -292,10 +300,29 @@ fn host_rows(p: &Value) -> Vec<Value> {
                     &h[key]
                 }
             };
+            // Layout B: CPU · RAM over GPU · GPU memory, then one full-width
+            // Disk strip. GPU memory and Disk keep a fixed `header` for Detail's
+            // columns while their tile label names what they are: "Unified" on
+            // Apple Silicon, the volume's mount on the strip.
+            let disk = (!down).then(|| disk_volume(list(h, "volumes"))).flatten();
+            let disk_measured = disk.filter(|v| string(v, "percent") != card::UNKNOWN);
             r["metrics"] = json!([
                 field("CPU", reading("cpuValue")),
-                field("RAM", reading("memValue"))
+                field("RAM", reading("memValue")),
+                field("GPU", reading("gpuValue")),
+                field(h["vramLabel"].as_str().unwrap_or("VRAM"), reading("vramValue")),
+                field(disk.map_or("Disk", |v| string(v, "mount")), &disk.map_or(Value::Null, |v| v["percent"].clone())),
             ]);
+            r["metrics"][3]["header"] = json!("GPU mem");
+            r["metrics"][4]["header"] = json!("Disk");
+            r["metrics"][4]["span"] = json!("full");
+            if let Some(v) = disk {
+                r["metrics"][4]["title"] = json!(format!("{} · {}", string(v, "mount"), string(v, "detail")));
+            }
+            if let Some(v) = disk_measured {
+                r["metrics"][4]["fraction"] = v["fraction"].clone();
+                r["metrics"][4]["color"] = v["tint"].clone();
+            }
             for (index, metric, label, tint, preference) in [
                 (0, "cpu", "CPU", "cpuValueColor", "cpuWarningAcknowledged"),
                 (1, "ram", "RAM", "memValueColor", "memWarningAcknowledged"),
@@ -322,6 +349,8 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 for (index, fraction, color) in [
                     (0, "cpuFraction", "cpuValueColor"),
                     (1, "memFraction", "memValueColor"),
+                    (2, "gpuFraction", "gpuValueColor"),
+                    (3, "vramFraction", "gpuValueColor"),
                 ] {
                     r["metrics"][index]["fraction"] = h[fraction].clone();
                     r["metrics"][index]["color"] = h[color].clone();
@@ -332,7 +361,6 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 field("Disk write", reading("diskWrite")),
                 field("Network down", reading("netDown")),
                 field("Network up", reading("netUp")),
-                field("GPU", reading("gpuValue")),
                 field("Thermal", reading("thermalText")),
             ]);
             if !down {
@@ -340,6 +368,9 @@ fn host_rows(p: &Value) -> Vec<Value> {
                 volumes.sort_by(|a, b| string(a, "mount").cmp(string(b, "mount")));
                 r["volumes"] = json!(volumes);
             }
+            // Listed even while the machine is down: undoing a hide must not
+            // wait for the host to answer.
+            r["hiddenVolumes"] = h["hiddenVolumes"].as_array().map_or_else(|| json!([]), |m| json!(m));
             r
         })
         .collect()
@@ -839,8 +870,8 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
             "value" => 210,
             "context" => 400,
             _ => match string(column, "label") {
-                "CPU" | "GPU" => 55,
-                "RAM" => 130,
+                "CPU" | "GPU" | "Disk" => 55,
+                "RAM" | "GPU mem" => 130,
                 "Disk read" | "Disk write" | "Network down" | "Network up" => 95,
                 "Thermal" => 90,
                 "Organization" => 180,
@@ -1120,6 +1151,13 @@ fn labels() -> Value {
         ("used", "Used"),
         ("total", "Total"),
         ("use", "Use"),
+        ("hideVolume", "Hide"),
+        ("unhideVolume", "Unhide"),
+        ("hiddenVolume", "Hidden"),
+        ("hideVolumeHelp", "Hide this volume: it stays measured, but leaves the Disk meter, the status line and attention."),
+        ("volumeHidden", "Volume hidden. It no longer counts toward Disk or attention."),
+        ("volumeUnhidden", "Volume shown again."),
+        ("volumeHideFailed", "Could not save the volume change. Nothing was changed."),
         ("expandDetails", "Expand or collapse resource details"),
         ("configure", "Configure"),
         ("hide", "Hide"),
@@ -1503,6 +1541,63 @@ mod tests {
         }
     }
 
+    /// Layout B end to end from a real card: GPU and GPU memory meters, a Disk
+    /// strip naming the fullest visible volume, and a hidden volume that is
+    /// filling up gone from the strip, the status line and attention alike.
+    #[test]
+    fn machines_rows_carry_gpu_memory_and_the_fullest_visible_volume() {
+        let mut snapshot: wire::Snapshot =
+            serde_json::from_str(include_str!("../../../tests/fixtures/snapshot_mac.json"))
+                .unwrap();
+        snapshot.gpu = wire::Gpu {
+            usage: Some(41.0),
+            vram_used_gb: Some(21.4),
+            vram_total_gb: Some(64.0),
+            unified_memory: Some(true),
+        };
+        let volume = |mount: &str, used_gb: f64| wire::Volume {
+            mount: mount.into(),
+            used_gb,
+            total_gb: 100.0,
+            fstype: None,
+        };
+        snapshot.volumes = vec![volume("/", 71.0), volume("/srv", 97.0)];
+        let mut card = card::host_card(
+            "studio",
+            &snapshot,
+            &card::HostHistories::new(),
+            &card::Connection::Live,
+        );
+        card["id"] = json!("local");
+
+        let rows = host_rows(&json!({"hosts": [card.clone()]}));
+        let metrics = list(&rows[0], "metrics");
+        assert_eq!(metrics[2]["value"], "41%");
+        assert_eq!(metrics[2]["fraction"], 0.41);
+        assert_eq!(metrics[3]["label"], "Unified");
+        assert_eq!(metrics[3]["header"], "GPU mem");
+        assert_eq!(metrics[3]["value"], "21.4 / 64.0 GB");
+        assert_eq!(metrics[4]["label"], "/srv", "the fullest volume");
+        assert_eq!(metrics[4]["header"], "Disk");
+        assert_eq!(metrics[4]["span"], "full");
+        assert_eq!(metrics[4]["color"], color::hex(color::RED));
+        assert_eq!(rows[0]["value"], "/srv at 97%");
+        assert_eq!(rows[0]["attention"], true);
+
+        card::hide_volumes(&mut card, &["/srv".to_owned()]);
+        let rows = host_rows(&json!({"hosts": [card]}));
+        let metrics = list(&rows[0], "metrics");
+        assert_eq!(metrics[4]["label"], "/");
+        assert_eq!(metrics[4]["value"], "71%");
+        assert_eq!(rows[0]["value"], "Connected");
+        assert_eq!(
+            rows[0]["attention"], false,
+            "a hidden volume raises nothing"
+        );
+        assert_eq!(rows[0]["hiddenVolumes"], json!(["/srv"]));
+        assert_eq!(list(&rows[0], "volumes").len(), 1);
+    }
+
     #[test]
     fn disconnected_hosts_keep_unknown_metric_slots() {
         let rows = host_rows(&json!({"hosts": [{
@@ -1511,17 +1606,23 @@ mod tests {
             "cpuValue":"99%", "memValue":"31 GB", "memWarningAcknowledged":true
         }]}));
         let metrics = rows[0]["metrics"].as_array().unwrap();
-        assert_eq!(metrics.len(), 2);
-        for (metric, label) in metrics.iter().zip(["CPU", "RAM"]) {
+        assert_eq!(metrics.len(), 5);
+        for (metric, label) in metrics.iter().zip(["CPU", "RAM", "GPU", "VRAM", "Disk"]) {
             assert_eq!(metric["label"], label);
             assert!(metric["value"].is_null());
             assert!(metric["fraction"].is_null());
+        }
+        for metric in &metrics[..2] {
             assert_eq!(metric["acknowledgement"]["badge"], "");
         }
+        assert!(
+            metrics[2..].iter().all(|m| m["acknowledgement"].is_null()),
+            "only CPU and RAM warnings can be acknowledged"
+        );
         assert_eq!(metrics[0]["acknowledgement"]["available"], false);
         assert_eq!(metrics[1]["acknowledgement"]["available"], true);
         assert_eq!(rows[0]["attention"], true);
-        assert_eq!(rows[0]["details"].as_array().unwrap().len(), 6);
+        assert_eq!(rows[0]["details"].as_array().unwrap().len(), 5);
         assert!(rows[0]["details"]
             .as_array()
             .unwrap()
@@ -1918,7 +2019,7 @@ mod tests {
         let row = &host_rows(&p)[0];
         assert_eq!(row["attention"], false);
         assert_eq!(row["value"], "Connecting");
-        assert_eq!(list(row, "metrics").len(), 2);
+        assert_eq!(list(row, "metrics").len(), 5);
         assert!(list(row, "metrics").iter().all(|m| m["value"].is_null()));
     }
 
