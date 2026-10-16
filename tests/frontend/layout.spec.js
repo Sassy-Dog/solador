@@ -509,7 +509,7 @@ test("this machine leads the grid and admits what it could not measure", async (
   // The local card is not a remote host with a shorter address: it is collected
   // in-process, so its connection dot is green by construction, and the figures
   // the platform declines to answer (memory pressure has no portable source,
-  // the GPU has no dependency-free read) must render "—" rather than the 0.0
+  // and this fixture machine reports no GPU) must render "—" rather than the 0.0
   // the wire contract would lower them to. Both are Rust's decisions
   // (`local::lower_unknowns`) and both are asserted against Rust's own dump.
   const vm = await fixture(baseURL, "sample-cockpit.json");

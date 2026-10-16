@@ -827,16 +827,38 @@ test("the Hosts tab lists every host with its endpoint and token badge", async (
 
   // Hidden volumes hang off their own host's row, with the unhide button that
   // addresses that host.
-  const withHidden = settings.hosts.rows.find((h) => h.hiddenVolumes.length > 0);
+  const withHidden = settings.hosts.rows.find((h) => h.volumes.some((v) => v.hidden));
+  const hiddenMounts = withHidden.volumes.filter((v) => v.hidden).map((v) => v.mount);
   await openConnection(page, `host:${withHidden.id}`);
   const hidden = page.locator(`.host-row[data-host="${withHidden.id}"] .hidden-row`);
-  await expect(hidden).toHaveCount(withHidden.hiddenVolumes.length);
-  await expect(hidden.first().locator(".mount")).toHaveText(withHidden.hiddenVolumes[0]);
+  await expect(hidden).toHaveCount(hiddenMounts.length);
+  await expect(hidden.first().locator(".mount")).toHaveText(hiddenMounts[0]);
   await hidden.first().locator(".unhide").click();
-  expect(await calls(page, "settings_unhide_volume")).toEqual([
+  expect(await calls(page, "settings_set_volume_hidden")).toEqual([
     {
-      command: "settings_unhide_volume",
-      args: { hostId: withHidden.id, mount: withHidden.hiddenVolumes[0] },
+      command: "settings_set_volume_hidden",
+      args: { hostId: withHidden.id, mount: hiddenMounts[0], hidden: false },
+    },
+  ]);
+});
+
+test("a machine's volume checklist shows every mount and hides one when unchecked", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  await tab(page, "hosts").click();
+  const host = settings.hosts.rows.find((h) => h.volumes.some((v) => !v.hidden));
+  await openConnection(page, `host:${host.id}`);
+  const choices = page.locator(".volume-choice");
+  await expect(choices.locator(".mount")).toHaveText(host.volumes.map((v) => v.mount));
+  for (const [i, volume] of host.volumes.entries())
+    expect(await choices.nth(i).locator("input").isChecked()).toBe(!volume.hidden);
+  const shown = host.volumes.find((v) => !v.hidden);
+  // A click, not `uncheck()`: the stub answers with the fixture unchanged, so
+  // the re-render puts the tick back and `uncheck()` would wait for it forever.
+  await choices.locator(`input[data-mount="${shown.mount}"]`).click();
+  expect(await calls(page, "settings_set_volume_hidden")).toEqual([
+    {
+      command: "settings_set_volume_hidden",
+      args: { hostId: host.id, mount: shown.mount, hidden: true },
     },
   ]);
 });

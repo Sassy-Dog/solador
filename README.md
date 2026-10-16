@@ -68,9 +68,11 @@ and the same **Full view**, **Edit dashboard** and **Settings** icons at the top
 right. Editing also offers **Add tile** and **Undo** icons; every icon has a
 tooltip on hover or keyboard focus.
 Connections stay in **Settings**.
-Machines includes colored CPU/RAM utilization bars and persistent acknowledgements
-for expected warnings on a specific machine and metric; critical alerts still
-need attention. GitHub Repos supports
+Machines includes colored CPU/RAM utilization bars, GPU and GPU-memory meters
+(labelled Unified on Apple Silicon) for machines running local models, a Disk
+strip for the fullest volume, and persistent acknowledgements for expected
+warnings on a specific machine and metric; critical alerts still need attention.
+Volumes you don't care about can be hidden per machine from Detail or Settings. GitHub Repos supports
 per-tile repository selection, sortable columns and an All rows option.
 Runners can show every individual runner or counts grouped by OS and architecture.
 

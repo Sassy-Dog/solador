@@ -52,6 +52,28 @@ readings, with configurable green/amber/red utilization thresholds. Fractions
 come from the current numeric measurements, never from parsing display text.
 Unavailable measurements leave an empty track and `—` instead of a zero reading.
 
+Below CPU · RAM sit **GPU** (utilization) and **GPU memory** (used / total GB),
+then one full-width **Disk** strip. GPU memory is labelled **Unified** where the
+producer says the figure is the GPU's share of system RAM (Apple Silicon:
+`gpu.unifiedMemory`, agent ≥ 0.7.0), and **VRAM** otherwise, including for an
+older agent that does not say. Neither GPU meter is threshold-coloured: a GPU
+pinned at 100% is what serving a local model looks like. A host with no GPU
+keeps both slots with `—`, so the rows stay aligned. The Disk strip names the
+**fullest visible** volume and uses the volume colours (amber at 85%, red at
+95%), the same volume the status line names when it warns. Detail columns read
+`GPU`, `GPU mem` and `Disk` whatever the tile label says.
+
+**Hiding volumes.** Each machine's expanded Detail lists its volumes with a
+**Hide** button, and its hidden mounts beneath with **Unhide**. Settings →
+Connections → the machine (including **This machine**) shows the same list as
+checkboxes: every mount the machine last reported, plus any hidden mount it no
+longer reports. A hidden volume is still measured but leaves the Machines tile,
+the Hosts panel cards, the Disk strip, the status line and attention. Both
+controls write `Host.hidden_volume_mounts` or `Settings.local_hidden_volume_mounts`
+in `store.json`, and the filter runs once per frame in the `cockpit` command's
+`apply_machine_preferences` (`app/src-tauri/src/volumes.rs`), on `cockpit_view`'s
+payload and before either view reads the cards.
+
 Machines Detail also shows thermal pressure: Normal, Fair, Hot or Critical when
 the host reports it, and `—` when unavailable, in both Table and List. Local and
 remote Macs use the same OS reader (`crates/thermal`); remote Macs need an agent
@@ -179,7 +201,9 @@ or failed polls do not collapse them. Minimum reservations are 196px for Machine
 144px for other summary tiles, 360px for detailed tiles/List inspectors, 200px for
 list panels, 300px for Usage/Azure Cost/OpenClaw, and 960px for host cards.
 Table inspectors fit their rows without a minimum-height reservation.
-These are floors, never clipping limits. New resources or a first larger reading
+These are floors, never clipping limits. The one exception is the hidden-tile
+library's preview, which scrolls inside `min(440px, 55vh)` like the list beside
+it, so a tall tile's preview cannot push **Restore** and **Remove** off screen. New resources or a first larger reading
 can expand the page; resizing or changing a tile’s source, scope, presentation,
 row limit, repo selection, runner view, or a deliberate Detail expansion,
 filter or view change resets its measured reservation.
@@ -1687,7 +1711,7 @@ capability](#the-one-granted-capability) for the single entry that does.
 | `settings_add_host` / `settings_remove_host` / `settings_set_host_enabled` | hosts CRUD; add files the token, remove deletes it. Add takes an optional `tlsFingerprint` — the one the operator **trusted** — validated through `crates/certpin` and stored as `Host.tls_fingerprint` (absent ⇒ plain HTTP) |
 | `settings_probe_host_certificate` | pairing step one (#448): the certificate an address presents, fetched **without trusting it** → `{status: "tls" \| "no-tls" \| "failed", fingerprint, message}`. One unauthenticated request; nothing stored, no token sent |
 | `settings_save_host` | edit a host's name / address / port and, on request, replace its token. An optional `tlsFingerprint` **replaces the pin** (Re-pair); absent leaves it exactly as it is, so a rename can never touch it |
-| `settings_unhide_volume` | one mount, on a host or on the local list |
+| `settings_set_volume_hidden` | one mount hidden or shown, on a host or on the local list (the Connections volume checklist and the Hosts tab's Unhide) |
 | `settings_add_container_rule` / `settings_set_container_rule` / `settings_remove_container_rule` | the [container group rules](#the-containers-command), by index — one **field** per call |
 | `settings_test_host` | one `/v1/health` probe → the original result line, through the pinned client for a paired host. The answer also carries `certificateChanged`, which is what offers **Re-pair** the moment Test finds it |
 | `settings_save_account` | create or edit a [vendor account](#the-accounts-tab) — `id: null` adds, an id edits. The token is minted as **its own** credential-store item (`SecretKey::VendorToken`), never shared with another account. An empty token is a legitimate save, not a failure: the row reads **No token** and the operator fills it in later. Wakes the GitHub loop, because accounts *are* that pass's identities |
@@ -2601,6 +2625,7 @@ and that immediacy is itself the check on the corresponding wake:
 | usage providers | save a Neon org key and/or Sentry `org:read` token | sections appear in seconds. A key with **no org id** renders `—` on both figures, never `0.0 CU-h` |
 | `settings_save_machine_alerts` | in Preferences → Machine alerts, set RAM warning/critical to `90`/`98` and Apply; then open one machine in Connections, clear Use shared defaults and choose its own limits; re-enable shared defaults and Apply | the next Machines frame uses the saved limits for meter colors, row dots and attention counts; another host's override stays independent. Invalid ordering is refused without losing the draft, and saved choices survive reopening the app |
 | `machine_acknowledge_warning` | open a machine with a CPU/RAM warning in Details, acknowledge that metric, relaunch, then clear it from the same details (try Table and List) | the warning alone leaves Needs Attention, its reading stays amber with an Acknowledged indicator, and the saved choice survives relaunch. A critical reading still needs attention and has no Acknowledged badge. Other metrics/hosts still alert. Clear restores warning attention; a failed save leaves the prior choice visible and retryable |
+| `machine_set_volume_hidden` / `settings_set_volume_hidden` | expand a machine with two or more volumes in Details, press **Hide** on one, relaunch, then **Unhide** it; then untick and re-tick a volume under Settings → Connections → that machine | the volume leaves the Detail table, the Disk strip and the Hosts panel card on the same frame, and a hidden full volume stops counting toward attention. The choice survives relaunch, Unhide restores it everywhere, and a failed save leaves the previous list in place |
 | `openclaw_wake` | put a gateway URL under Settings → Connections → OpenClaw, **Save** | `connecting…` (amber) within a second or two; then the pairing banner or green AGENTS/CRON/CHANNELS rows |
 | a live agent | re-run step 2 with `\|$TOKEN` appended to `SOLADOR_SEED_HOST` | the host card fills with live figures and a green dot |
 

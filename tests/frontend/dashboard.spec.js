@@ -82,6 +82,23 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               Object.assign(original, structuredClone(window.__ACK_RESPONSE__));
               return project();
             }
+            if (command === "machine_set_volume_hidden") {
+              if (window.__FAIL_VOLUME__) throw "Could not save the hidden volumes.";
+              // What Rust does to the row: the mount leaves `volumes` for
+              // `hiddenVolumes`, or comes back. Readings are not re-derived here.
+              const row = original.sources.find(s => s.id === "hosts").rows.find(r => r.id === args.hostId);
+              const all = [...(row.volumes || []), ...(window.__HIDDEN_VOLUMES__ ||= [])];
+              const volume = all.find(v => v.mount === args.mount);
+              if (args.hidden) {
+                row.volumes = row.volumes.filter(v => v.mount !== args.mount);
+                window.__HIDDEN_VOLUMES__.push(volume);
+                row.hiddenVolumes = [...(row.hiddenVolumes || []), args.mount];
+              } else {
+                row.volumes = [...row.volumes, volume].sort((a, b) => a.mount.localeCompare(b.mount));
+                row.hiddenVolumes = row.hiddenVolumes.filter(m => m !== args.mount);
+              }
+              return project();
+            }
             if (command === "dashboard_preview") {
               const preview = project(args.tile).tiles[0];
               if (window.__HOLD_PREVIEW__) {
@@ -363,10 +380,45 @@ test('machine volumes use sorted aligned columns in both Detail views', async ({
   for (const view of ['Table','List']) {
     await page.getByRole('button',{name:view,exact:true}).click();
     await expect(volumes.locator('tbody th')).toHaveText(mounts);
-    await expect(volumes.locator('thead th')).toHaveText(['Volume','Used','Total','Use']);
+    await expect(volumes.locator('thead th')).toHaveText(['Volume','Used','Total','Use','']);
     const columns = await volumes.locator('tbody tr').evaluateAll(rows=>rows.map(row=>[...row.cells].map(c=>c.getBoundingClientRect().right)));
     for (const positions of columns) expect(positions).toEqual(columns[0]);
   }
+});
+
+test('a volume hidden from Detail leaves the table and can be unhidden there', async ({page,baseURL}) => {
+  const model = await openDashboard(page,baseURL);
+  const host = model.sources.find(s=>s.id==='hosts').rows.find(r=>r.volumes?.length>1);
+  const mount = host.volumes[0].mount;
+  await page.locator(`[data-action="row"][data-source="hosts"][data-id="${host.id}"]`).first().click();
+  const inspector = page.locator('.db-inspector');
+  const hide = inspector.getByRole('button',{name:`Hide ${mount}`,exact:true});
+  // A refused save keeps the volume where it was and says why beside the
+  // volumes, never inside the button it came from.
+  await page.evaluate(() => { window.__FAIL_VOLUME__ = true; });
+  await hide.click();
+  const error = inspector.locator('.db-volumes > .db-action-error');
+  await expect(error).toHaveText('Could not save the hidden volumes.');
+  await expect(inspector.locator('button .db-action-error')).toHaveCount(0);
+  await expect(hide).toHaveAccessibleName(`Hide ${mount}`);
+  await expect(hide).toBeFocused();
+  await page.evaluate(() => { window.__FAIL_VOLUME__ = false; });
+  await hide.click();
+  await expect(error).toHaveCount(0);
+  await expect(inspector.locator('.db-volume-table tbody th')).toHaveText(host.volumes.map(v=>v.mount).filter(m=>m!==mount).sort());
+  const line = inspector.locator('.db-hidden-volume');
+  await expect(line).toHaveText(`Hidden: ${mount}Unhide`);
+  const unhide = line.getByRole('button',{name:`Unhide ${mount}`});
+  await expect(unhide).toBeFocused();
+  await unhide.click();
+  await expect(inspector.locator('.db-hidden-volume')).toHaveCount(0);
+  await expect(inspector.locator('.db-volume-table tbody th')).toHaveText(host.volumes.map(v=>v.mount).sort());
+  await expect(hide).toBeFocused();
+  expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === 'machine_set_volume_hidden').map(c => c.args))).toEqual([
+    {hostId:host.id, mount, hidden:true, width:expect.any(Number)},
+    {hostId:host.id, mount, hidden:true, width:expect.any(Number)},
+    {hostId:host.id, mount, hidden:false, width:expect.any(Number)},
+  ]);
 });
 
 test('Settings header keeps space around the logo and Done button', async ({page,baseURL}) => {
@@ -603,7 +655,10 @@ test("Rust expanded view renders sorted repos, grouped runners and live meters a
   await expect(tile(page,"ghWorkflows").locator('.db-item-name')).toHaveText(["gadget","pipe-fitting","widget","flywheel","cogwheel","toolkit"]);
   await expect(tile(page,"ghRunners").locator('.db-item-name')).toHaveText(["LINUX · ARM64","MACOS · ARM64"]);
   await expect(tile(page,"ghRunners").locator('.db-row-description')).toHaveText(["0 busy · 1 idle · 1 offline · 1 missing","1 busy · 1 idle · 0 offline · 1 recycling"]);
-  await expect(tile(page,"hosts").getByRole("meter")).toHaveCount(4);
+  // Measured meters only: mac-studio has no GPU (CPU, RAM, Disk) and ubu-01
+  // serves a model (CPU, RAM, GPU, VRAM, Disk). An unmeasured slot is a track
+  // with no `meter` role, never a 0% one.
+  await expect(tile(page,"hosts").getByRole("meter")).toHaveCount(8);
   for (const width of [375, 1024, 1440]) {
     await page.setViewportSize({width,height:900});
     const rects = await tile(page,"ghWorkflows").locator('.db-repo-head button').evaluateAll(els=>els.map(e=>({x:e.getBoundingClientRect().x,right:e.getBoundingClientRect().right})));
@@ -630,7 +685,8 @@ test('runner groups open the shared inline Detail panel like machines', async ({
   await expect(inspector.locator('.db-table-name')).toHaveText(['ubu-01', 'ubu-1', 'ubu-spare']);
   const controls = await inspector.locator('button[data-action]').evaluateAll(buttons =>
     buttons.map(b => b.dataset.action).filter(action => !['detail-toggle', 'manage-resource'].includes(action)));
-  expect(controls).toEqual(machineControls.filter(action => action !== 'manage-resource'));
+  // Hiding a volume is a machine's own control; the shared panel is the rest.
+  expect(controls).toEqual(machineControls.filter(action => !['manage-resource', 'volume-hidden'].includes(action)));
   await inspector.getByRole('button', {name:'List', exact:true}).click();
   await expect(inspector.locator('.db-detail-resource')).toHaveCount(3);
   await tile(page, 'ghRunners').getByRole('button', {name:/MACOS · ARM64/}).click();
@@ -1264,6 +1320,9 @@ test("clicking or cancelling a move handle leaves the saved layout alone", async
   page,
   baseURL,
 }) => {
+  // Tall enough that the second tile row — the services handle — is on
+  // screen: a drag that starts outside the viewport presses nothing.
+  await page.setViewportSize({ width: 1280, height: 1100 });
   const original = await openDashboard(page, baseURL);
   await action(page, "edit").click();
   const handle = tile(page, "services").locator(".db-drag");

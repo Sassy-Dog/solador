@@ -104,10 +104,14 @@ Notes:
       its own card, so a Mac host's remote card matches what that Mac shows
       locally. On Apple Silicon the GPU has no VRAM of its own: `vramUsedGB` is
       the GPU's resident share of system memory and `vramTotalGB` is physical
-      memory, the pool it allocates from.
+      memory, the pool it allocates from. Since 0.7.0 the agent says so with
+      `unifiedMemory: true` (`false` for a discrete adapter's own VRAM), which
+      the cockpit labels **Unified**; an older agent omits the key and reads
+      as plain VRAM.
     - **NVIDIA** reads `nvidia-smi`. `usage` is the utilisation percentage;
       `vramUsedGB` / `vramTotalGB` are its MiB figures in the same 1024-base
-      "GB" as every other size here (a 12288 MiB card reads `12.0`). A
+      "GB" as every other size here (a 12288 MiB card reads `12.0`), with
+      `unifiedMemory: false` since 0.7.0. A
       multi-GPU host reports its **first** card, since the contract carries
       one `gpu`.
 

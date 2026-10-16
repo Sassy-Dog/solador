@@ -146,6 +146,19 @@ pub struct Gpu {
         skip_serializing_if = "Option::is_none"
     )]
     pub vram_total_gb: Option<f64>,
+    /// Whether `vramUsedGB` / `vramTotalGB` describe a pool the GPU shares with
+    /// the CPU (Apple Silicon's unified memory: the GPU's resident share of
+    /// system RAM, against all of RAM) rather than memory of its own. `false`
+    /// where the producer read a dedicated pool. Omitted where it cannot say —
+    /// and by every agent predating the key, so the absent key is the whole
+    /// version check (#378's precedent): a consumer labels it plain VRAM rather
+    /// than guessing from the numbers.
+    #[serde(
+        default,
+        rename = "unifiedMemory",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub unified_memory: Option<bool>,
 }
 
 impl Gpu {
@@ -173,6 +186,7 @@ impl Gpu {
             usage: Some(0.0),
             vram_used_gb: Some(0.0),
             vram_total_gb: Some(0.0),
+            unified_memory: None,
         }
     }
 

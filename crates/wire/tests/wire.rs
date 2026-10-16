@@ -123,6 +123,7 @@ fn an_unknown_field_omits_its_key_rather_than_emitting_null() {
         (&json["gpu"], "usage"),
         (&json["gpu"], "vramUsedGB"),
         (&json["gpu"], "vramTotalGB"),
+        (&json["gpu"], "unifiedMemory"),
     ] {
         assert!(
             !object.as_object().unwrap().contains_key(key),
@@ -132,6 +133,26 @@ fn an_unknown_field_omits_its_key_rather_than_emitting_null() {
 
     // …and a measured one keeps its key under the agent's own name.
     assert_eq!(json["network"]["downloadMBps"], 0.9);
+}
+
+/// `unifiedMemory` is how a consumer tells "Unified" from VRAM, and its absence
+/// is how it recognises an agent predating the key — so the name both ways,
+/// and an absent key reading as unknown rather than `false`, are the contract.
+#[test]
+fn unified_memory_round_trips_under_its_wire_name_and_absent_reads_unknown() {
+    for value in [true, false] {
+        let gpu = Gpu {
+            unified_memory: Some(value),
+            ..Gpu::unknown()
+        };
+        let json = serde_json::to_value(&gpu).unwrap();
+        assert_eq!(json["unifiedMemory"], value);
+        let back: Gpu = serde_json::from_value(json).unwrap();
+        assert_eq!(back.unified_memory, Some(value));
+    }
+    let older: Gpu =
+        serde_json::from_str(r#"{"usage": 40, "vramUsedGB": 2, "vramTotalGB": 24}"#).unwrap();
+    assert_eq!(older.unified_memory, None);
 }
 
 /// The documented limit of this change, pinned so nobody mistakes the contract
@@ -375,6 +396,7 @@ fn gpu_absence_is_one_definition_shared_by_producer_and_consumer() {
         usage: Some(0.0),
         vram_used_gb: Some(0.5),
         vram_total_gb: Some(24.0),
+        unified_memory: None,
     };
     assert!(idle.is_present());
 }

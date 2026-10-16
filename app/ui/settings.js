@@ -666,10 +666,31 @@ function hiddenRow(t, mount, hostId) {
   row.appendChild(node("span", "grow"));
   const unhide = button(t.unhideLabel, "unhide");
   unhide.addEventListener("click", () =>
-    mutate("settings_unhide_volume", { hostId: hostId, mount })
+    mutate("settings_set_volume_hidden", { hostId: hostId, mount, hidden: false })
   );
   row.appendChild(unhide);
   return row;
+}
+
+/**
+ * A machine's volume checklist: every mount it last reported plus every hidden
+ * one, checked when shown. `hostId` null is this machine.
+ */
+function volumesGroup(t, volumes, hostId) {
+  const g = group(t.volumesHeading);
+  g.classList.add("volume-choices");
+  for (const volume of volumes) {
+    const row = node("label", "volume-choice");
+    const box = checkbox(!volume.hidden);
+    box.dataset.mount = volume.mount;
+    box.addEventListener("change", () =>
+      mutate("settings_set_volume_hidden", { hostId, mount: volume.mount, hidden: !box.checked })
+    );
+    row.append(box, node("span", "mount", volume.mount), node("span", "grow"), node("span", "volume-detail", volume.detail));
+    g.appendChild(row);
+  }
+  g.appendChild(help(t.volumesHelp));
+  return g;
 }
 
 /**
@@ -844,22 +865,15 @@ function hostsTab(t, options = {}) {
     head.append(test, remove);
     row.prepend(head);
     row.appendChild(monitor);
-    for (const mount of host.hiddenVolumes) row.appendChild(hiddenRow(t, mount, host.id));
+    for (const volume of host.volumes.filter(v => v.hidden)) row.appendChild(hiddenRow(t, volume.mount, host.id));
     list.appendChild(row);
   }
 
   const boxes = options.addOnly ? [] : [list];
 
-  // Only when it has entries: this shell has no local collector, so an empty
-  // section here would be a heading for something that cannot exist yet.
-  if (!options.edit && !options.addOnly && t.localHidden.mounts.length > 0) {
-    const local = group(t.localHidden.heading);
-    for (const mount of t.localHidden.mounts) local.appendChild(hiddenRow(t, mount, null));
-    boxes.push(local);
-  }
-
   if (options.edit) {
     boxes.push(...t.rows.map(host => machineAlertsGroup(host.machineAlerts)));
+    boxes.push(...t.rows.filter(host => host.volumes.length).map(host => volumesGroup(t, host.volumes, host.id)));
     boxes.push(advanced(rulesGroup(t.rules)));
     return boxes;
   }
@@ -2131,9 +2145,8 @@ function connectionEditor() {
     content = [orphaned];
   } else if (entry.kind === "local") {
     const hosts = S.view.hosts;
-    const local = group(hosts.localHidden.heading);
-    for (const mount of hosts.localHidden.mounts) local.appendChild(hiddenRow(hosts, mount, null));
-    content = [help(entry.help), machineAlertsGroup(hosts.localMachineAlerts), ...(hosts.localHidden.mounts.length ? [local] : []), rulesGroup(hosts.rules)];
+    const volumes = hosts.localVolumes.length ? [volumesGroup(hosts, hosts.localVolumes, null)] : [];
+    content = [help(entry.help), machineAlertsGroup(hosts.localMachineAlerts), ...volumes, rulesGroup(hosts.rules)];
   } else if (entry.kind === "claude") content = [help(entry.help)];
   else if (entry.kind === "services") {
     const add = button(t.addLabel, "connection-add");

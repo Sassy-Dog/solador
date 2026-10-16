@@ -145,22 +145,28 @@ fn read_accelerator(accelerator: &Accelerator, pool_bytes: u64) -> wire::Gpu {
     // figure came from, so the two are chosen together rather than in separate
     // ladders. Pairing a unified-memory occupancy with a discrete capacity (or
     // the reverse) would render a ratio of two different pools.
-    let (used_bytes, total_bytes) = if let Some(used) =
+    //
+    // The third value is which pool that is, and it is claimed only where both
+    // figures came from it: a unified occupancy beside a dedicated capacity is
+    // a pairing this walk cannot name, so it says nothing.
+    let (used_bytes, total_bytes, unified_memory) = if let Some(used) =
         first_number(&accelerator.performance_statistics, DEDICATED_USED_KEYS)
     {
-        (Some(used), dedicated_capacity)
+        (Some(used), dedicated_capacity, Some(false))
     } else if let Some(used) = first_number(&accelerator.performance_statistics, UNIFIED_USED_KEYS)
     {
         let pool = (pool_bytes > 0).then_some(pool_bytes as f64);
-        (Some(used), dedicated_capacity.or(pool))
+        let unified = (dedicated_capacity.is_none() && pool.is_some()).then_some(true);
+        (Some(used), dedicated_capacity.or(pool), unified)
     } else {
-        (None, dedicated_capacity)
+        (None, dedicated_capacity, None)
     };
 
     wire::Gpu {
         usage,
         vram_used_gb: used_bytes.map(|bytes| bytes / BYTES_PER_GIB),
         vram_total_gb: total_bytes.map(|bytes| bytes / BYTES_PER_GIB),
+        unified_memory,
     }
 }
 
@@ -422,6 +428,7 @@ mod tests {
         // a guess at half of RAM.
         assert_eq!(gpu.vram_used_gb, Some(2_026_127_360.0 / BYTES_PER_GIB));
         assert_eq!(gpu.vram_total_gb, Some(32.0));
+        assert_eq!(gpu.unified_memory, Some(true), "the pool is system RAM");
         assert!(
             gpu.is_present(),
             "the card must render, not show an em dash"
@@ -483,6 +490,7 @@ mod tests {
 
         assert_eq!(gpu.usage, Some(69.0));
         assert_eq!(gpu.vram_total_gb, None);
+        assert_eq!(gpu.unified_memory, None, "no pool, so no claim about one");
         assert!(!gpu.is_present());
     }
 
@@ -504,6 +512,22 @@ mod tests {
 
         assert_eq!(gpu.vram_total_gb, Some(24.0));
         assert_eq!(gpu.vram_used_gb, Some(3.0));
+        assert_eq!(gpu.unified_memory, Some(false));
+    }
+
+    /// Unified occupancy beside a dedicated capacity pairs two figures this walk
+    /// cannot name one pool for, so it claims neither label.
+    #[test]
+    fn unified_occupancy_beside_a_dedicated_capacity_claims_no_pool() {
+        let mut mixed = apple_silicon();
+        mixed
+            .properties
+            .insert("VRAM,totalMB".to_string(), 24_576.0);
+
+        let gpu = map_accelerators(&[mixed], POOL);
+
+        assert_eq!(gpu.vram_total_gb, Some(24.0));
+        assert_eq!(gpu.unified_memory, None);
     }
 
     /// A discrete adapter that reports occupancy but no capacity gets no

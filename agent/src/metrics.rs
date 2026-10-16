@@ -1109,6 +1109,7 @@ mod tests {
             usage: Some(0.0),
             vram_used_gb: Some(0.0),
             vram_total_gb: Some(12.0),
+            unified_memory: None,
         };
         let v = serde_json::to_value(sampled_snapshot_with(Some(4.5), measured)).unwrap();
 
