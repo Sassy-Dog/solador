@@ -29,6 +29,17 @@ APP_HELPERS = {
     "scripts/generate-icons.sh", "scripts/render-icons.mjs",
 }
 
+# Configuration that no CI job builds or tests. Secrets guard (always run) still
+# checks every workflow for secrets and every `.claude` path against its guard.
+NO_BUILD_CONFIG = {
+    ".github/dependabot.yml",
+    ".github/workflows/dependabot-auto-merge.yml", ".github/workflows/deps-cadence.yml",
+    ".github/workflows/deps-cadence-impl.yml", ".github/workflows/deps-cadence-codegen.yml",
+}
+NO_BUILD_WORKFLOW = re.compile(r"\.github/workflows/(dependabot-[^/]+-lockfile|lockfile-sync-[^/]+)\.yml")
+# Markdown here is served or rendered by tested code, so it keeps its own rule.
+SERVED_TREES = ("app/", "site/")
+
 
 def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE)
@@ -89,7 +100,13 @@ def is_documentation(path):
         or (len(p.parts) == 3 and p.parts[0] == "crates")
     ):
         return True
+    if p.suffix.lower() == ".md" and not path.startswith(SERVED_TREES):
+        return True
     return path.startswith("docs/") and p.suffix.lower() in {".md", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".pdf"}
+
+
+def is_no_build_config(path):
+    return path in NO_BUILD_CONFIG or NO_BUILD_WORKFLOW.fullmatch(path) is not None
 
 
 def select_paths(repo, paths):
@@ -99,7 +116,7 @@ def select_paths(repo, paths):
         # Both products and release tooling consume the agent trust set.
         if path in {"agent/release-signing-key.pub", "agent/release-signing-key-next.pub"}:
             return dict(FULL)
-        if is_documentation(path):
+        if is_documentation(path) or is_no_build_config(path):
             continue
         if path.startswith("agent/deploy/") or path in AGENT_HELPERS:
             selected["helpers"] = True
