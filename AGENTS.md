@@ -128,7 +128,8 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   suite (`scripts/run-test.sh`), the signing-identity refusal test
   (`scripts/signing-identity-test.sh`, #474), the `.dmg` layout test
   (`scripts/dmg-layout-test.sh`, #539 — real images from a dummy bundle: the
-  `Applications` symlink must be present and point at `/Applications`), the
+  `Applications` symlink must be present and point at `/Applications`; and,
+  #586, only `hdiutil attach`'s transient EAGAIN is retried), the
   notarization outcome test (`scripts/notarize-outcome-test.sh`, #551 — a stub
   `xcrun`: a timed-out wait is "still in progress", never "rejected"), the e2e server's bind test
   (`tests/frontend/csp_server_test.py`), plus the `tests/frontend` Playwright
@@ -1040,8 +1041,11 @@ only an Apple-issued certificate stops the keychain prompts; see app/README.md,
 directory holding the `ditto`-copied app and an `Applications` symlink, and
 `build.sh` mounts the finished image read-only and fails unless its root is
 exactly those two; the test builds real images from a dummy bundle and proves
-the assertion refuses a missing or mis-targeted link; macOS only, skips itself
-elsewhere), `scripts/notarize-outcome-test.sh` (#551: `notarize_and_staple`
+the assertion refuses a missing or mis-targeted link. The mount retries only
+`hdiutil attach`'s "Resource temporarily unavailable", 5 tries with a 2-8s
+backoff, because that transient error ejected a merge-queue group (#586); any
+other failure is final at once, and a stub `hdiutil` proves both. macOS only,
+skips itself elsewhere), `scripts/notarize-outcome-test.sh` (#551: `notarize_and_staple`
 classifies a failed `notarytool submit --wait` by Apple's submission status
 from `notarytool info`, never by the exit code — the wait is 60 minutes, and
 one that runs out reads "still in progress" and, locally, gives the

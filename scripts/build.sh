@@ -671,6 +671,29 @@ stage_dmg_source() {
     ln -s /Applications "$stage/Applications"
 }
 
+# Mount <dmg> read-only at <mnt>. hdiutil can answer "Resource temporarily
+# unavailable" (EAGAIN) while diskimages-helper is still busy, which ejected a
+# merge-queue group in #586; only that error is retried, with a short backoff.
+# Any other failure is final at once, and the last hdiutil error is printed.
+attach_dmg_readonly() {
+    local mnt="$1" dmg="$2" attempt err="" attempts=5
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if err="$(hdiutil attach -nobrowse -readonly -noverify -mountpoint "$mnt" "$dmg" 2>&1 >/dev/null)"; then
+            return 0
+        fi
+        case "$err" in
+            *"Resource temporarily unavailable"*) ;;
+            *) break ;;
+        esac
+        if ((attempt < attempts)); then
+            log_warning "hdiutil attach is busy; retrying ($attempt/$attempts)"
+            sleep "$((attempt * 2))"
+        fi
+    done
+    printf '%s\n' "$err" >&2
+    return 1
+}
+
 # Mount the finished image read-only and require its root to hold exactly the
 # app and an `Applications` symlink whose target is `/Applications`. The
 # `.DS_Store`-style Finder metadata is not expected: no window layout is built.
@@ -679,7 +702,7 @@ assert_dmg_layout() {
     local mnt entries target status=0
     mnt="$(mktemp -d)"
 
-    if ! hdiutil attach -nobrowse -readonly -noverify -mountpoint "$mnt" "$dmg" >/dev/null; then
+    if ! attach_dmg_readonly "$mnt" "$dmg"; then
         rm -rf "$mnt"
         log_error "could not mount $dmg to check its layout"
         return 1

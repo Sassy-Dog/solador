@@ -22,8 +22,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 lift() { awk -v fn="$1" '$0 ~ "^" fn "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$SCRIPT_DIR/build.sh"; }
-{ lift stage_dmg_source; lift assert_dmg_layout; lift make_dmg; } > "$work/under-test.sh"
-for fn in stage_dmg_source assert_dmg_layout make_dmg; do
+{ lift stage_dmg_source; lift attach_dmg_readonly; lift assert_dmg_layout; lift make_dmg; } > "$work/under-test.sh"
+for fn in stage_dmg_source attach_dmg_readonly assert_dmg_layout make_dmg; do
     grep -q "^$fn() {" "$work/under-test.sh" || { echo "could not lift $fn out of build.sh" >&2; exit 1; }
 done
 # shellcheck source=/dev/null
@@ -92,6 +92,56 @@ stage_dmg_source "$app" "$extra"
 echo x > "$extra/README"
 make_image extra "$extra"
 expect_refused "extra root entry is refused" extra "must hold exactly"
+
+# #586: a transient EAGAIN from `hdiutil attach` is retried; nothing else is.
+# The stub fails the first <n> attaches with <message>, records each attach, and
+# hands every other call (and later attaches) to the real hdiutil. `sleep` is a
+# no-op so the backoff costs nothing here. Sourced, like the stub below.
+cat > "$work/flaky-hdiutil.sh" <<'EOF'
+hdiutil() {
+    if [[ "$1" == attach ]]; then
+        echo attach >> "$FLAKY_LOG"
+        if (( $(wc -l < "$FLAKY_LOG") <= FLAKY_FAILS )); then
+            echo "hdiutil: attach failed - $FLAKY_MESSAGE" >&2
+            return 1
+        fi
+    fi
+    command hdiutil "$@"
+}
+sleep() { :; }
+EOF
+# attach_under_flake <fails> <message>: assert_dmg_layout on the good image;
+# prints "<status> <attach count>".
+attach_under_flake() {
+    local status=0
+    : > "$work/attaches"
+    (
+        export FLAKY_LOG="$work/attaches" FLAKY_FAILS="$1" FLAKY_MESSAGE="$2"
+        # shellcheck source=/dev/null
+        source "$work/flaky-hdiutil.sh"
+        assert_dmg_layout "$work/good.dmg" Solador.app
+    ) 2>"$work/err" || status=$?
+    echo "$status $(wc -l < "$work/attaches" | tr -d ' ')"
+}
+busy="Resource temporarily unavailable"
+result="$(attach_under_flake 2 "$busy")"
+if [[ "$result" == "0 3" ]]; then
+    pass "a busy attach is retried until it mounts"
+else
+    fail "a busy attach is retried until it mounts (status, attaches: $result; $(cat "$work/err"))"
+fi
+result="$(attach_under_flake 99 "$busy")"
+if [[ "$result" == "1 5" ]] && grep -q "$busy" "$work/err" && grep -q "could not mount" "$work/err"; then
+    pass "a busy attach gives up after 5 tries and names the error"
+else
+    fail "a busy attach gives up after 5 tries and names the error (status, attaches: $result; $(cat "$work/err"))"
+fi
+result="$(attach_under_flake 99 "no mountable file systems")"
+if [[ "$result" == "1 1" ]] && grep -q "no mountable file systems" "$work/err"; then
+    pass "any other attach failure is not retried"
+else
+    fail "any other attach failure is not retried (status, attaches: $result; $(cat "$work/err"))"
+fi
 
 # make_dmg itself (the wiring: stage -> hdiutil -> assert -> sign). codesign is
 # stubbed; everything else is real. Run in a subshell because make_dmg traps
