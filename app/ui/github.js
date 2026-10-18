@@ -67,6 +67,7 @@ function reserveWidth(el, width) {
 function cellNode(cls, cell) {
   const el = node("span", cls, cell.text);
   el.style.color = cell.color;
+  if (cell.title) el.title = cell.title;
   reserveWidth(el, cell.width);
   return el;
 }

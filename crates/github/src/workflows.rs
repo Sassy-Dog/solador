@@ -185,6 +185,9 @@ pub struct RepoCounts {
     /// `open issues + open PRs`.
     pub open_issues_including_prs: Option<u32>,
     pub open_pull_requests: Option<u32>,
+    /// Of `open_pull_requests`, those Dependabot opened. Read in the same walk,
+    /// so it is `None` exactly when that count is.
+    pub open_dependabot_prs: Option<u32>,
     /// Open issues whose project-board `Status` is `Ready` (see
     /// [`crate::ready`]). `None` is a PAT without the Projects permission or
     /// a refused walk — never an empty column.
@@ -218,6 +221,9 @@ pub struct RepoWorkflowHealth {
     pub open_issues: Option<u32>,
     /// Open pull requests; `None` if unknown/fetch failed.
     pub open_prs: Option<u32>,
+    /// Of `open_prs`, those Dependabot opened; `None` exactly when `open_prs`
+    /// is.
+    pub dependabot_prs: Option<u32>,
     /// Open issues in the board's `Ready` column; `None` if unknown/fetch
     /// failed.
     pub ready_issues: Option<u32>,
@@ -243,6 +249,7 @@ impl RepoWorkflowHealth {
             remote_branches: None,
             open_issues: None,
             open_prs: None,
+            dependabot_prs: None,
             ready_issues: None,
             ready_error: None,
         }
@@ -348,6 +355,7 @@ pub fn health(
             counts.open_pull_requests,
         ),
         open_prs: counts.open_pull_requests,
+        dependabot_prs: counts.open_dependabot_prs,
         ready_issues: counts.ready_issues,
         ready_error: counts.ready_error,
     }
@@ -938,6 +946,7 @@ mod tests {
                 remote_branches: Some(9),
                 open_issues_including_prs: Some(12),
                 open_pull_requests: Some(4),
+                open_dependabot_prs: Some(3),
                 ready_issues: Some(3),
                 ready_error: None,
             },
@@ -945,6 +954,7 @@ mod tests {
         );
         assert_eq!(h.open_issues, Some(8), "12 inclusive − 4 PRs = 8 pure");
         assert_eq!(h.open_prs, Some(4));
+        assert_eq!(h.dependabot_prs, Some(3), "carried through untouched");
         assert_eq!(h.ready_issues, Some(3), "carried through untouched");
         assert_eq!(h.remote_branches, Some(9));
     }
@@ -970,6 +980,7 @@ mod tests {
                 remote_branches: Some(0),
                 open_issues_including_prs: Some(0),
                 open_pull_requests: Some(0),
+                open_dependabot_prs: Some(0),
                 ready_issues: None,
                 ready_error: None,
             },
@@ -978,6 +989,7 @@ mod tests {
         assert_eq!(h.remote_branches, Some(0));
         assert_eq!(h.open_issues, Some(0));
         assert_eq!(h.open_prs, Some(0));
+        assert_eq!(h.dependabot_prs, Some(0));
     }
 
     #[test]
@@ -985,6 +997,7 @@ mod tests {
         let h = RepoWorkflowHealth::unreachable("o/r");
         assert_eq!(h.open_issues, None);
         assert_eq!(h.open_prs, None);
+        assert_eq!(h.dependabot_prs, None);
         assert_eq!(h.remote_branches, None);
     }
 
@@ -1280,6 +1293,7 @@ mod tests {
                 remote_branches: Some(37),
                 open_issues_including_prs: Some(12),
                 open_pull_requests: Some(4),
+                open_dependabot_prs: Some(1),
                 ready_issues: None,
                 ready_error: None,
             },

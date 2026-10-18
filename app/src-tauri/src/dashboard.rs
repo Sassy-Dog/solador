@@ -527,13 +527,34 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     .iter()
                     .map(|(column, one, many)| count(column, one, many, cell(column)))
                     .collect::<Vec<_>>());
+                // The PRS cell's tooltip (who opened them) rides with its
+                // count, verbatim.
+                let prs_title = list(p, "columns")
+                    .iter()
+                    .skip(1)
+                    .zip(list(v, "cells"))
+                    .find(|(column, _)| string(column, "label") == crate::github::COL_PRS)
+                    .map(|(_, cell)| cell["title"].clone())
+                    .filter(Value::is_string);
+                if let (Some(title), Some(entry)) = (
+                    prs_title,
+                    r["counts"]
+                        .as_array_mut()
+                        .and_then(|c| c.iter_mut().find(|c| c["header"] == crate::github::COL_PRS)),
+                ) {
+                    entry["title"] = title;
+                }
                 // …and what is left is Detailed's extra, so the three are
                 // never printed twice on one row.
-                r["details"] = json!(cells
+                let mut details: Vec<Value> = cells
                     .iter()
                     .filter(|(label, _)| !ROW_COUNTS.iter().any(|(column, _, _)| column == label))
                     .map(|(label, text)| field(label, text))
-                    .collect::<Vec<_>>());
+                    .collect();
+                // Dependabot's share of PRS has no column in the Repos panel;
+                // here it is a Detail column of its own.
+                details.push(field("Dependabot", &v["dependabotPrs"]));
+                r["details"] = json!(details);
                 r
             })
             .collect(),
@@ -874,6 +895,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
                 "RAM" | "GPU mem" => 130,
                 "Disk read" | "Disk write" | "Network down" | "Network up" => 95,
                 "Thermal" => 90,
+                "Dependabot" => 95,
                 "Organization" => 180,
                 "OS" | "Architecture" | "LONGEST" => 120,
                 _ => 80,
@@ -2134,8 +2156,23 @@ mod tests {
         }
         assert_eq!(
             labels(get("widget"), "details"),
-            ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
+            ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST", "Dependabot"]
         );
+        // Who opened the PRs: a tooltip on the PRs count and a Detail field,
+        // both verbatim from the Repos view; nothing over an unknown count.
+        let prs = |name: &'static str| list(get(name), "counts")[2].clone();
+        assert_eq!(prs("gadget")["title"], "5 open PRs · 3 from Dependabot");
+        assert_eq!(prs("flywheel")["title"], "1 open PR · none from Dependabot");
+        assert!(prs("cogwheel")["title"].is_null());
+        let dependabot = |name: &'static str| {
+            list(get(name), "details")
+                .iter()
+                .find(|d| d["label"] == "Dependabot")
+                .map(|d| d["value"].clone())
+        };
+        assert_eq!(dependabot("gadget"), Some(json!("3")));
+        assert_eq!(dependabot("cogwheel"), Some(json!("—")));
+        assert_eq!(dependabot("toolkit"), Some(json!("—")));
     }
 
     /// The CSS slots are hand-copied numbers; this is what ties them to the

@@ -37,6 +37,11 @@ const RUNNERS_PER_PAGE: &str = "100";
 /// an order of magnitude past any portfolio this cockpit tracks. Hitting it
 /// sets [`discovery::AccessibleRepos::truncated`] rather than looping on.
 pub const DISCOVERY_PAGE_CAP: usize = 10;
+/// Pages of 100 the open-PR walk reads before refusing: 1,000 open PRs. Past
+/// it the walk reports [`GitHubError::TooManyToCount`], never a truncation.
+pub const PULLS_PAGE_CAP: usize = 10;
+/// The author Dependabot's pull requests carry: its GitHub App's bot login.
+pub const DEPENDABOT_LOGIN: &str = "dependabot[bot]";
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitHubError {
@@ -71,6 +76,10 @@ pub enum GitHubError {
     /// permission, and telling the operator to grant one would be wrong.
     #[error("GitHub could not answer the board read: {0}")]
     BoardUnavailable(String),
+    /// A list walk reached its page cap with more pages advertised. The count
+    /// would be a truncation, so there is none; the reason names the cap.
+    #[error("too many to count: {0}")]
+    TooManyToCount(String),
 }
 
 impl GitHubError {
@@ -128,6 +137,9 @@ impl GitHubError {
             }
             GitHubError::BoardUnavailable(reason) => {
                 format!("GitHub could not answer the board read — {reason}")
+            }
+            GitHubError::TooManyToCount(reason) => {
+                format!("GitHub has more than this build will count — {reason}")
             }
         }
     }
@@ -379,11 +391,47 @@ impl GitHubClient {
             .await
     }
 
-    /// Number of **open** pull requests for a repo. Requires the PAT's
-    /// Pull requests (read) permission.
-    pub async fn open_pull_request_count(&self, repo: &str) -> Result<u32, GitHubError> {
-        self.open_count(&format!("/repos/{repo}/pulls"), &[("state", "open")])
-            .await
+    /// The **open** pull requests for a repo: how many, and how many of those
+    /// Dependabot opened. Requires the PAT's Pull requests (read) permission.
+    ///
+    /// A walk of the list, 100 per page, rather than [`Self::open_count`]'s
+    /// `per_page=1` trick: the trick yields a total but never an author. For a
+    /// repo with up to 100 open PRs it is still exactly one request. Both
+    /// numbers come from the one walk, so they are known or unknown together;
+    /// past [`PULLS_PAGE_CAP`] pages it refuses rather than undercount.
+    pub async fn open_pull_requests(&self, repo: &str) -> Result<PullRequestCounts, GitHubError> {
+        let mut counts = PullRequestCounts::default();
+        for page in 1..=PULLS_PAGE_CAP {
+            let page_query = page.to_string();
+            let resp = self
+                .get(
+                    &format!("/repos/{repo}/pulls"),
+                    &[
+                        ("state", "open"),
+                        ("per_page", "100"),
+                        ("page", &page_query),
+                    ],
+                )
+                .await?;
+            let pulls: Vec<PullDto> = serde_json::from_str(&resp.body).map_err(decode_failed)?;
+            let dependabot = pulls
+                .iter()
+                .filter(|pr| {
+                    pr.user
+                        .as_ref()
+                        .is_some_and(|u| u.login == DEPENDABOT_LOGIN)
+                })
+                .count();
+            counts.open += u32::try_from(pulls.len()).unwrap_or(u32::MAX);
+            counts.dependabot += u32::try_from(dependabot).unwrap_or(u32::MAX);
+            if !link::has_next_page(resp.link.as_deref()) {
+                return Ok(counts);
+            }
+        }
+        Err(GitHubError::TooManyToCount(format!(
+            "{repo} has more than {} open pull requests",
+            PULLS_PAGE_CAP * 100
+        )))
     }
 
     /// Open issue+PR count, read from the repo object's accurate
@@ -467,7 +515,7 @@ impl GitHubClient {
         };
         let (branches, open_prs, open_issues_incl_prs, ready) = join4(
             self.branch_count(repo),
-            self.open_pull_request_count(repo),
+            self.open_pull_requests(repo),
             self.open_issues_including_prs_count(repo),
             self.ready_issue_count(repo),
         )
@@ -480,7 +528,8 @@ impl GitHubClient {
             RepoCounts {
                 remote_branches: branches.ok(),
                 open_issues_including_prs: open_issues_incl_prs.ok(),
-                open_pull_requests: open_prs.ok(),
+                open_pull_requests: open_prs.as_ref().ok().map(|c| c.open),
+                open_dependabot_prs: open_prs.as_ref().ok().map(|c| c.dependabot),
                 ready_issues: ready.as_ref().ok().copied(),
                 ready_error: ready.err().map(|e| e.user_message()),
             },
@@ -521,6 +570,27 @@ impl GitHubClient {
 struct Response {
     body: String,
     link: Option<String>,
+}
+
+/// One repo's open pull requests, as [`GitHubClient::open_pull_requests`]
+/// counted them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PullRequestCounts {
+    pub open: u32,
+    /// Of `open`, those whose author is [`DEPENDABOT_LOGIN`].
+    pub dependabot: u32,
+}
+
+/// Minimal decode of one `GET /repos/{owner}/{repo}/pulls` entry: only its
+/// author. `user` is nullable for a deleted ("ghost") account.
+#[derive(Debug, Deserialize)]
+struct PullDto {
+    user: Option<PullUserDto>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullUserDto {
+    login: String,
 }
 
 /// Minimal decode of `GET /repos/{owner}/{repo}` — only the accurate
@@ -907,9 +977,9 @@ mod tests {
     /// An empty collection is a real answer of zero, not an unknown.
     #[tokio::test]
     async fn an_empty_collection_counts_as_zero() {
-        let server = github_replying("/repos/o/r/pulls", json("[]")).await;
+        let server = github_replying("/repos/o/r/branches", json("[]")).await;
         let count = GitHubClient::with_base_url(server.uri(), "t")
-            .open_pull_request_count("o/r")
+            .branch_count("o/r")
             .await
             .expect("count");
         assert_eq!(count, 0);
@@ -921,16 +991,16 @@ mod tests {
     #[tokio::test]
     async fn cursor_pagination_refuses_to_undercount() {
         let server = github_replying(
-            "/repos/o/r/pulls",
-            json("[{\"number\":1}]").insert_header(
+            "/repos/o/r/branches",
+            json("[{\"name\":\"main\"}]").insert_header(
                 "link",
-                "<https://api.github.com/repositories/1/pulls?per_page=1&after=Y3Vyc29y&page=2>; \
+                "<https://api.github.com/repositories/1/branches?per_page=1&after=Y3Vyc29y&page=2>; \
                  rel=\"next\"",
             ),
         )
         .await;
         let err = GitHubClient::with_base_url(server.uri(), "t")
-            .open_pull_request_count("o/r")
+            .branch_count("o/r")
             .await
             .unwrap_err();
         assert!(
@@ -953,24 +1023,134 @@ mod tests {
         assert!(matches!(err, GitHubError::DecodeFailed(_)), "got {err:?}");
     }
 
+    /// One pull request per entry of `authors`, opened by that login, as
+    /// `GET /pulls` serves them.
+    fn pulls_by(authors: &[&str]) -> String {
+        let entries: Vec<String> = authors
+            .iter()
+            .enumerate()
+            .map(|(i, login)| {
+                format!(
+                    "{{\"number\":{},\"user\":{{\"login\":\"{login}\"}}}}",
+                    i + 1
+                )
+            })
+            .collect();
+        format!("[{}]", entries.join(","))
+    }
+
     #[tokio::test]
-    async fn open_pull_request_count_asks_for_open_state_only() {
+    async fn open_pull_requests_counts_dependabots_share_of_the_open_list() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/repos/o/r/pulls"))
             .and(query_param("state", "open"))
-            .and(query_param("per_page", "1"))
-            .respond_with(json("[]").insert_header(
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(json(&pulls_by(&[
+                DEPENDABOT_LOGIN,
+                "octocat",
+                DEPENDABOT_LOGIN,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let counts = GitHubClient::with_base_url(server.uri(), "t")
+            .open_pull_requests("o/r")
+            .await
+            .expect("counts");
+        assert_eq!(
+            counts,
+            PullRequestCounts {
+                open: 3,
+                dependabot: 2
+            }
+        );
+    }
+
+    /// A deleted author arrives as `"user": null`: still an open PR, and not
+    /// Dependabot's.
+    #[tokio::test]
+    async fn a_ghost_author_counts_as_open_but_not_dependabot() {
+        let server =
+            github_replying("/repos/o/r/pulls", json("[{\"number\":1,\"user\":null}]")).await;
+        let counts = GitHubClient::with_base_url(server.uri(), "t")
+            .open_pull_requests("o/r")
+            .await
+            .expect("counts");
+        assert_eq!(
+            counts,
+            PullRequestCounts {
+                open: 1,
+                dependabot: 0
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn open_pull_requests_walks_every_advertised_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/pulls"))
+            .and(query_param("page", "1"))
+            .respond_with(json(&pulls_by(&[DEPENDABOT_LOGIN; 100])).insert_header(
                 "link",
-                "<https://api.github.com/x?per_page=1&page=4>; rel=\"last\"",
+                "<https://api.github.com/x?per_page=100&page=2>; rel=\"next\", \
+                 <https://api.github.com/x?per_page=100&page=2>; rel=\"last\"",
             ))
             .mount(&server)
             .await;
-        let count = GitHubClient::with_base_url(server.uri(), "t")
-            .open_pull_request_count("o/r")
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/pulls"))
+            .and(query_param("page", "2"))
+            .respond_with(json(&pulls_by(&["octocat", DEPENDABOT_LOGIN])))
+            .mount(&server)
+            .await;
+        let counts = GitHubClient::with_base_url(server.uri(), "t")
+            .open_pull_requests("o/r")
             .await
-            .expect("count");
-        assert_eq!(count, 4);
+            .expect("counts");
+        assert_eq!(
+            counts,
+            PullRequestCounts {
+                open: 102,
+                dependabot: 101
+            }
+        );
+    }
+
+    /// Past the cap the walk refuses: reporting the first 1,000 as the total
+    /// would be a truncation passed off as a count.
+    #[tokio::test]
+    async fn open_pull_requests_refuses_past_its_page_cap() {
+        let server = github_replying(
+            "/repos/o/r/pulls",
+            json(&pulls_by(&["octocat"])).insert_header(
+                "link",
+                "<https://api.github.com/x?per_page=100&page=99>; rel=\"next\"",
+            ),
+        )
+        .await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .open_pull_requests("o/r")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitHubError::TooManyToCount(_)), "got {err:?}");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            PULLS_PAGE_CAP
+        );
+    }
+
+    /// A body that is not a list is skew, never zero open PRs.
+    #[tokio::test]
+    async fn a_non_array_pulls_body_is_decode_failed_not_zero() {
+        let server = github_replying("/repos/o/r/pulls", json("{\"message\":\"Not Found\"}")).await;
+        let err = GitHubClient::with_base_url(server.uri(), "t")
+            .open_pull_requests("o/r")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GitHubError::DecodeFailed(_)), "got {err:?}");
     }
 
     /// The issue+PR total comes from the repo object, NOT the cursor-paginated
@@ -1009,10 +1189,12 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/repos/o/r/pulls"))
-            .respond_with(json("[]").insert_header(
-                "link",
-                "<https://api.github.com/x?per_page=1&page=4>; rel=\"last\"",
-            ))
+            .respond_with(json(&pulls_by(&[
+                "octocat",
+                DEPENDABOT_LOGIN,
+                "hubot",
+                DEPENDABOT_LOGIN,
+            ])))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -1063,6 +1245,7 @@ mod tests {
         );
         assert_eq!(health.remote_branches, Some(37));
         assert_eq!(health.open_prs, Some(4));
+        assert_eq!(health.dependabot_prs, Some(2));
         assert_eq!(health.open_issues, Some(8), "12 inclusive − 4 PRs");
         assert_eq!(
             health.ready_issues,
@@ -1406,10 +1589,12 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/repos/o/r/pulls"))
-            .respond_with(json("[]").insert_header(
-                "link",
-                "<https://api.github.com/x?per_page=1&page=4>; rel=\"last\"",
-            ))
+            .respond_with(json(&pulls_by(&[
+                "octocat",
+                DEPENDABOT_LOGIN,
+                "hubot",
+                DEPENDABOT_LOGIN,
+            ])))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -1536,6 +1721,7 @@ mod tests {
             .repo_health("o/r", None, now())
             .await;
         assert_eq!(health.open_prs, None);
+        assert_eq!(health.dependabot_prs, None, "unknown together, never 0");
         assert_eq!(
             health.open_issues, None,
             "12 inclusive with an unknown PR count is not 12 issues"

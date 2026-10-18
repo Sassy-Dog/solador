@@ -112,6 +112,9 @@ test("every repo row carries Rust's cells, widths and dot colour", async ({ page
       await expect(cells.nth(i)).toHaveText(cell.text);
       await expect(cells.nth(i)).toHaveCSS("color", rgb(cell.color));
       await expect(cells.nth(i)).toHaveCSS("width", `${cell.width}px`);
+      // Only a cell Rust gave words to has a tooltip (PRS: who opened them).
+      if (cell.title) await expect(cells.nth(i)).toHaveAttribute("title", cell.title);
+      else await expect(cells.nth(i)).not.toHaveAttribute("title");
     }
   }
 });
