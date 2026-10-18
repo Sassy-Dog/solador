@@ -953,8 +953,11 @@ the bundle's floor.
   (via `app/src-tauri/src/volumes.rs`, on `cockpit_view`'s payload), before the
   Hosts panel or the dashboard reads a card, so a hidden volume never
   colours the strip, names itself in the status or raises attention. Hide from
-  Detail (`machine_set_volume_hidden`) or the Connections checklist
-  (`settings_set_volume_hidden`). GitHub tiles persist row limits
+  the tile's Disk strip or Detail (`machine_set_volume_hidden`) or the
+  Connections checklist (`settings_set_volume_hidden`). A Machines tile's
+  `showDisk: false` (Configure → **Disk strip**) drops the strip from that tile's
+  rows only, in `tile_view`; status, attention and Detail are unchanged. Each
+  machine renders as an inset card. GitHub tiles persist row limits
   (including All); Repos also persists selected repository identities and column
   sorting, and Runners supports OS + architecture groups. `viewmodel::dashboard`
   owns sorting/aggregation. Architecture is carried from GitHub's standard labels
@@ -978,7 +981,8 @@ the bundle's floor.
   until explicitly cleared, even across recovery/critical episodes. Only warning
   severity is excluded from attention: colours remain truthful, critical always
   breaks through, and disk/thermal/connection problems are unaffected. The
-  overview meter marks an acknowledged warning; Detail adds a tooltip checkmark.
+  overview meter and Detail both mark an acknowledged warning with a muted ✓
+  beside the value (tooltip), never a standing text line.
   `machine_acknowledge_warning` saves before rendering, rolls back on failure,
   and does not enter dashboard layout undo history. Host deletion removes its
   acknowledgements. Polls started before the save cannot overwrite its response.

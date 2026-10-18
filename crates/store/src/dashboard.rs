@@ -26,6 +26,10 @@ pub struct DashboardTile {
     pub sort_descending: bool,
     #[serde(default = "runner_list")]
     pub runner_view: String,
+    /// Machines tiles only: false drops the Disk strip from this tile's rows.
+    /// The volumes still colour the status line and raise attention.
+    #[serde(default = "disk_shown")]
+    pub show_disk: bool,
 }
 
 fn automatic_rows() -> String {
@@ -36,6 +40,9 @@ fn name_sort() -> String {
 }
 fn runner_list() -> String {
     "list".into()
+}
+fn disk_shown() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

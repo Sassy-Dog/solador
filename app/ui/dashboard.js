@@ -72,7 +72,7 @@
   function paintFeedback() {
     const anchor = feedback?.anchor && q(feedback.anchor);
     const target = feedback && mode === "overview" && (feedback.anchor
-      ? anchor?.closest(".db-warning-control, .db-volumes") || anchor
+      ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric") || anchor
       : active ? q(".db-inspector") : q(".db-attention"));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
@@ -252,10 +252,20 @@
         const metric = node("div", m.span === "full" ? "db-metric db-metric-full" : "db-metric");
         if (m.title) metric.title = m.title;
         const label = node("div", "db-stat-label");
-        label.append(
-          node("span", "", m.label),
-          node("strong", "", m.value ?? "—"),
-        );
+        const reading = node("strong", "", m.value ?? "—");
+        // An acknowledged warning is a ✓ beside its value, not a line of its
+        // own: it lasts as long as the warning, which can be all day.
+        const badge = acknowledgementBadge(m, true);
+        if (badge) reading.append(" ", badge);
+        label.append(node("span", "", m.label));
+        // Beside the mount it hides, so the percentage keeps the right edge
+        // every other reading on the card uses.
+        if (m.mount && interactive) {
+          const hide = volumeButton(row, m.mount, true);
+          hide.dataset.origin = "tile";
+          label.append(hide);
+        }
+        label.append(reading);
         const track = node("div", "db-meter");
         track.setAttribute("aria-label", `${row.label} ${m.label}`);
         if (Number.isFinite(m.fraction)) {
@@ -270,8 +280,6 @@
           track.append(fill);
         } else track.setAttribute("aria-hidden", "true");
         metric.append(label, track);
-        const badge = acknowledgementBadge(m);
-        if (badge) metric.append(badge);
         stats.append(metric);
       }
       wrap.append(stats);
@@ -358,7 +366,7 @@
       el.dataset.width = t.width;
       el.dataset.source = t.source;
       el.dataset.presentation = t.presentation;
-      el.dataset.options = JSON.stringify([t.rowLimit, t.runnerView, t.selectedRepos]);
+      el.dataset.options = JSON.stringify([t.rowLimit, t.runnerView, t.selectedRepos, t.showDisk]);
       el.dataset.scope = t.scopeLabel;
       el.setAttribute("aria-label", t.title);
       el.classList.toggle("db-editable", editing);
@@ -639,6 +647,9 @@
       if (["ghWorkflows", "ghRunners"].includes(t.source)) {
         fields.append(selectField("rowLimit", L("rowLimit"), ["auto", "5", "10", "20", "50", "all"].map(value => ({value, label:L(value) || value})), t.rowLimit || "auto"));
       }
+      if (t.source === "hosts") {
+        fields.append(selectField("showDisk", L("showDisk"), [{value:"true", label:L("diskShown")}, {value:"false", label:L("diskHidden")}], String(t.showDisk !== false)));
+      }
       if (t.source === "ghRunners") {
         fields.append(selectField("runnerView", L("runnerView"), ["list", "grouped"].map(value => ({value, label:L(value)})), t.runnerView));
       }
@@ -775,7 +786,7 @@
     card.dataset.source = t.source;
     card.dataset.presentation = t.presentation;
     card.dataset.scope = t.scopeLabel;
-    card.dataset.options = JSON.stringify([t.rowLimit, t.runnerView, t.selectedRepos]);
+    card.dataset.options = JSON.stringify([t.rowLimit, t.runnerView, t.selectedRepos, t.showDisk]);
     const head = node("header", "db-tile-head");
     head.append(tileHeading(t, "h3"));
     const content = node("div", "db-tile-content");
@@ -801,6 +812,7 @@
     return { ...original, title: String(fields.get("title")).trim(), scope: fields.get("scope"), presentation: fields.get("presentation"), width: fields.get("width"),
       rowLimit: fields.get("rowLimit") || original.rowLimit || "auto",
       runnerView: fields.get("runnerView") || original.runnerView,
+      showDisk: original.source === "hosts" ? fields.get("showDisk") !== "false" : true,
       selectedRepos: original.source === "ghWorkflows" ? fields.getAll("selectedRepos") : (original.selectedRepos || []),
     };
   }
@@ -1238,7 +1250,10 @@
     const inspector = active, restoreFocus = document.activeElement === control;
     // Hide and Unhide for one mount share this selector, so focus follows the
     // volume to whichever list it lands in.
-    const selector = `[data-action="volume-hidden"][data-id="${CSS.escape(row.id)}"][data-mount="${CSS.escape(mount)}"]`;
+    // The tile's strip and Detail can both offer Hide for one mount; the
+    // origin keeps feedback and focus with the control that was pressed.
+    const origin = control.dataset.origin ? `[data-origin="${CSS.escape(control.dataset.origin)}"]` : ":not([data-origin])";
+    const selector = `[data-action="volume-hidden"][data-id="${CSS.escape(row.id)}"][data-mount="${CSS.escape(mount)}"]${origin}`;
     status("");
     acknowledgementVersion++;
     busy = true;

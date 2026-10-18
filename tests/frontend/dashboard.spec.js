@@ -194,9 +194,12 @@ test('machine warnings can be acknowledged and cleared from details without chan
   const acknowledge = inspector.getByRole('button', {name:'Acknowledge RAM warning', exact:true});
   await acknowledge.click();
   await expect(inspector.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeVisible();
-  await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toBeVisible();
+  await expect(tile(page, 'hosts').getByRole('img', {name:'RAM: Acknowledged', exact:true})).toBeVisible();
   await expect(page.locator('.db-end')).toHaveCount(0);
   expect(await page.locator('.db-live-note').evaluate(el => el.getBoundingClientRect().height)).toBeLessThanOrEqual(1);
+  // A ✓ beside the value, never a standing line of text under the meter.
+  await expect(tile(page, 'hosts').getByRole('img', {name:'RAM: Acknowledged', exact:true})).toHaveText('✓');
+  await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toHaveCount(0);
   await expect(tile(page, 'hosts').getByRole('meter', {name:'mac-n87k RAM'})).toHaveAttribute('aria-valuenow', '78.75');
   await expect(action(page, 'attention').filter({hasText:'Machines'})).toHaveCount(0);
   expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === 'machine_acknowledge_warning'))).toEqual([
@@ -230,11 +233,11 @@ test('failed acknowledgement keeps the warning actionable and allows retry', asy
   expect(await page.evaluate(() => window.__ANNOUNCEMENTS__)).toBe(0);
   await expect(acknowledge).toBeEnabled();
   await expect(action(page, 'attention').filter({hasText:'Machines'})).toBeVisible();
-  await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toHaveCount(0);
+  await expect(tile(page, 'hosts').getByRole('img', {name:'RAM: Acknowledged', exact:true})).toHaveCount(0);
   await page.evaluate(next => { window.__FAIL_ACK__ = false; window.__ACK_RESPONSE__ = next; }, warningFrame(initial, true));
   await acknowledge.click();
   await expect(page.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeEnabled();
-  await expect(tile(page, 'hosts').getByText('Acknowledged', {exact:true})).toBeVisible();
+  await expect(tile(page, 'hosts').getByRole('img', {name:'RAM: Acknowledged', exact:true})).toBeVisible();
 });
 
 test('an acknowledgement failure stays with its machine when changing inspectors', async ({page, baseURL}) => {
@@ -280,10 +283,10 @@ test('critical attention stays visible with a saved acknowledgement in table and
     await expect(inspector.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeVisible();
     await expect(inspector.getByRole('button', {name:'Acknowledge RAM warning',exact:true})).toHaveCount(0);
     await expect(action(page, 'attention').filter({hasText:'Machines'})).toBeVisible();
-    await expect(tile(page, 'hosts').getByText('Acknowledged',{exact:true})).toHaveCount(0);
+    await expect(tile(page, 'hosts').getByRole('img', {name:'RAM: Acknowledged', exact:true})).toHaveCount(0);
   }
   await page.evaluate(next => window.__SET_DASHBOARD__(next), warningFrame(initial, true));
-  await expect(tile(page, 'hosts').getByText('Acknowledged',{exact:true})).toBeVisible();
+  await expect(tile(page, 'hosts').getByRole('img', {name:'RAM: Acknowledged', exact:true})).toBeVisible();
   for (const width of [390, 240, 1280]) {
     await page.setViewportSize({width, height:900});
     await expect(inspector.getByRole('button', {name:'Clear RAM acknowledgement'})).toBeVisible();
@@ -419,6 +422,63 @@ test('a volume hidden from Detail leaves the table and can be unhidden there', a
     {hostId:host.id, mount, hidden:true, width:expect.any(Number)},
     {hostId:host.id, mount, hidden:false, width:expect.any(Number)},
   ]);
+});
+
+test('the Machines tile hides its Disk strip volume from the strip itself', async ({page,baseURL}) => {
+  const model = await openDashboard(page,baseURL);
+  const host = model.sources.find(s=>s.id==='hosts').rows.find(r=>r.metrics?.[4]?.mount);
+  const mount = host.metrics[4].mount;
+  const card = tile(page,'hosts').locator('.db-host').filter({has:page.locator(`[data-action="row"][data-id="${host.id}"]`)});
+  const hide = card.getByRole('button',{name:`Hide ${mount}`,exact:true});
+  // Held in place but invisible until the card is hovered or focused, so the
+  // percentage never moves.
+  await page.mouse.move(0,0);
+  await expect(hide).toBeHidden();
+  await card.hover();
+  await expect(hide).toBeVisible();
+  await page.evaluate(() => { window.__FAIL_VOLUME__ = true; });
+  await hide.click();
+  await expect(card.locator('.db-metric > .db-action-error')).toHaveText('Could not save the hidden volumes.');
+  await page.evaluate(() => { window.__FAIL_VOLUME__ = false; });
+  await hide.click();
+  await expect(card.locator('.db-action-error')).toHaveCount(0);
+  await expect(page.locator('.db-inspector')).toBeHidden();
+  expect(await page.evaluate(() => window.__CALLS__.filter(c => c.command === 'machine_set_volume_hidden').map(c => c.args))).toEqual([
+    {hostId:host.id, mount, hidden:true, width:expect.any(Number)},
+    {hostId:host.id, mount, hidden:true, width:expect.any(Number)},
+  ]);
+});
+
+test('each machine on the Machines tile sits in its own card', async ({page,baseURL}) => {
+  await openDashboard(page,baseURL);
+  const cards = await tile(page,'hosts').locator('.db-host').evaluateAll(els => els.map(el => {
+    const style = getComputedStyle(el), box = el.getBoundingClientRect();
+    return {border:style.borderTopWidth, radius:parseFloat(style.borderTopLeftRadius), top:box.top, bottom:box.bottom};
+  }));
+  expect(cards.length).toBeGreaterThan(1);
+  for (const [i, c] of cards.entries()) {
+    expect(c.border).toBe('1px');
+    expect(c.radius).toBeGreaterThan(0);
+    if (i) expect(c.top - cards[i-1].bottom).toBeGreaterThanOrEqual(6);
+  }
+});
+
+test('a Machines tile can drop its Disk strip, and only Machines tiles offer it', async ({page,baseURL}) => {
+  await openDashboard(page,baseURL);
+  await action(page,'edit').click();
+  await tile(page,'ghWorkflows').locator('[data-action="configure"]').click();
+  await expect(page.getByLabel('Disk strip',{exact:true})).toHaveCount(0);
+  await tile(page,'hosts').locator('[data-action="configure"]').click();
+  const option = page.getByLabel('Disk strip',{exact:true});
+  await expect(option).toHaveValue('true');
+  await option.selectOption('false');
+  await action(page,'apply').click();
+  expect((await savedLayout(page)).tiles.find(t => t.source === 'hosts').showDisk).toBe(false);
+  expect((await savedLayout(page)).tiles.find(t => t.source === 'ghWorkflows').showDisk).toBe(true);
+  await page.reload();
+  await action(page,'edit').click();
+  await tile(page,'hosts').locator('[data-action="configure"]').click();
+  await expect(page.getByLabel('Disk strip',{exact:true})).toHaveValue('false');
 });
 
 test('Settings header keeps space around the logo and Done button', async ({page,baseURL}) => {
@@ -1236,8 +1296,8 @@ test("a duplicate has an independent scope, width and draft that polling preserv
   });
   expect(duplicate.id).not.toBe(layout.tiles[0].id);
   const copied = page.locator(`[data-tile="${duplicate.id}"]`);
-  await expect(copied.locator('[data-id="local"]')).toHaveCount(0);
-  await expect(tile(page, "hosts").locator('[data-id="local"]')).toHaveCount(1);
+  await expect(copied.locator('[data-action="row"][data-id="local"]')).toHaveCount(0);
+  await expect(tile(page, "hosts").locator('[data-action="row"][data-id="local"]')).toHaveCount(1);
   await expect(copied).toHaveAttribute("data-width", "wide");
 });
 

@@ -70,6 +70,7 @@ pub fn default_layout() -> DashboardLayout {
                     "list"
                 }
                 .into(),
+                show_disk: true,
             })
             .collect(),
     }
@@ -120,6 +121,7 @@ pub fn validate(layout: &DashboardLayout) -> Result<(), String> {
             || !["name", "issues", "ready", "prs", "status"].contains(&tile.sort_by.as_str())
             || !["list", "grouped"].contains(&tile.runner_view.as_str())
             || (tile.runner_view == "grouped" && tile.source != "ghRunners")
+            || (!tile.show_disk && tile.source != "hosts")
             || (!tile.selected_repos.is_empty() && tile.source != "ghWorkflows")
             || tile.selected_repos.len() > 1000
             || tile
@@ -317,6 +319,9 @@ fn host_rows(p: &Value) -> Vec<Value> {
             r["metrics"][4]["header"] = json!("Disk");
             r["metrics"][4]["span"] = json!("full");
             if let Some(v) = disk {
+                // The tile's Hide control names the volume by this, never by
+                // the label it happens to share.
+                r["metrics"][4]["mount"] = v["mount"].clone();
                 r["metrics"][4]["title"] = json!(format!("{} · {}", string(v, "mount"), string(v, "detail")));
             }
             if let Some(v) = disk_measured {
@@ -985,7 +990,16 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         12
     };
     // Default ordering is stable. Explicit column sorts follow current values.
-    let shown: Vec<_> = matching.iter().take(limit).copied().cloned().collect();
+    let mut shown: Vec<_> = matching.iter().take(limit).copied().cloned().collect();
+    // Only this tile's copies lose the strip: Detail reads the source rows, and
+    // the status line and attention were derived before this point.
+    if tile.source == "hosts" && !tile.show_disk {
+        for row in &mut shown {
+            if let Some(metrics) = row["metrics"].as_array_mut() {
+                metrics.retain(|m| m["span"] != "full");
+            }
+        }
+    }
     let hidden = matching.len().saturating_sub(limit);
     let hidden_attention: u64 = matching
         .iter()
@@ -1052,7 +1066,7 @@ fn tile_view(tile: &DashboardTile, source: &Value) -> Value {
         format!("{} shown · {problems} need attention", shown.len())
     };
     json!({"id":tile.id,"source":tile.source,"title":title_case(&tile.title),"width":tile.width,"presentation":tile.presentation,"scopeLabel":scope_label,"rows":shown,"empty":empty,"emptyAction":empty_action,"warnings":source["warnings"],"moreLabel":more,"moreCount":hidden,"footer":footer,
-        "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
+        "rowLimit":tile.row_limit,"runnerView":tile.runner_view,"showDisk":tile.show_disk,"sortBy":tile.sort_by,"sortDescending":tile.sort_descending,"selectedRepos":tile.selected_repos,
         "sortColumns":if tile.source == "ghWorkflows" { json!([
             {"key":"name","label":"Repo"},{"key":"issues","label":"Issues"},{"key":"ready","label":"Ready"},{"key":"prs","label":"PRs"},{"key":"status","label":"Status"}
         ]) } else {json!([])}})
@@ -1110,17 +1124,17 @@ fn presets() -> Value {
         {
             "id":"remote-machines",
             "hint":"Keep remote hosts together, with CPU and memory at a glance.",
-            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote Machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into() }
+            "tile":DashboardTile { id:"draft".into(), source:"hosts".into(), title:"Remote Machines".into(), scope:"remote".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into(), show_disk:true }
         },
         {
             "id":"repos-attention",
             "hint":"Focus on repositories with issues in their available readings.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos Needing Attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into() }
+            "tile":DashboardTile { id:"draft".into(), source:"ghWorkflows".into(), title:"Repos Needing Attention".into(), scope:"attention".into(), presentation:"summary".into(), width:"medium".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"list".into(), show_disk:true }
         },
         {
             "id":"linux-runners",
             "hint":"See Linux runner availability in one compact tile.",
-            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"grouped".into() }
+            "tile":DashboardTile { id:"draft".into(), source:"ghRunners".into(), title:"Linux Runners".into(), scope:"LINUX".into(), presentation:"summary".into(), width:"small".into(), hidden:false, row_limit:"auto".into(), selected_repos:vec![], sort_by:"name".into(), sort_descending:false, runner_view:"grouped".into(), show_disk:true }
         }
     ])
 }
@@ -1180,6 +1194,9 @@ fn labels() -> Value {
         ("runnerView", "Runner view"),
         ("list", "Individual runners"),
         ("grouped", "By OS + architecture"),
+        ("showDisk", "Disk strip"),
+        ("diskShown", "Show"),
+        ("diskHidden", "Hide"),
         ("selectedRepos", "Repositories in this tile"),
         ("reposHint", "Leave all unchecked to include every repo in this scope, including new repos."),
         ("ascending", "Ascending"),
@@ -1379,8 +1396,13 @@ mod tests {
         assert_eq!(list(&tile_view(&tile, &source), "rows").len(), 5);
         assert_eq!(tile.sort_by, "name");
         assert_eq!(tile.runner_view, "list");
+        assert!(
+            tile.show_disk,
+            "a stored tile without the key showed its Disk strip"
+        );
         for options in [
             json!({"rowLimit":"0"}),
+            json!({"showDisk":false}),
             json!({"sortBy":"unknown"}),
             json!({"runnerView":"grouped"}),
             json!({"selectedRepos":["\n"]}),
@@ -1396,6 +1418,37 @@ mod tests {
         let view = tile_view(&missing, &source);
         assert!(list(&view, "rows").is_empty());
         assert_eq!(view["emptyAction"], "configure");
+    }
+
+    #[test]
+    fn a_machines_tile_can_drop_its_disk_strip_without_touching_the_source() {
+        let rows = host_rows(&json!({"hosts":[{
+            "id":"local", "hostName":"mac", "connection":{"state":"live"},
+            "volumes":[{"mount":"/data","percent":"95%","fraction":0.95,"tint":color::hex(color::RED),"detail":"95 / 100 GB"}]
+        }]}));
+        assert_eq!(rows[0]["metrics"][4]["mount"], "/data");
+        let source = json!({"rows":rows});
+        let shown = tile_view(&configured_tile("hosts", json!({})), &source);
+        assert_eq!(
+            list(&shown, "rows")[0]["metrics"].as_array().unwrap().len(),
+            5
+        );
+        let tile = configured_tile("hosts", json!({"showDisk":false}));
+        assert!(validate(&DashboardLayout {
+            revision: 0,
+            detail_views: Default::default(),
+            tiles: vec![tile.clone()]
+        })
+        .is_ok());
+        let view = tile_view(&tile, &source);
+        assert_eq!(view["showDisk"], false);
+        let row = &list(&view, "rows")[0];
+        assert_eq!(row["metrics"].as_array().unwrap().len(), 4);
+        assert!(list(row, "metrics").iter().all(|m| m["span"] != "full"));
+        // The volume still speaks through the row's status and attention.
+        assert_eq!(row["value"], "/data at 95%");
+        assert_eq!(row["attention"], true);
+        assert_eq!(source["rows"][0]["metrics"].as_array().unwrap().len(), 5);
     }
 
     #[test]
