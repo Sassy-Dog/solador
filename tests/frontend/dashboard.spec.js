@@ -463,6 +463,24 @@ test('each machine on the Machines tile sits in its own card', async ({page,base
   }
 });
 
+test('GPU memory reads VRAM, and a unified machine says so on RAM and VRAM', async ({page,baseURL}) => {
+  // Rust authors the tooltip (only where the producer reports unified memory);
+  // this holds the tile to painting it on exactly those two meters.
+  const unified = 'Unified memory: the CPU and GPU share one pool, so VRAM is part of RAM';
+  await openDashboard(page, baseURL, false, view => {
+    const rows = view.sources.find(s => s.id === 'hosts').rows;
+    for (const i of [1, 3]) rows[0].metrics[i].title = unified;
+  });
+  const cards = tile(page,'hosts').locator('.db-host');
+  const metrics = cards.nth(0).locator('.db-metric');
+  await expect(metrics.nth(3).locator('.db-stat-label')).toContainText('VRAM');
+  await expect(metrics.nth(1)).toHaveAttribute('title', unified);
+  await expect(metrics.nth(3)).toHaveAttribute('title', unified);
+  for (const i of [0, 2]) await expect(metrics.nth(i)).not.toHaveAttribute('title', /./);
+  await expect(cards.nth(1).locator('.db-metric').nth(3)).not.toHaveAttribute('title', /./);
+  await expect(cards.nth(1).locator('.db-metric').nth(3)).toContainText('22.1 / 24 GB');
+});
+
 test('a Machines tile can drop its Disk strip, and only Machines tiles offer it', async ({page,baseURL}) => {
   await openDashboard(page,baseURL);
   await action(page,'edit').click();

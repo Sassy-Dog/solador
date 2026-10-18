@@ -954,8 +954,9 @@ the bundle's floor.
 - Status indicated by color: green (good), orange (warning), red (error).
 - Designed for persistent full-screen display on a second monitor.
 - Overview Machines has numeric CPU/RAM meters, GPU and GPU-memory meters below
-  them (never threshold-coloured; labelled `Unified` only when the producer sets
-  `gpu.unifiedMemory`), and a full-width Disk strip for the fullest visible
+  them (never threshold-coloured; GPU memory always reads `VRAM`, and only when
+  the producer sets `gpu.unifiedMemory` do RAM and VRAM carry a "Unified memory"
+  tooltip; both totals are whole GB), and a full-width Disk strip for the fullest visible
   volume (`disk_volume` in `app/src-tauri/src/dashboard.rs`). **Hidden volumes**
   (`Host.hidden_volume_mounts` / `Settings.local_hidden_volume_mounts`) are
   filtered once per frame by the `cockpit` command's `apply_machine_preferences`

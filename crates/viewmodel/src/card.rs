@@ -18,7 +18,7 @@
 //! is the mirror-image bug.
 
 use crate::color::{self, MemoryPressure, ThermalState};
-use crate::format::{core_label, fmt, fmt_axis, fmt_rate, memory_label, relative_age};
+use crate::format::{core_label, fmt, fmt_axis, fmt_rate, memory_label, relative_age, whole_gb};
 use crate::history::History;
 use crate::layout::{
     core_block_height, core_column_ladder, core_rung_height, core_visual_rows, CORE_GAP,
@@ -382,7 +382,7 @@ pub fn host_card(
             format!(
                 "VRAM: {} / {} GB",
                 or_unknown(s.gpu.vram_used_gb, fmt),
-                or_unknown(s.gpu.vram_total_gb, fmt)
+                or_unknown(s.gpu.vram_total_gb, whole_gb)
             ),
         )
     } else {
@@ -439,7 +439,7 @@ pub fn host_card(
         "thermalColor": color::hex(badge_col),
         "cpuHistory": h.cpu.values(),
         "cores": cores,
-        "memValue": format!("{} / {} GB", fmt(s.memory.used_gb), s.memory.total_gb as i64),
+        "memValue": format!("{} / {} GB", fmt(s.memory.used_gb), whole_gb(s.memory.total_gb)),
         "memHistory": h.mem.values(),
         "swapText": format!("Swap: {} GB", fmt(s.memory.swap_used_gb)),
         // The level's word wins where the kernel reported one; otherwise the
@@ -532,17 +532,13 @@ pub fn host_card(
     card["vramFraction"] = json!(gpu_memory.map(|(used, total)| (used / total).clamp(0.0, 1.0)));
     card["vramValue"] = json!(gpu_memory.map_or_else(
         || UNKNOWN.to_owned(),
-        |(used, total)| format!("{} / {} GB", fmt(used), fmt(total)),
+        |(used, total)| format!("{} / {} GB", fmt(used), whole_gb(total)),
     ));
-    // "Unified" only where the producer said the figures are system RAM: on
-    // Apple Silicon they overlap the RAM meter, and calling them VRAM would
-    // read as a second pool. An agent that predates the key gets the plain
-    // word, never a guess from the numbers.
-    card["vramLabel"] = json!(if s.gpu.unified_memory == Some(true) {
-        "Unified"
-    } else {
-        "VRAM"
-    });
+    // Unified only where the producer said the figures are system RAM: on
+    // Apple Silicon they overlap the RAM meter, which the Machines tile says
+    // in a tooltip on both. An agent that predates the key is not unified,
+    // never a guess from the numbers.
+    card["unifiedMemory"] = json!(s.gpu.unified_memory == Some(true));
     card
 }
 
@@ -732,7 +728,7 @@ mod tests {
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuValue"], "0%");
         assert_eq!(vm["gpuValueColor"], color::hex(color::GPU));
-        assert_eq!(vm["vramText"], "VRAM: 0.5 / 24.0 GB");
+        assert_eq!(vm["vramText"], "VRAM: 0.5 / 24 GB");
     }
 
     #[test]
@@ -741,7 +737,7 @@ mod tests {
         s.gpu = gpu(41.0, 3.5, 24.0);
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuValue"], "41%");
-        assert_eq!(vm["vramText"], "VRAM: 3.5 / 24.0 GB");
+        assert_eq!(vm["vramText"], "VRAM: 3.5 / 24 GB");
     }
 
     /// A GPU whose capacity is readable but whose utilisation is not: present,
@@ -759,7 +755,7 @@ mod tests {
         };
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuValue"], UNKNOWN);
-        assert_eq!(vm["vramText"], "VRAM: 3.5 / 24.0 GB");
+        assert_eq!(vm["vramText"], "VRAM: 3.5 / 24 GB");
     }
 
     // MARK: the kernel's memory-pressure level (#544)
@@ -1268,8 +1264,11 @@ mod tests {
         let vm = host_card("llm-box", &s, &HostHistories::new(), &Connection::Live);
         assert_eq!(vm["gpuFraction"], 0.97);
         assert!((vm["vramFraction"].as_f64().unwrap() - 22.1 / 24.0).abs() < 1e-9);
-        assert_eq!(vm["vramValue"], "22.1 / 24.0 GB");
-        assert_eq!(vm["vramLabel"], "VRAM", "an unstated pool is plain VRAM");
+        assert_eq!(vm["vramValue"], "22.1 / 24 GB");
+        assert_eq!(
+            vm["unifiedMemory"], false,
+            "an unstated pool is not unified"
+        );
 
         for absent in [wire::Gpu::zeros(), wire::Gpu::unknown()] {
             s.gpu = absent;
@@ -1291,24 +1290,24 @@ mod tests {
         };
         let vm = host_card("m4", &s, &HostHistories::new(), &Connection::Live);
         assert!(vm["gpuFraction"].is_null());
-        assert_eq!(vm["vramValue"], "3.5 / 24.0 GB");
+        assert_eq!(vm["vramValue"], "3.5 / 24 GB");
     }
 
-    /// Unified memory is labelled as such only when the producer said so.
+    /// Unified memory is reported as such only when the producer said so.
     #[test]
-    fn gpu_memory_is_labelled_unified_only_on_the_producers_word() {
+    fn gpu_memory_is_unified_only_on_the_producers_word() {
         let mut s = fixture();
-        for (unified, label) in [
-            (Some(true), "Unified"),
-            (Some(false), "VRAM"),
-            (None, "VRAM"),
-        ] {
+        for (unified, expected) in [(Some(true), true), (Some(false), false), (None, false)] {
             s.gpu = wire::Gpu {
                 unified_memory: unified,
                 ..gpu(41.0, 21.4, 64.0)
             };
             let vm = host_card("studio", &s, &HostHistories::new(), &Connection::Live);
-            assert_eq!(vm["vramLabel"], label, "unifiedMemory {unified:?}");
+            assert_eq!(vm["unifiedMemory"], expected, "unifiedMemory {unified:?}");
+            assert_eq!(
+                vm["vramValue"], "21.4 / 64 GB",
+                "a whole-GB total, like RAM's"
+            );
         }
     }
 

@@ -69,7 +69,7 @@ right. Editing also offers **Add tile** and **Undo** icons; every icon has a
 tooltip on hover or keyboard focus.
 Connections stay in **Settings**.
 Machines includes colored CPU/RAM utilization bars, GPU and GPU-memory meters
-(labelled Unified on Apple Silicon) for machines running local models, a Disk
+(VRAM, with a Unified memory tooltip on Apple Silicon) for machines running local models, a Disk
 strip for the fullest volume, and persistent acknowledgements for expected
 warnings on a specific machine and metric; critical alerts still need attention.
 Volumes you don't care about can be hidden per machine from the tile, Detail or Settings,
