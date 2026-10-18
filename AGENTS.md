@@ -48,7 +48,7 @@ detailed than this file.
   are a walk of `/pulls` (100 per page, refused past `PULLS_PAGE_CAP` rather
   than truncated), not the `per_page=1` trick, because the walk also yields how
   many Dependabot opened: the PRs count's tooltip (`7 open PRs · 5 from
-  Dependabot`) and a **Dependabot** column in Repos Detail.
+  Dependabot`) and a **DEPENDABOT** column after PRS in Repos Detail.
 - **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES
