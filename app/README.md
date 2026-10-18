@@ -55,10 +55,11 @@ Each machine sits in its own inset card, so one machine's Disk strip never reads
 as the top of the next machine's meters.
 
 Below CPU · RAM sit **GPU** (utilization) and **GPU memory** (used / total GB),
-then one full-width **Disk** strip. GPU memory is labelled **Unified** where the
+then one full-width **Disk** strip. GPU memory is labelled **VRAM**. Where the
 producer says the figure is the GPU's share of system RAM (Apple Silicon:
-`gpu.unifiedMemory`, agent ≥ 0.7.0), and **VRAM** otherwise, including for an
-older agent that does not say. Neither GPU meter is threshold-coloured: a GPU
+`gpu.unifiedMemory`, agent ≥ 0.7.0), the RAM and VRAM meters both carry a
+**Unified memory** tooltip; an older agent that does not say gets none. RAM and
+VRAM totals read in whole GB (`9.8 / 64 GB`). Neither GPU meter is threshold-coloured: a GPU
 pinned at 100% is what serving a local model looks like. A host with no GPU
 keeps both slots with `—`, so the rows stay aligned. The Disk strip names the
 **fullest visible** volume and uses the volume colours (amber at 85%, red at

@@ -10,6 +10,13 @@ pub fn fmt(v: f64) -> String {
     }
 }
 
+/// A memory capacity in whole GB, the way RAM's total has always read
+/// (`64`, and `62` for a Linux host's 62.7): RAM and VRAM totals sit side by
+/// side on the Machines tile, so they share this rather than `fmt`'s decimal.
+pub fn whole_gb(v: f64) -> String {
+    format!("{}", v as i64)
+}
+
 /// MB/s up to 1000, then GB/s, so a burst can't widen the anchored legend.
 pub fn fmt_rate(mbps: f64) -> String {
     if mbps >= 1000.0 {
@@ -85,6 +92,14 @@ pub fn relative_age(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn memory_capacities_read_in_whole_gb() {
+        assert_eq!(whole_gb(64.0), "64");
+        assert_eq!(whole_gb(24.0), "24");
+        assert_eq!(whole_gb(62.7), "62", "truncated, as RAM's total always was");
+    }
+
     use super::*;
 
     #[test]

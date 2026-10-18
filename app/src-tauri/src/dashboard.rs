@@ -304,18 +304,24 @@ fn host_rows(p: &Value) -> Vec<Value> {
             };
             // Layout B: CPU · RAM over GPU · GPU memory, then one full-width
             // Disk strip. GPU memory and Disk keep a fixed `header` for Detail's
-            // columns while their tile label names what they are: "Unified" on
-            // Apple Silicon, the volume's mount on the strip.
+            // columns while their tile label names what they are: the
+            // volume's mount on the strip. GPU memory always reads VRAM; on
+            // Apple Silicon a tooltip on it and on RAM says the two are one pool.
             let disk = (!down).then(|| disk_volume(list(h, "volumes"))).flatten();
             let disk_measured = disk.filter(|v| string(v, "percent") != card::UNKNOWN);
             r["metrics"] = json!([
                 field("CPU", reading("cpuValue")),
                 field("RAM", reading("memValue")),
                 field("GPU", reading("gpuValue")),
-                field(h["vramLabel"].as_str().unwrap_or("VRAM"), reading("vramValue")),
+                field("VRAM", reading("vramValue")),
                 field(disk.map_or("Disk", |v| string(v, "mount")), &disk.map_or(Value::Null, |v| v["percent"].clone())),
             ]);
             r["metrics"][3]["header"] = json!("GPU mem");
+            if h["unifiedMemory"] == true {
+                for index in [1, 3] {
+                    r["metrics"][index]["title"] = json!(UNIFIED_MEMORY_TITLE);
+                }
+            }
             r["metrics"][4]["header"] = json!("Disk");
             r["metrics"][4]["span"] = json!("full");
             if let Some(v) = disk {
@@ -427,6 +433,12 @@ fn all_remote_hosts_unreachable(p: &Value) -> bool {
                 && string(&h["connection"], "state") != "connecting"
         })
 }
+
+/// The tooltip on a Machines tile's RAM and VRAM meters where the producer
+/// said the GPU's memory is system RAM: on Apple Silicon the two meters read
+/// one pool, and VRAM is part of the RAM figure beside it.
+const UNIFIED_MEMORY_TITLE: &str =
+    "Unified memory: the CPU and GPU share one pool, so VRAM is part of RAM";
 
 /// The Repos columns a summary row carries *on* the row, between the name and
 /// the status, as `7 issues · 3 ready · 2 PRs`: the backlog at a glance. Each
@@ -1651,9 +1663,15 @@ mod tests {
         let metrics = list(&rows[0], "metrics");
         assert_eq!(metrics[2]["value"], "41%");
         assert_eq!(metrics[2]["fraction"], 0.41);
-        assert_eq!(metrics[3]["label"], "Unified");
+        assert_eq!(metrics[3]["label"], "VRAM");
         assert_eq!(metrics[3]["header"], "GPU mem");
-        assert_eq!(metrics[3]["value"], "21.4 / 64.0 GB");
+        assert_eq!(metrics[3]["value"], "21.4 / 64 GB");
+        for index in [1, 3] {
+            assert_eq!(
+                metrics[index]["title"], UNIFIED_MEMORY_TITLE,
+                "metric {index}"
+            );
+        }
         assert_eq!(metrics[4]["label"], "/srv", "the fullest volume");
         assert_eq!(metrics[4]["header"], "Disk");
         assert_eq!(metrics[4]["span"], "full");
@@ -1673,6 +1691,28 @@ mod tests {
         );
         assert_eq!(rows[0]["hiddenVolumes"], json!(["/srv"]));
         assert_eq!(list(&rows[0], "volumes").len(), 1);
+    }
+
+    /// Only a producer that said its GPU memory is system RAM gets the
+    /// unified tooltip; the label is VRAM either way.
+    #[test]
+    fn only_unified_memory_carries_the_unified_tooltip() {
+        for (unified, titled) in [(true, true), (false, false)] {
+            let rows = host_rows(&json!({"hosts": [{
+                "id":"m", "hostName":"m", "connection":{"state":"live"},
+                "unifiedMemory": unified
+            }]}));
+            let metrics = list(&rows[0], "metrics");
+            assert_eq!(metrics[3]["label"], "VRAM");
+            for index in [1, 3] {
+                assert_eq!(
+                    metrics[index]["title"].is_string(),
+                    titled,
+                    "unified {unified}, metric {index}"
+                );
+            }
+            assert!(metrics[0]["title"].is_null() && metrics[2]["title"].is_null());
+        }
     }
 
     #[test]
