@@ -478,6 +478,11 @@ test("Detail uses compact aligned table rows and preserves focus through live re
   const rows = page.locator('.db-detail-resource');
   await expect(rows).toHaveCount(6);
   await expect(page.locator('#dashboardOverview .db-detail-table')).toBeVisible();
+  // Dependabot's share of PRS is a Detail column of its own.
+  const table = page.locator('#dashboardOverview .db-detail-table');
+  await expect(table.locator('thead th', {hasText:'Dependabot'})).toHaveCount(1);
+  const dependabotColumn = await table.locator('thead th').evaluateAll(ths => ths.findIndex(th => th.textContent === 'Dependabot'));
+  await expect(table.locator('tr.db-detail-resource[data-resource="acme/gadget"] > *').nth(dependabotColumn)).toHaveText('3');
   await expect(rows.first().locator('[data-action="detail-toggle"]')).toHaveAttribute('aria-expanded', 'false');
   for (const width of [375, 1440]) {
     await page.setViewportSize({width, height:950});
@@ -1437,6 +1442,13 @@ test("repo rows carry issues, ready and PRs on the row, in summary and in detail
   // Exactly one is singular; `ready` has no plural.
   await expect(item("acme/flywheel").locator(".db-row-counts")).toHaveText("1 issue · 0 ready · 1 PR");
   await expect(item("acme/cogwheel").locator(".db-row-counts")).toHaveText("— issues · — ready · — PRs");
+  // Who opened the PRs is the count's tooltip, in Rust's words, and absent
+  // over an unknown count.
+  const prsCount = (id) => item(id).locator('.db-count[data-header="PRS"]');
+  await expect(prsCount("acme/gadget")).toHaveAttribute("title", "5 open PRs · 3 from Dependabot");
+  await expect(prsCount("acme/flywheel")).toHaveAttribute("title", "1 open PR · none from Dependabot");
+  await expect(prsCount("acme/cogwheel")).not.toHaveAttribute("title");
+  await expect(item("acme/gadget")).toHaveAttribute("aria-label", /5 open PRs · 3 from Dependabot/);
   // The numbers are columns: every row's three numbers end at the same x as
   // every other row's, whether the row reads `1 PR`, `18 issues` or `—`.
   const rightEdges = await repos
@@ -1465,7 +1477,7 @@ test("repo rows carry issues, ready and PRs on the row, in summary and in detail
   await page.locator("#dashboard-presentation").selectOption("detailed");
   await action(page, "apply").click();
   const row = item("acme/pipe-fitting").locator("xpath=..");
-  await expect(row.locator(".db-extra-metrics .db-muted")).toHaveText(["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]);
+  await expect(row.locator(".db-extra-metrics .db-muted")).toHaveText(["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST", "Dependabot"]);
   await expect(row.locator(".db-row-counts")).toHaveCount(1);
   expect(page.dashboardErrors).toEqual([]);
 });

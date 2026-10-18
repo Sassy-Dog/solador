@@ -237,6 +237,8 @@
         if (i) counts.append(" · ");
         const cell = node("span", "db-count");
         cell.dataset.header = c.header;
+        // Rust's words for what the bare number hides (who opened the PRs).
+        if (c.title) cell.title = c.title;
         cell.append(node("strong", "", c.value), " ", node("span", "", c.label));
         counts.append(cell);
       });
@@ -244,7 +246,7 @@
     }
     b.append(colored("span", "db-value", row.value, row.valueColor));
     b.title = [row.label, row.value, row.detail].filter(Boolean).join(" · ");
-    if (row.counts?.length) b.setAttribute("aria-label", [row.label, ...row.counts.map(c => `${c.value} ${c.label}`), row.value].join(" · "));
+    if (row.counts?.length) b.setAttribute("aria-label", [row.label, ...row.counts.map(c => c.title || `${c.value} ${c.label}`), row.value].join(" · "));
     wrap.append(b);
     if (row.metrics?.length) {
       const stats = node("div", "db-host-stats");

@@ -44,7 +44,11 @@ detailed than this file.
   `refresh_interval_secs`). READY is a GraphQL read (`crates/github::ready`),
   issue-side so no board identity lives in config; it needs the PAT's org
   Projects permission and renders `—`, never `0`, without it — and, alone
-  among the four counts, says why in the panel footer (`ready_error`).
+  among the four counts, says why in the panel footer (`ready_error`). Open PRs
+  are a walk of `/pulls` (100 per page, refused past `PULLS_PAGE_CAP` rather
+  than truncated), not the `per_page=1` trick, because the walk also yields how
+  many Dependabot opened: the PRs count's tooltip (`7 open PRs · 5 from
+  Dependabot`) and a **Dependabot** column in Repos Detail.
 - **Usage** — Claude token rollups (same interval); Neon, Sentry + Vercel
   (hourly). Vercel reads the FOCUS billing export: month-to-date spend and what
   falls beyond the plan. Neon renders compute/storage MTD, `NEON EST. CHARGES

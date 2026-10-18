@@ -164,7 +164,10 @@ A **GitHub Repos** row carries its backlog on the row itself, in both
 presentations: numeric-only Issues, Ready and PRs columns at every tile width,
 without repeated labels or dot separators. *Ready* is the repo's open issues
 whose project-board Status is `Ready`. Counts come verbatim from the detailed
-table's cells, so an unreadable count is the same `—` there. Numbers and their
+table's cells, so an unreadable count is the same `—` there. Hovering the PRs
+count (here and in the full Repos panel) says how many Dependabot opened —
+`7 open PRs · 5 from Dependabot` — and Repos Detail has a **Dependabot** column;
+an unreadable PR count has no tooltip and reads `—` there. Numbers and their
 column headers align to the right in fixed-width slots. The status column
 is exactly as wide as the widest Repos status (`Unreadable`, 10ch), and a long
 repo name ellipsizes before the counts give way. A repo with a run parked at a

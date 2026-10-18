@@ -1082,10 +1082,13 @@ fn repo_row(
         // Keyed on the status, not on `needs_approval` alone: a failed repo
         // with a parked run reads Failed and keeps opening Detail.
         "approvalUrl": if status == RepoStatus::NeedsApproval { approval_url(health) } else { None },
+        // Dependabot's share of PRS, as the cell would print it: the
+        // dashboard's Detail column reads this, never re-derives it.
+        "dependabotPrs": count_cell(health.dependabot_prs, PRS_W, color::INK)["text"],
         "cells": [
             count_cell(health.open_issues, ISSUES_W, color::INK),
             count_cell(health.ready_issues, READY_W, color::INK),
-            count_cell(health.open_prs, PRS_W, color::INK),
+            pull_request_cell(health.open_prs, health.dependabot_prs),
             count_cell(health.remote_branches, REMOTE_W, color::INK),
             count_cell(on_disk.local_branches, LOCAL_W, color::INK),
             count_cell(on_disk.worktrees, WT_W, color::INK),
@@ -1114,6 +1117,28 @@ fn count_cell(value: Option<u32>, width: f64, non_zero_color: u32) -> Value {
         Some(n) => (n.to_string(), non_zero_color),
     };
     json!({ "text": text, "color": color::hex(tint), "width": width })
+}
+
+/// The PRS cell, carrying who opened them as its tooltip: `7 open PRs · 5
+/// from Dependabot`. No tooltip while either count is unknown — the two are
+/// read in one walk, so in practice they are known or unknown together.
+fn pull_request_cell(open: Option<u32>, dependabot: Option<u32>) -> Value {
+    let mut cell = count_cell(open, PRS_W, color::INK);
+    if let Some(title) = pull_request_title(open, dependabot) {
+        cell["title"] = json!(title);
+    }
+    cell
+}
+
+fn pull_request_title(open: Option<u32>, dependabot: Option<u32>) -> Option<String> {
+    let (open, dependabot) = (open?, dependabot?);
+    let prs = if open == 1 { "open PR" } else { "open PRs" };
+    let from = if dependabot == 0 {
+        "none from Dependabot".to_owned()
+    } else {
+        format!("{dependabot} from Dependabot")
+    };
+    Some(format!("{open} {prs} · {from}"))
 }
 
 /// The LONGEST cell: an amber elapsed time, or a muted `·` when nothing is
@@ -1628,13 +1653,13 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         health(
             "acme/widget",
             &[run(1, "CI", "completed", Some("success"), 30)],
-            counts(Some(12), Some(4), Some(0), Some(0)),
+            counts(Some(12), Some(4), Some(0), Some(0), Some(0)),
         ),
         // A build in flight: amber dot, amber JOBS, an elapsed LONGEST.
         health(
             "acme/pipe-fitting",
             &[run(2, "CI", "in_progress", None, 95)],
-            counts(Some(3), Some(9), Some(2), Some(3)),
+            counts(Some(3), Some(9), Some(2), Some(1), Some(3)),
         ),
         // Parked at an approval gate: the blinking dot. Exactly one issue
         // and one PR — the singular words the dashboard strip prints, and
@@ -1642,13 +1667,13 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         health(
             "acme/flywheel",
             &[run(3, "Release", "waiting", None, 6)],
-            counts(Some(2), Some(2), Some(1), Some(0)),
+            counts(Some(2), Some(2), Some(1), Some(0), Some(0)),
         ),
         // Red, and its side counts came back while its runs failed.
         health(
             "acme/gadget",
             &[run(4, "CI", "completed", Some("failure"), 12)],
-            counts(Some(41), Some(23), Some(5), Some(6)),
+            counts(Some(41), Some(23), Some(5), Some(3), Some(6)),
         ),
         // The PAT could read the runs but not the Issues/PRs/Projects
         // permissions: every side count is an em dash while the repo stays
@@ -1656,7 +1681,7 @@ pub fn fixture_state(now: DateTime<Utc>) -> GitHubState {
         health(
             "acme/cogwheel",
             &[run(5, "CI", "completed", Some("success"), 240)],
-            counts(None, None, None, None),
+            counts(None, None, None, None, None),
         ),
         // The runs themselves could not be fetched: muted dot, all em dashes.
         RepoWorkflowHealth::unreachable("acme/toolkit"),
@@ -1762,29 +1787,36 @@ pub fn showcase_state(now: DateTime<Utc>) -> GitHubState {
         let run = fixture_run(now, id, "CI", "completed", Some(conclusion), minutes_ago);
         github::workflows::health(slug, &[run], None, counts, now)
     };
-    let counts = |branches, issues_incl_prs, prs, ready| {
+    let counts = |branches, issues_incl_prs, prs, dependabot, ready| {
         fixture_counts(
             Some(branches),
             Some(issues_incl_prs),
             Some(prs),
+            Some(dependabot),
             Some(ready),
         )
     };
 
     let mut state = GitHubState::new();
     state.apply_repos(vec![
-        health("acme/widget", 1, "success", 30, counts(12, 4, 1, 2)),
-        health("acme/flywheel", 2, "success", 55, counts(5, 7, 2, 3)),
+        health("acme/widget", 1, "success", 30, counts(12, 4, 1, 1, 2)),
+        health("acme/flywheel", 2, "success", 55, counts(5, 7, 2, 1, 3)),
         // The one tile out of true.
-        health("acme/gadget", 3, "failure", 12, counts(9, 11, 3, 4)),
-        health("acme/pipe-fitting", 4, "success", 140, counts(3, 2, 0, 1)),
+        health("acme/gadget", 3, "failure", 12, counts(9, 11, 3, 2, 4)),
+        health(
+            "acme/pipe-fitting",
+            4,
+            "success",
+            140,
+            counts(3, 2, 0, 0, 1),
+        ),
         // Runs readable, side counts not: em dashes on a green row.
         health(
             "acme/cogwheel",
             5,
             "success",
             240,
-            fixture_counts(None, None, None, None),
+            fixture_counts(None, None, None, None, None),
         ),
     ]);
     state.apply_local(BTreeMap::from([
@@ -1846,12 +1878,14 @@ fn fixture_counts(
     branches: Option<u32>,
     issues_incl_prs: Option<u32>,
     prs: Option<u32>,
+    dependabot: Option<u32>,
     ready: Option<u32>,
 ) -> github::workflows::RepoCounts {
     github::workflows::RepoCounts {
         remote_branches: branches,
         open_issues_including_prs: issues_incl_prs,
         open_pull_requests: prs,
+        open_dependabot_prs: dependabot,
         ready_issues: ready,
         ready_error: None,
     }
@@ -2273,6 +2307,7 @@ mod tests {
                 remote_branches: Some(0),
                 open_issues_including_prs: None,
                 open_pull_requests: None,
+                open_dependabot_prs: None,
                 ready_issues: None,
                 ready_error: None,
             },
@@ -2288,6 +2323,11 @@ mod tests {
             "no Projects permission is not an empty column"
         );
         assert_eq!(cell_text(row, PRS), "—");
+        assert!(
+            cell(row, PRS)["title"].is_null(),
+            "no tooltip over an unknown"
+        );
+        assert_eq!(row["dependabotPrs"], "—");
 
         assert_eq!(cell_text(row, REMOTE), "0", "a genuine zero survives");
         assert_eq!(
@@ -2310,6 +2350,7 @@ mod tests {
                 remote_branches: Some(41),
                 open_issues_including_prs: Some(9),
                 open_pull_requests: Some(2),
+                open_dependabot_prs: Some(1),
                 ready_issues: None,
                 ready_error: None,
             },
@@ -2318,7 +2359,29 @@ mod tests {
         assert_eq!(cell_text(row, ISSUES), "7", "9 inclusive − 2 PRs");
         assert_eq!(cell(row, ISSUES)["color"], color::hex(color::INK));
         assert_eq!(cell_text(row, PRS), "2");
+        assert_eq!(cell(row, PRS)["title"], "2 open PRs · 1 from Dependabot");
+        assert_eq!(row["dependabotPrs"], "1");
         assert_eq!(cell_text(row, REMOTE), "41");
+    }
+
+    /// The PRS tooltip says who opened them, in Rust's words, and says
+    /// nothing at all when the walk did not answer.
+    #[test]
+    fn the_pull_request_tooltip_names_dependabots_share() {
+        assert_eq!(
+            pull_request_title(Some(7), Some(5)).as_deref(),
+            Some("7 open PRs · 5 from Dependabot")
+        );
+        assert_eq!(
+            pull_request_title(Some(1), Some(0)).as_deref(),
+            Some("1 open PR · none from Dependabot")
+        );
+        assert_eq!(
+            pull_request_title(Some(0), Some(0)).as_deref(),
+            Some("0 open PRs · none from Dependabot")
+        );
+        assert_eq!(pull_request_title(None, None), None);
+        assert_eq!(pull_request_title(Some(3), None), None);
     }
 
     /// READY sits between ISSUES and PRS and follows the same three-way
@@ -2333,6 +2396,7 @@ mod tests {
                     remote_branches: Some(1),
                     open_issues_including_prs: Some(9),
                     open_pull_requests: Some(2),
+                    open_dependabot_prs: Some(0),
                     ready_issues: count,
                     ready_error: None,
                 },
