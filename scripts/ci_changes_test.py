@@ -86,6 +86,48 @@ class SelectionTests(unittest.TestCase):
     def test_root_claude_import_is_docs_only(self):
         self.assert_change(["CLAUDE.md"], DOCS)
 
+    def test_markdown_outside_served_trees_is_docs_only(self):
+        self.assert_change([".claude/sassy-dog/take-it.md", ".github/ISSUE_TEMPLATE/bug_report.md",
+                            "brand/README.md", "tests/fixtures/README.md", "CONTRIBUTING.md"], DOCS)
+
+    def test_served_markdown_keeps_its_own_rule(self):
+        self.assert_change(["app/ui/notes.md"], dict(DOCS, frontend=True))
+
+    def test_site_markdown_is_not_ignored(self):
+        self.assert_change(["site/notes.md"], FULL)
+
+    def test_claude_config_that_is_not_markdown_forces_full_suite(self):
+        self.assert_change([".claude/settings.json"], FULL)
+
+    def test_dependabot_config_skips_builds(self):
+        self.assert_change([".github/dependabot.yml"], DOCS)
+
+    def test_dependency_automation_workflows_skip_builds(self):
+        self.assert_change([
+            ".github/workflows/dependabot-auto-merge.yml", ".github/workflows/deps-cadence.yml",
+            ".github/workflows/deps-cadence-impl.yml", ".github/workflows/deps-cadence-codegen.yml",
+            ".github/workflows/dependabot-cargo-lockfile.yml", ".github/workflows/lockfile-sync-npm.yml",
+        ], DOCS)
+
+    def test_near_misses_of_dependency_automation_force_full_suite(self):
+        for path in (".github/dependabot.yaml", ".github/workflows/dependabot-auto-merge.yaml",
+                     ".github/workflows/release.yml", ".github/workflows/lockfile-sync-npm.yml.bak",
+                     "nested/.github/workflows/lockfile-sync-npm.yml"):
+            with self.subTest(path=path):
+                self.write(path)
+                self.commit()
+                self.assertEqual(self.run_selection(), FULL)
+                self.git("reset", "-q", "--hard", self.base)
+
+    def test_config_only_pr_and_queue_group_select_nothing(self):
+        self.write(".claude/sassy-dog/take-it.md")
+        self.write(".github/dependabot.yml")
+        head = self.commit()
+        pull = {"pull_request": {"base": {"sha": self.base}, "head": {"sha": head}}}
+        group = {"merge_group": {"base_sha": self.base, "head_sha": head}}
+        self.assertEqual(self.run_selection("pull_request", pull), DOCS)
+        self.assertEqual(self.run_selection("merge_group", group), DOCS)
+
     def test_agent_code_excludes_app_work(self):
         self.assert_change(["agent/src/main.rs", "agent/tests/new_test.rs", "agent/README.md"], AGENT)
 

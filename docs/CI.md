@@ -7,13 +7,13 @@ changed-files API or workflow-level path filters.
 
 | Changed area | Selected work |
 | --- | --- |
-| Recognized documentation only | Selection tests and security/dependency guards; no compilation |
+| Documentation only: Markdown anywhere outside `app/` and `site/` (`.claude/sassy-dog/*.md` included), `docs/` images and PDFs, `.github/dependabot.yml`, and the dependency-automation workflows | Selection tests and security/dependency guards; no compilation |
 | `app/ui/`, `tests/frontend/` | Rust view-model parity tests, frontend server tests and Playwright on macOS, including the Rust fixture generator |
 | `agent/` outside `deploy/`, agent build script | Agent Rust on Linux, macOS and Windows; Linux static musl build; build script changes also select helpers |
 | `agent/deploy/`, explicit agent signing/feed helpers | Shell lint, deploy/versioning/feed/signing helper suites on Linux/macOS; versioning on Windows |
 | `app/src-tauri/`, app build/run/icon helpers | Workspace Rust on macOS/Windows, frontend tests, unsigned universal macOS bundle; helper script changes also select helpers |
 | `crates/` | Workspace Rust, frontend and macOS bundle; also Linux agent/musl when the crate is in the agent's local dependency graph |
-| Shared inputs, agent signing public keys, workflows, selection policy, or an unrecognized path | Full suite |
+| Shared inputs, agent signing public keys, any other workflow, selection policy, or an unrecognized path | Full suite |
 
 Mixed changes take the union. Shared inputs include `Cargo.toml`, `Cargo.lock`,
 Rust toolchain/configuration, `dev`, `prd`, and scripts not explicitly assigned
@@ -21,6 +21,15 @@ to a narrower area. The classifier is the authoritative path list. It follows
 local normal, build, dev and target-specific Cargo dependencies transitively,
 including inherited workspace dependencies. New or unreadable paths fail toward
 more testing, never less.
+
+The dependency-automation workflows are matched by exact name:
+`dependabot-auto-merge.yml`, `deps-cadence.yml`, `deps-cadence-impl.yml`,
+`deps-cadence-codegen.yml`, `dependabot-*-lockfile.yml` and `lockfile-sync-*.yml`.
+No build or test job exercises them, `dependabot.yml` or the plugin's
+`.claude/sassy-dog/*.md` config. **Secrets guard** still runs on every change,
+so a secret in any workflow and any other tracked `.claude` path are still
+refused. Markdown under `app/` and `site/` keeps the rule for its tree, because
+that tree serves or renders it.
 
 For PRs the diff starts at the merge base; queue groups compare their base and
 head, covering every queued PR together; main pushes compare `before` and
