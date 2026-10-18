@@ -449,13 +449,17 @@
   width: 10ch;
   max-width: none;
 }
+/* Each machine is its own inset card, so one machine's Disk strip never
+   reads as the top of the next machine's meters. */
 #dashboardOverview .db-host {
-  padding: 6px 0;
-  border-top: 1px solid var(--db-line);
+  padding: 8px 10px;
+  margin-top: 8px;
+  border: 1px solid var(--db-line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--db-line) 22%, transparent);
 }
 #dashboardOverview .db-host:first-child {
-  border-top: 0;
-  padding-top: 0;
+  margin-top: 0;
 }
 /* Layout B: CPU · RAM over GPU · GPU memory, then the Disk strip spanning
    both columns (`span: "full"` from Rust). */
@@ -487,7 +491,13 @@
 }
 #dashboardOverview .db-metric { min-width: 0; }
 #dashboardOverview .db-acknowledged { color:var(--db-muted); font-size:10px; }
-#dashboardOverview .db-metric > .db-acknowledged { display:block; margin-top:3px; }
+/* The Disk strip's Hide sits beside the mount: its space is always held so
+   nothing moves, and it shows only while the machine's card is hovered or
+   focused. */
+#dashboardOverview .db-stat-label > .db-volume-action { flex:none; margin-left:2px; line-height:1.2; visibility:hidden; }
+#dashboardOverview .db-stat-label:has(> .db-volume-action) > strong { margin-left:auto; }
+#dashboardOverview .db-host:is(:hover, :focus-within) .db-stat-label > .db-volume-action { visibility:visible; }
+#dashboardOverview .db-metric > .db-action-error { margin:4px 0 0; }
 #dashboardOverview .db-warning-controls { display:grid; gap:10px; margin-top:12px; }
 #dashboardOverview .db-warning-control { display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; }
 #dashboardOverview .db-warning-control button { flex:none; max-width:100%; white-space:normal; }
