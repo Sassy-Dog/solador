@@ -1,4 +1,8 @@
 version: 2
+# Minor and patch bumps arrive as ONE weekly PR per ecosystem (`groups`),
+# rather than one PR per dependency: nine single-dependency PRs a week was
+# more review than the bumps were worth. Majors are left out of every group,
+# so each still gets a PR -- and a review -- of its own.
 updates:
   # The whole Rust workspace: crates/*, app/src-tauri and agent, against one
   # Cargo.lock. This was two entries -- /agent kept its own lockfile and
@@ -10,6 +14,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
     commit-message:
       prefix: chore
       include: scope
@@ -20,6 +27,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
     commit-message:
       prefix: chore
       include: scope
@@ -31,6 +41,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      github-actions-minor-patch:
+        update-types: [minor, patch]
     commit-message:
       prefix: chore
       include: scope
