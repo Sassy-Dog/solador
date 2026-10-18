@@ -557,8 +557,10 @@ fn source_rows(id: &str, p: &Value) -> Vec<Value> {
                     .map(|(label, text)| field(label, text))
                     .collect();
                 // Dependabot's share of PRS has no column in the Repos panel;
-                // here it is a Detail column of its own.
-                details.push(field("Dependabot", &v["dependabotPrs"]));
+                // here it is a Detail column of its own. First among the
+                // details, so the table puts it right after PRS, and in
+                // capitals like every column it sits beside.
+                details.insert(0, field("DEPENDABOT", &v["dependabotPrs"]));
                 r["details"] = json!(details);
                 r
             })
@@ -900,7 +902,7 @@ fn detail_columns(id: &str, rows: &[Value]) -> Vec<Value> {
                 "RAM" | "GPU mem" => 130,
                 "Disk read" | "Disk write" | "Network down" | "Network up" => 95,
                 "Thermal" => 90,
-                "Dependabot" => 95,
+                "DEPENDABOT" => 95,
                 "Organization" => 180,
                 "OS" | "Architecture" | "LONGEST" => 120,
                 _ => 80,
@@ -2209,7 +2211,7 @@ mod tests {
         }
         assert_eq!(
             labels(get("widget"), "details"),
-            ["REMOTE", "LOCAL", "WT", "JOBS", "LONGEST", "Dependabot"]
+            ["DEPENDABOT", "REMOTE", "LOCAL", "WT", "JOBS", "LONGEST"]
         );
         // Who opened the PRs: a tooltip on the PRs count and a Detail field,
         // both verbatim from the Repos view; nothing over an unknown count.
@@ -2220,7 +2222,7 @@ mod tests {
         let dependabot = |name: &'static str| {
             list(get(name), "details")
                 .iter()
-                .find(|d| d["label"] == "Dependabot")
+                .find(|d| d["label"] == "DEPENDABOT")
                 .map(|d| d["value"].clone())
         };
         assert_eq!(dependabot("gadget"), Some(json!("3")));
