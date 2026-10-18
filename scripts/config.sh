@@ -168,7 +168,14 @@ export AGENT_SIGNING_PUBKEY="agent/release-signing-key.pub"
 # See docs/VERSIONING.md.
 
 # Directories
+# The pre-Tauri build directory. Nothing builds into it any more; `./dev clean`
+# still removes it from checkouts that predate the move to cargo's target/.
 export BUILD_DIR="build"
+
+# `./dev clean --over-budget` (run by tidy-repo) clears target/ only above this
+# many GB. One debug build plus one universal release build fits well inside it,
+# so only the artifacts of superseded dependency versions push it over.
+export TARGET_BUDGET_GB=15
 
 # Signing.
 #
