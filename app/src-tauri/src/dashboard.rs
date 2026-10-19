@@ -1181,6 +1181,7 @@ fn labels() -> Value {
         ("subtitle", "Overview"),
         ("settings", "Settings"),
         ("allPanels", "Full view"),
+        ("fitHeight", "Fit window to tiles"),
         ("edit", "Edit dashboard"),
         ("done", "Done editing"),
         ("add", "Add tile"),

@@ -139,6 +139,7 @@ async function openDashboard(page, baseURL, expanded = false, prepare = null) {
               localStorage.setItem("test-dashboard", JSON.stringify(layout));
               return project();
             }
+            if (command === "window_fit_height" && window.__FAIL_FIT__) throw "Couldn't fit the window: exit full screen first";
             if (command === "plugin:opener|open_url") return null;
             return fixtures[command] || null;
           },
@@ -302,7 +303,7 @@ test('critical attention stays visible with a saved acknowledgement in table and
 test("dashboard toolbar icons keep accessible labels and keyboard tooltips through editing", async ({ page, baseURL }) => {
   await openDashboard(page, baseURL);
   const toolbar = page.locator(".db-chrome");
-  for (const name of ["Full view", "Edit dashboard", "Settings"]) {
+  for (const name of ["Full view", "Fit window to tiles", "Edit dashboard", "Settings"]) {
     const button = toolbar.getByRole("button", { name, exact: true });
     await expect(button).toBeVisible();
     await button.focus();
@@ -336,6 +337,39 @@ test("dashboard toolbar icons keep accessible labels and keyboard tooltips throu
   await expect(toolbar.locator('[data-action="allPanels"]')).toHaveAttribute("aria-pressed", "false");
   await toolbar.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page.locator("#settings")).toBeVisible();
+});
+
+test("Fit window to tiles sends the measured content height from either view, and a failure sits under the toolbar", async ({ page, baseURL }) => {
+  await openDashboard(page, baseURL);
+  // A window much taller than its tiles: the button must measure the tiles,
+  // never the viewport.
+  await page.setViewportSize({ width: 1280, height: 3000 });
+  const toolbar = page.locator(".db-chrome");
+  const fit = toolbar.getByRole("button", { name: "Fit window to tiles", exact: true });
+  const fits = () => page.evaluate(() => window.__CALLS__.filter(c => c.command === "window_fit_height").map(c => c.args));
+  const measured = () => page.evaluate(() => ({
+    contentHeight: Math.ceil(document.body.getBoundingClientRect().height),
+    viewportHeight: document.documentElement.clientHeight,
+  }));
+
+  await fit.click();
+  const overview = await measured();
+  expect(overview.contentHeight).toBeLessThan(3000);
+  expect(overview.viewportHeight).toBe(3000);
+  expect(await fits()).toEqual([overview]);
+
+  await toolbar.getByRole("button", { name: "Full view", exact: true }).click();
+  await expect(page.locator("#cockpitView")).toBeVisible();
+  await fit.click();
+  expect((await fits())[1]).toEqual(await measured());
+
+  await page.evaluate(() => { window.__FAIL_FIT__ = true; });
+  await fit.click();
+  const notice = page.locator("#cockpitView > .db-chrome + .db-action-error");
+  await expect(notice).toHaveText("Couldn't fit the window: exit full screen first");
+  await page.evaluate(() => { window.__FAIL_FIT__ = false; });
+  await fit.click();
+  await expect(page.locator(".db-action-error")).toHaveCount(0);
 });
 
 test('Full runners share Detail tables and the saved view choice', async ({page, baseURL}) => {

@@ -8,8 +8,10 @@ and OpenClaw. Each tile opens its readings and the existing full panel; **Full
 view** toggles between the overview and the full cockpit. Connections and credentials remain
 in **Settings**, backed by the OS credential store. Both views share a compact
 toolbar with the logo, app name and actions, without a background frame or
-divider. **Full view**, **Edit dashboard** and **Settings** are outline
-icon buttons at the top right, with labels on hover or keyboard focus. Edit
+divider. **Full view**, **Fit window to tiles**, **Edit dashboard** and
+**Settings** are outline icon buttons at the top right, with labels on hover or
+keyboard focus. **Fit window to tiles** sets the window's height to the current
+view's content and keeps its width (see Remembered window size and position). Edit
 dashboard stays highlighted while editing and its label becomes **Done editing**;
 **Add tile** and **Undo** also appear as icons with tooltips. Full view stays
 highlighted while showing full panels. Editing from Full returns to the overview.
@@ -2286,6 +2288,20 @@ Minimized windows do not replace the normal saved bounds. On macOS, fullscreen
 also preserves normal bounds, and writes replace the state file atomically.
 No frontend plugin permission or JavaScript dependency is needed.
 
+**Fit window to tiles** is the one thing that resizes the window from inside the
+app. The frontend measures `document.body`'s height and its own viewport's, in
+CSS pixels, which are logical points. It passes both to the app-defined
+`window_fit_height` command in `src/window_fit.rs`. The command changes the
+window's height by the difference, so the bottom margin ends up equal to the
+sides (the body's padding). It keeps the width and clamps the height between
+`tauri.conf.json`'s `minHeight`, which a test holds equal, and the monitor's
+work area. The resize is relative because Tauri on macOS reports
+`inner_size` and `outer_size` both as the frame, title bar included, so an
+absolute content height cut 28pt off the bottom. It does not use the JS window API,
+because the capability file grants no `core:window:*` permission. A maximized
+window is unmaximized first; a fullscreen one is refused with a sentence under
+the toolbar. The fitted size is saved like any other resize.
+
 This file is separate from `store.json`; `SOLADOR_STORE_DIR` overrides the
 settings store only. State is saved on orderly exit, not guaranteed after a
 force-quit or crash. Delete `.window-state.json` while the app is closed to
@@ -2567,7 +2583,7 @@ SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
   cargo run -p solador-app                   # 2. scratch store, distinctive name
 ```
 
-Then tick these off. Nine terminal lines and five on-screen reads — the terminal
+Then tick these off. Nine terminal lines and six on-screen reads — the terminal
 half works on a machine whose screen you cannot see.
 
 - [ ] **Terminal** — `cockpit: first frontend request (1 host(s), <N>pt)`
@@ -2612,8 +2628,12 @@ half works on a machine whose screen you cannot see.
       for, and the second is #353 back: an offer to install a release over a
       build that has no bundle for it to replace
       ([#308](https://github.com/Sassy-Dog/solador/issues/308)).
+- [ ] **Screen** — make the window taller than its tiles and click **Fit window
+      to tiles**: the height snaps to the tiles and the width does not change. In
+      fullscreen the click instead shows `Couldn't fit the window: exit full
+      screen first` under the toolbar.
 
-All thirteen ticked ⇒ every registered command round-tripped through the ACL and
+All fifteen ticked ⇒ every registered command round-tripped through the ACL and
 the IPC transport. **A zero, a `false` or an empty string is a pass**: those are Rust's
 own unconfigured sentences, and none of them has a path to the DOM except a
 successful `invoke`. What fails this test is a *missing line* or a blank panel.

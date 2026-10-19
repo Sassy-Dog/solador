@@ -1008,8 +1008,14 @@ the bundle's floor.
   with Hide, and hidden mounts listed beneath with Unhide; Full
   host cards retain their fullest-first order. Overview and Full view share one
   compact wrapping toolbar and Solador heading without a background frame or
-  divider. Full view is a pressed-state toggle; Edit dashboard and Settings use
-  the same icons in both views, with Add tile and Undo icons during editing.
+  divider. Full view is a pressed-state toggle; Fit window to tiles, Edit
+  dashboard and Settings use the same icons in both views, with Add tile and
+  Undo icons during editing. Fit window to tiles sends `document.body`'s
+  measured height and the viewport's to the `window_fit_height` command
+  (`src/window_fit.rs`), which moves the window's height by the difference (a
+  relative resize, because macOS Tauri counts the title bar in `inner_size`)
+  and keeps its width; no `core:window:*`
+  permission is granted, so the frontend never resizes the window itself.
   Tooltips appear on hover or keyboard focus. Dashboard action successes have
   no visible footer; failures stay beside their controls, and reading failures
   beside Needs Attention. About puts update controls above naturally flowing
