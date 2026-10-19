@@ -758,9 +758,10 @@
   padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%);
   white-space:nowrap;
 }
-#dashboardOverview .db-action-error {
+#dashboardOverview .db-action-error, #cockpitView > .db-action-error {
   color:var(--db-red); font-size:11px; margin:10px 0 0; overflow-wrap:anywhere;
 }
+#cockpitView > .db-action-error { margin:-6px 0 16px; }
 #dashboardOverview .db-inspector > .db-action-error { padding:0 16px 16px; }
 #cockpitView > .db-chrome { margin-bottom:16px; }
 #dashboardOverview .db-empty {

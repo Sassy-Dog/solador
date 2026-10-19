@@ -33,6 +33,7 @@ mod settings;
 mod update;
 mod usage;
 mod volumes;
+mod window_fit;
 mod window_state;
 
 use azure::AzureState;
@@ -6734,6 +6735,7 @@ fn main() {
             settings_remove_status_vendor,
             settings_save_secret,
             settings_clear_secret,
+            window_fit::window_fit_height,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start");

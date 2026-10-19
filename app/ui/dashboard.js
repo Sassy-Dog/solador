@@ -71,15 +71,18 @@
   }
   function paintFeedback() {
     const anchor = feedback?.anchor && q(feedback.anchor);
-    const target = feedback && mode === "overview" && (feedback.anchor
+    // A toolbar control's failure sits under the toolbar, which both views
+    // share; every other failure belongs to the overview.
+    const inChrome = anchor && appChrome?.contains(anchor);
+    const target = feedback && (inChrome ? appChrome : mode === "overview" && (feedback.anchor
       ? anchor?.closest(".db-warning-control, .db-volumes, .db-metric") || anchor
-      : active ? q(".db-inspector") : q(".db-attention"));
+      : active ? q(".db-inspector") : q(".db-attention")));
     if (!target) { feedbackNotice?.remove(); return; }
     // Only status() announces the outcome. Polls may replace the surrounding
     // readings, so this visual notice must not itself be a live alert.
     feedbackNotice ||= node("p", "db-action-error");
     if (feedbackNotice.textContent !== feedback.message) text(feedbackNotice, feedback.message);
-    if (target.matches(".db-attention")) {
+    if (target === appChrome || target.matches(".db-attention")) {
       if (target.nextElementSibling !== feedbackNotice) target.after(feedbackNotice);
     } else if (feedbackNotice.parentElement !== target) target.append(feedbackNotice);
   }
@@ -149,6 +152,7 @@
       iconButton(L("add"), "catalog", "M12 5v14M5 12h14"),
       iconButton(L("undo"), "undo", "M9 4 4 9l5 5M4 9h10a6 6 0 0 1 0 12h-3"),
       iconButton(L("allPanels"), "allPanels", "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1ZM3 9h18M9 9v12"),
+      iconButton(L("fitHeight"), "fitHeight", "M4 3h16M4 21h16M12 7v10M9 10l3-3 3 3M9 14l3 3 3-3"),
       iconButton(L("edit"), "edit", "M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M16 3a2.12 2.12 0 0 1 3 3l-9 9-4 1 1-4ZM14 5l3 3"),
       iconButton(L("settings"), "settings", "m9 3-.5 2-2 1L4.5 5.5l-2 3.5L4 10.5v3L2.5 15l2 3.5 2-.5 2 1 .5 2h4l.5-2 2-1 2 .5 2-3.5-1.5-1.5v-3L19.5 9l-2-3.5-2 .5-2-1-.5-2ZM14.5 12a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z", document.getElementById("settingsToggle")),
     );
@@ -469,6 +473,7 @@
     q('[data-action="allPanels"]').setAttribute("aria-pressed", String(mode === "details"));
     text(edit.querySelector(".db-tooltip"), editLabel);
     q('[data-action="edit"]').disabled = busy || !window.__TAURI__;
+    q('[data-action="fitHeight"]').disabled = !window.__TAURI__;
     q('[data-action="catalog"]').hidden = !editing || mode !== "overview";
     q('[data-action="undo"]').hidden = !editing || mode !== "overview";
     q('[data-action="catalog"]').disabled = busy;
@@ -1386,6 +1391,23 @@
     if (action === "details") {
       const t = tile(id);
       openInspector({ kind: "details", source: t.source, tile: id });
+      return;
+    }
+    if (action === "fitHeight") {
+      // The body has no height of its own (no 100vh, no overflow), so its box
+      // is exactly the tiles plus the same padding as the sides.
+      // scrollHeight would never shrink below the viewport. Rust moves the
+      // window by the gap between the two, so the title bar never has to be
+      // known here.
+      try {
+        await callRust("window_fit_height", {
+          contentHeight: Math.ceil(document.body.getBoundingClientRect().height),
+          viewportHeight: document.documentElement.clientHeight,
+        });
+        status("");
+      } catch (e) {
+        status(String(e), true, '[data-action="fitHeight"]');
+      }
       return;
     }
     if (action === "allPanels") {
