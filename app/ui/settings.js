@@ -819,10 +819,10 @@ function hostsTab(t, options = {}) {
       pinned.appendChild(node("code", "pair-fingerprint pinned-fingerprint", host.fingerprint));
       names.appendChild(pinned);
     }
+    // Its own line under the buttons, not a slot in `names`: the sentence gets
+    // the row's whole width, and when it wraps nothing above it moves.
     const result = node("span", "result", S.tests.get(host.id) || "");
-    result.tabIndex = 0;
-    names.appendChild(result);
-    head.append(names, node("span", "grow"));
+    head.append(names);
     head.appendChild(
       node("span", host.tokenStored ? "badge-ok" : "badge-dim",
         host.tokenStored ? t.tokenStoredLabel : t.noTokenLabel)
@@ -863,7 +863,7 @@ function hostsTab(t, options = {}) {
     const monitor = node("label", "connection-toggle");
     monitor.append(enabled, node("span", null, S.view.connections.monitorLabel));
     head.append(test, remove);
-    row.prepend(head);
+    row.prepend(head, result);
     row.appendChild(monitor);
     for (const volume of host.volumes.filter(v => v.hidden)) row.appendChild(hiddenRow(t, volume.mount, host.id));
     list.appendChild(row);
@@ -946,9 +946,12 @@ function hostDetails(t, host) {
   const replace = button(host.tokenStored ? labels.replaceLabel : labels.addCredentialLabel, "host-replace-token");
   const credential = field("host-edit-token", t.add.tokenLabel, token);
   credential.hidden = true;
+  // The field carries its own label, so the caption goes with the button
+  // rather than reading "Agent token" twice.
+  const caption = actionRow(node("span", "lbl", t.add.tokenLabel), replace);
   replace.addEventListener("click", () => {
     credential.hidden = false;
-    replace.hidden = true;
+    caption.hidden = true;
     token.focus();
   });
   // Pairing (#448). An unpaired host can be paired; a paired host's pin is
@@ -985,7 +988,7 @@ function hostDetails(t, host) {
     }
     box.appendChild(pair.node);
   }
-  box.append(actionRow(node("span", "lbl", t.add.tokenLabel), replace), credential, actionRow(save));
+  box.append(caption, credential, actionRow(save));
   return box;
 }
 
