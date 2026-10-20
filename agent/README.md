@@ -422,7 +422,9 @@ by mistake.) So:
   installer, **remove both `SOLADOR_AGENT_BIND` and `SOLADOR_AGENT_BIND_AUTO`**
   (so the agent finds the tailnet address itself) or set `SOLADOR_AGENT_BIND` to
   one address, because the agent honours the `0.0.0.0` already there.
-- A host with Tailscale keeps today's default: the tailnet IP only.
+- A host with Tailscale keeps today's default: the tailnet IP only. To reach
+  it from a cockpit that is not on the tailnet as well, see **Reaching a
+  Tailscale host from the LAN too**, below.
 - To make "never a wildcard" a refusal rather than a default, set
   `SOLADOR_AGENT_REQUIRE_TAILNET=1` (next section).
 - Plain HTTP is tailnet-only **by default**, and no tailnet is a refusal — the
@@ -479,6 +481,86 @@ plain-HTTP form.
 key or certificate.** `install.sh --uninstall` keeps them, exactly as it keeps
 the env file, and names them in its "left" output; `--uninstall --purge`
 removes them too, because purging the host's credentials means a re-pair.
+
+### Reaching a Tailscale host from the LAN too
+
+A host with Tailscale binds **only its tailnet IP** (`install.sh` writes it into
+the env file as `SOLADOR_AGENT_BIND`), so a cockpit that is not on the tailnet
+has nothing to reach at the host's LAN address: Settings → **Test** reads
+`✗ not paired`, and **Check certificate** finds nothing there. The agent listens
+on exactly one address (`SOLADOR_AGENT_BIND` takes one value, and a list fails
+to bind), so "the LAN and the tailnet" means all interfaces, over TLS:
+
+1. **Read the env file, leaving out the token.** For a [system
+   daemon](#running-as-a-system-daemon-under-a-service-user), prefix this and
+   the next step with `sudo -u <service-user> -H`, so `$HOME` is that user's:
+
+   ```bash
+   sh -c 'grep -v "^SOLADOR_AGENT_TOKEN=" "$HOME/.config/solador-agent.env"'
+   ```
+
+   `SOLADOR_AGENT_TLS=1` must be there. Without it the host cannot be paired,
+   and an unpaired host off the tailnet is never sent the token, so turn TLS on
+   first with `install.sh --enable-tls`. The `SOLADOR_AGENT_BIND` line you see
+   is your way back.
+2. **Set `SOLADOR_AGENT_BIND=0.0.0.0`, and drop the two keys that would undo
+   it.** `SOLADOR_AGENT_REQUIRE_TAILNET=1` refuses a wildcard (the agent exits
+   at start, and the service manager restarts it in a loop), and
+   `SOLADOR_AGENT_BIND_AUTO=1` tells the next installer run to resolve the bind
+   again, which goes back to the tailnet IP. `SOLADOR_AGENT_REQUIRE_TAILNET=1`
+   is never there by accident: someone decided this host must not be reachable
+   off the tailnet (**Tailnet-only bind**, above), so settle that decision
+   before removing it, and do not follow this procedure on a host held to it.
+   Rewriting the file as its owner keeps it `0600`, never prints the token, and
+   refuses while TLS is off:
+
+   ```bash
+   sh -c 'umask 077; f="$HOME/.config/solador-agent.env";
+     grep -qx SOLADOR_AGENT_TLS=1 "$f" || { echo "TLS is off: run install.sh --enable-tls first" >&2; exit 1; }
+     grep -v -E "^SOLADOR_AGENT_(BIND|BIND_AUTO|REQUIRE_TAILNET)=" "$f" > "$f.new" &&
+     echo SOLADOR_AGENT_BIND=0.0.0.0 >> "$f.new" && mv "$f.new" "$f"'
+   ```
+
+   Re-running the installer with `SOLADOR_AGENT_BIND=0.0.0.0` in its
+   environment does the same (an explicit value wins, is written without the
+   marker, and later runs keep it; add `SOLADOR_AGENT_REQUIRE_TAILNET=0` if the
+   file has that key), but a re-run is also the update path, and with
+   `--system-daemon` it restarts nothing.
+3. **Restart**, which re-reads the env file:
+
+   ```bash
+   systemctl --user restart solador-agent                  # Linux
+   launchctl kickstart -k gui/$(id -u)/app.solador.agent   # macOS LaunchAgent
+   sudo launchctl kickstart -k system/app.solador.agent    # macOS system daemon
+   ```
+
+4. **Check it.** `lsof -nP -iTCP:7878 -sTCP:LISTEN` (with `sudo` for a system
+   daemon) or `ss -tlnp | grep 7878` shows `*:7878` or `0.0.0.0:7878`. From
+   another machine on the LAN,
+   `curl -sk -o /dev/null -w '%{http_code}\n' https://<lan-ip>:7878/v1/health`
+   prints `401` (serving, and refusing a request without the token), and the
+   same URL over `http://` gets no answer at all.
+5. **Pair the LAN address** in that machine's cockpit: Settings → the host (or
+   **Add connection → Remote host**), the LAN IP as its address, **Check
+   certificate**, compare the fingerprint with `solador-agent tls-fingerprint`
+   on the host, **Trust**, enter the token, and save. **Test** then reads
+   `✓ <hostname> · agent v…`. For a system daemon, read the fingerprint as the
+   service user, since the certificate is under that user's home:
+   `sudo -u <service-user> -H ~<service-user>/.local/bin/solador-agent tls-fingerprint`.
+
+The certificate does not change: it is not regenerated when the bind does, and
+the cockpit pins its fingerprint without checking a hostname, so the LAN IP does
+not need to be in it and a cockpit already paired over the tailnet keeps
+working. `solador-agent update` and the daily job probe a wildcard bind at
+`127.0.0.1`, which every certificate names, so they keep working too.
+
+All interfaces means every network the host is on: the LAN, the tailnet, a VPN,
+a VM bridge, and on a laptop whatever Wi-Fi it joins. The token and the pinned
+transport protect it (**Network exposure**, above), so do not forward the port
+at the router, and firewall it on a host with a public address. A DHCP
+reservation keeps the LAN address the cockpit saved pointing at this host. To
+undo all of this, put the old `SOLADOR_AGENT_BIND` line back the same way and
+restart.
 
 ## Releases
 
