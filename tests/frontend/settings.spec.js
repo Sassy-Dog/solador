@@ -206,6 +206,18 @@ test("host edits retain the saved identity and replace the token only explicitly
   expect(await calls(page, "settings_add_host")).toEqual([]);
 });
 
+test("Replace… swaps the token caption for the field, so the label reads once", async ({ page, baseURL }) => {
+  const settings = await openSettings(page, baseURL);
+  const host = settings.hosts.rows[0];
+  await openConnection(page, `host:${host.id}`);
+  const details = page.locator(`.host-row[data-host="${host.id}"] .host-details`);
+  const label = details.locator(".lbl:visible", { hasText: settings.hosts.add.tokenLabel });
+  await expect(label).toHaveCount(1);
+  await details.locator(".host-replace-token").click();
+  await expect(page.locator("#host-edit-token")).toBeFocused();
+  await expect(label).toHaveCount(1);
+});
+
 test("a rejected save keeps the connection draft and reports the failure", async ({ page, baseURL }) => {
   const settings = await openSettings(page, baseURL);
   await tab(page, "usage").click();
@@ -1007,6 +1019,45 @@ test("Test probes that one host and paints the line Rust produced", async ({ pag
   const other = settings.hosts.rows[0];
   await openConnection(page, `host:${other.id}`);
   await expect(page.locator(`.host-row[data-host="${other.id}"] .result`)).toHaveText("");
+});
+
+test("a long Test result wraps across the whole row instead of scrolling, and the buttons stay put", async ({ page, baseURL }) => {
+  // `settings::health_result`'s sentence for a host the plain-HTTP guard
+  // refused (#449), the longest line Test paints.
+  const notPaired = "✗ not paired — the cockpit sends the token over plain HTTP only to loopback or " +
+    "Tailscale addresses; check this host's certificate and trust it";
+  for (const width of [1280, 760]) {
+    await page.setViewportSize({ width, height: 900 });
+    // A fresh page each pass: a Test result outlives a re-render, so reusing
+    // the page would measure `before` with the sentence already laid out.
+    const settings = await openSettings(page, baseURL);
+    const host = settings.hosts.rows.find((h) => !h.pinned);
+    // The real payload for this sentence, `plainRefused` included, so the
+    // rebuild it triggers (the refusal note) is part of what is measured.
+    await page.evaluate(({ id, notPaired }) => {
+      const original = window.__TAURI__.core.invoke;
+      window.__TAURI__.core.invoke = async (command, args) =>
+        command === "settings_test_host"
+          ? { id, result: notPaired, certificateChanged: false, plainRefused: true }
+          : original(command, args);
+    }, { id: host.id, notPaired });
+    await openConnection(page, `host:${host.id}`);
+    const row = page.locator(`.host-row[data-host="${host.id}"]`);
+    const test = row.locator(".test");
+    const before = await test.boundingBox();
+    await test.click();
+    const result = row.locator(".result");
+    await expect(result).toHaveText(notPaired);
+
+    // Every line is on screen: no scroll box of its own…
+    const fit = await result.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
+    expect(fit.scroll, `${width}px`).toBeLessThanOrEqual(fit.client);
+    // …the sentence has the row's whole width, not a share split with a spacer…
+    const head = await row.locator(":scope > .row").first().boundingBox();
+    expect((await result.boundingBox()).width, `${width}px`).toBeGreaterThanOrEqual(head.width - 1);
+    // …and growing it moves nothing that comes before it.
+    expect(await test.boundingBox(), `${width}px`).toEqual(before);
+  }
 });
 
 test("Add Host waits for a name and an address, and keeps the token out of the DOM", async ({ page, baseURL }) => {

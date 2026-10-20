@@ -223,7 +223,9 @@ can expand the page; resizing or changing a tile’s source, scope, presentation
 row limit, repo selection, runner view, or a deliberate Detail expansion,
 filter or view change resets its measured reservation.
 Disconnected host cards hide old readings while retaining their occupied space.
-Settings reserves space for probe results and status messages. About places
+Settings reserves space for probe results and status messages. A host's Test
+result has its own line below the row's buttons and wraps across the row rather
+than scrolling, so a long one moves nothing above it. About places
 update buttons first with extra spacing, followed by the update status and help,
 then release notes that fill the remaining space and grow with the page. Neither
 the buttons nor the notes have an internal scrollbar. Notes render Markdown

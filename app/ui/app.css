@@ -939,7 +939,9 @@ hr { border:0; border-top:1px solid var(--line); margin:4px 0; width:100%; }
 .settings .update-controls > .btn { min-height:36px; padding:8px 12px; }
 .settings .update-controls > button { max-width:100%; white-space:normal; }
 .host-row > .row > .stack { flex:1; }
-.host-row > .row > .stack > .result { height:29px; overflow:auto; }
+/* Reserved, so a short Test result moves nothing (#436); a long one wraps
+   across the row and grows below the buttons rather than scrolling in place. */
+.host-row > .result { min-height:29px; overflow-wrap:anywhere; }
 .crash-status, .cadence-status { height:29px; overflow:auto; }
 
 /* A host grows to fit every core and volume. Keep the initial reservation for
