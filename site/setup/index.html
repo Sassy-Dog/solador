@@ -121,7 +121,12 @@ bash bootstrap.sh</code></pre>
             approved, and Solador never sends the token over plain HTTP anywhere
             but loopback or Tailscale. A fresh install serves TLS, and on a
             machine without Tailscale it listens on all interfaces, behind TLS
-            and the token: firewall its port on a machine with a public address. The <a href="https://github.com/Sassy-Dog/solador/blob/main/agent/README.md">agent reference</a>
+            and the token: firewall its port on a machine with a public address.
+            On a machine with Tailscale it listens only on its Tailscale
+            address, so a computer that is not on your tailnet sees
+            “not paired” for its LAN address until you
+            <a href="https://github.com/Sassy-Dog/solador/blob/main/agent/README.md#reaching-a-tailscale-host-from-the-lan-too">bind all interfaces</a>
+            and pair that address. The <a href="https://github.com/Sassy-Dog/solador/blob/main/agent/README.md">agent reference</a>
             covers binding, updates, unattended updates and uninstalling.
           </p>
         </li>

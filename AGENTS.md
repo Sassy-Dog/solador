@@ -755,6 +755,21 @@ the bundle's floor.
   about the VPN). **Re-pair** (Settings → the host) appears only when the
   certificate changed and replaces the pin through the same probe → Trust flow.
   There is no unpin: to go back to plain HTTP, delete the host and add it again.
+- **"Reach it on the LAN and the tailnet" is configuration, not code.**
+  `SOLADOR_AGENT_BIND` is one address (`resolve_bind_host`; a list fails to
+  bind), and `install.sh` writes a detected tailnet IP into the env file, so a
+  cockpit off the tailnet reads `✗ not paired` at the host's LAN address and
+  **Check certificate** finds nothing. The answer is TLS on,
+  `SOLADOR_AGENT_BIND=0.0.0.0`, no `SOLADOR_AGENT_REQUIRE_TAILNET` (it refuses a
+  wildcard: FATAL at start, a restart loop under the service manager; it is a
+  deliberate tailnet-only policy, so its presence is a question for the
+  operator, never a key to drop silently) and no
+  `SOLADOR_AGENT_BIND_AUTO` (the next installer run would resolve back to the
+  tailnet IP), a restart, then pairing the LAN address. The certificate is not
+  regenerated and the pin checks no hostname, so existing pairings survive and
+  the LAN IP need not be a SAN. `agent/README.md`'s **Reaching a Tailscale host
+  from the LAN too** is the operator procedure. A real agent bound to `0.0.0.0`
+  may be bound there on purpose: report it, never "fix" it.
 - Agent endpoints: `GET /v1/snapshot` (CPU/mem/disk/net/gpu/battery),
   `GET /v1/containers`, `GET /v1/health`. All require `Authorization: Bearer <token>`.
 - **`/v1/health`'s `version` is the agent's own version, and it is optional
