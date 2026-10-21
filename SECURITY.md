@@ -51,6 +51,18 @@ accepts the token over that pinned connection. A reply that carries a token, a
 peer of another user being answered, or a pin saved without that match is in
 scope.
 
+`solador-app host add --ssh` reads that fingerprint and that token on the host,
+over the operator's own ssh, which runs with `BatchMode=yes` and
+`StrictHostKeyChecking=yes` (it never accepts a host key or answers a prompt)
+and never runs `sudo`. The fingerprint is only the *expected* value; the app's
+own probe still has to equal it. The token travels on ssh's stdout and the
+socket, never in an argument. Text the host sends back is printed with its
+control characters replaced, so a host cannot repaint the operator's terminal.
+A token in any argv, log or output, a host key accepted on the operator's
+behalf, a change made on the host that no flag allowed (removing
+`SOLADOR_AGENT_REQUIRE_TAILNET` above all), or terminal control sequences from
+the host reaching the terminal is in scope.
+
 **The frontend runs under a real CSP** (`app/src-tauri/tauri.conf.json`) and the
 Playwright suite serves it under the same policy. Panel content — repository
 names, container names, incident text — reaches the DOM as text, never as

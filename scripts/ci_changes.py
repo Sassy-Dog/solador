@@ -29,6 +29,10 @@ APP_HELPERS = {
     "scripts/generate-icons.sh", "scripts/render-icons.mjs",
 }
 
+# Shell a crate embeds (`include_str!`): built and tested with the workspace,
+# and linted with every other shell source this repo ships.
+CRATE_SHELL_SOURCES = ("crates/hostsetup/remote/",)
+
 # Configuration that no CI job builds or tests. Secrets guard (always run) still
 # checks every workflow for secrets and every `.claude` path against its guard.
 NO_BUILD_CONFIG = {
@@ -134,6 +138,8 @@ def select_paths(repo, paths):
                 selected["helpers"] = True
         elif path.startswith("crates/"):
             selected.update(rust_scope="workspace", frontend=True, bundle=True)
+            if path.startswith(CRATE_SHELL_SOURCES):
+                selected["helpers"] = True
             if dependency_roots is None:
                 dependency_roots = agent_dependency_roots(repo)
             if any(path.startswith(root) for root in dependency_roots):

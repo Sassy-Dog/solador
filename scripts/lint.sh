@@ -61,7 +61,9 @@ fi
 # (The word "shell·check" is spelt out in this comment rather than written as one
 # word: shellcheck reads `# shellcheck …` at the start of a comment as a
 # directive and refuses to parse the file when it is prose.)
-SHELL_SOURCES=(agent/deploy/*.sh scripts/*.sh dev prd)
+# crates/hostsetup/remote/ is the script `solador-app host add --ssh` embeds and
+# runs on a remote host, so it is held to the same gates.
+SHELL_SOURCES=(agent/deploy/*.sh scripts/*.sh crates/hostsetup/remote/*.sh dev prd)
 
 log_info "bash -n over ${#SHELL_SOURCES[@]} shell sources…"
 if bash -n "${SHELL_SOURCES[@]}"; then

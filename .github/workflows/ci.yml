@@ -109,7 +109,7 @@ jobs:
       # Windows release leg.
       - name: Shell syntax check
         if: ${{ needs.changes.outputs.helpers == 'true' }}
-        run: bash -n agent/deploy/*.sh scripts/*.sh dev prd
+        run: bash -n agent/deploy/*.sh scripts/*.sh crates/hostsetup/remote/*.sh dev prd
 
       - name: ShellCheck
         if: ${{ needs.changes.outputs.helpers == 'true' }}
@@ -128,7 +128,7 @@ jobs:
           tar -xJf "$archive" -C "$dir" --strip-components=1 "shellcheck-v$version/shellcheck"
           SHELLCHECK="$dir/shellcheck" scripts/shellcheck-pin-guard.sh
           "$dir/shellcheck" --version
-          "$dir/shellcheck" -S warning agent/deploy/*.sh scripts/*.sh dev prd
+          "$dir/shellcheck" -S warning agent/deploy/*.sh scripts/*.sh crates/hostsetup/remote/*.sh dev prd
 
       # The reference minisign, so the suite's signature-rejection cases run
       # here rather than reporting themselves SKIPPED (#392). They are the

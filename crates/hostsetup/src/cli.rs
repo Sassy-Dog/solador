@@ -9,6 +9,8 @@
 use std::io::Read;
 
 #[cfg(unix)]
+use crate::channel::ChannelError;
+#[cfg(unix)]
 use crate::protocol::{AddRequest, Envelope, Request, Response, PROTOCOL};
 use crate::protocol::{HostSummary, Outcome, Paired};
 #[cfg(any(unix, test))]
@@ -21,6 +23,9 @@ pub mod exit {
     /// unless it says otherwise).
     pub const FAILED: i32 = 1;
     pub const USAGE: i32 = 2;
+    /// `add` changed what it could on the host and owes a step only root can
+    /// take there: printed, never taken. Run it, then the same command again.
+    pub const ROOT_STEP: i32 = 3;
     /// Solador is not running, so nothing could be handed to it.
     pub const NOT_RUNNING: i32 = 4;
 }
@@ -32,6 +37,9 @@ USAGE
   solador-app host list [--json]
   solador-app host pair --address <addr> --fingerprint <sha256> --token-stdin
                         [--port <port>] [--name <name>] [--replace]
+  solador-app host add  --ssh <[user@]host> [--address <addr>] [--port <port>]
+                        [--name <name>] [--install] [--bind-all] [--enable-tls]
+                        [--ref <commit>] [--replace] [--dry-run]
 
   Symlinked as `solador`, the same commands run without the leading
   `solador-app`: ln -s /Applications/Solador.app/Contents/MacOS/solador-app ~/.local/bin/solador
@@ -51,11 +59,33 @@ COMMANDS
          A host already at that address (unpaired, or pinned to another
          certificate), or this certificate already paired at another
          address, is refused unless --replace is given.
+  add    Get a host's agent ready for this cockpit over ssh, then pair it as
+         `pair` does. It reads the agent's install as the ssh user (never
+         sudo), changes only what a flag below allows, and reads the
+         fingerprint and the token there for Solador, which checks both itself
+         before saving. The token is never shown. A user whose agent it is not
+         is refused: --ssh as the user who owns it.
+           --install     no agent for that user yet: install one (a signed
+                         release, verified before it runs; the host generates
+                         its own token)
+           --bind-all    the agent listens only on an address this machine
+                         can't dial (its tailnet IP): listen on all interfaces
+           --enable-tls  TLS is off: re-run the installer to turn it on (it
+                         also updates the agent to the newest release)
+           --address     the address Solador dials (default: ssh's HostName
+                         for the host; required behind a ProxyJump)
+           --ref         run the installer from this commit on main (40 hex)
+           --dry-run     say what would change; change nothing
+         ssh runs with BatchMode=yes and StrictHostKeyChecking=yes: nothing
+         prompts, and a host key not already accepted is refused (connect once
+         by hand first). SOLADOR_AGENT_REQUIRE_TAILNET is never removed, and an
+         existing token is never replaced.
 
   Solador must be open: it is the only writer of its hosts and the keychain.
 
 EXIT STATUS
   0 done (or already so)   1 refused or failed   2 usage
+  3 add owes a step only root can take on the host (printed): run it, re-run
   4 Solador isn't running
 ";
 
@@ -64,6 +94,7 @@ pub enum Command {
     Help,
     List { json: bool },
     Pair(PairArgs),
+    Add(AddArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +104,22 @@ pub struct PairArgs {
     pub name: String,
     pub fingerprint: String,
     pub replace: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddArgs {
+    /// What ssh connects to: `[user@]host`, or a `Host` alias from ssh config.
+    pub target: String,
+    pub address: Option<String>,
+    pub port: Option<u16>,
+    pub name: Option<String>,
+    pub install: bool,
+    pub bind_all: bool,
+    pub enable_tls: bool,
+    pub replace: bool,
+    /// `--ref`: the commit on main the installer's scripts come from.
+    pub git_ref: Option<String>,
+    pub dry_run: bool,
 }
 
 /// Whether this invocation is the command mode, and if so its exit status.
@@ -121,6 +168,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             _ => Err(format!("host list: unexpected {}", flags.join(" "))),
         },
         ["host", "pair", flags @ ..] => parse_pair(flags).map(Command::Pair),
+        ["host", "add", flags @ ..] => parse_add(flags).map(Command::Add),
         ["host", other, ..] => Err(format!("unknown host command: {other}")),
         [other, ..] => Err(format!("unknown command: {other}")),
     }
@@ -177,10 +225,84 @@ fn parse_pair(flags: &[&str]) -> Result<PairArgs, String> {
     })
 }
 
+/// A word this command hands to ssh, or to the app as an address: never empty,
+/// never whitespace, never option-shaped.
+fn plain_word(flag: &str, value: &str) -> Result<String, String> {
+    if value.is_empty() || value.starts_with('-') || value.contains(char::is_whitespace) {
+        return Err(format!("host add: {flag} {value:?} is not a host"));
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_add(flags: &[&str]) -> Result<AddArgs, String> {
+    let mut parsed = AddArgs {
+        target: String::new(),
+        address: None,
+        port: None,
+        name: None,
+        install: false,
+        bind_all: false,
+        enable_tls: false,
+        replace: false,
+        git_ref: None,
+        dry_run: false,
+    };
+    let mut iter = flags.iter();
+    while let Some(&flag) = iter.next() {
+        let mut value = || {
+            iter.next()
+                .map(|v| (*v).to_owned())
+                .ok_or(format!("host add: {flag} needs a value"))
+        };
+        match flag {
+            "--ssh" => parsed.target = plain_word(flag, &value()?)?,
+            "--address" => parsed.address = Some(plain_word(flag, &value()?)?),
+            "--port" => {
+                let raw = value()?;
+                parsed.port = Some(
+                    raw.parse::<u16>()
+                        .ok()
+                        .filter(|p| *p != 0)
+                        .ok_or(format!("host add: --port {raw} is not a port"))?,
+                );
+            }
+            "--name" => parsed.name = Some(value()?),
+            "--ref" => {
+                let raw = value()?;
+                if raw.len() != 40 || !raw.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                    return Err(format!(
+                        "host add: --ref {raw} is not a full commit (40 lowercase hex)"
+                    ));
+                }
+                parsed.git_ref = Some(raw);
+            }
+            "--install" => parsed.install = true,
+            "--bind-all" => parsed.bind_all = true,
+            "--enable-tls" => parsed.enable_tls = true,
+            "--replace" => parsed.replace = true,
+            "--dry-run" => parsed.dry_run = true,
+            other => return Err(format!("host add: unexpected {other}")),
+        }
+    }
+    if parsed.target.is_empty() {
+        return Err("host add: --ssh is required".into());
+    }
+    Ok(parsed)
+}
+
 #[cfg(unix)]
 fn run(command: Command) -> i32 {
     match crate::channel::store_dir() {
-        Ok(dir) => run_in(&dir, command, read_token),
+        Ok(dir) => match command {
+            Command::Add(args) => crate::remote::add(
+                &args,
+                &crate::remote::Ssh::system(),
+                &dir,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            ),
+            command => run_in(&dir, command, read_token),
+        },
         Err(message) => {
             eprintln!("{message}");
             exit::FAILED
@@ -196,34 +318,19 @@ fn run_in(
     command: Command,
     token: impl FnOnce() -> Result<Secret, String>,
 ) -> i32 {
-    use crate::channel::{self, ChannelError};
-
-    let ask = |request: Request| channel::request(store_dir, &Envelope::new(request));
+    let ask = |request: Request| crate::channel::request(store_dir, &Envelope::new(request));
     let failed = |error: ChannelError| {
         eprintln!("{error}");
-        match error {
-            ChannelError::NotRunning => exit::NOT_RUNNING,
-            _ => exit::FAILED,
-        }
+        not_running_or_failed(&error)
     };
 
-    // First, before anything else is read or sent: is the app there, and does
-    // it speak this command's protocol?
-    match ask(Request::Hello) {
-        Ok(Response::Hello { protocol, .. }) if protocol == PROTOCOL => {}
-        Ok(Response::Hello { protocol, .. }) => {
-            eprintln!("{}", crate::server::version_skew(protocol));
-            return exit::FAILED;
-        }
-        Ok(other) => {
-            eprintln!("unexpected reply to hello: {}", describe(&other));
-            return exit::FAILED;
-        }
-        Err(error) => return failed(error),
+    if let Err(code) = hello(store_dir, &mut std::io::stderr()) {
+        return code;
     }
 
     match command {
         Command::Help => unreachable!("handled by dispatch"),
+        Command::Add(_) => unreachable!("handled by run"),
         Command::List { json } => match ask(Request::List) {
             Ok(Response::Hosts { hosts }) => {
                 if json {
@@ -264,6 +371,32 @@ fn run_in(
                 Err(error) => failed(error),
             }
         }
+    }
+}
+
+/// First, before anything else is read or sent: is the app there, and does it
+/// speak this command's protocol? `Err` is the exit status, its reason
+/// already written to `err`.
+#[cfg(unix)]
+pub(crate) fn hello(store_dir: &std::path::Path, err: &mut dyn std::io::Write) -> Result<(), i32> {
+    let message = match crate::channel::request(store_dir, &Envelope::new(Request::Hello)) {
+        Ok(Response::Hello { protocol, .. }) if protocol == PROTOCOL => return Ok(()),
+        Ok(Response::Hello { protocol, .. }) => crate::server::version_skew(protocol),
+        Ok(other) => format!("unexpected reply to hello: {}", describe(&other)),
+        Err(error) => {
+            let _ = writeln!(err, "{error}");
+            return Err(not_running_or_failed(&error));
+        }
+    };
+    let _ = writeln!(err, "{message}");
+    Err(exit::FAILED)
+}
+
+#[cfg(unix)]
+pub(crate) fn not_running_or_failed(error: &ChannelError) -> i32 {
+    match error {
+        ChannelError::NotRunning => exit::NOT_RUNNING,
+        _ => exit::FAILED,
     }
 }
 
@@ -479,6 +612,46 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("--token-stdin"), "{error}");
         assert!(!error.contains("s3cret"), "{error}");
+    }
+
+    #[test]
+    fn add_needs_an_ssh_target_and_takes_only_its_own_flags() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let full = parse(&args(&format!(
+            "host add --ssh svc@agent-1 --address 192.168.1.2 --port 7979 --name a1 \
+             --install --bind-all --enable-tls --replace --ref {sha} --dry-run"
+        )))
+        .unwrap();
+        assert_eq!(
+            full,
+            Command::Add(AddArgs {
+                target: "svc@agent-1".into(),
+                address: Some("192.168.1.2".into()),
+                port: Some(7979),
+                name: Some("a1".into()),
+                install: true,
+                bind_all: true,
+                enable_tls: true,
+                replace: true,
+                git_ref: Some(sha.into()),
+                dry_run: true,
+            })
+        );
+        let bare = parse(&args("host add --ssh agent-1")).unwrap();
+        let Command::Add(bare) = bare else {
+            panic!("not an add")
+        };
+        assert_eq!((bare.port, bare.address, bare.install), (None, None, false));
+        assert!(parse(&args("host add --install")).is_err());
+        // Never something ssh could read as one of its own options.
+        assert!(parse(&args("host add --ssh -oProxyCommand=x")).is_err());
+        assert!(parse(&args("host add --ssh a --address -x")).is_err());
+        assert!(parse(&args("host add --ssh a --ref main")).is_err());
+        assert!(parse(&args(
+            "host add --ssh a --ref 0123456789ABCDEF0123456789abcdef01234567"
+        ))
+        .is_err());
+        assert!(parse(&args("host add --ssh a --token t")).is_err());
     }
 
     #[test]

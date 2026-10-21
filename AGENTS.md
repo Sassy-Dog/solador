@@ -136,7 +136,7 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   e2e suite
 - `./dev lint` — `cargo fmt --check` + `cargo clippy`, plus `bash -n` and
   `shellcheck -S warning` over every shell source this repo ships
-  (`agent/deploy/*.sh`, `scripts/*.sh`, `dev`, `prd`), `scripts/shellcheck-pin-guard.sh`
+  (`agent/deploy/*.sh`, `scripts/*.sh`, `crates/hostsetup/remote/*.sh`, `dev`, `prd`), `scripts/shellcheck-pin-guard.sh`
   (#548: fails on any local ShellCheck other than `SHELLCHECK_VERSION`, naming both
   and how to install the pinned one; CI downloads that release and verifies
   `SHELLCHECK_SHA256_LINUX_X86_64` rather than using the runner image's) with its
@@ -600,7 +600,9 @@ the bundle's floor.
 │   │                       #   first in main(), before the store opens) and the
 │   │                       #   hand-off socket the running app serves it on, so
 │   │                       #   the app stays the only writer of the store and
-│   │                       #   keychain. APP-ONLY, like agentrelease
+│   │                       #   keychain; `remote/host.sh` is the script
+│   │                       #   `host add --ssh` embeds and runs on the host.
+│   │                       #   APP-ONLY, like agentrelease
 │   └── crashreport/        # opt-in crash reporting: the consent gate, the
 │                           #   payload allow-list, the Sentry SDK. The ONLY
 │                           #   crate carrying the SDK, and only app/src-tauri
@@ -762,7 +764,8 @@ the bundle's floor.
   about the VPN). **Re-pair** (Settings → the host) appears only when the
   certificate changed and replaces the pin through the same probe → Trust flow.
   There is no unpin: to go back to plain HTTP, delete the host and add it again.
-- **`solador-app host …` asks the running app; it never writes anything itself.**
+- **`solador-app host …` asks the running app; it never writes the store or the
+  keychain itself.**
   The app's executable in a command mode (`crates/hostsetup`), dispatched on
   `main()`'s first line — before `open_store`, whose migration writes the file —
   when argv[1] is `host`/`help`/`--help`/`-h` or argv[0] is named `solador`
@@ -782,6 +785,41 @@ the bundle's floor.
   just before the write, so a Settings edit during the network checks is
   refused rather than duplicated or overwritten. Unix only; Windows prints
   that it is not available yet.
+- **`host add --ssh` is `host pair` with the fingerprint and token read over
+  ssh, and it changes the host only behind a flag.** `hostsetup::remote` sends
+  `crates/hostsetup/remote/host.sh` (embedded, `include_str!`) on ssh's stdin as
+  `ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -T -- <target> /bin/sh -s
+  -- <mode>`: `discover` (never the token), `rebind`, `install`, and `collect`,
+  the one mode that prints the token, captured and never shown. The pure
+  `remote::plan` decides from `discover` what must change for the address the
+  app will dial (default `ssh -G`'s `HostName`; `--address` behind a
+  ProxyJump) and refuses, with nothing changed, anything a flag does not
+  allow: `--install` (bootstrap.sh with stdin closed, so the host generates its
+  token), `--bind-all` (the "LAN too" rewrite and restart; the only way the
+  command itself asks for `0.0.0.0` — a plain `--install` on a host with no
+  tailnet gets the installer's own provisional wildcard, which `plan` notes
+  first), `--enable-tls` (an installer re-run). It **never
+  removes `SOLADOR_AGENT_REQUIRE_TAILNET`**, never rotates a token, never
+  shadows another user's agent, installs no packages and never runs `sudo`: a
+  system daemon's restart is printed with exit `3`. The installer runs with the
+  bind/port/TLS/tailnet/release/launchd-label variables unset, so a login rc file cannot
+  decide them. The app is asked first (exit `4` before any ssh), the agent's
+  fingerprint is sent as `expectedFingerprint`, and the app's own probe still
+  has to match it. **After a step, only a TLS answer at the address ends the
+  wait** (15 s, `remote::SETTLE`): an agent that never gives one is its own
+  failure, the change named and no add sent. Every failure after a step says
+  what changed on the host, and ssh dropping (255) during a step that changes
+  it says the host *may* have changed, never "could not reach". Text from the
+  host is made printable before it reaches the terminal, and ssh gives up on
+  a silent host (`ConnectTimeout`, `ServerAlive*`). `tests/ssh_flow.rs` runs
+  the script under a stand-in ssh with `env -i` and every host command stubbed
+  first on PATH, against a real hand-off server; nothing there reaches a real service manager or agent.
+  `host.sh` restates where `install.sh` puts an agent and how `lib.sh` reads
+  the env file, so `agent/deploy/lib_test.sh` holds it to both: the path and
+  label lines word for word, `env_value` against `lib.sh`'s over one fixture,
+  and the tailnet lookup run beside `install.sh`'s `detect_tailscale_ip` under
+  `install.sh`'s own `pipefail`, which is what decides that a CLI that fails
+  is no answer. CI selects that suite for a change on either side.
 - **"Reach it on the LAN and the tailnet" is configuration, not code.**
   `SOLADOR_AGENT_BIND` is one address (`resolve_bind_host`; a list fails to
   bind), and `install.sh` writes a detected tailnet IP into the env file, so a

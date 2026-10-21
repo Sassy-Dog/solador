@@ -12,7 +12,7 @@ changed-files API or workflow-level path filters.
 | `agent/` outside `deploy/`, agent build script | Agent Rust on Linux, macOS and Windows; Linux static musl build; build script changes also select helpers |
 | `agent/deploy/`, explicit agent signing/feed helpers | Shell lint, deploy/versioning/feed/signing helper suites on Linux/macOS; versioning on Windows |
 | `app/src-tauri/`, app build/run/icon helpers | Workspace Rust on macOS/Windows, frontend tests, unsigned universal macOS bundle; helper script changes also select helpers |
-| `crates/` | Workspace Rust, frontend and macOS bundle; also Linux agent/musl when the crate is in the agent's local dependency graph |
+| `crates/` | Workspace Rust, frontend and macOS bundle; also Linux agent/musl when the crate is in the agent's local dependency graph; `crates/hostsetup/remote/` (shell the crate embeds) also selects helpers |
 | Shared inputs, agent signing public keys, any other workflow, selection policy, or an unrecognized path | Full suite |
 
 Mixed changes take the union. Shared inputs include `Cargo.toml`, `Cargo.lock`,
