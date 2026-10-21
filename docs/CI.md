@@ -7,8 +7,8 @@ changed-files API or workflow-level path filters.
 
 | Changed area | Selected work |
 | --- | --- |
-| Documentation only: Markdown anywhere outside `app/` and `site/` (`.claude/sassy-dog/*.md` included), `docs/` images and PDFs, `.github/dependabot.yml`, and the dependency-automation workflows | Selection tests and security/dependency guards; no compilation |
-| `app/ui/`, `tests/frontend/` | Rust view-model parity tests, frontend server tests and Playwright on macOS, including the Rust fixture generator |
+| Documentation only: Markdown anywhere outside `app/` and `site/` except the root `README.md` (`.claude/sassy-dog/*.md` included), `docs/` images and PDFs, `.github/dependabot.yml`, and the dependency-automation workflows | Selection tests and security/dependency guards; no compilation |
+| `app/ui/`, `tests/frontend/`, the root `README.md` (`site.spec.js` holds the setup page's coding-agent prompt to it) | Rust view-model parity tests, frontend server tests and Playwright on macOS, including the Rust fixture generator |
 | `agent/` outside `deploy/`, agent build script | Agent Rust on Linux, macOS and Windows; Linux static musl build; build script changes also select helpers |
 | `agent/deploy/`, explicit agent signing/feed helpers | Shell lint, deploy/versioning/feed/signing helper suites on Linux/macOS; versioning on Windows |
 | `app/src-tauri/`, app build/run/icon helpers | Workspace Rust on macOS/Windows, frontend tests, unsigned universal macOS bundle; helper script changes also select helpers |

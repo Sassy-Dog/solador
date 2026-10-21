@@ -41,6 +41,9 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* The sticky header is 64px tall: without this, a link to an anchor
+     (/setup/#coding-agent) lands its heading underneath it. */
+  scroll-padding-top: 88px;
 }
 
 body {
@@ -778,6 +781,37 @@ pre code {
 .path {
   color: var(--text);
   font-weight: 600;
+}
+
+/* A block of text to paste elsewhere, with copy.js's button under it. The
+   row is hidden until the script shows the button: without it, there is
+   nothing to put there. */
+.copyable {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.copy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.copy-row:not(:has(.copy-btn:not([hidden]))) {
+  display: none;
+}
+
+.copy-btn {
+  min-height: 38px;
+  padding: 0 16px;
+  font-size: 0.9rem;
+}
+
+.copy-status {
+  color: var(--muted);
+  font-size: 0.88rem;
 }
 
 .note {
