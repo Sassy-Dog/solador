@@ -272,7 +272,11 @@ that has the pairing half reaches it like this: Settings → Connections → add
 address presents *without trusting it* and shows its SHA-256 fingerprint →
 compare that with what `install.sh` printed (or `solador-agent
 tls-fingerprint`) → press **Trust**. Nothing is stored until you do, and the
-fingerprint is never typed in. From then on the cockpit dials that host over
+fingerprint is never typed in. (The cockpit's command line, `solador-app host
+pair`, does take one as `--fingerprint`, but only to compare with what the app's
+own probe finds; it pins the probe's answer, and only when the two are equal —
+see [app/README.md](../app/README.md#adding-a-host-from-the-command-line).)
+From then on the cockpit dials that host over
 HTTPS and accepts **exactly that one certificate**: no certificate authority
 is consulted, the name is not checked (the certificate is the identity, not
 its SANs), and the handshake signature is still verified with the

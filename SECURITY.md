@@ -39,6 +39,18 @@ shown in the UI, is a vulnerability. The Azure blob client deliberately strips
 URLs out of transport errors for exactly this reason: a SAS token is a URL
 query string, and error messages get pasted into issues.
 
+**The command line hands credentials in, never out.** `solador-app host …`
+gives the running app a host and its token over a local Unix socket,
+`<store dir>/run/cli.sock`, whose directory is created `0700` and refused by
+both sides unless it belongs to the current user; the server also checks each
+peer's uid. Anything that can connect could already edit `store.json` as that
+user, so the socket adds no new principal, and no reply carries a token, so it
+adds no way to read one. A pin is set from it only when the app's own probe of
+the address finds the fingerprint the request names, and only after the agent
+accepts the token over that pinned connection. A reply that carries a token, a
+peer of another user being answered, or a pin saved without that match is in
+scope.
+
 **The frontend runs under a real CSP** (`app/src-tauri/tauri.conf.json`) and the
 Playwright suite serves it under the same policy. Panel content — repository
 names, container names, incident text — reaches the DOM as text, never as

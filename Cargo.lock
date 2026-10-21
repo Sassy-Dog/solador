@@ -4417,6 +4417,7 @@ dependencies = [
  "futures-util",
  "glob",
  "mac-notification-sys",
+ "rcgen",
  "serde",
  "serde_json",
  "solador-agentrelease",
@@ -4425,6 +4426,7 @@ dependencies = [
  "solador-certpin",
  "solador-crashreport",
  "solador-github",
+ "solador-hostsetup",
  "solador-localhost",
  "solador-openclaw",
  "solador-servicestatus",
@@ -4439,6 +4441,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "uuid",
  "viewmodel",
 ]
@@ -4491,6 +4494,20 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "solador-hostsetup"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "solador-certpin",
+ "solador-store",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

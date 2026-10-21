@@ -54,6 +54,10 @@ solador-crashreport = { path = "../../crates/crashreport" }
 # App-only, like crashreport — `agent/` must never resolve it
 # (`scripts/agent-deps-guard.sh`).
 solador-agentrelease = { path = "../../crates/agentrelease" }
+# `solador-app host …`: the command mode dispatched from `main()`, and the
+# hand-off socket this process serves it on (`src/handoff.rs`). App-only, like
+# agentrelease — `agent/` must never resolve it (`scripts/agent-deps-guard.sh`).
+solador-hostsetup = { path = "../../crates/hostsetup" }
 # The GitHub clocks are `DateTime<Utc>` (run start times, roster sightings), so
 # the panel layer speaks the same type rather than converting at every call.
 # Same pin as crates/github's, so one chrono resolves for the workspace.
@@ -122,3 +126,10 @@ tempfile = "3"
 # plugin's, so one glob resolves for the workspace; test-only, so it adds
 # nothing to the shipped binary.
 glob = "0.3"
+# The hand-off tests (src/handoff.rs) pair against a real rustls agent on a
+# loopback port, as crates/agentclient's pinning tests do: the same pins and
+# the same `ring` backend, so nothing new resolves, and test-only, so the
+# shipped binary gains nothing.
+tokio = { version = "1", features = ["net", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }

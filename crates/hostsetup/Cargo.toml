@@ -1,0 +1,43 @@
+[package]
+# Prefixed like every other member; the lib keeps the short import name.
+name = "solador-hostsetup"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "hostsetup"
+
+# APP-ONLY. The `solador-app host …` command mode and the running cockpit's
+# side of the hand-off socket it talks to. `agent/` must never resolve it, and
+# `scripts/agent-deps-guard.sh` asserts the absence with `cargo tree`.
+#
+# Deliberately NOT a dependency on `agentclient`: the server reaches the agent
+# through the `Agent` trait, which the app implements with its own client, so
+# this crate's tests run with no network and the words a health check renders
+# stay the app's.
+[dependencies]
+# `Host`, `DEFAULT_AGENT_PORT` and `Store::default_dir()` — the last does no
+# I/O, which is why the command mode may call it and must never call
+# `Store::open`, whose migration writes the file the running app owns.
+solador-store = { path = "../store" }
+# The expected fingerprint is canonicalised by the same parser the agent's
+# `tls-fingerprint` and the pinning client use.
+solador-certpin = { path = "../certpin" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Same major as the store's, so one uuid resolves.
+uuid = "1"
+# The server's listener and its per-connection reads. The command mode is
+# blocking std I/O and needs none of it. Every feature here is already enabled
+# elsewhere in the app's tree (reqwest, agentclient), so nothing new resolves.
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt"] }
+
+[target.'cfg(unix)'.dependencies]
+# `geteuid()`: the socket's directory must be ours and only ours, and so must
+# every peer. Already in the lock.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "sync"] }
