@@ -21,7 +21,10 @@
 # scripts/agent-standby-key.sh against a file-backed `doppler` stub. Since
 # #434, bootstrap.sh is driven the same way — a stubbed curl serving a local
 # tarball keyed by the ref's own basename, so no change to the stub was
-# needed to add it. Nothing here talks to a host or a network. What is NOT
+# needed to add it. The remote script `solador-app host add --ssh` runs
+# (crates/hostsetup/remote/host.sh) is held to install.sh and lib.sh here
+# too: where it looks, and how it reads the env file and the tailnet address.
+# Nothing here talks to a host or a network. What is NOT
 # stubbed is the signature verifier: the
 # tamper-rejection cases run the real `minisign` against fixtures signed with a
 # throwaway key, and report themselves as SKIPPED when it is not installed,
@@ -9554,6 +9557,146 @@ test_deploy_script_invariants() {
         '$SUDO mv -f "$NEW_BIN" "$INSTALL_PATH"'
 }
 
+# ---- `host add --ssh`'s remote script agrees with the installer -------------
+# crates/hostsetup/remote/host.sh, which `solador-app host add --ssh` runs on a
+# host, looks for an agent where install.sh puts one, and reads the env file
+# and the tailnet address the way lib.sh and install.sh do. It lives in another
+# crate, so the ties are held here: CI runs this suite when either side changes
+# (scripts/ci_changes.py selects helpers for agent/deploy/ and for
+# crates/hostsetup/remote/ alike).
+test_host_script_agrees_with_installer() {
+    local host_sh install_sh dir installer script name os want out_installer out_host key tool real
+    host_sh="$SCRIPT_DIR/../../crates/hostsetup/remote/host.sh"
+    install_sh="$SCRIPT_DIR/install.sh"
+    if [ ! -f "$host_sh" ]; then
+        fail "host.sh is where this suite looks for it" "$host_sh is missing"
+        return
+    fi
+
+    # Where an agent is, said twice: install.sh's line, then host.sh's. Whole
+    # lines, so a label that grows a suffix is a change, not a match.
+    while IFS='|' read -r installer script; do
+        [ -n "$installer" ] || continue
+        if grep -qxF -- "$installer" "$install_sh"; then
+            pass "install.sh still says $installer"
+        else
+            fail "install.sh still says $installer" "no line of $install_sh reads exactly that"
+        fi
+        if grep -qxF -- "$script" "$host_sh"; then
+            pass "host.sh still says $script"
+        else
+            fail "host.sh still says $script" "no line of $host_sh reads exactly that"
+        fi
+    done <<'PAIRS'
+BIN_NAME="solador-agent"|BIN="$HOME/.local/bin/solador-agent"
+INSTALL_DIR="$HOME/.local/bin"|BIN="$HOME/.local/bin/solador-agent"
+ENV_FILE="$HOME/.config/${BIN_NAME}.env"|ENV_FILE="$HOME/.config/solador-agent.env"
+LAUNCHD_LABEL="${SOLADOR_AGENT_LAUNCHD_LABEL:-app.solador.agent}"|LABEL=app.solador.agent
+UNIT_DST="$HOME/.config/systemd/user/${BIN_NAME}.service"|UNIT=solador-agent.service
+UNIT_DST="$HOME/.config/systemd/user/${BIN_NAME}.service"|UNIT_FILE="$HOME/.config/systemd/user/$UNIT"
+PLIST_DST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"|AGENT_PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+SYSTEM_PLIST="/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist"|DAEMON_PLIST="/Library/LaunchDaemons/$LABEL.plist"
+PAIRS
+    # install.sh names the app's CLI inside a condition, so it is matched
+    # quoted rather than as a line; the parity runs below rewrite that literal.
+    assert_file_has "install.sh still looks for the Mac app's own CLI" \
+        "$install_sh" '"/Applications/Tailscale.app/Contents/MacOS/Tailscale"'
+    if grep -qxF -- 'TAILSCALE_APP="/Applications/Tailscale.app/Contents/MacOS/Tailscale"' "$host_sh"; then
+        pass "host.sh looks for the Mac app's CLI where install.sh does"
+    else
+        fail "host.sh looks for the Mac app's CLI where install.sh does" \
+            "no line of $host_sh reads TAILSCALE_APP=\"/Applications/Tailscale.app/Contents/MacOS/Tailscale\""
+    fi
+    assert_file_has "install.sh still runs under pipefail (the parity below assumes it)" \
+        "$install_sh" "set -euo pipefail"
+
+    # The tailnet address: both functions, run side by side against the same
+    # stubs, must give the same answer, and the answer each case expects. An
+    # empty answer from both would agree and prove nothing, so it is checked.
+    # install.sh's copy runs under the options install.sh sets, because
+    # pipefail is what decides whether a failing CLI ends its search.
+    dir="$TMP/host-sh-parity"
+    # Stubs first, then only the real tools the two functions pipe through,
+    # so a tailscale or ip on this machine cannot answer for a stub.
+    mkdir -p "$dir/tools"
+    for tool in awk grep head sh bash; do
+        real="$(command -v "$tool" 2>/dev/null || true)"
+        [ -n "$real" ] && ln -sf "$real" "$dir/tools/$tool"
+    done
+    extract_function "$install_sh" detect_tailscale_ip |
+        sed "s#/Applications/Tailscale.app#$dir/Tailscale.app#" > "$dir/installer.sh"
+    extract_function "$host_sh" tailnet_ip > "$dir/script.sh"
+    extract_function "$host_sh" env_value > "$dir/env_value.sh"
+    if [ ! -s "$dir/installer.sh" ] || [ ! -s "$dir/script.sh" ] || [ ! -s "$dir/env_value.sh" ]; then
+        fail "install.sh and host.sh still define the functions compared here" \
+            "detect_tailscale_ip, tailnet_ip or env_value could not be extracted"
+        return
+    fi
+    for name in cli cli-fails cli-empty app interface none; do
+        rm -rf "${dir:?}/bin" "${dir:?}/Tailscale.app"
+        mkdir -p "$dir/bin" "$dir/Tailscale.app/Contents/MacOS"
+        os=Linux
+        want=100.64.0.9
+        printf '#!/bin/sh\ntrue\n' > "$dir/bin/ip"
+        case "$name" in
+            cli) printf '#!/bin/sh\necho 100.64.0.9\n' > "$dir/bin/tailscale" ;;
+            cli-fails)
+                # A CLI that fails (logged out) is no answer: both go on to
+                # the app's own CLI.
+                printf '#!/bin/sh\nexit 1\n' > "$dir/bin/tailscale"
+                os=Darwin
+                printf '#!/bin/sh\necho 100.64.0.10\n' > "$dir/Tailscale.app/Contents/MacOS/Tailscale"
+                want=100.64.0.10
+                ;;
+            cli-empty)
+                # A CLI that succeeds with nothing to say is the answer:
+                # neither looks further, even with the app installed.
+                printf '#!/bin/sh\nexit 0\n' > "$dir/bin/tailscale"
+                os=Darwin
+                printf '#!/bin/sh\necho 100.64.0.10\n' > "$dir/Tailscale.app/Contents/MacOS/Tailscale"
+                want=""
+                ;;
+            app)
+                os=Darwin
+                printf '#!/bin/sh\necho 100.64.0.9\n' > "$dir/Tailscale.app/Contents/MacOS/Tailscale"
+                ;;
+            interface)
+                printf '#!/bin/sh\n[ "$*" = "-4 -o addr show tailscale0" ] && echo "4: tailscale0    inet 100.64.0.9/32 scope global tailscale0"\ntrue\n' > "$dir/bin/ip"
+                ;;
+            none) want="" ;;
+        esac
+        printf '#!/bin/sh\necho %s\n' "$os" > "$dir/bin/uname"
+        chmod 755 "$dir/bin/"* "$dir/Tailscale.app/Contents/MacOS/"* 2>/dev/null
+        out_installer="$(OS="$os" PATH="$dir/bin:$dir/tools" "$dir/tools/bash" -c 'set -euo pipefail; . "$1"; detect_tailscale_ip || true' _ "$dir/installer.sh" 2>/dev/null)"
+        out_host="$(TAILSCALE_APP="$dir/Tailscale.app/Contents/MacOS/Tailscale" PATH="$dir/bin:$dir/tools" "$dir/tools/sh" -c '. "$1"; tailnet_ip' _ "$dir/script.sh" 2>/dev/null)"
+        assert_eq "install.sh finds the tailnet address as expected ($name)" "$want" "$out_installer"
+        assert_eq "host.sh finds the tailnet address as install.sh does ($name)" "$out_installer" "$out_host"
+    done
+
+    # The env file, read by lib.sh's env_value and by host.sh's copy of it:
+    # last match wins, a CR is dropped, padding trimmed, one pair of quotes
+    # removed, and a key that is not at the start of its line is no match.
+    printf '%s\n' \
+        'SOLADOR_AGENT_TLS=0' \
+        "SOLADOR_AGENT_TLS=1"$'\r' \
+        'SOLADOR_AGENT_BIND=  "0.0.0.0"  ' \
+        "SOLADOR_AGENT_PORT='7878'" \
+        ' SOLADOR_AGENT_REQUIRE_TAILNET=1' \
+        'SOLADOR_AGENT_TOKEN=abc=def' \
+        "SOLADOR_AGENT_BIND_AUTO="$'\t'"1"$'\t' \
+        'SOLADOR_AGENT_RELEASE="' \
+        > "$dir/env"
+    for key in SOLADOR_AGENT_TLS SOLADOR_AGENT_BIND SOLADOR_AGENT_PORT SOLADOR_AGENT_REQUIRE_TAILNET \
+        SOLADOR_AGENT_TOKEN SOLADOR_AGENT_BIND_AUTO SOLADOR_AGENT_RELEASE SOLADOR_AGENT_MISSING; do
+        out_installer="$(env_value "$dir/env" "$key")"
+        out_host="$(ENV_FILE="$dir/env" sh -c '. "$1"; env_value "$2"' _ "$dir/env_value.sh" "$key")"
+        assert_eq "host.sh reads $key as lib.sh does" "$out_installer" "$out_host"
+    done
+    assert_eq "lib.sh's reading of the fixture is the one described" \
+        "1|0.0.0.0|7878||abc=def|1" \
+        "$(for key in TLS BIND PORT REQUIRE_TAILNET TOKEN BIND_AUTO; do env_value "$dir/env" "SOLADOR_AGENT_$key"; done | paste -sd '|' -)"
+}
+
 # ---- the env-file carry-over is an allow-list (#496) ----------------------
 # keys_of_launcher: the keys run-agent.sh's `KEY=*` case arms recognise, one
 # per line, sorted. Read from the file, not restated here, so a key added to
@@ -9908,6 +10051,7 @@ CASES="
         test_install_system_daemon
         test_standby_key_script
         test_deploy_script_invariants
+        test_host_script_agrees_with_installer
         test_watchdog_trips_on_a_hung_case
     "
 

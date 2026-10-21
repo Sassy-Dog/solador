@@ -493,7 +493,14 @@ the env file as `SOLADOR_AGENT_BIND`), so a cockpit that is not on the tailnet
 has nothing to reach at the host's LAN address: Settings → **Test** reads
 `✗ not paired`, and **Check certificate** finds nothing there. The agent listens
 on exactly one address (`SOLADOR_AGENT_BIND` takes one value, and a list fails
-to bind), so "the LAN and the tailnet" means all interfaces, over TLS:
+to bind), so "the LAN and the tailnet" means all interfaces, over TLS.
+
+From a machine that can ssh to the host as the agent's user,
+`solador-app host add --ssh <agent-user>@<host> --bind-all` does steps 1 to 3
+and 5 below and stops wherever they do: TLS off, a host held to its tailnet, a
+system daemon's root-only restart (printed, not run). Run it with `--dry-run`
+first to see what it would change
+([app/README.md](../app/README.md#adding-a-host-from-the-command-line)). By hand:
 
 1. **Read the env file, leaving out the token.** For a [system
    daemon](#running-as-a-system-daemon-under-a-service-user), prefix this and

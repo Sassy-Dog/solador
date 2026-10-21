@@ -11,12 +11,19 @@
 //! the app makes between what it finds at the address and what the host itself
 //! printed (`--fingerprint`), and the token is checked over that pinned
 //! connection before anything is saved.
+//!
+//! `host add --ssh` (`remote`) is the same pairing with the operator's two
+//! copy-and-pastes done over ssh: the fingerprint and the token are read on
+//! the host, as the ssh user, by the script it embeds, and the app still
+//! checks both itself.
 
 #[cfg(unix)]
 pub mod channel;
 pub mod cli;
 pub mod pairing;
 pub mod protocol;
+#[cfg(unix)]
+pub mod remote;
 mod secret;
 pub mod server;
 

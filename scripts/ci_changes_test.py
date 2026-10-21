@@ -158,6 +158,9 @@ class SelectionTests(unittest.TestCase):
     def test_app_only_crate_does_not_build_linux_agent(self):
         self.assert_change(["crates/app-only/src/lib.rs"], APP)
 
+    def test_shell_a_crate_embeds_is_linted_too(self):
+        self.assert_change(["crates/hostsetup/remote/host.sh"], dict(APP, helpers=True))
+
     def test_transitive_agent_dependency_selects_both_products(self):
         self.assert_change(["crates/indirect/src/lib.rs"], dict(APP, agent_rust=True))
 

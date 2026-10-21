@@ -511,6 +511,9 @@ when it is invoked through a symlink named `solador`:
 ```bash
 ln -s /Applications/Solador.app/Contents/MacOS/solador-app ~/.local/bin/solador
 solador host list                      # every host and the certificate it is pinned to; --json too
+solador host add --ssh <agent-user>@<agent-host> --dry-run   # what it would change on the host, and the pairing
+solador host add --ssh <agent-user>@<agent-host>             # do it
+# The same pairing by hand, with the two values copied over ssh:
 # <agent-user>@<agent-host> is the account the agent runs as: its env file is in that home.
 ssh <agent-user>@<agent-host> 'grep ^SOLADOR_AGENT_TOKEN= ~/.config/solador-agent.env | cut -d= -f2-' \
   | solador host pair --address <address> --name <name> \
@@ -549,7 +552,51 @@ in Settings meanwhile is refused rather than duplicated. One write can half
 land — the row saved, then the keychain refusing its token — and that says so
 (and the row is polled) rather than claiming nothing changed.
 
-Exit status: `0` done or already so, `1` refused or failed, `2` usage, `4`
+**`add --ssh` is `pair` with the two copy-and-pastes done over ssh.** It reads
+the agent's install as the ssh user, through a POSIX script the executable
+embeds and sends on ssh's stdin (`crates/hostsetup/remote/host.sh`, so nothing
+is left on the host but what a step writes), then sends the same `add` request
+`pair` does, with the fingerprint and the token read there: the app still
+probes the address itself and pins only on a match. The address it dials is
+ssh's own `HostName` for the target (`ssh -G`) unless `--address` is given,
+and must be given behind a ProxyJump or ProxyCommand. A cockpit off the
+tailnet should pass the host's LAN address: a `HostName` can be a name only
+the tailnet resolves. It changes the host only where a flag says it may:
+
+- `--install`, when that user has no agent: `bootstrap.sh`, always fetched
+  from `main` (`--ref` chooses the commit on `main` its installer comes from),
+  with stdin closed so the installer generates the token on the host;
+- `--bind-all`, when the agent listens only on an address this machine cannot
+  dial (its tailnet IP, for a cockpit off the tailnet): agent/README.md's
+  [Reaching a Tailscale host from the LAN too](../agent/README.md#reaching-a-tailscale-host-from-the-lan-too),
+  steps 2 and 3, with the old bind printed as the way back. This is the only
+  way the command asks for `0.0.0.0`; a plain `--install` on a host with no
+  tailnet address gets the installer's own provisional wildcard
+  (`SOLADOR_AGENT_BIND_AUTO=1`), and the command says so before it runs;
+- `--enable-tls`, when TLS is off: an installer re-run, which also updates
+  the agent to the newest release.
+
+Everything else is refused before anything changes, naming what would get past
+it: another user's agent on that host (`--ssh` as that user, or `pair` with
+the two values read as that user when it has no ssh access, as a macOS
+service user usually does; it never installs a second agent beside one), `SOLADOR_AGENT_REQUIRE_TAILNET=1` with a bind the
+address misses (never removed, whatever the flags), a Mac user with no login
+session (a fresh install there is a system daemon, set up by hand), a missing
+`curl`, `bash` or `minisign` (it installs no packages). It never runs `sudo`:
+a system daemon it rebinds can be restarted only by root, so it prints that
+step and exits `3` — run it, then the same command again. It never rotates an
+existing token, never accepts a host key or answers a prompt (`BatchMode=yes`,
+`StrictHostKeyChecking=yes`: connect once by hand first; ssh gives up on a
+host that does not connect within 15 s, or that goes silent for about 45 s
+once connected), and prints the token nowhere. If a step ran and the
+pairing then failed, the output says what changed on the host and how to undo
+it. An agent that does not answer over TLS within 15 s of a step is that
+failure, with the command to look at it, never an add; a connection that drops
+during a step says the host may have changed, and `--dry-run` shows where it
+stands.
+
+Exit status: `0` done or already so, `1` refused or failed, `2` usage, `3` an
+`add` owes a step only root can take on the host (printed), `4`
 Solador isn't running — strictly, nothing answered the socket, so the sentence
 also says to quit and reopen an app that is open (its hand-off failed to
 start; the app logs why to stderr). Windows prints that the command mode is not available
