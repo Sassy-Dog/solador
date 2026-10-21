@@ -44,8 +44,11 @@ pub struct Host {
     /// A non-secret preference that lives in `store.json` beside the address:
     /// it is a public certificate's hash, and the only thing it can do is make
     /// the client *refuse* more. It is set only by the operator clicking
-    /// **Trust** on a fingerprint the cockpit just fetched, never typed in and
-    /// never adopted from a poll — a pin learned silently is not a pin.
+    /// **Trust** on a fingerprint the cockpit just fetched, or by
+    /// `solador-app host pair` when the fingerprint the cockpit fetched equals
+    /// the one the operator passed (`crates/hostsetup`) — never adopted from a
+    /// poll, and never from a typed value alone. A pin learned silently is not
+    /// a pin.
     ///
     /// Absent on disk is `None`, and omitted when `None`, so a store written
     /// before this field existed loads unchanged and one that never pins a

@@ -275,6 +275,28 @@ impl Store {
             .ok_or(StoreError::NoConfigDir)
     }
 
+    /// `SOLADOR_STORE_DIR`, when set: a scratch directory standing in for
+    /// [`Store::default_dir`] (the manual smoke runs in `app/README.md`).
+    ///
+    /// One rule for every process that must agree on it: the app opens its
+    /// store here, and `solador-app host` looks here for the running app's
+    /// hand-off socket. Two copies of the rule would let a scratch app and a
+    /// scratch command disagree, and the command would report the app as not
+    /// running.
+    #[must_use]
+    pub fn dir_override() -> Option<PathBuf> {
+        std::env::var_os("SOLADOR_STORE_DIR").map(PathBuf::from)
+    }
+
+    /// The directory this process's store is in: [`Store::dir_override`],
+    /// else [`Store::default_dir`].
+    ///
+    /// # Errors
+    /// [`StoreError::NoConfigDir`], as [`Store::default_dir`].
+    pub fn resolved_dir() -> Result<PathBuf, StoreError> {
+        Store::dir_override().map_or_else(Store::default_dir, Ok)
+    }
+
     /// Opens (or first-run creates) the store at its platform default path.
     ///
     /// `github_token_present` is the caller's answer about the *pre-existing*

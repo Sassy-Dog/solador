@@ -349,7 +349,10 @@ fingerprint — the same string `solador-agent tls-fingerprint` prints, written 
 two and presses **Trust**. Nothing is stored by the probe; the fingerprint is
 in the arguments of Add / Save only after Trust (`tlsFingerprint`), only for the
 address and port it was read from (editing either drops the answer), and never
-typed in. A found-but-untrusted certificate holds **Add Host** back — adding the
+typed in. `solador-app host pair` does take a typed `--fingerprint`, but only to
+compare against: the app probes the address itself and stores what it found,
+and only when the two are equal ([Adding a host from the command
+line](#adding-a-host-from-the-command-line)). A found-but-untrusted certificate holds **Add Host** back — adding the
 host anyway would poll a TLS agent over plain HTTP. "No TLS" (an agent
 answering plain HTTP) and "couldn't reach" are findings too, each in its own
 sentence, and neither offers Trust. A host that is never paired stays plain
@@ -389,8 +392,9 @@ header is never sent to an impostor. Two failures get their own words, never
 *Unreachable*: **certificate changed** and **doesn't speak TLS yet**
 (`Fault::CertificateChanged` / `Fault::NoTls`). On *certificate changed* the
 host's edit form offers **Re-pair** — the same Check → compare → Trust flow,
-replacing the pin on Save — and that is the only way a pin changes: there is no
-one-click unpin, so going back to plain HTTP means deleting the host and adding
+replacing the pin on Save — and that, or `solador-app host pair --replace`
+(which likewise pins only what the app's own probe found), is the only way a
+pin changes: there is no one-click unpin, so going back to plain HTTP means deleting the host and adding
 it again. Preferences,
 Full view layout and About remain available in the side navigation.
 
@@ -489,12 +493,67 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
 | [`crashreport`](../crates/crashreport) | the opt-in crash reporter: the consent gate, the payload allow-list, the Sentry SDK |
+| [`hostsetup`](../crates/hostsetup) | `solador-app host …`: the command mode, and the hand-off socket the running app serves it on |
 | [`buildversion`](../crates/buildversion) | a **build** dependency: publishes the git-derived CalVer as `SOLADOR_MARKETING_VERSION` — and, through a second entry point, the agent's own version for `agent/build.rs` (#390, #490) — so the plumbing around `scripts/get-version-info.sh` has one home |
 
 `crashreport` is the **only** crate carrying the Sentry SDK, and only this shell
 depends on it — `agent/`'s CI job is scoped `-p solador-agent` and must not
 resolve any of it. It is unrelated to `usage`'s Sentry client, which *reads*
 Sentry's API for two panels and reports nothing.
+
+### Adding a host from the command line
+
+`solador-app host …` is the app's own executable in a command mode
+(`crates/hostsetup`), dispatched on the first line of `main()` — before the
+store opens — when the first argument is `host` (or `help`/`--help`/`-h`), or
+when it is invoked through a symlink named `solador`:
+
+```bash
+ln -s /Applications/Solador.app/Contents/MacOS/solador-app ~/.local/bin/solador
+solador host list                      # every host and the certificate it is pinned to; --json too
+# <agent-user>@<agent-host> is the account the agent runs as: its env file is in that home.
+ssh <agent-user>@<agent-host> 'grep ^SOLADOR_AGENT_TOKEN= ~/.config/solador-agent.env | cut -d= -f2-' \
+  | solador host pair --address <address> --name <name> \
+      --fingerprint "$(ssh <agent-user>@<agent-host> '~/.local/bin/solador-agent tls-fingerprint')" \
+      --token-stdin
+```
+
+**It changes nothing itself; the running app does.** In command mode no store
+is opened (its migration writes the file), no credential store is touched and no
+window is created: every request goes to the open Solador over a local socket,
+`<store dir>/run/cli.sock`, and the app writes through the same
+`add_host_connection` / `save_host_connection` the Settings form uses, then
+reloads its hosts. So the app stays the only writer of `store.json` and the
+keychain item (no new keychain prompts, no clobbered store), and a host added
+this way is indistinguishable from one added by hand. If Solador is not open the
+command exits `4` and says so; there is no fallback writer. The socket's
+directory is created `0700` and refused by both sides unless it belongs to this
+user; the server checks each peer's uid; replies never contain a token.
+
+**`pair` keeps Settings' rule that nothing is pinned by a probe alone.** The
+comparison the operator makes by eye on the form — the fingerprint Check
+certificate found against the one `solador-agent tls-fingerprint` printed — is
+made by the app instead: it probes `--address`:`--port` itself, pins only if
+what it finds equals `--fingerprint`, then sends the token over that pinned
+connection to `/v1/health` and saves only if the agent accepts it. A mismatch,
+an agent answering plain HTTP, and a refused token each save nothing and say
+why. The token is read from stdin and never from an argument (`--token` is
+refused, and so is a terminal on stdin, which would echo it). A host already at
+that address — unpaired, or pinned to another certificate — or this certificate
+already paired at another address (the tailnet IP you saved earlier, say), is
+refused unless `--replace` is given, which re-pins or moves that one row;
+pairing the same host again changes nothing, or only replaces its token. The
+app decides that against its host list, waits on the probe and the health
+check, then asks again under the store's lock before it writes: a host added
+in Settings meanwhile is refused rather than duplicated. One write can half
+land — the row saved, then the keychain refusing its token — and that says so
+(and the row is polled) rather than claiming nothing changed.
+
+Exit status: `0` done or already so, `1` refused or failed, `2` usage, `4`
+Solador isn't running — strictly, nothing answered the socket, so the sentence
+also says to quit and reopen an app that is open (its hand-off failed to
+start; the app logs why to stderr). Windows prints that the command mode is not available
+there yet: the socket is Unix-only for now.
 
 ## The `cockpit` command
 
@@ -2580,13 +2639,14 @@ paths are the ⏱ extras at the end.
 
 ```bash
 rm -f app/ui/sample*.json                      # 1. fixtures MUST be gone
-SOLADOR_STORE_DIR=$(mktemp -d) \
+export SOLADOR_STORE_DIR=$(mktemp -d)          # 2. scratch store (the last step reuses it)
 SOLADOR_SEED_HOST="smoke-$(date +%H%M%S)|100.100.100.100|7878" \
-  cargo run -p solador-app                   # 2. scratch store, distinctive name
+  cargo run -p solador-app                   #    distinctive name
 ```
 
-Then tick these off. Nine terminal lines and six on-screen reads — the terminal
-half works on a machine whose screen you cannot see.
+Then tick these off. Nine terminal lines, six on-screen reads and one command in
+a second terminal — the terminal half works on a machine whose screen you
+cannot see.
 
 - [ ] **Terminal** — `cockpit: first frontend request (1 host(s), <N>pt)`
 - [ ] **Terminal** — `containers: first frontend request (N section(s))`
@@ -2634,10 +2694,15 @@ half works on a machine whose screen you cannot see.
       to tiles**: the height snaps to the tiles and the width does not change. In
       fullscreen the click instead shows `Couldn't fit the window: exit full
       screen first` under the toolbar.
+- [ ] **Second terminal**, with the same `SOLADOR_STORE_DIR` exported —
+      `target/debug/solador-app host list` prints the seeded host as
+      `unpaired (plain HTTP)` and exits `0`: the command mode reached this
+      instance over the hand-off socket. Quit the app and the same command
+      exits `4`, `Solador isn't running`.
 
-All fifteen ticked ⇒ every registered command round-tripped through the ACL and
-the IPC transport. **A zero, a `false` or an empty string is a pass**: those are Rust's
-own unconfigured sentences, and none of them has a path to the DOM except a
+All sixteen ticked ⇒ every registered command round-tripped through the ACL and
+the IPC transport, and the command line reached the app. **A zero, a `false` or
+an empty string is a pass**: those are Rust's own unconfigured sentences, and none of them has a path to the DOM except a
 successful `invoke`. What fails this test is a *missing line* or a blank panel.
 
 ⏱ **Extras** — only when you touched that surface. Each applies without a relaunch,

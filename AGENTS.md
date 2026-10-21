@@ -143,7 +143,7 @@ remain full validation and include the Python 3.11+ CI-selection regression suit
   negative control `scripts/shellcheck-pin-guard-test.sh` (stub binaries), the secrets guard and
   its mutation corpus (`scripts/secrets-guard.sh`, `scripts/secrets-guard-test.sh`),
   `scripts/agent-deps-guard.sh`'s `cargo tree` assertion that `agent/`
-  does not resolve `crates/updatefeed` or `crates/agentrelease`, and `scripts/tauri-cli-pin-guard.sh`
+  does not resolve `crates/updatefeed`, `crates/agentrelease` or `crates/hostsetup`, and `scripts/tauri-cli-pin-guard.sh`
   (#485: `TAURI_CLI_VERSION` and `Cargo.lock`'s `tauri` must share major.minor,
   text-only) with its negative control `scripts/tauri-cli-pin-guard-test.sh`, and
   `scripts/claude-dir-guard.sh` (nothing named `.claude` is tracked except
@@ -596,6 +596,11 @@ the bundle's floor.
 │   │                       #   in, as `agent/build.rs` does) before decoding.
 │   │                       #   APP-ONLY — agent/ must never resolve it, and it does
 │   │                       #   not use `crates/updatefeed`
+│   ├── hostsetup/          # `solador-app host …`: the command mode (dispatched
+│   │                       #   first in main(), before the store opens) and the
+│   │                       #   hand-off socket the running app serves it on, so
+│   │                       #   the app stays the only writer of the store and
+│   │                       #   keychain. APP-ONLY, like agentrelease
 │   └── crashreport/        # opt-in crash reporting: the consent gate, the
 │                           #   payload allow-list, the Sentry SDK. The ONLY
 │                           #   crate carrying the SDK, and only app/src-tauri
@@ -747,7 +752,9 @@ the bundle's floor.
   only because no pin exists yet), Settings shows the fingerprint, and only the
   **Trust** click puts one in the arguments of Add / Save. A probe alone
   persists nothing; an untrusted found certificate holds Add back; editing the
-  address drops the answer. Two `Fault` states — `CertificateChanged` and
+  address drops the answer. The one other way a pin is set is
+  `solador-app host pair` (next bullet), and it keeps the same rule: the app
+  pins only a fingerprint it found itself *and* the request named. Two `Fault` states — `CertificateChanged` and
   `NoTls` — are their own sentences and never `Unreachable`; the host card's
   `error.kind` tags them so the dashboard's Machines row reads `Cert changed` /
   `No TLS`, and **neither counts as "the network is down"** for the
@@ -755,6 +762,26 @@ the bundle's floor.
   about the VPN). **Re-pair** (Settings → the host) appears only when the
   certificate changed and replaces the pin through the same probe → Trust flow.
   There is no unpin: to go back to plain HTTP, delete the host and add it again.
+- **`solador-app host …` asks the running app; it never writes anything itself.**
+  The app's executable in a command mode (`crates/hostsetup`), dispatched on
+  `main()`'s first line — before `open_store`, whose migration writes the file —
+  when argv[1] is `host`/`help`/`--help`/`-h` or argv[0] is named `solador`
+  (the documented symlink). Every request goes over `<store dir>/run/cli.sock` to the
+  open instance (`src/handoff.rs`), which writes through `add_host_connection` /
+  `save_host_connection` — the Settings form's own functions — and reloads, so
+  the app stays the **only writer** of `store.json` and `secrets_v1` (no
+  keychain prompts from a second binary, no clobbered store). Not running is
+  exit `4` and a sentence; there is no fallback writer, by design. The socket's
+  directory is `0700`, both sides refuse it otherwise, the server checks the
+  peer's uid, and **no reply carries a token**. `host pair` probes the address
+  itself, pins only if that equals `--fingerprint`, proves the token over the
+  pinned connection (`/v1/health`) before saving, and reads the token from
+  stdin only. `hostsetup::pairing::decide` refuses a second row for one machine
+  (same address, paired or not, or the same certificate elsewhere) unless
+  `--replace`, and `Pairing::confirm` asks it again under the store's lock
+  just before the write, so a Settings edit during the network checks is
+  refused rather than duplicated or overwritten. Unix only; Windows prints
+  that it is not available yet.
 - **"Reach it on the LAN and the tailnet" is configuration, not code.**
   `SOLADOR_AGENT_BIND` is one address (`resolve_bind_host`; a list fails to
   bind), and `install.sh` writes a detected tailnet IP into the env file, so a

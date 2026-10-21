@@ -23,6 +23,8 @@ mod containers;
 mod crons;
 mod dashboard;
 mod github;
+#[cfg(unix)]
+mod handoff;
 mod local;
 mod machine_alerts;
 mod openclaw;
@@ -4281,30 +4283,60 @@ fn settings_add_host(
 
     let status = {
         let mut store = state.store.lock().expect("store poisoned");
-        let mut host = Host::new(&name, address);
-        host.port = settings::parse_port(&port);
-        host.tls_fingerprint = pin;
-        let id = host.id;
-        store.upsert_host(host);
-        let status = save_status(&store, format!("Added {name}."));
-
-        if !token.is_empty() {
-            // Keyed by the id the store just minted, and never into the store
-            // file. A credential-store failure is reported and not fatal: the
-            // host row is saved, and the operator can re-enter the token --
-            // losing the row too would be the worse outcome.
-            if let Err(e) = state
-                .credentials
-                .set_secret(SecretKey::HostToken(id), &token)
-            {
-                eprintln!("could not store the new host's token: {e}");
-            }
+        match add_host_connection(
+            &mut store,
+            state.credentials.as_ref(),
+            (&name, &address, settings::parse_port(&port)),
+            &token,
+            pin,
+        ) {
+            Ok(_) => format!("Added {name}."),
+            Err(message) => message,
         }
-        status
     };
 
     reload_hosts(&state);
-    settings_response(&state, status)
+    settings_response(&state, Some(status))
+}
+
+/// A new host row, saved, with its token stored under the id the store minted.
+///
+/// Shared by Settings' Add Host and the command-line hand-off (`handoff.rs`),
+/// so the two cannot disagree about what adding a host writes. A failed file
+/// write takes the row back out: the in-memory store must not hold a host the
+/// file does not, or the next unrelated save would quietly persist it. A
+/// credential-store failure keeps the row — the operator can re-enter the
+/// token, and losing the row too would be the worse outcome — but says so.
+/// The token is keyed by the host's id and never reaches the store file.
+fn add_host_connection(
+    store: &mut Store,
+    credentials: &dyn CredentialStore,
+    (name, address, port): (&str, &str, u16),
+    token: &str,
+    pin: Option<String>,
+) -> Result<Host, String> {
+    let (name, address) = (name.trim(), address.trim());
+    if name.is_empty() || address.is_empty() {
+        return Err("Skipped — name and address are required.".into());
+    }
+    let mut host = Host::new(name, address);
+    host.port = port;
+    host.tls_fingerprint = pin;
+    let id = host.id;
+    store.upsert_host(host.clone());
+    if let Err(error) = store.save() {
+        store.remove_host(id);
+        return Err(format!("Failed: {error}"));
+    }
+    if !token.is_empty() {
+        if let Err(error) = credentials.set_secret(SecretKey::HostToken(id), token) {
+            eprintln!("could not store the token for new host {name} ({id}): {error}");
+            return Err(format!(
+                "Added {name}, but its token could not be stored. Enter it again in Settings."
+            ));
+        }
+    }
+    Ok(host)
 }
 
 /// Step one of pairing a host (#448): fetch the certificate its agent presents,
@@ -4357,22 +4389,29 @@ fn settings_save_host(
         )
     };
     if result == Ok(true) {
-        // Clients retain their token. Replacing it restarts only this host;
-        // a rename or another connection's edit keeps every poll/history.
-        let mut hosts = state.hosts.lock().expect("poll set poisoned");
-        hosts.retain(|host| {
-            if host.key.id != id {
-                return true;
-            }
-            host.task.abort();
-            false
-        });
+        restart_host_task(&state, id);
     }
     reload_hosts(&state);
     settings_response(
         &state,
         Some(result.map_or_else(|message| message, |_| "Saved.".into())),
     )
+}
+
+/// Drops host `id`'s poll task, so the next [`reload_hosts`] starts a fresh one.
+///
+/// Clients retain their token, so a replaced token needs a new client.
+/// Replacing it restarts only this host; a rename or another connection's edit
+/// keeps every poll and its history.
+fn restart_host_task(app: &App, id: Uuid) {
+    let mut hosts = app.hosts.lock().expect("poll set poisoned");
+    hosts.retain(|host| {
+        if host.key.id != id {
+            return true;
+        }
+        host.task.abort();
+        false
+    });
 }
 
 /// A failed file write must retain both the previous host and its credential.
@@ -6329,7 +6368,8 @@ fn run_dump(args: &[String]) -> bool {
 /// evidence of an absent token, and the store treats a `false` as "ask again
 /// next launch" rather than as a finished migration.
 fn open_store(github_token_present: bool) -> Result<Store, StoreError> {
-    match std::env::var_os("SOLADOR_STORE_DIR") {
+    // The same rule `solador-app host` finds the hand-off socket by.
+    match Store::dir_override() {
         Some(dir) => Store::open_in(dir, github_token_present),
         None => Store::open(github_token_present),
     }
@@ -6472,6 +6512,13 @@ fn start_crash_reporting(store: &Store) -> crashreport::Reporting {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // `solador-app host …` (and the `solador` symlink): the command mode, which
+    // hands hosts to the running instance and touches nothing itself — no
+    // store open, no keychain, no window. Decided before anything else here
+    // runs, because everything below opens the store.
+    if let Some(code) = hostsetup::cli::dispatch(&args) {
+        std::process::exit(code);
+    }
     if run_dump(&args) {
         return;
     }
@@ -6516,7 +6563,7 @@ fn main() {
     // launch. `migrate_legacy`'s own "blob already exists" guard can't catch
     // this: an empty or wrong host list still looks like "nothing to copy",
     // not a scratch run.
-    if std::env::var_os("SOLADOR_STORE_DIR").is_none() {
+    if Store::dir_override().is_none() {
         let mut migrate_keys = SecretKey::static_migration_keys();
         migrate_keys.extend(store.hosts().iter().map(|h| SecretKey::HostToken(h.id)));
         match credentials.migrate_legacy(&migrate_keys) {
@@ -6578,6 +6625,11 @@ fn main() {
     // up any other host's tick. Startup is the same code path a settings edit
     // takes, so there is one definition of "which hosts are polled".
     reload_hosts(&app);
+    // The other end of `solador-app host …`: hosts handed over on a local
+    // socket are added through the same code Settings uses, so this process
+    // stays the only writer of the store and the keychain (crates/hostsetup).
+    #[cfg(unix)]
+    rt.spawn(handoff::serve(Arc::clone(&app)));
     // The containers panel polls on its own 10s cadence and reads the poll set
     // rather than owning one, so a host added in Settings joins it on the next
     // tick with no reload of its own.
@@ -8445,6 +8497,79 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let store = Store::open_in(dir.path(), false).expect("open");
         (dir, store)
+    }
+
+    /// Settings' Add Host and the command-line hand-off both go through this:
+    /// the row is saved pinned, the token is keyed by the minted id, and the
+    /// token never reaches the store file.
+    #[test]
+    fn adding_a_host_saves_it_pinned_with_its_token_beside_the_file() {
+        let (dir, mut store) = scratch_store();
+        let credentials = MemoryCredentialStore::new();
+        let pin = certpin::format(&[0x33; certpin::DIGEST_LEN]);
+        let host = add_host_connection(
+            &mut store,
+            &credentials,
+            (" agent-1 ", " 192.168.1.2 ", 7878),
+            "lan-token",
+            Some(pin.clone()),
+        )
+        .expect("added");
+        assert_eq!(
+            (host.name.as_str(), host.address.as_str()),
+            ("agent-1", "192.168.1.2")
+        );
+        let reopened = Store::open_in(dir.path(), false).unwrap();
+        assert_eq!(reopened.host(host.id).unwrap().tls_fingerprint, Some(pin));
+        assert_eq!(
+            credentials
+                .secret(SecretKey::HostToken(host.id))
+                .unwrap()
+                .as_deref(),
+            Some("lan-token")
+        );
+        assert!(!std::fs::read_to_string(store.path())
+            .unwrap()
+            .contains("lan-token"));
+    }
+
+    /// A row the file does not hold must not linger in memory, where the next
+    /// unrelated save would persist it after all; and its token is not stored.
+    #[test]
+    fn a_failed_add_takes_the_row_back_out_and_stores_no_token() {
+        let (_dir, mut store) = scratch_store();
+        let credentials = MemoryCredentialStore::new();
+        store.save().unwrap();
+        std::fs::remove_file(store.path()).unwrap();
+        std::fs::create_dir(store.path()).unwrap();
+        let result = add_host_connection(
+            &mut store,
+            &credentials,
+            ("ubu", "192.168.1.2", 7878),
+            "lan-token",
+            None,
+        );
+        assert!(result.unwrap_err().starts_with("Failed:"));
+        assert!(store.hosts().is_empty());
+        assert!(credentials.accounts().is_empty());
+    }
+
+    #[test]
+    fn adding_a_host_without_a_name_or_address_changes_nothing() {
+        let (_dir, mut store) = scratch_store();
+        let credentials = MemoryCredentialStore::new();
+        for (name, address) in [("", "192.168.1.2"), ("ubu", "  ")] {
+            assert!(add_host_connection(
+                &mut store,
+                &credentials,
+                (name, address, 7878),
+                "t",
+                None
+            )
+            .is_err());
+        }
+        assert!(store.hosts().is_empty());
+        assert!(credentials.accounts().is_empty());
     }
 
     #[test]
