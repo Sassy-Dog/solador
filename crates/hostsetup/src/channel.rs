@@ -143,12 +143,13 @@ fn check_dir(dir: &Path, is_dir: bool, owner: u32, mode: u32, me: u32) -> Result
 }
 
 /// Whether a connected peer may be answered: only a process running as this
-/// user. `Err` is the reason it is dropped, for the log.
-fn admit(peer_uid: std::io::Result<u32>, me: u32) -> Result<(), String> {
+/// user. `Err` is the reason it is dropped, for the log, and it is a constant:
+/// nothing read from the peer's credentials reaches a log line.
+fn admit(peer_uid: std::io::Result<u32>, me: u32) -> Result<(), &'static str> {
     match peer_uid {
         Ok(uid) if uid == me => Ok(()),
-        Ok(uid) => Err(format!("a peer running as uid {uid}, not this user")),
-        Err(error) => Err(format!("a peer whose uid could not be read ({error})")),
+        Ok(_) => Err("a peer running as another user"),
+        Err(_) => Err("a peer whose user could not be read"),
     }
 }
 
@@ -474,8 +475,7 @@ mod tests {
     #[test]
     fn only_a_peer_running_as_this_user_is_answered() {
         assert!(admit(Ok(501), 501).is_ok());
-        let refused = admit(Ok(502), 501).unwrap_err();
-        assert!(refused.contains("uid 502"), "{refused}");
+        assert_eq!(admit(Ok(502), 501), Err("a peer running as another user"));
         assert!(admit(Ok(0), 501).is_err(), "root is another user here too");
         assert!(admit(Err(std::io::Error::other("no creds")), 501).is_err());
     }
