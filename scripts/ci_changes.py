@@ -43,6 +43,10 @@ NO_BUILD_CONFIG = {
 NO_BUILD_WORKFLOW = re.compile(r"\.github/workflows/(dependabot-[^/]+-lockfile|lockfile-sync-[^/]+)\.yml")
 # Markdown here is served or rendered by tested code, so it keeps its own rule.
 SERVED_TREES = ("app/", "site/")
+# Documentation a browser test reads as its source of truth: site.spec.js holds
+# /setup/'s coding-agent prompt to the README's copy, so a README-only edit
+# must still run it.
+FRONTEND_SOURCES = {"README.md"}
 
 
 def git(repo, *args):
@@ -120,6 +124,9 @@ def select_paths(repo, paths):
         # Both products and release tooling consume the agent trust set.
         if path in {"agent/release-signing-key.pub", "agent/release-signing-key-next.pub"}:
             return dict(FULL)
+        if path in FRONTEND_SOURCES:
+            selected["frontend"] = True
+            continue
         if is_documentation(path) or is_no_build_config(path):
             continue
         if path.startswith("agent/deploy/") or path in AGENT_HELPERS:

@@ -220,6 +220,101 @@ test.describe("the download buttons", () => {
   });
 });
 
+/**
+ * The coding-agent prompt on /setup/, which README.md also carries. The two are
+ * one text in two files, so the page's copy is held to the README's, and the
+ * copy button is held to the page's text: what a visitor pastes is what the
+ * README says.
+ */
+function readmePrompt() {
+  const readme = fs.readFileSync(path.resolve(__dirname, "..", "..", "README.md"), "utf8");
+  const match = readme.match(/### Let a coding agent add a host[\s\S]*?```text\n([\s\S]*?)```/);
+  if (!match) throw new Error("README.md no longer has the coding-agent prompt this suite compares");
+  return match[1].trimEnd();
+}
+
+test.describe("the coding-agent prompt", () => {
+  const copyButton = (page) => page.locator('button[data-copy="agent-prompt"]');
+  const status = (page) => page.locator('[data-copy-status="agent-prompt"]');
+
+  test("the prompt names only flags `host add` takes and output the command prints", () => {
+    // The prompt steers an agent by the CLI's own words, so a renamed flag or
+    // reworded line would leave it following instructions that no longer
+    // apply. Read both from the sources rather than restating them here.
+    const repo = path.resolve(__dirname, "..", "..");
+    const cli = fs.readFileSync(path.join(repo, "crates/hostsetup/src/cli.rs"), "utf8");
+    const remote = fs.readFileSync(path.join(repo, "crates/hostsetup/src/remote.rs"), "utf8");
+    const usage = cli.match(/solador-app host add [\s\S]*?\n\n/);
+    expect(usage, "cli.rs's HELP no longer has a `host add` usage block").not.toBeNull();
+    // Whole flags on both sides, so `--address` is not satisfied by a usage
+    // that only has `--address-foo`.
+    const flagsIn = (text) => new Set(text.match(/--[a-z][a-z-]*/g));
+    const takes = flagsIn(usage[0]);
+    const flags = [...flagsIn(readmePrompt())];
+    expect(flags.length).toBeGreaterThan(5);
+    for (const flag of flags) {
+      expect(takes.has(flag), `the prompt names ${flag}, which \`host add\` does not take`).toBe(true);
+    }
+    // Only what remote.rs prints: string literals outside its tests and
+    // comments, so a comment or a test that keeps an old wording cannot
+    // satisfy the check after the output itself changes.
+    const shipped = remote
+      .split(/\n#\[cfg\(test\)\]\nmod tests/)[0]
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+    // `\\[\s\S]`, not `\\.`: a Rust literal continues across lines with a
+    // trailing backslash, and `.` does not match the newline after it.
+    const literals = [...shipped.matchAll(/"((?:[^"\\]|\\[\s\S])*)"/g)].map((m) => m[1]);
+    const prompt = readmePrompt();
+    const quoted = [...prompt.matchAll(/"([^"]+)"/g)].map((m) => m[1].replace(/\s*\.\.\.$/, ""));
+    expect(quoted.length).toBeGreaterThan(2);
+    for (const line of quoted) {
+      expect(
+        literals.some((literal) => literal.includes(line)),
+        `the prompt quotes "${line}", which remote.rs does not print`,
+      ).toBe(true);
+    }
+  });
+
+  test("the setup page carries the README's prompt word for word", async ({ page }) => {
+    await openSite(page, "/setup/", { platform: "macOS" });
+    expect((await page.locator("#agent-prompt").textContent()).trimEnd()).toBe(readmePrompt());
+  });
+
+  test("Copy prompt puts exactly that text on the clipboard and says so", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: ORIGIN });
+    await openSite(page, "/setup/", { platform: "macOS" });
+    await copyButton(page).click();
+    await expect(status(page)).toHaveText("Copied to the clipboard.");
+    await expect(copyButton(page)).toHaveText("Copied");
+    expect((await page.evaluate(() => navigator.clipboard.readText())).trimEnd()).toBe(readmePrompt());
+    await expect(copyButton(page)).toHaveText("Copy prompt", { timeout: 5000 });
+    await expect(status(page)).toHaveText("");
+  });
+
+  test("a clipboard that refuses is not reported as a copy, and the text is selected instead", async ({ page }) => {
+    await page.addInitScript(() => {
+      navigator.clipboard.writeText = () => Promise.reject(new DOMException("denied", "NotAllowedError"));
+    });
+    await openSite(page, "/setup/", { platform: "macOS" });
+    await copyButton(page).click();
+    await expect(status(page)).toHaveText(/^Could not copy\./);
+    await expect(copyButton(page)).toHaveText("Copy prompt");
+    expect((await page.evaluate(() => window.getSelection().toString())).trimEnd()).toBe(readmePrompt());
+  });
+
+  test("with no clipboard API there is no button, and the prompt is still there to select", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(Navigator.prototype, "clipboard", { get: () => undefined });
+    });
+    await openSite(page, "/setup/", { platform: "macOS" });
+    await expect(copyButton(page)).toBeHidden();
+    await expect(page.locator(".copy-row")).toBeHidden();
+    await expect(page.locator("#agent-prompt")).toBeVisible();
+  });
+});
+
 test.describe("every page", () => {
   for (const urlPath of PAGES) {
     test(`${urlPath} raises no CSP violation and every local link and asset exists`, async ({ page }) => {

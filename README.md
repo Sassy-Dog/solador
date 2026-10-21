@@ -134,6 +134,54 @@ The cockpit, for its part, never sends the token over plain HTTP anywhere but
 loopback or Tailscale: a host you have not paired is only polled there. See
 [`agent/README.md`](agent/README.md).
 
+### Let a coding agent add a host
+
+On a Mac, the app is also a command-line tool that adds a host over your own
+ssh: `solador-app host add --ssh` reads the agent's certificate fingerprint and
+token on the host and hands both to the open app, which checks the certificate
+and the token itself before it saves anything
+([reference](app/README.md#adding-a-host-from-the-command-line)). It changes the
+host only where a flag allows it, and never runs `sudo`. To hand the job to a
+coding agent (Claude Code, Codex, …), give it this, with your host filled in:
+
+```text
+Add <user>@<host> to Solador on this Mac with Solador's own command-line tool.
+Below, solador-app means /Applications/Solador.app/Contents/MacOS/solador-app;
+if Solador is installed somewhere else, ask me where.
+
+1. Run: solador-app host add --ssh <user>@<host> --dry-run
+   If it refuses and its message says to pass --install, --enable-tls,
+   --bind-all or --address, show me the message word for word and ask me
+   which, if any, to add: --bind-all has the agent listen on every network
+   the host is on, a public one included, with only its token guarding it.
+   --address takes a value: use the one the message names, or ask me; never
+   guess one. Add only what I agree to, then run the dry run again. Repeat
+   until it prints "Would pair ...". If a refusal names a flag the command
+   already has, show me the message and stop.
+2. Show me that plan, every "first:" and "note:" line included, and wait for
+   my go-ahead. Then run the same command, with the same flags, without
+   --dry-run.
+3. Finish with: solador-app host list
+
+Rules:
+- Solador must be open. If the tool says it is not, ask me to open it. Never
+  edit Solador's files or its keychain item.
+- Never print, log or ask me for the agent's bearer token.
+- Never use sudo. If the tool exits 3, show me the step it printed, wait for
+  me to run it, then run the same command again.
+- Any other refusal (an unknown ssh host key, an agent run by another user,
+  SOLADOR_AGENT_REQUIRE_TAILNET, a Mac user with no login session): show me
+  its message and stop. Re-run as another ssh user only if I say I can log
+  in as them.
+- Never remove SOLADOR_AGENT_REQUIRE_TAILNET, and never rotate or regenerate
+  a token. If any message mentions --replace, show me and stop: pass
+  --replace only if I ask.
+- Do not accept a new ssh host key, edit ssh config, or install packages on
+  the host.
+```
+
+On Windows, add hosts in Settings: the command line is not available there yet.
+
 ## The one design rule
 
 **Unknown is representable, and it is never rendered as zero.**

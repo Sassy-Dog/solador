@@ -81,7 +81,10 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(self.run_selection(), expected)
 
     def test_docs_only_skip_builds(self):
-        self.assert_change(["README.md", "AGENTS.md", "CLAUDE.md", "agent/README.md", "docs/guide.md", "docs/image.png"], DOCS)
+        self.assert_change(["AGENTS.md", "CLAUDE.md", "agent/README.md", "docs/guide.md", "docs/image.png"], DOCS)
+
+    def test_root_readme_runs_the_browser_suite_that_reads_it(self):
+        self.assert_change(["README.md"], dict(DOCS, frontend=True))
 
     def test_root_claude_import_is_docs_only(self):
         self.assert_change(["CLAUDE.md"], DOCS)
