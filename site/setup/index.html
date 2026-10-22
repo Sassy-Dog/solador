@@ -118,12 +118,17 @@ bash bootstrap.sh</code></pre>
           </p>
           <h3 id="coding-agent">Or let a coding agent do it</h3>
           <p>
-            On a Mac, the app is also a command-line tool that adds a host over
+            The app is also a command-line tool that adds a host over
             your own ssh. It reads the agent's fingerprint and token on the host
             and hands both to the open app, which checks the certificate and the
             token itself before it saves anything. It changes the host only where
             a flag allows it, and never runs <code>sudo</code>. Give this to a
-            coding agent (Claude Code, Codex, …) with your host filled in:
+            coding agent (Claude Code, Codex, …) with your host filled in. The prompt
+            is written for macOS. On Windows the same command runs from
+            <code>solador-app.exe</code> in Solador's install folder: put its full
+            path in the prompt's second line (and "this PC" for "this Mac" in its first). It uses Windows' own
+            <code>ssh.exe</code>, which has not been tried on a real Windows
+            machine yet.
           </p>
           <div class="copyable">
 <pre id="agent-prompt"><code>Add &lt;user&gt;@&lt;host&gt; to Solador on this Mac with Solador's own command-line tool.
@@ -166,8 +171,7 @@ Rules:
           </div>
           <p>
             The <a href="https://github.com/Sassy-Dog/solador/blob/main/app/README.md#adding-a-host-from-the-command-line">command reference</a>
-            has every flag. On Windows, add hosts in Settings: the command line is
-            not available there yet.
+            has every flag.
           </p>
           <p class="note">
             Any network path works: a LAN, a VPN, Tailscale, an SSH tunnel. A

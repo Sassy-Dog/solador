@@ -349,7 +349,7 @@ impl World {
             .unwrap();
         let listener = {
             let _entered = rt.enter();
-            channel::bind(&channel::socket_path(&self.store())).unwrap()
+            channel::bind(&self.store()).unwrap()
         };
         let agent = Arc::new(FakeAgent {
             presents,

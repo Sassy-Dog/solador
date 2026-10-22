@@ -38,6 +38,20 @@ tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt"] }
 # every peer. Already in the lock.
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# The hand-off pipe's owner-only DACL and the peer's user SID (`GetNamedPipe*
+# ProcessId` -> process token -> `TokenUser`). 0.61 is the version `dirs-sys`
+# already resolves, so no crate is added to the lock; only the features this
+# module calls are enabled.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "sync"] }

@@ -47,3 +47,9 @@ tests/fixtures/agent-v/** -text
 # the fingerprint string it must format to. Both consumers read these bytes, and
 # the .sha256 has no final newline.
 tests/fixtures/tls/** -text
+
+# `solador-app host add --ssh` embeds this script (`include_str!`) and sends it
+# on ssh's stdin to the HOST's `/bin/sh`. A Windows checkout with
+# `core.autocrlf=true` would compile it in with CRLF line endings, and every
+# line would reach the host with a trailing `\r`. LF on every platform.
+crates/hostsetup/remote/host.sh text eol=lf

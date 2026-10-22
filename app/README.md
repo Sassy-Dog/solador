@@ -493,7 +493,7 @@ The shell sits at the top of the root Cargo workspace, alongside `agent/`:
 | [`azurecost`](../crates/azurecost) | the Cost Management export reader (SAS blob list + RFC4180 CSV) |
 | [`openclaw`](../crates/openclaw) | the OpenClaw gateway client: WS protocol v3, Ed25519 identity, reducer |
 | [`crashreport`](../crates/crashreport) | the opt-in crash reporter: the consent gate, the payload allow-list, the Sentry SDK |
-| [`hostsetup`](../crates/hostsetup) | `solador-app host …`: the command mode, and the hand-off socket the running app serves it on |
+| [`hostsetup`](../crates/hostsetup) | `solador-app host …`: the command mode, and the hand-off channel (a Unix socket, a Windows named pipe) the running app serves it on |
 | [`buildversion`](../crates/buildversion) | a **build** dependency: publishes the git-derived CalVer as `SOLADOR_MARKETING_VERSION` — and, through a second entry point, the agent's own version for `agent/build.rs` (#390, #490) — so the plumbing around `scripts/get-version-info.sh` has one home |
 
 `crashreport` is the **only** crate carrying the Sentry SDK, and only this shell
@@ -506,10 +506,12 @@ Sentry's API for two panels and reports nothing.
 `solador-app host …` is the app's own executable in a command mode
 (`crates/hostsetup`), dispatched on the first line of `main()` — before the
 store opens — when the first argument is `host` (or `help`/`--help`/`-h`), or
-when it is invoked through a symlink named `solador`:
+when it is invoked through a symlink named `solador` (on Windows, a copy or hard
+link named `solador.exe`; the extension is ignored):
 
 ```bash
 ln -s /Applications/Solador.app/Contents/MacOS/solador-app ~/.local/bin/solador
+# Windows (PowerShell): New-Item -ItemType HardLink -Path solador.exe -Target <install folder>\solador-app.exe
 solador host list                      # every host and the certificate it is pinned to; --json too
 solador host add --ssh <agent-user>@<agent-host> --dry-run   # what it would change on the host, and the pairing
 solador host add --ssh <agent-user>@<agent-host>             # do it
@@ -523,15 +525,24 @@ ssh <agent-user>@<agent-host> 'grep ^SOLADOR_AGENT_TOKEN= ~/.config/solador-agen
 
 **It changes nothing itself; the running app does.** In command mode no store
 is opened (its migration writes the file), no credential store is touched and no
-window is created: every request goes to the open Solador over a local socket,
-`<store dir>/run/cli.sock`, and the app writes through the same
+window is created: every request goes to the open Solador over a local channel
+(on Unix a socket, `<store dir>/run/cli.sock`; on Windows a named pipe, below), and the app writes through the same
 `add_host_connection` / `save_host_connection` the Settings form uses, then
 reloads its hosts. So the app stays the only writer of `store.json` and the
 keychain item (no new keychain prompts, no clobbered store), and a host added
 this way is indistinguishable from one added by hand. If Solador is not open the
-command exits `4` and says so; there is no fallback writer. The socket's
+command exits `4` and says so; there is no fallback writer. On Unix the socket's
 directory is created `0700` and refused by both sides unless it belongs to this
-user; the server checks each peer's uid; replies never contain a token.
+user, and the server checks each peer's uid. On Windows the pipe is
+`\\.\pipe\solador-handoff-<hash of the store directory>` (so `SOLADOR_STORE_DIR`
+scratch instances get their own), created with a DACL granting only this user's
+SID, as the first instance — a process that took the name first makes the app
+log one line and carry on without a hand-off, and a second Solador leaves the
+first one's pipe alone — with remote clients rejected; the server drops a client
+whose user SID is not this process's, and the command refuses a server whose
+SID is not its own before it sends a request. Replies never contain a token.
+Windows is tested in the `Windows workspace tests` job; `add --ssh` over a real
+Windows `ssh.exe` is not yet observed.
 
 **`pair` keeps Settings' rule that nothing is pinned by a probe alone.** The
 comparison the operator makes by eye on the form — the fingerprint Check
@@ -597,10 +608,9 @@ stands.
 
 Exit status: `0` done or already so, `1` refused or failed, `2` usage, `3` an
 `add` owes a step only root can take on the host (printed), `4`
-Solador isn't running — strictly, nothing answered the socket, so the sentence
+Solador isn't running — strictly, nothing answered the channel, so the sentence
 also says to quit and reopen an app that is open (its hand-off failed to
-start; the app logs why to stderr). Windows prints that the command mode is not available
-there yet: the socket is Unix-only for now.
+start; the app logs why to stderr).
 
 ## The `cockpit` command
 

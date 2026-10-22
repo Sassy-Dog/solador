@@ -17,12 +17,10 @@
 //! the host, as the ssh user, by the script it embeds, and the app still
 //! checks both itself.
 
-#[cfg(unix)]
 pub mod channel;
 pub mod cli;
 pub mod pairing;
 pub mod protocol;
-#[cfg(unix)]
 pub mod remote;
 mod secret;
 pub mod server;

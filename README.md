@@ -136,13 +136,19 @@ loopback or Tailscale: a host you have not paired is only polled there. See
 
 ### Let a coding agent add a host
 
-On a Mac, the app is also a command-line tool that adds a host over your own
+The app is also a command-line tool that adds a host over your own
 ssh: `solador-app host add --ssh` reads the agent's certificate fingerprint and
 token on the host and hands both to the open app, which checks the certificate
 and the token itself before it saves anything
 ([reference](app/README.md#adding-a-host-from-the-command-line)). It changes the
 host only where a flag allows it, and never runs `sudo`. To hand the job to a
-coding agent (Claude Code, Codex, …), give it this, with your host filled in:
+coding agent (Claude Code, Codex, …), give it this, with your host filled in.
+The prompt is written for macOS: on Windows, the same command runs from
+`solador-app.exe` (the full path to it in Solador's install folder; a copy or
+hard link of it named `solador.exe` works as `solador`), so replace the path in
+its second line with that one (and "this Mac" in its first with "this PC").
+Its ssh steps use Windows' own `ssh.exe`, which has not been tried on a real
+Windows machine yet.
 
 ```text
 Add <user>@<host> to Solador on this Mac with Solador's own command-line tool.
@@ -179,8 +185,6 @@ Rules:
 - Do not accept a new ssh host key, edit ssh config, or install packages on
   the host.
 ```
-
-On Windows, add hosts in Settings: the command line is not available there yet.
 
 ## The one design rule
 
