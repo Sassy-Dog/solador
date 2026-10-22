@@ -309,8 +309,10 @@ One Windows-only checkout detail, easy to lose and expensive to rediscover:
 `core.autocrlf input` is set **before** `actions/checkout`, because the runner image
 defaults it to `true` and `dev` plus `scripts/*.sh` would then arrive CRLF for Git
 Bash to read with a literal `\r` on every line. `.gitattributes` deliberately protects
-only the signature-covered fixtures, so the scripts are protected here instead — at
-the only place a Windows checkout executes them.
+only files whose bytes are load-bearing — the signature-covered fixtures and, since #599,
+`crates/hostsetup/remote/host.sh` (embedded with `include_str!` and run by a *remote*
+`/bin/sh`, so no checkout step could protect it) — so `dev` and `scripts/*.sh` are
+protected here instead, at the only place a Windows checkout executes them.
 
 **There is no Windows updater, and saying so is the point.** The feed is macOS-only:
 `latest.json` carries exactly `darwin-aarch64` and `darwin-x86_64`, and
@@ -598,7 +600,8 @@ the bundle's floor.
 │   │                       #   not use `crates/updatefeed`
 │   ├── hostsetup/          # `solador-app host …`: the command mode (dispatched
 │   │                       #   first in main(), before the store opens) and the
-│   │                       #   hand-off socket the running app serves it on, so
+│   │                       #   hand-off channel the running app serves it on (a
+│   │                       #   Unix socket, a Windows named pipe), so
 │   │                       #   the app stays the only writer of the store and
 │   │                       #   keychain; `remote/host.sh` is the script
 │   │                       #   `host add --ssh` embeds and runs on the host.
@@ -769,22 +772,44 @@ the bundle's floor.
   The app's executable in a command mode (`crates/hostsetup`), dispatched on
   `main()`'s first line — before `open_store`, whose migration writes the file —
   when argv[1] is `host`/`help`/`--help`/`-h` or argv[0] is named `solador`
-  (the documented symlink). Every request goes over `<store dir>/run/cli.sock` to the
-  open instance (`src/handoff.rs`), which writes through `add_host_connection` /
+  (the documented symlink; on Windows `solador.exe`, a copy or hard link of
+  `solador-app.exe`, since `file_stem` ignores the extension). Every request
+  goes over the hand-off channel to the
+  open instance (`src/handoff.rs`) — `<store dir>/run/cli.sock` on Unix, a
+  named pipe on Windows (below) — which writes through `add_host_connection` /
   `save_host_connection` — the Settings form's own functions — and reloads, so
   the app stays the **only writer** of `store.json` and `secrets_v1` (no
   keychain prompts from a second binary, no clobbered store). Not running is
-  exit `4` and a sentence; there is no fallback writer, by design. The socket's
-  directory is `0700`, both sides refuse it otherwise, the server checks the
-  peer's uid, and **no reply carries a token**. `host pair` probes the address
+  exit `4` and a sentence; there is no fallback writer, by design. On Unix the
+  socket's directory is `0700`, both sides refuse it otherwise, and the server
+  checks the peer's uid. **On Windows the channel is a named pipe**
+  (`crates/hostsetup/src/channel/windows.rs`; `channel/unix.rs` is the socket,
+  and `channel.rs` the shared interface, error type and one-line exchange —
+  `protocol`, `pairing` and `server` do not know which they are on): the name is
+  `\\.\pipe\solador-handoff-<FNV-1a hash of the store dir>` (not a secret),
+  created with an **owner-only DACL** (`D:P(A;;GA;;;<this user's SID>)`), as the
+  *first* instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`, so a process that took the
+  name first, or a second Solador, makes the app's create fail — one log line,
+  the window carries on, as for a socket bind failure) and with remote clients
+  rejected. The server resolves each client's user SID
+  (`GetNamedPipeClientProcessId` → process token → `TokenUser`) and drops one that
+  is not this process's; **the command mode does the same to the server before it
+  sends anything**, because a request carries a token. The decision is the pure
+  `channel::admit_sid` (tested on every platform, with a negative control), the
+  Win32 calls a thin layer around it. **No reply carries a token** on either. `host pair` probes the address
   itself, pins only if that equals `--fingerprint`, proves the token over the
   pinned connection (`/v1/health`) before saving, and reads the token from
   stdin only. `hostsetup::pairing::decide` refuses a second row for one machine
   (same address, paired or not, or the same certificate elsewhere) unless
   `--replace`, and `Pairing::confirm` asks it again under the store's lock
   just before the write, so a Settings edit during the network checks is
-  refused rather than duplicated or overwritten. Unix only; Windows prints
-  that it is not available yet.
+  refused rather than duplicated or overwritten. Both channels are exercised by
+  tests in `./dev test` on macOS and by the `Windows workspace tests` job on
+  Windows; **`host add --ssh` against a real Windows `ssh.exe` has not been
+  observed** (CI cannot), so what the code assumes — `ssh -G` output, `host.sh`
+  on stdin, `collect`'s token line, `BatchMode`/`StrictHostKeyChecking` — is
+  unverified there. `host.sh` is `eol=lf` in `.gitattributes`: a CRLF checkout
+  would embed it with a `\r` on every line.
 - **`host add --ssh` is `host pair` with the fingerprint and token read over
   ssh, and it changes the host only behind a flag.** `hostsetup::remote` sends
   `crates/hostsetup/remote/host.sh` (embedded, `include_str!`) on ssh's stdin as

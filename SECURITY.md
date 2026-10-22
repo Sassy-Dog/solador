@@ -40,15 +40,21 @@ URLs out of transport errors for exactly this reason: a SAS token is a URL
 query string, and error messages get pasted into issues.
 
 **The command line hands credentials in, never out.** `solador-app host …`
-gives the running app a host and its token over a local Unix socket,
-`<store dir>/run/cli.sock`, whose directory is created `0700` and refused by
-both sides unless it belongs to the current user; the server also checks each
-peer's uid. Anything that can connect could already edit `store.json` as that
-user, so the socket adds no new principal, and no reply carries a token, so it
+gives the running app a host and its token over a local channel: on Unix a
+socket, `<store dir>/run/cli.sock`, whose directory is created `0700` and
+refused by both sides unless it belongs to the current user, with the server
+checking each peer's uid; on Windows a named pipe created with an owner-only
+DACL (one ACE, the current user's SID), as the first instance (a process that
+took the name first makes the app's create fail rather than be served beside)
+and with remote clients rejected. There the server checks each client's user
+SID, and the command checks the server's before it sends a request, which
+carries a token. Anything that can connect could already edit `store.json` as
+that user, so the channel adds no new principal, and no reply carries a token, so it
 adds no way to read one. A pin is set from it only when the app's own probe of
 the address finds the fingerprint the request names, and only after the agent
 accepts the token over that pinned connection. A reply that carries a token, a
-peer of another user being answered, or a pin saved without that match is in
+peer of another user being answered (or, on Windows, a request sent to a pipe
+served by another user), or a pin saved without that match is in
 scope.
 
 `solador-app host add --ssh` reads that fingerprint and that token on the host,
@@ -56,7 +62,7 @@ over the operator's own ssh, which runs with `BatchMode=yes` and
 `StrictHostKeyChecking=yes` (it never accepts a host key or answers a prompt)
 and never runs `sudo`. The fingerprint is only the *expected* value; the app's
 own probe still has to equal it. The token travels on ssh's stdout and the
-socket, never in an argument. Text the host sends back is printed with its
+channel, never in an argument. Text the host sends back is printed with its
 control characters replaced, so a host cannot repaint the operator's terminal.
 A token in any argv, log or output, a host key accepted on the operator's
 behalf, a change made on the host that no flag allowed (removing

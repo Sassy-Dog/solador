@@ -3,7 +3,10 @@
 # This is deliberately not a line-ending policy for the repository. Everything
 # here is LF in the index and LF in the working tree on macOS and Linux, where
 # git's default leaves it alone, and nothing below is trying to change that. It
-# is a list of files that a *checkout* must not rewrite.
+# is a list of files that a *checkout* must not rewrite. (The one exception
+# to "signed": `crates/hostsetup/remote/host.sh`, at the end, whose bytes are
+# run by a remote shell; `dev` and `scripts/*.sh` are protected by the CI
+# `core.autocrlf input` step instead.)
 #
 # A Windows runner clones with `core.autocrlf=true`, so every file git
 # classifies as text gets LF -> CRLF on the way to disk. For anything covered by
@@ -47,3 +50,9 @@ tests/fixtures/agent-v/** -text
 # the fingerprint string it must format to. Both consumers read these bytes, and
 # the .sha256 has no final newline.
 tests/fixtures/tls/** -text
+
+# `solador-app host add --ssh` embeds this script (`include_str!`) and sends it
+# on ssh's stdin to the HOST's `/bin/sh`. A Windows checkout with
+# `core.autocrlf=true` would compile it in with CRLF line endings, and every
+# line would reach the host with a trailing `\r`. LF on every platform.
+crates/hostsetup/remote/host.sh text eol=lf

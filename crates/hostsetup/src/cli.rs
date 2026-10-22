@@ -4,17 +4,11 @@
 //! does at launch. In command mode nothing else runs — no store open (whose
 //! migration would write the file the running app owns), no credential store,
 //! no crash reporter, no window. Every change goes through the running app.
-
-#[cfg(any(unix, test))]
-use std::io::Read;
-
-#[cfg(unix)]
 use crate::channel::ChannelError;
-#[cfg(unix)]
 use crate::protocol::{AddRequest, Envelope, Request, Response, PROTOCOL};
 use crate::protocol::{HostSummary, Outcome, Paired};
-#[cfg(any(unix, test))]
 use crate::Secret;
+use std::io::Read;
 
 /// Exit statuses, so a script (or a coding agent) can tell the outcomes apart.
 pub mod exit {
@@ -289,8 +283,6 @@ fn parse_add(flags: &[&str]) -> Result<AddArgs, String> {
     }
     Ok(parsed)
 }
-
-#[cfg(unix)]
 fn run(command: Command) -> i32 {
     match crate::channel::store_dir() {
         Ok(dir) => match command {
@@ -312,7 +304,6 @@ fn run(command: Command) -> i32 {
 
 /// [`run`] against the running app whose store is `store_dir`, with the token
 /// read by `token` (stdin, in the product).
-#[cfg(unix)]
 fn run_in(
     store_dir: &std::path::Path,
     command: Command,
@@ -377,7 +368,6 @@ fn run_in(
 /// First, before anything else is read or sent: is the app there, and does it
 /// speak this command's protocol? `Err` is the exit status, its reason
 /// already written to `err`.
-#[cfg(unix)]
 pub(crate) fn hello(store_dir: &std::path::Path, err: &mut dyn std::io::Write) -> Result<(), i32> {
     let message = match crate::channel::request(store_dir, &Envelope::new(Request::Hello)) {
         Ok(Response::Hello { protocol, .. }) if protocol == PROTOCOL => return Ok(()),
@@ -391,28 +381,16 @@ pub(crate) fn hello(store_dir: &std::path::Path, err: &mut dyn std::io::Write) -
     let _ = writeln!(err, "{message}");
     Err(exit::FAILED)
 }
-
-#[cfg(unix)]
 pub(crate) fn not_running_or_failed(error: &ChannelError) -> i32 {
     match error {
         ChannelError::NotRunning => exit::NOT_RUNNING,
         _ => exit::FAILED,
     }
 }
-
-#[cfg(not(unix))]
-fn run(_command: Command) -> i32 {
-    eprintln!("solador-app host is not available on this platform yet (macOS only for now).");
-    exit::FAILED
-}
-
-#[cfg(unix)]
 fn refused(response: &Response) -> i32 {
     eprintln!("{}", describe(response));
     exit::FAILED
 }
-
-#[cfg(unix)]
 fn describe(response: &Response) -> String {
     match response {
         Response::Refused { message } => message.clone(),
@@ -423,7 +401,6 @@ fn describe(response: &Response) -> String {
 /// The token, from stdin and nowhere else. A terminal on stdin is refused
 /// rather than prompted: typing a token there echoes it into the scrollback
 /// (and into a coding agent's transcript, when one is driving).
-#[cfg(unix)]
 fn read_token() -> Result<Secret, String> {
     use std::io::IsTerminal;
 
@@ -434,7 +411,6 @@ fn read_token() -> Result<Secret, String> {
 
 /// [`read_token`]'s rules over any reader, so they are testable without a
 /// terminal or a pipe.
-#[cfg(any(unix, test))]
 fn token_from(mut input: impl Read, terminal: bool) -> Result<Secret, String> {
     if terminal {
         return Err(
@@ -537,7 +513,6 @@ mod tests {
 
     /// Exit 4 is what a script (or a coding agent) branches on to say "open
     /// Solador", and `pair` reaches it before reading the token at all.
-    #[cfg(unix)]
     #[test]
     fn with_no_app_running_every_command_exits_4_and_reads_no_token() {
         let dir = tempfile::TempDir::new().unwrap();

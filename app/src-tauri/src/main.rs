@@ -23,7 +23,6 @@ mod containers;
 mod crons;
 mod dashboard;
 mod github;
-#[cfg(unix)]
 mod handoff;
 mod local;
 mod machine_alerts;
@@ -6625,10 +6624,9 @@ fn main() {
     // up any other host's tick. Startup is the same code path a settings edit
     // takes, so there is one definition of "which hosts are polled".
     reload_hosts(&app);
-    // The other end of `solador-app host …`: hosts handed over on a local
-    // socket are added through the same code Settings uses, so this process
+    // The other end of `solador-app host …`: hosts handed over on the local
+    // hand-off channel (a Unix socket, a Windows named pipe) are added through the same code Settings uses, so this process
     // stays the only writer of the store and the keychain (crates/hostsetup).
-    #[cfg(unix)]
     rt.spawn(handoff::serve(Arc::clone(&app)));
     // The containers panel polls on its own 10s cadence and reads the poll set
     // rather than owning one, so a host added in Settings joins it on the next

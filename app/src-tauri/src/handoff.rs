@@ -20,20 +20,21 @@ use crate::{
     add_host_connection, reload_hosts, restart_host_task, save_host_connection, settings, App,
 };
 
-/// Binds the hand-off socket and serves it for the life of the process.
+/// Binds the hand-off channel (a socket on Unix, a named pipe on Windows) and
+/// serves it for the life of the process.
 ///
 /// Failing to bind costs the command line, never the cockpit: one line in the
 /// log, and the window carries on. A second instance finds the first one's
-/// socket alive and leaves it alone.
+/// channel alive and leaves it alone.
 pub async fn serve(app: Arc<App>) {
-    let path = match hostsetup::channel::store_dir() {
-        Ok(dir) => hostsetup::channel::socket_path(&dir),
+    let dir = match hostsetup::channel::store_dir() {
+        Ok(dir) => dir,
         Err(error) => {
             eprintln!("hand-off: {error}; `solador-app host` cannot reach this instance");
             return;
         }
     };
-    let listener = match hostsetup::channel::bind(&path) {
+    let listener = match hostsetup::channel::bind(&dir) {
         Ok(listener) => listener,
         Err(error) => {
             eprintln!("hand-off: {error}; `solador-app host` cannot reach this instance");
