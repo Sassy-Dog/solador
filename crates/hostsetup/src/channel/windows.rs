@@ -356,7 +356,11 @@ async fn exchange(name: &str, me: &[u8], envelope: &Envelope) -> Result<Response
             Err(error) => return Err(error.into()),
         }
     };
-    // Before anything is sent: the request carries a token.
+    // Before anything is sent: the request carries a token. The server is
+    // identified by the process behind the instance we connected to
+    // (`GetNamedPipeServerProcessId`), the same reading the server takes of
+    // us; a PID can in principle be recycled, but the instance is already
+    // connected, so what is read is the process that holds it right now.
     let server = peer_sid(&pipe, GetNamedPipeServerProcessId);
     if let Err(why) = admit_sid(&server, me) {
         return Err(ChannelError::Insecure(format!(
@@ -530,7 +534,11 @@ mod tests {
             line.push('\n');
             let _ = pipe.write_all(line.as_bytes()).await;
             let mut reply = String::new();
-            let _ = AsyncBufReader::new(pipe).read_line(&mut reply).await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(10),
+                AsyncBufReader::new(pipe).read_line(&mut reply),
+            )
+            .await;
             reply
         }
         let ours = scratch();
@@ -559,10 +567,53 @@ mod tests {
         let mut listener = bind(dir.path()).unwrap();
         let name = pipe_name(dir.path());
         let client = tokio::spawn(async move { ClientOptions::new().open(&name).unwrap() });
-        let server = listener.accept().await.unwrap();
-        let client = client.await.unwrap();
+        let bound = Duration::from_secs(10);
+        let server = tokio::time::timeout(bound, listener.accept())
+            .await
+            .expect("accept timed out")
+            .unwrap();
+        let client = tokio::time::timeout(bound, client)
+            .await
+            .expect("open timed out")
+            .unwrap();
         let me = own_sid().unwrap();
         assert_eq!(peer_sid(&server, GetNamedPipeClientProcessId).unwrap(), me);
         assert_eq!(peer_sid(&client, GetNamedPipeServerProcessId).unwrap(), me);
+    }
+
+    /// The negative control for the client's check: a live server, and a
+    /// client that expects another user. It is refused as `Insecure`, and the
+    /// server never reads a byte, so no token could have crossed. Deleting the
+    /// `admit_sid` call in `exchange` turns this red.
+    #[tokio::test]
+    async fn a_server_that_is_not_this_user_is_refused_before_anything_is_sent() {
+        let dir = scratch();
+        let name = pipe_name(dir.path());
+        let sddl = sddl_for(&own_sid().unwrap()).unwrap();
+        let server = create_instance(&name, &sddl, true).unwrap();
+        let reader = tokio::spawn(async move {
+            let mut server = server;
+            server.connect().await.unwrap();
+            let mut received = Vec::new();
+            server.read_to_end(&mut received).await.unwrap();
+            received
+        });
+        let mut stranger = own_sid().unwrap();
+        *stranger.last_mut().unwrap() ^= 0xff;
+        let refused = tokio::time::timeout(
+            Duration::from_secs(10),
+            exchange(&name, &stranger, &Envelope::new(Request::Hello)),
+        )
+        .await
+        .expect("exchange timed out");
+        assert!(
+            matches!(refused, Err(ChannelError::Insecure(_))),
+            "{refused:?}"
+        );
+        let received = tokio::time::timeout(Duration::from_secs(10), reader)
+            .await
+            .expect("server read timed out")
+            .unwrap();
+        assert!(received.is_empty(), "the server was sent {received:?}");
     }
 }

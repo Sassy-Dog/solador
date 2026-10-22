@@ -3,7 +3,10 @@
 # This is deliberately not a line-ending policy for the repository. Everything
 # here is LF in the index and LF in the working tree on macOS and Linux, where
 # git's default leaves it alone, and nothing below is trying to change that. It
-# is a list of files that a *checkout* must not rewrite.
+# is a list of files that a *checkout* must not rewrite. (The one exception
+# to "signed": `crates/hostsetup/remote/host.sh`, at the end, whose bytes are
+# run by a remote shell; `dev` and `scripts/*.sh` are protected by the CI
+# `core.autocrlf input` step instead.)
 #
 # A Windows runner clones with `core.autocrlf=true`, so every file git
 # classifies as text gets LF -> CRLF on the way to disk. For anything covered by

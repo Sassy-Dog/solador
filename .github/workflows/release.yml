@@ -361,10 +361,12 @@ jobs:
       # BEFORE checkout. The runner image sets core.autocrlf=true, so every
       # file git classifies as text would arrive CRLF — including `dev` and
       # scripts/*.sh, which bash then reads with a literal \r on every line.
-      # .gitattributes deliberately protects only the signature-covered
-      # fixtures (its header explains why it is not a repo-wide line-ending
-      # policy); the scripts are protected here, at the only place a Windows
-      # checkout executes them.
+      # .gitattributes deliberately protects only files whose bytes are
+      # load-bearing: the signature-covered fixtures and, since #599,
+      # crates/hostsetup/remote/host.sh (embedded and run by a remote
+      # /bin/sh). Its header explains why it is not a repo-wide line-ending
+      # policy; dev and scripts/*.sh are protected here, at the only place a
+      # Windows checkout executes them.
       - name: Check out with LF line endings
         run: git config --global core.autocrlf input
 

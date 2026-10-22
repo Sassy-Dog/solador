@@ -309,8 +309,10 @@ One Windows-only checkout detail, easy to lose and expensive to rediscover:
 `core.autocrlf input` is set **before** `actions/checkout`, because the runner image
 defaults it to `true` and `dev` plus `scripts/*.sh` would then arrive CRLF for Git
 Bash to read with a literal `\r` on every line. `.gitattributes` deliberately protects
-only the signature-covered fixtures, so the scripts are protected here instead — at
-the only place a Windows checkout executes them.
+only files whose bytes are load-bearing — the signature-covered fixtures and, since #599,
+`crates/hostsetup/remote/host.sh` (embedded with `include_str!` and run by a *remote*
+`/bin/sh`, so no checkout step could protect it) — so `dev` and `scripts/*.sh` are
+protected here instead, at the only place a Windows checkout executes them.
 
 **There is no Windows updater, and saying so is the point.** The feed is macOS-only:
 `latest.json` carries exactly `darwin-aarch64` and `darwin-x86_64`, and

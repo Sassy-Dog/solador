@@ -70,10 +70,18 @@ impl std::fmt::Display for ChannelError {
                 "Solador isn't running. Open it (it holds your hosts and their tokens), then re-run. \
                  If it is already open, quit and reopen it: its command-line hand-off did not start.",
             ),
-            ChannelError::Insecure(why) => write!(f, "refusing the hand-off channel: {why}"),
+            #[cfg(unix)]
+            ChannelError::Insecure(why) => write!(f, "refusing the hand-off socket: {why}"),
+            #[cfg(windows)]
+            ChannelError::Insecure(why) => write!(f, "refusing the hand-off pipe: {why}"),
+            #[cfg(unix)]
+            ChannelError::AlreadyServed => {
+                f.write_str("another Solador instance already answers the hand-off socket")
+            }
+            #[cfg(windows)]
             ChannelError::AlreadyServed => f.write_str(
-                "something already serves the hand-off channel: another Solador instance, \
-                 or on Windows another process that took its name",
+                "something already holds the hand-off pipe: another Solador instance, \
+                 or another process that took its name first",
             ),
             #[cfg(unix)]
             ChannelError::TooLong(path) => write!(
@@ -82,7 +90,10 @@ impl std::fmt::Display for ChannelError {
                 unix::SUN_PATH_MAX - 1,
                 path.display()
             ),
-            ChannelError::Io(error) => write!(f, "hand-off channel: {error}"),
+            #[cfg(unix)]
+            ChannelError::Io(error) => write!(f, "hand-off socket: {error}"),
+            #[cfg(windows)]
+            ChannelError::Io(error) => write!(f, "hand-off pipe: {error}"),
         }
     }
 }
