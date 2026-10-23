@@ -2367,12 +2367,32 @@ fn health_client(
     pin: Option<&[u8]>,
     dial: &[SocketAddr],
 ) -> Result<reqwest::Client, UpdateError> {
+    health_client_bounded(
+        running_version,
+        pin,
+        dial,
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+    )
+}
+
+/// [`health_client`] with its two per-attempt bounds as arguments, and nothing
+/// else different. Production always goes through `health_client`; the only
+/// other caller is the test that dials this host's own non-loopback address,
+/// whose receiving end is the test binary rather than the service (#482).
+fn health_client_bounded(
+    running_version: Option<&str>,
+    pin: Option<&[u8]>,
+    dial: &[SocketAddr],
+    connect: Duration,
+    total: Duration,
+) -> Result<reqwest::Client, UpdateError> {
     let mut builder = reqwest::Client::builder()
         .user_agent(user_agent(running_version))
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(5));
+        .connect_timeout(connect)
+        .timeout(total);
     if let Some(der) = pin {
         let cert = reqwest::Certificate::from_der(der).map_err(|e| UpdateError::Network {
             what: "loading the agent's TLS certificate".to_string(),
@@ -4459,10 +4479,34 @@ mod tests {
         server.abort();
     }
 
+    /// The bounds for a test that dials this host's own non-loopback address
+    /// (#482). Everything else is production's [`health_client`]: only these
+    /// two differ, because of who receives the connection. macOS's Application
+    /// Firewall holds every inbound flow to a non-loopback address until
+    /// `socketfilterfw` returns a verdict for the *receiving* binary, and here
+    /// that binary is the test executable itself. Measured on a dev Mac on
+    /// 2026-10-23 from the firewall's own log: 1.6-4.7 s per connection
+    /// (median 2.7 s over 20, nearly all past 2 s) for the 21 MB ad-hoc-signed
+    /// debug test binary. A 3.2 MB release agent took 8-87 ms. The verdict
+    /// was "allow" every time; nothing was blocked. So
+    /// production's 2 s connect bound is right for the service and too short
+    /// for this test. Loopback is never filtered, so every other test keeps
+    /// production's bounds.
+    const LAN_CONNECT: std::time::Duration = std::time::Duration::from_secs(30);
+    const LAN_TOTAL: std::time::Duration = std::time::Duration::from_secs(35);
+
+    fn lan_health_client(pin: &[u8], dial: &[SocketAddr]) -> reqwest::Client {
+        health_client_bounded(None, Some(pin), dial, LAN_CONNECT, LAN_TOTAL).unwrap()
+    }
+
     /// Everything a failed self-connect can say about the host (#482). On
-    /// 2026-09-30 the test below timed out for a stretch on one Mac with nothing but
-    /// `Connect, TimedOut`, and the cause was never found: the firewall was
-    /// measured and ruled out. So the failure carries its own evidence:
+    /// 2026-09-30 the test below timed out for a stretch on one Mac with
+    /// nothing but `Connect, TimedOut`. The root cause, found on 2026-10-23
+    /// with these diagnostics and the firewall's own log, is the verdict hold
+    /// described at `LAN_CONNECT`. The 2026-10-01 measurement that ruled the
+    /// firewall out looked for a dialog, not a delay, and its runs that day
+    /// were fast: the hold varies. A failure past those bounds is something
+    /// else, so the failure still carries its own evidence:
     ///
     /// - the full error chain, not just the top-level `Debug`;
     /// - a raw TCP connect to the same address, which separates "the path to my
@@ -4588,7 +4632,8 @@ mod tests {
         };
         assert_eq!(serving.dial(), Dial::Addr(SocketAddr::new(ip, port)));
         let dial = resolve_dial(&serving.dial()).await.unwrap();
-        let client = health_client(None, Some(&cert_der), &dial).unwrap();
+        // Production's client but for its bounds: see `LAN_CONNECT`.
+        let client = lan_health_client(&cert_der, &dial);
         let started = std::time::Instant::now();
         let resp = match client.get(serving.health_url()).send().await {
             Ok(resp) => resp,
@@ -4600,8 +4645,9 @@ mod tests {
         assert!(resp.status().is_success());
 
         // Negative control: verifying by the bind address itself fails, as the
-        // certificate does not name it.
-        let direct = health_client(None, Some(&cert_der), &[]).unwrap();
+        // certificate does not name it. It dials the same non-loopback address,
+        // so it waits on the same firewall verdict.
+        let direct = lan_health_client(&cert_der, &[]);
         let err = direct
             .get(format!("https://{ip}:{port}/v1/health"))
             .send()
