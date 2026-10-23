@@ -516,7 +516,7 @@ mod tests {
     /// `normalize_store_dir` cannot know the working directory.
     #[tokio::test]
     async fn a_relative_store_dir_reaches_the_pipe_bound_for_its_absolute_form() {
-        // Under the gitignored `tmp/`, so a killed run leaves nothing untracked.
+        // Under the gitignored `tmp/`: a killed run leaves nothing untracked.
         let tmp = std::env::current_dir().expect("cwd").join("tmp");
         std::fs::create_dir_all(&tmp).expect("tmp dir");
         let dir = tempfile::TempDir::new_in(&tmp).expect("temp dir under tmp/");

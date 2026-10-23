@@ -3963,9 +3963,10 @@ fn settings_clear_panel_interval(panel: String, state: tauri::State<'_, Arc<App>
 /// records consent and never starts a client: that is resolved once, at
 /// startup. A reporting that started off created none and touched no hub (its
 /// `start_with_transport` returns before `sentry::init`), so calling `init`
-/// here would make this worker the process hub, and every thread that touches
-/// a hub afterwards would inherit its client. The Settings payload says so out
-/// loud rather than implying the toggle did more than it did — see
+/// here would make this thread the process hub (a synchronous command runs on
+/// the main thread), and every thread that touches a hub afterwards would
+/// inherit its client. The Settings payload says so out loud rather than
+/// implying the toggle did more than it did — see
 /// `crashreport::Reporting::needs_restart`.
 #[tauri::command]
 fn settings_set_crash_reporting(enabled: bool, state: tauri::State<'_, Arc<App>>) -> Value {

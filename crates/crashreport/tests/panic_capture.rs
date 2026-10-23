@@ -15,8 +15,8 @@
 //! thread whose hub is created later starts from a copy of it, client included.
 //! Which `#[test]` thread comes first is up to the scheduler, so without
 //! `isolated` a no-client case's forced panic could land in a granted case's
-//! recorder (#601). `a_sibling_thread_does_not_inherit_a_cases_client` pins it by
-//! making the process hub the bound one itself (see there), so that without
+//! recorder (#601). `a_sibling_thread_does_not_inherit_a_cases_client` pins it
+//! by making the process hub the bound one itself (see there), so that without
 //! `isolated` it fails whatever order the test threads run in.
 
 use std::sync::{Arc, Mutex};
