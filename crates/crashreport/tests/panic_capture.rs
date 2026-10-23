@@ -6,11 +6,20 @@
 //!
 //! Its own integration-test binary on purpose. The panic hook is process-wide
 //! and installed exactly once, so the fewer other tests share the process, the
-//! less there is to reason about. Each `#[test]` still runs on its own thread,
-//! and `sentry::init` binds its client to the calling thread's hub — which is
-//! what keeps the three cases below from seeing each other's clients.
+//! less there is to reason about.
+//!
+//! Each case runs inside its own **explicitly fresh hub** (`isolated`), and that
+//! is what keeps the cases from seeing each other's clients. A thread's own hub
+//! is not enough: in sentry-core the first thread to touch a hub *is* the
+//! process hub, `sentry::init` on that thread binds the client to it, and every
+//! thread whose hub is created later starts from a copy of it, client included.
+//! Which `#[test]` thread comes first is up to the scheduler, so without
+//! `isolated` a no-client case's forced panic could land in a granted case's
+//! recorder (#601). `a_sibling_thread_does_not_inherit_a_cases_client` pins it.
 
 use std::sync::{Arc, Mutex};
+
+use sentry::{Hub, Scope};
 
 use crashreport::{Config, OptIn, Reporting};
 use sentry::protocol::{Envelope, EnvelopeItem, Event};
@@ -56,6 +65,13 @@ impl Transport for Recorder {
     }
 }
 
+/// Runs `body` with a brand-new hub, bound to no client, as this thread's
+/// current hub. Nothing the test starts is inherited from, or leaks into, the
+/// process hub, whichever test thread happened to touch a hub first.
+fn isolated<R>(body: impl FnOnce() -> R) -> R {
+    Hub::run(Arc::new(Hub::new(None, Arc::new(Scope::default()))), body)
+}
+
 fn start_recording(opt_in: OptIn, dsn: Option<&str>) -> (Reporting, Arc<Recorder>) {
     let recorder = Arc::new(Recorder::default());
     let reporting = crashreport::start_with_transport(
@@ -81,92 +97,121 @@ fn force_panic(message: String) {
 
 #[test]
 fn a_forced_panic_produces_a_scrubbed_event() {
-    let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
-    assert!(reporting.is_active());
+    isolated(|| {
+        let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
+        assert!(reporting.is_active());
 
-    force_panic(format!("host {TAILNET} rejected {TOKEN}"));
+        force_panic(format!("host {TAILNET} rejected {TOKEN}"));
 
-    let events = recorder.events();
-    assert_eq!(events.len(), 1, "a panic must produce exactly one event");
-    let json = serde_json::to_string(&events[0]).expect("serialize");
+        let events = recorder.events();
+        assert_eq!(events.len(), 1, "a panic must produce exactly one event");
+        let json = serde_json::to_string(&events[0]).expect("serialize");
 
-    // It is a panic report and it carries a stack.
-    assert!(json.contains("\"type\":\"panic\""), "{json}");
-    let frames = &events[0].exception.values[0]
-        .stacktrace
-        .as_ref()
-        .expect("a panic event must carry a stacktrace")
-        .frames;
-    assert!(
-        !frames.is_empty(),
-        "a report with no frames is not a report"
-    );
+        // It is a panic report and it carries a stack.
+        assert!(json.contains("\"type\":\"panic\""), "{json}");
+        let frames = &events[0].exception.values[0]
+            .stacktrace
+            .as_ref()
+            .expect("a panic event must carry a stacktrace")
+            .frames;
+        assert!(
+            !frames.is_empty(),
+            "a report with no frames is not a report"
+        );
 
-    // And nothing that went into the panic message came back out of it. This is
-    // the whole point: the scrubber has to hold on the path the SDK actually
-    // takes, not only on a hand-built event.
-    assert!(
-        !json.contains(TAILNET),
-        "a tailnet address survived:\n{json}"
-    );
-    assert!(
-        !json.contains("100.87.202.125"),
-        "an address survived:\n{json}"
-    );
-    assert!(!json.contains(TOKEN), "a token survived:\n{json}");
-    assert!(json.contains("[redacted-address]"), "{json}");
+        // And nothing that went into the panic message came back out of it. This is
+        // the whole point: the scrubber has to hold on the path the SDK actually
+        // takes, not only on a hand-built event.
+        assert!(
+            !json.contains(TAILNET),
+            "a tailnet address survived:\n{json}"
+        );
+        assert!(
+            !json.contains("100.87.202.125"),
+            "an address survived:\n{json}"
+        );
+        assert!(!json.contains(TOKEN), "a token survived:\n{json}");
+        assert!(json.contains("[redacted-address]"), "{json}");
 
-    // No frame may carry an absolute path, and this run has real ones to drop.
-    for frame in frames {
-        assert_eq!(frame.abs_path, None, "an absolute path survived");
-        assert!(frame.vars.is_empty(), "local variables survived");
-        if let Some(filename) = frame.filename.as_deref() {
-            assert!(
-                !filename.starts_with('/') && !filename.contains(":\\"),
-                "an absolute filename survived: {filename}"
-            );
+        // No frame may carry an absolute path, and this run has real ones to drop.
+        for frame in frames {
+            assert_eq!(frame.abs_path, None, "an absolute path survived");
+            assert!(frame.vars.is_empty(), "local variables survived");
+            if let Some(filename) = frame.filename.as_deref() {
+                assert!(
+                    !filename.starts_with('/') && !filename.contains(":\\"),
+                    "an absolute filename survived: {filename}"
+                );
+            }
         }
-    }
-    // The event's own hostname field, which the SDK fills in on some builds.
-    assert_eq!(events[0].server_name, None);
+        // The event's own hostname field, which the SDK fills in on some builds.
+        assert_eq!(events[0].server_name, None);
+    });
 }
 
 #[test]
 fn withdrawing_consent_stops_reports_in_the_same_session() {
-    let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
-    reporting.set_consent(false);
-    assert!(!reporting.is_active());
+    isolated(|| {
+        let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
+        reporting.set_consent(false);
+        assert!(!reporting.is_active());
 
-    force_panic("this must not be reported".to_owned());
+        force_panic("this must not be reported".to_owned());
 
-    assert!(
-        recorder.events().is_empty(),
-        "a withdrawn consent must take effect immediately, not next launch"
-    );
+        assert!(
+            recorder.events().is_empty(),
+            "a withdrawn consent must take effect immediately, not next launch"
+        );
+    });
 }
 
 #[test]
 fn a_default_store_reports_nothing_even_with_a_dsn() {
-    // The acceptance item, end to end rather than at the gate: default off, a
-    // DSN present, a real panic — and nothing recorded, because no client was
-    // ever created to record through.
-    let (reporting, recorder) = start_recording(OptIn::Declined, Some(TEST_DSN));
-    assert!(!reporting.is_active());
+    isolated(|| {
+        // The acceptance item, end to end rather than at the gate: default off, a
+        // DSN present, a real panic — and nothing recorded, because no client was
+        // ever created to record through.
+        let (reporting, recorder) = start_recording(OptIn::Declined, Some(TEST_DSN));
+        assert!(!reporting.is_active());
 
-    force_panic(format!("host {TAILNET} rejected {TOKEN}"));
+        force_panic(format!("host {TAILNET} rejected {TOKEN}"));
 
-    assert!(
-        recorder.events().is_empty(),
-        "a fresh store must report nothing"
-    );
+        assert!(
+            recorder.events().is_empty(),
+            "a fresh store must report nothing"
+        );
+    });
 }
 
 #[test]
 fn opting_in_with_no_dsn_sends_nothing_and_does_not_error() {
-    let (reporting, recorder) = start_recording(OptIn::Granted, None);
-    assert!(!reporting.is_active());
+    isolated(|| {
+        let (reporting, recorder) = start_recording(OptIn::Granted, None);
+        assert!(!reporting.is_active());
 
-    force_panic("this build has nowhere to report to".to_owned());
+        force_panic("this build has nowhere to report to".to_owned());
 
-    assert!(recorder.events().is_empty());
+        assert!(recorder.events().is_empty());
+    });
+}
+
+#[test]
+fn a_sibling_thread_does_not_inherit_a_cases_client() {
+    // The #601 ordering, forced rather than left to the scheduler: a granted
+    // client is bound, then a thread that binds none of its own is created
+    // afterwards and panics. Unisolated, whichever thread touched a hub first
+    // was the process hub and this sibling copied its client.
+    isolated(|| {
+        let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
+        assert!(reporting.is_active());
+
+        std::thread::spawn(|| force_panic("a sibling that reports to nobody".to_owned()))
+            .join()
+            .expect("the sibling thread");
+
+        assert!(
+            recorder.events().is_empty(),
+            "a thread that bound no client must not report through another case's"
+        );
+    });
 }
