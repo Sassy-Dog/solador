@@ -3959,10 +3959,15 @@ fn settings_clear_panel_interval(panel: String, state: tauri::State<'_, Arc<App>
 /// cannot leave this session reporting on the strength of a preference the next
 /// launch will not find.
 ///
-/// Turning it on still needs a relaunch to do anything, because `sentry::init`
-/// binds its client to the calling thread's hub and this runs on a worker
-/// thread. The Settings payload says so out loud rather than implying the
-/// toggle did more than it did — see `crashreport::Reporting::needs_restart`.
+/// Turning it on still needs a relaunch to do anything, because this only
+/// records consent and never starts a client: that is resolved once, at
+/// startup. A reporting that started off created none and touched no hub (its
+/// `start_with_transport` returns before `sentry::init`), so calling `init`
+/// here would make this thread the process hub (a synchronous command runs on
+/// the main thread), and every thread that touches a hub afterwards would
+/// inherit its client. The Settings payload says so out loud rather than
+/// implying the toggle did more than it did — see
+/// `crashreport::Reporting::needs_restart`.
 #[tauri::command]
 fn settings_set_crash_reporting(enabled: bool, state: tauri::State<'_, Arc<App>>) -> Value {
     if !enabled {

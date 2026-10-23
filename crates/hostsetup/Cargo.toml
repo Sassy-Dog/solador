@@ -9,8 +9,9 @@ rust-version.workspace = true
 name = "hostsetup"
 
 # APP-ONLY. The `solador-app host …` command mode and the running cockpit's
-# side of the hand-off channel it talks to (a Unix socket, a Windows named pipe). `agent/` must never resolve it, and
-# `scripts/agent-deps-guard.sh` asserts the absence with `cargo tree`.
+# side of the hand-off channel it talks to (a Unix socket, a Windows named
+# pipe). `agent/` must never resolve it, and `scripts/agent-deps-guard.sh`
+# asserts the absence with `cargo tree`.
 #
 # Deliberately NOT a dependency on `agentclient`: the server reaches the agent
 # through the `Agent` trait, which the app implements with its own client, so
@@ -30,8 +31,9 @@ serde_json = { workspace = true }
 uuid = "1"
 # The server's listener and its per-connection reads. On Unix the command mode
 # is blocking std I/O and needs none of it; on Windows its `request` builds a
-# current-thread runtime over `named_pipe` and `time`. Every feature here is already enabled
-# elsewhere in the app's tree (reqwest, agentclient), so nothing new resolves.
+# current-thread runtime (`rt`) over `named_pipe` (`net`) with timeouts
+# (`time`). Every feature here is already enabled elsewhere in the app's tree
+# (reqwest, agentclient), so nothing new resolves.
 tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt"] }
 
 [target.'cfg(unix)'.dependencies]

@@ -489,6 +489,49 @@ mod tests {
         server.abort();
     }
 
+    /// The app binds the directory as `std::env::var` handed it; the command
+    /// may be given another spelling of the same place. Both must reach the
+    /// one pipe.
+    #[tokio::test]
+    async fn another_spelling_of_the_store_dir_reaches_the_same_pipe() {
+        let dir = scratch();
+        let server = start(dir.path());
+        let respelled = format!(
+            "{}\\",
+            dir.path()
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_uppercase()
+        );
+        assert!(
+            ask(Path::new(&respelled), Request::Hello).await.is_ok(),
+            "{respelled} did not reach the pipe bound for {}",
+            dir.path().display()
+        );
+        server.abort();
+    }
+
+    /// A relative `SOLADOR_STORE_DIR` names the same pipe as its absolute
+    /// form. This is what `std::path::absolute` in `pipe_name` is for:
+    /// `normalize_store_dir` cannot know the working directory.
+    #[tokio::test]
+    async fn a_relative_store_dir_reaches_the_pipe_bound_for_its_absolute_form() {
+        // Under the gitignored `tmp/`: a killed run leaves nothing untracked.
+        let tmp = std::env::current_dir().expect("cwd").join("tmp");
+        std::fs::create_dir_all(&tmp).expect("tmp dir");
+        let dir = tempfile::TempDir::new_in(&tmp).expect("temp dir under tmp/");
+        let relative = Path::new("tmp").join(dir.path().file_name().expect("name"));
+        assert!(relative.is_relative());
+        let server = start(dir.path());
+        assert!(
+            ask(&relative, Request::Hello).await.is_ok(),
+            "{} did not reach the pipe bound for {}",
+            relative.display(),
+            dir.path().display()
+        );
+        server.abort();
+    }
+
     #[tokio::test]
     async fn nothing_listening_is_not_running() {
         let dir = scratch();
@@ -793,11 +836,17 @@ mod tests {
             let mut server = server;
             server.connect().await.unwrap();
             let mut buffer = vec![0u8; 4096];
-            // EOF (the client hung up unsent), an error, or the bound all read
-            // as nothing; the server then closes, so a client that did send
-            // gets EOF instead of waiting for a reply.
+            // EOF (the client hung up unsent) and the bound both read as
+            // nothing; the server then closes, so a client that did send gets
+            // EOF instead of waiting for a reply. A read *error* is neither,
+            // and must not pass for "nothing sent".
             let read = tokio::time::timeout(Duration::from_secs(2), server.read(&mut buffer)).await;
-            buffer.truncate(read.map_or(0, |n| n.unwrap_or(0)));
+            let received = match read {
+                Ok(Ok(n)) => n,
+                Err(_elapsed) => 0,
+                Ok(Err(error)) => panic!("the server's read failed: {error}"),
+            };
+            buffer.truncate(received);
             buffer
         });
         let mut stranger = own_sid().unwrap();
