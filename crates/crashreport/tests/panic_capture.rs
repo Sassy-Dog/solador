@@ -206,10 +206,11 @@ fn a_sibling_thread_does_not_inherit_a_cases_client() {
     // afterwards and panics. A new thread's hub is copied from the process hub
     // (whichever thread first touched a hub), and this test cannot make its own
     // thread that one. So it makes the process hub *this thread's current hub*:
-    // `Hub::main()` initialises it, `Hub::run` installs it here. Without
-    // `isolated`, `sentry::init` then binds the client to the process hub on
-    // every ordering and the sibling inherits it. With `isolated`, the client
-    // lands on the fresh inner hub and the process hub stays unbound.
+    // `Hub::main()` returns it (initialising it if no thread has yet), and
+    // `Hub::run` installs it here. Without `isolated`, `sentry::init` then
+    // binds the client to the process hub on every ordering and the sibling
+    // inherits it. With `isolated`, the client lands on the fresh inner hub and
+    // the process hub stays unbound.
     Hub::run(Hub::main(), || {
         isolated(|| {
             let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
