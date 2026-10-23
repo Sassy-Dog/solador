@@ -625,7 +625,9 @@ mod tests {
             let sddl = sddl_for(&own_sid().unwrap()).unwrap();
             let server = create_instance(&name, &sddl, true).unwrap();
             println!("ready");
-            server.connect().await.unwrap();
+            // The client may already have come and gone; either way this
+            // process stays the pipe's server until it is let go.
+            let _ = tokio::time::timeout(Duration::from_secs(10), server.connect()).await;
             Held::Server(server)
         } else {
             Held::Client(ClientOptions::new().open(&name).unwrap())
@@ -639,16 +641,73 @@ mod tests {
         Client(tokio::net::windows::named_pipe::NamedPipeClient),
     }
 
-    /// Runs [`pipe_peer_helper`] as `role` on `name`.
-    fn spawn_peer(role: &str, name: &str) -> std::process::Child {
-        std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["pipe_peer_helper", "--nocapture", "--test-threads=1"])
-            .env("SOLADOR_PIPE_HELPER", role)
-            .env("SOLADOR_PIPE_NAME", name)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn the peer")
+    /// A running [`pipe_peer_helper`]. Everything about it is bounded, and
+    /// what it printed is kept, so a peer that misbehaves fails the test with
+    /// its output instead of hanging the job.
+    struct Peer {
+        child: std::process::Child,
+        lines: std::sync::mpsc::Receiver<String>,
+        seen: Vec<String>,
+    }
+
+    impl Peer {
+        /// Runs [`pipe_peer_helper`] as `role` on `name`.
+        fn spawn(role: &str, name: &str) -> Peer {
+            use std::io::{BufRead, BufReader};
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["pipe_peer_helper", "--nocapture", "--test-threads=1"])
+                .env("SOLADOR_PIPE_HELPER", role)
+                .env("SOLADOR_PIPE_NAME", name)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn the peer");
+            let stdout = child.stdout.take().unwrap();
+            let (send, lines) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if send.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            Peer {
+                child,
+                lines,
+                seen: Vec::new(),
+            }
+        }
+
+        fn id(&self) -> u32 {
+            self.child.id()
+        }
+
+        /// Waits for the peer to print `ready`.
+        fn ready(&mut self) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                match self.lines.recv_timeout(left) {
+                    Ok(line) if line == "ready" => return,
+                    Ok(line) => self.seen.push(line),
+                    Err(_) => panic!("the peer never said ready; it printed {:?}", self.seen),
+                }
+            }
+        }
+
+        /// Lets the peer go (it holds the pipe until stdin closes) and waits
+        /// for it to exit, killing it if it will not.
+        fn finish(&mut self) {
+            drop(self.child.stdin.take());
+            for _ in 0..200 {
+                if self.child.try_wait().unwrap().is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = self.child.kill();
+            panic!("the peer did not exit; it printed {:?}", self.seen);
+        }
     }
 
     static CLIENT_PID_ASKED: AtomicU32 = AtomicU32::new(0);
@@ -674,7 +733,7 @@ mod tests {
         let dir = scratch();
         let name = pipe_name(dir.path());
         let server = start_with(dir.path(), own_sid().unwrap(), note_client_pid);
-        let mut child = spawn_peer("client", &name);
+        let mut peer = Peer::spawn("client", &name);
         let mut asked = 0;
         for _ in 0..200 {
             asked = CLIENT_PID_ASKED.load(Ordering::SeqCst);
@@ -683,10 +742,9 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        drop(child.stdin.take());
-        let _ = child.wait();
         server.abort();
-        assert_eq!(asked, child.id(), "the server asked about pid {asked}");
+        peer.finish();
+        assert_eq!(asked, peer.id(), "the server asked about pid {asked}");
         assert_ne!(asked, std::process::id());
     }
 
@@ -694,12 +752,10 @@ mod tests {
     /// the pipe, which here is the child.
     #[tokio::test]
     async fn the_client_asks_about_its_server_process() {
-        use std::io::{BufRead, BufReader};
         let dir = scratch();
         let name = pipe_name(dir.path());
-        let mut child = spawn_peer("server", &name);
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        while lines.next().expect("the peer exited early").unwrap() != "ready" {}
+        let mut peer = Peer::spawn("server", &name);
+        peer.ready();
         let refused = tokio::time::timeout(
             Duration::from_secs(10),
             exchange(
@@ -711,14 +767,13 @@ mod tests {
         )
         .await
         .expect("exchange timed out");
-        drop(child.stdin.take());
-        let _ = child.wait();
+        peer.finish();
         assert!(
             matches!(refused, Err(ChannelError::Insecure(_))),
             "{refused:?}"
         );
         let asked = SERVER_PID_ASKED.load(Ordering::SeqCst);
-        assert_eq!(asked, child.id(), "the client asked about pid {asked}");
+        assert_eq!(asked, peer.id(), "the client asked about pid {asked}");
         assert_ne!(asked, std::process::id());
     }
 
