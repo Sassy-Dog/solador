@@ -308,7 +308,7 @@ async fn serve_as<B, A>(
                 continue;
             }
         };
-        let client = peer_sid(&stream, GetNamedPipeClientProcessId, sid_of);
+        let client = peer_sid(&stream, GetNamedPipeServerProcessId, sid_of);
         if let Err(why) = admit_sid(&client, &me) {
             eprintln!("hand-off: dropped {why}");
             continue;
@@ -381,7 +381,7 @@ async fn exchange(
     // (`GetNamedPipeServerProcessId`), the same reading the server takes of
     // us; a PID can in principle be recycled, but the instance is already
     // connected, so what is read is the process that holds it right now.
-    let server = peer_sid(&pipe, GetNamedPipeServerProcessId, sid_of);
+    let server = peer_sid(&pipe, GetNamedPipeClientProcessId, sid_of);
     if let Err(why) = admit_sid(&server, me) {
         return Err(ChannelError::Insecure(format!(
             "the hand-off pipe is answered by {why}"
