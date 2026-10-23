@@ -15,7 +15,9 @@
 //! thread whose hub is created later starts from a copy of it, client included.
 //! Which `#[test]` thread comes first is up to the scheduler, so without
 //! `isolated` a no-client case's forced panic could land in a granted case's
-//! recorder (#601). `a_sibling_thread_does_not_inherit_a_cases_client` pins it.
+//! recorder (#601). `a_sibling_thread_does_not_inherit_a_cases_client` pins it by
+//! making the process hub the bound one itself (see there), so that without
+//! `isolated` it fails whatever order the test threads run in.
 
 use std::sync::{Arc, Mutex};
 
@@ -88,8 +90,10 @@ fn start_recording(opt_in: OptIn, dsn: Option<&str>) -> (Reporting, Arc<Recorder
     (reporting, recorder)
 }
 
-/// Panics on *this* thread, so the hub the hook reaches is the one
-/// `start_with_transport` just bound a client to.
+/// Panics on *this* thread, so the hub the hook reaches is this thread's
+/// current hub: the one `start_with_transport` just bound a client to when the
+/// caller is the thread that started it, and whatever a thread that started no
+/// client inherited when it is not (the sibling-thread case).
 fn force_panic(message: String) {
     let caught = std::panic::catch_unwind(|| panic!("{message}"));
     assert!(caught.is_err(), "the panic under test did not happen");
@@ -199,19 +203,26 @@ fn opting_in_with_no_dsn_sends_nothing_and_does_not_error() {
 fn a_sibling_thread_does_not_inherit_a_cases_client() {
     // The #601 ordering, forced rather than left to the scheduler: a granted
     // client is bound, then a thread that binds none of its own is created
-    // afterwards and panics. Unisolated, whichever thread touched a hub first
-    // was the process hub and this sibling copied its client.
-    isolated(|| {
-        let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
-        assert!(reporting.is_active());
+    // afterwards and panics. A new thread's hub is copied from the process hub
+    // (whichever thread first touched a hub), and this test cannot make its own
+    // thread that one. So it makes the process hub *this thread's current hub*:
+    // `Hub::main()` initialises it, `Hub::run` installs it here. Without
+    // `isolated`, `sentry::init` then binds the client to the process hub on
+    // every ordering and the sibling inherits it. With `isolated`, the client
+    // lands on the fresh inner hub and the process hub stays unbound.
+    Hub::run(Hub::main(), || {
+        isolated(|| {
+            let (reporting, recorder) = start_recording(OptIn::Granted, Some(TEST_DSN));
+            assert!(reporting.is_active());
 
-        std::thread::spawn(|| force_panic("a sibling that reports to nobody".to_owned()))
-            .join()
-            .expect("the sibling thread");
+            std::thread::spawn(|| force_panic("a sibling that reports to nobody".to_owned()))
+                .join()
+                .expect("the sibling thread");
 
-        assert!(
-            recorder.events().is_empty(),
-            "a thread that bound no client must not report through another case's"
-        );
+            assert!(
+                recorder.events().is_empty(),
+                "a thread that bound no client must not report through another case's"
+            );
+        })
     });
 }

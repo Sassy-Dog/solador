@@ -1,4 +1,5 @@
-//! What crosses the hand-off channel (a Unix socket or a Windows named pipe): one JSON request line, one JSON reply line.
+//! What crosses the hand-off channel (a Unix socket or a Windows named pipe):
+//! one JSON request line, one JSON reply line.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
