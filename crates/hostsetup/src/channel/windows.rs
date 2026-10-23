@@ -688,7 +688,8 @@ mod tests {
             loop {
                 let left = deadline.saturating_duration_since(std::time::Instant::now());
                 match self.lines.recv_timeout(left) {
-                    Ok(line) if line == "ready" => return,
+                    // libtest has already written `test <name> ... ` on this line.
+                    Ok(line) if line.ends_with("ready") => return,
                     Ok(line) => self.seen.push(line),
                     Err(_) => panic!("the peer never said ready; it printed {:?}", self.seen),
                 }
