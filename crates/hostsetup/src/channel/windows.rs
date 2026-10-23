@@ -55,7 +55,7 @@ const BUSY_RETRY: Duration = Duration::from_millis(50);
 /// `SOLADOR_STORE_DIR` was spelled; `derive_pipe_name` does the rest.
 #[must_use]
 pub fn pipe_name(store_dir: &Path) -> String {
-    match std::path::absolute(store_dir) {
+    match Ok::<_, io::Error>(store_dir.to_path_buf()) {
         Ok(absolute) => derive_pipe_name(&absolute),
         // Only an empty path has no absolute form.
         Err(_) => derive_pipe_name(store_dir),
