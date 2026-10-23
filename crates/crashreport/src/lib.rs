@@ -25,8 +25,9 @@
 //! Off takes effect **immediately**: [`Reporting::set_consent`] flips a flag
 //! that `before_send` reads on every event, so revoking consent stops reports
 //! within the same session. Turning it *on* takes effect on the next launch,
-//! because `sentry::init` binds a client to the hub of the thread that calls it
-//! and the Settings command runs on a worker thread. That asymmetry is the
+//! because the Settings toggle only records consent ([`Reporting::set_consent`]);
+//! it cannot create a client that startup never created, and that is decided
+//! once, when the app starts. That asymmetry is the
 //! right way round — the direction that needs to be instant is the one that
 //! withdraws permission — and [`Reporting::needs_restart`] exists so the UI can
 //! say which state it is actually in instead of implying the toggle did more

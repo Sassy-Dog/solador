@@ -516,9 +516,11 @@ mod tests {
     /// `normalize_store_dir` cannot know the working directory.
     #[tokio::test]
     async fn a_relative_store_dir_reaches_the_pipe_bound_for_its_absolute_form() {
-        let cwd = std::env::current_dir().expect("cwd");
-        let dir = tempfile::TempDir::new_in(&cwd).expect("temp dir under cwd");
-        let relative = Path::new(dir.path().file_name().expect("name")).to_owned();
+        // Under the gitignored `tmp/`, so a killed run leaves nothing untracked.
+        let tmp = std::env::current_dir().expect("cwd").join("tmp");
+        std::fs::create_dir_all(&tmp).expect("tmp dir");
+        let dir = tempfile::TempDir::new_in(&tmp).expect("temp dir under tmp/");
+        let relative = Path::new("tmp").join(dir.path().file_name().expect("name"));
         assert!(relative.is_relative());
         let server = start(dir.path());
         assert!(
