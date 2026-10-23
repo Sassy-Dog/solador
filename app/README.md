@@ -535,7 +535,9 @@ command exits `4` and says so; there is no fallback writer. On Unix the socket's
 directory is created `0700` and refused by both sides unless it belongs to this
 user, and the server checks each peer's uid. On Windows the pipe is
 `\\.\pipe\solador-handoff-<hash of the store directory>` (so `SOLADOR_STORE_DIR`
-scratch instances get their own), created with a DACL granting only this user's
+scratch instances get their own; the directory is made absolute and its case,
+separators and trailing `\` are normalised before hashing, junctions and 8.3
+names are not resolved), created with a DACL granting only this user's
 SID, as the first instance — a process that took the name first makes the app
 log one line and carry on without a hand-off, and a second Solador leaves the
 first one's pipe alone — with remote clients rejected; the server drops a client

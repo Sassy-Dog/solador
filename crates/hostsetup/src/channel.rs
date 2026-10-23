@@ -178,16 +178,40 @@ fn admit_sid(peer: &std::io::Result<Vec<u8>>, me: &[u8]) -> Result<(), Refusal> 
     }
 }
 
+/// A store directory's spelling reduced to what Windows treats as one name:
+/// separators unified to `\`, trailing separators dropped (a drive root such
+/// as `C:\` keeps its one), case folded. Purely lexical: no filesystem access,
+/// so it cannot fail and the directory need not exist. Junctions and 8.3 short
+/// names are not resolved, and that is accepted. Making a relative path
+/// absolute is the Windows caller's step, not this function's: on another
+/// platform `C:\...` is a relative path, and `absolute` would prepend the
+/// working directory.
+#[cfg(any(windows, test))]
+fn normalize_store_dir(text: &str) -> String {
+    let unified = text.replace('/', "\\");
+    let trimmed = unified.trim_end_matches('\\');
+    let mut out = trimmed.to_lowercase();
+    // `C:\` is the root; `C:` is the drive's working directory.
+    let drive_root =
+        trimmed.len() == 2 && trimmed.ends_with(':') && trimmed.as_bytes()[0].is_ascii_alphabetic();
+    if trimmed.len() < unified.len() && (drive_root || trimmed.is_empty()) {
+        out.push('\\');
+    }
+    out
+}
+
 /// The pipe both sides open for `store_dir`: `\\.\pipe\solador-handoff-<hash>`.
 /// The name is not a secret (the DACL and the SID checks are the protection),
-/// only a function of the directory, as the socket's path is. FNV-1a over the
-/// path's text rather than `DefaultHasher`, whose output is not promised
-/// across Rust versions: the app and the command are one binary today, but
-/// nothing should depend on that.
+/// only a function of the directory, as the socket's path is. The directory is
+/// [`normalize_store_dir`]d first, so `SOLADOR_STORE_DIR` spelled with another
+/// case, a trailing `\` or `/` for `\` reaches the same pipe from the app and
+/// from the command. FNV-1a over that text rather than `DefaultHasher`, whose
+/// output is not promised across Rust versions: the app and the command are
+/// one binary today, but nothing should depend on that.
 #[cfg(any(windows, test))]
 fn derive_pipe_name(store_dir: &std::path::Path) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in store_dir.to_string_lossy().bytes() {
+    for byte in normalize_store_dir(&store_dir.to_string_lossy()).bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
@@ -252,6 +276,29 @@ mod tests {
             !a.contains("Users"),
             "the name must not spell the path: {a}"
         );
+    }
+
+    #[test]
+    fn spellings_of_one_directory_share_a_pipe() {
+        let one = derive_pipe_name(Path::new(r"C:\Users\me\Solador"));
+        assert_eq!(one, derive_pipe_name(Path::new("c:/users/me/solador/")));
+        assert_eq!(one, derive_pipe_name(Path::new(r"C:\USERS\ME\SOLADOR\")));
+        assert_ne!(one, derive_pipe_name(Path::new(r"C:\Users\me\Solador2")));
+        assert_ne!(one, derive_pipe_name(Path::new(r"C:\Users\you\Solador")));
+    }
+
+    #[test]
+    fn normalising_keeps_a_drive_root_and_nothing_else_special() {
+        assert_eq!(normalize_store_dir(r"C:\"), r"c:\");
+        assert_eq!(normalize_store_dir("C:/"), r"c:\");
+        // The drive's working directory is not its root.
+        assert_eq!(normalize_store_dir("C:"), "c:");
+        assert_ne!(
+            derive_pipe_name(Path::new("C:")),
+            derive_pipe_name(Path::new(r"C:\"))
+        );
+        assert_eq!(normalize_store_dir(r"\\Srv\Share\"), r"\\srv\share");
+        assert_eq!(normalize_store_dir(""), "");
     }
 
     #[test]

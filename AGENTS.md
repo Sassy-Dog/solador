@@ -786,7 +786,10 @@ the bundle's floor.
   (`crates/hostsetup/src/channel/windows.rs`; `channel/unix.rs` is the socket,
   and `channel.rs` the shared interface, error type and one-line exchange —
   `protocol`, `pairing` and `server` do not know which they are on): the name is
-  `\\.\pipe\solador-handoff-<FNV-1a hash of the store dir>` (not a secret),
+  `\\.\pipe\solador-handoff-<FNV-1a hash of the store dir>` (not a secret; the
+  directory is first made absolute and normalised lexically — separators to `\`,
+  trailing ones dropped but a drive root kept, case folded — so spellings of one
+  directory share a pipe; junctions and 8.3 names are not resolved),
   created with an **owner-only DACL** (`D:P(A;;GA;;;<this user's SID>)`), as the
   *first* instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`, so a process that took the
   name first, or a second Solador, makes the app's create fail — one log line,

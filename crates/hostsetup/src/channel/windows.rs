@@ -49,11 +49,23 @@ const ERROR_PIPE_BUSY: i32 = 231;
 const BUSY_PATIENCE: Duration = Duration::from_secs(5);
 const BUSY_RETRY: Duration = Duration::from_millis(50);
 
-/// The name of the pipe serving `store_dir`.
+/// The name of the pipe serving `store_dir`. A relative directory is made
+/// absolute first (lexically: `std::path::absolute` reads the working
+/// directory and touches no file), so the app and the command agree however
+/// `SOLADOR_STORE_DIR` was spelled; `derive_pipe_name` does the rest.
 #[must_use]
 pub fn pipe_name(store_dir: &Path) -> String {
-    derive_pipe_name(store_dir)
+    match std::path::absolute(store_dir) {
+        Ok(absolute) => derive_pipe_name(&absolute),
+        // Only an empty path has no absolute form.
+        Err(_) => derive_pipe_name(store_dir),
+    }
 }
+
+/// How a process id becomes a user SID. A parameter of the two checks so a
+/// test can see which id each one asked about: in one process both ends of a
+/// pipe have the same id, so the wrong lookup would read the same either way.
+type SidOf = fn(u32) -> io::Result<Vec<u8>>;
 
 /// A handle that is closed when it goes out of scope.
 struct Owned(HANDLE);
@@ -124,13 +136,14 @@ fn pid_sid(pid: u32) -> io::Result<Vec<u8>> {
 fn peer_sid(
     pipe: &impl AsRawHandle,
     pid_of: unsafe extern "system" fn(HANDLE, *mut u32) -> i32,
+    sid_of: SidOf,
 ) -> io::Result<Vec<u8>> {
     let mut pid = 0u32;
     // SAFETY: `pipe` is a live pipe handle and `pid` a valid out-pointer.
     if unsafe { pid_of(pipe.as_raw_handle(), &mut pid) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    pid_sid(pid)
+    sid_of(pid)
 }
 
 /// `D:P(A;;GA;;;<this user's SID>)`, from the SID's bytes.
@@ -260,17 +273,19 @@ where
     A: Agent + 'static,
 {
     let me = listener.me.clone();
-    serve_as(listener, book, agent, info, me).await;
+    serve_as(listener, book, agent, info, me, pid_sid).await;
 }
 
 /// [`serve`], answering only clients whose SID is `me`: a parameter so a test
-/// can stand in for another user without a second account.
+/// can stand in for another user without a second account, and `sid_of`, so a
+/// test can see which process id it asked about.
 async fn serve_as<B, A>(
     mut listener: Listener,
     book: Arc<B>,
     agent: Arc<A>,
     info: ServerInfo,
     me: Vec<u8>,
+    sid_of: SidOf,
 ) where
     B: HostBook + 'static,
     A: Agent + 'static,
@@ -293,7 +308,7 @@ async fn serve_as<B, A>(
                 continue;
             }
         };
-        let client = peer_sid(&stream, GetNamedPipeClientProcessId);
+        let client = peer_sid(&stream, GetNamedPipeClientProcessId, sid_of);
         if let Err(why) = admit_sid(&client, &me) {
             eprintln!("hand-off: dropped {why}");
             continue;
@@ -323,7 +338,7 @@ pub fn request(store_dir: &Path, envelope: &Envelope) -> Result<Response, Channe
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        tokio::time::timeout(CLIENT_TIMEOUT, exchange(&name, &me, envelope))
+        tokio::time::timeout(CLIENT_TIMEOUT, exchange(&name, &me, envelope, pid_sid))
             .await
             .map_err(|_| {
                 ChannelError::Io(io::Error::new(
@@ -334,7 +349,12 @@ pub fn request(store_dir: &Path, envelope: &Envelope) -> Result<Response, Channe
     })
 }
 
-async fn exchange(name: &str, me: &[u8], envelope: &Envelope) -> Result<Response, ChannelError> {
+async fn exchange(
+    name: &str,
+    me: &[u8],
+    envelope: &Envelope,
+    sid_of: SidOf,
+) -> Result<Response, ChannelError> {
     let started = tokio::time::Instant::now();
     let mut pipe = loop {
         // SECURITY_IDENTIFICATION: whatever answers may learn who this is but
@@ -361,7 +381,7 @@ async fn exchange(name: &str, me: &[u8], envelope: &Envelope) -> Result<Response
     // (`GetNamedPipeServerProcessId`), the same reading the server takes of
     // us; a PID can in principle be recycled, but the instance is already
     // connected, so what is read is the process that holds it right now.
-    let server = peer_sid(&pipe, GetNamedPipeServerProcessId);
+    let server = peer_sid(&pipe, GetNamedPipeServerProcessId, sid_of);
     if let Err(why) = admit_sid(&server, me) {
         return Err(ChannelError::Insecure(format!(
             "the hand-off pipe is answered by {why}"
@@ -388,6 +408,7 @@ mod tests {
     use crate::pairing::{Decision, Pairing};
     use crate::protocol::{ProbeSummary, Request};
     use crate::Secret;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use store::Host;
     use uuid::Uuid;
 
@@ -425,6 +446,10 @@ mod tests {
 
     /// A server that answers only clients whose SID is `me`.
     fn start_as(dir: &Path, me: Vec<u8>) -> tokio::task::JoinHandle<()> {
+        start_with(dir, me, pid_sid)
+    }
+
+    fn start_with(dir: &Path, me: Vec<u8>, sid_of: SidOf) -> tokio::task::JoinHandle<()> {
         let listener = bind(dir).expect("bind");
         tokio::spawn(serve_as(
             listener,
@@ -434,6 +459,7 @@ mod tests {
                 app_version: Some("2026.10.20".into()),
             },
             me,
+            sid_of,
         ))
     }
 
@@ -577,14 +603,130 @@ mod tests {
             .expect("open timed out")
             .unwrap();
         let me = own_sid().unwrap();
-        assert_eq!(peer_sid(&server, GetNamedPipeClientProcessId).unwrap(), me);
-        assert_eq!(peer_sid(&client, GetNamedPipeServerProcessId).unwrap(), me);
+        let (pid, ours) = (GetNamedPipeClientProcessId, pid_sid);
+        assert_eq!(peer_sid(&server, pid, ours).unwrap(), me);
+        let (pid, ours) = (GetNamedPipeServerProcessId, pid_sid);
+        assert_eq!(peer_sid(&client, pid, ours).unwrap(), me);
+    }
+
+    /// The other end of a pipe, held by a child process (this test binary,
+    /// re-run on this one test) so its process id is not ours. Without the
+    /// `SOLADOR_PIPE_HELPER` variable it is a no-op in an ordinary run.
+    /// `client` opens `SOLADOR_PIPE_NAME`; `server` creates it and says
+    /// `ready` once it exists. Either way it holds the pipe until stdin closes.
+    #[tokio::test]
+    async fn pipe_peer_helper() {
+        use std::io::Read;
+        let Ok(role) = std::env::var("SOLADOR_PIPE_HELPER") else {
+            return;
+        };
+        let name = std::env::var("SOLADOR_PIPE_NAME").unwrap();
+        let _held = if role == "server" {
+            let sddl = sddl_for(&own_sid().unwrap()).unwrap();
+            let server = create_instance(&name, &sddl, true).unwrap();
+            println!("ready");
+            server.connect().await.unwrap();
+            Held::Server(server)
+        } else {
+            Held::Client(ClientOptions::new().open(&name).unwrap())
+        };
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+    }
+
+    #[allow(dead_code)]
+    enum Held {
+        Server(NamedPipeServer),
+        Client(tokio::net::windows::named_pipe::NamedPipeClient),
+    }
+
+    /// Runs [`pipe_peer_helper`] as `role` on `name`.
+    fn spawn_peer(role: &str, name: &str) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["pipe_peer_helper", "--nocapture", "--test-threads=1"])
+            .env("SOLADOR_PIPE_HELPER", role)
+            .env("SOLADOR_PIPE_NAME", name)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the peer")
+    }
+
+    static CLIENT_PID_ASKED: AtomicU32 = AtomicU32::new(0);
+    static SERVER_PID_ASKED: AtomicU32 = AtomicU32::new(0);
+
+    /// Records the process id it was asked about, and answers that the SID
+    /// could not be read, so the check refuses at once and nothing is sent.
+    fn note_client_pid(pid: u32) -> io::Result<Vec<u8>> {
+        CLIENT_PID_ASKED.store(pid, Ordering::SeqCst);
+        Err(io::Error::other("recorded"))
+    }
+    fn note_server_pid(pid: u32) -> io::Result<Vec<u8>> {
+        SERVER_PID_ASKED.store(pid, Ordering::SeqCst);
+        Err(io::Error::other("recorded"))
+    }
+
+    /// In one process both ends of a pipe have the same id, so a swap of
+    /// `GetNamedPipeClientProcessId` and `GetNamedPipeServerProcessId` would
+    /// read the same either way. With the other end in a child, the app must
+    /// ask about the child (its client), not about itself.
+    #[tokio::test]
+    async fn the_server_asks_about_its_client_process() {
+        let dir = scratch();
+        let name = pipe_name(dir.path());
+        let server = start_with(dir.path(), own_sid().unwrap(), note_client_pid);
+        let mut child = spawn_peer("client", &name);
+        let mut asked = 0;
+        for _ in 0..200 {
+            asked = CLIENT_PID_ASKED.load(Ordering::SeqCst);
+            if asked != 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        drop(child.stdin.take());
+        let _ = child.wait();
+        server.abort();
+        assert_eq!(asked, child.id(), "the server asked about pid {asked}");
+        assert_ne!(asked, std::process::id());
+    }
+
+    /// The same for the command mode: it must ask about the process serving
+    /// the pipe, which here is the child.
+    #[tokio::test]
+    async fn the_client_asks_about_its_server_process() {
+        use std::io::{BufRead, BufReader};
+        let dir = scratch();
+        let name = pipe_name(dir.path());
+        let mut child = spawn_peer("server", &name);
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        while lines.next().expect("the peer exited early").unwrap() != "ready" {}
+        let refused = tokio::time::timeout(
+            Duration::from_secs(10),
+            exchange(
+                &name,
+                &own_sid().unwrap(),
+                &Envelope::new(Request::Hello),
+                note_server_pid,
+            ),
+        )
+        .await
+        .expect("exchange timed out");
+        drop(child.stdin.take());
+        let _ = child.wait();
+        assert!(
+            matches!(refused, Err(ChannelError::Insecure(_))),
+            "{refused:?}"
+        );
+        let asked = SERVER_PID_ASKED.load(Ordering::SeqCst);
+        assert_eq!(asked, child.id(), "the client asked about pid {asked}");
+        assert_ne!(asked, std::process::id());
     }
 
     /// The negative control for the client's check: a live server, and a
     /// client that expects another user. It is refused as `Insecure`, and the
-    /// server never reads a byte, so no token could have crossed. Deleting the
-    /// `admit_sid` call in `exchange` turns this red.
+    /// server is sent nothing, so no token could have crossed. The server does
+    /// one bounded read and reports what it got, so deleting the `admit_sid`
+    /// call in `exchange` turns this red on the bytes that leaked.
     #[tokio::test]
     async fn a_server_that_is_not_this_user_is_refused_before_anything_is_sent() {
         let dir = scratch();
@@ -594,26 +736,34 @@ mod tests {
         let reader = tokio::spawn(async move {
             let mut server = server;
             server.connect().await.unwrap();
-            let mut received = Vec::new();
-            server.read_to_end(&mut received).await.unwrap();
-            received
+            let mut buffer = vec![0u8; 4096];
+            // EOF (the client hung up unsent), an error, or the bound all read
+            // as nothing; the server then closes, so a client that did send
+            // gets EOF instead of waiting for a reply.
+            let read = tokio::time::timeout(Duration::from_secs(2), server.read(&mut buffer)).await;
+            buffer.truncate(read.map_or(0, |n| n.unwrap_or(0)));
+            buffer
         });
         let mut stranger = own_sid().unwrap();
         *stranger.last_mut().unwrap() ^= 0xff;
         let refused = tokio::time::timeout(
             Duration::from_secs(10),
-            exchange(&name, &stranger, &Envelope::new(Request::Hello)),
+            exchange(&name, &stranger, &Envelope::new(Request::Hello), pid_sid),
         )
         .await
         .expect("exchange timed out");
-        assert!(
-            matches!(refused, Err(ChannelError::Insecure(_))),
-            "{refused:?}"
-        );
         let received = tokio::time::timeout(Duration::from_secs(10), reader)
             .await
             .expect("server read timed out")
             .unwrap();
-        assert!(received.is_empty(), "the server was sent {received:?}");
+        assert!(
+            received.is_empty(),
+            "the server was sent {:?}",
+            String::from_utf8_lossy(&received)
+        );
+        assert!(
+            matches!(refused, Err(ChannelError::Insecure(_))),
+            "{refused:?}"
+        );
     }
 }
